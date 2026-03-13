@@ -1,0 +1,65 @@
+import asyncio
+from types import SimpleNamespace
+from pathlib import Path
+
+from src.core.orchestration.event_bus import EventBus
+from src.core.orchestration.message_manager import MessageManager
+from src.core.orchestration.orchestrator import Orchestrator
+
+
+def test_message_truncation_emits_event(tmp_path):
+    bus = EventBus()
+    received = {}
+
+    def on_trunc(payload):
+        received['payload'] = payload
+
+    bus.subscribe('message.truncation', on_trunc)
+
+    # Use a very small token window to force truncation quickly
+    mm = MessageManager(max_tokens=5, event_bus=bus)
+    mm.append('system', 'system init')
+    # append many long token-like messages to force truncation
+    for i in range(6):
+        mm.append('user', ('word ' * 100))
+
+    # ensure event was received
+    assert 'payload' in received
+    p = received['payload']
+    assert 'dropped_count' in p and 'dropped_tokens' in p and 'tokens_after' in p
+    assert isinstance(p['dropped_count'], int)
+
+
+def test_model_routing_emits_event(monkeypatch, tmp_path):
+    bus = EventBus()
+    captured = {}
+
+    def on_route(payload):
+        captured['payload'] = payload
+
+    bus.subscribe('model.routing', on_route)
+
+    # Create a simple adapter with provider and models
+    adapter = SimpleNamespace()
+    adapter.provider = {'name': 'testprov'}
+    adapter.models = ['small-7b', 'med-13b', 'large-70b']
+
+    # Monkeypatch call_model to avoid external LLM calls
+    async def fake_call_model(messages, provider=None, model=None, stream=False, format_json=False, tools=None):
+        # return a simple assistant response (no tool calls)
+        return {'choices': [{'message': 'ok'}]}
+
+    monkeypatch.setattr('src.core.llm_manager.call_model', fake_call_model)
+
+    orch = Orchestrator(adapter=adapter, working_dir=str(tmp_path), allow_external_working_dir=True, message_max_tokens=1000)
+    # Ensure Orchestrator uses our bus
+    orch.event_bus = bus
+    # Run a single iteration; model routing happens before call_model
+    res = orch.run_agent_once(None, [{'role': 'user', 'content': 'Hello, select model'}], {})
+
+    assert 'payload' in captured
+    p = captured['payload']
+    assert p.get('provider') in (None, 'testprov')
+    assert 'available_models' in p and isinstance(p['available_models'], list)
+    assert 'selected' in p and p['selected'] in adapter.models
+

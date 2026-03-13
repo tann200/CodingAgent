@@ -1,0 +1,102 @@
+/* Main TUI stylesheet - Kilocode/VSCode Dark Theme */
+
+Screen {
+    background: #1e1e1e;
+    color: #cccccc;
+}
+
+#app_grid {
+    height: 100%;
+}
+
+#main_area {
+    width: 1fr;
+    height: 100%;
+    layout: vertical;
+}
+
+#chat_output {
+    height: 1fr;
+    background: #1e1e1e;
+    border-bottom: solid #333333;
+    padding: 0 1;
+}
+
+#sys_log {
+    height: 30%;
+    background: #000000;
+    color: #888888;
+    border-bottom: solid #333333;
+    padding: 0 1;
+}
+
+#input_container {
+    height: auto;
+    background: #1e1e1e;
+    padding: 1 2;
+}
+
+#input_status_bar {
+    height: 1;
+    margin-bottom: 1;
+}
+
+#mode_info {
+    width: auto;
+    color: #4fc1ff;
+    margin-right: 2;
+    text-style: bold;
+}
+
+#provider_model_info {
+    width: 1fr;
+    color: #9cdcfe;
+}
+
+#chat_input {
+    dock: bottom;
+    border: tall #333333;
+    background: #252526;
+    height: auto;
+}
+
+#chat_input:focus {
+    border: tall #007acc;
+}
+
+#input_legend {
+    height: 1;
+    margin-top: 1;
+    color: #808080;
+}
+
+/* Sidebar on the right */
+#sidebar {
+    width: 35;
+    dock: right;
+    height: 100%;
+    background: #252526;
+    border-left: solid #333333;
+    layout: vertical;
+}
+
+#sidebar_top {
+    height: 1fr;
+    padding: 1 2;
+}
+
+#sidebar_bottom {
+    height: auto;
+    padding: 1 2;
+    border-top: solid #333333;
+}
+
+.sidebar_title {
+    text-style: bold;
+    color: #d4d4d4;
+    margin-bottom: 1;
+}
+
+#context_info, #working_dir_info {
+    color: #999999;
+}

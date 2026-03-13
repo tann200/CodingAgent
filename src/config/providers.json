@@ -1,0 +1,1 @@
+{"name": "lm_studio", "type": "lm_studio", "base_url": "http://localhost:1234/v1", "models": ["qwen3.5:9b"]}

@@ -1,0 +1,1 @@
+[{"name": "ollama", "type": "ollama", "base_url": "http://localhost:11434/api", "models": ["qwen3.5:9b"]}]

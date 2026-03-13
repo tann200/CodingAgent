@@ -1,0 +1,385 @@
+{
+  "generated": "2026-03-11 18:15:58Z",
+  "nodes": {
+    "agent-brain": {
+      "path": "agent-brain",
+      "is_dir": true
+    },
+    "agent-brain/agents": {
+      "path": "agent-brain/agents",
+      "is_dir": true
+    },
+    "agent-brain/agents/coding_agent.md": {
+      "path": "agent-brain/agents/coding_agent.md",
+      "is_dir": false
+    },
+    "agent-brain/agents/full_stack_engineer.md": {
+      "path": "agent-brain/agents/full_stack_engineer.md",
+      "is_dir": false
+    },
+    "agent-brain/agents/qa_lead.md": {
+      "path": "agent-brain/agents/qa_lead.md",
+      "is_dir": false
+    },
+    "agent-brain/skills": {
+      "path": "agent-brain/skills",
+      "is_dir": true
+    },
+    "agent-brain/skills/context_hygiene.md": {
+      "path": "agent-brain/skills/context_hygiene.md",
+      "is_dir": false
+    },
+    "agent-brain/skills/dry.md": {
+      "path": "agent-brain/skills/dry.md",
+      "is_dir": false
+    },
+    "agent-brain/templates": {
+      "path": "agent-brain/templates",
+      "is_dir": true
+    },
+    "agent-brain/templates/architecture.md": {
+      "path": "agent-brain/templates/architecture.md",
+      "is_dir": false
+    },
+    "agent-brain/templates/concerns.md": {
+      "path": "agent-brain/templates/concerns.md",
+      "is_dir": false
+    },
+    "agent-brain/templates/conventions.md": {
+      "path": "agent-brain/templates/conventions.md",
+      "is_dir": false
+    },
+    "agent-brain/templates/stack.md": {
+      "path": "agent-brain/templates/stack.md",
+      "is_dir": false
+    },
+    "agent-brain/templates/structure.md": {
+      "path": "agent-brain/templates/structure.md",
+      "is_dir": false
+    },
+    "agent-brain/templates/testing.md": {
+      "path": "agent-brain/templates/testing.md",
+      "is_dir": false
+    },
+    "agent-brain/workflows": {
+      "path": "agent-brain/workflows",
+      "is_dir": true
+    },
+    "agent-brain/workflows/debug.md": {
+      "path": "agent-brain/workflows/debug.md",
+      "is_dir": false
+    },
+    "agent-brain/workflows/plan_phase.md": {
+      "path": "agent-brain/workflows/plan_phase.md",
+      "is_dir": false
+    },
+    "agent-brain/LAWS.md": {
+      "path": "agent-brain/LAWS.md",
+      "is_dir": false
+    },
+    "agent-brain/SOUL.md": {
+      "path": "agent-brain/SOUL.md",
+      "is_dir": false
+    },
+    "agent-brain/system_prompt_coding.md": {
+      "path": "agent-brain/system_prompt_coding.md",
+      "is_dir": false
+    },
+    "agent-brain/system_prompt_planner.md": {
+      "path": "agent-brain/system_prompt_planner.md",
+      "is_dir": false
+    },
+    "agent-brain/system_prompts.md": {
+      "path": "agent-brain/system_prompts.md",
+      "is_dir": false
+    },
+    "docs": {
+      "path": "docs",
+      "is_dir": true
+    },
+    "docs/ARCHITECTURE.md": {
+      "path": "docs/ARCHITECTURE.md",
+      "is_dir": false
+    },
+    "docs/FINAL_AUDIT_REPORT.md": {
+      "path": "docs/FINAL_AUDIT_REPORT.md",
+      "is_dir": false
+    },
+    "docs/memory-implementation.md": {
+      "path": "docs/memory-implementation.md",
+      "is_dir": false
+    },
+    "docs/NEW_AUDIT_INSTRUCTIONS.md": {
+      "path": "docs/NEW_AUDIT_INSTRUCTIONS.md",
+      "is_dir": false
+    },
+    "docs/system_capability_report.md": {
+      "path": "docs/system_capability_report.md",
+      "is_dir": false
+    },
+    "docs/tooloptimization.md": {
+      "path": "docs/tooloptimization.md",
+      "is_dir": false
+    },
+    "docs/tuispec.md": {
+      "path": "docs/tuispec.md",
+      "is_dir": false
+    },
+    "scripts": {
+      "path": "scripts",
+      "is_dir": true
+    },
+    "scripts/add_provider.py": {
+      "path": "scripts/add_provider.py",
+      "is_dir": false
+    },
+    "scripts/check_providers_and_models.py": {
+      "path": "scripts/check_providers_and_models.py",
+      "is_dir": false
+    },
+    "scripts/diagnose_lmstudio.py": {
+      "path": "scripts/diagnose_lmstudio.py",
+      "is_dir": false
+    },
+    "scripts/fetch_ollama.py": {
+      "path": "scripts/fetch_ollama.py",
+      "is_dir": false
+    },
+    "scripts/generate_system_map.py": {
+      "path": "scripts/generate_system_map.py",
+      "is_dir": false
+    },
+    "scripts/list_prompts.py": {
+      "path": "scripts/list_prompts.py",
+      "is_dir": false
+    },
+    "scripts/run_generate.py": {
+      "path": "scripts/run_generate.py",
+      "is_dir": false
+    },
+    "scripts/run_tests_settings.py": {
+      "path": "scripts/run_tests_settings.py",
+      "is_dir": false
+    },
+    "scripts/run_tui.py": {
+      "path": "scripts/run_tui.py",
+      "is_dir": false
+    },
+    "scripts/simulate_tui.py": {
+      "path": "scripts/simulate_tui.py",
+      "is_dir": false
+    },
+    "scripts/start_tui.py": {
+      "path": "scripts/start_tui.py",
+      "is_dir": false
+    },
+    "scripts/test_langgraph_node.py": {
+      "path": "scripts/test_langgraph_node.py",
+      "is_dir": false
+    },
+    "scripts/test_tools.py": {
+      "path": "scripts/test_tools.py",
+      "is_dir": false
+    },
+    "scripts/validate_ollama.py": {
+      "path": "scripts/validate_ollama.py",
+      "is_dir": false
+    },
+    "scripts/wait_for_model.py": {
+      "path": "scripts/wait_for_model.py",
+      "is_dir": false
+    },
+    "src": {
+      "path": "src",
+      "is_dir": true
+    },
+    "src/adapters": {
+      "path": "src/adapters",
+      "is_dir": true
+    },
+    "src/adapters/lm_studio_adapter.py": {
+      "path": "src/adapters/lm_studio_adapter.py",
+      "is_dir": false
+    },
+    "src/adapters/ollama_adapter.py": {
+      "path": "src/adapters/ollama_adapter.py",
+      "is_dir": false
+    },
+    "src/config": {
+      "path": "src/config",
+      "is_dir": true
+    },
+    "src/config/providers.json": {
+      "path": "src/config/providers.json",
+      "is_dir": false
+    },
+    "src/core": {
+      "path": "src/core",
+      "is_dir": true
+    },
+    "src/core/orchestration": {
+      "path": "src/core/orchestration",
+      "is_dir": true
+    },
+    "src/core/orchestration/agent_brain.py": {
+      "path": "src/core/orchestration/agent_brain.py",
+      "is_dir": false
+    },
+    "src/core/orchestration/event_bus.py": {
+      "path": "src/core/orchestration/event_bus.py",
+      "is_dir": false
+    },
+    "src/core/orchestration/langgraph_node.py": {
+      "path": "src/core/orchestration/langgraph_node.py",
+      "is_dir": false
+    },
+    "src/core/orchestration/message_manager.py": {
+      "path": "src/core/orchestration/message_manager.py",
+      "is_dir": false
+    },
+    "src/core/orchestration/orchestrator.py": {
+      "path": "src/core/orchestration/orchestrator.py",
+      "is_dir": false
+    },
+    "src/core/orchestration/schema.json": {
+      "path": "src/core/orchestration/schema.json",
+      "is_dir": false
+    },
+    "src/core/telemetry": {
+      "path": "src/core/telemetry",
+      "is_dir": true
+    },
+    "src/core/telemetry/consumer.py": {
+      "path": "src/core/telemetry/consumer.py",
+      "is_dir": false
+    },
+    "src/core/telemetry/metrics.py": {
+      "path": "src/core/telemetry/metrics.py",
+      "is_dir": false
+    },
+    "src/core/llm_manager.py": {
+      "path": "src/core/llm_manager.py",
+      "is_dir": false
+    },
+    "src/core/logger.py": {
+      "path": "src/core/logger.py",
+      "is_dir": false
+    },
+    "src/core/startup.py": {
+      "path": "src/core/startup.py",
+      "is_dir": false
+    },
+    "src/core/user_prefs.py": {
+      "path": "src/core/user_prefs.py",
+      "is_dir": false
+    },
+    "src/data": {
+      "path": "src/data",
+      "is_dir": true
+    },
+    "src/tools": {
+      "path": "src/tools",
+      "is_dir": true
+    },
+    "src/tools/file_tools.py": {
+      "path": "src/tools/file_tools.py",
+      "is_dir": false
+    },
+    "src/tools/registry.py": {
+      "path": "src/tools/registry.py",
+      "is_dir": false
+    },
+    "src/tools/system_tools.py": {
+      "path": "src/tools/system_tools.py",
+      "is_dir": false
+    },
+    "src/ui": {
+      "path": "src/ui",
+      "is_dir": true
+    },
+    "src/ui/components": {
+      "path": "src/ui/components",
+      "is_dir": true
+    },
+    "src/ui/components/__init__.py": {
+      "path": "src/ui/components/__init__.py",
+      "is_dir": false
+    },
+    "src/ui/components/log_panel.py": {
+      "path": "src/ui/components/log_panel.py",
+      "is_dir": false
+    },
+    "src/ui/styles": {
+      "path": "src/ui/styles",
+      "is_dir": true
+    },
+    "src/ui/styles/main.tcss": {
+      "path": "src/ui/styles/main.tcss",
+      "is_dir": false
+    },
+    "src/ui/styles/README.md": {
+      "path": "src/ui/styles/README.md",
+      "is_dir": false
+    },
+    "src/ui/views": {
+      "path": "src/ui/views",
+      "is_dir": true
+    },
+    "src/ui/views/__init__.py": {
+      "path": "src/ui/views/__init__.py",
+      "is_dir": false
+    },
+    "src/ui/views/main_view.py": {
+      "path": "src/ui/views/main_view.py",
+      "is_dir": false
+    },
+    "src/ui/views/provider_panel.py": {
+      "path": "src/ui/views/provider_panel.py",
+      "is_dir": false
+    },
+    "src/ui/views/settings_panel.py": {
+      "path": "src/ui/views/settings_panel.py",
+      "is_dir": false
+    },
+    "src/ui/__init__.py": {
+      "path": "src/ui/__init__.py",
+      "is_dir": false
+    },
+    "src/ui/app.py": {
+      "path": "src/ui/app.py",
+      "is_dir": false
+    },
+    "src/ui/README.md": {
+      "path": "src/ui/README.md",
+      "is_dir": false
+    },
+    "src/ui/textual_app.py": {
+      "path": "src/ui/textual_app.py",
+      "is_dir": false
+    },
+    "src/ui/textual_app_impl.py": {
+      "path": "src/ui/textual_app_impl.py",
+      "is_dir": false
+    },
+    "src/main.py": {
+      "path": "src/main.py",
+      "is_dir": false
+    },
+    "src/tmp_app_started.log": {
+      "path": "src/tmp_app_started.log",
+      "is_dir": false
+    },
+    "pyproject.toml": {
+      "path": "pyproject.toml",
+      "is_dir": false
+    },
+    "README.md": {
+      "path": "README.md",
+      "is_dir": false
+    },
+    "requirements.txt": {
+      "path": "requirements.txt",
+      "is_dir": false
+    }
+  }
+}

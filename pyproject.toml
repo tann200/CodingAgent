@@ -1,0 +1,35 @@
+[project]
+name = "codingagent"
+version = "0.1.0"
+description = "Local coding agent orchestration using LM Studio / Ollama"
+readme = "README.md"
+requires-python = ">=3.9"
+
+[project.dependencies]
+requests = "^2.31"
+httpx = "^0.28"
+textual = "^8.1"
+openai = "^2.0"
+python-dotenv = "^1.0"
+typing-extensions = "^4.5"
+uv = "^0.10"
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=7.0",
+  "ruff>=0.12",
+  "black>=23.9",
+  "mypy>=0.991",
+]
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.ruff]
+line-length = 88
+target-version = ["py39"]
+
+[tool.black]
+line-length = 88
+target-version = ["py39"]

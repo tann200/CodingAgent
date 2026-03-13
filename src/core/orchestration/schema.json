@@ -1,0 +1,30 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "OpenAI-compatible Agent Response Schema",
+  "description": "Schema for structured assistant responses and function/tool calls compatible with OpenAI function_call and other providers.",
+  "type": "object",
+  "properties": {
+    "summary": { "type": "string", "description": "Short summary of the assistant output" },
+    "explanation": { "type": "string", "description": "Longer explanation or reasoning" },
+    "final_answer": { "description": "Final answer payload (string or structured object)", "oneOf": [ {"type": "string"}, {"type": "object"} ] },
+    "tool_call": {
+      "type": "object",
+      "description": "Provider-agnostic tool call shape (legacy/ollama style).",
+      "properties": {
+        "name": { "type": "string" },
+        "arguments": { "type": ["object", "string"] }
+      },
+      "required": ["name"]
+    },
+    "function_call": {
+      "type": "object",
+      "description": "OpenAI-compatible function_call shape.",
+      "properties": {
+        "name": { "type": "string" },
+        "arguments": { "oneOf": [ {"type": "object"}, {"type": "string"} ] }
+      },
+      "required": ["name"]
+    }
+  },
+  "additionalProperties": true
+}
