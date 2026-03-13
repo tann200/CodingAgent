@@ -86,17 +86,17 @@ def edit_file(path: str, patch: str, workdir: Path = DEFAULT_WORKDIR) -> Dict[st
         if not patch.strip().startswith('---') and not patch.strip().startswith('@@'):
             return {"path": str(p), "status": "error", "error": "Invalid patch format. Must be unified diff."}
 
-        # Apply unified diff. Use -N (forward) -F0 (strict) -u (unified) --no-backup-if-mismatch
-        # For patching directly to the file, we can just pipe to patch or give the file
+        # Apply unified diff. 
+        # Using -f to force (ignore previous patches) and -u (unified)
         result = subprocess.run(
-            ['patch', '-u', str(p), '-i', patch_file],
+            ['patch', '-u', '-f', str(p), '-i', patch_file],
             capture_output=True,
             text=True,
             check=False
         )
         
         if result.returncode != 0:
-            return {"path": str(p), "status": "error", "error": f"Patch failed:\n{result.stdout}\n{result.stderr}"}
+            return {"path": str(p), "status": "error", "error": f"Patch failed code {result.returncode}:\n{result.stdout}\n{result.stderr}"}
         
         return {"path": str(p), "status": "ok"}
     finally:
