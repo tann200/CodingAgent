@@ -491,7 +491,7 @@ class Orchestrator:
                     identity=full_system_prompt,
                     role=f"Working Directory: {self.working_dir}",
                     active_skills=[],
-                    task_description=prompt or "Please continue.",
+                    task_description=prompt if rounds == 1 else "Please continue with the next step of the task.",
                     tools=tools_list,
                     conversation=self.msg_mgr.messages,
                     max_tokens=6000

@@ -31,6 +31,21 @@ class ContextBuilder:
             tools_text += f"name: {tool['name']}\ndescription: {tool['description']}\n"
         system_parts.append(f"<available_tools>\n{tools_text}\n</available_tools>")
         
+        # 1.5 Mandatory Output Format (Last part of system instructions)
+        format_instr = (
+            "<output_format>\n"
+            "You MUST think step-by-step. Write your internal reasoning inside <think> tags.\n"
+            "To execute an action, you MUST use the provided XML tool format. NEVER use JSON tool calls.\n"
+            "Format your tool calls exactly like this:\n"
+            "<tool>\n"
+            "name: the_tool_name\n"
+            "arguments: {\"arg_name\": \"arg_value\"}\n"
+            "</tool>\n"
+            "Wait for the user to provide the tool execution result before proceeding.\n"
+            "</output_format>"
+        )
+        system_parts.append(format_instr)
+        
         built_messages.append({"role": "system", "content": "\n\n".join(system_parts)})
 
         # 2. Conversation Logic
@@ -60,14 +75,16 @@ class ContextBuilder:
         
         # Final check: is the last message Assistant or is the list missing User?
         if not built_messages or built_messages[-1].get("role") != "user":
-            prompt_content = f"<task>\n{task_description}\n</task>"
+            prompt_content = f"<task>\n{task_description}\n</task>\n\nExecute the next action using the <tool> format."
             built_messages.append({"role": "user", "content": prompt_content})
         else:
             # If the last message is already User, we can either wrap it in <task> 
             # or just leave it. For continuity, let's wrap it if it doesn't have it.
             last_msg = built_messages[-1]
             if "<task>" not in last_msg.get("content", ""):
-                last_msg["content"] = f"<task>\n{last_msg['content']}\n</task>\n\nPlease continue."
+                last_msg["content"] = f"<task>\n{last_msg['content']}\n</task>\n\nExecute the next action using the <tool> format."
+        
+        return built_messages
         
         return built_messages
 
