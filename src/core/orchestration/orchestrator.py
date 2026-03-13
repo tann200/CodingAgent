@@ -436,183 +436,66 @@ class Orchestrator:
 
 
     def run_agent_once(self, system_prompt_name: Optional[str], messages: List[Dict[str, Any]], tools: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Invokes the LangGraph cognitive pipeline to execute the task.
+        """
         prompt = ""
         if messages and isinstance(messages, list) and messages[-1].get("role") == "user":
             prompt = messages[-1].get("content", "")
 
         from .agent_brain import load_system_prompt
-        from src.core.context.context_builder import ContextBuilder
+        from src.core.orchestration.graph.builder import compile_agent_graph
         
-        # 1. Load raw system prompt content
+        # 1. Prepare Initial State
         full_system_prompt = load_system_prompt(system_prompt_name) or "You are a helpful coding assistant."
         
-        # 2. Add current prompt to permanent history (to avoid losing it on next rounds)
-        if prompt:
-            # check if prompt is already in msg_mgr (to avoid duplicates)
-            last_msg = self.msg_mgr.messages[-1] if self.msg_mgr.messages else None
-            if not last_msg or last_msg.get("content") != prompt:
-                self.msg_mgr.append("user", prompt)
-
-        # Context components for ContextBuilder
-        tools_list = []
-        for name, meta in self.tool_registry.tools.items():
-            tools_list.append({"name": name, "description": meta.get('description', '')})
-
-        # Dynamically determine provider and model
-        provider = "None"
-        model = "None"
+        initial_state = {
+            "task": prompt,
+            "history": self.msg_mgr.messages,
+            "verified_reads": list(self._session_read_files),
+            "next_action": None,
+            "last_result": None,
+            "rounds": 0,
+            "working_dir": str(self.working_dir),
+            "system_prompt": full_system_prompt,
+            "errors": []
+        }
+        
+        # 2. Compile and Run Graph
+        graph = compile_agent_graph()
+        
+        import asyncio
         try:
-            if self.adapter and hasattr(self.adapter, "provider") and isinstance(self.adapter.provider, dict):
-                provider = self.adapter.provider.get("name") or self.adapter.provider.get("type") or "None"
-            if self.adapter and hasattr(self.adapter, "models") and isinstance(self.adapter.models, list) and self.adapter.models:
-                model = self.adapter.models[0]
-            elif self.adapter and hasattr(self.adapter, "default_model") and self.adapter.default_model:
-                model = self.adapter.default_model
-        except Exception:
-            pass
+            # We use the same safe asyncio execution logic
+            def _run_graph():
+                return asyncio.run(graph.ainvoke(initial_state, {"configurable": {"orchestrator": self}}))
 
-        max_rounds = 10
-        rounds = 0
-        last_assistant_message = ""
-
-        try:
-            from src.core.llm_manager import call_model
-            from src.core.orchestration.tool_parser import parse_tool_block
-            import asyncio as _asyncio
-            import json
+            try:
+                loop = asyncio.get_running_loop()
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    future = executor.submit(_run_graph)
+                    final_state = future.result()
+            except RuntimeError:
+                final_state = _run_graph()
             
-            builder = ContextBuilder()
+            # Debug: check why verified_reads might be empty
+            guilogger.info(f"Final state verified reads: {final_state.get('verified_reads')}")
+                
+            # 3. Synchronize MessageManager with graph history
+            # The graph history contains the new turns
+            new_turns = final_state["history"][len(self.msg_mgr.messages):]
+            for turn in new_turns:
+                self.msg_mgr.append(turn["role"], turn["content"])
+                
+            # Update session tracking
+            for path in final_state.get("verified_reads", []):
+                self._session_read_files.add(path)
 
-            while rounds < max_rounds:
-                rounds += 1
-                
-                # Build the fully BUDGETED tiered prompt for this turn
-                msgs_to_send = builder.build_prompt(
-                    identity=full_system_prompt,
-                    role=f"Working Directory: {self.working_dir}",
-                    active_skills=[],
-                    task_description=prompt if rounds == 1 else "Please continue with the next step of the task.",
-                    tools=tools_list,
-                    conversation=self.msg_mgr.messages,
-                    max_tokens=6000
-                )
-                
-                try:
-                    # emit routing event to sync UI labels
-                    if hasattr(self, 'event_bus'):
-                        self.event_bus.publish('model.routing', {
-                            'selected': model, 
-                            'provider': provider, 
-                            'available_models': getattr(self.adapter, 'models', [])
-                        })
-                        
-                    # Safe asyncio execution
-                    try:
-                        loop = _asyncio.get_running_loop()
-                        import concurrent.futures
-                        with concurrent.futures.ThreadPoolExecutor() as executor:
-                            future = executor.submit(_asyncio.run, call_model(
-                                msgs_to_send, 
-                                provider=provider, 
-                                model=model, 
-                                stream=False, 
-                                format_json=False, 
-                                tools=None
-                            ))
-                            resp = future.result()
-                    except RuntimeError:
-                        resp = _asyncio.run(call_model(
-                            msgs_to_send, 
-                            provider=provider, 
-                            model=model, 
-                            stream=False, 
-                            format_json=False, 
-                            tools=None
-                        ))
-                except Exception as e:
-                    return {"error": "call_model_failed", "exception": str(e), "assistant_message": last_assistant_message}
-
-                ch = None
-                usage = {}
-                if isinstance(resp, dict):
-                    if resp.get("choices") and isinstance(resp.get("choices"), list):
-                        ch = resp["choices"][0].get("message")
-                        usage = resp.get("usage", {})
-                    elif resp.get("message"):
-                        ch = resp.get("message")
-                        usage = resp.get("usage", {})
-
-                if usage and hasattr(self, 'event_bus'):
-                    self.event_bus.publish('model.usage', usage)
-
-                if not ch:
-                    return {"assistant_message": str(resp), "raw": resp}
-
-                if isinstance(ch, str):
-                    content = ch
-                elif isinstance(ch, dict):
-                    content = ch.get("content") or ""
-                else:
-                    content = str(ch)
-
-                # Parse XML tools
-                tool_call = parse_tool_block(content)
-                
-                # Update history
-                self.msg_mgr.append("assistant", content)
-                
-                if content:
-                    last_assistant_message += (content + "\n")
-                    
-                if not tool_call:
-                    return {"assistant_message": last_assistant_message}
-
-                # Exec tool
-                tc_name = tool_call.get("name")
-                tc_args = tool_call.get("arguments", {})
-                
-                # Check Loop Prevention
-                if self._check_loop_prevention(tc_name, tc_args):
-                    if hasattr(self, 'event_bus'):
-                        self.event_bus.publish('execution.loop_detected', {'tool': tc_name, 'args': tc_args})
-                    self.msg_mgr.append("system", "[LOOP DETECTED] Repeated tool calls blocked; consider alternate strategy.")
-                    continue
-                
-                if hasattr(self, 'event_bus'):
-                    self.event_bus.publish('tool.execute.start', {'tool': tc_name, 'args': tc_args})
-                    
-                # Run preflight check
-                preflight = self.preflight_check(tool_call)
-                if not preflight.get("ok"):
-                    tool_res = preflight
-                else:
-                    tool_res = self.execute_tool({"name": tc_name, "arguments": tc_args})
-                
-                if hasattr(self, 'event_bus'):
-                    self.event_bus.publish('tool.execute.finish', {'tool': tc_name, 'result': str(tool_res)[:100]})
-                
-                # Log to trace
-                import datetime
-                self._append_execution_trace({
-                    "ts": datetime.datetime.utcnow().isoformat() + "Z",
-                    "goal": prompt or "Continue task",
-                    "tool": tc_name,
-                    "args": tc_args,
-                    "result_summary": str(tool_res)[:100],
-                    "assistant_message_excerpt": content[:100]
-                })
-                
-                self.msg_mgr.append("user", json.dumps({"tool_execution_result": tool_res}))
-                
-                # Distillation every round
-                try:
-                    from src.core.memory.distiller import distill_context
-                    distill_context(self.msg_mgr.all(), working_dir=self.working_dir)
-                except Exception:
-                    pass
-
+            # Construct final response
+            assistant_msgs = [m["content"] for m in final_state["history"] if m["role"] == "assistant"]
+            guilogger.info(f"Graph execution completed in {final_state['rounds']} rounds")
+            return {"assistant_message": "\n".join(assistant_msgs[-1:]) if assistant_msgs else ""}
         except Exception as e:
-            return {"error": "agent_loop_failed", "exception": str(e)}
-            
-        return {"assistant_message": last_assistant_message}
-
+            guilogger.error(f"Graph execution failed: {e}")
+            return {"error": "graph_failed", "exception": str(e)}
