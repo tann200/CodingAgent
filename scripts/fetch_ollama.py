@@ -8,7 +8,6 @@ This script will try common host/port combos (127.0.0.1 and localhost; ports 114
 It prints responses and helpful diagnostics.
 """
 import json
-import sys
 import requests
 
 HOSTS = ["127.0.0.1", "localhost"]

@@ -1,12 +1,8 @@
-import os
-import json
-import types
-import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 import asyncio
 
 from src.adapters.lm_studio_adapter import LmStudioAdapter
-from src.core.llm_manager import call_model, get_provider_manager, _provider_manager
+from src.core.llm_manager import call_model, get_provider_manager
 
 
 def make_response(status_code=200, json_data=None, text_data=None):

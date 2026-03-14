@@ -1,7 +1,6 @@
 import json
 from pathlib import Path
 import asyncio
-import tempfile
 
 from src.core.llm_manager import call_model
 
@@ -24,7 +23,8 @@ def test_call_model_uses_providers_json(tmp_path, monkeypatch):
             return {'ok': True, 'model': model or 'm1', 'choices': [{'message': {'role': 'assistant', 'content': 'ok'}}], 'usage': {'prompt_tokens':1,'completion_tokens':2,'total_tokens':3}}
 
     # insert DummyAdapter into src.adapters.ollama_adapter module namespace
-    import importlib, types
+    import importlib
+    import types
     modname = 'src.adapters.ollama_adapter'
     try:
         mod = importlib.import_module(modname)

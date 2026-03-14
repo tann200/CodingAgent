@@ -1,5 +1,3 @@
-import pytest
-from pathlib import Path
 from src.tools.file_tools import edit_file
 
 def test_edit_file_unified_diff(tmp_path):

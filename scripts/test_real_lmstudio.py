@@ -1,5 +1,3 @@
-import asyncio
-import os
 import sys
 from pathlib import Path
 
@@ -8,7 +6,6 @@ sys.path.insert(0, str(Path(__file__).parents[1]))
 
 from src.core.orchestration.orchestrator import Orchestrator
 from src.adapters.lm_studio_adapter import LmStudioAdapter
-from src.tools.registry import register_tool
 
 def dummy_read_file(path: str, **kwargs) -> str:
     return "Content of the file"

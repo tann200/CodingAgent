@@ -1,10 +1,8 @@
 import importlib
 import time
-import asyncio
 
-from src.adapters.lm_studio_adapter import LmStudioAdapter
 from src.core.orchestration.event_bus import EventBus
-from src.core.llm_manager import get_provider_manager, _provider_manager
+from src.core.llm_manager import _provider_manager
 
 
 def test_orchestrator_emits_startup_and_model_events(monkeypatch, tmp_path):

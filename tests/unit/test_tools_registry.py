@@ -1,5 +1,5 @@
 import pytest
-from src.tools.registry import register_tool, unregister_tool, get_tool, list_tools, call_tool, clear_registry, get_tool_descriptions, _registry
+from src.tools.registry import register_tool, unregister_tool, get_tool, list_tools, call_tool, clear_registry, get_tool_descriptions
 
 def test_registry_lifecycle():
     clear_registry()

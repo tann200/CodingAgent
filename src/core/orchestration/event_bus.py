@@ -4,20 +4,43 @@ API:
 - EventBus.subscribe(event_name: str, callback: Callable[[Any], None]) -> None
 - EventBus.unsubscribe(event_name: str, callback: Callable[[Any], None]) -> None
 - EventBus.publish(event_name: str, payload: Any) -> None
+- EventBus.subscribe_to_agent(agent_id: str, callback) -> None
+- EventBus.publish_to_agent(agent_id: str, payload: Any) -> None
 
 Callbacks are executed synchronously in the publisher's thread. Subscriber exceptions are
 caught and ignored to keep the event bus robust for telemetry.
 """
+
 from __future__ import annotations
 
 import threading
-from typing import Any, Callable, Dict, List
+from typing import Any, Callable, Dict, List, Optional, Set
+from dataclasses import dataclass, field
+from enum import IntEnum
+
+
+class MessagePriority(IntEnum):
+    LOW = 0
+    NORMAL = 1
+    HIGH = 2
+    CRITICAL = 3
+
+
+@dataclass
+class AgentMessage:
+    agent_id: str
+    payload: Any
+    priority: MessagePriority = MessagePriority.NORMAL
+    reply_to: Optional[str] = None
+    timestamp: float = field(default_factory=lambda: __import__("time").time())
 
 
 class EventBus:
     def __init__(self) -> None:
         self._lock = threading.RLock()
         self._subscribers: Dict[str, List[Callable[[Any], None]]] = {}
+        self._agent_subscribers: Dict[str, List[Callable[[AgentMessage], None]]] = {}
+        self._agent_ids: Set[str] = set()
 
     def subscribe(self, event_name: str, callback: Callable[[Any], None]) -> None:
         if not callable(callback):
@@ -34,18 +57,95 @@ class EventBus:
                     pass
 
     def publish(self, event_name: str, payload: Any) -> None:
-        # Copy subscribers under lock to avoid holding lock while invoking callbacks
         with self._lock:
             subs = list(self._subscribers.get(event_name, []))
         for cb in subs:
             try:
                 cb(payload)
             except Exception:
-                # Do not let subscriber exceptions break the publisher
                 continue
 
+    def subscribe_to_agent(
+        self, agent_id: str, callback: Callable[[AgentMessage], None]
+    ) -> None:
+        if not callable(callback):
+            raise TypeError("callback must be callable")
+        with self._lock:
+            self._agent_ids.add(agent_id)
+            self._agent_subscribers.setdefault(agent_id, []).append(callback)
 
-# Optional singleton accessor for convenience
+    def unsubscribe_from_agent(
+        self, agent_id: str, callback: Callable[[AgentMessage], None]
+    ) -> None:
+        with self._lock:
+            if agent_id in self._agent_subscribers:
+                try:
+                    self._agent_subscribers[agent_id].remove(callback)
+                except ValueError:
+                    pass
+
+    def publish_to_agent(
+        self,
+        agent_id: str,
+        payload: Any,
+        priority: MessagePriority = MessagePriority.NORMAL,
+        reply_to: Optional[str] = None,
+    ) -> None:
+        msg = AgentMessage(
+            agent_id=agent_id, payload=payload, priority=priority, reply_to=reply_to
+        )
+        with self._lock:
+            subs = list(self._agent_subscribers.get(agent_id, []))
+            priority_subs = list(self._agent_subscribers.get("*", []))
+        for cb in priority_subs:
+            try:
+                cb(msg)
+            except Exception:
+                continue
+        if priority >= MessagePriority.HIGH:
+            for cb in sorted(subs, key=lambda x: 0):
+                try:
+                    cb(msg)
+                except Exception:
+                    continue
+        else:
+            for cb in subs:
+                try:
+                    cb(msg)
+                except Exception:
+                    continue
+
+    def broadcast_to_agents(
+        self, payload: Any, priority: MessagePriority = MessagePriority.NORMAL
+    ) -> None:
+        msg = AgentMessage(agent_id="broadcast", payload=payload, priority=priority)
+        with self._lock:
+            all_subs = []
+            for agent_id in self._agent_ids:
+                all_subs.extend(self._agent_subscribers.get(agent_id, []))
+            all_subs.extend(self._agent_subscribers.get("*", []))
+        for cb in all_subs:
+            try:
+                cb(msg)
+            except Exception:
+                continue
+
+    def list_registered_agents(self) -> List[str]:
+        with self._lock:
+            return list(self._agent_ids)
+
+    def publish_with_identity(
+        self,
+        event_name: str,
+        payload: Any,
+        sender_id: Optional[str] = None,
+        priority: Optional[int] = None,
+    ) -> None:
+        meta = {"sender_id": sender_id, "priority": priority}
+        full = {"meta": meta, "payload": payload}
+        return self.publish(event_name, full)
+
+
 _default_bus: EventBus | None = None
 
 

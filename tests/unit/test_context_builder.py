@@ -1,4 +1,3 @@
-import pytest
 from src.core.context.context_builder import ContextBuilder
 
 def test_build_prompt_basic_structure():
@@ -21,7 +20,7 @@ def test_build_prompt_basic_structure():
     assert len(messages) == 7 # identity, role, active_skills, task, tools, user_conv, assistant_conv
     assert messages[0]["content"] == f"<identity>\n{identity}\n</identity>"
     assert messages[1]["content"] == f"<role>\n{role}\n</role>"
-    assert messages[2]["content"] == f"<active_skills>\nSkill A\nSkill B\n</active_skills>"
+    assert messages[2]["content"] == "<active_skills>\nSkill A\nSkill B\n</active_skills>"
     assert messages[3]["content"] == f"<task>\n{task_description}\n</task>"
     assert "<tools>" in messages[4]["content"]
     assert "name: read_file" in messages[4]["content"]

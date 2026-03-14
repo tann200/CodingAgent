@@ -10,13 +10,12 @@ stub and the Textual implementation.
 """
 from __future__ import annotations
 
-from typing import List, Optional, Dict, Any
+from typing import List, Optional
 from src.core.llm_manager import get_provider_manager
 from src.core.logger import logger as guilogger
 from src.core.orchestration.event_bus import get_event_bus
 from src.core.user_prefs import UserPrefs
 import json
-from pathlib import Path
 import time
 import threading
 

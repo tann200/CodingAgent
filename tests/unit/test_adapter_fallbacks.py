@@ -1,4 +1,3 @@
-import pytest
 from unittest.mock import patch, mock_open
 import json
 from src.adapters.lm_studio_adapter import LmStudioAdapter

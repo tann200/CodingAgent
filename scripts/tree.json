@@ -1,24 +1,32 @@
 {
-  "generated": "2026-03-11 18:15:58Z",
+  "generated": "2026-03-13 19:10:51Z",
   "nodes": {
     "agent-brain": {
       "path": "agent-brain",
       "is_dir": true
     },
-    "agent-brain/agents": {
-      "path": "agent-brain/agents",
+    "agent-brain/identity": {
+      "path": "agent-brain/identity",
       "is_dir": true
     },
-    "agent-brain/agents/coding_agent.md": {
-      "path": "agent-brain/agents/coding_agent.md",
+    "agent-brain/identity/LAWS.md": {
+      "path": "agent-brain/identity/LAWS.md",
       "is_dir": false
     },
-    "agent-brain/agents/full_stack_engineer.md": {
-      "path": "agent-brain/agents/full_stack_engineer.md",
+    "agent-brain/identity/SOUL.md": {
+      "path": "agent-brain/identity/SOUL.md",
       "is_dir": false
     },
-    "agent-brain/agents/qa_lead.md": {
-      "path": "agent-brain/agents/qa_lead.md",
+    "agent-brain/roles": {
+      "path": "agent-brain/roles",
+      "is_dir": true
+    },
+    "agent-brain/roles/operational.md": {
+      "path": "agent-brain/roles/operational.md",
+      "is_dir": false
+    },
+    "agent-brain/roles/strategic.md": {
+      "path": "agent-brain/roles/strategic.md",
       "is_dir": false
     },
     "agent-brain/skills": {
@@ -33,72 +41,16 @@
       "path": "agent-brain/skills/dry.md",
       "is_dir": false
     },
-    "agent-brain/templates": {
-      "path": "agent-brain/templates",
-      "is_dir": true
-    },
-    "agent-brain/templates/architecture.md": {
-      "path": "agent-brain/templates/architecture.md",
-      "is_dir": false
-    },
-    "agent-brain/templates/concerns.md": {
-      "path": "agent-brain/templates/concerns.md",
-      "is_dir": false
-    },
-    "agent-brain/templates/conventions.md": {
-      "path": "agent-brain/templates/conventions.md",
-      "is_dir": false
-    },
-    "agent-brain/templates/stack.md": {
-      "path": "agent-brain/templates/stack.md",
-      "is_dir": false
-    },
-    "agent-brain/templates/structure.md": {
-      "path": "agent-brain/templates/structure.md",
-      "is_dir": false
-    },
-    "agent-brain/templates/testing.md": {
-      "path": "agent-brain/templates/testing.md",
-      "is_dir": false
-    },
-    "agent-brain/workflows": {
-      "path": "agent-brain/workflows",
-      "is_dir": true
-    },
-    "agent-brain/workflows/debug.md": {
-      "path": "agent-brain/workflows/debug.md",
-      "is_dir": false
-    },
-    "agent-brain/workflows/plan_phase.md": {
-      "path": "agent-brain/workflows/plan_phase.md",
-      "is_dir": false
-    },
-    "agent-brain/LAWS.md": {
-      "path": "agent-brain/LAWS.md",
-      "is_dir": false
-    },
-    "agent-brain/SOUL.md": {
-      "path": "agent-brain/SOUL.md",
-      "is_dir": false
-    },
-    "agent-brain/system_prompt_coding.md": {
-      "path": "agent-brain/system_prompt_coding.md",
-      "is_dir": false
-    },
-    "agent-brain/system_prompt_planner.md": {
-      "path": "agent-brain/system_prompt_planner.md",
-      "is_dir": false
-    },
-    "agent-brain/system_prompts.md": {
-      "path": "agent-brain/system_prompts.md",
-      "is_dir": false
-    },
     "docs": {
       "path": "docs",
       "is_dir": true
     },
     "docs/ARCHITECTURE.md": {
       "path": "docs/ARCHITECTURE.md",
+      "is_dir": false
+    },
+    "docs/DEVELOPMENT.md": {
+      "path": "docs/DEVELOPMENT.md",
       "is_dir": false
     },
     "docs/FINAL_AUDIT_REPORT.md": {
@@ -109,12 +61,24 @@
       "path": "docs/memory-implementation.md",
       "is_dir": false
     },
+    "docs/MEMORY_ARCHITECTURE.md": {
+      "path": "docs/MEMORY_ARCHITECTURE.md",
+      "is_dir": false
+    },
+    "docs/mvp-tasklist.md": {
+      "path": "docs/mvp-tasklist.md",
+      "is_dir": false
+    },
     "docs/NEW_AUDIT_INSTRUCTIONS.md": {
       "path": "docs/NEW_AUDIT_INSTRUCTIONS.md",
       "is_dir": false
     },
     "docs/system_capability_report.md": {
       "path": "docs/system_capability_report.md",
+      "is_dir": false
+    },
+    "docs/system_map.md": {
+      "path": "docs/system_map.md",
       "is_dir": false
     },
     "docs/tooloptimization.md": {
@@ -125,12 +89,20 @@
       "path": "docs/tuispec.md",
       "is_dir": false
     },
+    "docs/unified_plan.md": {
+      "path": "docs/unified_plan.md",
+      "is_dir": false
+    },
     "scripts": {
       "path": "scripts",
       "is_dir": true
     },
     "scripts/add_provider.py": {
       "path": "scripts/add_provider.py",
+      "is_dir": false
+    },
+    "scripts/analyze_tokens.py": {
+      "path": "scripts/analyze_tokens.py",
       "is_dir": false
     },
     "scripts/check_providers_and_models.py": {
@@ -173,12 +145,32 @@
       "path": "scripts/start_tui.py",
       "is_dir": false
     },
+    "scripts/test_agent_stability.py": {
+      "path": "scripts/test_agent_stability.py",
+      "is_dir": false
+    },
     "scripts/test_langgraph_node.py": {
       "path": "scripts/test_langgraph_node.py",
       "is_dir": false
     },
+    "scripts/test_llm_stability.py": {
+      "path": "scripts/test_llm_stability.py",
+      "is_dir": false
+    },
+    "scripts/test_real_lmstudio.py": {
+      "path": "scripts/test_real_lmstudio.py",
+      "is_dir": false
+    },
+    "scripts/test_real_lmstudio_file_edit.py": {
+      "path": "scripts/test_real_lmstudio_file_edit.py",
+      "is_dir": false
+    },
     "scripts/test_tools.py": {
       "path": "scripts/test_tools.py",
+      "is_dir": false
+    },
+    "scripts/tree.json": {
+      "path": "scripts/tree.json",
       "is_dir": false
     },
     "scripts/validate_ollama.py": {
@@ -217,9 +209,61 @@
       "path": "src/core",
       "is_dir": true
     },
+    "src/core/context": {
+      "path": "src/core/context",
+      "is_dir": true
+    },
+    "src/core/context/context_builder.py": {
+      "path": "src/core/context/context_builder.py",
+      "is_dir": false
+    },
+    "src/core/inference": {
+      "path": "src/core/inference",
+      "is_dir": true
+    },
+    "src/core/inference/__init__.py": {
+      "path": "src/core/inference/__init__.py",
+      "is_dir": false
+    },
+    "src/core/inference/adapter_wrappers.py": {
+      "path": "src/core/inference/adapter_wrappers.py",
+      "is_dir": false
+    },
+    "src/core/inference/llm_client.py": {
+      "path": "src/core/inference/llm_client.py",
+      "is_dir": false
+    },
+    "src/core/inference/telemetry.py": {
+      "path": "src/core/inference/telemetry.py",
+      "is_dir": false
+    },
+    "src/core/memory": {
+      "path": "src/core/memory",
+      "is_dir": true
+    },
+    "src/core/memory/distiller.py": {
+      "path": "src/core/memory/distiller.py",
+      "is_dir": false
+    },
     "src/core/orchestration": {
       "path": "src/core/orchestration",
       "is_dir": true
+    },
+    "src/core/orchestration/graph": {
+      "path": "src/core/orchestration/graph",
+      "is_dir": true
+    },
+    "src/core/orchestration/graph/nodes": {
+      "path": "src/core/orchestration/graph/nodes",
+      "is_dir": true
+    },
+    "src/core/orchestration/graph/builder.py": {
+      "path": "src/core/orchestration/graph/builder.py",
+      "is_dir": false
+    },
+    "src/core/orchestration/graph/state.py": {
+      "path": "src/core/orchestration/graph/state.py",
+      "is_dir": false
     },
     "src/core/orchestration/agent_brain.py": {
       "path": "src/core/orchestration/agent_brain.py",
@@ -227,10 +271,6 @@
     },
     "src/core/orchestration/event_bus.py": {
       "path": "src/core/orchestration/event_bus.py",
-      "is_dir": false
-    },
-    "src/core/orchestration/langgraph_node.py": {
-      "path": "src/core/orchestration/langgraph_node.py",
       "is_dir": false
     },
     "src/core/orchestration/message_manager.py": {
@@ -243,6 +283,10 @@
     },
     "src/core/orchestration/schema.json": {
       "path": "src/core/orchestration/schema.json",
+      "is_dir": false
+    },
+    "src/core/orchestration/tool_parser.py": {
+      "path": "src/core/orchestration/tool_parser.py",
       "is_dir": false
     },
     "src/core/telemetry": {

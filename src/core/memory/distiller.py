@@ -67,7 +67,7 @@ User: Here are the recent messages:
                 
         if content:
             import re
-            match = re.search(r"\{.*\}", content, re.DOTALL)
+            match = re.search(r"\{.*?\}", content, re.DOTALL)
             if match:
                 distilled_state = json.loads(match.group(0))
             else:
@@ -79,7 +79,8 @@ User: Here are the recent messages:
         
     if distilled_state and working_dir:
         try:
-            task_state_path = working_dir / ".agent-context" / "TASK_STATE.md"
+            agent_context = working_dir / ".agent-context"
+            task_state_path = agent_context / "TASK_STATE.md"
             lines = [
                 "# Current Task",
                 distilled_state.get("current_task", "None"),
@@ -93,5 +94,23 @@ User: Here are the recent messages:
             task_state_path.write_text("\n".join(lines))
         except Exception as e:
             logger.error(f"Failed to write TASK_STATE.md: {e}")
-            
+
+    # Also attempt to produce a lightweight repo_memory.json summarizing modules if repo_index is available
+    try:
+        if working_dir:
+            index_path = working_dir / ".agent-context" / "repo_index.json"
+            if index_path.exists():
+                with open(index_path, 'r', encoding='utf-8') as f:
+                    repo_index = json.load(f)
+                repo_memory = {"modules": []}
+                for fdata in repo_index.get('files', []):
+                    repo_memory['modules'].append({
+                        "path": fdata.get('path'),
+                        "imports": fdata.get('imports', [])
+                    })
+                mem_path = working_dir / ".agent-context" / "repo_memory.json"
+                mem_path.write_text(json.dumps(repo_memory, indent=2))
+    except Exception as e:
+        logger.error(f"Failed to write repo_memory.json: {e}")
+
     return distilled_state

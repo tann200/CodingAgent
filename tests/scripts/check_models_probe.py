@@ -4,7 +4,6 @@
 Usage: PYTHONPATH=. python3 tests/scripts/check_models_probe.py
 """
 import importlib
-import sys
 import time
 
 # Ensure project is importable

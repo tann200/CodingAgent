@@ -1,8 +1,6 @@
 import json
-from pathlib import Path
 import time
 
-import pytest
 
 from src.ui.views.settings_panel import SettingsPanelController
 import src.core.llm_manager as llm

@@ -1,6 +1,5 @@
 from pathlib import Path
 from src.ui.app import CodingAgentApp, AppConfig
-from src.core.orchestration.event_bus import EventBus
 
 
 def test_app_wires_telemetry(tmp_path):

@@ -42,7 +42,7 @@ async def provider_health_check(timeout: float = 5.0) -> Dict[str, Dict[str, Any
             if hasattr(adapter, "get_models_from_api") and callable(getattr(adapter, "get_models_from_api")):
                 try:
                     models_resp = adapter.get_models_from_api()
-                except Exception as e:
+                except Exception:
                     # Some adapters may expose async get_models_from_api
                     maybe = adapter.get_models_from_api
                     if inspect.isawaitable(maybe):

@@ -6,7 +6,6 @@ issues during test collection. It provides the interface expected by
 """
 from __future__ import annotations
 
-import json
 import warnings
 import os
 from pathlib import Path
@@ -538,7 +537,7 @@ class LmStudioAdapter(LLMClient):
                 except TypeError:
                     try:
                         return requests.post(url, payload)
-                    except Exception as e:
+                    except Exception:
                         raise
         except requests.exceptions.RequestException:
             raise

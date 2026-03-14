@@ -1,7 +1,6 @@
 import unittest
 from unittest.mock import patch, mock_open
 from src.adapters.ollama_adapter import OllamaAdapter
-import json
 
 class TestOllamaAdapterUnit(unittest.TestCase):
     @patch('pathlib.Path.read_text')

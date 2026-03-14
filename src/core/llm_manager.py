@@ -16,7 +16,6 @@ from pathlib import Path
 import json
 import inspect
 import re
-from functools import partial
 
 # Prefer the central project logger so all components share the same logging pipeline.
 # If the central logger isn't importable (tests or early import), fall back to the standard
@@ -746,7 +745,6 @@ async def _call_model_internal(messages: List[Dict[str, Any]], provider: Optiona
 async def call_model(messages: List[Dict[str, Any]], provider: Optional[str] = None, model: Optional[str] = None, stream: bool = False, format_json: bool = False, tools: Optional[List[Any]] = None, **kwargs) -> Any:
     res = await _call_model_internal(messages, provider, model, stream, format_json, tools, **kwargs)
     
-    import os
     if os.getenv("LLM_MANAGER_ENABLE_MODEL_FALLBACK") == "1":
         is_error = False
         if isinstance(res, dict):

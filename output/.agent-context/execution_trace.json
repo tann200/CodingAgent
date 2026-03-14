@@ -7,5 +7,21 @@
     },
     "result_summary": "{'ok': True, 'result': {'echo': '2025-10-24 | Created TEST.md in /Users/tann200/PycharmProjects/Codi",
     "assistant_message_excerpt": "<think>The user wants me to create a TEST.md file in the working directory with the current date and"
+  },
+  {
+    "tool": "echo",
+    "args": {
+      "text": "hello"
+    },
+    "ts": 1773516861.408594,
+    "retries": 0
+  },
+  {
+    "tool": "echo",
+    "args": {
+      "text": "hello"
+    },
+    "ts": 1773518303.456427,
+    "retries": 1
   }
 ]

@@ -1,5 +1,4 @@
 import pytest
-from pathlib import Path
 from src.tools.file_tools import write_file, read_file, edit_file, _safe_resolve
 
 def test_file_tools_exceptions(tmp_path):

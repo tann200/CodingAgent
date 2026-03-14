@@ -1,6 +1,5 @@
 import time
-from pathlib import Path
-from src.core.logger import set_audit_log_path, audit_file_access, logger as guilogger
+from src.core.logger import set_audit_log_path, audit_file_access
 
 
 def test_audit_file_writer(tmp_path):

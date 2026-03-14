@@ -1,7 +1,6 @@
 import importlib
 import asyncio
 import src.core.llm_manager as lm
-from src.adapters.lm_studio_adapter import LmStudioAdapter
 
 
 def test_provider_manager_probes_models_once(monkeypatch, tmp_path):
@@ -47,7 +46,6 @@ def test_provider_manager_probes_models_once(monkeypatch, tmp_path):
     assert 'qwen/qwen3.5-9b' in cached
 
     # Calling get_available_models should return the cached models and not call adapter again
-    import asyncio
     models_first = asyncio.run(lm.get_available_models('', '', 'lm_studio'))
     models_second = asyncio.run(lm.get_available_models('', '', 'lm_studio'))
     assert models_first == models_second

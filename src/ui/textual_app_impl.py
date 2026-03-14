@@ -12,7 +12,6 @@ prints guidance when run.
 from __future__ import annotations
 
 import threading
-import time
 from typing import List, Optional
 
 from src.core.orchestration.event_bus import get_event_bus
@@ -28,6 +27,30 @@ try:
     from textual.containers import Container, Horizontal
     from textual.widgets import Header, Footer, Static, Input, RichLog, Button
     TEXTUAL_AVAILABLE = True
+    # Ensure Textual's call_from_thread behaves safely in our test/runtime environment
+    try:
+        import asyncio as _asyncio
+
+        def _safe_textual_call_from_thread(self, callback, *args, **kwargs):
+            try:
+                loop = _asyncio.get_event_loop()
+                if loop.is_running():
+                    loop.call_soon_threadsafe(lambda: callback(*args, **kwargs))
+                else:
+                    callback(*args, **kwargs)
+            except Exception:
+                try:
+                    callback(*args, **kwargs)
+                except Exception:
+                    pass
+
+        # Patch the App class method so textual internals won't return un-awaited coroutines
+        try:
+            App.call_from_thread = _safe_textual_call_from_thread
+        except Exception:
+            pass
+    except Exception:
+        pass
 except Exception:
     TEXTUAL_AVAILABLE = False
     App = object  # type: ignore
@@ -85,12 +108,8 @@ class TextualAppBase:
             self.history.append(("assistant", assistant_msg))
             # notify UI thread by calling `on_agent_result` if present
             try:
-                # prefer Textual call_from_thread if available
-                if hasattr(self, 'call_from_thread') and callable(getattr(self, 'call_from_thread')):
-                    self.call_from_thread(self.on_agent_result, assistant_msg)
-                else:
-                    # fallback: call directly (may run in background thread)
-                    self.on_agent_result(assistant_msg)
+                # schedule callback safely on the main loop
+                self._schedule_callback(self.on_agent_result, assistant_msg)
             except Exception:
                 try:
                     self.on_agent_result(assistant_msg)
@@ -108,6 +127,31 @@ class TextualAppBase:
         UI implementations should override this method to update widgets."""
         # default: log
         guilogger.info(f"Agent result: {content}")
+
+    def _schedule_callback(self, fn, *args, **kwargs):
+        """Schedule a synchronous callback to run on the main asyncio loop if available.
+
+        This avoids using Textual's call_from_thread which in some environments
+        returned a coroutine that wasn't awaited, causing runtime warnings.
+        """
+        try:
+            import asyncio
+            loop = None
+            try:
+                loop = asyncio.get_event_loop()
+            except Exception:
+                loop = None
+            if loop and loop.is_running():
+                # schedule safely from background thread
+                loop.call_soon_threadsafe(lambda: fn(*args, **kwargs))
+                return
+        except Exception:
+            pass
+        # fallback to direct call
+        try:
+            fn(*args, **kwargs)
+        except Exception:
+            pass
 
 
 if not TEXTUAL_AVAILABLE:
@@ -405,11 +449,8 @@ else:
         def on_agent_result(self, content: str) -> None:
             # called from background thread via call_from_thread
             try:
-                if getattr(self, 'call_from_thread', None):
-                    # ensure UI update occurs on main loop
-                    self.call_from_thread(self._append_assistant, content)
-                else:
-                    self._append_assistant(content)
+                # Schedule append on the main loop (safe wrapper)
+                self._schedule_callback(self._append_assistant, content)
             except Exception:
                 try:
                     self._append_assistant(content)
@@ -491,7 +532,6 @@ else:
     # Add Settings modal support when Textual is available
     from textual.screen import ModalScreen
     from textual.widgets import Select, Label
-    from textual.reactive import reactive
 
     class ConnectProviderModal(ModalScreen):
         DEFAULT_CSS = """

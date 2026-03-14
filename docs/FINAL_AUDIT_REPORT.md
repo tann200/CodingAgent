@@ -1,191 +1,220 @@
-# Final Architectural Audit Report
+CODING AGENT DEVELOPMENT TASKLIST
+P0 — Core Capability Upgrades
+Task 1 — Introduce Planning Node
 
-## Executive Summary
+Extend the graph.
 
-This report summarizes the findings from a comprehensive 10-phase architectural audit of the AI coding agent system. The audit identified critical issues preventing proper operation, missing capabilities, and architectural gaps in decomposition, model routing, and safety guardrails.
+New pipeline:
 
-**Overall System Status: OPERATIONAL (with known limitations)**
+Perception
+→ Planning
+→ Execution
+→ Memory
 
-The system can now start and execute basic tasks after remediation of critical bugs. However, it lacks advanced features for task decomposition, complexity-based model routing, and safety constraints that would enable reliable operation on large tasks with small models.
+Planning node outputs structured plan:
 
----
+Plan:
+1 locate target file
+2 read file
+3 modify function
+4 validate change
 
-## Phase I: Structural Architecture Mapping
+Add to state:
 
-### Findings
+current_plan
+current_step
+Task 2 — Implement Repo Index
 
-| Component | Layer | Status | Issues |
-|-----------|-------|--------|--------|
-| TUI (textual_app_impl.py) | UI Layer | **FIXED** | Outdated imports (TextLog, Modal) replaced |
-| ProviderManager (llm_manager.py) | Model Invocation | **FIXED** | Duplicate /v1/models calls removed |
-| Orchestrator (orchestrator.py) | Orchestration | **FIXED** | Parsing errors, retry logic added |
-| Tool Registry | Tool Layer | **ENHANCED** | 5 new tools added |
-| EventBus | Cross-layer | **OPERATIONAL** | EventPubSub working |
+Add repository intelligence.
 
-### Severity: N/A (Structural - Completed)
+Minimum components:
 
-### Remediation: Completed
-- Updated TUI imports in `src/ui/textual_app_impl.py`
-- Created CSS stylesheet `src/ui/styles/main.tcss`
-- Fixed duplicate API calls in ProviderManager
-- Added tool retry logic (3 attempts)
+file index
+symbol index
+function map
+import graph
 
----
+Store in:
 
-## Phase II: Decomposition & Task Splitting Audit
+.agent-context/repo_index.json
 
-### Findings
+Expose tools:
 
-| Capability | Status | Gap |
-|------------|--------|-----|
-| Sub-agent spawning mechanism | **PARTIAL / ENHANCED** | `subagent_call` in prompts, basic `TaskDecomposer` runtime present but full sub-agent execution and isolation not yet implemented |
-| Task chunking | **MISSING** | No mechanism to break large tasks into smaller pieces automatically at runtime (TaskDecomposer provides heuristics only) |
-| Independent subtask execution | **MISSING** | No isolation between subtasks |
-| Task queue management | **MISSING** | No persistent queue for decomposed tasks |
+find_symbol
+find_references
+search_code
+Task 3 — Code Search Tool
 
-### Severity: **HIGH**
+Add semantic code search.
 
-The system now includes a basic `TaskDecomposer` implementation (heuristics-driven, in `src/core/orchestration/orchestrator.py`) which can break down simple tasks into subtasks; however, there is not yet a runtime sub-agent runner with true isolation, nor a persistent queue for managing many subtasks.
+Implementation:
 
-### Remediation Steps
-1. Implement `TaskDecomposer` class in `src/core/orchestration/` — PARTIALLY IMPLEMENTED (basic heuristics added).
-2. Add subtask queue in `MessageManager` — PENDING
-3. Implement sub-agent runner that can execute isolated subtasks — PENDING
+embeddings
+vector index
+top-k retrieval
 
----
+Libraries:
 
-## Phase III: Orchestration Logic Audit
+sentence-transformers
+faiss
+lancedb
 
-### Findings
+Tool:
 
-| Aspect | Status | Notes |
-|--------|--------|-------|
-| Tool execution loop | **OPERATIONAL** | 3-retry logic added |
-| Preflight checks | **IMPROVED** | `read_before_edit` flagged and enforcement refined |
-| Error handling | **IMPROVED** | consecutive_errors counter added |
-| EventPubSub | **OPERATIONAL** | Working correctly |
+search_code(query)
+Task 4 — Execution Verification
 
-### Severity: **MEDIUM**
+Add verification node.
 
-The `read_before_edit` flag is now enforced more sensibly: surgical edits (`edit_file`) require a prior read, while `write_file` may create new files without a prior read; overwriting an existing file still requires a prior read. Session-level tracking of read and modified files is implemented to support QE locks.
+Pipeline becomes:
 
-### Remediation Steps
-1. Add enforcement of `read_before_edit` in `execute_tool` — IMPLEMENTED (with refined semantics).
-2. Track file read history per task session — IMPLEMENTED (session state in Orchestrator)
+Perception
+→ Planning
+→ Execution
+→ Verification
+→ Memory
 
----
+Verification tools:
 
-## Phase IV: Model Routing & Amplification Strategy Audit
+run_tests
+run_linter
+syntax_check
+Task 5 — Patch Generation Layer
 
-### Findings
+Replace LLM patch generation.
 
-| Capability | Status | Gap |
-|------------|--------|-----|
-| Model selection | **ENHANCED** | `ModelRouter` implemented and integrated; orchestrator now routes using simple heuristics when multiple models are available |
-| Complexity-based routing | **PARTIAL** | Basic heuristics implemented (keyword / subtask count); further signal-based heuristics (token estimates, file counts) can improve accuracy |
-| Multi-model orchestration | **MISSING** | No routing between models for multi-step amplification or mixed-model execution yet |
-| Specialized sub-agents | **PARTIAL** | Prompts exist but not fully wired into multi-model workflows |
+New workflow:
 
-### Severity: **HIGH**
+LLM outputs edit intent
+system generates diff
 
-A `ModelRouter` class with simple complexity heuristics has been added and integrated into the orchestrator to select among adapter-provided models. This enables routing simple tasks to smaller models and more complex tasks to larger models as a first step.
+Example intent:
 
-### Remediation Steps
-1. Implement `ModelRouter` class with complexity heuristics — IMPLEMENTED (basic keyword and subtask-count heuristics in `src/core/orchestration/orchestrator.py`).
-2. Add task complexity analysis (file count, token estimate, skill requirements) — PENDING (recommended next step).
-3. Route simple tasks to small models, complex tasks to larger models — PARTIALLY IMPLEMENTED (basic routing performed when multiple models exist in adapter).
+replace function foo with new implementation
+P1 — Memory Intelligence
+Task 6 — Memory Retrieval
 
----
+Upgrade memory usage.
 
-## Phase V: Context & Token Economy Audit
+Add:
 
-### Findings
+memory_search(query)
 
-| Aspect | Status | Impact |
-|--------|--------|--------|
-| System prompts | **LARGE** | 80+ lines, could be reduced |
-| Tool schemas | **REASONABLE** | No significant bloat |
-| Message history | **UNBOUNDED** | No truncation policy |
-| File reading | **RISKY** | Some callers still read entire files; `read_file_chunk` is available and recommended |
+Ranking:
 
-### Severity: **MEDIUM**
+recency
+semantic similarity
+task relevance
+Task 7 — Repository Knowledge Memory
 
-- Default system prompt is ~2000 tokens (could be reduced to ~500)
-- No message truncation - could exceed context window on long sessions
-- `read_file` loads entire files - risk of context overflow
+Store repo insights:
 
-### Remediation Steps
-1. Reduce system prompts to essential instructions only — PENDING
-2. Implement message window with max tokens (e.g., 8k context window, keep last 6k) — PENDING
-3. Enforce `read_file_chunk` for files > 1000 lines — PARTIALLY ADDRESSED (tool implemented; callers need updates)
-4. Add `summarize_structure` tool to assist planning and avoid large reads — IMPLEMENTED (`src/tools/system_tools.py`, registered in orchestrator example registry)
+module summaries
+dependency relationships
+bug fixes
 
----
+File:
 
-## Phase VI: Guardrail & Safety Constraint Audit
+.agent-context/repo_memory.json
+Task 8 — Loop Prevention Improvement
 
-### Findings
+Current loop prevention uses execution_trace.
 
-| Guardrail | Status | Gap |
-|-----------|--------|-----|
-| Path sandboxing | **OPERATIONAL** | working_dir enforcement works |
-| Tool preflight | **IMPROVED** | Flag set and enforcement refined |
-| QE locks | **OPERATIONAL** | `max_files_modified_per_task` enforced (default: 10) |
-| Concurrent task limits | **MISSING** | No max concurrent tasks yet |
-| Rate limiting | **MISSING** | No API rate limiting |
+Add:
 
-### Severity: **MEDIUM**
+duplicate action detection
+dead-end detection
+retry limit
+P2 — Agent Reliability
+Task 9 — Structured Tool Contracts
 
-The system now enforces QE locks to help prevent runaway file modifications (session tracked, default max = 10). Read-before-edit semantics have been refined to balance safety and legitimate file creation.
+Define schema for each tool.
 
-### Remediation Steps
-1. Add `max_files_modified_per_task` config (default: 10) — IMPLEMENTED (session state in Orchestrator).
-2. Track modified files in session state — IMPLEMENTED.
-3. Block edits when limit exceeded — IMPLEMENTED.
+Example:
 
----
+{
+ tool: str
+ args: dict
+ result: dict
+ error: str
+}
+Task 10 — Deterministic Mode
 
-## Summary of Implemented Fixes
+Add optional deterministic runs.
 
-| Issue | File | Fix Applied |
-|-------|------|--------------|
-| TUI startup crash | `textual_app_impl.py` | Updated imports (RichLog, ModalScreen) |
-| Duplicate API calls | `llm_manager.py` | Removed redundant probe, use cached models |
-| Agent loop crash | `orchestrator.py` | Added type checking for string responses |
-| False connected status | `llm_manager.py` | Added validate_connection() check |
-| Missing tools | `orchestrator.py` | Added grep, get_git_diff, read_file_chunk, edit_file, list_files |
-| Retry loop | `orchestrator.py` | Added consecutive_errors counter |
-| Uninitialized variable | `orchestrator.py` | Added consecutive_errors = 0 initialization |
-| QE read-before-edit semantics | `orchestrator.py` | Refined enforcement: `edit_file` requires read; `write_file` may create new files; overwrites require prior read |
-| Model routing | `orchestrator.py` | Added `ModelRouter` and integrated simple routing heuristic into `run_agent_once` |
-| Workspace summarizer | `src/tools/system_tools.py` | Added `summarize_structure` tool and registered it (helps avoid large reads) |
+temperature = 0
+seed control
 
----
+Used for debugging.
 
-## Next Steps (Priority Order)
+Task 11 — Cost Tracking
 
-1. **Add sub-agent runner & persistent queue** - Execute decomposed subtasks in isolated environments and manage long-running task queues (HIGH)
-2. **Add richer complexity signals for ModelRouter** - Token estimates, file counts, skill tags (HIGH)
-3. **Implement message truncation / token windowing** - Prevent context overflow during long sessions (MEDIUM)
-4. **Rationalize tool aliases** - De-duplicate `read_file`/`fs.read` and `write_file`/`fs.write` (LOW)
-5. **Add concurrency and rate limiting guardrails** - Limits to protect providers and local resources (MEDIUM)
+Add metrics:
 
----
+tokens
+latency
+tool calls
+iterations
+P3 — Hub-and-Spoke Preparation
 
-## Appendix: New Tools Available
+You said your goal is hub-and-spoke architecture.
 
-| Tool | Description |
-|------|-------------|
-| `list_files` | List directory contents |
-| `read_file_chunk` | Read file with offset and limit |
-| `edit_file` | Edit file with old_string -> new_string |
-| `grep` | Search for pattern in files (system `grep` wrapper) |
-| `get_git_diff` | Get git diff of current repository |
-| `summarize_structure` | Summarize workspace structure (file/dir counts, top entries) |
+Prepare the current system.
 
+Task 12 — Agent Role Abstraction
 
----
+Refactor roles into config.
 
-Test evidence (local):
-- Unit test suite executed locally after these changes: `pytest` completed with no failures.
+Examples:
+
+planner
+coder
+reviewer
+researcher
+Task 13 — Message Bus Upgrade
+
+Your event_bus is a good start.
+
+Extend to support:
+
+multi-agent message routing
+agent identity
+message priority
+Task 14 — Graph Modularity
+
+Allow dynamic graph composition.
+
+Example:
+
+planner_graph
+coder_graph
+review_graph
+Recommended Next Architecture
+
+After improvements:
+
+User Task
+ ↓
+Planner Node
+ ↓
+Repo Intelligence
+ ↓
+Execution Node
+ ↓
+Verification Node
+ ↓
+Memory Update
+
+Then hub-and-spoke becomes:
+
+Coordinator
+ ├ Planner
+ ├ Coder
+ ├ Reviewer
+ └ Researcher
+The Single Most Important Next Feature
+
+Implement repo intelligence (index + code search).
+
+This single feature will increase success rate more than any other improvement.
 

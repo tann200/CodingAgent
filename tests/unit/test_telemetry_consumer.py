@@ -1,5 +1,3 @@
-from pathlib import Path
-from types import SimpleNamespace
 
 from src.core.orchestration.event_bus import EventBus
 from src.core.telemetry.consumer import TelemetryConsumer

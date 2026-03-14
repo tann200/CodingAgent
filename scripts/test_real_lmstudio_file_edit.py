@@ -1,7 +1,4 @@
-import asyncio
-import os
 import sys
-import json
 from pathlib import Path
 
 # Add project root to sys.path
@@ -66,7 +63,7 @@ def main():
         last_msg = orch.msg_mgr.messages[-1]
         
         if last_msg["role"] == "user" and "tool_execution_result" in last_msg.get("content", ""):
-            print(f"Tool executed. Result injected back to agent:")
+            print("Tool executed. Result injected back to agent:")
             print(last_msg["content"][:200] + "...")
         else:
             print("No tool executed or loop finished.")

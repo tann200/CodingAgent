@@ -1,5 +1,4 @@
 import pytest
-import asyncio
 from src.ui.textual_app_impl import CodingAgentTextualApp, TEXTUAL_AVAILABLE
 
 @pytest.mark.asyncio

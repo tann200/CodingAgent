@@ -1,10 +1,8 @@
 import asyncio
-import pytest
 import json
 from src.core.llm_manager import ProviderManager, _provider_manager, get_structured_llm
 from src.core.orchestration.event_bus import EventBus
 from src.core.user_prefs import UserPrefs
-from pathlib import Path
 
 
 def test_provider_manager_initialize_and_list(tmp_path):

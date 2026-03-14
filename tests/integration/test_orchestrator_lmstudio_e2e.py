@@ -6,7 +6,6 @@ import pytest
 from src.adapters.lm_studio_adapter import LmStudioAdapter
 from src.core.orchestration.orchestrator import Orchestrator
 from src.core.orchestration import agent_brain
-from src.core.llm_manager import get_provider_manager, _ensure_provider_manager_initialized_sync
 
 pytestmark = pytest.mark.lmstudio
 

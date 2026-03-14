@@ -3,7 +3,6 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
 import asyncio
-from typing import List
 from src.core.inference.llm_client import LLMClient
 from src.adapters.lm_studio_adapter import LMStudioAdapter
 from src.adapters.ollama_adapter import OllamaAdapter

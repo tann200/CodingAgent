@@ -1,7 +1,6 @@
 import json
 import requests
 import pytest
-from pathlib import Path
 
 from src.adapters.ollama_adapter import OllamaAdapter
 

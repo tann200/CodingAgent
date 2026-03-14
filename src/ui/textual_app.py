@@ -16,7 +16,7 @@ class TextualApp:
     def run(self) -> None:
         try:
             # import textual only when running
-            from textual.app import App
+            pass
         except Exception:
             # Textual not installed; fallback to no-op but provide informative message
             print("Textual is not installed; TextualApp.run is a no-op in headless mode")

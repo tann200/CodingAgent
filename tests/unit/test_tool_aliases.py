@@ -1,5 +1,4 @@
 from src.core.orchestration.orchestrator import example_registry
-from pathlib import Path
 
 
 def test_tool_aliases_read_write(tmp_path):

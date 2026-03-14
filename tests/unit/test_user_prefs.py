@@ -1,5 +1,3 @@
-import tempfile
-from pathlib import Path
 from src.core.user_prefs import UserPrefs
 
 

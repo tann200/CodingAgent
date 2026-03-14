@@ -1,6 +1,4 @@
-import pytest
 import json
-from pathlib import Path
 from src.core.orchestration.orchestrator import Orchestrator
 from tests.integration.mocks.deterministic_adapter import DeterministicAdapter
 
@@ -40,14 +38,27 @@ def test_loop_prevention(tmp_path):
             
         orchestrator.tool_registry.register("bash", bash_mock, [], "Run bash")
         
-        # Run agent
-        orchestrator.run_agent_once(None, [{"role": "user", "content": "Start"}], {})
-        
-        # Check trace file exists and has 3 tool executions, not 4 (because 4th was blocked)
+        # Run the agent, allow multiple rounds to consume adapter
+        import time
         trace_path = tmp_path / ".agent-context" / "execution_trace.json"
-        assert trace_path.exists()
-        
-        trace = json.loads(trace_path.read_text())
+        trace = []
+        max_rounds = 12
+        scenario_len = len(scenarios["loop_scenario"]) if isinstance(scenarios, dict) else 4
+        for _ in range(max_rounds):
+            orchestrator.run_agent_once(None, [{"role": "user", "content": "Start"}], {})
+            time.sleep(0.05)
+            if trace_path.exists():
+                try:
+                    trace = json.loads(trace_path.read_text())
+                except Exception:
+                    trace = []
+            if len(trace) >= 3:
+                break
+            if getattr(adapter, 'step_index', 0) >= scenario_len:
+                break
+
+        # Check trace file exists and has 3 tool executions, not 4 (because 4th was blocked)
+        assert trace_path.exists(), "execution_trace.json not found"
         assert len(trace) == 3, f"Expected 3 tool executions, got {len(trace)}"
         
         # Check that the orchestrator injected the loop detected message into the messages

@@ -1,43 +1,36 @@
 # System Map
 
-Generated: 2026-03-11 18:15:58Z
+Generated: 2026-03-13 19:10:51Z
 
 ```text
 Repository: CodingAgent
 
 ├── agent-brain
-│   ├── agents
-│   │   ├── coding_agent.md
-│   │   ├── full_stack_engineer.md
-│   │   └── qa_lead.md
-│   ├── skills
-│   │   ├── context_hygiene.md
-│   │   └── dry.md
-│   ├── templates
-│   │   ├── architecture.md
-│   │   ├── concerns.md
-│   │   ├── conventions.md
-│   │   ├── stack.md
-│   │   ├── structure.md
-│   │   └── testing.md
-│   ├── workflows
-│   │   ├── debug.md
-│   │   └── plan_phase.md
-│   ├── LAWS.md
-│   ├── SOUL.md
-│   ├── system_prompt_coding.md
-│   ├── system_prompt_planner.md
-│   └── system_prompts.md
+│   ├── identity
+│   │   ├── LAWS.md
+│   │   └── SOUL.md
+│   ├── roles
+│   │   ├── operational.md
+│   │   └── strategic.md
+│   └── skills
+│       ├── context_hygiene.md
+│       └── dry.md
 ├── docs
 │   ├── ARCHITECTURE.md
+│   ├── DEVELOPMENT.md
 │   ├── FINAL_AUDIT_REPORT.md
 │   ├── memory-implementation.md
+│   ├── MEMORY_ARCHITECTURE.md
+│   ├── mvp-tasklist.md
 │   ├── NEW_AUDIT_INSTRUCTIONS.md
 │   ├── system_capability_report.md
+│   ├── system_map.md
 │   ├── tooloptimization.md
-│   └── tuispec.md
+│   ├── tuispec.md
+│   └── unified_plan.md
 ├── scripts
 │   ├── add_provider.py
+│   ├── analyze_tokens.py
 │   ├── check_providers_and_models.py
 │   ├── diagnose_lmstudio.py
 │   ├── fetch_ollama.py
@@ -48,8 +41,13 @@ Repository: CodingAgent
 │   ├── run_tui.py
 │   ├── simulate_tui.py
 │   ├── start_tui.py
+│   ├── test_agent_stability.py
 │   ├── test_langgraph_node.py
+│   ├── test_llm_stability.py
+│   ├── test_real_lmstudio.py
+│   ├── test_real_lmstudio_file_edit.py
 │   ├── test_tools.py
+│   ├── tree.json
 │   ├── validate_ollama.py
 │   └── wait_for_model.py
 ├── src
@@ -59,13 +57,27 @@ Repository: CodingAgent
 │   ├── config
 │   │   └── providers.json
 │   ├── core
+│   │   ├── context
+│   │   │   └── context_builder.py
+│   │   ├── inference
+│   │   │   ├── __init__.py
+│   │   │   ├── adapter_wrappers.py
+│   │   │   ├── llm_client.py
+│   │   │   └── telemetry.py
+│   │   ├── memory
+│   │   │   └── distiller.py
 │   │   ├── orchestration
+│   │   │   ├── graph
+│   │   │   │   ├── nodes
+│   │   │   │   │   └── ...
+│   │   │   │   ├── builder.py
+│   │   │   │   └── state.py
 │   │   │   ├── agent_brain.py
 │   │   │   ├── event_bus.py
-│   │   │   ├── langgraph_node.py
 │   │   │   ├── message_manager.py
 │   │   │   ├── orchestrator.py
-│   │   │   └── schema.json
+│   │   │   ├── schema.json
+│   │   │   └── tool_parser.py
 │   │   ├── telemetry
 │   │   │   ├── consumer.py
 │   │   │   └── metrics.py

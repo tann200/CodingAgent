@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
 """Script to test tool registry and orchestrator read/write sandbox behavior."""
-import os
 import sys
 from pathlib import Path
-import json
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))

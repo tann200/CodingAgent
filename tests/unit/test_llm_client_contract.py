@@ -1,8 +1,5 @@
-import pytest
-from unittest.mock import MagicMock
 from src.core.inference.llm_client import LLMClient
 from src.core.inference.telemetry import with_telemetry
-import time
 
 class DummyAdapter(LLMClient):
     @with_telemetry

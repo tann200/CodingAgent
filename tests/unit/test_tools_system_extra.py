@@ -1,5 +1,3 @@
-import pytest
-from pathlib import Path
 from src.tools.system_tools import grep, get_git_diff, summarize_structure
 import subprocess
 
