@@ -1,18 +1,24 @@
-# Runtime dependencies for CodingAgent (pinned)
+# Runtime dependencies for CodingAgent
+# Requires Python >= 3.9
 requests==2.31.0
 httpx==0.28.0
 textual==8.1.0
 openai==2.0.0
 python-dotenv==1.0.0
-typing-extensions==4.5.0
+typing-extensions>=4.11.0
 uv==0.10.0
 PyYAML==6.0
+langgraph>=0.2.0
+langchain-core>=0.3.0
+pydantic>=2.0.0
+pandas>=2.0.0
 
 # Development/test tools
-pytest==7.4.0
+pytest>=8.0.0
+pytest-asyncio>=0.21.0
 ruff==0.12.0
 black==23.9.0
-mypy==0.991
+mypy>=1.0.0
 
 # Create virtualenv with
 # python -m venv .venv

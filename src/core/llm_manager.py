@@ -8,6 +8,7 @@ Design goals for tests:
 - Provide stable symbols (get_provider_manager, call_model, resolve_config_path, etc.).
 - Be defensive: adapters may call functions synchronously.
 """
+
 import asyncio
 import os
 import time
@@ -27,7 +28,7 @@ except Exception:
     import logging
 
     # Fallback: use a sensible logger name that maps to the project (so logs remain centralized)
-    guilogger = logging.getLogger('coding_agent')
+    guilogger = logging.getLogger("coding_agent")
 
 # Simple in-memory caches
 _MODEL_CACHE: Dict[str, List[str]] = {}
@@ -36,6 +37,7 @@ _CACHE_TTL = 300
 
 # --- Helper functions ---
 
+
 def canonical_provider(name: Optional[str]) -> str:
     """Return a strict canonical provider key.
 
@@ -43,12 +45,12 @@ def canonical_provider(name: Optional[str]) -> str:
     so other provider names containing 'lm' are not misclassified.
     """
     if not name:
-        return ''
+        return ""
     s = str(name).strip().lower()
-    normalized = s.replace(' ', '_').replace('-', '_')
-    lm_variants = {'lm', 'lm_studio', 'lmstudio', 'lm_studio'}
-    if normalized in lm_variants or normalized == 'lmstudio':
-        return 'lm_studio'
+    normalized = s.replace(" ", "_").replace("-", "_")
+    lm_variants = {"lm", "lm_studio", "lmstudio", "lm_studio"}
+    if normalized in lm_variants or normalized == "lmstudio":
+        return "lm_studio"
     return normalized
 
 
@@ -66,7 +68,10 @@ def _get_models_for_provider_key(provider_key: str) -> List[str]:
     try:
         # 1) module-level cache
         now = time.time()
-        if provider_key in _MODEL_CACHE and (now - _MODEL_CACHE_TIME.get(provider_key, 0)) < _CACHE_TTL:
+        if (
+            provider_key in _MODEL_CACHE
+            and (now - _MODEL_CACHE_TIME.get(provider_key, 0)) < _CACHE_TTL
+        ):
             return _MODEL_CACHE[provider_key]
 
         mgr = _provider_manager
@@ -75,7 +80,7 @@ def _get_models_for_provider_key(provider_key: str) -> List[str]:
             cached = mgr.get_cached_models(provider_key)
             if cached:
                 # ensure LM Studio models are full ids
-                if provider_key == 'lm_studio':
+                if provider_key == "lm_studio":
                     return [_lmstudio_full_id(m) for m in cached]
                 return cached
         except Exception:
@@ -84,22 +89,27 @@ def _get_models_for_provider_key(provider_key: str) -> List[str]:
         # 3) Adapter probe
         try:
             adapter = mgr.get_provider(provider_key)
-            if adapter and hasattr(adapter, 'get_models_from_api'):
+            if adapter and hasattr(adapter, "get_models_from_api"):
                 try:
                     resp = adapter.get_models_from_api()
                 except Exception:
                     resp = None
                 if isinstance(resp, dict):
                     models = []
-                    for m in resp.get('models', []):
+                    for m in resp.get("models", []):
                         if isinstance(m, dict):
-                            fid = m.get('id') or m.get('key') or m.get('name') or m.get('model')
+                            fid = (
+                                m.get("id")
+                                or m.get("key")
+                                or m.get("name")
+                                or m.get("model")
+                            )
                             if fid:
                                 models.append(str(fid))
                         elif isinstance(m, str):
                             models.append(m)
                     if models:
-                        if provider_key == 'lm_studio':
+                        if provider_key == "lm_studio":
                             models = [_lmstudio_full_id(x) for x in models]
                         _MODEL_CACHE[provider_key] = models
                         _MODEL_CACHE_TIME[provider_key] = time.time()
@@ -110,13 +120,17 @@ def _get_models_for_provider_key(provider_key: str) -> List[str]:
         # 4) fallback to providers.json static config
         try:
             raw = None
-            if getattr(mgr, 'providers_config_path', None):
+            if getattr(mgr, "providers_config_path", None):
                 raw = load_provider(mgr.providers_config_path)
             if raw is None:
                 raw = load_provider(None)
-            providers = raw if isinstance(raw, list) else ([raw] if isinstance(raw, dict) else [])
+            providers = (
+                raw
+                if isinstance(raw, list)
+                else ([raw] if isinstance(raw, dict) else [])
+            )
             for p in providers:
-                key = (p.get('name') or p.get('type') or '').lower().replace(' ', '_')
+                key = (p.get("name") or p.get("type") or "").lower().replace(" ", "_")
                 if key == provider_key:
                     models = normalize_models_for_provider(p)
                     if models:
@@ -137,12 +151,12 @@ def normalize_models_for_provider(provider: Dict[str, Any]) -> List[str]:
     out: List[str] = []
     if not provider or not isinstance(provider, dict):
         return out
-    ptype = str(provider.get('type') or '').lower()
-    models_field = provider.get('models') or []
+    ptype = str(provider.get("type") or "").lower()
+    models_field = provider.get("models") or []
     if isinstance(models_field, list):
         for m in models_field:
             if isinstance(m, dict):
-                fid = m.get('id') or m.get('key') or m.get('name') or m.get('model')
+                fid = m.get("id") or m.get("key") or m.get("name") or m.get("model")
                 if not fid:
                     continue
             elif isinstance(m, str):
@@ -150,7 +164,7 @@ def normalize_models_for_provider(provider: Dict[str, Any]) -> List[str]:
             else:
                 continue
             # If provider type indicates some LM studio, normalize to full id
-            if 'lm' in ptype or canonical_provider(provider.get('name')) == 'lm_studio':
+            if "lm" in ptype or canonical_provider(provider.get("name")) == "lm_studio":
                 try:
                     out.append(_lmstudio_full_id(fid))
                 except Exception:
@@ -164,7 +178,7 @@ def resolve_config_path(path: Optional[str] = None) -> Path:
     """Return path to providers.json. Prefer explicit path, otherwise src/config/providers.json."""
     if path:
         return Path(path)
-    return Path(__file__).parents[1] / 'config' / 'providers.json'
+    return Path(__file__).parents[1] / "config" / "providers.json"
 
 
 def select_model_name(models: List[Any], requested: Optional[str]) -> Optional[str]:
@@ -173,7 +187,7 @@ def select_model_name(models: List[Any], requested: Optional[str]) -> Optional[s
     names: List[str] = []
     for m in models:
         if isinstance(m, dict):
-            fid = m.get('id') or m.get('key') or m.get('name')
+            fid = m.get("id") or m.get("key") or m.get("name")
             if fid:
                 names.append(str(fid))
         elif isinstance(m, str):
@@ -182,7 +196,7 @@ def select_model_name(models: List[Any], requested: Optional[str]) -> Optional[s
         if requested in names:
             return requested
         for n in names:
-            if n.endswith('/' + requested) or n.split('/')[-1] == requested:
+            if n.endswith("/" + requested) or n.split("/")[-1] == requested:
                 return n
         return None
     return names[0] if names else None
@@ -200,12 +214,12 @@ def _lmstudio_full_id(raw: str) -> str:
     if not raw:
         return raw
     s = str(raw)
-    if '/' in s:
+    if "/" in s:
         return s
-    if ':' in s:
-        left, right = s.split(':', 1)
+    if ":" in s:
+        left, right = s.split(":", 1)
         # vendor = leading alpha characters from left
-        m = re.match(r'^([a-zA-Z]+)', left)
+        m = re.match(r"^([a-zA-Z]+)", left)
         vendor = m.group(1) if m else left
         return f"{vendor}/{left}-{right}"
     return s
@@ -228,13 +242,20 @@ def call_requests(method: str, url: str, **kwargs) -> Any:
     fn = getattr(requests, method.lower(), None)
     if fn is None:
         # fallback to requests.request
-        return requests.request(method, url, timeout=kwargs.pop('timeout', DEFAULT_TIMEOUT), **kwargs)
-    if 'timeout' not in kwargs:
-        kwargs['timeout'] = DEFAULT_TIMEOUT
+        return requests.request(
+            method, url, timeout=kwargs.pop("timeout", DEFAULT_TIMEOUT), **kwargs
+        )
+    if "timeout" not in kwargs:
+        kwargs["timeout"] = DEFAULT_TIMEOUT
     return fn(url, **kwargs)
 
 
-def post_stream_compatible(url: str, json_data: Any = None, headers: Optional[Dict[str, str]] = None, timeout: Optional[float] = None):
+def post_stream_compatible(
+    url: str,
+    json_data: Any = None,
+    headers: Optional[Dict[str, str]] = None,
+    timeout: Optional[float] = None,
+):
     """Post helper that prefers the simple signature used in tests/fakes.
 
     Avoids passing headers by default so test fakes without that kwarg don't fail.
@@ -248,7 +269,9 @@ def post_stream_compatible(url: str, json_data: Any = None, headers: Optional[Di
     try:
         return requests.post(url, json=json_data, timeout=timeout)
     except TypeError:
-        return requests.post(url, json=json_data, headers=(headers or {}), timeout=timeout)
+        return requests.post(
+            url, json=json_data, headers=(headers or {}), timeout=timeout
+        )
 
 
 def load_provider(path: Optional[str] = None) -> Any:
@@ -262,10 +285,10 @@ def load_provider(path: Optional[str] = None) -> Any:
         text = None
         try:
             # try direct read (Path.read_text) to respect monkeypatching of open in tests
-            text = Path(p).read_text(encoding='utf-8')
+            text = Path(p).read_text(encoding="utf-8")
         except Exception:
             try:
-                with open(p, 'r', encoding='utf-8') as fh:
+                with open(p, "r", encoding="utf-8") as fh:
                     text = fh.read()
             except Exception:
                 return None
@@ -279,7 +302,9 @@ def load_provider(path: Optional[str] = None) -> Any:
         return None
 
 
-def save_provider(data: Any, path: Optional[str] = None, initial_path: Optional[Path] = None) -> bool:
+def save_provider(
+    data: Any, path: Optional[str] = None, initial_path: Optional[Path] = None
+) -> bool:
     """Save provider config to disk. Accepts optional initial_path for compatibility."""
     try:
         target = None
@@ -291,7 +316,7 @@ def save_provider(data: Any, path: Optional[str] = None, initial_path: Optional[
         if target is None:
             target = resolve_config_path(path)
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(json.dumps(data), encoding='utf-8')
+        target.write_text(json.dumps(data), encoding="utf-8")
         return True
     except Exception:
         return False
@@ -306,11 +331,15 @@ def lm_load_provider(path: Optional[str] = None) -> Any:
     return load_provider(path)
 
 
-def lm_save_provider(data: Any, path: Optional[str] = None, initial_path: Optional[Path] = None) -> bool:
+def lm_save_provider(
+    data: Any, path: Optional[str] = None, initial_path: Optional[Path] = None
+) -> bool:
     return save_provider(data, path=path, initial_path=initial_path)
 
 
-def lm_select_model_name(models: List[Any], requested: Optional[str] = None) -> Optional[str]:
+def lm_select_model_name(
+    models: List[Any], requested: Optional[str] = None
+) -> Optional[str]:
     return select_model_name(models, requested)
 
 
@@ -318,9 +347,17 @@ def lm_call_requests(method: str, url: str, **kwargs) -> Any:
     return call_requests(method, url, **kwargs)
 
 
-def lm_post_stream_compatible(url: str, json_data: Any = None, headers: Optional[Dict[str, str]] = None, timeout: Optional[float] = None):
+def lm_post_stream_compatible(
+    url: str,
+    json_data: Any = None,
+    headers: Optional[Dict[str, str]] = None,
+    timeout: Optional[float] = None,
+):
     # delegate to post_stream_compatible but adapt signature
-    return post_stream_compatible(url, json_data=json_data, headers=headers, timeout=timeout)
+    return post_stream_compatible(
+        url, json_data=json_data, headers=headers, timeout=timeout
+    )
+
 
 # --- ProviderManager ---
 class ProviderManager:
@@ -340,61 +377,75 @@ class ProviderManager:
     def get_provider(self, key: str) -> Optional[Any]:
         if not key:
             return None
-        return self._providers.get(key.lower().replace(' ', '_'))
+        return self._providers.get(key.lower().replace(" ", "_"))
 
     def get_cached_models(self, key: str) -> List[str]:
         if not key:
             return []
-        return list(self._models_cache.get(key.lower().replace(' ', '_')) or [])
+        return list(self._models_cache.get(key.lower().replace(" ", "_")) or [])
 
     async def initialize(self):
         if self._initialized:
             return
-        guilogger.info('ProviderManager.initialize: loading providers.json')
+        guilogger.info("ProviderManager.initialize: loading providers.json")
         cfg = resolve_config_path(self.providers_config_path)
         try:
             if not cfg.exists():
                 # No providers.json present; publish missing event and mark initialized
                 if self._event_bus:
                     try:
-                        self._event_bus.publish('provider.config.missing', {'path': str(cfg)})
+                        self._event_bus.publish(
+                            "provider.config.missing", {"path": str(cfg)}
+                        )
                     except Exception:
                         pass
                 self._initialized = True
                 return
 
-            raw = json.loads(cfg.read_text(encoding='utf-8'))
-            providers = raw if isinstance(raw, list) else ([raw] if isinstance(raw, dict) else [])
+            raw = json.loads(cfg.read_text(encoding="utf-8"))
+            providers = (
+                raw
+                if isinstance(raw, list)
+                else ([raw] if isinstance(raw, dict) else [])
+            )
             for p in providers:
                 if not isinstance(p, dict):
                     # Malformed provider entry is an error: surface to the user
-                    guilogger.error(f'ProviderManager.initialize: provider entry malformed, expected dict: {repr(p)[:200]}')
+                    guilogger.error(
+                        f"ProviderManager.initialize: provider entry malformed, expected dict: {repr(p)[:200]}"
+                    )
                     continue
 
                 # canonical provider key
-                key = canonical_provider(p.get('name') or p.get('type') or '')
+                key = canonical_provider(p.get("name") or p.get("type") or "")
 
                 # Load adapter module using the provider type; expect adapters to follow naming convention
-                ptype = str(p.get('type') or 'ollama').strip().lower().replace('-', '_')
-                module_name = f'src.adapters.{ptype}_adapter'
+                ptype = str(p.get("type") or "ollama").strip().lower().replace("-", "_")
+                module_name = f"src.adapters.{ptype}_adapter"
                 try:
                     import importlib
 
                     mod = importlib.import_module(module_name)
                 except Exception as e:
-                    guilogger.error(f'ProviderManager: adapter module import failed for type "{ptype}": {e}')
+                    guilogger.error(
+                        f'ProviderManager: adapter module import failed for type "{ptype}": {e}'
+                    )
                     self._providers[key] = None
                     continue
 
                 # Resolve Adapter class by convention: CamelCase type + 'Adapter' or 'Adapter'
                 def _camelize(s: str) -> str:
-                    parts = [x for x in s.replace('_', ' ').split() if x]
-                    return ''.join(part.title() for part in parts)
+                    parts = [x for x in s.replace("_", " ").split() if x]
+                    return "".join(part.title() for part in parts)
 
-                class_name = _camelize(ptype) + 'Adapter'
-                AdapterCls = getattr(mod, class_name, None) or getattr(mod, 'Adapter', None)
+                class_name = _camelize(ptype) + "Adapter"
+                AdapterCls = getattr(mod, class_name, None) or getattr(
+                    mod, "Adapter", None
+                )
                 if AdapterCls is None:
-                    guilogger.error(f'ProviderManager: Adapter class not found in module {module_name}')
+                    guilogger.error(
+                        f"ProviderManager: Adapter class not found in module {module_name}"
+                    )
                     self._providers[key] = None
                     continue
 
@@ -403,7 +454,7 @@ class ProviderManager:
                 # structured named args or the provider dict as a last resort.
                 adapter = None
                 try:
-                    if hasattr(AdapterCls, 'from_provider_config'):
+                    if hasattr(AdapterCls, "from_provider_config"):
                         try:
                             adapter = AdapterCls.from_provider_config(p)
                         except TypeError:
@@ -411,29 +462,43 @@ class ProviderManager:
                     else:
                         # First choice: prefer explicit named args adapters commonly support
                         try:
-                            cfg_path = str(self.providers_config_path) if self.providers_config_path else None
-                            adapter = AdapterCls(name=p.get('name'), config_path=cfg_path, base_url=p.get('base_url') or p.get('url'), api_key=p.get('api_key'), models=normalize_models_for_provider(p))
+                            cfg_path = (
+                                str(self.providers_config_path)
+                                if self.providers_config_path
+                                else None
+                            )
+                            adapter = AdapterCls(
+                                name=p.get("name"),
+                                config_path=cfg_path,
+                                base_url=p.get("base_url") or p.get("url"),
+                                api_key=p.get("api_key"),
+                                models=normalize_models_for_provider(p),
+                            )
                         except TypeError:
                             # Try passing provider dict or base_url as single arg
                             try:
                                 adapter = AdapterCls(p)
                             except Exception:
                                 try:
-                                    adapter = AdapterCls(p.get('base_url') or p.get('url'))
+                                    adapter = AdapterCls(
+                                        p.get("base_url") or p.get("url")
+                                    )
                                 except Exception:
                                     adapter = AdapterCls()
                 except Exception as e:
-                    guilogger.error(f'ProviderManager: failed to instantiate adapter for {key}: {e}')
+                    guilogger.error(
+                        f"ProviderManager: failed to instantiate adapter for {key}: {e}"
+                    )
                     adapter = None
 
                 # Attach provider metadata and cache static models if present
                 if adapter is not None:
                     try:
-                        setattr(adapter, 'provider', p)
+                        setattr(adapter, "provider", p)
                     except Exception:
                         pass
                     try:
-                        setattr(adapter, 'missing_provider', False)
+                        setattr(adapter, "missing_provider", False)
                     except Exception:
                         pass
 
@@ -448,8 +513,14 @@ class ProviderManager:
                         _MODEL_CACHE_TIME[key] = time.time()
                         if self._event_bus:
                             try:
-                                self._event_bus.publish('provider.models.list', {'provider': key, 'models': models_list_static})
-                                self._event_bus.publish('provider.models.cached', {'provider': key, 'models': models_list_static})
+                                self._event_bus.publish(
+                                    "provider.models.list",
+                                    {"provider": key, "models": models_list_static},
+                                )
+                                self._event_bus.publish(
+                                    "provider.models.cached",
+                                    {"provider": key, "models": models_list_static},
+                                )
                             except Exception:
                                 pass
                 except Exception:
@@ -462,12 +533,15 @@ class ProviderManager:
                         self._models_cache[prov_key] = []
                         if self._event_bus:
                             try:
-                                self._event_bus.publish('provider.status.changed', {'provider': prov_key, 'status': 'disconnected'})
+                                self._event_bus.publish(
+                                    "provider.status.changed",
+                                    {"provider": prov_key, "status": "disconnected"},
+                                )
                             except Exception:
                                 pass
                         continue
 
-                    if hasattr(adapter, 'get_models_from_api'):
+                    if hasattr(adapter, "get_models_from_api"):
                         try:
                             resp = adapter.get_models_from_api()
                         except Exception:
@@ -475,43 +549,70 @@ class ProviderManager:
 
                         models_list = []
                         if isinstance(resp, dict):
-                            for m in resp.get('models', []):
+                            for m in resp.get("models", []):
                                 if isinstance(m, dict):
-                                    fid = m.get('id') or m.get('key') or m.get('name') or m.get('model')
+                                    fid = (
+                                        m.get("id")
+                                        or m.get("key")
+                                        or m.get("name")
+                                        or m.get("model")
+                                    )
                                     if fid:
                                         models_list.append(str(fid))
                                 elif isinstance(m, str):
                                     models_list.append(m)
 
                         # Normalize LM Studio ids if needed
-                        if prov_key == 'lm_studio':
+                        if prov_key == "lm_studio":
                             models_list = [_lmstudio_full_id(x) for x in models_list]
 
                         if models_list:
                             self._models_cache[prov_key] = models_list
                             _MODEL_CACHE[prov_key] = models_list
                             _MODEL_CACHE_TIME[prov_key] = time.time()
-                            guilogger.info(f"ProviderManager: cached models for {prov_key}: {models_list}")
+                            guilogger.info(
+                                f"ProviderManager: cached models for {prov_key}: {models_list}"
+                            )
                             if self._event_bus:
                                 try:
-                                    self._event_bus.publish('provider.models.list', {'provider': prov_key, 'models': models_list})
-                                    self._event_bus.publish('provider.models.cached', {'provider': prov_key, 'models': models_list})
-                                    self._event_bus.publish('provider.status.changed', {'provider': prov_key, 'status': 'connected'})
+                                    self._event_bus.publish(
+                                        "provider.models.list",
+                                        {"provider": prov_key, "models": models_list},
+                                    )
+                                    self._event_bus.publish(
+                                        "provider.models.cached",
+                                        {"provider": prov_key, "models": models_list},
+                                    )
+                                    self._event_bus.publish(
+                                        "provider.status.changed",
+                                        {"provider": prov_key, "status": "connected"},
+                                    )
                                 except Exception:
                                     pass
                         else:
                             self._models_cache[prov_key] = []
                             if self._event_bus:
                                 try:
-                                    self._event_bus.publish('provider.models.empty', {'provider': prov_key})
-                                    self._event_bus.publish('provider.status.changed', {'provider': prov_key, 'status': 'disconnected'})
+                                    self._event_bus.publish(
+                                        "provider.models.empty", {"provider": prov_key}
+                                    )
+                                    self._event_bus.publish(
+                                        "provider.status.changed",
+                                        {
+                                            "provider": prov_key,
+                                            "status": "disconnected",
+                                        },
+                                    )
                                 except Exception:
                                     pass
                     else:
                         self._models_cache[prov_key] = []
                         if self._event_bus:
                             try:
-                                self._event_bus.publish('provider.status.changed', {'provider': prov_key, 'status': 'unknown'})
+                                self._event_bus.publish(
+                                    "provider.status.changed",
+                                    {"provider": prov_key, "status": "unknown"},
+                                )
                             except Exception:
                                 pass
                 except Exception:
@@ -522,7 +623,7 @@ class ProviderManager:
                     continue
 
         except Exception as e:
-            guilogger.error(f'ProviderManager.initialize error: {e}')
+            guilogger.error(f"ProviderManager.initialize error: {e}")
         self._initialized = True
 
     async def validate_provider(self, name: str) -> bool:
@@ -530,12 +631,12 @@ class ProviderManager:
         if not prov:
             return False
         try:
-            if hasattr(prov, 'validate_connection'):
+            if hasattr(prov, "validate_connection"):
                 res = prov.validate_connection()
                 if inspect.isawaitable(res):
                     return await res
                 return bool(res)
-            if hasattr(prov, 'get_models_from_api'):
+            if hasattr(prov, "get_models_from_api"):
                 try:
                     resp = prov.get_models_from_api()
                     return resp is not None
@@ -544,6 +645,7 @@ class ProviderManager:
             return True
         except Exception:
             return False
+
 
 # Module-level singleton
 _provider_manager: ProviderManager = ProviderManager()
@@ -566,8 +668,11 @@ def _ensure_provider_manager_initialized_sync():
         except Exception:
             pass
 
+
 # --- Model discovery and wrappers ---
-async def get_available_models(base_url: str, api_key: str, provider_name: str) -> List[str]:
+async def get_available_models(
+    base_url: str, api_key: str, provider_name: str
+) -> List[str]:
     if not provider_name:
         return []
     provider_key = canonical_provider(provider_name)
@@ -583,7 +688,9 @@ async def get_available_models(base_url: str, api_key: str, provider_name: str) 
     return _get_models_for_provider_key(provider_key)
 
 
-async def get_structured_llm(provider_override: Optional[str] = None, model_override: Optional[str] = None) -> Tuple[Any, Optional[str]]:
+async def get_structured_llm(
+    provider_override: Optional[str] = None, model_override: Optional[str] = None
+) -> Tuple[Any, Optional[str]]:
     mgr = _provider_manager
     if not mgr._initialized:
         await mgr.initialize()
@@ -592,16 +699,21 @@ async def get_structured_llm(provider_override: Optional[str] = None, model_over
     try:
         prefs = UserPrefs.load()
     except Exception:
-        prefs = type('P', (), {'selected_model_provider': None, 'selected_model_name': None})()
-    p_name = provider_override or prefs.selected_model_provider
-    model_name = model_override or prefs.selected_model_name
+        # Create a dummy object for tests
+        class DummyPrefs:
+            selected_model_provider: Optional[str] = None
+            selected_model_name: Optional[str] = None
+
+        prefs = DummyPrefs()
+    p_name = provider_override or getattr(prefs, "selected_model_provider", None)
+    model_name = model_override or getattr(prefs, "selected_model_name", None)
     if not p_name:
-        raise RuntimeError('No provider configured')
+        raise RuntimeError("No provider configured")
     p_key = canonical_provider(p_name)
 
     # Centralized model discovery (module cache, provider cache, adapter probe, providers.json)
     try:
-        models = await get_available_models('', '', p_key)
+        models = await get_available_models("", "", p_key)
     except Exception:
         models = []
 
@@ -616,7 +728,14 @@ async def get_structured_llm(provider_override: Optional[str] = None, model_over
                 # publish missing model event so callers can react
                 try:
                     if mgr._event_bus:
-                        mgr._event_bus.publish('provider.model.missing', {'provider': p_key, 'requested': model_name, 'available': models})
+                        mgr._event_bus.publish(
+                            "provider.model.missing",
+                            {
+                                "provider": p_key,
+                                "requested": model_name,
+                                "available": models,
+                            },
+                        )
                 except Exception:
                     pass
                 resolved = None
@@ -627,7 +746,15 @@ async def get_structured_llm(provider_override: Optional[str] = None, model_over
     return adapter, resolved
 
 
-async def _call_model_internal(messages: List[Dict[str, Any]], provider: Optional[str] = None, model: Optional[str] = None, stream: bool = False, format_json: bool = False, tools: Optional[List[Any]] = None, **kwargs) -> Any:
+async def _call_model_internal(
+    messages: List[Dict[str, Any]],
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
+    stream: bool = False,
+    format_json: bool = False,
+    tools: Optional[List[Any]] = None,
+    **kwargs,
+) -> Any:
     # Prefer ProviderManager-registered adapter
     try:
         mgr = _provider_manager
@@ -640,40 +767,56 @@ async def _call_model_internal(messages: List[Dict[str, Any]], provider: Optiona
         if adapter is None:
             # try loading from providers.json
             raw = load_provider(None)
-            providers = raw if isinstance(raw, list) else ([raw] if isinstance(raw, dict) else [])
+            providers = (
+                raw
+                if isinstance(raw, list)
+                else ([raw] if isinstance(raw, dict) else [])
+            )
             selected = None
             if provider:
                 for p in providers:
-                    if (p.get('name') or '').lower() == str(provider).lower() or (p.get('type') or '').lower() == str(provider).lower():
+                    if (p.get("name") or "").lower() == str(provider).lower() or (
+                        p.get("type") or ""
+                    ).lower() == str(provider).lower():
                         selected = p
                         break
             if not selected and providers:
                 selected = providers[0]
             if selected:
                 # instantiate adapter similar to ProviderManager logic
-                ptype = str(selected.get('type') or '').strip().lower().replace('-', '_') or 'ollama'
+                ptype = (
+                    str(selected.get("type") or "").strip().lower().replace("-", "_")
+                    or "ollama"
+                )
                 # Load adapter module and try sensible instantiation fallbacks.
                 try:
                     import importlib
 
-                    mod = importlib.import_module(f'src.adapters.{ptype}_adapter')
-                    class_name = ''.join(part.title() for part in ptype.replace('-', '_').split('_')) + 'Adapter'
-                    AdapterCls = getattr(mod, class_name, None) or getattr(mod, 'Adapter', None)
+                    mod = importlib.import_module(f"src.adapters.{ptype}_adapter")
+                    class_name = (
+                        "".join(
+                            part.title() for part in ptype.replace("-", "_").split("_")
+                        )
+                        + "Adapter"
+                    )
+                    AdapterCls = getattr(mod, class_name, None) or getattr(
+                        mod, "Adapter", None
+                    )
                     if AdapterCls is None:
                         # fallback: pick any class ending with Adapter
                         for attr in dir(mod):
-                            if attr.lower().endswith('adapter'):
+                            if attr.lower().endswith("adapter"):
                                 candidate = getattr(mod, attr)
                                 if isinstance(candidate, type):
                                     AdapterCls = candidate
                                     break
                     if AdapterCls is None:
-                        raise ImportError('Adapter class not found')
+                        raise ImportError("Adapter class not found")
 
                     adapter = None
                     # Try factory-based construction first
                     try:
-                        if hasattr(AdapterCls, 'from_provider_config'):
+                        if hasattr(AdapterCls, "from_provider_config"):
                             try:
                                 adapter = AdapterCls.from_provider_config(selected)
                             except TypeError:
@@ -685,17 +828,33 @@ async def _call_model_internal(messages: List[Dict[str, Any]], provider: Optiona
                         # Try passing structured args
                         cfg_path = None
                         try:
-                            cfg_path = str(mgr.providers_config_path) if mgr.providers_config_path else (selected.get('config_path') or None)
+                            cfg_path = (
+                                str(mgr.providers_config_path)
+                                if mgr.providers_config_path
+                                else (selected.get("config_path") or None)
+                            )
                         except Exception:
                             cfg_path = None
                         try:
-                            adapter = AdapterCls(name=selected.get('name'), config_path=cfg_path, api_key=selected.get('api_key'), models=normalize_models_for_provider(selected))
+                            adapter = AdapterCls(
+                                name=selected.get("name"),
+                                config_path=cfg_path,
+                                api_key=selected.get("api_key"),
+                                models=normalize_models_for_provider(selected),
+                            )
                         except TypeError:
                             try:
-                                adapter = AdapterCls(name=selected.get('name'), base_url=selected.get('base_url') or selected.get('url'), api_key=selected.get('api_key'))
+                                adapter = AdapterCls(
+                                    name=selected.get("name"),
+                                    base_url=selected.get("base_url")
+                                    or selected.get("url"),
+                                    api_key=selected.get("api_key"),
+                                )
                             except TypeError:
                                 try:
-                                    adapter = AdapterCls(selected.get('base_url') or selected.get('url'))
+                                    adapter = AdapterCls(
+                                        selected.get("base_url") or selected.get("url")
+                                    )
                                 except Exception:
                                     try:
                                         adapter = AdapterCls(selected)
@@ -705,25 +864,41 @@ async def _call_model_internal(messages: List[Dict[str, Any]], provider: Optiona
                 except Exception:
                     adapter = None
         if adapter is None:
-            return {'ok': False, 'error': 'no_adapter_found'}
+            return {"ok": False, "error": "no_adapter_found"}
         # Prefer adapter.chat if present (we pass messages directly), otherwise try adapter.generate
         last_err = None
-        if hasattr(adapter, 'chat'):
+        if hasattr(adapter, "chat"):
             loop = asyncio.get_running_loop()
             from functools import partial
+
             try:
                 # call synchronously in executor
-                fn = partial(adapter.chat, messages, model=model, stream=stream, format_json=format_json, **(kwargs or {}))
+                fn = partial(
+                    adapter.chat,
+                    messages,
+                    model=model,
+                    stream=stream,
+                    format_json=format_json,
+                    **(kwargs or {}),
+                )
                 res = await loop.run_in_executor(None, fn)
                 return res
             except Exception as e:
                 last_err = e
-        if hasattr(adapter, 'generate'):
+        if hasattr(adapter, "generate"):
             loop = asyncio.get_running_loop()
             from functools import partial
+
             try:
                 # Some adapters expect (prompt, model, stream, format_json) while some expect prompt-only.
-                fn = partial(adapter.generate, messages, model=model, stream=stream, format_json=format_json, **(kwargs or {}))
+                fn = partial(
+                    adapter.generate,
+                    messages,
+                    model=model,
+                    stream=stream,
+                    format_json=format_json,
+                    **(kwargs or {}),
+                )
                 res = await loop.run_in_executor(None, fn)
                 return res
             except TypeError:
@@ -737,31 +912,66 @@ async def _call_model_internal(messages: List[Dict[str, Any]], provider: Optiona
             except Exception as e:
                 last_err = e
         if last_err:
-            return {'ok': False, 'error': str(last_err)}
-        return {'ok': False, 'error': 'adapter_missing_generate_or_chat'}
+            return {"ok": False, "error": str(last_err)}
+        return {"ok": False, "error": "adapter_missing_generate_or_chat"}
     except Exception as e:
-        return {'ok': False, 'error': str(e)}
+        return {"ok": False, "error": str(e)}
 
-async def call_model(messages: List[Dict[str, Any]], provider: Optional[str] = None, model: Optional[str] = None, stream: bool = False, format_json: bool = False, tools: Optional[List[Any]] = None, **kwargs) -> Any:
-    res = await _call_model_internal(messages, provider, model, stream, format_json, tools, **kwargs)
-    
+
+async def call_model(
+    messages: List[Dict[str, Any]],
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
+    stream: bool = False,
+    format_json: bool = False,
+    tools: Optional[List[Any]] = None,
+    **kwargs,
+) -> Any:
+    res = await _call_model_internal(
+        messages, provider, model, stream, format_json, tools, **kwargs
+    )
+
     if os.getenv("LLM_MANAGER_ENABLE_MODEL_FALLBACK") == "1":
         is_error = False
         if isinstance(res, dict):
-            if res.get('ok') is False or 'error' in res or (res.get('meta') and isinstance(res.get('meta'), dict) and res['meta'].get('error')):
+            if (
+                res.get("ok") is False
+                or "error" in res
+                or (
+                    res.get("meta")
+                    and isinstance(res.get("meta"), dict)
+                    and res["meta"].get("error")
+                )
+            ):
                 is_error = True
-        
+
         if is_error:
             # Attempt fallback
             try:
-                models = await get_available_models('', '', provider or '')
+                models = await get_available_models("", "", provider or "")
                 if models:
                     for m in models:
                         if m != model:
-                            fb_res = await _call_model_internal(messages, provider, m, stream, format_json, tools, **kwargs)
+                            fb_res = await _call_model_internal(
+                                messages,
+                                provider,
+                                m,
+                                stream,
+                                format_json,
+                                tools,
+                                **kwargs,
+                            )
                             is_fb_err = False
                             if isinstance(fb_res, dict):
-                                if fb_res.get('ok') is False or 'error' in fb_res or (fb_res.get('meta') and isinstance(fb_res.get('meta'), dict) and fb_res['meta'].get('error')):
+                                if (
+                                    fb_res.get("ok") is False
+                                    or "error" in fb_res
+                                    or (
+                                        fb_res.get("meta")
+                                        and isinstance(fb_res.get("meta"), dict)
+                                        and fb_res["meta"].get("error")
+                                    )
+                                ):
                                     is_fb_err = True
                             if not is_fb_err:
                                 return fb_res
@@ -771,18 +981,19 @@ async def call_model(messages: List[Dict[str, Any]], provider: Optional[str] = N
     return res
 
 
-
-
 # Attempt to expose UserPrefs at module level so tests can monkeypatch it easily
 try:
     from src.core.user_prefs import UserPrefs  # type: ignore
 except Exception:
+
     class UserPrefs:  # minimal fallback used only during import-time when real module is unavailable
-        def __init__(self, data: Optional[Dict[str, Any]] = None, path: Optional[Path] = None):
+        def __init__(
+            self, data: Optional[Dict[str, Any]] = None, path: Optional[Path] = None
+        ):
             self.data = data or {}
             self.path = Path(path) if path else None
-            self.selected_model_provider = self.data.get('selected_model_provider')
-            self.selected_model_name = self.data.get('selected_model_name')
+            self.selected_model_provider = self.data.get("selected_model_provider")
+            self.selected_model_name = self.data.get("selected_model_name")
 
         @classmethod
         def load(cls, path: Optional[str] = None):
@@ -791,19 +1002,20 @@ except Exception:
         def save(self):
             return None
 
+
 # Public exports
 __all__ = [
-    'ProviderManager',
-    'get_provider_manager',
-    'call_model',
-    'get_available_models',
-    'get_structured_llm',
-    'canonical_provider',
-    'resolve_config_path',
-    'load_provider',
-    'save_provider',
-    'call_requests',
-    'post_stream_compatible',
-    'DEFAULT_TIMEOUT',
-    'LM_DEFAULT_TIMEOUT',
+    "ProviderManager",
+    "get_provider_manager",
+    "call_model",
+    "get_available_models",
+    "get_structured_llm",
+    "canonical_provider",
+    "resolve_config_path",
+    "load_provider",
+    "save_provider",
+    "call_requests",
+    "post_stream_compatible",
+    "DEFAULT_TIMEOUT",
+    "LM_DEFAULT_TIMEOUT",
 ]

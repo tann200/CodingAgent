@@ -1,0 +1,17 @@
+name: debug
+description: Toolset for debugging and troubleshooting tasks
+tools:
+  - read_file
+  - list_files
+  - grep
+  - search_code
+  - find_symbol
+  - find_references
+  - run_tests
+  - run_linter
+  - syntax_check
+  - bash
+  - get_git_diff
+  - memory_search
+  - batched_file_read
+  - multi_file_summary

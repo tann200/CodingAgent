@@ -122,6 +122,12 @@ def example_registry() -> ToolRegistry:
         reg.register("fs.read", file_tools.read_file, description="alias for read_file")
     except Exception:
         pass
+    # read_file_chunk for incremental reading
+    reg.register(
+        "read_file_chunk",
+        file_tools.read_file_chunk,
+        description="read_file_chunk(path, offset, limit) -> Read file contents with offset and limit",
+    )
     reg.register(
         "write_file",
         file_tools.write_file,
@@ -153,6 +159,150 @@ def example_registry() -> ToolRegistry:
     # alias: fs.list
     try:
         reg.register("fs.list", file_tools.list_dir, description="alias for list_files")
+    except Exception:
+        pass
+
+    # MVP Tools: bash and glob
+    reg.register(
+        "bash",
+        file_tools.bash,
+        side_effects=["execute"],
+        description="bash(command) -> Execute a shell command",
+    )
+    reg.register(
+        "glob",
+        file_tools.glob,
+        description="glob(pattern) -> Find files matching a glob pattern",
+    )
+
+    # ToolOptimization Phase 1: Pattern Search & Git
+    try:
+        from src.tools import system_tools
+
+        reg.register(
+            "grep",
+            system_tools.grep,
+            description="grep(pattern, path) -> Search for pattern in files",
+        )
+        reg.register(
+            "summarize_structure",
+            system_tools.summarize_structure,
+            description="summarize_structure() -> Get workspace summary (files, dirs, sizes)",
+        )
+    except Exception:
+        pass
+
+    def get_git_diff(workdir: Optional[str] = None, **kwargs) -> Dict[str, Any]:
+        """Get git diff of changes in the working directory."""
+        import subprocess
+
+        wd = workdir or str(Path.cwd())
+        try:
+            result = subprocess.run(
+                ["git", "diff", "--no-color"],
+                cwd=wd,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            return {"status": "ok", "diff": result.stdout or "No changes"}
+        except FileNotFoundError:
+            return {"status": "error", "error": "git not found"}
+        except Exception as e:
+            return {"status": "error", "error": str(e)}
+
+    reg.register(
+        "get_git_diff",
+        get_git_diff,
+        description="get_git_diff(workdir) -> Get git diff of changes",
+    )
+
+    # ToolOptimization Phase 4: Surgical Editing
+    def edit_by_line_range(
+        path: str,
+        start_line: int,
+        end_line: int,
+        new_content: Optional[str] = None,
+        workdir: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Edit a file by replacing specific line range."""
+        from pathlib import Path
+
+        wd = Path(workdir) if workdir else file_tools.DEFAULT_WORKDIR
+        p = file_tools._safe_resolve(path, wd)
+        if not p.exists():
+            return {"status": "error", "error": "File not found"}
+
+        try:
+            lines = p.read_text().splitlines()
+            if start_line < 1 or end_line > len(lines):
+                return {
+                    "status": "error",
+                    "error": f"Line range {start_line}-{end_line} out of bounds (file has {len(lines)} lines)",
+                }
+
+            if new_content is None:
+                # Return the current content of those lines
+                return {
+                    "status": "ok",
+                    "content": "\n".join(lines[start_line - 1 : end_line]),
+                }
+            else:
+                # Replace the lines
+                new_lines = lines[: start_line - 1] + [new_content] + lines[end_line:]
+                p.write_text("\n".join(new_lines))
+                return {"status": "ok", "path": str(p)}
+        except Exception as e:
+            return {"status": "error", "error": str(e)}
+
+    reg.register(
+        "edit_by_line_range",
+        edit_by_line_range,
+        side_effects=["write"],
+        description="edit_by_line_range(path, start_line, end_line, new_content) -> Replace specific line range",
+    )
+
+    # ToolOptimization Phase 6: State Checkpoints
+    try:
+        from src.tools import state_tools as st
+
+        reg.register(
+            "create_state_checkpoint",
+            st.create_state_checkpoint,
+            description="create_state_checkpoint(task, history, files, summary) -> Save current state",
+        )
+        reg.register(
+            "list_checkpoints",
+            st.list_checkpoints,
+            description="list_checkpoints() -> List available state checkpoints",
+        )
+        reg.register(
+            "restore_state_checkpoint",
+            st.restore_state_checkpoint,
+            description="restore_state_checkpoint(checkpoint_id) -> Restore a previous checkpoint",
+        )
+        reg.register(
+            "diff_state",
+            st.diff_state,
+            description="diff_state(id1, id2) -> Compare two checkpoints",
+        )
+    except Exception:
+        pass
+
+    # ToolOptimization Phase 8: Batched Tools
+    try:
+        from src.tools import state_tools as st
+
+        reg.register(
+            "batched_file_read",
+            st.batched_file_read,
+            description="batched_file_read(paths) -> Read multiple files efficiently",
+        )
+        reg.register(
+            "multi_file_summary",
+            st.multi_file_summary,
+            description="multi_file_summary(paths) -> Get info on multiple files without reading",
+        )
     except Exception:
         pass
 
@@ -573,19 +723,20 @@ class Orchestrator:
                 if name == "set_role" and isinstance(res, dict):
                     # extract role and apply
                     role = None
-                    if "role" in res:
+                    if res and "role" in res:
                         role = res.get("role")
-                    elif isinstance(res.get("result"), dict) and "role" in res.get(
-                        "result"
-                    ):
-                        role = res.get("result").get("role")
+                    else:
+                        result = res.get("result") if res else None
+                        if isinstance(result, dict) and "role" in result:
+                            role = result.get("role")
                     if role:
                         self.current_role = role
             except Exception:
                 pass
 
-            # Validate tool contract if pydantic is available and a contract exists
+            # Validate tool contract if registered. If validation fails, return an error to the caller.
             try:
+                from pydantic import ValidationError
                 from src.core.orchestration.tool_contracts import (
                     get_tool_contract,
                     ToolContract,
@@ -593,58 +744,54 @@ class Orchestrator:
 
                 schema = get_tool_contract(name)
                 if schema and isinstance(res, dict):
+                    # schema is a pydantic model class; validate either full res or res.get('result')
                     try:
-                        # if res is directly the contract, validate
-                        schema.parse_obj(res)
-                    except Exception:
-                        # try validating res.get('result') shape
+                        schema.model_validate(res)
+                    except ValidationError:
                         try:
-                            schema.parse_obj(res.get("result") or {})
+                            schema.model_validate(res.get("result") or {})
+                        except ValidationError as ve:
+                            return {"ok": False, "error": f"Tool result failed contract validation: {ve}"}
+
+                else:
+                    # Validate general ToolContract wrapper for additional safety
+                    try:
+                        ToolContract.model_validate({"tool": name, "args": args, "result": res})
+                    except ValidationError as ve:
+                        return {"ok": False, "error": f"Tool result failed contract validation: {ve}"}
+
+                # Telemetry: record invocation counts and latency (best-effort)
+                try:
+                    import time as _time
+
+                    call_info = {
+                        "tool": name,
+                        "args": args,
+                        "ts": _time.time(),
+                    }
+                    # load usage file
+                    usage_path = self.working_dir / ".agent-context" / "usage.json"
+                    import json as _json
+
+                    usage = {}
+                    if usage_path.exists():
+                        try:
+                            usage = _json.loads(usage_path.read_text())
                         except Exception:
-                            pass
-                elif isinstance(res, dict):
-                    try:
-                        ToolContract.parse_obj(
-                            {"tool": name, "args": args, "result": res}
-                        )
-                    except Exception:
-                        pass
+                            usage = {}
+                    tool_stats = usage.get("tools", {})
+                    stats = tool_stats.get(name, {"calls": 0})
+                    stats["calls"] = stats.get("calls", 0) + 1
+                    tool_stats[name] = stats
+                    usage["tools"] = tool_stats
+                    usage_path.write_text(_json.dumps(usage, indent=2))
+
+                    # Trace appending moved to workflow_nodes.py execution_node to avoid duplicates
+                    # self._append_execution_trace(call_info)
+                except Exception:
+                    pass
             except Exception:
-                # ignore validation failures to keep runtime robust
-                pass
-            except Exception:
-                # ignore validation failures to keep runtime robust
-                pass
-
-            # Telemetry: record invocation counts and latency (best-effort)
-            try:
-                import time as _time
-
-                call_info = {
-                    "tool": name,
-                    "args": args,
-                    "ts": _time.time(),
-                }
-                # load usage file
-                usage_path = self.working_dir / ".agent-context" / "usage.json"
-                import json as _json
-
-                usage = {}
-                if usage_path.exists():
-                    try:
-                        usage = _json.loads(usage_path.read_text())
-                    except Exception:
-                        usage = {}
-                tool_stats = usage.get("tools", {})
-                stats = tool_stats.get(name, {"calls": 0})
-                stats["calls"] = stats.get("calls", 0) + 1
-                tool_stats[name] = stats
-                usage["tools"] = tool_stats
-                usage_path.write_text(_json.dumps(usage, indent=2))
-
-                # Append to execution trace
-                self._append_execution_trace(call_info)
-            except Exception:
+                # If pydantic is missing or other issues occur, continue without strict validation
                 pass
 
             # Track state for session rules
@@ -711,140 +858,33 @@ class Orchestrator:
         if not tool_name:
             return False
         trace = self._read_execution_trace()
-        if not trace or len(trace) < 3:
+        if not trace:
             return False
 
-        recent = trace[-5:]
-        # exact match repeated threshold
+        # Check for repeated tool calls - need at least 2 previous to detect a pattern
+        if len(trace) < 2:
+            return False
+
+        # Count occurrences in the entire trace
         count = 0
-        for entry in recent:
+        for entry in trace:
             if entry.get("tool") == tool_name and entry.get("args") == tool_args:
                 count += 1
-        if count >= 3:
+
+        # Block if we've seen this exact tool+args 2 or more times before (current + 2 previous = 3 total)
+        # This blocks the 3rd execution when same tool+args was used twice before
+        if count >= 2:
             return True
-        # detect repeating same tool name pattern regardless of args
+
+        # Also block if same tool name appears 4+ times regardless of args
         name_counts = {}
-        for entry in recent:
+        for entry in trace:
             t = entry.get("tool")
             name_counts[t] = name_counts.get(t, 0) + 1
         for _, c in name_counts.items():
             if c >= 4:
                 return True
-        return False
-        trace = self._read_execution_trace()
-        if not trace or len(trace) < 2:
-            return False
 
-        # Dead-end detection for file modifications
-        if tool_name in ["write_file", "edit_file", "apply_patch", "edit_code_block"]:
-            # Find the last two entries for this tool and args
-            last_two = []
-            for entry in reversed(trace):
-                if entry.get("tool") == tool_name and entry.get("args") == tool_args:
-                    last_two.append(entry)
-                    if len(last_two) == 2:
-                        break
-            if len(last_two) == 2:
-                if (
-                    last_two[0].get("file_hash")
-                    and last_two[1].get("file_hash")
-                    and last_two[0]["file_hash"] == last_two[1]["file_hash"]
-                ):
-                    return True
-
-        recent = trace[-5:]
-        # exact match repeated threshold
-        count = 0
-        for entry in recent:
-            if entry.get("tool") == tool_name and entry.get("args") == tool_args:
-                count += 1
-        if count >= 3:
-            return True
-        # detect repeating same tool name pattern regardless of args
-        name_counts = {}
-        for entry in recent:
-            t = entry.get("tool")
-            name_counts[t] = name_counts.get(t, 0) + 1
-        for _, c in name_counts.items():
-            if c >= 4:
-                return True
-        return False
-        trace = self._read_execution_trace()
-        print(f"Execution trace: {trace}")
-        if not trace or len(trace) < 2:
-            return False
-
-        # Dead-end detection for file modifications
-        if tool_name in ["write_file", "edit_file", "apply_patch", "edit_code_block"]:
-            # Find the last two entries for this tool and args
-            last_two = []
-            for entry in reversed(trace):
-                if entry.get("tool") == tool_name and entry.get("args") == tool_args:
-                    last_two.append(entry)
-                    if len(last_two) == 2:
-                        break
-            if len(last_two) == 2:
-                if (
-                    last_two[0].get("file_hash")
-                    and last_two[1].get("file_hash")
-                    and last_two[0]["file_hash"] == last_two[1]["file_hash"]
-                ):
-                    return True
-
-        recent = trace[-5:]
-        # exact match repeated threshold
-        count = 0
-        for entry in recent:
-            if entry.get("tool") == tool_name and entry.get("args") == tool_args:
-                count += 1
-        if count >= 3:
-            return True
-        # detect repeating same tool name pattern regardless of args
-        name_counts = {}
-        for entry in recent:
-            t = entry.get("tool")
-            name_counts[t] = name_counts.get(t, 0) + 1
-        for _, c in name_counts.items():
-            if c >= 4:
-                return True
-        return False
-        trace = self._read_execution_trace()
-        if not trace or len(trace) < 2:
-            return False
-
-        # Dead-end detection for file modifications
-        if tool_name in ["write_file", "edit_file", "apply_patch", "edit_code_block"]:
-            # Find the last two entries for this tool and args
-            last_two = []
-            for entry in reversed(trace):
-                if entry.get("tool") == tool_name and entry.get("args") == tool_args:
-                    last_two.append(entry)
-                    if len(last_two) == 2:
-                        break
-            if len(last_two) == 2:
-                if (
-                    last_two[0].get("file_hash")
-                    and last_two[1].get("file_hash")
-                    and last_two[0]["file_hash"] == last_two[1]["file_hash"]
-                ):
-                    return True
-
-        recent = trace[-5:]
-        # exact match repeated threshold
-        count = 0
-        for entry in recent:
-            if entry.get("tool") == tool_name and entry.get("args") == tool_args:
-                count += 1
-        if count >= 3:
-            return True
-        # detect repeating same tool name pattern regardless of args
-        name_counts = {}
-        for entry in recent:
-            t = entry.get("tool")
-            name_counts[t] = name_counts.get(t, 0) + 1
-        for _, c in name_counts.items():
-            if c >= 4:
-                return True
         return False
 
     def _ensure_working_dir(self):
@@ -880,19 +920,27 @@ class Orchestrator:
         try:
             pm = get_provider_manager()
             if pm:
+                # First try to use cached models to avoid redundant API calls
+                cached = None
+                try:
+                    cached = pm.get_cached_models("lm_studio")
+                except Exception:
+                    pass
+
+                # Only call API if no cached models available
+                if not cached:
+                    adapters = pm.list_providers()
+                    if "lm_studio" in adapters:
+                        ad = pm.get_provider("lm_studio")
+                        if ad and hasattr(ad, "get_models_from_api"):
+                            ad.get_models_from_api()
+
                 self.event_bus.publish(
                     "provider.models.cached", {"provider": "lm_studio"}
                 )
                 self.event_bus.publish(
                     "provider.models.probing.completed", {"provider": "lm_studio"}
                 )
-                # pm.get_cached_models("lm_studio") # force a sync call for testing
-                # In test environment, the probe is sometimes stubbed, so just call adapter directly to trigger the test spy
-                adapters = pm.list_providers()
-                if "lm_studio" in adapters:
-                    ad = pm.get_provider("lm_studio")
-                    if ad and hasattr(ad, "get_models_from_api"):
-                        ad.get_models_from_api()
         except Exception:
             pass
 
@@ -973,7 +1021,7 @@ class Orchestrator:
             final_state = None
             for round_idx in range(max_rounds):
                 try:
-                    loop = asyncio.get_running_loop()
+                    asyncio.get_running_loop()
                     import concurrent.futures
 
                     with concurrent.futures.ThreadPoolExecutor() as executor:
@@ -1026,26 +1074,35 @@ class Orchestrator:
                 }
 
             # Debug: check why verified_reads might be empty
-            guilogger.info(
-                f"Final state verified reads: {final_state.get('verified_reads')}"
-            )
+            if final_state:
+                guilogger.info(
+                    f"Final state verified reads: {final_state.get('verified_reads')}"
+                )
 
             # 3. Synchronize MessageManager with graph history
             # The graph history contains the new turns
-            new_turns = final_state["history"][len(self.msg_mgr.messages) :]
-            for turn in new_turns:
-                self.msg_mgr.append(turn["role"], turn["content"])
+            if final_state and "history" in final_state:
+                new_turns = final_state["history"][len(self.msg_mgr.messages) :]
+                for turn in new_turns:
+                    self.msg_mgr.append(turn["role"], turn["content"])
 
             # Update session tracking
-            for path in final_state.get("verified_reads", []):
-                self._session_read_files.add(path)
+            if final_state:
+                for path in final_state.get("verified_reads", []):
+                    self._session_read_files.add(path)
 
             # Construct final response
-            assistant_msgs = [
-                m["content"] for m in final_state["history"] if m["role"] == "assistant"
-            ]
+            assistant_msgs = []
+            if final_state and "history" in final_state:
+                assistant_msgs = [
+                    m["content"]
+                    for m in final_state["history"]
+                    if m["role"] == "assistant"
+                ]
             guilogger.info(
-                f"Graph execution completed in {final_state['rounds']} rounds"
+                f"Graph execution completed in {final_state.get('rounds', 0)} rounds"
+                if final_state
+                else "Graph execution completed"
             )
             return {
                 "assistant_message": "\n".join(assistant_msgs[-1:])

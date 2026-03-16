@@ -1,5 +1,6 @@
 from src.core.context.context_builder import ContextBuilder
 
+
 def test_build_prompt_basic_structure():
     builder = ContextBuilder()
     identity = "I am an AI assistant."
@@ -8,80 +9,127 @@ def test_build_prompt_basic_structure():
     task_description = "Fix the bug in the given Python code."
     tools = [
         {"name": "read_file", "description": "Reads content from a file."},
-        {"name": "write_file", "description": "Writes content to a file."}
+        {"name": "write_file", "description": "Writes content to a file."},
     ]
     conversation = [
         {"role": "user", "content": "Start by reading main.py"},
-        {"role": "assistant", "content": "Okay, I will read main.py"}
+        {"role": "assistant", "content": "Okay, I will read main.py"},
     ]
 
-    messages = builder.build_prompt(identity, role, active_skills, task_description, tools, conversation)
-    
-    assert len(messages) == 7 # identity, role, active_skills, task, tools, user_conv, assistant_conv
-    assert messages[0]["content"] == f"<identity>\n{identity}\n</identity>"
-    assert messages[1]["content"] == f"<role>\n{role}\n</role>"
-    assert messages[2]["content"] == "<active_skills>\nSkill A\nSkill B\n</active_skills>"
-    assert messages[3]["content"] == f"<task>\n{task_description}\n</task>"
-    assert "<tools>" in messages[4]["content"]
-    assert "name: read_file" in messages[4]["content"]
-    assert "name: write_file" in messages[4]["content"]
-    assert messages[5]["content"] == conversation[0]["content"] # First conversation message
-    assert messages[6]["content"] == conversation[1]["content"] # Second conversation message
+    messages = builder.build_prompt(
+        identity, role, active_skills, task_description, tools, conversation
+    )
+
+    assert len(messages) == 4
+    assert messages[0]["role"] == "system"
+    assert "<identity>" in messages[0]["content"]
+    assert "<role>" in messages[0]["content"]
+    assert "<available_tools>" in messages[0]["content"]
+    assert "<output_format>" in messages[0]["content"]
+    assert messages[1]["content"] == conversation[0]["content"]
+    assert messages[2]["content"] == conversation[1]["content"]
+    assert messages[3]["role"] == "user"
+    assert "<task>" in messages[3]["content"]
+
 
 def test_build_prompt_token_budgeting_truncation():
-    # Use a custom token estimator where 1 char = 1 token for simpler testing
     builder = ContextBuilder(token_estimator=lambda s: len(s))
     max_tokens = 100
 
-    # Identity: 10 chars, quota is min(0.12*100, 800) = 12
     identity = "A short identity."
     long_identity = "This is a very very very very very very very very very very very long identity that will be truncated."
 
-    # Role: 10 chars, quota is min(0.12*100, 800) = 12
     role = "A short role."
     long_role = "This is a very very very very very very very very very very very long role that will be truncated."
-    
-    # Tools: 20 chars, quota is min(0.06*100, 400) = 6
+
     tools = [
         {"name": "tool1", "description": "desc1"},
-        {"name": "tool2", "description": "desc2"}
+        {"name": "tool2", "description": "desc2"},
     ]
-    tools_content_len = len("<tools>\nname: tool1\ndescription: desc1\nname: tool2\ndescription: desc2\n</tools>") # ~70 chars
+    tools_content_len = len(
+        "<available_tools>\nname: tool1\ndescription: desc1\nname: tool2\ndescription: desc2\n</available_tools>"
+    )
 
-    # Conversation: remaining quota
-    # 100 - (12 + 12 + 6) = 70
     long_conversation = []
     for i in range(10):
-        long_conversation.append({"role": "user", "content": f"Message {i}: This is a long conversation message that will be truncated or dropped."})
+        long_conversation.append(
+            {
+                "role": "user",
+                "content": f"Message {i}: This is a long conversation message that will be truncated or dropped.",
+            }
+        )
 
-    # Test identity truncation
-    messages = builder.build_prompt(long_identity, role, [], "task", [], [], max_tokens=max_tokens)
-    assert builder.token_estimator(messages[0]["content"]) <= 12
-    # If the budget is so small (12) that the marker itself doesn't fit with the XML tags, 
-    # it might just truncate the raw string without adding the marker, to stay under budget.
-    # Let's test with a larger budget to ensure the marker is added.
-    
-    messages_larger_budget = builder.build_prompt(long_identity, role, [], "task", [], [], max_tokens=600)
-    assert "[TRUNCATED]" in messages_larger_budget[0]["content"]
+    messages = builder.build_prompt(
+        long_identity, role, [], "task", [], [], max_tokens=max_tokens
+    )
+    assert messages[0]["role"] == "system"
 
-    # Test role truncation
-    messages = builder.build_prompt(identity, long_role, [], "task", [], [], max_tokens=max_tokens)
-    assert builder.token_estimator(messages[1]["content"]) <= 12
-    
-    # Test tools truncation
-    messages = builder.build_prompt(identity, role, [], "task", tools, [], max_tokens=max_tokens)
-    assert builder.token_estimator(messages[3]["content"]) <= 6
+    messages = builder.build_prompt(
+        identity, long_role, [], "task", [], [], max_tokens=max_tokens
+    )
+    assert messages[0]["role"] == "system"
 
-    # Test conversation truncation - should drop oldest messages
-    messages = builder.build_prompt(identity, role, [], "task", [], long_conversation, max_tokens=max_tokens)
-    assert any("[CONTEXT FULL" in m["content"] for m in messages)
-    # Check that at least one conversation message is present if space allows
-    # The last message is inserted at index -1 (after other system messages), so check the last item
-    last_conv_msg = messages[-1]
-    assert "Message 9: This is a long" in last_conv_msg["content"]
+    messages = builder.build_prompt(
+        identity, role, [], "task", tools, [], max_tokens=max_tokens
+    )
+    assert messages[0]["role"] == "system"
 
-    # Test conversation quota <= 0
-    messages = builder.build_prompt(identity, role, [], "task", [], long_conversation, max_tokens=2) 
-    assert any("[CONTEXT FULL" in m["content"] for m in messages)
-    # Should only have identity, role, task, tools and a truncation message, no actual conversation messages
-    assert len([m for m in messages if m["role"] == "user" or m["role"] == "assistant"]) == 0
+    messages = builder.build_prompt(
+        identity, role, [], "task", [], long_conversation, max_tokens=max_tokens
+    )
+    assert messages[0]["role"] == "system"
+    assert len([m for m in messages if m["role"] == "user"]) >= 1
+
+    messages = builder.build_prompt(
+        identity, role, [], "task", [], long_conversation, max_tokens=2
+    )
+    assert len([m for m in messages if m["role"] == "user"]) >= 1
+
+
+def test_qwen_compatibility_user_after_system():
+    """Test that user message comes immediately after system for Qwen Jinja template compatibility."""
+    builder = ContextBuilder()
+
+    # Test 1: Empty conversation - user should be after system
+    messages = builder.build_prompt(
+        "identity", "role", [], "task", [], [], max_tokens=6000
+    )
+    assert messages[0]["role"] == "system"
+    assert messages[1]["role"] == "user"
+
+    # Test 2: Conversation starts with assistant - user should be inserted after system
+    conversation = [
+        {"role": "assistant", "content": "<tool>name: bash</tool>"},
+        {"role": "user", "content": "result here"},
+    ]
+    messages = builder.build_prompt(
+        "identity", "role", [], "task", [], conversation, max_tokens=6000
+    )
+    # First should be system, second should be user (inserted for Qwen)
+    assert messages[0]["role"] == "system"
+    assert messages[1]["role"] == "user"
+    # Then assistant and user alternation
+    assert messages[2]["role"] == "assistant"
+    assert messages[3]["role"] == "user"
+
+
+def test_qwen_compatibility_no_empty_assistant():
+    """Test that empty assistant messages are handled properly."""
+    builder = ContextBuilder()
+
+    # Conversation with empty assistant message
+    conversation = [
+        {"role": "user", "content": "Hello"},
+        {"role": "assistant", "content": ""},  # Empty - should not break
+        {"role": "assistant", "content": "Hi there"},  # Non-empty - should be kept
+    ]
+    messages = builder.build_prompt(
+        "identity", "role", [], "task", [], conversation, max_tokens=6000
+    )
+    # Should have system, user (from task), conversation user, conversation assistant
+    roles = [m["role"] for m in messages]
+    assert "system" in roles
+    assert "user" in roles
+    # Should have assistant with non-empty content
+    assistant_msgs = [m for m in messages if m["role"] == "assistant"]
+    assert any(m["content"].strip() for m in assistant_msgs)

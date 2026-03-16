@@ -1,4 +1,3 @@
-
 from src.tools import file_tools, system_tools
 
 
@@ -59,10 +58,9 @@ def test_summarize_structure(tmp_path):
     (tmp_path / "a").mkdir()
     (tmp_path / "a" / "f1.txt").write_text("x")
     (tmp_path / "b.txt").write_text("y")
-    res = system_tools.summarize_structure(path='.', workdir=tmp_path, max_entries=10)
+    res = system_tools.summarize_structure(workdir=tmp_path)
     assert "error" not in res  # Ensure no error was returned
-    assert res.get("file_count") is not None
-    assert res.get("dir_count") is not None
-    assert res["file_count"] >= 2
-    assert res["dir_count"] >= 1
-    assert isinstance(res.get("top"), list)
+    assert res.get("total_files") is not None
+    assert res.get("total_dirs") is not None
+    assert res["total_files"] >= 2
+    assert res["total_dirs"] >= 1

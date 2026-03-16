@@ -2,6 +2,8 @@ from __future__ import annotations
 from typing import Callable, Dict, List, Optional
 import math
 import json
+import re
+from pathlib import Path
 
 
 class ContextBuilder:
@@ -12,6 +14,90 @@ class ContextBuilder:
             else (lambda s: math.ceil(len(s) / 4))
         )  # Default to len/4 if no estimator provided
 
+    def _sanitize_text(self, text: str) -> str:
+        """Sanitize file / conversation text to reduce prompt-injection risk.
+        - Remove fenced code blocks (```...```) and replace with a placeholder.
+        - Remove top-level prompt-injection lines like "ignore all instructions".
+        - Collapse long comment blocks (keep first/last few lines).
+        """
+        if not text:
+            return text
+
+        # 1) Remove fenced code blocks ```...``` or ```lang ... ```
+        def _replace_fence(match):
+            body = match.group(0)
+            # count lines
+            n = body.count("\n")
+            return f"[CODE BLOCK REMOVED - {n} lines]"
+
+        text = re.sub(r"```[\s\S]*?```", _replace_fence, text)
+
+        # 2) Remove triple-tilde fences as well
+        text = re.sub(r"~~~[\s\S]*?~~~", _replace_fence, text)
+
+        # 3) Remove obvious prompt-injection lines
+        lines = text.splitlines()
+        cleaned_lines = []
+        removed_any = False
+        for ln in lines:
+            s = ln.strip().lower()
+            # heuristics for prompt-injection: match substrings anywhere
+            if (
+                "ignore all instructions" in s
+                or "do not follow" in s
+                or "disregard previous" in s
+                or "forget all previous" in s
+            ):
+                # skip this line
+                removed_any = True
+                continue
+            cleaned_lines.append(ln)
+        text = "\n".join(cleaned_lines)
+
+        # 4) Collapse very long comment blocks (consecutive comment lines > 20)
+        collapsed = []
+        comment_block = []
+        for ln in text.splitlines():
+            if ln.strip().startswith("#") or ln.strip().startswith("//"):
+                comment_block.append(ln)
+            else:
+                if len(comment_block) > 20:
+                    # keep first 3 and last 3
+                    collapsed.extend(comment_block[:3])
+                    collapsed.append(f"[COMMENT BLOCK TRUNCATED - {len(comment_block)} lines]")
+                    collapsed.extend(comment_block[-3:])
+                    removed_any = True
+                else:
+                    collapsed.extend(comment_block)
+                comment_block = []
+                collapsed.append(ln)
+        # flush tail comment block
+        if comment_block:
+            if len(comment_block) > 20:
+                collapsed.extend(comment_block[:3])
+                collapsed.append(f"[COMMENT BLOCK TRUNCATED - {len(comment_block)} lines]")
+                collapsed.extend(comment_block[-3:])
+                removed_any = True
+            else:
+                collapsed.extend(comment_block)
+
+        sanitized = "\n".join(collapsed)
+
+        # Best-effort audit log for sanitization events
+        if removed_any:
+            try:
+                cwd = Path.cwd()
+                ac = cwd / ".agent-context"
+                if ac.exists():
+                    logp = ac / "context_sanitization.log"
+                    with open(logp, "a", encoding="utf-8") as f:
+                        f.write("SANITIZE: removed suspicious content\n")
+            except Exception:
+                # never fail sanitization due to logging issues
+                pass
+
+        return sanitized
+
     def build_prompt(
         self,
         identity: str,
@@ -21,52 +107,109 @@ class ContextBuilder:
         tools: List[Dict],
         conversation: List[Dict],
         max_tokens: int = 6000,
+        retrieved_snippets: Optional[List[Dict]] = None,
     ) -> List[Dict[str, str]]:
         # Token budgeting rules
         identity_quota = min(math.ceil(0.12 * max_tokens), 800)
         role_quota = min(math.ceil(0.12 * max_tokens), 800)
         tools_quota = min(math.ceil(0.06 * max_tokens), 400)
-        # Remaining budget for conversation, task, and format
-        remaining_budget = max_tokens - (identity_quota + role_quota + tools_quota)
-        # Conversation quota: allow remaining budget to be used for conversation
-        # (tests expect conversation_quota = remaining_budget)
-        conversation_quota = max(0, remaining_budget)
+        conversation_quota = max(
+            0, max_tokens - (identity_quota + role_quota + tools_quota + 500)
+        )  # buffer for tags
 
         built_messages: List[Dict[str, str]] = []
 
-        # 1. System Blocks as separate messages in expected test order
-        identity_msg = self._build_system_message("identity", identity, identity_quota)
-        built_messages.append(identity_msg)
+        # 1. System Block (Identity + Role + Skills + Tools)
+        # We consolidate these into a single system message for better compatibility
+        system_parts = []
 
-        role_msg = self._build_system_message("role", role, role_quota)
-        built_messages.append(role_msg)
+        # sanitize identity/role/task_description
+        safe_identity = self._sanitize_text(identity)
+        safe_role = self._sanitize_text(role)
+        safe_task_description = self._sanitize_text(task_description)
+
+        system_parts.append(f"<identity>\n{safe_identity}\n</identity>")
+        system_parts.append(f"<role>\n{safe_role}\n</role>")
+
+        # 1a. Repository Intelligence block (if any retrieved snippets provided)
+        repo_block = ""
+        if retrieved_snippets:
+            try:
+                # Try reading summary cache
+                cwd = Path.cwd()
+                summary_cache = {}
+                cache_path = cwd / ".agent-context" / "file_summaries.json"
+                if cache_path.exists():
+                    try:
+                        summary_cache = json.loads(cache_path.read_text(encoding="utf-8"))
+                    except Exception:
+                        summary_cache = {}
+
+                repo_entries = []
+                for snip in retrieved_snippets[:10]:
+                    # each snippet expected to be dict with keys: file_path, snippet, reason
+                    fp = snip.get("file_path")
+                    if fp and fp in summary_cache:
+                        entry_text = summary_cache.get(fp)
+                    else:
+                        entry_text = snip.get("snippet") or snip.get("content") or ""
+                    # sanitize entry
+                    entry_text = self._sanitize_text(str(entry_text))
+                    repo_entries.append(f"File: {fp or 'unknown'}\n{entry_text}\n---\n")
+
+                if repo_entries:
+                    repo_block = "<repository_intelligence>\n" + "\n".join(repo_entries) + "\n</repository_intelligence>"
+                    system_parts.append(repo_block)
+            except Exception:
+                # best-effort: do not fail prompt build
+                pass
 
         if active_skills:
-            skills_raw = "\n".join(active_skills)
-            skills_msg = self._build_system_message("active_skills", skills_raw, 200)
-            built_messages.append(skills_msg)
+            # sanitize each skill string
+            safe_skills = [self._sanitize_text(s) for s in active_skills]
+            system_parts.append(
+                f"<active_skills>\n{chr(10).join(safe_skills)}\n</active_skills>"
+            )
 
-        # Task placed in system messages as tests expect
-        task_msg = self._build_system_message("task", task_description, 400)
-        built_messages.append(task_msg)
-
-        # Tools
-        tools_raw = ""
+        tools_text = ""
         for tool in tools:
-            tools_raw += f"name: {tool['name']}\ndescription: {tool['description']}\n"
-        tools_msg = self._build_system_message("tools", tools_raw, tools_quota)
-        built_messages.append(tools_msg)
+            # keep tool descriptions short; sanitize tool descriptions too
+            desc = tool.get("description", "")
+            desc = self._sanitize_text(desc)
+            tools_text += f"name: {tool['name']}\ndescription: {desc}\n"
+        system_parts.append(f"<available_tools>\n{tools_text}\n</available_tools>")
+
+        # 1.5 Mandatory Output Format (Last part of system instructions)
+        format_instr = (
+            "<output_format>\n"
+            "You MUST think step-by-step. Write your internal reasoning inside <think> tags.\n"
+            "To execute an action, you MUST use the provided XML tool format. NEVER use JSON tool calls.\n"
+            "Format your tool calls exactly like this:\n"
+            "<tool>\n"
+            "name: the_tool_name\n"
+            "arguments: {\"arg_name\": \"arg_value\"}\n"
+            "</tool>\n"
+            "Wait for the user to provide the tool execution result before proceeding.\n"
+            "</output_format>"
+        )
+        system_parts.append(format_instr)
+
+        built_messages.append({"role": "system", "content": "\n\n".join(system_parts)})
 
         # 2. Conversation Logic
-        filtered_conv = [m for m in (conversation or []) if m.get("role") in ["user", "assistant"]]
+        # Filter msg_mgr to only include User and Assistant messages (strip system prompts)
+        filtered_conv = [
+            {"role": m.get("role"), "content": self._sanitize_text(m.get("content", ""))}
+            for m in conversation
+            if m.get("role") in ["user", "assistant"]
+        ]
 
         truncated_conversation: List[Dict[str, str]] = []
         if conversation_quota > 0 and filtered_conv:
             total_conv_tokens = 0
             for message in reversed(filtered_conv):
                 msg_json = json.dumps(message)
-                # Use the message content length/token estimate (tests expect this behavior)
-                message_token_count = self.token_estimator(message.get('content', ''))
+                message_token_count = self.token_estimator(msg_json)
 
                 if total_conv_tokens + message_token_count <= conversation_quota:
                     truncated_conversation.insert(0, message)
@@ -74,20 +217,38 @@ class ContextBuilder:
                 else:
                     break
 
-            # If we dropped messages, add a system-level note before the preserved conversation
-            if len(truncated_conversation) < len(filtered_conv):
-                built_messages.append({"role": "system", "content": "[CONTEXT FULL — conversation truncated]"})
+        # 3. Task / Prompt Logic
+        # Ensure the last message is always USER for local model templates
+        # If the history ends in ASSISTANT, we must append a "Proceed" user message.
+        # If the history is empty, the task itself is the USER message.
 
-            # Append truncated conversation messages (most recent preserved)
-            built_messages.extend(truncated_conversation)
-            # If nothing fit but there were messages, include a truncated last message so the agent has some context
-            if not truncated_conversation and filtered_conv:
-                last_msg = filtered_conv[-1]
-                tcontent = self._truncate_text(last_msg.get('content', ''), conversation_quota)
-                built_messages.append({"role": last_msg.get('role', 'user'), "content": tcontent})
+        # Add conversation
+        built_messages.extend(truncated_conversation)
+
+        # Ensure there's a user message after system for Qwen compatibility
+        # If conversation starts with assistant, insert task as user message first
+        if (
+            truncated_conversation
+            and truncated_conversation[0].get("role") == "assistant"
+        ):
+            # Insert task as user message before the assistant messages
+            prompt_content = f"<task>\n{safe_task_description}\n</task>\n\nExecute the next action using the <tool> format."
+            # Insert at index 1 (after system message)
+            built_messages.insert(1, {"role": "user", "content": prompt_content})
+        # Final check: is the last message Assistant or is the list missing User?
+        elif not built_messages or built_messages[-1].get("role") != "user":
+            prompt_content = f"<task>\n{safe_task_description}\n</task>\n\nExecute the next action using the <tool> format."
+            built_messages.append({"role": "user", "content": prompt_content})
         else:
-            # conversation_quota <= 0: insert a system-level note indicating context full
-            built_messages.append({"role": "system", "content": "[CONTEXT FULL — conversation truncated]"})
+            # If the last message is already User, we can either wrap it in <task>
+            # or just leave it. For continuity, let's wrap it if it doesn't have it.
+            last_msg = built_messages[-1]
+            if "<task>" not in last_msg.get("content", ""):
+                last_msg["content"] = (
+                    f"<task>\n{last_msg['content']}\n</task>\n\nExecute the next action using the <tool> format."
+                )
+
+        return built_messages
 
         return built_messages
 
@@ -160,9 +321,7 @@ class ContextBuilder:
         self, tag: str, raw_content: str, total_quota: int
     ) -> Dict[str, str]:
         # We need the final message to be <= total_quota
-        # Format: <tag>
-        # {content}
-        # </tag>
+        # Format: <tag>\n{content}\n</tag>
         # If content needs truncation, format: <tag>\n{content}\n\n[TRUNCATED]\n</tag>
 
         # 1. Check if it fits without truncation

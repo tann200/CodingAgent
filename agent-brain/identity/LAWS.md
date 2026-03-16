@@ -1,6 +1,6 @@
 # LAWS.md
 
-# GECK CORE OPERATING LAWS
+# CORE OPERATING LAWS
 
 These laws define the immutable behavioral contract of the system.  
 They are subordinate to runtime enforcement (LangGraph, ExecutionPolicy, state machine) but binding within prompt-level reasoning.
