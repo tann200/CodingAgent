@@ -3,7 +3,7 @@ name = "codingagent"
 version = "0.1.0"
 description = "Local coding agent orchestration using LM Studio / Ollama"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 
 [project.dependencies]
 requests = "==2.31.0"
@@ -34,11 +34,11 @@ build-backend = "setuptools.build_meta"
 
 [tool.ruff]
 line-length = 88
-target-version = "py39"
+target-version = "py311"
 
 [tool.black]
 line-length = 88
-target-version = "py39"
+target-version = "py311"
 
 [tool.codingagent]
 # Project-local virtualenv that must be used for development and testing

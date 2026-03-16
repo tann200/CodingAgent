@@ -24,6 +24,64 @@ async def perception_node(state: AgentState, config: Any) -> Dict[str, Any]:
     orchestrator = config.get("configurable", {}).get("orchestrator")
     adapter = orchestrator.adapter
 
+    # Pre-retrieval: consult repo intelligence tools if available (search_code, find_symbol, find_references)
+    retrieved_snippets = []
+    try:
+        if orchestrator and hasattr(orchestrator, "tool_registry"):
+            # helper to call a tool if registered
+            def _call_tool_if_exists(tool_name, **kwargs):
+                try:
+                    t = orchestrator.tool_registry.get(tool_name)
+                    if t and callable(t.get("fn")):
+                        return t["fn"](**kwargs)
+                except Exception:
+                    pass
+                return None
+
+            query = state.get("task") or ""
+            # search_code
+            try:
+                sc = _call_tool_if_exists("search_code", query=query, workdir=state.get("working_dir"))
+                if sc:
+                    # support both dict{results:[]} and list
+                    if isinstance(sc, dict) and sc.get("results"):
+                        for r in sc.get("results"):
+                            retrieved_snippets.append({
+                                "file_path": r.get("file_path") or r.get("file"),
+                                "snippet": r.get("snippet") or r.get("text") or r.get("content"),
+                                "reason": "search_code",
+                            })
+                    elif isinstance(sc, list):
+                        for r in sc:
+                            if isinstance(r, dict):
+                                retrieved_snippets.append({
+                                    "file_path": r.get("file_path") or r.get("file"),
+                                    "snippet": r.get("snippet") or r.get("text") or r.get("content"),
+                                    "reason": "search_code",
+                                })
+            except Exception:
+                pass
+
+            # find_symbol
+            try:
+                fs = _call_tool_if_exists("find_symbol", name=query, workdir=state.get("working_dir"))
+                if fs and isinstance(fs, dict) and fs.get("file_path"):
+                    retrieved_snippets.append({"file_path": fs.get("file_path"), "snippet": fs.get("snippet"), "reason": "find_symbol"})
+            except Exception:
+                pass
+
+            # find_references
+            try:
+                fr = _call_tool_if_exists("find_references", name=query, workdir=state.get("working_dir"))
+                if fr and isinstance(fr, list):
+                    for r in fr:
+                        if isinstance(r, dict):
+                            retrieved_snippets.append({"file_path": r.get("file_path"), "snippet": r.get("excerpt") or r.get("context"), "reason": "find_references"})
+            except Exception:
+                pass
+    except Exception:
+        retrieved_snippets = []
+
     # Setup prompt
     builder = ContextBuilder()
     tools_list = [
@@ -39,6 +97,7 @@ async def perception_node(state: AgentState, config: Any) -> Dict[str, Any]:
         task_description=state["task"],
         tools=tools_list,
         conversation=state["history"],
+        retrieved_snippets=retrieved_snippets,
         max_tokens=6000,
     )
 

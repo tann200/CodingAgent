@@ -37,7 +37,6 @@ build/
 
 # GitHub workflows (if you intentionally want to ignore the .github directory, keep this entry)
 # If you want to keep workflows tracked, remove the next line
-.github/
 
 # Logs
 logs/
@@ -58,4 +57,3 @@ secrets.json
 *~
 
 # End of .gitignore
-

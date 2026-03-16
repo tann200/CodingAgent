@@ -41,5 +41,22 @@ try:
     register_tool_contract("read_file", ReadFileContract)
     register_tool_contract("write_file", WriteFileContract)
     register_tool_contract("edit_file", WriteFileContract)
+
+    # Additional contracts
+    class GeneratePatchContract(BaseModel):
+        path: str
+        patch: str
+
+    class ApplyPatchContract(BaseModel):
+        path: str
+        status: str
+
+    class RunTestsContract(BaseModel):
+        status: str
+        returncode: int
+
+    register_tool_contract("generate_patch", GeneratePatchContract)
+    register_tool_contract("apply_patch", ApplyPatchContract)
+    register_tool_contract("run_tests", RunTestsContract)
 except Exception:
     pass
