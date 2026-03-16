@@ -13,7 +13,8 @@ prints guidance when run.
 from __future__ import annotations
 
 import threading
-from typing import List, Optional
+from typing import List, Optional, Dict, Any, TYPE_CHECKING
+import importlib
 
 from src.core.orchestration.event_bus import get_event_bus
 from src.core.llm_manager import get_provider_manager
@@ -21,41 +22,53 @@ from src.core.orchestration.orchestrator import Orchestrator
 from src.core.logger import logger as guilogger
 from src.ui.views.settings_panel import SettingsPanelController
 
-
-# Try to import Textual. If not available, provide a stub that warns the user.
-try:
-    from textual.app import App, ComposeResult
-    from textual.containers import Container, Horizontal
-    from textual.widgets import Header, Footer, Static, Input, RichLog, Button
-
-    TEXTUAL_AVAILABLE = True
-    # Ensure Textual's call_from_thread behaves safely in our test/runtime environment
+if TYPE_CHECKING:
+    # These imports are only for static type checkers (IDE/linter). At runtime we
+    # dynamically import textual via importlib so the module can be imported on
+    # systems without Textual installed.
     try:
-        import asyncio as _asyncio
-
-        def _safe_textual_call_from_thread(self, callback, *args, **kwargs):
-            try:
-                loop = _asyncio.get_event_loop()
-                if loop.is_running():
-                    loop.call_soon_threadsafe(lambda: callback(*args, **kwargs))
-                else:
-                    callback(*args, **kwargs)
-            except Exception:
-                try:
-                    callback(*args, **kwargs)
-                except Exception:
-                    pass
-
-        # Patch the App class method so textual internals won't return un-awaited coroutines
-        try:
-            App.call_from_thread = _safe_textual_call_from_thread
-        except Exception:
-            pass
+        from textual.app import App, ComposeResult  # type: ignore
+        from textual.containers import Container, Horizontal  # type: ignore
+        from textual.widgets import Header, Footer, Static, Input, RichLog, Button  # type: ignore
+        from textual.events import Key, Paste  # type: ignore
+        from textual.screen import ModalScreen  # type: ignore
+        from textual.widgets import Select, Label  # type: ignore
     except Exception:
         pass
+
+
+# Try to dynamically import Textual so static analyzers won't error when it's absent.
+TEXTUAL_AVAILABLE: bool = False
+from typing import Any
+
+App: Any = object  # fallback
+Container: Any = None
+Horizontal: Any = None
+Header: Any = None
+Footer: Any = None
+Static: Any = None
+Input: Any = None
+RichLog: Any = None
+Button: Any = None
+ComposeResult: Any = None
+try:
+    _textual_app = importlib.import_module("textual.app")
+    App = getattr(_textual_app, "App")
+    ComposeResult = getattr(_textual_app, "ComposeResult")
+    _containers = importlib.import_module("textual.containers")
+    Container = getattr(_containers, "Container")
+    Horizontal = getattr(_containers, "Horizontal")
+    _widgets = importlib.import_module("textual.widgets")
+    Header = getattr(_widgets, "Header")
+    Footer = getattr(_widgets, "Footer")
+    Static = getattr(_widgets, "Static")
+    Input = getattr(_widgets, "Input")
+    RichLog = getattr(_widgets, "RichLog")
+    Button = getattr(_widgets, "Button")
+    TEXTUAL_AVAILABLE = True
 except Exception:
+    # Textual isn't available at runtime; fall back to plain-mode.
     TEXTUAL_AVAILABLE = False
-    App = object  # type: ignore
 
 
 class TextualAppBase:
@@ -68,8 +81,12 @@ class TextualAppBase:
         # event bus
         try:
             self.event_bus = get_event_bus()
+            if self.event_bus:
+                self.event_bus.subscribe("ui.notification", self._on_ui_notification)
         except Exception:
             self.event_bus = None
+        # cancel event for interrupting agent
+        self._cancel_event = threading.Event()
 
     def send_prompt(self, prompt: str) -> None:
         """Send a prompt to the orchestrator in a background thread."""
@@ -79,15 +96,27 @@ class TextualAppBase:
 
     def _run_agent(self, prompt: str) -> None:
         try:
+            # Clear execution trace and start new task with fresh state
+            if hasattr(self.orchestrator, "_clear_execution_trace"):
+                self.orchestrator._clear_execution_trace()
+            # Start new task (generates ID and clears message history)
+            if hasattr(self.orchestrator, "start_new_task"):
+                task_id = self.orchestrator.start_new_task()
+                guilogger.info(f"Starting task {task_id}: {prompt[:50]}...")
+            # Clear cancel event for new task
+            self._cancel_event.clear()
             # Build messages list (system prompt is injected by orchestrator)
             messages = [{"role": "user", "content": prompt}]
-            guilogger.info(f"TextualApp: sending prompt to orchestrator: {prompt[:60]}")
-            res = self.orchestrator.run_agent_once(None, messages, {})
+            res = self.orchestrator.run_agent_once(
+                None, messages, {}, cancel_event=self._cancel_event
+            )
             # res expected to have 'assistant_message' or 'raw'
             assistant_msg = None
+            work_summary = None
             try:
                 if isinstance(res, dict) and res.get("assistant_message"):
                     assistant_msg = res.get("assistant_message")
+                    work_summary = res.get("work_summary")
                 elif isinstance(res, dict) and res.get("raw"):
                     raw = res.get("raw")
                     if isinstance(raw, dict):
@@ -105,6 +134,8 @@ class TextualAppBase:
                 assistant_msg = str(res)
             if assistant_msg is None:
                 assistant_msg = ""
+            if work_summary:
+                assistant_msg = assistant_msg + "\n" + work_summary
             # append
             self.history.append(("assistant", assistant_msg))
             # notify UI thread by calling `on_agent_result` if present
@@ -128,6 +159,51 @@ class TextualAppBase:
         UI implementations should override this method to update widgets."""
         # default: log
         guilogger.info(f"Agent result: {content}")
+
+    def _on_ui_notification(self, payload) -> None:
+        """Handle ui.notification events from the event bus."""
+        if isinstance(payload, dict):
+            level = payload.get("level", "info")
+            message = payload.get("message", "")
+            if message:
+                level_indicator = {
+                    "warning": "[yellow]⚠[/yellow] ",
+                    "error": "[red]✖[/red] ",
+                    "info": "[blue]ℹ[/blue] ",
+                }.get(level, "")
+                self._safe_write(f"{level_indicator}{message}")
+
+    def _safe_write(self, msg: str) -> None:
+        """Write to the output using rich markup if available, otherwise plain text.
+
+        This centralizes the logic to handle environments without `rich` or where
+        the `RichLog` widget isn't present. It silently falls back to plain
+        writes when needed.
+        """
+        try:
+            if not getattr(self, "output", None):
+                return
+            # Try rich.text if available
+            try:
+                from rich.text import Text  # type: ignore
+
+                try:
+                    self.output.write(Text.from_markup(msg))
+                    return
+                except Exception:
+                    # fall through to plain write
+                    pass
+            except Exception:
+                pass
+            # Plain write fallback
+            try:
+                self.output.write(msg)
+            except Exception:
+                # last resort: log
+                guilogger.info(msg)
+        except Exception:
+            # never raise from UI write
+            pass
 
     def _schedule_callback(self, fn, *args, **kwargs):
         """Schedule a synchronous callback to run on the main asyncio loop if available.
@@ -170,8 +246,14 @@ if not TEXTUAL_AVAILABLE:
         return TextualAppStub(orchestrator=orchestrator)
 
 else:
-    from textual.events import Key
-    from textual.events import Paste
+    # Dynamically import textual.events to avoid static import errors when Textual is absent
+    try:
+        _events = importlib.import_module("textual.events")
+        Key = getattr(_events, "Key")
+        Paste = getattr(_events, "Paste")
+    except Exception:
+        Key = object
+        Paste = object
 
     class ChatInput(Input):
         def __init__(self, *args, **kwargs):
@@ -218,6 +300,8 @@ else:
         BINDINGS = [
             ("ctrl+o", "open_settings", "Settings"),
             ("ctrl+l", "toggle_log", "Log"),
+            ("escape", "interrupt_agent", "Interrupt"),
+            ("escape,escape", "force_interrupt_agent", "Force Interrupt"),
         ]
 
         def __init__(self, orchestrator: Optional[Orchestrator] = None):
@@ -227,6 +311,10 @@ else:
             self.sys_log: Optional[RichLog] = None
             self.mode_label: Optional[Static] = None
             self.provider_model_label: Optional[Static] = None
+            self._agent_running = False
+            self._agent_thread: Optional[threading.Thread] = None
+            self._cancel_event = threading.Event()
+            self._continue_state: Optional[Dict[str, Any]] = None
             self.context_label: Optional[Static] = None
             self.input_widget: Optional[Input] = None
 
@@ -261,7 +349,7 @@ else:
 
                         with Horizontal(id="input_legend"):
                             yield Static(
-                                "⌨️  ^O Settings | ^L Toggle Log | Enter Send",
+                                "⌨️  Ctrl+O Settings | Ctrl+L Log | Esc Interrupt | Double-Esc Force Stop | Enter Send",
                                 id="legend_info",
                             )
 
@@ -490,17 +578,94 @@ else:
             # Unescape compact newlines
             text = raw_text.replace("\\n", "\n")
 
+            # Handle "continue" command
+            if text.strip().lower() == "continue":
+                if self._continue_state:
+                    if self._restore_state_for_continue():
+                        self.output.write("[cyan]⟳ Resuming from saved state...[/cyan]")
+                        # Get the last user message from history to continue
+                        history = self._continue_state.get("history", [])
+                        last_user_msg = None
+                        for m in reversed(history):
+                            if m.get("role") == "user":
+                                last_user_msg = m.get("content", "")
+                                break
+                        if last_user_msg:
+                            text = last_user_msg
+                            self._continue_state = None
+                        else:
+                            self.output.write(
+                                "[yellow]No previous task found. Please enter a new command.[/yellow]"
+                            )
+                            if self.input_widget:
+                                self.input_widget.value = ""
+                            return
+                    else:
+                        self.output.write(
+                            "[yellow]No saved state to continue from.[/yellow]"
+                        )
+                        if self.input_widget:
+                            self.input_widget.value = ""
+                        return
+                else:
+                    self.output.write(
+                        "[yellow]No saved state to continue from.[/yellow]"
+                    )
+                    if self.input_widget:
+                        self.input_widget.value = ""
+                    return
+
             # display in output immediately
             if self.output:
                 self.output.write(f"User: {text}")
+
+            # Update sidebar task state immediately with the new task
+            if hasattr(self, "task_state_label") and self.task_state_label:
+                # Truncate long tasks for display
+                display_task = (
+                    text.strip()[:80] + "..."
+                    if len(text.strip()) > 80
+                    else text.strip()
+                )
+                guilogger.info(f"Updating task_state_label to: {display_task}")
+                self.task_state_label.update(f"▶ {display_task}")
+            else:
+                guilogger.warning(
+                    f"task_state_label not available: hasattr={hasattr(self, 'task_state_label')}"
+                )
+
+            # Show progress indicator
+            self._show_progress()
+
             # send to orchestrator in background
+            self._agent_running = True
             threading.Thread(target=self.send_prompt, args=(text,), daemon=True).start()
             # clear input
             if self.input_widget:
                 self.input_widget.value = ""
 
+        def _show_progress(self) -> None:
+            """Show progress indicator in the UI."""
+            try:
+                # Show spinner in mode label
+                if self.mode_label:
+                    self.mode_label.update("🔄 Working...")
+            except Exception as e:
+                guilogger.error(f"Failed to show progress: {e}")
+
+        def _hide_progress(self) -> None:
+            """Hide progress indicator."""
+            try:
+                if self.mode_label:
+                    self.mode_label.update("Idle")
+            except Exception:
+                pass
+
         def on_agent_result(self, content: str) -> None:
             # called from background thread via call_from_thread
+            self._agent_running = False
+            self._cancel_event.clear()
+            self._hide_progress()
             try:
                 # Schedule append on the main loop (safe wrapper)
                 self._schedule_callback(self._append_assistant, content)
@@ -522,13 +687,39 @@ else:
                 if match:
                     thinking = match.group(1).strip()
                     rest = content.replace(match.group(0), "").strip()
-                    self.output.write("[dim italic]Thinking:[/dim italic]")
-                    self.output.write(f"[dim]{thinking}[/dim]")
-                    self.output.write("")
+                    # Use Rich Text with markup so styles are applied in the RichLog
+                    try:
+                        # Use Text.from_markup if rich.text is available; otherwise fall back to plain writes
+                        try:
+                            from rich.text import Text  # type: ignore
+
+                            self.output.write(
+                                Text.from_markup("[dim italic]Thinking:[/dim italic]")
+                            )
+                            self.output.write(
+                                Text.from_markup(f"[dim]{thinking}[/dim]")
+                            )
+                            self.output.write("")
+                        except Exception:
+                            self.output.write("Thinking:")
+                            self.output.write(thinking)
+                            self.output.write("")
+                    except Exception:
+                        # Fallback to plain text if Rich isn't available
+                        self.output.write("Thinking:")
+                        self.output.write(thinking)
+                        self.output.write("")
                     processed_content = rest
 
             if processed_content:
-                self.output.write(f"[bold]Assistant:[/bold] {processed_content}")
+                try:
+                    from rich.text import Text  # type: ignore
+
+                    self.output.write(
+                        Text.from_markup(f"[bold]Assistant:[/bold] {processed_content}")
+                    )
+                except Exception:
+                    self.output.write(f"Assistant: {processed_content}")
 
             if hasattr(self, "task_state_label"):
                 self._refresh_task_state()
@@ -541,6 +732,24 @@ else:
                 from pathlib import Path
 
                 task_state_path = Path(wd) / ".agent-context" / "TASK_STATE.md"
+
+                # Check if there's an active session by looking at message history
+                has_active_session = False
+                try:
+                    if hasattr(self.orchestrator, "msg_mgr"):
+                        msgs = self.orchestrator.msg_mgr.messages
+                        # If there are user messages, there's an active session
+                        user_msgs = [m for m in msgs if m.get("role") == "user"]
+                        has_active_session = len(user_msgs) > 0
+                except Exception:
+                    pass
+
+                if not has_active_session:
+                    # Fresh start - show "No active task"
+                    if hasattr(self, "task_state_label"):
+                        self.task_state_label.update("No active task")
+                    return
+
                 if task_state_path.exists():
                     content = task_state_path.read_text()
                     guilogger.info(f"Task State read: {content[:100]}...")
@@ -556,9 +765,15 @@ else:
                         if capture and line.strip():
                             task_info = line.strip()
                             break
-                    if task_info:
+
+                    # Only update if there's actual task info (not the stale "completed" state)
+                    if task_info and "completed" not in task_info.lower():
                         guilogger.info(f"Task State label updating to: {task_info}")
                         self.task_state_label.update(task_info)
+                    else:
+                        guilogger.info(
+                            f"Task State label keeping current (stale task info: {task_info})"
+                        )
             except Exception as e:
                 guilogger.error(f"Failed to refresh task state: {e}")
 
@@ -617,9 +832,83 @@ else:
             except Exception as e:
                 guilogger.error(f"Failed to open settings: {e}")
 
-    # Add Settings modal support when Textual is available
-    from textual.screen import ModalScreen
-    from textual.widgets import Select, Label
+        def action_interrupt_agent(self) -> None:
+            """Interrupt the currently running agent."""
+            if (
+                self._agent_running
+                and self._agent_thread
+                and self._agent_thread.is_alive()
+            ):
+                guilogger.info("User interrupted agent (Escape pressed)")
+                self._cancel_event.set()
+                self.output.write(
+                    "[yellow]⚠ Agent interrupted. Type 'continue' to resume or enter a new command.[/yellow]"
+                )
+                self._agent_running = False
+            else:
+                guilogger.info("No agent running to interrupt")
+
+        def action_force_interrupt_agent(self) -> None:
+            """Force interrupt the agent immediately (double-ESC)."""
+            guilogger.info("User force interrupted agent (double-Escape pressed)")
+            self._cancel_event.set()
+            if self._agent_running:
+                self.output.write(
+                    "[red]⚠ Agent force stopped. Type 'continue' to resume or enter a new command.[/red]"
+                )
+                self._agent_running = False
+            if self._agent_thread and self._agent_thread.is_alive():
+                guilogger.info("Agent thread still running, setting cancel event")
+
+        def _save_state_for_continue(self) -> None:
+            """Save current agent state for continue functionality."""
+            try:
+                if self.orchestrator and hasattr(self.orchestrator, "msg_mgr"):
+                    msg_mgr = self.orchestrator.msg_mgr
+                    self._continue_state = {
+                        "history": msg_mgr.messages.copy()
+                        if hasattr(msg_mgr, "messages")
+                        else [],
+                        "session_read_files": list(
+                            getattr(self.orchestrator, "_session_read_files", [])
+                        ),
+                    }
+                    guilogger.info("State saved for continue")
+            except Exception as e:
+                guilogger.error(f"Failed to save state for continue: {e}")
+
+        def _restore_state_for_continue(self) -> bool:
+            """Restore saved state for continue functionality."""
+            if not self._continue_state:
+                return False
+            try:
+                if self.orchestrator and hasattr(self.orchestrator, "msg_mgr"):
+                    msg_mgr = self.orchestrator.msg_mgr
+                    if hasattr(msg_mgr, "messages") and self._continue_state.get(
+                        "history"
+                    ):
+                        msg_mgr.messages = self._continue_state["history"].copy()
+                    if hasattr(self.orchestrator, "_session_read_files"):
+                        self.orchestrator._session_read_files = set(
+                            self._continue_state.get("session_read_files", [])
+                        )
+                    guilogger.info("State restored for continue")
+                    return True
+            except Exception as e:
+                guilogger.error(f"Failed to restore state: {e}")
+            return False
+
+    # Add Settings modal support when Textual is available - import dynamically
+    try:
+        _screen = importlib.import_module("textual.screen")
+        ModalScreen = getattr(_screen, "ModalScreen")
+        _widgets2 = importlib.import_module("textual.widgets")
+        Select = getattr(_widgets2, "Select")
+        Label = getattr(_widgets2, "Label")
+    except Exception:
+        ModalScreen = object
+        Select = object
+        Label = object
 
     class ConnectProviderModal(ModalScreen):
         DEFAULT_CSS = """

@@ -12,17 +12,205 @@ from src.core.memory.distiller import distill_context
 logger = logging.getLogger(__name__)
 
 
+def _notify_provider_limit(error_msg: str) -> None:
+    """Send UI notification when provider/context limit is reached."""
+    error_lower = error_msg.lower()
+    if any(
+        x in error_lower
+        for x in [
+            "disconnected",
+            "connection",
+            "timeout",
+            "memory",
+            "slot",
+            "batch",
+            "kv cache",
+            "context",
+            "attention",
+            "memory slot",
+            "ubatch",
+            "total tokens",
+        ]
+    ):
+        try:
+            from src.core.orchestration.event_bus import get_event_bus
+
+            bus = get_event_bus()
+            bus.publish(
+                "ui.notification",
+                {
+                    "level": "warning",
+                    "message": error_msg,
+                    "source": "provider",
+                },
+            )
+        except Exception:
+            pass
+
+
 async def perception_node(state: AgentState, config: Any) -> Dict[str, Any]:
     """
     Perception Layer: Responsible for generating the next action or thought.
     Enforces 'Thinking' and 'XML Tool Usage' before moving to execution.
+    Also handles task decomposition for multi-step tasks.
     """
     import logging
+    import re
 
     logger = logging.getLogger(__name__)
     logger.info("=== perception_node START ===")
-    orchestrator = config.get("configurable", {}).get("orchestrator")
-    adapter = orchestrator.adapter
+
+    # Check for cancellation
+    cancel_event = state.get("cancel_event")
+    if cancel_event and hasattr(cancel_event, "is_set") and cancel_event.is_set():
+        logger.info("perception_node: Task canceled by user")
+        return {
+            "history": state.get("history", []),
+            "next_action": None,
+            "rounds": (state.get("rounds") or 0) + 1,
+            "last_result": {"ok": False, "error": "Task canceled by user"},
+            "errors": ["canceled"],
+        }
+
+    # Validate config and orchestrator
+    try:
+        orchestrator = config.get("configurable", {}).get("orchestrator")
+        if orchestrator is None:
+            logger.error("perception_node: orchestrator is None in config")
+            return {
+                "history": [],
+                "next_action": None,
+                "rounds": (state.get("rounds") or 0) + 1,
+                "errors": ["orchestrator not found in config"],
+            }
+    except Exception as e:
+        logger.error(f"perception_node: failed to get orchestrator: {e}")
+        return {
+            "history": [],
+            "next_action": None,
+            "rounds": (state.get("rounds") or 0) + 1,
+            "errors": [f"config error: {e}"],
+        }
+
+    # Validate call_model is available
+    if not callable(call_model):
+        logger.error(f"perception_node: call_model is not callable: {call_model}")
+        return {
+            "history": [],
+            "next_action": None,
+            "rounds": (state.get("rounds") or 0) + 1,
+            "errors": ["call_model not available"],
+        }
+
+    try:
+        adapter = orchestrator.adapter
+        if adapter is None:
+            logger.warning("perception_node: orchestrator.adapter is None")
+    except Exception as e:
+        logger.error(f"perception_node: failed to get adapter: {e}")
+        return {
+            "history": [],
+            "next_action": None,
+            "rounds": (state.get("rounds") or 0) + 1,
+            "errors": [f"adapter error: {e}"],
+        }
+
+    # Task Decomposition: Check if this is a fresh task (round 0) that needs decomposition
+    task = state.get("task") or ""
+    current_plan = state.get("current_plan") or []
+    current_step = state.get("current_step") or 0
+
+    # Only decompose on fresh task (first round)
+    if state.get("rounds", 0) == 0 and task and (not current_plan or current_step == 0):
+        # Heuristic: check if task looks multi-step
+        multi_step_indicators = [
+            # Multiple imperative verbs or "and" connecting actions
+            re.search(r"\band\b", task, re.IGNORECASE),
+            # Numbered lists
+            re.search(r"^\d+[\.\)]\s", task, re.MULTILINE),
+            # Commas with multiple distinct actions
+            re.search(
+                r",.*?(?:then|and|after|before|also|add|create|delete|update|modify|fix)",
+                task,
+                re.IGNORECASE,
+            ),
+            # Common multi-action patterns
+            re.search(
+                r"(?:create|delete|update|modify|fix|add|remove).*(?:and|then|after).*(?:create|delete|update|modify|fix|add|remove)",
+                task,
+                re.IGNORECASE,
+            ),
+        ]
+
+        needs_decomposition = any(multi_step_indicators)
+
+        if needs_decomposition:
+            logger.info("Task appears multi-step, attempting decomposition")
+            try:
+                builder = ContextBuilder()
+                decomp_prompt = f"""Analyze this task and break it down into small, independent steps. 
+For each step, provide a brief description (max 10 words).
+Return ONLY a JSON array of step objects with format:
+[{{"description": "step 1 description"}}, {{"description": "step 2 description"}}, ...]
+
+Task: {task}
+
+Respond with ONLY valid JSON, no markdown, no explanation."""
+
+                messages = [
+                    {
+                        "role": "system",
+                        "content": "You are a task planning assistant. Break down complex tasks into simple steps.",
+                    },
+                    {"role": "user", "content": decomp_prompt},
+                ]
+
+                resp = await call_model(messages, stream=False, format_json=False)
+
+                content = ""
+                if isinstance(resp, dict):
+                    if resp.get("choices"):
+                        ch = resp["choices"][0].get("message")
+                        if isinstance(ch, dict):
+                            content = ch.get("content") or ""
+
+                # Parse the response
+                plan_steps = []
+                try:
+                    # Try to extract JSON from response
+                    json_match = re.search(r"\[.*\]", content, re.DOTALL)
+                    if json_match:
+                        import json
+
+                        steps_data = json.loads(json_match.group(0))
+                        if isinstance(steps_data, list):
+                            for step in steps_data:
+                                if isinstance(step, dict) and step.get("description"):
+                                    plan_steps.append(
+                                        {
+                                            "description": step["description"],
+                                            "action": None,
+                                            "pending": True,
+                                        }
+                                    )
+                except Exception as e:
+                    logger.warning(f"Failed to parse decomposition response: {e}")
+
+                if plan_steps:
+                    logger.info(f"Decomposed task into {len(plan_steps)} steps")
+                    # Store the plan and set first step as current
+                    return {
+                        "history": [],
+                        "next_action": None,
+                        "rounds": 0,
+                        "current_plan": plan_steps,
+                        "current_step": 0,
+                        "task": plan_steps[0]["description"],  # Focus on first step
+                        "task_decomposed": True,
+                        "original_task": task,  # Keep original for reference
+                    }
+            except Exception as e:
+                logger.warning(f"Task decomposition failed: {e}")
 
     # Pre-retrieval: consult repo intelligence tools if available (search_code, find_symbol, find_references)
     retrieved_snippets = []
@@ -41,42 +229,70 @@ async def perception_node(state: AgentState, config: Any) -> Dict[str, Any]:
             query = state.get("task") or ""
             # search_code
             try:
-                sc = _call_tool_if_exists("search_code", query=query, workdir=state.get("working_dir"))
+                sc = _call_tool_if_exists(
+                    "search_code", query=query, workdir=state.get("working_dir")
+                )
                 if sc:
                     # support both dict{results:[]} and list
-                    if isinstance(sc, dict) and sc.get("results"):
-                        for r in sc.get("results"):
-                            retrieved_snippets.append({
-                                "file_path": r.get("file_path") or r.get("file"),
-                                "snippet": r.get("snippet") or r.get("text") or r.get("content"),
-                                "reason": "search_code",
-                            })
+                    results = sc.get("results") if isinstance(sc, dict) else None
+                    if results:
+                        for r in results:
+                            retrieved_snippets.append(
+                                {
+                                    "file_path": r.get("file_path") or r.get("file"),
+                                    "snippet": r.get("snippet")
+                                    or r.get("text")
+                                    or r.get("content"),
+                                    "reason": "search_code",
+                                }
+                            )
                     elif isinstance(sc, list):
                         for r in sc:
                             if isinstance(r, dict):
-                                retrieved_snippets.append({
-                                    "file_path": r.get("file_path") or r.get("file"),
-                                    "snippet": r.get("snippet") or r.get("text") or r.get("content"),
-                                    "reason": "search_code",
-                                })
+                                retrieved_snippets.append(
+                                    {
+                                        "file_path": r.get("file_path")
+                                        or r.get("file"),
+                                        "snippet": r.get("snippet")
+                                        or r.get("text")
+                                        or r.get("content"),
+                                        "reason": "search_code",
+                                    }
+                                )
             except Exception:
                 pass
 
             # find_symbol
             try:
-                fs = _call_tool_if_exists("find_symbol", name=query, workdir=state.get("working_dir"))
+                fs = _call_tool_if_exists(
+                    "find_symbol", name=query, workdir=state.get("working_dir")
+                )
                 if fs and isinstance(fs, dict) and fs.get("file_path"):
-                    retrieved_snippets.append({"file_path": fs.get("file_path"), "snippet": fs.get("snippet"), "reason": "find_symbol"})
+                    retrieved_snippets.append(
+                        {
+                            "file_path": fs.get("file_path"),
+                            "snippet": fs.get("snippet"),
+                            "reason": "find_symbol",
+                        }
+                    )
             except Exception:
                 pass
 
             # find_references
             try:
-                fr = _call_tool_if_exists("find_references", name=query, workdir=state.get("working_dir"))
+                fr = _call_tool_if_exists(
+                    "find_references", name=query, workdir=state.get("working_dir")
+                )
                 if fr and isinstance(fr, list):
                     for r in fr:
                         if isinstance(r, dict):
-                            retrieved_snippets.append({"file_path": r.get("file_path"), "snippet": r.get("excerpt") or r.get("context"), "reason": "find_references"})
+                            retrieved_snippets.append(
+                                {
+                                    "file_path": r.get("file_path"),
+                                    "snippet": r.get("excerpt") or r.get("context"),
+                                    "reason": "find_references",
+                                }
+                            )
             except Exception:
                 pass
     except Exception:
@@ -105,12 +321,17 @@ async def perception_node(state: AgentState, config: Any) -> Dict[str, Any]:
     provider = "None"
     model = "None"
     if adapter:
+        logger.info(f"perception_node: adapter type: {type(adapter)}")
         if hasattr(adapter, "provider") and isinstance(adapter.provider, dict):
             provider = (
                 adapter.provider.get("name") or adapter.provider.get("type") or "None"
             )
+            logger.info(f"perception_node: provider from adapter: {provider}")
         if hasattr(adapter, "models") and adapter.models:
             model = adapter.models[0]
+            logger.info(f"perception_node: model from adapter: {model}")
+    else:
+        logger.warning("perception_node: adapter is None!")
 
     # Determine deterministic overrides if orchestrator requests them
     llm_kwargs = {}
@@ -120,10 +341,15 @@ async def perception_node(state: AgentState, config: Any) -> Dict[str, Any]:
             seed = getattr(orchestrator, "seed", None)
             if seed is not None:
                 llm_kwargs["seed"] = seed
+        else:
+            llm_kwargs["temperature"] = 0.4
     except Exception:
         pass
 
     # LLM Inference
+    logger.info(
+        f"perception_node: calling call_model with provider={provider}, model={model}"
+    )
     try:
         raw_resp = call_model(
             messages,
@@ -141,6 +367,7 @@ async def perception_node(state: AgentState, config: Any) -> Dict[str, Any]:
     except Exception as e:
         logger.error(f"call_model failed: {e}")
         resp = {"ok": False, "error": str(e)}
+        _notify_provider_limit(str(e))
 
     # Debug: log raw response for troubleshooting
     try:
@@ -182,12 +409,29 @@ async def perception_node(state: AgentState, config: Any) -> Dict[str, Any]:
     except Exception:
         pass
 
-    # Update state: record assistant turn and the identified action
-    return {
+    # Preserve plan state if already exists
+    current_plan = state.get("current_plan")
+    current_step = state.get("current_step")
+    task_decomposed = state.get("task_decomposed")
+    original_task = state.get("original_task")
+
+    result = {
         "history": [{"role": "assistant", "content": content}],
         "next_action": tool_call,
         "rounds": state["rounds"] + 1,
     }
+
+    # Preserve plan-related fields
+    if current_plan is not None:
+        result["current_plan"] = current_plan
+    if current_step is not None:
+        result["current_step"] = current_step
+    if task_decomposed is not None:
+        result["task_decomposed"] = task_decomposed
+    if original_task is not None:
+        result["original_task"] = original_task
+
+    return result
 
 
 async def planning_node(state: AgentState, config: Any) -> Dict[str, Any]:
@@ -197,7 +441,23 @@ async def planning_node(state: AgentState, config: Any) -> Dict[str, Any]:
     This is a lightweight, defensive implementation that prefers LLM-generated
     plans but falls back to a simple one-step plan when no plan is detected.
     """
-    orchestrator = config.get("configurable", {}).get("orchestrator")
+    # Validate orchestrator
+    try:
+        orchestrator = config.get("configurable", {}).get("orchestrator")
+        if orchestrator is None:
+            logger.error("planning_node: orchestrator is None")
+            return {
+                "current_plan": state.get("current_plan", []),
+                "current_step": state.get("current_step", 0),
+                "errors": ["orchestrator not found"],
+            }
+    except Exception as e:
+        logger.error(f"planning_node: failed to get orchestrator: {e}")
+        return {
+            "current_plan": state.get("current_plan", []),
+            "current_step": state.get("current_step", 0),
+            "errors": [f"config error: {e}"],
+        }
 
     # Treat state as a plain dict for flexible lookups
     s = dict(state)
@@ -208,6 +468,18 @@ async def planning_node(state: AgentState, config: Any) -> Dict[str, Any]:
     # Minimal planner: if next_action exists, make a one-step plan; otherwise ask the LLM
     current_plan = s.get("current_plan") or []
     current_step = s.get("current_step") or 0
+    task_decomposed = s.get("task_decomposed", False)
+
+    # If we already have a decomposed plan with steps, use it
+    if task_decomposed and current_plan and current_step < len(current_plan):
+        logger.info(
+            f"Using decomposed plan: step {current_step + 1}/{len(current_plan)}"
+        )
+        return {
+            "current_plan": current_plan,
+            "current_step": current_step,
+            "task": current_plan[current_step].get("description", ""),
+        }
 
     if s.get("next_action"):
         # Construct a trivial plan wrapping the existing action
@@ -268,9 +540,114 @@ async def execution_node(state: AgentState, config: Any) -> Dict[str, Any]:
     """
     Execution Layer: Programmatically enforces Operational Workflows.
     Specifically: Read-Before-Edit and Sandbox constraints.
+    Handles multi-step plan execution by advancing through steps.
     """
-    orchestrator = config.get("configurable", {}).get("orchestrator")
-    action = state["next_action"]
+    # Check for cancellation
+    cancel_event = state.get("cancel_event")
+    if cancel_event and hasattr(cancel_event, "is_set") and cancel_event.is_set():
+        logger.info("execution_node: Task canceled by user")
+        return {
+            "last_result": {"ok": False, "error": "Task canceled by user"},
+            "errors": ["canceled"],
+            "next_action": None,
+        }
+
+    # Validate orchestrator
+    try:
+        orchestrator = config.get("configurable", {}).get("orchestrator")
+        if orchestrator is None:
+            logger.error("execution_node: orchestrator is None")
+            return {
+                "last_result": None,
+                "errors": ["orchestrator not found"],
+            }
+    except Exception as e:
+        logger.error(f"execution_node: failed to get orchestrator: {e}")
+        return {
+            "last_result": None,
+            "errors": [f"config error: {e}"],
+        }
+
+    try:
+        action = state["next_action"]
+    except Exception as e:
+        logger.error(f"execution_node: failed to get next_action: {e}")
+        action = None
+
+    # Handle multi-step plan execution
+    current_plan = state.get("current_plan") or []
+    current_step = state.get("current_step") or 0
+    original_task = state.get("original_task")
+    task_decomposed = state.get("task_decomposed", False)
+
+    # If we have a plan but no action, we need to generate one for the current step
+    if not action and current_plan and current_step < len(current_plan):
+        current_step_desc = current_plan[current_step].get("description", "")
+        logger.info(
+            f"No action provided, generating tool for step: {current_step_desc}"
+        )
+
+        # Call LLM to generate a tool for this step
+        try:
+            builder = ContextBuilder()
+            tools_list = [
+                {"name": n, "description": m.get("description", "")}
+                for n, m in orchestrator.tool_registry.tools.items()
+            ]
+
+            step_prompt = f"""Execute this specific step: {current_step_desc}
+
+Working directory: {state.get("working_dir")}
+Original task: {original_task or state.get("task")}
+
+Generate the appropriate tool call to complete this step. Respond with ONLY a tool call in the required XML format."""
+
+            messages = builder.build_prompt(
+                identity=state.get("system_prompt", ""),
+                role=f"Executing step {current_step + 1}/{len(current_plan)}",
+                active_skills=[],
+                task_description=step_prompt,
+                tools=tools_list,
+                conversation=state.get("history", []),
+                max_tokens=4000,
+            )
+
+            resp = await call_model(messages, stream=False, format_json=False)
+
+            content = ""
+            if isinstance(resp, dict):
+                if resp.get("choices"):
+                    ch = resp["choices"][0].get("message")
+                    if isinstance(ch, dict):
+                        content = ch.get("content") or ""
+                elif resp.get("message"):
+                    content = resp.get("message", {}).get("content", "")
+
+            # Parse the tool call
+            tool_call = parse_tool_block(content)
+            if tool_call:
+                logger.info(f"Generated tool call for step: {tool_call}")
+                # Update the step with the action
+                current_plan[current_step]["action"] = tool_call
+                action = tool_call
+        except Exception as e:
+            logger.error(f"Failed to generate tool for step: {e}")
+            _notify_provider_limit(str(e))
+
+    # If we have a plan and haven't finished it, check if we need to advance
+    if current_plan and current_step < len(current_plan):
+        current_step_desc = current_plan[current_step].get("description", "")
+
+        # Update the task to focus on the current step
+        if task_decomposed and original_task:
+            # Construct context for current step
+            progress_msg = f"Working on step {current_step + 1}/{len(current_plan)} of multi-step task.\n"
+            progress_msg += f"Current step: {current_step_desc}\n"
+            if current_step > 0:
+                progress_msg += f"Completed: {', '.join([s.get('description', '') for s in current_plan[:current_step] if s.get('completed')])}"
+            logger.info(
+                f"Plan execution: step {current_step + 1}/{len(current_plan)} - {current_step_desc}"
+            )
 
     if not action:
         return {"last_result": None}
@@ -367,6 +744,35 @@ async def execution_node(state: AgentState, config: Any) -> Dict[str, Any]:
 
     # Successful tool execution
     verified_update = []
+    plan_advance = {}
+
+    # Check for multi-step plan completion
+    if current_plan and current_step < len(current_plan):
+        # Check if execution was successful
+        if res.get("ok"):
+            # Mark current step as completed
+            current_plan[current_step]["completed"] = True
+            next_step = current_step + 1
+
+            if next_step < len(current_plan):
+                # Move to next step
+                plan_advance = {
+                    "current_step": next_step,
+                    "current_plan": current_plan,
+                    "task": current_plan[next_step].get("description", ""),
+                }
+                logger.info(
+                    f"Step {current_step + 1} complete, advancing to step {next_step + 1}"
+                )
+            else:
+                # Plan complete
+                plan_advance = {
+                    "current_step": next_step,
+                    "current_plan": current_plan,
+                    "task": original_task or "Task complete",
+                }
+                logger.info("All plan steps completed")
+
     if res.get("ok"):
         # Log to trace
         import datetime
@@ -420,26 +826,69 @@ async def execution_node(state: AgentState, config: Any) -> Dict[str, Any]:
             {"role": "user", "content": json.dumps({"tool_execution_result": res})}
         ],
         "next_action": None,  # Reset after execution
+        **plan_advance,
     }
 
 
 async def verification_node(state: AgentState, config: Any) -> Dict[str, Any]:
     """
     Verification Layer: Run tests / linters / syntax checks on proposed edits.
+    Also validates file deletions to ensure files are actually deleted.
     This node is intentionally conservative: it will only run verification tools when
     the state indicates a recent edit or when the `current_plan` requests validation.
     """
+    import logging
+
+    logger = logging.getLogger(__name__)
     orchestrator = config.get("configurable", {}).get("orchestrator")
 
     # Decide whether verification is needed
     last_result = state.get("last_result") or {}
     need_verify = False
+    verification_type = None
+
+    # Check if last action was a deletion
+    if isinstance(last_result, dict):
+        r = last_result.get("result") or {}
+        if isinstance(r, dict) and r.get("status") == "ok" and r.get("deleted"):
+            # This was a delete_file call - verify the file is actually gone
+            deleted_path = r.get("path")
+            if deleted_path:
+                workdir = Path(state.get("working_dir", "."))
+                full_path = (
+                    workdir / deleted_path
+                    if not Path(deleted_path).is_absolute()
+                    else Path(deleted_path)
+                )
+                if full_path.exists():
+                    logger.warning(
+                        f"Verification FAILED: {deleted_path} still exists after deletion"
+                    )
+                    return {
+                        "verification_result": {
+                            "deletion_verification": "FAILED",
+                            "error": f"File still exists: {deleted_path}",
+                            "path": deleted_path,
+                        }
+                    }
+                else:
+                    logger.info(
+                        f"Verification PASSED: {deleted_path} successfully deleted"
+                    )
+                    return {
+                        "verification_result": {
+                            "deletion_verification": "PASSED",
+                            "path": deleted_path,
+                        }
+                    }
+
     # If the last action was an edit_file that reported ok, run verification
     try:
         if isinstance(last_result, dict):
             r = last_result.get("result") or {}
             if isinstance(r, dict) and r.get("status") == "ok" and r.get("path"):
                 need_verify = True
+                verification_type = "edit"
     except Exception:
         pass
 

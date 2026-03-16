@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
@@ -24,6 +25,59 @@ from src.tools import file_tools
 from src.tools.registry import register_tool
 
 logger = logging.getLogger(__name__)
+
+
+def _generate_work_summary(
+    final_state: Optional[Dict[str, Any]], history: List[Dict[str, Any]]
+) -> str:
+    """Generate a summary of work done based on final state and history."""
+    if not final_state:
+        return ""
+
+    task = final_state.get("task", final_state.get("original_task", ""))
+    rounds = final_state.get("rounds", 0)
+    current_plan = final_state.get("current_plan") or []
+    current_step = final_state.get("current_step", 0)
+    verified_reads = final_state.get("verified_reads") or []
+
+    tool_counts: Dict[str, int] = {}
+    for entry in history:
+        if entry.get("role") == "tool" and entry.get("tool"):
+            tool_name = entry.get("tool", "unknown")
+            tool_counts[tool_name] = tool_counts.get(tool_name, 0) + 1
+
+    completed_steps = []
+    pending_steps = []
+    if current_plan:
+        for i, step in enumerate(current_plan):
+            desc = step.get("description", f"Step {i + 1}")
+            if step.get("completed"):
+                completed_steps.append(desc)
+            elif i >= current_step:
+                pending_steps.append(desc)
+
+    lines = ["", "---", "**Work Summary**", ""]
+    lines.append(f"- Task: {task}")
+    lines.append(f"- Rounds: {rounds}")
+
+    if tool_counts:
+        tools_str = ", ".join(
+            f"{count}× {name}" for name, count in sorted(tool_counts.items())
+        )
+        lines.append(f"- Tools used: {tools_str}")
+
+    if verified_reads:
+        lines.append(f"- Files inspected: {len(verified_reads)}")
+
+    if completed_steps:
+        lines.append(f"- Steps completed: {len(completed_steps)}/{len(current_plan)}")
+        for step in completed_steps:
+            lines.append(f"  - {step}")
+
+    if pending_steps:
+        lines.append(f"- Pending steps: {len(pending_steps)}")
+
+    return "\n".join(lines)
 
 
 class ToolRegistry:
@@ -448,6 +502,8 @@ class Orchestrator:
         self._allow_external = bool(allow_external_working_dir)
         self._ensure_working_dir()
 
+        self._current_task_id: Optional[str] = None
+
         pm = None
         try:
             pm = get_provider_manager()
@@ -461,9 +517,15 @@ class Orchestrator:
                 # Pick default adapter if none provided
                 if self._adapter is None:
                     providers = pm.list_providers()
+                    guilogger.info(
+                        f"Orchestrator init: available providers: {providers}"
+                    )
                     if providers:
                         name = "lm_studio" if "lm_studio" in providers else providers[0]
                         self._adapter = pm.get_provider(name)
+                        guilogger.info(
+                            f"Orchestrator init: picked adapter: {name}, adapter: {self._adapter}"
+                        )
         except Exception:
             pass
 
@@ -678,10 +740,6 @@ class Orchestrator:
         name = name_raw
         args = tool_call.get("arguments", {})
 
-        tool = self.tool_registry.get(name)
-        if not tool:
-            return {"ok": False, "error": f"Tool '{name}' not found."}
-
         # Hard Rule Enforcement: Read before Edit
         path_arg = args.get("path") or args.get("file_path")
         if path_arg and name == "edit_file":
@@ -694,6 +752,10 @@ class Orchestrator:
                     }
             except Exception:
                 pass
+
+        tool = self.tool_registry.get(name)
+        if not tool:
+            return {"ok": False, "error": f"Tool '{name}' not found."}
 
         try:
             import inspect
@@ -751,14 +813,22 @@ class Orchestrator:
                         try:
                             schema.model_validate(res.get("result") or {})
                         except ValidationError as ve:
-                            return {"ok": False, "error": f"Tool result failed contract validation: {ve}"}
+                            return {
+                                "ok": False,
+                                "error": f"Tool result failed contract validation: {ve}",
+                            }
 
                 else:
                     # Validate general ToolContract wrapper for additional safety
                     try:
-                        ToolContract.model_validate({"tool": name, "args": args, "result": res})
+                        ToolContract.model_validate(
+                            {"tool": name, "args": args, "result": res}
+                        )
                     except ValidationError as ve:
-                        return {"ok": False, "error": f"Tool result failed contract validation: {ve}"}
+                        return {
+                            "ok": False,
+                            "error": f"Tool result failed contract validation: {ve}",
+                        }
 
                 # Telemetry: record invocation counts and latency (best-effort)
                 try:
@@ -854,6 +924,15 @@ class Orchestrator:
         except Exception as e:
             guilogger.error(f"Orchestrator: failed to append execution trace: {e}")
 
+    def _clear_execution_trace(self):
+        try:
+            trace_path = self.working_dir / ".agent-context" / "execution_trace.json"
+            import json
+
+            trace_path.write_text(json.dumps([], indent=2))
+        except Exception as e:
+            guilogger.error(f"Orchestrator: failed to clear execution trace: {e}")
+
     def _check_loop_prevention(self, tool_name: Optional[str], tool_args: dict) -> bool:
         if not tool_name:
             return False
@@ -861,29 +940,27 @@ class Orchestrator:
         if not trace:
             return False
 
-        # Check for repeated tool calls - need at least 2 previous to detect a pattern
-        if len(trace) < 2:
-            return False
+        # Only check the last 10 entries for loop detection (not entire history)
+        recent_trace = trace[-10:] if len(trace) > 10 else trace
 
-        # Count occurrences in the entire trace
+        # Check for repeated tool calls in recent trace only
+        # Block only if exact same tool+args appears 2+ times in recent trace
         count = 0
-        for entry in trace:
+        for entry in recent_trace:
             if entry.get("tool") == tool_name and entry.get("args") == tool_args:
                 count += 1
 
-        # Block if we've seen this exact tool+args 2 or more times before (current + 2 previous = 3 total)
-        # This blocks the 3rd execution when same tool+args was used twice before
         if count >= 2:
             return True
 
-        # Also block if same tool name appears 4+ times regardless of args
-        name_counts = {}
-        for entry in trace:
-            t = entry.get("tool")
-            name_counts[t] = name_counts.get(t, 0) + 1
-        for _, c in name_counts.items():
-            if c >= 4:
-                return True
+        # Also block if THIS SPECIFIC tool appears 3+ times in recent trace (regardless of args)
+        # Only apply to tools that have been attempted multiple times in recent history
+        tool_count = 0
+        for entry in recent_trace:
+            if entry.get("tool") == tool_name:
+                tool_count += 1
+        if tool_count >= 3:
+            return True
 
         return False
 
@@ -944,15 +1021,41 @@ class Orchestrator:
         except Exception:
             pass
 
+    def start_new_task(self) -> str:
+        """
+        Start a new task by generating a new task ID and clearing message history.
+        Returns the new task ID.
+        """
+        self._current_task_id = str(uuid.uuid4())[:8]
+        try:
+            self.msg_mgr.messages = []
+        except Exception:
+            pass
+        guilogger.info(f"Started new task with ID: {self._current_task_id}")
+        return self._current_task_id
+
+    def get_current_task_id(self) -> Optional[str]:
+        """Get the current task ID."""
+        return self._current_task_id
+
     def run_agent_once(
         self,
         system_prompt_name: Optional[str],
         messages: List[Dict[str, Any]],
         tools: Dict[str, Any],
+        cancel_event: Optional[Any] = None,
     ) -> Dict[str, Any]:
         """
         Invokes the LangGraph cognitive pipeline to execute the task.
         """
+        # Check if canceled before starting
+        if cancel_event and hasattr(cancel_event, "is_set") and cancel_event.is_set():
+            return {
+                "ok": False,
+                "error": "canceled_before_start",
+                "assistant_message": "Task was canceled before starting.",
+            }
+
         prompt = ""
         if (
             messages
@@ -997,6 +1100,7 @@ class Orchestrator:
             "current_step": 0,
             # deterministic hints for nodes
             "deterministic": getattr(self, "deterministic", False),
+            "cancel_event": cancel_event,
             "seed": getattr(self, "seed", None),
         }
 
@@ -1004,6 +1108,8 @@ class Orchestrator:
         graph = compile_agent_graph()
 
         import asyncio
+
+        guilogger.info(f"run_agent_once: starting with task: {prompt[:80]}")
 
         try:
             # We use the same safe asyncio execution logic
@@ -1029,6 +1135,10 @@ class Orchestrator:
                         next_state = future.result()
                 except RuntimeError:
                     next_state = _run_graph(current_state)
+
+                guilogger.info(
+                    f"Graph round {round_idx}: next_state keys: {list(next_state.keys()) if next_state else 'None'}"
+                )
 
                 # If nothing changed (no new assistant turn) or no next action, stop early
                 final_state = next_state
@@ -1067,8 +1177,10 @@ class Orchestrator:
                     "working_dir": current_state.get("working_dir"),
                     "system_prompt": current_state.get("system_prompt"),
                     "errors": [],
-                    "current_plan": [],
-                    "current_step": 0,
+                    "current_plan": final_state.get("current_plan", []),
+                    "current_step": final_state.get("current_step", 0),
+                    "task_decomposed": final_state.get("task_decomposed", False),
+                    "original_task": final_state.get("original_task"),
                     "deterministic": getattr(self, "deterministic", False),
                     "seed": getattr(self, "seed", None),
                 }
@@ -1104,14 +1216,25 @@ class Orchestrator:
                 if final_state
                 else "Graph execution completed"
             )
+
+            work_summary = _generate_work_summary(
+                final_state, final_state.get("history", [])
+            )
             return {
                 "assistant_message": "\n".join(assistant_msgs[-1:])
                 if assistant_msgs
-                else ""
+                else "",
+                "work_summary": work_summary,
             }
         except StopAsyncIteration:
             # This is expected when the graph finishes successfully.
-            return {"assistant_message": "Graph finished."}
+            work_summary = _generate_work_summary(
+                final_state, final_state.get("history", []) if final_state else []
+            )
+            return {
+                "assistant_message": "Graph finished.",
+                "work_summary": work_summary,
+            }
         except Exception as e:
             guilogger.error(f"Graph execution failed: {e}")
             self.msg_mgr.append("user", f"Error during tool execution: {e}")

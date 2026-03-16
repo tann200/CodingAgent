@@ -29,11 +29,25 @@ def write_file(
     return {"path": str(p), "status": "ok"}
 
 
-def read_file(path: str, workdir: Path = DEFAULT_WORKDIR) -> Dict[str, Any]:
+def read_file(
+    path: str, summarize: bool = False, workdir: Path = DEFAULT_WORKDIR
+) -> Dict[str, Any]:
     p = _safe_resolve(path, workdir)
     if not p.exists():
         return {"path": str(p), "status": "not_found"}
-    return {"path": str(p), "status": "ok", "content": p.read_text(encoding="utf-8")}
+    content = p.read_text(encoding="utf-8")
+    if summarize and len(content) > 500:
+        lines = content.splitlines()
+        if len(lines) > 20:
+            summary = (
+                f"[{len(lines)} lines, {len(content)} chars] "
+                + "\n".join(lines[:10])
+                + f"\n... [{len(lines) - 20} more lines]"
+            )
+        else:
+            summary = f"[{len(content)} chars] {content[:500]}..."
+        return {"path": str(p), "status": "ok", "content": summary, "truncated": True}
+    return {"path": str(p), "status": "ok", "content": content}
 
 
 def list_dir(path: str = ".", workdir: Path = DEFAULT_WORKDIR) -> Dict[str, Any]:
@@ -49,13 +63,14 @@ def delete_file(path: str, workdir: Path = DEFAULT_WORKDIR) -> Dict[str, Any]:
         p = _safe_resolve(path, workdir)
         if not p.exists():
             return {"path": str(p), "status": "not_found"}
+        deleted_path = str(p)
         if p.is_dir():
             import shutil
 
             shutil.rmtree(p)
         else:
             p.unlink()
-        return {"path": str(p), "status": "ok"}
+        return {"path": deleted_path, "status": "ok", "deleted": True}
     except Exception as e:
         return {"status": "error", "error": str(e)}
 

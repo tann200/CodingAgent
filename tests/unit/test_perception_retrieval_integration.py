@@ -6,7 +6,12 @@ from src.core.orchestration.orchestrator import ToolRegistry
 
 
 def run_async(coro):
-    return asyncio.get_event_loop().run_until_complete(coro)
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
 
 
 def test_perception_injects_retrieved_snippets(tmp_path):
@@ -44,4 +49,3 @@ def test_perception_injects_retrieved_snippets(tmp_path):
     # The builder puts repository intelligence in system message; here we check that the returned next_action is present (none expected) and no error
     assert "next_action" in res
     # Nothing should break; test passes if perception_node ran and returned dict
-

@@ -4,6 +4,7 @@ This module exposes a `MainViewController` class that will be used by the
 Textual application to build the layout. For tests it can be instantiated and
 inspected without rendering.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -16,6 +17,8 @@ from src.core.orchestration.event_bus import EventBus
 class MainViewState:
     status: str = "idle"
     active_provider: Optional[str] = None
+    last_notification: Optional[str] = None
+    notification_level: Optional[str] = None
 
 
 class MainViewController:
@@ -25,6 +28,7 @@ class MainViewController:
         # subscribe to orchestrator/provider events
         self.event_bus.subscribe("orchestrator.startup", self._on_startup)
         self.event_bus.subscribe("provider.status.changed", self._on_provider_status)
+        self.event_bus.subscribe("ui.notification", self._on_notification)
 
     def _on_startup(self, payload):
         self.state.status = "started"
@@ -33,6 +37,10 @@ class MainViewController:
         if isinstance(payload, dict):
             self.state.active_provider = payload.get("provider")
 
+    def _on_notification(self, payload):
+        if isinstance(payload, dict):
+            self.state.last_notification = payload.get("message")
+            self.state.notification_level = payload.get("level", "info")
+
     def get_status(self) -> str:
         return self.state.status
-

@@ -49,15 +49,23 @@ This document describes the core architecture of the local CodingAgent, includin
    - Evaluating responses, validating Tool calls via `preflight_check`, executing them via `execute_tool`.
    - Role-based tool filtering via `RoleManager`.
 
-3. **LangGraph Cognitive Pipeline** (`src/core/orchestration/graph/`)
-   The system uses a LangGraph state machine with the following nodes:
-   - **perception_node**: Understands user request, classifies task
-   - **planning_node**: Converts perception outputs into structured plans
-   - **execution_node**: Enforces operational workflows (read_file-Before-edit_file, Sandbox constraints)
-   - **verification_node**: Runs tests/linters/syntax checks on proposed edits
-   - **memory_sync_node**: Persists distilled context to TASK_STATE.md, updates execution_trace.json
-   
-   Flow: `perception → planning → (conditional: execute|memory_sync|end) → execution → verification → memory_sync → end`
+ 3. **LangGraph Cognitive Pipeline** (`src/core/orchestration/graph/`)
+    The system uses a LangGraph state machine with the following nodes:
+    - **perception_node**: Understands user request, classifies task, performs task decomposition for multi-step tasks
+    - **planning_node**: Converts perception outputs into structured plans, manages decomposed task execution
+    - **execution_node**: Enforces operational workflows (read_file-Before-edit_file, Sandbox constraints), executes plan steps
+    - **verification_node**: Runs tests/linters/syntax checks on proposed edits
+    - **memory_sync_node**: Persists distilled context to TASK_STATE.md, updates execution_trace.json
+    
+    **Flow:** 
+    - Simple task: `perception → planning → execute → verification → memory_sync → end`
+    - Multi-step task: `perception (decompose) → planning → execute → perception (next step) → ... → verification → memory_sync → end`
+    
+    **Task Decomposition:**
+    - perception_node detects multi-step tasks using heuristics (e.g., "and", numbered lists, multiple action verbs)
+    - When detected, calls LLM to split into independent steps stored in `current_plan`
+    - execution_node generates tool calls for each step and advances through steps
+    - Graph loops back to perception when more steps remain via `should_after_execution` conditional routing
 
 4. **Message & Token Manager** (`src/core/orchestration/message_manager.py`)
    Because local models have strict sequence constraints (e.g. 8K tokens), the `MessageManager` tracks history and automatically shifts the sliding window (dropping oldest non-system interactions) when the conversation exceeds `max_tokens`.
@@ -95,6 +103,32 @@ This document describes the core architecture of the local CodingAgent, includin
    - Tracks `execution_trace.json` with tool+args pairs
    - Blocks repeated calls after 3 consecutive identical actions
    - Injects `[LOOP DETECTED]` system message forcing strategy change
+   - Trace is cleared at start of each new task to prevent false positives
+
+10. **Task Context Management**
+   
+   **Context Retention:**
+   - `MessageManager` (`src/core/orchestration/message_manager.py`) stores conversation history
+   - Automatically manages token window by dropping oldest non-system messages
+   - System prompt is always preserved at the top of the message list
+   
+   **Task Isolation:**
+   - Each user prompt starts a new task with a unique 8-character task ID
+   - `start_new_task()` method clears message history between tasks
+   - This prevents context bleed from previous conversations
+   - Task ID is logged for debugging and tracing
+   
+   **Key Methods:**
+   - `orchestrator.start_new_task()` - Generates new task ID, clears message history
+   - `orchestrator.get_current_task_id()` - Returns current task ID
+   - `orchestrator._clear_execution_trace()` - Clears loop detection trace
+   - `cancel_event` - threading.Event passed to nodes for interruption
+
+11. **Agent Interruption**
+   - **ESC**: Graceful interrupt (sets cancel event)
+   - **Double-ESC**: Force interrupt
+   - **Ctrl+C**: Cancel request
+   - Cancellation checked in `perception_node` and `execution_node` before each LLM call
 
 10. **Agent Brain Structure** (`agent-brain/`)
      - `identity/` - Immutable core (SOUL.md, LAWS.md)

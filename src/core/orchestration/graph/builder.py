@@ -50,10 +50,36 @@ def should_after_planning(
     return "end"
 
 
+def should_after_execution(
+    state: AgentState,
+) -> Literal["perception", "verification"]:
+    """
+    Decide routing after execution node.
+    If there's a plan with more steps, loop back to perception. Otherwise go to verification.
+    """
+    current_plan = state.get("current_plan") or []
+    current_step = state.get("current_step") or 0
+
+    # If we have more steps in the plan, continue with perception
+    if current_plan and current_step < len(current_plan) - 1:
+        logger.info(
+            f"should_after_execution: more steps ({current_step + 1}/{len(current_plan)}), looping to perception"
+        )
+        return "perception"
+
+    # Otherwise proceed to verification
+    logger.info("should_after_execution: no more steps, going to verification")
+    return "verification"
+
+
 def compile_agent_graph():
     """
     Assembles the LangGraph cognitive pipeline including Planning and Verification nodes.
     """
+    import logging
+
+    logger = logging.getLogger(__name__)
+
     workflow = StateGraph(AgentState)
 
     # 1. Add Nodes
@@ -92,8 +118,12 @@ def compile_agent_graph():
         {"execute": "execution", "memory_sync": "memory_sync", "end": END},
     )
 
-    # After execution, go to verification
-    workflow.add_edge("execution", "verification")
+    # After execution, decide whether to continue with plan or go to verification
+    workflow.add_conditional_edges(
+        "execution",
+        should_after_execution,
+        {"perception": "perception", "verification": "verification"},
+    )
 
     # After verification, always sync memory
     workflow.add_edge("verification", "memory_sync")
