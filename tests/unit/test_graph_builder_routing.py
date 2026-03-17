@@ -56,6 +56,7 @@ def test_should_after_execution_no_more_steps():
     state = {
         "current_plan": [{"description": "step 1"}, {"description": "step 2"}],
         "current_step": 1,
+        "step_controller_enabled": False,  # Disable for direct verification
     }
     result = should_after_execution(state)
     assert result == "verification"
@@ -66,6 +67,7 @@ def test_should_after_execution_empty_plan():
     state = {
         "current_plan": [],
         "current_step": 0,
+        "step_controller_enabled": False,  # Disable for direct verification
     }
     result = should_after_execution(state)
     assert result == "verification"

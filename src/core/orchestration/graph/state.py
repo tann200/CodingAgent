@@ -1,10 +1,11 @@
 from typing import TypedDict, List, Dict, Any, Annotated, Optional
 import operator
 
+
 class AgentState(TypedDict):
     """
     Represents the shared state of the LangGraph cognitive pipeline.
-    
+
     Fields:
         task: The primary goal or user prompt.
         history: The cumulative message history (appended automatically).
@@ -16,6 +17,7 @@ class AgentState(TypedDict):
         system_prompt: Base instructions loaded from agent-brain.
         errors: List of logic or system violations encountered.
     """
+
     task: str
     history: Annotated[List[Dict[str, Any]], operator.add]
     verified_reads: Annotated[List[str], operator.add]
@@ -30,3 +32,23 @@ class AgentState(TypedDict):
     current_step: Optional[int]
     deterministic: Optional[bool]
     seed: Optional[int]
+    # Analysis phase output
+    analysis_summary: Optional[str]
+    relevant_files: Optional[List[str]]
+    key_symbols: Optional[List[str]]
+    # Debug retry tracking
+    debug_attempts: Optional[int]
+    max_debug_attempts: int
+    # Verification result
+    verification_passed: Optional[bool]
+    verification_result: Optional[Dict[str, Any]]
+    # Step controller
+    step_controller_enabled: bool
+    # Task decomposition
+    task_decomposed: Optional[bool]
+    # Tool cooldowns to prevent spam
+    tool_last_used: Optional[Dict[str, int]]
+    tool_call_count: int
+    max_tool_calls: int
+    # Files read tracking for read-before-edit
+    files_read: Optional[Dict[str, bool]]

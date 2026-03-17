@@ -148,8 +148,45 @@ def bash(command: str, workdir: Path = DEFAULT_WORKDIR) -> Dict[str, Any]:
     import subprocess
     import shlex
 
-    # Security: only allow certain safe commands
-    allowed_commands = {
+    # Check for dangerous patterns BEFORE parsing
+    DANGEROUS_PATTERNS = [
+        "&&",
+        "||",
+        ";",
+        "|",
+        ">",
+        ">>",
+        "<",
+        "$(",
+        "`",
+        "rm -rf",
+        "rm -r",
+        "rm -f",
+        "del ",
+        "format ",
+        "shutdown",
+        "reboot",
+        "halt",
+        "poweroff",
+    ]
+    cmd_lower = command.lower()
+    for pattern in DANGEROUS_PATTERNS:
+        if pattern in cmd_lower:
+            return {
+                "status": "error",
+                "error": f"Command contains dangerous pattern '{pattern}'. No shell operators or destructive commands allowed.",
+            }
+
+    try:
+        cmd_parts = shlex.split(command)
+    except ValueError as e:
+        return {"status": "error", "error": f"Invalid command: {e}"}
+
+    if not cmd_parts:
+        return {"status": "error", "error": "Empty command"}
+
+    # Safe read-only and utility commands
+    ALLOWED_COMMANDS = {
         "ls",
         "cat",
         "grep",
@@ -163,34 +200,66 @@ def bash(command: str, workdir: Path = DEFAULT_WORKDIR) -> Dict[str, Any]:
         "date",
         "which",
         "env",
+        "mkdir",
+        "touch",
+        "cp",
+        "mv",
+        "chmod",
+        "tree",
+        "sort",
+        "uniq",
+        "awk",
+        "sed",
+        "python",
+        "python3",
+        "pip",
+        "pip3",
+        "npm",
+        "node",
+        "cargo",
+        "rustc",
+        "go",
+        "javac",
+        "java",
     }
-    cmd_parts = shlex.split(command)
-    if cmd_parts and cmd_parts[0] not in allowed_commands:
+
+    if cmd_parts[0] not in ALLOWED_COMMANDS:
         return {
             "status": "error",
-            "error": f"Command '{cmd_parts[0]}' not allowed. Allowed: {allowed_commands}",
+            "error": f"Command '{cmd_parts[0]}' not allowed. Allowed: {sorted(ALLOWED_COMMANDS)}",
+        }
+
+    DANGEROUS_PATTERNS = ["&&", "||", ";", "|", ">", ">>", "<", "$(", "`"]
+    if any(p in command for p in DANGEROUS_PATTERNS):
+        return {
+            "status": "error",
+            "error": f"Command contains dangerous pattern. No shell operators allowed.",
         }
 
     try:
         result = subprocess.run(
-            command,
-            shell=True,
+            cmd_parts,
+            shell=False,
             cwd=str(workdir),
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=60,
         )
         return {
             "status": "ok",
             "command": command,
-            "stdout": result.stdout,
-            "stderr": result.stderr,
+            "stdout": result.stdout[:50000],
+            "stderr": result.stderr[:5000],
             "returncode": result.returncode,
         }
     except subprocess.TimeoutExpired:
-        return {"status": "error", "error": "Command timed out after 30 seconds"}
-    except Exception as e:
-        return {"status": "error", "error": str(e)}
+        return {"status": "error", "error": "Command timed out after 60 seconds"}
+    except FileNotFoundError:
+        return {"status": "error", "error": f"Command not found: {cmd_parts[0]}"}
+    except PermissionError:
+        return {"status": "error", "error": f"Permission denied: {cmd_parts[0]}"}
+    except OSError as e:
+        return {"status": "error", "error": f"OS error: {e}"}
 
 
 def glob(pattern: str, workdir: Path = DEFAULT_WORKDIR) -> Dict[str, Any]:

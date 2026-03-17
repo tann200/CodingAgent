@@ -12,6 +12,102 @@ from src.core.memory.distiller import distill_context
 logger = logging.getLogger(__name__)
 
 
+async def analysis_node(state: AgentState, config: Any) -> Dict[str, Any]:
+    """
+    Analysis Layer: Explores the repository to gather relevant context before planning.
+    Uses repository intelligence tools to find relevant files, symbols, and dependencies.
+    """
+    import logging
+
+    logger = logging.getLogger(__name__)
+    logger.info("=== analysis_node START ===")
+
+    try:
+        orchestrator = config.get("configurable", {}).get("orchestrator")
+        if orchestrator is None:
+            logger.error("analysis_node: orchestrator is None in config")
+            return {
+                "analysis_summary": "Orchestrator not found",
+                "relevant_files": [],
+                "key_symbols": [],
+            }
+    except Exception as e:
+        logger.error(f"analysis_node: failed to get orchestrator: {e}")
+        return {
+            "analysis_summary": f"Error: {e}",
+            "relevant_files": [],
+            "key_symbols": [],
+        }
+
+    task = state.get("task") or ""
+    working_dir = state.get("working_dir", ".")
+
+    relevant_files = []
+    key_symbols = []
+    analysis_summary = ""
+
+    def _call_tool_if_exists(tool_name, **kwargs):
+        try:
+            t = orchestrator.tool_registry.get(tool_name)
+            if t and callable(t.get("fn")):
+                return t["fn"](**kwargs)
+        except Exception as e:
+            logger.warning(f"analysis_node: tool {tool_name} failed: {e}")
+        return None
+
+    try:
+        results = []
+
+        sc = _call_tool_if_exists("search_code", query=task, workdir=working_dir)
+        if sc:
+            results_data = sc.get("results") if isinstance(sc, dict) else sc
+            if isinstance(results_data, list):
+                for r in results_data[:5]:
+                    fp = r.get("file_path") or r.get("file")
+                    if fp and fp not in relevant_files:
+                        relevant_files.append(fp)
+
+        fs = _call_tool_if_exists(
+            "find_symbol", name=task.split()[0] if task else "", workdir=working_dir
+        )
+        if fs and isinstance(fs, dict):
+            fp = fs.get("file_path")
+            if fp and fp not in relevant_files:
+                relevant_files.append(fp)
+            sym = fs.get("symbol_name")
+            if sym and sym not in key_symbols:
+                key_symbols.append(sym)
+
+        gl = _call_tool_if_exists("glob", pattern="**/*.py", workdir=working_dir)
+        if gl and isinstance(gl, dict):
+            items = gl.get("items", [])
+            for item in items[:20]:
+                fp = item.get("name") if isinstance(item, dict) else item
+                if fp and fp.endswith(".py") and fp not in relevant_files:
+                    relevant_files.append(fp)
+
+        if relevant_files:
+            analysis_summary = (
+                f"Found {len(relevant_files)} relevant files for task: {task[:50]}..."
+            )
+        else:
+            analysis_summary = f"No specific files found. Task: {task[:50]}..."
+
+        logger.info(
+            f"analysis_node: found {len(relevant_files)} files, {len(key_symbols)} symbols"
+        )
+
+    except Exception as e:
+        logger.error(f"analysis_node: analysis failed: {e}")
+        analysis_summary = f"Analysis failed: {e}"
+
+    return {
+        "analysis_summary": analysis_summary,
+        "relevant_files": relevant_files,
+        "key_symbols": key_symbols,
+    }
+
+
 def _notify_provider_limit(error_msg: str) -> None:
     """Send UI notification when provider/context limit is reached."""
     error_lower = error_msg.lower()
@@ -463,28 +559,35 @@ async def planning_node(state: AgentState, config: Any) -> Dict[str, Any]:
     s = dict(state)
 
     # If the perception already provided a next_action, try to build a simple plan
-    task = s.get("task") or ""
+    task = str(s.get("task") or "")
 
     # Minimal planner: if next_action exists, make a one-step plan; otherwise ask the LLM
-    current_plan = s.get("current_plan") or []
-    current_step = s.get("current_step") or 0
-    task_decomposed = s.get("task_decomposed", False)
+    current_plan = s.get("current_plan")
+    if not isinstance(current_plan, list):
+        current_plan = []
+    current_step = s.get("current_step")
+    if not isinstance(current_step, int):
+        current_step = 0
+    task_decomposed = bool(s.get("task_decomposed", False))
 
     # If we already have a decomposed plan with steps, use it
     if task_decomposed and current_plan and current_step < len(current_plan):
-        logger.info(
-            f"Using decomposed plan: step {current_step + 1}/{len(current_plan)}"
-        )
+        plan_len = len(current_plan)
+        logger.info(f"Using decomposed plan: step {current_step + 1}/{plan_len}")
+        step_desc = ""
+        if current_step < len(current_plan):
+            step_desc = str(current_plan[current_step].get("description", ""))
         return {
             "current_plan": current_plan,
             "current_step": current_step,
-            "task": current_plan[current_step].get("description", ""),
+            "task": step_desc,
         }
 
-    if s.get("next_action"):
+    next_action = s.get("next_action")
+    if next_action:
         # Construct a trivial plan wrapping the existing action
         step = {
-            "action": s.get("next_action"),
+            "action": next_action,
             "description": "Execute the requested tool",
         }
         current_plan = [step]
@@ -494,13 +597,37 @@ async def planning_node(state: AgentState, config: Any) -> Dict[str, Any]:
     # Fallback: ask the model for a short plan (non-blocking best effort)
     try:
         builder = ContextBuilder()
+        system_prompt = str(s.get("system_prompt") or "")
+        history = s.get("history")
+        if not isinstance(history, list):
+            history = []
+
+        # Build repo-aware context from analysis output
+        analysis_summary = str(s.get("analysis_summary") or "No analysis available")
+        relevant_files = s.get("relevant_files") or []
+        key_symbols = s.get("key_symbols") or []
+
+        repo_context = ""
+        if relevant_files or key_symbols:
+            repo_context = "\n\nRepository Context:\n"
+            if relevant_files:
+                repo_context += f"- Relevant files: {', '.join(str(f) for f in relevant_files[:10])}\n"
+            if key_symbols:
+                repo_context += (
+                    f"- Key symbols: {', '.join(str(s) for s in key_symbols[:10])}\n"
+                )
+            if analysis_summary and analysis_summary != "No analysis available":
+                repo_context += f"- Analysis: {analysis_summary}\n"
+
+        full_task = f"Task: {task}{repo_context}\n\nGenerate a step-by-step plan. Each step must reference specific files explicitly."
+
         messages = builder.build_prompt(
-            identity=s.get("system_prompt"),
+            identity=system_prompt,
             role=f"Planner for task: {task}",
             active_skills=[],
-            task_description=task,
+            task_description=full_task,
             tools=[],
-            conversation=s.get("history", []),
+            conversation=history,
             max_tokens=1500,
         )
         resp = await call_model(messages, stream=False, format_json=False)
@@ -927,3 +1054,173 @@ async def memory_update_node(state: AgentState, config: Any) -> Dict[str, Any]:
     except Exception as e:
         logger.error(f"memory_update_node: distillation failed: {e}")
     return {}
+
+
+async def debug_node(state: AgentState, config: Any) -> Dict[str, Any]:
+    """
+    Debug Node: Analyzes verification failures and attempts to fix issues.
+    Called when verification fails, with max retry limit.
+    """
+    import logging
+
+    logger = logging.getLogger(__name__)
+    logger.info("=== debug_node START ===")
+
+    try:
+        orchestrator = config.get("configurable", {}).get("orchestrator")
+        if orchestrator is None:
+            logger.error("debug_node: orchestrator is None")
+            return {"next_action": None, "errors": ["orchestrator not found"]}
+    except Exception as e:
+        logger.error(f"debug_node: failed to get orchestrator: {e}")
+        return {"next_action": None, "errors": [str(e)]}
+
+    current_attempt: int = int(state.get("debug_attempts") or 0)
+    max_attempts: int = int(state.get("max_debug_attempts") or 3)
+    last_result = state.get("last_result") or {}
+    verification_result = state.get("verification_result") or {}
+    task = str(state.get("task") or "")
+
+    logger.info(f"debug_node: attempt {current_attempt + 1}/{max_attempts}")
+
+    error_summary = ""
+    if last_result.get("error"):
+        error_summary = f"Tool error: {last_result.get('error')}"
+    elif verification_result:
+        v = verification_result.get("tests", {})
+        if v.get("status") == "fail":
+            error_summary = f"Test failure: {v.get('stdout', '')[:500]}"
+        v = verification_result.get("linter", {})
+        if v.get("status") == "fail":
+            error_summary += f" Linter: {v.get('stdout', '')[:200]}"
+
+    if current_attempt >= max_attempts:
+        logger.warning("debug_node: max attempts reached, giving up")
+        return {
+            "next_action": None,
+            "errors": [f"Max debug attempts ({max_attempts}) reached"],
+        }
+
+    next_attempt = current_attempt + 1
+
+    fix_prompt = f"""You are a debugging assistant. The previous attempt failed.
+
+Task: {task}
+
+Error: {error_summary}
+
+Analyze the error and generate a FIX tool call to correct the issue.
+If the issue is a test failure, fix the code.
+If the issue is a linter error, fix the formatting.
+If the issue is a syntax error, correct the code.
+
+Generate a tool call to fix the issue. Use the appropriate tool (edit_file, write_file, etc).
+Respond with ONLY a tool call in XML format."""
+
+    try:
+        from src.core.context.context_builder import ContextBuilder
+        from src.core.llm_manager import call_model
+        from src.core.orchestration.tool_parser import parse_tool_block
+
+        builder = ContextBuilder()
+        tools_list = [
+            {"name": n, "description": m.get("description", "")}
+            for n, m in orchestrator.tool_registry.tools.items()
+        ]
+
+        messages = builder.build_prompt(
+            identity=state.get("system_prompt", ""),
+            role="Debugging",
+            active_skills=[],
+            task_description=fix_prompt,
+            tools=tools_list,
+            conversation=state.get("history", []),
+            max_tokens=4000,
+        )
+
+        provider = "None"
+        model = "None"
+        if orchestrator.adapter:
+            if hasattr(orchestrator.adapter, "provider") and isinstance(
+                orchestrator.adapter.provider, dict
+            ):
+                provider = orchestrator.adapter.provider.get("name") or "None"
+            if hasattr(orchestrator.adapter, "models") and orchestrator.adapter.models:
+                model = orchestrator.adapter.models[0]
+
+        resp = call_model(
+            messages, provider=provider, model=model, stream=False, format_json=False
+        )
+
+        content = ""
+        if isinstance(resp, dict):
+            if resp.get("choices"):
+                ch = resp["choices"][0].get("message")
+                if isinstance(ch, dict):
+                    content = ch.get("content") or ""
+
+        tool_call = parse_tool_block(content)
+        if tool_call:
+            logger.info(f"debug_node: generated fix tool: {tool_call}")
+            return {
+                "next_action": tool_call,
+                "debug_attempts": next_attempt,
+            }
+        else:
+            logger.warning("debug_node: no tool generated for fix")
+            return {
+                "next_action": None,
+                "debug_attempts": next_attempt,
+                "errors": ["Debug node could not generate fix"],
+            }
+
+    except Exception as e:
+        logger.error(f"debug_node: failed to generate fix: {e}")
+        return {
+            "next_action": None,
+            "debug_attempts": next_attempt,
+            "errors": [str(e)],
+        }
+
+
+async def step_controller_node(state: AgentState, config: Any) -> Dict[str, Any]:
+    """
+    Step Controller: Enforces single-step execution from the plan.
+    Validates that the current step matches the planned action.
+    """
+    import logging
+
+    logger = logging.getLogger(__name__)
+    logger.info("=== step_controller_node START ===")
+
+    current_plan = state.get("current_plan")
+    if not isinstance(current_plan, list):
+        current_plan = []
+    current_step = state.get("current_step")
+    if not isinstance(current_step, int):
+        current_step = 0
+    step_controller_enabled = bool(state.get("step_controller_enabled", True))
+
+    if not step_controller_enabled or not current_plan:
+        logger.info("step_controller_node: disabled or no plan, passing through")
+        return {}
+
+    plan_len = len(current_plan)
+    if current_step >= plan_len:
+        logger.info(
+            f"step_controller_node: step {current_step} >= plan length {plan_len}"
+        )
+        return {"next_action": None}
+
+    current_step_data = current_plan[current_step]
+    step_description = str(current_step_data.get("description", ""))
+    planned_action = current_step_data.get("action")
+
+    logger.info(
+        f"step_controller_node: enforcing step {current_step + 1}/{plan_len}: {step_description}"
+    )
+
+    return {
+        "step_description": step_description,
+        "planned_action": planned_action,
+    }

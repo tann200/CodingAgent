@@ -776,6 +776,32 @@ class Orchestrator:
                         "error": "Tool not permitted for role 'reviewer'",
                     }
 
+            # Sandbox validation for write operations
+            if "write" in tool.get("side_effects", []) and path_arg:
+                try:
+                    from src.core.orchestration.sandbox import ExecutionSandbox
+
+                    sandbox = ExecutionSandbox(str(self.working_dir))
+
+                    # Validate AST for Python files
+                    if path_arg.endswith(".py"):
+                        ast_result = sandbox.validate_ast(path_arg)
+                        if ast_result.get("status") == "error":
+                            return {
+                                "ok": False,
+                                "error": f"Sandbox validation error: {ast_result.get('error')}",
+                            }
+                except Exception as e:
+                    guilogger.warning(f"Sandbox validation failed: {e}")
+
+            # Track files read for read-before-edit enforcement
+            if name == "read_file" and path_arg:
+                try:
+                    resolved = str((Path(self.working_dir) / path_arg).resolve())
+                    self._session_read_files.add(resolved)
+                except Exception:
+                    pass
+
             res = tool["fn"](**args)
             # Normalize the result to a dict contract
             res = self._normalize_tool_result(res)
@@ -1102,6 +1128,26 @@ class Orchestrator:
             "deterministic": getattr(self, "deterministic", False),
             "cancel_event": cancel_event,
             "seed": getattr(self, "seed", None),
+            # analysis phase
+            "analysis_summary": None,
+            "relevant_files": [],
+            "key_symbols": [],
+            # debug retry tracking
+            "debug_attempts": 0,
+            "max_debug_attempts": 3,
+            # verification result
+            "verification_passed": None,
+            "verification_result": None,
+            # step controller
+            "step_controller_enabled": True,
+            # task decomposition
+            "task_decomposed": False,
+            # tool cooldowns and budgeting
+            "tool_last_used": {},
+            "tool_call_count": 0,
+            "max_tool_calls": 30,
+            # files read tracking
+            "files_read": {},
         }
 
         # 2. Compile and Run Graph
@@ -1110,6 +1156,9 @@ class Orchestrator:
         import asyncio
 
         guilogger.info(f"run_agent_once: starting with task: {prompt[:80]}")
+
+        # Initialize final_state before try to satisfy LSP
+        final_state: dict = {}
 
         try:
             # We use the same safe asyncio execution logic
@@ -1124,7 +1173,6 @@ class Orchestrator:
             # Allow multiple graph rounds to consume multi-turn tool sequences (bounded)
             max_rounds = 12
             current_state = initial_state
-            final_state = None
             for round_idx in range(max_rounds):
                 try:
                     asyncio.get_running_loop()
@@ -1212,14 +1260,13 @@ class Orchestrator:
                     if m["role"] == "assistant"
                 ]
             guilogger.info(
-                f"Graph execution completed in {final_state.get('rounds', 0)} rounds"
+                f"Graph execution completed in {final_state.get('rounds', 0) if final_state else 0} rounds"
                 if final_state
                 else "Graph execution completed"
             )
 
-            work_summary = _generate_work_summary(
-                final_state, final_state.get("history", [])
-            )
+            history = final_state.get("history", []) if final_state else []
+            work_summary = _generate_work_summary(final_state, history)
             return {
                 "assistant_message": "\n".join(assistant_msgs[-1:])
                 if assistant_msgs
@@ -1228,9 +1275,10 @@ class Orchestrator:
             }
         except StopAsyncIteration:
             # This is expected when the graph finishes successfully.
-            work_summary = _generate_work_summary(
-                final_state, final_state.get("history", []) if final_state else []
+            history = (
+                final_state.get("history", []) if isinstance(final_state, dict) else []
             )
+            work_summary = _generate_work_summary(final_state, history)
             return {
                 "assistant_message": "Graph finished.",
                 "work_summary": work_summary,
