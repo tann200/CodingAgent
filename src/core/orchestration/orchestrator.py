@@ -860,11 +860,10 @@ class Orchestrator:
                 try:
                     import time as _time
 
-                    call_info = {
-                        "tool": name,
-                        "args": args,
-                        "ts": _time.time(),
-                    }
+                    # Telemetry data for usage tracking
+                    # (call_info reserved for future telemetry use)
+                    _ts = _time.time()
+
                     # load usage file
                     usage_path = self.working_dir / ".agent-context" / "usage.json"
                     import json as _json

@@ -32,7 +32,7 @@ def run_tests(workdir: str, test_files: Optional[List[str]] = None) -> Dict[str,
         )
 
         stdout = proc.stdout
-        stderr = proc.stderr
+        # stderr reserved for future use
 
         # Parse pytest output for structured data
         passed, failed = _parse_pytest_summary(stdout)

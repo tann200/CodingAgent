@@ -2,6 +2,7 @@
 
 This is a non-UI testable controller that will be connected to the real TUI later.
 """
+
 from __future__ import annotations
 
 from typing import List
@@ -17,12 +18,12 @@ class ProviderPanelController:
         if self.pm._initialized:
             self.providers = self.pm.list_providers()
         # subscribe for updates
-        self.event_bus.subscribe('provider.models.list', self._on_models_list)
+        self.event_bus.subscribe("provider.models.list", self._on_models_list)
 
     def _on_models_list(self, payload):
         try:
-            provider = payload.get('provider')
-            models = payload.get('models')
+            provider = payload.get("provider")
+            # models reserved for future use
             # store or update locally
             self.providers = list(set(self.providers + [provider]))
         except Exception:
@@ -30,4 +31,3 @@ class ProviderPanelController:
 
     def list_providers(self) -> List[str]:
         return self.providers
-
