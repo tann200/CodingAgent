@@ -2,6 +2,14 @@ import sys
 from pathlib import Path
 import warnings
 import tomli
+import pytest
+
+# Enforce Python 3.11 for test runs and fail early with a clear message.
+if sys.version_info[:2] != (3, 11):
+    pytest.exit(
+        f"Tests must be run under Python 3.11 but current interpreter is {sys.version}.\n"
+        "Activate the project's venv with Python 3.11 (e.g. `python3.11 -m venv .venv && source .venv/bin/activate`)."
+    )
 
 # Add the src directory to the sys.path
 sys.path.insert(0, str(Path(__file__).parent.parent))

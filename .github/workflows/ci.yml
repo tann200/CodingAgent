@@ -9,17 +9,51 @@ on:
 jobs:
   test:
     runs-on: macos-latest
+    strategy:
+      matrix:
+        python-version: [3.11]
     steps:
       - uses: actions/checkout@v4
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.9'
+          python-version: '${{ matrix.python-version }}'
+      - name: Assert Python requirement in pyproject
+        run: |
+          python - <<'PY'
+          import sys, pathlib
+          try:
+              import tomllib
+          except Exception:
+              print('tomllib not available in this Python environment')
+              sys.exit(1)
+
+          p = pathlib.Path('pyproject.toml')
+          if not p.exists():
+              print('pyproject.toml not found')
+              sys.exit(1)
+
+          data = tomllib.loads(p.read_text())
+          proj = data.get('project', {}) if isinstance(data, dict) else {}
+          spec = proj.get('requires-python')
+          if not spec:
+              print('project.requires-python not set in pyproject.toml')
+              sys.exit(1)
+
+          # Require that 3.11 is present in the spec (and recommend pinning to <3.12)
+          if '3.11' not in str(spec):
+              print(f"project.requires-python ('{spec}') does not include Python 3.11. CI requires Python 3.11.")
+              sys.exit(1)
+
+          if '<3.12' not in str(spec) and '==3.11' not in str(spec):
+              print(f"Warning: project.requires-python is '{spec}'. Recommended: '>=3.11,<3.12' to lock to 3.11.x")
+          print('pyproject Python requirement OK:', spec)
+          PY
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt || true
-          pip install pytest
+          pip install -e .[dev]
       - name: Run unit tests
         run: |
           python -m pytest tests/unit -q
@@ -27,4 +61,3 @@ jobs:
         if: ${{ env.RUN_INTEGRATION == '1' }}
         run: |
           RUN_INTEGRATION=1 python -m pytest tests/integration -q
-

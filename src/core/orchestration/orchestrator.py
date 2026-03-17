@@ -643,7 +643,17 @@ class Orchestrator:
             pass
 
         # async check in background
-        self._background_model_check()
+        # Run background model check in a daemon thread to avoid blocking during init
+        try:
+            import threading as _threading
+
+            _threading.Thread(target=self._background_model_check, daemon=True).start()
+        except Exception:
+            # Fallback to synchronous call if threading fails for some reason
+            try:
+                self._background_model_check()
+            except Exception:
+                pass
 
         # Initial publish of current config
         self._publish_active_config()
