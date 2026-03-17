@@ -472,7 +472,7 @@ class TestGraphBuilder:
         }
 
         result = should_after_execution(state)
-        assert result == "step_controller"
+        assert result == "perception"
 
 
 class TestStateFields:

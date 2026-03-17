@@ -1,6 +1,8 @@
 import pytest
 from src.core.orchestration.orchestrator import Orchestrator
 from unittest.mock import AsyncMock
+import src.core.llm_manager
+from src.core.orchestration.graph.nodes import workflow_nodes as wn
 
 
 @pytest.mark.asyncio
@@ -16,6 +18,7 @@ async def test_langgraph_refactor_read_before_edit(tmp_path):
     from src.core import llm_manager
 
     original_call = llm_manager.call_model
+    original_wn_call = wn.call_model
 
     mock_responses = [
         # 1. First turn: Agent wants to edit without reading
@@ -53,6 +56,7 @@ async def test_langgraph_refactor_read_before_edit(tmp_path):
     ]
 
     llm_manager.call_model = AsyncMock(side_effect=mock_responses)
+    wn.call_model = AsyncMock(side_effect=mock_responses)
 
     try:
         # Execute
@@ -72,3 +76,4 @@ async def test_langgraph_refactor_read_before_edit(tmp_path):
 
     finally:
         llm_manager.call_model = original_call
+        wn.call_model = original_wn_call

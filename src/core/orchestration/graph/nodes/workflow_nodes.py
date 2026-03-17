@@ -873,8 +873,9 @@ Generate the appropriate tool call to complete this step. Respond with ONLY a to
 
     # Check for multi-step plan completion
     if current_plan and current_step < len(current_plan):
-        # Check if execution was successful
-        if res.get("ok"):
+        # Check if execution was successful (handle both {"ok": True} and {"status": "ok"} formats)
+        execution_ok = res.get("ok") or res.get("status") == "ok"
+        if execution_ok:
             # Mark current step as completed
             current_plan[current_step]["completed"] = True
             next_step = current_step + 1
@@ -898,7 +899,9 @@ Generate the appropriate tool call to complete this step. Respond with ONLY a to
                 }
                 logger.info("All plan steps completed")
 
-    if res.get("ok"):
+    # Check if execution was successful (handle both {"ok": True} and {"status": "ok"} formats)
+    execution_ok = res.get("ok") or res.get("status") == "ok"
+    if execution_ok:
         # Log to trace
         import datetime
 

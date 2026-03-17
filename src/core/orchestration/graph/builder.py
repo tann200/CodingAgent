@@ -25,9 +25,6 @@ def should_after_planning(
     Decide routing after the planning node.
     If a current_plan or next_action exists, execute. If last_result exists, memory_sync. Otherwise end.
     """
-    import logging
-
-    logger = logging.getLogger(__name__)
     logger.info(
         f"should_after_planning: rounds={state.get('rounds')}, next_action={state.get('next_action')}, current_plan={state.get('current_plan')}, last_result={state.get('last_result')}"
     )
@@ -57,31 +54,53 @@ def should_after_planning(
 
 def should_after_execution(
     state: AgentState,
-) -> Literal["perception", "verification", "step_controller"]:
+) -> Literal["perception", "execution", "verification"]:
     """
     Decide routing after execution node.
-    If there's a plan with more steps, loop back to perception.
-    Otherwise go to step_controller for enforcement.
+    If there's no plan, go back to perception to generate next action.
+    If there's a plan with more steps that haven't been completed, execute the next step directly.
+    Otherwise go to verification.
     """
     current_plan = state.get("current_plan") or []
     current_step = state.get("current_step") or 0
-    step_controller_enabled = state.get("step_controller_enabled", True)
+    last_result = state.get("last_result")
 
-    # If we have more steps in the plan, continue with perception
-    if current_plan and current_step < len(current_plan) - 1:
-        logger.info(
-            f"should_after_execution: more steps ({current_step + 1}/{len(current_plan)}), looping to perception"
-        )
-        return "perception"
+    logger.info(
+        f"should_after_execution: current_step={current_step}, plan_len={len(current_plan)}, last_result={last_result is not None}"
+    )
 
-    # If step controller is enabled, go there for enforcement
-    if step_controller_enabled:
-        logger.info("should_after_execution: going to step_controller")
-        return "step_controller"
+    # Check if current step is completed
+    if current_plan and current_step < len(current_plan):
+        execution_ok = False
+        if last_result:
+            execution_ok = last_result.get("ok") or last_result.get("status") == "ok"
 
-    # Otherwise proceed to verification
-    logger.info("should_after_execution: no more steps, going to verification")
-    return "verification"
+        if execution_ok:
+            current_step_data = current_plan[current_step]
+            current_step_data["completed"] = True
+            next_step = current_step + 1
+
+            if next_step < len(current_plan):
+                # More steps - execute next step directly without going through perception
+                logger.info(
+                    f"should_after_execution: step completed, executing next step {next_step + 1}/{len(current_plan)}"
+                )
+                # Update state for next execution
+                return "execution"
+            else:
+                # All steps complete, go to verification
+                logger.info(
+                    "should_after_execution: all steps complete, going to verification"
+                )
+                return "verification"
+        else:
+            # Step failed, go back to perception to try again
+            logger.info("should_after_execution: step failed, going to perception")
+            return "perception"
+
+    # No plan - go back to perception to generate next action
+    logger.info("should_after_execution: no plan, going to perception")
+    return "perception"
 
 
 def should_after_verification(
@@ -93,10 +112,6 @@ def should_after_verification(
     If verification failed and debug attempts remain, go to debug.
     Otherwise end.
     """
-    import logging
-
-    logger = logging.getLogger(__name__)
-
     verification_result = state.get("verification_result") or {}
     debug_attempts: int = int(state.get("debug_attempts") or 0)
     max_debug_attempts: int = int(state.get("max_debug_attempts") or 3)
@@ -142,10 +157,6 @@ def should_after_debug(
     If debug generated a fix action, go to execution.
     Otherwise go to memory_sync or end.
     """
-    import logging
-
-    logger = logging.getLogger(__name__)
-
     next_action = state.get("next_action")
     debug_attempts: int = int(state.get("debug_attempts") or 0)
     max_debug_attempts: int = int(state.get("max_debug_attempts") or 3)
@@ -167,8 +178,6 @@ def should_after_step_controller(
 ) -> Literal["execution", "verification"]:
     """
     Step controller decides whether to proceed to execution or skip to verification.
-    If there's a valid next action or plan step pending, go to execution.
-    Otherwise go to verification.
     """
     import logging
 
@@ -176,7 +185,48 @@ def should_after_step_controller(
 
     current_plan = state.get("current_plan") or []
     current_step: int = int(state.get("current_step") or 0)
+    last_result = state.get("last_result")
 
+    logger.info(
+        f"should_after_step_controller: current_step={current_step}, plan_len={len(current_plan)}, last_result={last_result}"
+    )
+
+    # If there's a plan with steps that haven't been reached yet, execute them
+    # But only if the current step hasn't been attempted yet (current_step < len)
+    if current_plan and current_step < len(current_plan):
+        # Check if last result exists and was successful
+        if last_result and isinstance(last_result, dict):
+            if last_result.get("ok"):
+                # Last execution was successful, check if we need to advance
+                if current_step + 1 < len(current_plan):
+                    # More steps after current, go to execution
+                    logger.info(
+                        f"should_after_step_controller: step {current_step + 1} done, more steps pending, going to execution"
+                    )
+                    return "execution"
+                # Current is the last step, go to verification
+                logger.info(
+                    f"should_after_step_controller: step {current_step + 1} done, last step, going to verification"
+                )
+                return "verification"
+            else:
+                # Last execution failed, still at same step
+                logger.info(
+                    f"should_after_step_controller: step {current_step + 1} execution failed, going to verification"
+                )
+                return "verification"
+        else:
+            # No last_result yet (first time), go to execution
+            logger.info(
+                "should_after_step_controller: no last_result, going to execution"
+            )
+            return "execution"
+
+    # No plan or at end of plan, go to verification
+    logger.info("should_after_step_controller: no pending steps, going to verification")
+    return "verification"
+
+    # Only go to execution if there's an uncompleted pending step
     if current_plan and current_step < len(current_plan):
         logger.info(
             f"should_after_step_controller: step {current_step + 1} pending, going to execution"
@@ -246,18 +296,19 @@ def compile_agent_graph():
         {"execute": "execution", "memory_sync": "memory_sync", "end": END},
     )
 
-    # After execution, decide whether to continue with plan or go to step_controller
+    # After execution, decide whether to continue with plan or go back to perception or verification
     workflow.add_conditional_edges(
         "execution",
         should_after_execution,
         {
             "perception": "perception",
-            "step_controller": "step_controller",
+            "execution": "execution",
             "verification": "verification",
         },
     )
 
-    # Step controller -> execution or verification
+    # Step controller can still be used for enforcement but not in the main loop
+    # Step controller -> execution or verification (only called from planning)
     workflow.add_conditional_edges(
         "step_controller",
         should_after_step_controller,

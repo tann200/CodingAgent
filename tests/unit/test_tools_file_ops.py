@@ -60,7 +60,7 @@ def test_summarize_structure(tmp_path):
     (tmp_path / "b.txt").write_text("y")
     res = system_tools.summarize_structure(workdir=tmp_path)
     assert "error" not in res  # Ensure no error was returned
-    assert res.get("total_files") is not None
-    assert res.get("total_dirs") is not None
-    assert res["total_files"] >= 2
-    assert res["total_dirs"] >= 1
+    assert res.get("file_count") is not None
+    assert res.get("dir_count") is not None
+    assert res["file_count"] >= 2
+    assert res["dir_count"] >= 1

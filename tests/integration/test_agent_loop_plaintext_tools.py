@@ -68,19 +68,32 @@ def test_agent_loop_plaintext_tools(
     dummy_file.write_text("def foo(): pass\n")
 
     def run_tests_mock(**kwargs):
-        return "Tests passed"
+        return {"status": "ok", "output": "Tests passed", "exit_code": 0}
 
     def bash_mock(**kwargs):
-        return "Command executed"
+        return {
+            "status": "ok",
+            "stdout": "Command executed",
+            "stderr": "",
+            "exit_code": 0,
+        }
 
     def search_code_mock(**kwargs):
-        return "Found code"
+        return {
+            "status": "ok",
+            "results": [{"file": "test.py", "line": 1, "content": "found code"}],
+        }
 
     def read_file_mock(**kwargs):
-        return "File content"
+        return {
+            "status": "ok",
+            "path": kwargs.get("path"),
+            "content": "File content",
+            "lines": 1,
+        }
 
     def edit_file_mock(**kwargs):
-        return "File edited"
+        return {"status": "ok", "path": kwargs.get("path"), "edited": True}
 
     orchestrator.tool_registry.register(
         "run_tests", run_tests_mock, [], "Run test suite"

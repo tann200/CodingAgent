@@ -1165,7 +1165,11 @@ class Orchestrator:
                 # Run the langgraph for the provided state and return the resulting state
                 return asyncio.run(
                     graph.ainvoke(
-                        state_to_run, {"configurable": {"orchestrator": self}}
+                        state_to_run,
+                        {
+                            "configurable": {"orchestrator": self},
+                            "recursion_limit": 50,
+                        },
                     )
                 )
 

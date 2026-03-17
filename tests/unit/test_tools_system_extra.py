@@ -26,7 +26,7 @@ def test_summarize_structure(tmp_path):
     (tmp_path / "dir1" / "file.txt").write_text("hello")
 
     res = summarize_structure(workdir=tmp_path)
-    assert "dir1" in res.get("subdirs", []) or res.get("total_files", 0) >= 1
+    assert "dir1" in res.get("top", []) or res.get("file_count", 0) >= 1
 
 
 def test_git_diff(monkeypatch):
