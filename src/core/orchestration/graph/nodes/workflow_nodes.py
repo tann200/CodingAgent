@@ -12,6 +12,60 @@ from src.core.memory.distiller import distill_context
 logger = logging.getLogger(__name__)
 
 
+def _resolve_orchestrator(state: dict, config: Any):
+    """Robustly resolve the orchestrator from config or state.
+    Accept dict configs, RunnableConfig-like objects, or a direct field in state.
+    Also accept a direct Orchestrator-like object passed as `config`.
+    """
+    try:
+        # If config already looks like an Orchestrator (has tool_registry/msg_mgr), return it
+        try:
+            if hasattr(config, "tool_registry") and hasattr(config, "msg_mgr"):
+                return config
+        except Exception:
+            pass
+
+        # If config is a mapping-like object, try to pull configurable.orchestrator
+        # Support dicts, pydantic models, RunnableConfig, etc.
+        cfg = None
+        try:
+            if isinstance(config, dict):
+                cfg = config.get("configurable") or config
+            else:
+                # Try attribute access first
+                cfg = getattr(config, "configurable", None) or getattr(config, "config", None) or config
+        except Exception:
+            cfg = config
+
+        # Now try several ways to extract orchestrator from cfg
+        try:
+            # If cfg is a dict-like mapping
+            if hasattr(cfg, "get"):
+                orch = cfg.get("orchestrator")
+                if orch:
+                    return orch
+            # If cfg exposes orchestrator as attribute
+            if hasattr(cfg, "orchestrator"):
+                orch = getattr(cfg, "orchestrator")
+                if orch:
+                    return orch
+        except Exception:
+            pass
+
+        # Fallback: check state for an orchestrator reference
+        orch = None
+        try:
+            if isinstance(state, dict):
+                orch = state.get("orchestrator") or state.get("_orchestrator")
+        except Exception:
+            pass
+        if orch:
+            return orch
+    except Exception:
+        pass
+    return None
+
+
 async def analysis_node(state: AgentState, config: Any) -> Dict[str, Any]:
     """
     Analysis Layer: Explores the repository to gather relevant context before planning.
@@ -22,19 +76,11 @@ async def analysis_node(state: AgentState, config: Any) -> Dict[str, Any]:
     logger = logging.getLogger(__name__)
     logger.info("=== analysis_node START ===")
 
-    try:
-        orchestrator = config.get("configurable", {}).get("orchestrator")
-        if orchestrator is None:
-            logger.error("analysis_node: orchestrator is None in config")
-            return {
-                "analysis_summary": "Orchestrator not found",
-                "relevant_files": [],
-                "key_symbols": [],
-            }
-    except Exception as e:
-        logger.error(f"analysis_node: failed to get orchestrator: {e}")
+    orchestrator = _resolve_orchestrator(state, config)
+    if orchestrator is None:
+        logger.error("analysis_node: orchestrator is None in config")
         return {
-            "analysis_summary": f"Error: {e}",
+            "analysis_summary": "Orchestrator not found",
             "relevant_files": [],
             "key_symbols": [],
         }
@@ -166,24 +212,14 @@ async def perception_node(state: AgentState, config: Any) -> Dict[str, Any]:
             "errors": ["canceled"],
         }
 
-    # Validate config and orchestrator
-    try:
-        orchestrator = config.get("configurable", {}).get("orchestrator")
-        if orchestrator is None:
-            logger.error("perception_node: orchestrator is None in config")
-            return {
-                "history": [],
-                "next_action": None,
-                "rounds": (state.get("rounds") or 0) + 1,
-                "errors": ["orchestrator not found in config"],
-            }
-    except Exception as e:
-        logger.error(f"perception_node: failed to get orchestrator: {e}")
+    orchestrator = _resolve_orchestrator(state, config)
+    if orchestrator is None:
+        logger.error("perception_node: orchestrator is None in config")
         return {
             "history": [],
             "next_action": None,
             "rounds": (state.get("rounds") or 0) + 1,
-            "errors": [f"config error: {e}"],
+            "errors": ["orchestrator not found in config"],
         }
 
     # Validate call_model is available
@@ -497,7 +533,28 @@ Respond with ONLY valid JSON, no markdown, no explanation."""
         pass
 
     # Parse tools
-    tool_call = parse_tool_block(content)
+    # If the assistant content already contains a tool_execution_result (i.e. a previous
+    # tool run result), we should not parse it as a new <tool> block. Parsing and
+    # executing could cause immediate repetition of the same tool call.
+    tool_call = None
+    try:
+        # Additionally, if the previous history entry is a tool result (role=='tool'),
+        # skip parsing: the execution node already appended the tool result for the
+        # last assistant suggestion, and re-parsing the assistant content would re-run it.
+        prior_history = state.get("history") or []
+        last_was_tool = False
+        try:
+            if isinstance(prior_history, list) and prior_history:
+                last_was_tool = prior_history[-1].get("role") == "tool"
+        except Exception:
+            last_was_tool = False
+
+        if content and not last_was_tool and "\"tool_execution_result\"" not in content and "tool_execution_result" not in content:
+            tool_call = parse_tool_block(content)
+        else:
+            logger.info("perception_node: skipping parse_tool_block because content contains tool_execution_result or a recent tool result exists in history")
+    except Exception:
+        tool_call = None
     try:
         logger.info(f"perception_node: parsed tool_call: {repr(tool_call)}")
     except Exception:
@@ -509,8 +566,14 @@ Respond with ONLY valid JSON, no markdown, no explanation."""
     task_decomposed = state.get("task_decomposed")
     original_task = state.get("original_task")
 
+    # Append assistant response to existing history, preserving previous turns
+    existing_history = state.get("history", [])
+    if not isinstance(existing_history, list):
+        existing_history = []
+    existing_history.append({"role": "assistant", "content": content})
+
     result = {
-        "history": [{"role": "assistant", "content": content}],
+        "history": existing_history,
         "next_action": tool_call,
         "rounds": state["rounds"] + 1,
     }
@@ -537,7 +600,7 @@ async def planning_node(state: AgentState, config: Any) -> Dict[str, Any]:
     """
     # Validate orchestrator
     try:
-        orchestrator = config.get("configurable", {}).get("orchestrator")
+        orchestrator = _resolve_orchestrator(state, config)
         if orchestrator is None:
             logger.error("planning_node: orchestrator is None")
             return {
@@ -679,7 +742,7 @@ async def execution_node(state: AgentState, config: Any) -> Dict[str, Any]:
 
     # Validate orchestrator
     try:
-        orchestrator = config.get("configurable", {}).get("orchestrator")
+        orchestrator = _resolve_orchestrator(state, config)
         if orchestrator is None:
             logger.error("execution_node: orchestrator is None")
             return {
@@ -947,12 +1010,27 @@ Generate the appropriate tool call to complete this step. Respond with ONLY a to
             for path in verified_update:
                 orchestrator._session_read_files.add(path)
 
+    # Append tool result to history, preserving existing history
+    existing_history = state.get("history", [])
+    if not isinstance(existing_history, list):
+        existing_history = []
+    # Append as role 'tool' to clearly mark this entry as a tool response.
+    # This prevents the perception node from re-parsing the original <tool>
+    # block and re-executing it, which can cause loops.
+    try:
+        existing_history.append(
+            {"role": "tool", "content": json.dumps({"tool_execution_result": res})}
+        )
+    except Exception:
+        # Fallback: if something goes wrong, keep original behavior to avoid data loss
+        existing_history.append(
+            {"role": "assistant", "content": json.dumps({"tool_execution_result": res})}
+        )
+
     return {
         "last_result": res,
         "verified_reads": verified_update,
-        "history": [
-            {"role": "user", "content": json.dumps({"tool_execution_result": res})}
-        ],
+        "history": existing_history,
         "next_action": None,  # Reset after execution
         **plan_advance,
     }

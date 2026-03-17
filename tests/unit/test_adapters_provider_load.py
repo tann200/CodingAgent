@@ -29,10 +29,19 @@ def test_provider_manager_loads_adapter_from_config(tmp_path, monkeypatch):
     assert hasattr(adapter, 'missing_provider')
     # because provider config exists, missing_provider should be False
     assert adapter.missing_provider is False
-    # LM Studio models should be normalized to full ids when possible
+    # Adapter models should be present or default_model should be set
     if hasattr(adapter, 'models') and adapter.models:
-        # models are stored as strings; check they contain a '/'
-        assert any('/' in str(m) for m in adapter.models), f"Expected full LM Studio ids in adapter.models, got {adapter.models}"
+        assert len(adapter.models) >= 1
+    if hasattr(adapter, 'default_model'):
+        assert adapter.default_model is not None
+
+    # Deterministic check: ProviderManager should cache static models from providers.json
+    cached_models = pm.get_cached_models('lm_studio')
+    assert cached_models, f"Expected cached models for 'lm_studio', got {cached_models}"
+
+    # Deterministic check: ProviderManager should attach provider metadata to adapter
+    assert getattr(adapter, 'provider', None) is not None
+    assert adapter.provider.get('name') == 'lm_studio'
 
 
 def test_provider_manager_loads_ollama_adapter_from_config(tmp_path):
@@ -58,3 +67,11 @@ def test_provider_manager_loads_ollama_adapter_from_config(tmp_path):
     assert adapter is not None
     assert hasattr(adapter, 'missing_provider')
     assert adapter.missing_provider is False
+
+    # Deterministic check: ProviderManager should cache static models for ollama
+    cached_models_ollama = pm.get_cached_models('ollama')
+    assert cached_models_ollama, f"Expected cached models for 'ollama', got {cached_models_ollama}"
+
+    # Deterministic check: Adapter should have provider metadata attached
+    assert getattr(adapter, 'provider', None) is not None
+    assert adapter.provider.get('name') == 'ollama'

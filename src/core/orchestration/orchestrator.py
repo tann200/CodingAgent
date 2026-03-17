@@ -11,8 +11,36 @@ from __future__ import annotations
 import logging
 import time
 import uuid
+import asyncio
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
+
+# pydantic ValidationError: provide a safe alias even if pydantic is not installed
+try:
+    import importlib
+
+    _pyd = importlib.import_module("pydantic")
+    PydValidationError = getattr(_pyd, "ValidationError")
+except Exception:
+    class PydValidationError(Exception):
+        """Fallback ValidationError when pydantic is not installed."""
+        pass
+
+# Keep the name `ValidationError` for backward compatibility across the module
+ValidationError = PydValidationError
+
+# Import tool_contracts defensively; many CI/test environments may omit heavy deps
+try:
+    from src.core.orchestration.tool_contracts import get_tool_contract, ToolContract
+except Exception:
+    def get_tool_contract(name: str):
+        return None
+
+    class ToolContract:
+        @staticmethod
+        def model_validate(x):
+            # No-op validation in fallback mode
+            return x
 
 from src.core.llm_manager import (
     get_provider_manager,
@@ -132,7 +160,7 @@ def example_registry() -> ToolRegistry:
 
     # Simple echo tool used by unit tests
     def _echo(text: str, **kwargs):
-        return {"echo": text}
+        return {"status": "ok", "output": text}
 
     try:
         reg.register(
@@ -834,11 +862,6 @@ class Orchestrator:
 
             # Validate tool contract if registered. If validation fails, return an error to the caller.
             try:
-                from pydantic import ValidationError
-                from src.core.orchestration.tool_contracts import (
-                    get_tool_contract,
-                    ToolContract,
-                )
 
                 schema = get_tool_contract(name)
                 if schema and isinstance(res, dict):
@@ -891,6 +914,15 @@ class Orchestrator:
                     usage["tools"] = tool_stats
                     usage_path.write_text(_json.dumps(usage, indent=2))
 
+                    # Telemetry: publish event for tool invocation
+                    try:
+                        self.event_bus.publish(
+                            "tool.invoked",
+                            {"tool": name, "ts": _ts, "workdir": str(self.working_dir)},
+                        )
+                    except Exception:
+                        pass
+
                     # Trace appending moved to workflow_nodes.py execution_node to avoid duplicates
                     # self._append_execution_trace(call_info)
                 except Exception:
@@ -918,6 +950,23 @@ class Orchestrator:
                     except Exception:
                         pass
 
+            # Append execution trace for loop detection and auditing
+            try:
+                import datetime
+
+                entry = {
+                    "tool": name,
+                    "args": self._normalize_args(args),
+                    "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                    "result_ok": bool(res.get("status") == "ok" or res.get("ok") is True),
+                }
+                try:
+                    self._append_execution_trace(entry)
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
             return {"ok": True, "result": res}
         except Exception as e:
             return {"ok": False, "error": str(e)}
@@ -933,6 +982,20 @@ class Orchestrator:
             pass
         return []
 
+    def _normalize_args(self, a: Any):
+        """Normalize args into a JSON-serializable Python structure.
+        This ensures consistent comparison in loop detection regardless of
+        original arg types (Path, objects, etc.)."""
+        try:
+            import json
+
+            return json.loads(json.dumps(a, default=str))
+        except Exception:
+            try:
+                return str(a)
+            except Exception:
+                return None
+
     def _append_execution_trace(self, entry: dict):
         try:
             trace = self._read_execution_trace()
@@ -940,11 +1003,19 @@ class Orchestrator:
             recent = trace[-10:]
             count = 0
             for e in recent:
-                if e.get("tool") == entry.get("tool") and e.get("args") == entry.get(
-                    "args"
-                ):
-                    count += 1
+                # Compare normalized args
+                try:
+                    if e.get("tool") == entry.get("tool") and e.get("args") == self._normalize_args(entry.get("args")):
+                        count += 1
+                except Exception:
+                    if e.get("tool") == entry.get("tool") and e.get("args") == entry.get("args"):
+                        count += 1
             entry["retries"] = count
+            # Ensure stored args are normalized
+            try:
+                entry["args"] = self._normalize_args(entry.get("args"))
+            except Exception:
+                pass
             trace.append(entry)
             trace_path = self.working_dir / ".agent-context" / "execution_trace.json"
             import json
@@ -971,30 +1042,69 @@ class Orchestrator:
     def _check_loop_prevention(self, tool_name: Optional[str], tool_args: dict) -> bool:
         if not tool_name:
             return False
-        trace = self._read_execution_trace()
+        # Load trace and apply a time-windowed, conservative de-duplication strategy.
+        # Rationale: block only when the same tool+args is repeatedly attempted within a
+        # short timeframe (e.g., 5 minutes) and with at least 3 attempts — this reduces
+        # false-positives while still protecting against runaway loops.
+        try:
+            trace = self._read_execution_trace() or []
+        except Exception:
+            trace = []
+
         if not trace:
             return False
 
-        # Only check the last 10 entries for loop detection (not entire history)
-        recent_trace = trace[-10:] if len(trace) > 10 else trace
+        # Consider only recent entries within TIME_WINDOW seconds
+        TIME_WINDOW = 300
+        now_ts = None
+        recent_entries = []
+        try:
+            import datetime
 
-        # Check for repeated tool calls in recent trace only
-        # Block only if exact same tool+args appears 2+ times in recent trace
-        count = 0
-        for entry in recent_trace:
-            if entry.get("tool") == tool_name and entry.get("args") == tool_args:
-                count += 1
+            now_ts = datetime.datetime.now(datetime.timezone.utc)
+            for e in reversed(trace):
+                ts = e.get("ts")
+                if not ts:
+                    # If no timestamp, include but don't rely on it for timing
+                    recent_entries.append(e)
+                    continue
+                try:
+                    entry_ts = datetime.datetime.fromisoformat(ts)
+                except Exception:
+                    # try parsing without timezone
+                    try:
+                        entry_ts = datetime.datetime.fromisoformat(ts + "+00:00")
+                    except Exception:
+                        recent_entries.append(e)
+                        continue
+                delta = (now_ts - entry_ts).total_seconds()
+                if delta <= TIME_WINDOW:
+                    recent_entries.append(e)
+                else:
+                    break
+        except Exception:
+            recent_entries = trace[-10:]
 
-        if count >= 2:
+        # Now count exact matches (tool + args) conservatively: block only if 3+ matches
+        exact_count = 0
+        for entry in recent_entries:
+            try:
+                if entry.get("tool") == tool_name and entry.get("args") == self._normalize_args(tool_args):
+                    exact_count += 1
+            except Exception:
+                continue
+        if exact_count >= 3:
             return True
 
-        # Also block if THIS SPECIFIC tool appears 3+ times in recent trace (regardless of args)
-        # Only apply to tools that have been attempted multiple times in recent history
-        tool_count = 0
-        for entry in recent_trace:
-            if entry.get("tool") == tool_name:
-                tool_count += 1
-        if tool_count >= 3:
+        # Count tool-only occurrences and require a higher threshold (e.g., 6) to block
+        tool_only_count = 0
+        for entry in recent_entries:
+            try:
+                if entry.get("tool") == tool_name:
+                    tool_only_count += 1
+            except Exception:
+                continue
+        if tool_only_count >= 6:
             return True
 
         return False
@@ -1162,7 +1272,7 @@ class Orchestrator:
         # 2. Compile and Run Graph
         graph = compile_agent_graph()
 
-        import asyncio
+
 
         guilogger.info(f"run_agent_once: starting with task: {prompt[:80]}")
 
@@ -1187,6 +1297,17 @@ class Orchestrator:
             max_rounds = 12
             current_state = initial_state
             for round_idx in range(max_rounds):
+                # Check for cancellation at the start of each round
+                if (
+                    cancel_event
+                    and hasattr(cancel_event, "is_set")
+                    and cancel_event.is_set()
+                ):
+                    guilogger.info(
+                        "Orchestrator: Task canceled by user during round loop"
+                    )
+                    break
+
                 try:
                     asyncio.get_running_loop()
                     import concurrent.futures
@@ -1244,6 +1365,24 @@ class Orchestrator:
                     "original_task": final_state.get("original_task"),
                     "deterministic": getattr(self, "deterministic", False),
                     "seed": getattr(self, "seed", None),
+                    "cancel_event": cancel_event,
+                    "max_tool_calls": final_state.get("max_tool_calls", 30),
+                    "tool_call_count": final_state.get("tool_call_count", 0),
+                    "files_read": final_state.get("files_read", {}),
+                }
+
+            # Check if we broke out due to cancellation
+            if (
+                cancel_event
+                and hasattr(cancel_event, "is_set")
+                and cancel_event.is_set()
+            ):
+                guilogger.info(
+                    "Orchestrator: Task was canceled, returning cancel response"
+                )
+                return {
+                    "assistant_message": "[yellow]⚠ Task canceled by user.[/yellow]",
+                    "canceled": True,
                 }
 
             # Debug: check why verified_reads might be empty

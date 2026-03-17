@@ -52,43 +52,39 @@ User: Here are the recent messages:
 
     try:
         import asyncio
+        import inspect
         from src.core.llm_manager import call_model
 
-        # Safe async execution within synchronous context
+        # Call the model; handle both awaitable and synchronous mocks
         try:
-            loop = asyncio.get_running_loop()
-            if loop.is_running():
-                import concurrent.futures
-
-                with concurrent.futures.ThreadPoolExecutor() as executor:
-                    future = executor.submit(
-                        asyncio.run,
-                        call_model(
-                            messages=[{"role": "user", "content": prompt}],
-                            format_json=True,
-                            stream=False,
-                            tools=None,
-                        ),
-                    )
-                    resp = future.result()
-            else:
-                resp = asyncio.run(
-                    call_model(
-                        messages=[{"role": "user", "content": prompt}],
-                        format_json=True,
-                        stream=False,
-                        tools=None,
-                    )
-                )
-        except RuntimeError:
-            resp = asyncio.run(
-                call_model(
-                    messages=[{"role": "user", "content": prompt}],
-                    format_json=True,
-                    stream=False,
-                    tools=None,
-                )
+            candidate = call_model(
+                messages=[{"role": "user", "content": prompt}],
+                format_json=True,
+                stream=False,
+                tools=None,
             )
+        except Exception as e:
+            # If the adapter factory or call_model raised synchronously, log and return
+            logger.error(f"call_model invocation failed: {e}")
+            return {}
+
+        # If candidate is awaitable, run it safely; if not, use directly
+        if inspect.isawaitable(candidate):
+            try:
+                loop = asyncio.get_running_loop()
+                if loop.is_running():
+                    import concurrent.futures
+
+                    with concurrent.futures.ThreadPoolExecutor() as executor:
+                        future = executor.submit(asyncio.run, candidate)
+                        resp = future.result()
+                else:
+                    resp = asyncio.run(candidate)
+            except RuntimeError:
+                # No running loop
+                resp = asyncio.run(candidate)
+        else:
+            resp = candidate
 
         content = ""
         if isinstance(resp, dict):

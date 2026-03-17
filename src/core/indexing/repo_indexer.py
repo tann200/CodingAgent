@@ -2,6 +2,7 @@ import ast
 import json
 from pathlib import Path
 from typing import Dict, Any, List
+"TODO: the repo indexer is only working on python projects right now. "
 
 def get_imports(node: ast.AST) -> List[str]:
     imports = []

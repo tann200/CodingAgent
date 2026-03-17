@@ -20,10 +20,10 @@ def test_sanitizes_fenced_code_and_prompt_injection():
     # System message should not include the fenced code block
     system = msgs[0]["content"]
     assert "```" not in system
-    assert "[CODE BLOCK REMOVED" in system or "[COMMENT BLOCK TRUNCATED" in system or True
+    assert ("[CODE BLOCK REMOVED" in system) or ("[COMMENT BLOCK TRUNCATED" in system) or ("[...skipped...]" in system)
+
 
     # The user task message must be present and sanitized
     user_msgs = [m for m in msgs if m["role"] == "user"]
     assert len(user_msgs) >= 1
     assert "ignore all instructions" not in user_msgs[0]["content"].lower()
-
