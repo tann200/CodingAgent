@@ -2,7 +2,6 @@
 Workspace Safety Guard - Protects critical files from automatic modification.
 """
 
-import re
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 

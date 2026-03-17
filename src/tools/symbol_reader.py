@@ -5,9 +5,8 @@ Enables function-level and class-level code reading for better context managemen
 """
 
 import ast
-import re
 from pathlib import Path
-from typing import Dict, Any, Optional, List, Tuple
+from typing import Dict, Any, Optional, List
 from dataclasses import dataclass
 
 

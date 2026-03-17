@@ -34,7 +34,6 @@ def find_symbol(name: str, workdir: str) -> Dict[str, Any]:
     Finds a symbol (class or function) by its exact name.
     """
     import json
-    from pathlib import Path
     
     index_path = Path(workdir) / ".agent-context" / "repo_index.json"
     if not index_path.exists():
@@ -52,7 +51,6 @@ def find_references(name: str, workdir: str) -> Dict[str, Any]:
     Find references to a symbol by scanning indexed files for occurrences of the symbol name.
     This is a simple substring match over file contents.
     """
-    from pathlib import Path
     import json
     try:
         base = Path(workdir)

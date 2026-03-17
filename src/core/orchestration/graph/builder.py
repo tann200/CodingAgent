@@ -194,10 +194,6 @@ def compile_agent_graph():
     - verification success -> memory_sync
     - verification failure -> debug -> execution (with retry limit)
     """
-    import logging
-
-    logger = logging.getLogger(__name__)
-
     workflow = StateGraph(AgentState)
 
     # 1. Add Nodes

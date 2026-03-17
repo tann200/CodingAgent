@@ -7,7 +7,6 @@ issues during test collection. It provides the interface expected by
 
 from __future__ import annotations
 
-import json
 import warnings
 import os
 from pathlib import Path
@@ -358,11 +357,9 @@ class LmStudioAdapter(LLMClient):
                 }
 
             # Normalize successful response
-            content_text = ""
             prompt_tokens = 0
             completion_tokens = 0
             choices = []
-            finish_reason = "stop"
 
             if raw_response and "choices" in raw_response and raw_response["choices"]:
                 for c in raw_response["choices"]:

@@ -56,8 +56,6 @@ async def analysis_node(state: AgentState, config: Any) -> Dict[str, Any]:
         return None
 
     try:
-        results = []
-
         sc = _call_tool_if_exists("search_code", query=task, workdir=working_dir)
         if sc:
             results_data = sc.get("results") if isinstance(sc, dict) else sc
@@ -653,8 +651,8 @@ async def planning_node(state: AgentState, config: Any) -> Dict[str, Any]:
 
         if plan_lines:
             steps = []
-            for l in plan_lines:
-                steps.append({"description": l, "action": None})
+            for plan_line in plan_lines:
+                steps.append({"description": plan_line, "action": None})
             return {"current_plan": steps, "current_step": 0}
     except Exception:
         pass
@@ -817,7 +815,7 @@ Generate the appropriate tool call to complete this step. Respond with ONLY a to
 
     # Loop Prevention: Check for repeated tool calls
     if orchestrator and hasattr(orchestrator, "_check_loop_prevention"):
-        trace_before = orchestrator._read_execution_trace()
+        orchestrator._read_execution_trace()  # Load trace for loop detection
         loop_detected = orchestrator._check_loop_prevention(tool_name, args)
         if loop_detected:
             loop_msg = "[LOOP DETECTED] Repeated tool calls blocked; consider alternate strategy."
@@ -967,12 +965,10 @@ async def verification_node(state: AgentState, config: Any) -> Dict[str, Any]:
     import logging
 
     logger = logging.getLogger(__name__)
-    orchestrator = config.get("configurable", {}).get("orchestrator")
 
     # Decide whether verification is needed
     last_result = state.get("last_result") or {}
     need_verify = False
-    verification_type = None
 
     # Check if last action was a deletion
     if isinstance(last_result, dict):
@@ -1015,7 +1011,6 @@ async def verification_node(state: AgentState, config: Any) -> Dict[str, Any]:
             r = last_result.get("result") or {}
             if isinstance(r, dict) and r.get("status") == "ok" and r.get("path"):
                 need_verify = True
-                verification_type = "edit"
     except Exception:
         pass
 
@@ -1041,7 +1036,7 @@ async def memory_update_node(state: AgentState, config: Any) -> Dict[str, Any]:
     import logging
 
     logger = logging.getLogger(__name__)
-    orchestrator = config.get("configurable", {}).get("orchestrator")
+    config.get("configurable", {}).get("orchestrator")  # Available for future use
     try:
         history_len = len(state.get("history", []))
         working_dir = state.get("working_dir", "unknown")
@@ -1050,7 +1045,7 @@ async def memory_update_node(state: AgentState, config: Any) -> Dict[str, Any]:
         )
         # Trigger distillation to sync TASK_STATE.md
         distill_context(state["history"], working_dir=Path(state["working_dir"]))
-        logger.info(f"memory_update_node: distillation complete")
+        logger.info("memory_update_node: distillation complete")
     except Exception as e:
         logger.error(f"memory_update_node: distillation failed: {e}")
     return {}

@@ -3,9 +3,8 @@ import ast
 import hashlib
 import json
 import logging
-import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional
 from datetime import datetime
 
 logger = logging.getLogger(__name__)

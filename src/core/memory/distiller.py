@@ -48,7 +48,7 @@ User: Here are the recent messages:
     distilled_state = {}
 
     # Disable thinking for faster distillation
-    extra_params: Dict[str, Any] = {}
+    # (extra_params reserved for future use)
 
     try:
         import asyncio
@@ -146,7 +146,9 @@ User: Here are the recent messages:
                 mem_path.write_text(json.dumps(repo_memory, indent=2))
                 # Build a lightweight file summary cache for large files to speed prompt building
                 try:
-                    summary_path = working_dir / ".agent-context" / "file_summaries.json"
+                    summary_path = (
+                        working_dir / ".agent-context" / "file_summaries.json"
+                    )
                     summaries = {}
                     for fdata in repo_index.get("files", []):
                         p = working_dir / fdata.get("path")
@@ -156,14 +158,18 @@ User: Here are the recent messages:
                                 lines = text.splitlines()
                                 if len(lines) > 200:
                                     # keep head and tail
-                                    summary = "\n".join(lines[:10] + ["[...skipped...]"] + lines[-10:])
+                                    summary = "\n".join(
+                                        lines[:10] + ["[...skipped...]"] + lines[-10:]
+                                    )
                                 else:
                                     summary = "\n".join(lines[:200])
                                 summaries[str(fdata.get("path"))] = summary
                             except Exception:
                                 continue
                     try:
-                        summary_path.write_text(json.dumps(summaries, indent=2), encoding="utf-8")
+                        summary_path.write_text(
+                            json.dumps(summaries, indent=2), encoding="utf-8"
+                        )
                     except Exception:
                         pass
                 except Exception:

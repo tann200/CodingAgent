@@ -2,9 +2,6 @@
 Automatic Repo Summary - Generates quick overview of repository structure.
 """
 
-import json
-import os
-import re
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 
@@ -15,10 +12,8 @@ def detect_framework(workdir: str) -> Optional[str]:
 
     # Check for common frameworks
     framework_indicators = {
-        "FastAPI": ["from fastapi import", "FastAPI()"],
+        "FastAPI": ["from fastapi import", "FastAPI()", "uvicorn"],
         "Flask": ["from flask import", "Flask("],
-        "Django": ["from django", "manage.py"],
-        "FastAPI": ["uvicorn"],
         "Express": ["express()", "require('express')"],
         "React": ["import React", "create-react-app"],
         "Vue": ["import Vue", "createApp("],

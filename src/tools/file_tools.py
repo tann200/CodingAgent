@@ -233,7 +233,7 @@ def bash(command: str, workdir: Path = DEFAULT_WORKDIR) -> Dict[str, Any]:
     if any(p in command for p in DANGEROUS_PATTERNS):
         return {
             "status": "error",
-            "error": f"Command contains dangerous pattern. No shell operators allowed.",
+            "error": "Command contains dangerous pattern. No shell operators allowed.",
         }
 
     try:
@@ -264,7 +264,6 @@ def bash(command: str, workdir: Path = DEFAULT_WORKDIR) -> Dict[str, Any]:
 
 def glob(pattern: str, workdir: Path = DEFAULT_WORKDIR) -> Dict[str, Any]:
     """Find files matching a glob pattern."""
-    import fnmatch
 
     try:
         matches = []

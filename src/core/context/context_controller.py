@@ -5,8 +5,7 @@ This is critical for local LLM agents which have limited context windows.
 """
 
 import re
-from pathlib import Path
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Tuple
 
 
 class ContextController:

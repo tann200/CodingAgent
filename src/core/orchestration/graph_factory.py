@@ -1,4 +1,4 @@
-from typing import Dict, Any, Optional, Callable
+from typing import Dict, Any, Optional
 from langgraph.graph import StateGraph, END
 from langchain_core.runnables import RunnableConfig
 from src.core.orchestration.graph.state import AgentState

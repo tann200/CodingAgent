@@ -39,7 +39,6 @@ if TYPE_CHECKING:
 
 # Try to dynamically import Textual so static analyzers won't error when it's absent.
 TEXTUAL_AVAILABLE: bool = False
-from typing import Any
 
 App: Any = object  # fallback
 Container: Any = None

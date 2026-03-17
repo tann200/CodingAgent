@@ -106,7 +106,6 @@ def summarize_structure(
         file_count = 0
         dir_count = 0
         total_size = 0
-        entries = []
         for p in root.rglob("*"):
             try:
                 if p.is_dir():
@@ -140,7 +139,7 @@ def summarize_structure(
         return {"error": str(e)}
 
 
-def summarize_structure(workdir: Any = None) -> Dict[str, Any]:
+def summarize_structure_detailed(workdir: Any = None) -> Dict[str, Any]:
     """Provide a high-level summary of the workspace structure."""
     if workdir is None:
         workdir = Path.cwd()
