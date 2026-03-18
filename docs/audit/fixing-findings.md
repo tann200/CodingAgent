@@ -1490,7 +1490,7 @@ extend it).
 | 4.1 | ContextController | LOW | ✅ Done | Wired as Phase 3 of `analysis_node.py`; bug in `get_relevant_snippets` also fixed |
 | 4.2 | Hub-and-spoke multi-agent | LOW | ✅ Done | Verified already wired via `subagent_tools.py`; doc corrected |
 | 4.3 | Vector store semantic search | HIGH | ✅ Done | Bug fixed: `top_k` → `limit`; `sg.update()` → `sg.update_file()` |
-| 4.4 | Plan persistence | MEDIUM | ✅ Done | Verified `SessionStore.add_plan()` already implemented |
+| 4.4 | Plan persistence | MEDIUM | ✅ Done | `planning_node.py` - saves/loads `last_plan.json` |
 
 ---
 

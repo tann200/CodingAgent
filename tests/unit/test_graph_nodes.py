@@ -379,3 +379,113 @@ class TestPlanValidatorNode:
 
         # Valid plan should pass
         assert result.get("action_failed") is False
+
+
+class TestPlanPersistence:
+    """Tests for plan persistence between sessions."""
+
+    def test_get_last_plan_path(self, tmp_path):
+        """Test _get_last_plan_path returns correct path."""
+        from src.core.orchestration.graph.nodes.planning_node import _get_last_plan_path
+
+        path = _get_last_plan_path(str(tmp_path))
+        assert ".agent-context" in str(path)
+        assert "last_plan.json" in str(path)
+
+    def test_save_and_load_last_plan(self, tmp_path):
+        """Test saving and loading a plan from JSON file."""
+        from src.core.orchestration.graph.nodes.planning_node import (
+            _save_last_plan,
+            _load_last_plan,
+        )
+
+        plan = [
+            {"description": "Step 1", "action": None},
+            {"description": "Step 2", "action": None},
+        ]
+        task = "Test task"
+        step = 0
+
+        # Save plan
+        _save_last_plan(str(tmp_path), plan, task, step)
+
+        # Load plan
+        loaded = _load_last_plan(str(tmp_path))
+
+        assert loaded["plan"] == plan
+        assert loaded["task"] == task
+        assert loaded["current_step"] == step
+
+    def test_load_nonexistent_plan(self, tmp_path):
+        """Test loading a plan when file doesn't exist returns empty dict."""
+        from src.core.orchestration.graph.nodes.planning_node import _load_last_plan
+
+        loaded = _load_last_plan(str(tmp_path))
+        assert loaded == {}
+
+    def test_load_last_plan_invalid_json(self, tmp_path, monkeypatch):
+        """Test loading invalid JSON returns empty dict."""
+        from src.core.orchestration.graph.nodes.planning_node import _load_last_plan
+
+        # Create an invalid JSON file
+        plan_path = tmp_path / ".agent-context" / "last_plan.json"
+        plan_path.parent.mkdir(parents=True, exist_ok=True)
+        plan_path.write_text("not valid json")
+
+        loaded = _load_last_plan(str(tmp_path))
+        assert loaded == {}
+
+    @pytest.mark.asyncio
+    async def test_planning_node_saves_plan(self, tmp_path):
+        """Test planning_node saves plan to file."""
+        from src.core.orchestration.graph.nodes.planning_node import (
+            planning_node,
+            _get_last_plan_path,
+        )
+
+        state = _make_state(
+            task="Simple test task",
+            working_dir=str(tmp_path),
+            next_action="read_file",
+            current_plan=[],
+        )
+        config = {"configurable": {"orchestrator": MagicMock()}}
+
+        result = await planning_node(state, config)
+
+        # Check that a plan was created
+        assert result.get("current_plan") is not None
+        assert len(result.get("current_plan", [])) > 0
+
+        # Check that the plan was saved to file
+        plan_path = _get_last_plan_path(str(tmp_path))
+        assert plan_path.exists()
+
+    @pytest.mark.asyncio
+    async def test_planning_node_loads_existing_plan(self, tmp_path):
+        """Test planning_node loads existing plan from file."""
+        from src.core.orchestration.graph.nodes.planning_node import (
+            planning_node,
+            _save_last_plan,
+        )
+
+        # Pre-save a plan
+        saved_plan = [
+            {"description": "Saved step 1", "action": None},
+            {"description": "Saved step 2", "action": None},
+        ]
+        _save_last_plan(str(tmp_path), saved_plan, "Previous task", 0)
+
+        # Now run planning with empty plan
+        state = _make_state(
+            task="Previous task",  # Same task as saved
+            working_dir=str(tmp_path),
+            current_plan=[],  # Empty plan should trigger loading
+        )
+        config = {"configurable": {"orchestrator": MagicMock()}}
+
+        result = await planning_node(state, config)
+
+        # Check that the plan was resumed
+        assert result.get("current_plan") == saved_plan
+        assert result.get("plan_resumed") is True

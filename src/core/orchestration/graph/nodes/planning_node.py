@@ -1,5 +1,7 @@
 import asyncio
+import json
 import logging
+from pathlib import Path
 from typing import Dict, Any
 
 from src.core.orchestration.graph.state import AgentState
@@ -9,6 +11,43 @@ from src.core.orchestration.graph.nodes.node_utils import _resolve_orchestrator
 from src.core.orchestration.agent_brain import get_agent_brain_manager
 
 logger = logging.getLogger(__name__)
+
+
+def _get_last_plan_path(workdir: str) -> Path:
+    """Get the path to the last plan JSON file."""
+    return Path(workdir) / ".agent-context" / "last_plan.json"
+
+
+def _load_last_plan(workdir: str) -> Dict[str, Any]:
+    """Load the last plan from JSON file if it exists."""
+    plan_path = _get_last_plan_path(workdir)
+    if plan_path.exists():
+        try:
+            data = json.loads(plan_path.read_text())
+            logger.info(f"planning_node: loaded last plan from {plan_path}")
+            return data
+        except Exception as e:
+            logger.warning(f"planning_node: failed to load last plan: {e}")
+    return {}
+
+
+def _save_last_plan(workdir: str, plan: list, task: str, step: int = 0) -> None:
+    """Save the current plan to JSON file for cross-session persistence."""
+    from datetime import datetime
+
+    plan_path = _get_last_plan_path(workdir)
+    try:
+        plan_path.parent.mkdir(parents=True, exist_ok=True)
+        data = {
+            "plan": plan,
+            "task": task,
+            "current_step": step,
+            "saved_at": datetime.now().isoformat(),
+        }
+        plan_path.write_text(json.dumps(data, indent=2))
+        logger.info(f"planning_node: saved plan to {plan_path}")
+    except Exception as e:
+        logger.warning(f"planning_node: failed to save last plan: {e}")
 
 
 async def planning_node(state: AgentState, config: Any) -> Dict[str, Any]:
@@ -41,8 +80,33 @@ async def planning_node(state: AgentState, config: Any) -> Dict[str, Any]:
     # Treat state as a plain dict for flexible lookups
     s = dict(state)
 
-    # If the perception already provided a next_action, try to build a simple plan
+    # 4.4: Cross-session plan persistence - Load last plan if current is empty
+    working_dir = s.get("working_dir", ".")
+    current_plan = s.get("current_plan")
+    current_step = s.get("current_step", 0)
     task = str(s.get("task") or "")
+
+    if not isinstance(current_plan, list) or len(current_plan) == 0:
+        # Try to load from last_plan.json
+        last_plan_data = _load_last_plan(working_dir)
+        if last_plan_data and last_plan_data.get("plan"):
+            loaded_plan = last_plan_data["plan"]
+            loaded_task = last_plan_data.get("task", "")
+            loaded_step = last_plan_data.get("current_step", 0)
+
+            # Check if the loaded plan is for the same task or if we should resume
+            if loaded_plan and (loaded_task == task or not task):
+                logger.info(
+                    f"planning_node: resuming from saved plan with {len(loaded_plan)} steps"
+                )
+                return {
+                    "current_plan": loaded_plan,
+                    "current_step": loaded_step,
+                    "task_decomposed": True,
+                    "plan_resumed": True,
+                }
+
+    # If the perception already provided a next_action, try to build a simple plan
 
     # Minimal planner: if next_action exists, make a one-step plan; otherwise ask the LLM
     current_plan = s.get("current_plan")
@@ -75,6 +139,8 @@ async def planning_node(state: AgentState, config: Any) -> Dict[str, Any]:
         }
         current_plan = [step]
         current_step = 0
+        # 4.4: Persist simple plan for cross-session persistence
+        _save_last_plan(working_dir, current_plan, task, current_step)
         return {"current_plan": current_plan, "current_step": current_step}
 
     # Fallback: ask the model for a short plan (non-blocking best effort)
@@ -157,7 +223,12 @@ async def planning_node(state: AgentState, config: Any) -> Dict[str, Any]:
             # Persist plan to session store
             try:
                 import json as _json
-                orchestrator = config.get("configurable", {}).get("orchestrator") if config else None
+
+                orchestrator = (
+                    config.get("configurable", {}).get("orchestrator")
+                    if config
+                    else None
+                )
                 if orchestrator and hasattr(orchestrator, "session_store"):
                     orchestrator.session_store.add_plan(
                         session_id=getattr(orchestrator, "_current_task_id", "unknown"),
@@ -166,6 +237,10 @@ async def planning_node(state: AgentState, config: Any) -> Dict[str, Any]:
                     )
             except Exception:
                 pass  # never block execution
+
+            # 4.4: Persist plan to JSON file for cross-session persistence
+            _save_last_plan(working_dir, steps, task, 0)
+
             return {"current_plan": steps, "current_step": 0}
     except Exception as e:
         logger.error(f"planning_node: plan generation failed: {e}")

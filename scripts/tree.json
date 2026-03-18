@@ -1,5 +1,5 @@
 {
-  "generated": "2026-03-18 00:04:14Z",
+  "generated": "2026-03-18 17:05:27Z",
   "nodes": {
     "docs": {
       "path": "docs",
@@ -11,6 +11,18 @@
     },
     "docs/audit/audit-instructions.md": {
       "path": "docs/audit/audit-instructions.md",
+      "is_dir": false
+    },
+    "docs/audit/audit-report.md": {
+      "path": "docs/audit/audit-report.md",
+      "is_dir": false
+    },
+    "docs/audit/fixes-applied.md": {
+      "path": "docs/audit/fixes-applied.md",
+      "is_dir": false
+    },
+    "docs/audit/fixing-findings.md": {
+      "path": "docs/audit/fixing-findings.md",
       "is_dir": false
     },
     "docs/ARCHITECTURE.md": {
@@ -31,6 +43,14 @@
     },
     "docs/system_map.md": {
       "path": "docs/system_map.md",
+      "is_dir": false
+    },
+    "docs/test-coverage-analysis.md": {
+      "path": "docs/test-coverage-analysis.md",
+      "is_dir": false
+    },
+    "docs/test-plan.md": {
+      "path": "docs/test-plan.md",
       "is_dir": false
     },
     "docs/tuispec.md": {
@@ -137,10 +157,6 @@
       "path": "src",
       "is_dir": true
     },
-    "src/adapters": {
-      "path": "src/adapters",
-      "is_dir": true
-    },
     "src/config": {
       "path": "src/config",
       "is_dir": true
@@ -239,6 +255,14 @@
     },
     "src/core/context/context_controller.py": {
       "path": "src/core/context/context_controller.py",
+      "is_dir": false
+    },
+    "src/core/evaluation": {
+      "path": "src/core/evaluation",
+      "is_dir": true
+    },
+    "src/core/evaluation/scenario_evaluator.py": {
+      "path": "src/core/evaluation/scenario_evaluator.py",
       "is_dir": false
     },
     "src/core/indexing": {
@@ -357,6 +381,10 @@
       "path": "src/core/orchestration/role_config.py",
       "is_dir": false
     },
+    "src/core/orchestration/rollback_manager.py": {
+      "path": "src/core/orchestration/rollback_manager.py",
+      "is_dir": false
+    },
     "src/core/orchestration/sandbox.py": {
       "path": "src/core/orchestration/sandbox.py",
       "is_dir": false
@@ -467,6 +495,10 @@
     },
     "src/tools/state_tools.py": {
       "path": "src/tools/state_tools.py",
+      "is_dir": false
+    },
+    "src/tools/subagent_tools.py": {
+      "path": "src/tools/subagent_tools.py",
       "is_dir": false
     },
     "src/tools/symbol_reader.py": {

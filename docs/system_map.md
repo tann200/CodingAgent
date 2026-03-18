@@ -1,18 +1,23 @@
 # System Map
 
-Generated: 2026-03-18 00:04:14Z
+Generated: 2026-03-18 17:05:27Z
 
 ```text
 Repository: CodingAgent
 
 ├── docs
 │   ├── audit
-│   │   └── audit-instructions.md
+│   │   ├── audit-instructions.md
+│   │   ├── audit-report.md
+│   │   ├── fixes-applied.md
+│   │   └── fixing-findings.md
 │   ├── ARCHITECTURE.md
 │   ├── DEVELOPMENT.md
 │   ├── gap-analysis.md
 │   ├── MEMORY_ARCHITECTURE.md
 │   ├── system_map.md
+│   ├── test-coverage-analysis.md
+│   ├── test-plan.md
 │   └── tuispec.md
 ├── scripts
 │   ├── add_provider.py
@@ -39,7 +44,6 @@ Repository: CodingAgent
 │   ├── validate_ollama.py
 │   └── wait_for_model.py
 ├── src
-│   ├── adapters
 │   ├── config
 │   │   ├── agent-brain
 │   │   │   ├── identity
@@ -65,6 +69,8 @@ Repository: CodingAgent
 │   │   ├── context
 │   │   │   ├── context_builder.py
 │   │   │   └── context_controller.py
+│   │   ├── evaluation
+│   │   │   └── scenario_evaluator.py
 │   │   ├── indexing
 │   │   │   ├── repo_indexer.py
 │   │   │   ├── symbol_graph.py
@@ -95,6 +101,7 @@ Repository: CodingAgent
 │   │   │   ├── message_manager.py
 │   │   │   ├── orchestrator.py
 │   │   │   ├── role_config.py
+│   │   │   ├── rollback_manager.py
 │   │   │   ├── sandbox.py
 │   │   │   ├── schema.json
 │   │   │   ├── tool_contracts.py
@@ -123,6 +130,7 @@ Repository: CodingAgent
 │   │   ├── repo_tools.py
 │   │   ├── role_tools.py
 │   │   ├── state_tools.py
+│   │   ├── subagent_tools.py
 │   │   ├── symbol_reader.py
 │   │   ├── system_tools.py
 │   │   └── verification_tools.py

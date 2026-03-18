@@ -1009,7 +1009,10 @@ class Orchestrator:
 
             try:
                 import signal
-                from functools import wraps
+                import threading
+
+                # signal.SIGALRM only works in the main thread; skip it otherwise
+                in_main_thread = threading.current_thread() is threading.main_thread()
 
                 def timeout_handler(signum, frame):
                     raise TimeoutError(
@@ -1018,14 +1021,14 @@ class Orchestrator:
 
                 # Set timeout alarm for bash commands and long-running tools
                 old_handler = None
-                if timeout_seconds > 0:
+                if timeout_seconds > 0 and in_main_thread:
                     old_handler = signal.signal(signal.SIGALRM, timeout_handler)
                     signal.alarm(timeout_seconds)
 
                 try:
                     res = tool["fn"](**args)
                 finally:
-                    if timeout_seconds > 0 and old_handler is not None:
+                    if timeout_seconds > 0 and in_main_thread and old_handler is not None:
                         signal.alarm(0)
                         signal.signal(signal.SIGALRM, old_handler)
             except TimeoutError as te:
