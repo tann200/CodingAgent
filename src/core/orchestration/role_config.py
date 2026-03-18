@@ -78,7 +78,56 @@ ROLE_CONFIGS: Dict[str, Dict[str, Any]] = {
 }
 
 
+# Canonical roles defined in docs/gap-analysis.md
+CANONICAL_ROLES = ["analyst", "strategic", "operational", "reviewer", "debugger"]
+
+# Map legacy/alternate role names to canonical roles
+ROLE_ALIASES = {
+    "planner": "strategic",
+    "plan": "strategic",
+    "planning": "strategic",
+    "coder": "operational",
+    "developer": "operational",
+    "coding": "operational",
+    "researcher": "analyst",
+    "analysis": "analyst",
+    "review": "reviewer",
+    "audit": "reviewer",
+    "debug": "debugger",
+}
+
+# Build canonical role configs by mapping existing ROLE_CONFIGS entries
+CANONICAL_ROLE_CONFIGS: Dict[str, Dict[str, Any]] = {
+    "strategic": ROLE_CONFIGS.get("planner", {}),
+    "operational": ROLE_CONFIGS.get("coder", {}),
+    "reviewer": ROLE_CONFIGS.get("reviewer", {}),
+    "analyst": ROLE_CONFIGS.get("researcher", {}),
+    # debugger may not exist yet in ROLE_CONFIGS; provide a minimal placeholder
+    "debugger": ROLE_CONFIGS.get("researcher", {}),
+}
+
+
+def normalize_role(role: str) -> str:
+    """Normalize input role name to canonical role name.
+
+    If the provided role is already canonical, return it. Otherwise map via
+    ROLE_ALIASES. Default fallback is 'operational'.
+    """
+    if not role:
+        return "operational"
+    r = role.strip().lower()
+    if r in CANONICAL_ROLES:
+        return r
+    return ROLE_ALIASES.get(r, "operational")
+
+
 def get_role_config(role: str) -> Optional[Dict[str, Any]]:
+    # normalize to canonical and return canonical config if available
+    canonical = normalize_role(role)
+    cfg = CANONICAL_ROLE_CONFIGS.get(canonical)
+    if cfg:
+        return cfg
+    # fallback to legacy ROLE_CONFIGS if direct key was provided
     return ROLE_CONFIGS.get(role)
 
 
@@ -114,7 +163,20 @@ def is_tool_allowed_for_role(tool_name: str, role: str) -> bool:
 
 
 def list_roles() -> List[str]:
-    return list(ROLE_CONFIGS.keys())
+    """Return canonical roles to avoid overlaps in role naming."""
+    return list(CANONICAL_ROLES)
+
+
+def map_role_strict(role: str) -> Optional[str]:
+    """Map role to canonical if it is known or an alias; return None if unknown."""
+    if not role:
+        return None
+    r = role.strip().lower()
+    if r in CANONICAL_ROLES:
+        return r
+    if r in ROLE_ALIASES:
+        return ROLE_ALIASES[r]
+    return None
 
 
 class RoleManager:
@@ -123,10 +185,14 @@ class RoleManager:
         self._role_history: List[Dict[str, Any]] = []
 
     def set_role(self, role: str) -> bool:
-        if role not in ROLE_CONFIGS:
+        # use strict mapping here: unknown role strings should fail
+        canonical = map_role_strict(role)
+        if canonical is None:
             return False
-        self._current_role = role
-        self._role_history.append({"role": role})
+        if canonical not in CANONICAL_ROLES:
+            return False
+        self._current_role = canonical
+        self._role_history.append({"role": canonical})
         return True
 
     def get_current_role(self) -> Optional[str]:
@@ -134,7 +200,7 @@ class RoleManager:
 
     def get_role_config(self) -> Optional[Dict[str, Any]]:
         if self._current_role:
-            return ROLE_CONFIGS.get(self._current_role)
+            return CANONICAL_ROLE_CONFIGS.get(self._current_role)
         return None
 
     def get_allowed_tools(self) -> List[str]:

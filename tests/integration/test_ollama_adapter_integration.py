@@ -1,7 +1,7 @@
 import os
 import unittest
 from unittest.mock import patch, MagicMock
-from src.adapters.ollama_adapter import OllamaAdapter
+from src.core.inference.adapters.ollama_adapter import OllamaAdapter
 
 class IntegrationTestOllamaAdapter(unittest.TestCase):
     def setUp(self):

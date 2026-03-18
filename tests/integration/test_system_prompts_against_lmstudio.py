@@ -2,7 +2,7 @@ import os
 import json
 from pathlib import Path
 import pytest
-from src.adapters.lm_studio_adapter import LmStudioAdapter
+from src.core.inference.adapters.lm_studio_adapter import LmStudioAdapter
 
 # Mark as LMStudio integration
 pytestmark = pytest.mark.lmstudio

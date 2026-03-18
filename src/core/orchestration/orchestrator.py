@@ -22,27 +22,33 @@ try:
     _pyd = importlib.import_module("pydantic")
     PydValidationError = getattr(_pyd, "ValidationError")
 except Exception:
+
     class PydValidationError(Exception):
         """Fallback ValidationError when pydantic is not installed."""
+
         pass
+
 
 # Keep the name `ValidationError` for backward compatibility across the module
 ValidationError = PydValidationError
 
 # Import tool_contracts defensively; many CI/test environments may omit heavy deps
+# Using try/except to handle both environments gracefully
 try:
-    from src.core.orchestration.tool_contracts import get_tool_contract, ToolContract
-except Exception:
-    def get_tool_contract(name: str):
+    from src.core.orchestration.tool_contracts import get_tool_contract
+    from src.core.orchestration.tool_contracts import ToolContract
+except ImportError:
+    # Fallback no-op implementations for environments without pydantic
+    def get_tool_contract(name: str) -> Any:
         return None
 
     class ToolContract:
         @staticmethod
-        def model_validate(x):
-            # No-op validation in fallback mode
-            return x
+        def model_validate(obj: Any) -> Any:
+            return obj
 
-from src.core.llm_manager import (
+
+from src.core.inference.llm_manager import (
     get_provider_manager,
     _ensure_provider_manager_initialized_sync,
 )
@@ -761,6 +767,21 @@ class Orchestrator:
 
         return {"ok": True}
 
+    def _get_tool_timeout(self, tool_name: str) -> int:
+        """Get timeout in seconds for a tool. T9: Tool Timeout Protection."""
+        timeout_map = {
+            "bash": 60,
+            "run_tests": 120,
+            "run_linter": 60,
+            "syntax_check": 30,
+            "search_code": 30,
+            "grep": 30,
+            "find_symbol": 30,
+            "list_files": 10,
+            "glob": 10,
+        }
+        return timeout_map.get(tool_name, 30)
+
     def _normalize_tool_result(self, res: Any) -> Dict[str, Any]:
         """Ensure tool results conform to a minimal contract.
         Accepts various return shapes and normalizes to a dict with either 'status' or 'ok'."""
@@ -777,6 +798,15 @@ class Orchestrator:
             return {"ok": False, "error": "Tool name must be a string."}
         name = name_raw
         args = tool_call.get("arguments", {})
+
+        # Publish tool.execute.start event for UI dashboard
+        try:
+            self.event_bus.publish(
+                "tool.execute.start",
+                {"tool": name, "args": args, "workdir": str(self.working_dir)},
+            )
+        except Exception:
+            pass
 
         # Hard Rule Enforcement: Read before Edit
         path_arg = args.get("path") or args.get("file_path")
@@ -830,7 +860,13 @@ class Orchestrator:
                                 "error": f"Sandbox validation error: {ast_result.get('error')}",
                             }
                 except Exception as e:
-                    guilogger.warning(f"Sandbox validation failed: {e}")
+                    # Phase 1.2: Fail-closed - do not allow writes if validation fails
+                    guilogger.error(f"Sandbox validation failed (fail-closed): {e}")
+                    return {
+                        "ok": False,
+                        "error": f"Sandbox validation aborted: {str(e)}. "
+                        f"Write operation blocked for safety.",
+                    }
 
             # Track files read for read-before-edit enforcement
             if name == "read_file" and path_arg:
@@ -840,7 +876,38 @@ class Orchestrator:
                 except Exception:
                     pass
 
-            res = tool["fn"](**args)
+            # T9: Tool Timeout Protection
+            timeout_seconds = self._get_tool_timeout(name)
+
+            try:
+                import signal
+                from functools import wraps
+
+                def timeout_handler(signum, frame):
+                    raise TimeoutError(
+                        f"Tool '{name}' timed out after {timeout_seconds} seconds"
+                    )
+
+                # Set timeout alarm for bash commands and long-running tools
+                old_handler = None
+                if timeout_seconds > 0:
+                    old_handler = signal.signal(signal.SIGALRM, timeout_handler)
+                    signal.alarm(timeout_seconds)
+
+                try:
+                    res = tool["fn"](**args)
+                finally:
+                    if timeout_seconds > 0 and old_handler is not None:
+                        signal.alarm(0)
+                        signal.signal(signal.SIGALRM, old_handler)
+            except TimeoutError as te:
+                guilogger.warning(f"Tool '{name}' timed out after {timeout_seconds}s")
+                return {
+                    "ok": False,
+                    "error": f"Tool execution timed out after {timeout_seconds} seconds. "
+                    f"Consider breaking down the task into smaller steps.",
+                }
+
             # Normalize the result to a dict contract
             res = self._normalize_tool_result(res)
 
@@ -862,7 +929,6 @@ class Orchestrator:
 
             # Validate tool contract if registered. If validation fails, return an error to the caller.
             try:
-
                 schema = get_tool_contract(name)
                 if schema and isinstance(res, dict):
                     # schema is a pydantic model class; validate either full res or res.get('result')
@@ -947,6 +1013,36 @@ class Orchestrator:
                             (Path(self.working_dir) / path_arg).resolve()
                         )
                         self._session_modified_files.add(resolved_path)
+                        # Publish file.modified event for UI dashboard
+                        try:
+                            self.event_bus.publish(
+                                "file.modified",
+                                {
+                                    "path": resolved_path,
+                                    "tool": name,
+                                    "workdir": str(self.working_dir),
+                                },
+                            )
+                        except Exception:
+                            pass
+                    except Exception:
+                        pass
+                elif name == "delete_file" and path_arg:
+                    try:
+                        resolved_path = str(
+                            (Path(self.working_dir) / path_arg).resolve()
+                        )
+                        # Publish file.deleted event for UI dashboard
+                        try:
+                            self.event_bus.publish(
+                                "file.deleted",
+                                {
+                                    "path": resolved_path,
+                                    "workdir": str(self.working_dir),
+                                },
+                            )
+                        except Exception:
+                            pass
                     except Exception:
                         pass
 
@@ -958,7 +1054,9 @@ class Orchestrator:
                     "tool": name,
                     "args": self._normalize_args(args),
                     "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                    "result_ok": bool(res.get("status") == "ok" or res.get("ok") is True),
+                    "result_ok": bool(
+                        res.get("status") == "ok" or res.get("ok") is True
+                    ),
                 }
                 try:
                     self._append_execution_trace(entry)
@@ -967,8 +1065,25 @@ class Orchestrator:
             except Exception:
                 pass
 
+            # Publish tool.execute.finish event for UI dashboard
+            try:
+                self.event_bus.publish(
+                    "tool.execute.finish",
+                    {"tool": name, "ok": True, "workdir": str(self.working_dir)},
+                )
+            except Exception:
+                pass
+
             return {"ok": True, "result": res}
         except Exception as e:
+            # Publish tool.execute.error event for UI dashboard
+            try:
+                self.event_bus.publish(
+                    "tool.execute.error",
+                    {"tool": name, "error": str(e), "workdir": str(self.working_dir)},
+                )
+            except Exception:
+                pass
             return {"ok": False, "error": str(e)}
 
     def _read_execution_trace(self) -> list:
@@ -1005,10 +1120,14 @@ class Orchestrator:
             for e in recent:
                 # Compare normalized args
                 try:
-                    if e.get("tool") == entry.get("tool") and e.get("args") == self._normalize_args(entry.get("args")):
+                    if e.get("tool") == entry.get("tool") and e.get(
+                        "args"
+                    ) == self._normalize_args(entry.get("args")):
                         count += 1
                 except Exception:
-                    if e.get("tool") == entry.get("tool") and e.get("args") == entry.get("args"):
+                    if e.get("tool") == entry.get("tool") and e.get(
+                        "args"
+                    ) == entry.get("args"):
                         count += 1
             entry["retries"] = count
             # Ensure stored args are normalized
@@ -1089,7 +1208,9 @@ class Orchestrator:
         exact_count = 0
         for entry in recent_entries:
             try:
-                if entry.get("tool") == tool_name and entry.get("args") == self._normalize_args(tool_args):
+                if entry.get("tool") == tool_name and entry.get(
+                    "args"
+                ) == self._normalize_args(tool_args):
                     exact_count += 1
             except Exception:
                 continue
@@ -1193,6 +1314,9 @@ class Orchestrator:
         """
         Invokes the LangGraph cognitive pipeline to execute the task.
         """
+        # Store cancel_event on orchestrator instance so nodes can access it via getattr
+        self.cancel_event = cancel_event
+
         # Check if canceled before starting
         if cancel_event and hasattr(cancel_event, "is_set") and cancel_event.is_set():
             return {
@@ -1247,6 +1371,8 @@ class Orchestrator:
             "deterministic": getattr(self, "deterministic", False),
             "cancel_event": cancel_event,
             "seed": getattr(self, "seed", None),
+            # infinite loop prevention
+            "empty_response_count": 0,
             # analysis phase
             "analysis_summary": None,
             "relevant_files": [],
@@ -1271,8 +1397,6 @@ class Orchestrator:
 
         # 2. Compile and Run Graph
         graph = compile_agent_graph()
-
-
 
         guilogger.info(f"run_agent_once: starting with task: {prompt[:80]}")
 
@@ -1333,18 +1457,43 @@ class Orchestrator:
                 ]
                 last_assistant = assistant_msgs[-1] if assistant_msgs else ""
 
-                # If the last assistant message does not contain a tool block (no further action expected), stop
+                # Determine whether the assistant suggested a tool that still needs execution.
+                # If the assistant message contains a tool block but a 'tool' role entry with
+                # execution results exists after that assistant message, consider it handled.
                 try:
                     from src.core.orchestration.tool_parser import (
                         parse_tool_block as _parse_tool_block,
                     )
 
-                    has_tool = True if _parse_tool_block(last_assistant) else False
+                    has_tool_block = (
+                        True if _parse_tool_block(last_assistant) else False
+                    )
                 except Exception:
-                    has_tool = False
+                    has_tool_block = False
 
-                # If no tool was suggested, we're done; otherwise prepare next_state as input for the next round
-                if not has_tool:
+                # Find index of last assistant message in the full history
+                history = final_state.get("history", [])
+                last_assistant_idx = None
+                for idx in range(len(history) - 1, -1, -1):
+                    if (
+                        history[idx].get("role") == "assistant"
+                        and history[idx].get("content") == last_assistant
+                    ):
+                        last_assistant_idx = idx
+                        break
+
+                handled = False
+                if last_assistant_idx is not None:
+                    # Check if there's a 'tool' entry after this assistant msg
+                    for later in history[last_assistant_idx + 1 :]:
+                        if later.get("role") == "tool" and "tool_execution_result" in (
+                            later.get("content") or ""
+                        ):
+                            handled = True
+                            break
+
+                # If there's no unhandled tool block, we're done
+                if not has_tool_block or handled:
                     break
 
                 # Prepare next iteration: feed the graph with the new history and verified reads
@@ -1392,11 +1541,14 @@ class Orchestrator:
                 )
 
             # 3. Synchronize MessageManager with graph history
-            # The graph history contains the new turns
+            # The graph history contains new turns added by nodes via operator.add reducer
             if final_state and "history" in final_state:
-                new_turns = final_state["history"][len(self.msg_mgr.messages) :]
-                for turn in new_turns:
-                    self.msg_mgr.append(turn["role"], turn["content"])
+                # Only append messages that are new since last sync
+                msg_count_before = len(self.msg_mgr.messages)
+                if len(final_state["history"]) > msg_count_before:
+                    new_turns = final_state["history"][msg_count_before:]
+                    for turn in new_turns:
+                        self.msg_mgr.append(turn["role"], turn["content"])
 
             # Update session tracking
             if final_state:
@@ -1440,7 +1592,7 @@ class Orchestrator:
             self.msg_mgr.append("user", f"Error during tool execution: {e}")
             # Fallback: attempt to call the LLM directly (synchronous) to produce an assistant message
             try:
-                from src.core.llm_manager import call_model
+                from src.core.inference.llm_manager import call_model
 
                 # Determine provider/model from adapter
                 provider_name = None

@@ -53,7 +53,7 @@ User: Here are the recent messages:
     try:
         import asyncio
         import inspect
-        from src.core.llm_manager import call_model
+        from src.core.inference.llm_manager import call_model
 
         # Call the model; handle both awaitable and synchronous mocks
         try:

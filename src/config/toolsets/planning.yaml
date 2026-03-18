@@ -1,0 +1,14 @@
+name: planning
+description: Toolset for task planning and decomposition
+tools:
+  - read_file
+  - list_files
+  - search_code
+  - find_symbol
+  - find_references
+  - memory_search
+  - analyze_repository
+  - initialize_repo_intelligence
+  - grep
+  - multi_file_summary
+  - batched_file_read

@@ -99,7 +99,10 @@ def test_qwen_compatibility_user_after_system():
 
     # Test 2: Conversation starts with assistant - user should be inserted after system
     conversation = [
-        {"role": "assistant", "content": "<tool>name: bash</tool>"},
+        {
+            "role": "assistant",
+            "content": "```yaml\nname: bash\narguments:\n  command: ls\n```",
+        },
         {"role": "user", "content": "result here"},
     ]
     messages = builder.build_prompt(

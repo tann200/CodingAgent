@@ -6,7 +6,7 @@ This is a non-UI testable controller that will be connected to the real TUI late
 from __future__ import annotations
 
 from typing import List
-from src.core.llm_manager import get_provider_manager
+from src.core.inference.llm_manager import get_provider_manager
 from src.core.orchestration.event_bus import EventBus
 
 

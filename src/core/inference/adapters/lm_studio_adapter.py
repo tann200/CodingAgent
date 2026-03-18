@@ -46,7 +46,7 @@ class LmStudioAdapter(LLMClient):
         if providers_config_path is None:
             try:
                 providers_config_path = str(
-                    Path(__file__).parents[1] / "config" / "providers.json"
+                    Path(__file__).parents[3] / "config" / "providers.json"
                 )
             except Exception:
                 providers_config_path = None
@@ -130,7 +130,7 @@ class LmStudioAdapter(LLMClient):
         # If no provider config was provided, try to load from project's src/config/providers.json
         if not self.provider:
             try:
-                cfg = Path(__file__).parents[1] / "config" / "providers.json"
+                cfg = Path(__file__).parents[3] / "config" / "providers.json"
                 if cfg.exists():
                     raw = json.loads(cfg.read_text(encoding="utf-8"))
                     candidates = raw if isinstance(raw, list) else [raw]

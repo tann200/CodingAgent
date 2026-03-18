@@ -5,20 +5,20 @@ from tests.integration.mocks.deterministic_adapter import DeterministicAdapter
 
 SCENARIOS = {
     "provider_probe": [
-        '<tool>\nname: search_code\nargs: {"query": "ProviderManager"}\n</tool>',
-        '<tool>\nname: read_file\nargs: {"path": "src/core/llm_manager.py"}\n</tool>',
+        "```yaml\nname: search_code\narguments:\n  query: ProviderManager\n```",
+        "```yaml\nname: read_file\narguments:\n  path: src/core/llm_manager.py\n```",
         "I have found and read the ProviderManager.",
     ],
     "fix_syntax": [
-        '<tool>\nname: read_file\nargs: {"path": "src/dummy.py"}\n</tool>',
-        '<tool>\nname: edit_file\nargs: {"path": "src/dummy.py", "patch": "@@ -1 +1 @@\\n- def foo(): pass\\n+ def foo(): return 1\\n"}\n</tool>',
-        "<tool>\nname: run_tests\nargs: {}\n</tool>",
+        "```yaml\nname: read_file\narguments:\n  path: src/dummy.py\n```",
+        '```yaml\nname: edit_file\narguments:\n  path: src/dummy.py\n  patch: "@@ -1 +1 @@\\n- def foo(): pass\\n+ def foo(): return 1\\n"\n```',
+        "```yaml\nname: run_tests\narguments:\n  \n```",
         "I have fixed the syntax and run the tests.",
     ],
     "bash_then_act": [
-        '<tool>\nname: bash\nargs: {"command": "ls -la"}\n</tool>',
-        '<tool>\nname: read_file\nargs: {"path": "src/dummy.py"}\n</tool>',
-        '<tool>\nname: edit_file\nargs: {"path": "src/dummy.py", "patch": "@@ -1 +1 @@\\n- pass\\n+ return True\\n"}\n</tool>',
+        "```yaml\nname: bash\narguments:\n  command: ls -la\n```",
+        "```yaml\nname: read_file\narguments:\n  path: src/dummy.py\n```",
+        '```yaml\nname: edit_file\narguments:\n  path: src/dummy.py\n  patch: "@@ -1 +1 @@\\n- pass\\n+ return True\\n"\n```',
         "I have acted on the bash output.",
     ],
 }

@@ -1,7 +1,7 @@
 from unittest.mock import patch, mock_open
 import json
-from src.adapters.lm_studio_adapter import LmStudioAdapter
-from src.adapters.ollama_adapter import OllamaAdapter
+from src.core.inference.adapters.lm_studio_adapter import LmStudioAdapter
+from src.core.inference.adapters.ollama_adapter import OllamaAdapter
 
 
 def test_lm_studio_adapter_fallback(tmp_path):
@@ -12,7 +12,7 @@ def test_lm_studio_adapter_fallback(tmp_path):
             "name": "lm_studio",
             "base_url": "http://mock-lm-studio:1234",
             "api_key": "mock-key",
-            "models": ["mock/model"]
+            "models": ["mock/model"],
         }
     ]
     providers_path = tmp_path / "providers.json"
@@ -31,7 +31,7 @@ def test_ollama_adapter_fallback(tmp_path):
             "type": "ollama",
             "name": "ollama",
             "base_url": "http://mock-ollama:11434",
-            "models": ["mock-ollama-model"]
+            "models": ["mock-ollama-model"],
         }
     ]
     providers_path = tmp_path / "providers.json"

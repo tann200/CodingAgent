@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 import pytest
 
-from src.adapters.lm_studio_adapter import LmStudioAdapter
+from src.core.inference.adapters.lm_studio_adapter import LmStudioAdapter
 from src.core.orchestration.orchestrator import Orchestrator
 from src.core.orchestration import agent_brain
 

@@ -11,6 +11,10 @@ class MessageManager:
     By default the manager stores messages in a list. When `max_tokens` is provided,
     the manager keeps the total estimated token count of stored messages below that
     threshold by dropping the oldest messages (system messages are preserved when possible).
+
+    CRITICAL LOCAL LLM FIX: When truncating, this manager now drops messages in
+    User/Assistant pairs to prevent breaking the strict alternating role sequences
+    required by local chat templates (like Llama 3 or Qwen).
     """
 
     def __init__(self, max_tokens: Optional[int] = None, event_bus: Optional[Any] = None):
@@ -39,12 +43,7 @@ class MessageManager:
         self.messages.clear()
 
     def set_system_prompt(self, content: str) -> None:
-        """Ensure the first message is a system message with the given content.
-
-        If a system message already exists at the top and its content differs,
-        replace it. Otherwise insert a new system message at the front.
-        This ensures the system prompt is always present or refreshed each run.
-        """
+        """Ensure the first message is a system message with the given content."""
         try:
             if not self.messages:
                 self.messages.insert(0, {"role": "system", "content": content})
@@ -54,14 +53,12 @@ class MessageManager:
                 if first.get("content") != content:
                     self.messages[0] = {"role": "system", "content": content}
             else:
-                # prepend
                 self.messages.insert(0, {"role": "system", "content": content})
         except Exception:
-            # never raise from message manager
             pass
 
     def _estimate_tokens(self, text: str) -> int:
-        """Estimate tokens for a given text. Prefer tiktoken if available; otherwise use a regex proxy."""
+        """Estimate tokens for a given text."""
         if not text:
             return 0
         try:
@@ -93,16 +90,10 @@ class MessageManager:
         return total
 
     def _truncate_to_window(self) -> None:
-        """Drop oldest non-system messages until total tokens <= max_tokens.
-
-        Strategy:
-        - Prefer to preserve the most recent messages.
-        - System messages (role == 'system') are preserved when possible, but if the system messages alone exceed
-          the window, older system messages will be removed last-resort.
-        """
+        """Drop oldest non-system messages until total tokens <= max_tokens."""
         if self.max_tokens is None:
             return
-        # Quick check
+
         before_total = self._total_tokens()
         if before_total <= self.max_tokens:
             return
@@ -110,17 +101,19 @@ class MessageManager:
         kept = list(self.messages)
         dropped_count = 0
         dropped_tokens = 0
-        # Iterate dropping the oldest message until within budget
+
         while kept and before_total > self.max_tokens:
-            # find index of first droppable message (prefer non-system)
+            # Find index of first droppable message (prefer non-system)
             drop_idx = None
             for i, m in enumerate(kept):
                 if m.get("role") != "system":
                     drop_idx = i
                     break
+
             if drop_idx is None:
                 # all remaining are system messages; drop the oldest
                 drop_idx = 0
+
             dropped = kept.pop(drop_idx)
             c = dropped.get("content")
             s = c if isinstance(c, str) else str(c)
@@ -129,15 +122,29 @@ class MessageManager:
             dropped_count += 1
             dropped_tokens += tcount
 
-        # assign truncated list back
+            # FIX: If we just dropped a 'user' message, and the next available
+            # non-system message is 'assistant', we MUST drop it too.
+            # Local models crash if the alternating 'user -> assistant' sequence is broken.
+            if dropped.get("role") == "user" and drop_idx < len(kept):
+                next_msg = kept[drop_idx]
+                if next_msg.get("role") == "assistant" or next_msg.get("role") == "tool":
+                    dropped_assoc = kept.pop(drop_idx)
+                    assoc_c = dropped_assoc.get("content")
+                    assoc_s = assoc_c if isinstance(assoc_c, str) else str(assoc_c)
+                    assoc_tcount = self._estimate_tokens(assoc_s)
+                    before_total -= assoc_tcount
+                    dropped_count += 1
+                    dropped_tokens += assoc_tcount
+
         self.messages = kept
         after_total = before_total
 
-        # Emit telemetry / logging about truncation
         try:
-            logger.info(f"MessageManager.truncate: dropped_count={dropped_count} dropped_tokens={dropped_tokens} tokens_after={after_total}")
+            logger.info(
+                f"MessageManager.truncate: dropped_count={dropped_count} dropped_tokens={dropped_tokens} tokens_after={after_total}")
         except Exception:
             pass
+
         try:
             if self.event_bus and hasattr(self.event_bus, 'publish'):
                 payload = {
@@ -145,10 +152,6 @@ class MessageManager:
                     'dropped_tokens': dropped_tokens,
                     'tokens_after': after_total,
                 }
-                try:
-                    self.event_bus.publish('message.truncation', payload)
-                except Exception:
-                    # don't let event failures break flow
-                    logger.debug('Failed to publish message.truncation event')
+                self.event_bus.publish('message.truncation', payload)
         except Exception:
             pass

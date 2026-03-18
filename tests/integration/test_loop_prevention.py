@@ -7,7 +7,7 @@ def test_loop_prevention(tmp_path):
     # Setup scenario where the model repeats the exact same tool call multiple times
     # Each graph run makes 2 LLM calls (perception + planning), so we need 7 steps
     # to get 3 executions (3rd execution will be blocked by loop prevention)
-    repeated_tool_call = '<tool>\nname: bash\nargs: {"command": "ls -la"}\n</tool>'
+    repeated_tool_call = "```yaml\nname: bash\narguments:\n  command: ls -la\n```"
 
     scenarios = {
         "loop_scenario": [

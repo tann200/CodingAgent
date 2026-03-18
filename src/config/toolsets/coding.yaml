@@ -1,0 +1,22 @@
+name: coding
+description: Toolset for code editing and implementation tasks
+tools:
+  - read_file
+  - write_file
+  - edit_file
+  - edit_by_line_range
+  - delete_file
+  - list_files
+  - glob
+  - search_code
+  - find_symbol
+  - find_references
+  - grep
+  - run_tests
+  - run_linter
+  - syntax_check
+  - apply_patch
+  - generate_patch
+  - get_git_diff
+  - read_file_chunk
+  - batched_file_read

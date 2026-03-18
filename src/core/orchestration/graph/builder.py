@@ -4,16 +4,17 @@ from typing import Literal
 from langgraph.graph import StateGraph, END
 from langchain_core.runnables import RunnableConfig
 from src.core.orchestration.graph.state import AgentState
-from src.core.orchestration.graph.nodes.workflow_nodes import (
-    perception_node,
-    execution_node,
-    memory_update_node,
-    planning_node,
-    verification_node,
-    analysis_node,
-    debug_node,
-    step_controller_node,
-)
+from src.core.orchestration.graph.nodes.perception_node import perception_node
+from src.core.orchestration.graph.nodes.analysis_node import analysis_node
+from src.core.orchestration.graph.nodes.planning_node import planning_node
+from src.core.orchestration.graph.nodes.plan_validator_node import plan_validator_node
+from src.core.orchestration.graph.nodes.execution_node import execution_node
+from src.core.orchestration.graph.nodes.step_controller_node import step_controller_node
+from src.core.orchestration.graph.nodes.verification_node import verification_node
+from src.core.orchestration.graph.nodes.debug_node import debug_node
+from src.core.orchestration.graph.nodes.memory_update_node import memory_update_node
+from src.core.orchestration.graph.nodes.replan_node import replan_node
+from src.core.orchestration.graph.nodes.evaluation_node import evaluation_node
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +51,47 @@ def should_after_planning(
         return "memory_sync"
     logger.info("should_after_planning: returning end (no conditions met)")
     return "end"
+
+
+def should_after_plan_validator(
+    state: AgentState,
+) -> Literal["execute", "perception"]:
+    """
+    Decide routing after plan_validator node.
+    If plan is valid, execute. If plan is invalid, go back to perception.
+    """
+    plan_validation = state.get("plan_validation")
+    action_failed = state.get("action_failed")
+
+    logger.info(
+        f"should_after_plan_validator: validation={plan_validation}, action_failed={action_failed}"
+    )
+
+    if action_failed or not plan_validation or not plan_validation.get("valid", False):
+        logger.info("should_after_plan_validator: plan invalid, going to perception")
+        return "perception"
+
+    logger.info("should_after_plan_validator: plan valid, executing")
+    return "execute"
+
+
+def route_after_perception(state: AgentState) -> Literal["execution", "analysis"]:
+    """
+    Phase 2.1: Fast-Path Routing
+    If perception already generated a valid tool call (next_action), skip heavy
+    analysis and planning and go directly to execution.
+
+    This prevents over-engineering simple 1-step tasks that just need a quick tool call.
+    """
+    next_action = state.get("next_action")
+    logger.info(f"route_after_perception: next_action={next_action is not None}")
+
+    if next_action:
+        logger.info("route_after_perception: Fast-path - going directly to execution")
+        return "execution"
+
+    logger.info("route_after_perception: Standard path - going to analysis")
+    return "analysis"
 
 
 def should_after_execution(
@@ -101,6 +143,24 @@ def should_after_execution(
     # No plan - go back to perception to generate next action
     logger.info("should_after_execution: no plan, going to perception")
     return "perception"
+
+
+def should_after_execution_with_replan(
+    state: AgentState,
+) -> Literal["perception", "execution", "verification", "replan"]:
+    """
+    Decide routing after execution node with replan support.
+    If replan_required is set, route to replan_node.
+    Otherwise use standard execution routing.
+    """
+    replan_required = state.get("replan_required")
+    if replan_required:
+        logger.info(
+            f"should_after_execution_with_replan: replan required - {replan_required}"
+        )
+        return "replan"
+
+    return should_after_execution(state)
 
 
 def should_after_verification(
@@ -171,6 +231,50 @@ def should_after_debug(
 
     logger.info("should_after_debug: no fix generated, ending")
     return "end"
+
+
+def should_after_replan(
+    state: AgentState,
+) -> Literal["step_controller", "perception"]:
+    """
+    Decide routing after replan node.
+    After splitting oversized steps, go back to step_controller to execute the new smaller steps.
+    """
+    replan_required = state.get("replan_required")
+    if replan_required:
+        # Replan still has an issue, go to perception for help
+        logger.info("should_after_replan: replan still required, going to perception")
+        return "perception"
+
+    # Replan successful, continue with step controller
+    logger.info("should_after_replan: replan complete, going to step_controller")
+    return "step_controller"
+
+
+def should_after_evaluation(
+    state: AgentState,
+) -> Literal["memory_sync", "step_controller", "end"]:
+    """
+    Decide routing after evaluation node.
+    If task is complete, go to memory_sync.
+    If more work needed, go to step_controller.
+    Otherwise end.
+    """
+    evaluation_result = state.get("evaluation_result", "complete")
+
+    logger.info(f"should_after_evaluation: result={evaluation_result}")
+
+    if evaluation_result == "complete":
+        logger.info("should_after_evaluation: task complete, going to memory_sync")
+        return "memory_sync"
+    elif evaluation_result == "replan":
+        logger.info(
+            "should_after_evaluation: more work needed, going to step_controller"
+        )
+        return "step_controller"
+    else:
+        logger.info("should_after_evaluation: ending task")
+        return "end"
 
 
 def should_after_step_controller(
@@ -271,40 +375,77 @@ def compile_agent_graph():
     async def _memory_sync(state: AgentState, config: RunnableConfig):
         return await memory_update_node(state, config)
 
+    async def _replan(state: AgentState, config: RunnableConfig):
+        return await replan_node(state, config)
+
+    async def _evaluation(state: AgentState, config: RunnableConfig):
+        return await evaluation_node(state, config)
+
+    async def _plan_validator(state: AgentState, config: RunnableConfig):
+        return await plan_validator_node(state, config)
+
     workflow.add_node("perception", _perception)
     workflow.add_node("analysis", _analysis)
     workflow.add_node("planning", _planning)
+    workflow.add_node("plan_validator", _plan_validator)
     workflow.add_node("execution", _execution)
     workflow.add_node("step_controller", _step_controller)
     workflow.add_node("verification", _verification)
     workflow.add_node("debug", _debug)
     workflow.add_node("memory_sync", _memory_sync)
+    workflow.add_node("replan", _replan)
+    workflow.add_node("evaluation", _evaluation)
 
     # 2. Define Flow
     workflow.set_entry_point("perception")
 
-    # perception -> analysis (NEW)
-    workflow.add_edge("perception", "analysis")
+    # Phase 2.1: Fast-Path Routing
+    # If perception generated a tool call, skip analysis/planning and go directly to execution
+    # Otherwise, go through the full cognitive pipeline
+    workflow.add_conditional_edges(
+        "perception",
+        route_after_perception,
+        {"execution": "execution", "analysis": "analysis"},
+    )
 
     # analysis -> planning
     workflow.add_edge("analysis", "planning")
 
-    # After planning decide if we execute, sync memory, or end
+    # planning -> plan_validator (validate plan before execution)
+    workflow.add_edge("planning", "plan_validator")
+
+    # After plan_validator, execute or handle validation failure
     workflow.add_conditional_edges(
-        "planning",
-        should_after_planning,
-        {"execute": "execution", "memory_sync": "memory_sync", "end": END},
+        "plan_validator",
+        should_after_plan_validator,
+        {"execute": "execution", "perception": "perception"},
     )
 
-    # After execution, decide whether to continue with plan or go back to perception or verification
+    # After planning decide if we execute, sync memory, or end
+    # Note: This is now handled by plan_validator
+    # workflow.add_conditional_edges(
+    #     "planning",
+    #     should_after_planning,
+    #     {"execute": "execution", "memory_sync": "memory_sync", "end": END},
+    # )
+
+    # After execution, decide whether to continue with plan, replan, or go back to perception or verification
     workflow.add_conditional_edges(
         "execution",
-        should_after_execution,
+        should_after_execution_with_replan,
         {
             "perception": "perception",
             "execution": "execution",
             "verification": "verification",
+            "replan": "replan",
         },
+    )
+
+    # Replan -> step_controller (to execute new smaller steps)
+    workflow.add_conditional_edges(
+        "replan",
+        should_after_replan,
+        {"step_controller": "step_controller", "perception": "perception"},
     )
 
     # Step controller can still be used for enforcement but not in the main loop
@@ -315,11 +456,19 @@ def compile_agent_graph():
         {"execution": "execution", "verification": "verification"},
     )
 
-    # After verification, branch based on result (NEW)
+    # After verification, go to evaluation for overall state review
+    # Evaluation will check if task is complete or needs more work
+    workflow.add_edge("verification", "evaluation")
+
+    # Evaluation decides: memory_sync (complete), step_controller (more work), or end
     workflow.add_conditional_edges(
-        "verification",
-        should_after_verification,
-        {"memory_sync": "memory_sync", "debug": "debug", "end": END},
+        "evaluation",
+        should_after_evaluation,
+        {
+            "memory_sync": "memory_sync",
+            "step_controller": "step_controller",
+            "end": END,
+        },
     )
 
     # Debug -> execution (retry) or memory_sync (NEW)

@@ -17,7 +17,7 @@ from typing import List, Optional, Dict, Any, TYPE_CHECKING
 import importlib
 
 from src.core.orchestration.event_bus import get_event_bus
-from src.core.llm_manager import get_provider_manager
+from src.core.inference.llm_manager import get_provider_manager
 from src.core.orchestration.orchestrator import Orchestrator
 from src.core.logger import logger as guilogger
 from src.ui.views.settings_panel import SettingsPanelController
@@ -90,8 +90,10 @@ class TextualAppBase:
     def send_prompt(self, prompt: str) -> None:
         """Send a prompt to the orchestrator in a background thread."""
         self.history.append(("user", prompt))
-        t = threading.Thread(target=self._run_agent, args=(prompt,), daemon=True)
-        t.start()
+        self._agent_thread = threading.Thread(
+            target=self._run_agent, args=(prompt,), daemon=True
+        )
+        self._agent_thread.start()
 
     def _run_agent(self, prompt: str) -> None:
         try:
@@ -383,7 +385,7 @@ else:
                 pm = get_provider_manager()
                 if pm:
                     # Sync init to ensure providers are loaded
-                    from src.core.llm_manager import (
+                    from src.core.inference.llm_manager import (
                         _ensure_provider_manager_initialized_sync,
                     )
 
@@ -565,6 +567,20 @@ else:
             if not raw_text:
                 return
 
+            # Clear input immediately for responsive feel
+            event.input.value = ""
+
+            # 1. Visually Echo the user's prompt to the Chat Log IMMEDIATELY
+            if self.output:
+                try:
+                    from rich.text import Text
+
+                    self.output.write(
+                        Text.from_markup(f"[bold blue]User:[/bold blue] {raw_text}")
+                    )
+                except Exception:
+                    self._safe_write(f"User: {raw_text}")
+
             # Record in history
             if isinstance(self.input_widget, ChatInput):
                 if (
@@ -615,9 +631,9 @@ else:
                     return
 
             # display in output immediately
-            if self.output:
-                # Use safe write for user-visible content
-                self._safe_write(f"User: {text}")
+            # NOTE: User message already echoed above (line 577), don't duplicate
+            # if self.output:
+            #     self._safe_write(f"User: {text}")
 
             # Update sidebar task state immediately with the new task
             if hasattr(self, "task_state_label") and self.task_state_label:
@@ -639,7 +655,10 @@ else:
 
             # send to orchestrator in background
             self._agent_running = True
-            threading.Thread(target=self.send_prompt, args=(text,), daemon=True).start()
+            self._agent_thread = threading.Thread(
+                target=self.send_prompt, args=(text,), daemon=True
+            )
+            self._agent_thread.start()
             # clear input
             if self.input_widget:
                 self.input_widget.value = ""
@@ -726,7 +745,9 @@ else:
 
                     # If processed_content already contains markup tags, create a Text from markup
                     try:
-                        txt = Text.from_markup(f"[bold]Assistant:[/bold] {processed_content}")
+                        txt = Text.from_markup(
+                            f"[bold]Assistant:[/bold] {processed_content}"
+                        )
                     except Exception:
                         # fallback: create bold prefix and plain content
                         prefix = Text.from_markup("[bold]Assistant:[/bold] ")
@@ -741,7 +762,9 @@ else:
                         self._safe_write(str(txt))
                 except Exception:
                     # As a last resort, strip markup and write plain text
-                    self._safe_write(f"Assistant: {_strip_rich_markup(processed_content)}")
+                    self._safe_write(
+                        f"Assistant: {_strip_rich_markup(processed_content)}"
+                    )
 
             if hasattr(self, "task_state_label"):
                 self._refresh_task_state()
@@ -856,19 +879,20 @@ else:
 
         def action_interrupt_agent(self) -> None:
             """Interrupt the currently running agent."""
-            if (
-                self._agent_running
-                and self._agent_thread
-                and self._agent_thread.is_alive()
-            ):
-                guilogger.info("User interrupted agent (Escape pressed)")
-                self._cancel_event.set()
-                self.output.write(
-                    "[yellow]⚠ Agent interrupted. Type 'continue' to resume or enter a new command.[/yellow]"
-                )
-                self._agent_running = False
-            else:
-                guilogger.info("No agent running to interrupt")
+            # Check if agent is running - more robust check
+            if self._agent_running:
+                thread_alive = self._agent_thread and self._agent_thread.is_alive()
+                if (
+                    thread_alive or True
+                ):  # Be more permissive - if _agent_running is True, try to interrupt
+                    guilogger.info("User interrupted agent (Escape pressed)")
+                    self._cancel_event.set()
+                    self.output.write(
+                        "[yellow]⚠ Agent interrupted. Type 'continue' to resume or enter a new command.[/yellow]"
+                    )
+                    self._agent_running = False
+                    return
+            guilogger.info("No agent running to interrupt")
 
         def action_force_interrupt_agent(self) -> None:
             """Force interrupt the agent immediately (double-ESC)."""
@@ -1184,4 +1208,3 @@ except Exception:
                 except Exception:
                     return _strip_markup(text)
             return _strip_markup(text)
-

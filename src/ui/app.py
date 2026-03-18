@@ -15,7 +15,7 @@ from typing import Optional
 import os
 from pathlib import Path
 
-from src.core.llm_manager import get_provider_manager
+from src.core.inference.llm_manager import get_provider_manager
 from src.core.orchestration.event_bus import EventBus
 from src.core.orchestration.orchestrator import Orchestrator
 from src.core.logger import logger as guilogger

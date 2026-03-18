@@ -52,3 +52,16 @@ class AgentState(TypedDict):
     max_tool_calls: int
     # Files read tracking for read-before-edit
     files_read: Optional[Dict[str, bool]]
+    # Repo summary data (automatically generated in analysis phase)
+    repo_summary_data: Optional[str]
+    # Patch size guard - replan required when patch exceeds 200 lines
+    replan_required: Optional[str]
+    action_failed: Optional[bool]
+    # Plan progress tracking for UI dashboard
+    plan_progress: Optional[Dict[str, Any]]
+    # Evaluation result for task completion
+    evaluation_result: Optional[str]
+    # Cancel event for interrupting LLM generation
+    cancel_event: Optional[Any]
+    # Infinite loop prevention: track consecutive empty/no-tool responses
+    empty_response_count: int

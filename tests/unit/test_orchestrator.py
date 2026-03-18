@@ -19,7 +19,8 @@ def test_execute_tool_echo():
     tc = {"name": "echo", "arguments": {"text": "hello"}}
     res = orch.execute_tool(tc)
     assert res["ok"]
-    assert res["result"]["echo"] == "hello"
+    # The echo tool returns {"status": "ok", "output": "hello"}
+    assert res["result"]["output"] == "hello"
 
 
 def test_generate_work_summary():

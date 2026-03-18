@@ -1,18 +1,24 @@
-/* Main TUI stylesheet - Kilocode/VSCode Dark Theme */
+/* Main TUI stylesheet - Split-Pane Layout */
 
 Screen {
     background: #1e1e1e;
     color: #cccccc;
+    layout: horizontal;
 }
 
+/* Main horizontal split: 65% left (chat), 35% right (context) */
 #app_grid {
+    layout: horizontal;
+    width: 100%;
     height: 100%;
 }
 
+/* Left side: Chat and Input (Takes roughly 65% of width) */
 #main_area {
-    width: 1fr;
+    width: 2fr;
     height: 100%;
     layout: vertical;
+    border-right: solid #333333;
 }
 
 #chat_output {
@@ -70,25 +76,23 @@ Screen {
     color: #808080;
 }
 
-/* Sidebar on the right */
+/* Right side: Context, Workspace, and Task State (Fixed width sidebar) */
 #sidebar {
     width: 35;
-    dock: right;
     height: 100%;
     background: #252526;
-    border-left: solid #333333;
     layout: vertical;
+    padding: 1 2;
 }
 
 #sidebar_top {
     height: 1fr;
-    padding: 1 2;
 }
 
 #sidebar_bottom {
     height: auto;
-    padding: 1 2;
     border-top: solid #333333;
+    padding-top: 1;
 }
 
 .sidebar_title {

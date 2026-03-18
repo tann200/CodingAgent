@@ -1,0 +1,14 @@
+name: review
+description: Toolset for code review and quality assurance
+tools:
+  - read_file
+  - list_files
+  - run_tests
+  - run_linter
+  - syntax_check
+  - get_git_diff
+  - grep
+  - find_symbol
+  - find_references
+  - multi_file_summary
+  - search_code

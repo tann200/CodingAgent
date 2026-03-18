@@ -1,0 +1,27 @@
+{
+  "type": "object",
+  "properties": {
+    "summary": { "type": "string", "description": "Short summary of the assistant output" },
+    "explanation": { "type": "string", "description": "Longer explanation or reasoning" },
+    "final_answer": { "description": "Final answer payload (string or structured object)", "oneOf": [ {"type": "string"}, {"type": "object"} ] },
+    "tool_call": {
+      "type": "object",
+      "description": "Provider-agnostic tool call shape (legacy/ollama style).",
+      "properties": {
+        "name": { "type": "string" },
+        "arguments": { "type": ["object", "string"] }
+      },
+      "required": ["name"]
+    },
+    "function_call": {
+      "type": "object",
+      "description": "OpenAI-compatible function_call shape.",
+      "properties": {
+        "name": { "type": "string" },
+        "arguments": { "oneOf": [ {"type": "object"}, {"type": "string"} ] }
+      },
+      "required": ["name"]
+    }
+  },
+  "additionalProperties": true
+}

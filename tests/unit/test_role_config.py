@@ -11,10 +11,11 @@ from src.core.orchestration.role_config import (
 
 def test_list_roles():
     roles = list_roles()
-    assert "planner" in roles
-    assert "coder" in roles
+    # canonical roles per gap-analysis
+    assert "strategic" in roles
+    assert "operational" in roles
     assert "reviewer" in roles
-    assert "researcher" in roles
+    assert "analyst" in roles
 
 
 def test_get_role_config():
@@ -33,6 +34,7 @@ def test_planner_role_blocks_writes():
 
 
 def test_coder_role_allows_writes():
+    # legacy name 'coder' should map to canonical 'operational'
     assert is_tool_allowed_for_role("write_file", "coder")
     assert is_tool_allowed_for_role("edit_file", "coder")
     assert is_tool_allowed_for_role("read_file", "coder")
@@ -46,6 +48,7 @@ def test_reviewer_role_denies_writes():
 
 
 def test_researcher_role_allows_search():
+    # legacy 'researcher' maps to 'analyst'
     assert is_tool_allowed_for_role("search_code", "researcher")
     assert is_tool_allowed_for_role("find_symbol", "researcher")
     assert not is_tool_allowed_for_role("write_file", "researcher")
@@ -68,7 +71,8 @@ def test_get_denied_tools():
 def test_role_manager_set_role():
     rm = RoleManager()
     assert rm.set_role("planner")
-    assert rm.get_current_role() == "planner"
+    # normalized to canonical
+    assert rm.get_current_role() == "strategic"
 
 
 def test_role_manager_invalid_role():

@@ -36,7 +36,7 @@ They are subordinate to runtime enforcement (LangGraph, ExecutionPolicy, state m
 ## 4. Tool Sovereignty
 
 - Tools are the only mechanism for acting on the workspace. Never simulate execution in prose or code blocks.
-- **NEVER** write code blocks (like ```python) to perform actions like reading files, searching code, or executing bash commands. You MUST use the `<tool>` format for these actions.
+- **NEVER** write code blocks (like ```python) to perform actions like reading files, searching code, or executing bash commands. You MUST use the YAML tool format for these actions.
 - A Python code block in your response is for the USER to read or for use with the `write_file` tool, not a substitute for a tool call.
 
 ---

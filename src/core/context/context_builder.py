@@ -16,26 +16,15 @@ class ContextBuilder:
 
     def _sanitize_text(self, text: str) -> str:
         """Sanitize file / conversation text to reduce prompt-injection risk.
-        - Remove fenced code blocks (```...```) and replace with a placeholder.
+        CRITICAL: Fenced code blocks are NOT removed. Stripping code blocks
+        destroys agent tool calls and causes infinite loops.
         - Remove top-level prompt-injection lines like "ignore all instructions".
         - Collapse long comment blocks (keep first/last few lines).
         """
         if not text:
             return text
 
-        # 1) Remove fenced code blocks ```...``` or ```lang ... ```
-        def _replace_fence(match):
-            body = match.group(0)
-            # count lines
-            n = body.count("\n")
-            return f"[CODE BLOCK REMOVED - {n} lines]"
-
-        text = re.sub(r"```[\s\S]*?```", _replace_fence, text)
-
-        # 2) Remove triple-tilde fences as well
-        text = re.sub(r"~~~[\s\S]*?~~~", _replace_fence, text)
-
-        # 3) Remove obvious prompt-injection lines
+        # 1) Remove obvious prompt-injection lines
         lines = text.splitlines()
         cleaned_lines = []
         removed_any = False
@@ -64,7 +53,9 @@ class ContextBuilder:
                 if len(comment_block) > 20:
                     # keep first 3 and last 3
                     collapsed.extend(comment_block[:3])
-                    collapsed.append(f"[COMMENT BLOCK TRUNCATED - {len(comment_block)} lines]")
+                    collapsed.append(
+                        f"[COMMENT BLOCK TRUNCATED - {len(comment_block)} lines]"
+                    )
                     collapsed.extend(comment_block[-3:])
                     removed_any = True
                 else:
@@ -75,7 +66,9 @@ class ContextBuilder:
         if comment_block:
             if len(comment_block) > 20:
                 collapsed.extend(comment_block[:3])
-                collapsed.append(f"[COMMENT BLOCK TRUNCATED - {len(comment_block)} lines]")
+                collapsed.append(
+                    f"[COMMENT BLOCK TRUNCATED - {len(comment_block)} lines]"
+                )
                 collapsed.extend(comment_block[-3:])
                 removed_any = True
             else:
@@ -141,7 +134,9 @@ class ContextBuilder:
                 cache_path = cwd / ".agent-context" / "file_summaries.json"
                 if cache_path.exists():
                     try:
-                        summary_cache = json.loads(cache_path.read_text(encoding="utf-8"))
+                        summary_cache = json.loads(
+                            cache_path.read_text(encoding="utf-8")
+                        )
                     except Exception:
                         summary_cache = {}
 
@@ -158,7 +153,11 @@ class ContextBuilder:
                     repo_entries.append(f"File: {fp or 'unknown'}\n{entry_text}\n---\n")
 
                 if repo_entries:
-                    repo_block = "<repository_intelligence>\n" + "\n".join(repo_entries) + "\n</repository_intelligence>"
+                    repo_block = (
+                        "<repository_intelligence>\n"
+                        + "\n".join(repo_entries)
+                        + "\n</repository_intelligence>"
+                    )
                     system_parts.append(repo_block)
             except Exception:
                 # best-effort: do not fail prompt build
@@ -183,12 +182,14 @@ class ContextBuilder:
         format_instr = (
             "<output_format>\n"
             "You MUST think step-by-step. Write your internal reasoning inside <think> tags.\n"
-            "To execute an action, you MUST use the provided XML tool format. NEVER use JSON tool calls.\n"
-            "Format your tool calls exactly like this:\n"
-            "<tool>\n"
+            "To execute an action, you MUST use the provided markdown YAML tool format.\n"
+            "Format your tool calls exactly like this using a fenced code block:\n"
+            "```yaml\n"
             "name: the_tool_name\n"
-            "arguments: {\"arg_name\": \"arg_value\"}\n"
-            "</tool>\n"
+            "arguments:\n"
+            "  arg_name: arg_value\n"
+            "```\n"
+            "IMPORTANT: Use markdown YAML format (not XML). Do not use <tool> tags.\n"
             "Wait for the user to provide the tool execution result before proceeding.\n"
             "</output_format>"
         )
@@ -199,7 +200,10 @@ class ContextBuilder:
         # 2. Conversation Logic
         # Filter msg_mgr to only include User and Assistant messages (strip system prompts)
         filtered_conv = [
-            {"role": m.get("role"), "content": self._sanitize_text(m.get("content", ""))}
+            {
+                "role": m.get("role"),
+                "content": self._sanitize_text(m.get("content", "")),
+            }
             for m in conversation
             if m.get("role") in ["user", "assistant"]
         ]
@@ -232,12 +236,12 @@ class ContextBuilder:
             and truncated_conversation[0].get("role") == "assistant"
         ):
             # Insert task as user message before the assistant messages
-            prompt_content = f"<task>\n{safe_task_description}\n</task>\n\nExecute the next action using the <tool> format."
+            prompt_content = f"<task>\n{safe_task_description}\n</task>\n\nExecute the next action using the YAML tool format."
             # Insert at index 1 (after system message)
             built_messages.insert(1, {"role": "user", "content": prompt_content})
         # Final check: is the last message Assistant or is the list missing User?
         elif not built_messages or built_messages[-1].get("role") != "user":
-            prompt_content = f"<task>\n{safe_task_description}\n</task>\n\nExecute the next action using the <tool> format."
+            prompt_content = f"<task>\n{safe_task_description}\n</task>\n\nExecute the next action using the YAML tool format."
             built_messages.append({"role": "user", "content": prompt_content})
         else:
             # If the last message is already User, we can either wrap it in <task>
@@ -245,10 +249,8 @@ class ContextBuilder:
             last_msg = built_messages[-1]
             if "<task>" not in last_msg.get("content", ""):
                 last_msg["content"] = (
-                    f"<task>\n{last_msg['content']}\n</task>\n\nExecute the next action using the <tool> format."
+                    f"<task>\n{last_msg['content']}\n</task>\n\nExecute the next action using the YAML tool format."
                 )
-
-        return built_messages
 
         return built_messages
 

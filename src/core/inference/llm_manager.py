@@ -178,7 +178,7 @@ def resolve_config_path(path: Optional[str] = None) -> Path:
     """Return path to providers.json. Prefer explicit path, otherwise src/config/providers.json."""
     if path:
         return Path(path)
-    return Path(__file__).parents[1] / "config" / "providers.json"
+    return Path(__file__).parents[2] / "config" / "providers.json"
 
 
 def select_model_name(models: List[Any], requested: Optional[str]) -> Optional[str]:
@@ -421,7 +421,7 @@ class ProviderManager:
 
                 # Load adapter module using the provider type; expect adapters to follow naming convention
                 ptype = str(p.get("type") or "ollama").strip().lower().replace("-", "_")
-                module_name = f"src.adapters.{ptype}_adapter"
+                module_name = f"src.core.inference.adapters.{ptype}_adapter"
                 try:
                     import importlib
 
@@ -792,7 +792,9 @@ async def _call_model_internal(
                 try:
                     import importlib
 
-                    mod = importlib.import_module(f"src.adapters.{ptype}_adapter")
+                    mod = importlib.import_module(
+                        f"src.core.inference.adapters.{ptype}_adapter"
+                    )
                     class_name = (
                         "".join(
                             part.title() for part in ptype.replace("-", "_").split("_")

@@ -4,21 +4,31 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 
-_TOOLSETS_DIR = Path(__file__).parent
+# Prefer new config location
+_NEW_DIR = Path("src/config/toolsets")
+_LEGACY_DIR = Path("src/tools/toolsets")
 _cache: Dict[str, Dict] = {}
+
+
+def _find_toolset_path(name: str) -> Optional[Path]:
+    candidate = _NEW_DIR / f"{name}.yaml"
+    if candidate.exists():
+        return candidate
+    candidate = _LEGACY_DIR / f"{name}.yaml"
+    if candidate.exists():
+        return candidate
+    return None
 
 
 def load_toolset(name: str) -> Optional[Dict]:
     """Load a toolset YAML file by name."""
     if name in _cache:
         return _cache[name]
-
-    toolset_path = _TOOLSETS_DIR / f"{name}.yaml"
-    if not toolset_path.exists():
+    path = _find_toolset_path(name)
+    if not path:
         return None
-
     try:
-        with open(toolset_path, "r") as f:
+        with open(path, "r", encoding="utf-8") as f:
             toolset = yaml.safe_load(f)
             _cache[name] = toolset
             return toolset
@@ -30,32 +40,73 @@ def get_tools_for_toolset(name: str) -> List[str]:
     """Get the list of tools for a given toolset."""
     toolset = load_toolset(name)
     if toolset and "tools" in toolset:
-        return toolset["tools"]
+        return list(toolset["tools"])
     return []
 
 
 def get_toolset_for_role(role: str) -> str:
-    """Map a role to the appropriate toolset."""
-    role_to_toolset = {
-        "planner": "planning",
-        "strategic": "planning",
-        "coder": "coding",
-        "operational": "coding",
-        "execution": "coding",
-        "reviewer": "review",
-        "review": "review",
-        "researcher": "planning",
-        "debugger": "debug",
+    """Map an input role name to a toolset name.
+
+    Canonical role names (from docs/gap-analysis.md):
+      - analyst
+      - strategic
+      - operational
+      - reviewer
+      - debugger
+
+    This function accepts common synonyms and maps them to a canonical role,
+    then returns the toolset name associated with that canonical role.
+    """
+    role_in = (role or "").strip().lower()
+
+    # map input synonyms -> canonical role name
+    synonym_to_canonical = {
+        # operational (execution / coder)
+        "operational": "operational",
+        "coder": "operational",
+        "developer": "operational",
+        "coding": "operational",
+        # strategic / planner
+        "strategic": "strategic",
+        "planner": "strategic",
+        "planning": "strategic",
+        "plan": "strategic",
+        # reviewer
+        "review": "reviewer",
+        "reviewer": "reviewer",
+        "audit": "reviewer",
+        # debugger
+        "debug": "debugger",
+        "debugger": "debugger",
+        # analyst
+        "analysis": "analyst",
+        "analyst": "analyst",
     }
-    return role_to_toolset.get(role, "coding")
+
+    canonical = synonym_to_canonical.get(role_in, "operational")
+
+    # map canonical role -> toolset name
+    canonical_to_toolset = {
+        "operational": "coding",
+        "strategic": "planning",
+        "reviewer": "review",
+        "debugger": "debug",
+        "analyst": "planning",
+    }
+
+    return canonical_to_toolset.get(canonical, "coding")
 
 
 def list_available_toolsets() -> List[str]:
     """List all available toolset names."""
-    toolsets = []
-    for f in _TOOLSETS_DIR.glob("*.yaml"):
-        toolsets.append(f.stem)
-    return toolsets
+    names = set()
+    if _NEW_DIR.exists():
+        for p in _NEW_DIR.glob("*.yaml"):
+            names.add(p.stem)
+    if _LEGACY_DIR.exists():
+        for p in _LEGACY_DIR.glob("*.yaml"):
+            names.add(p.stem)
+    return sorted(names)
 
 
 def get_toolset_description(name: str) -> str:

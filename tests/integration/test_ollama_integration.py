@@ -2,7 +2,7 @@ import os
 import json
 from pathlib import Path
 import pytest
-from src.adapters.ollama_adapter import OllamaAdapter
+from src.core.inference.adapters.ollama_adapter import OllamaAdapter
 
 pytestmark = pytest.mark.ollama
 

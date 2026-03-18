@@ -68,14 +68,14 @@ def test_preflight_check_sandbox(tmp_path):
             "choices": [
                 {
                     "message": {
-                        "content": '<tool>\nname: write_file\nargs: {"path": "../outside.txt", "content": "illegal"}\n</tool>'
+                        "content": "```yaml\nname: write_file\narguments:\n  path: ../outside.txt\n  content: illegal\n```"
                     }
                 }
             ]
         },
         {"choices": [{"message": {"content": "Oops, I failed."}}]},
     ]
-    src.core.llm_manager.call_model = mock_call_model
+    src.core.inference.llm_manager.call_model = mock_call_model
 
     try:
         orch.run_agent_once(None, [{"role": "user", "content": "do it"}], {})

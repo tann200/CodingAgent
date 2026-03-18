@@ -1,41 +1,29 @@
 # System Map
 
-Generated: 2026-03-13 19:10:51Z
+Generated: 2026-03-18 00:04:14Z
 
 ```text
 Repository: CodingAgent
 
-├── agent-brain
-│   ├── identity
-│   │   ├── LAWS.md
-│   │   └── SOUL.md
-│   ├── roles
-│   │   ├── operational.md
-│   │   └── strategic.md
-│   └── skills
-│       ├── context_hygiene.md
-│       └── dry.md
 ├── docs
+│   ├── audit
+│   │   └── audit-instructions.md
 │   ├── ARCHITECTURE.md
 │   ├── DEVELOPMENT.md
-│   ├── FINAL_AUDIT_REPORT.md
-│   ├── memory-implementation.md
+│   ├── gap-analysis.md
 │   ├── MEMORY_ARCHITECTURE.md
-│   ├── mvp-tasklist.md
-│   ├── NEW_AUDIT_INSTRUCTIONS.md
-│   ├── system_capability_report.md
 │   ├── system_map.md
-│   ├── tooloptimization.md
-│   ├── tuispec.md
-│   └── unified_plan.md
+│   └── tuispec.md
 ├── scripts
 │   ├── add_provider.py
 │   ├── analyze_tokens.py
 │   ├── check_providers_and_models.py
 │   ├── diagnose_lmstudio.py
+│   ├── ensure_venv.sh
 │   ├── fetch_ollama.py
 │   ├── generate_system_map.py
 │   ├── list_prompts.py
+│   ├── refresh_summaries.py
 │   ├── run_generate.py
 │   ├── run_tests_settings.py
 │   ├── run_tui.py
@@ -52,20 +40,49 @@ Repository: CodingAgent
 │   └── wait_for_model.py
 ├── src
 │   ├── adapters
-│   │   ├── lm_studio_adapter.py
-│   │   └── ollama_adapter.py
 │   ├── config
-│   │   └── providers.json
+│   │   ├── agent-brain
+│   │   │   ├── identity
+│   │   │   │   ├── LAWS.md
+│   │   │   │   └── SOUL.md
+│   │   │   ├── roles
+│   │   │   │   ├── analyst.md
+│   │   │   │   ├── debugger.md
+│   │   │   │   ├── operational.md
+│   │   │   │   ├── reviewer.md
+│   │   │   │   └── strategic.md
+│   │   │   └── skills
+│   │   │       ├── context_hygiene.md
+│   │   │       └── dry.md
+│   │   ├── toolsets
+│   │   │   ├── coding.yaml
+│   │   │   ├── debug.yaml
+│   │   │   ├── planning.yaml
+│   │   │   └── review.yaml
+│   │   ├── providers.json
+│   │   └── schema.json
 │   ├── core
 │   │   ├── context
-│   │   │   └── context_builder.py
+│   │   │   ├── context_builder.py
+│   │   │   └── context_controller.py
+│   │   ├── indexing
+│   │   │   ├── repo_indexer.py
+│   │   │   ├── symbol_graph.py
+│   │   │   └── vector_store.py
 │   │   ├── inference
+│   │   │   ├── adapters
+│   │   │   │   ├── lm_studio_adapter.py
+│   │   │   │   └── ollama_adapter.py
 │   │   │   ├── __init__.py
 │   │   │   ├── adapter_wrappers.py
 │   │   │   ├── llm_client.py
+│   │   │   ├── llm_manager.py
 │   │   │   └── telemetry.py
 │   │   ├── memory
-│   │   │   └── distiller.py
+│   │   │   ├── advanced_features.py
+│   │   │   ├── distiller.py
+│   │   │   ├── memory_tools.py
+│   │   │   └── session_store.py
 │   │   ├── orchestration
 │   │   │   ├── graph
 │   │   │   │   ├── nodes
@@ -74,22 +91,41 @@ Repository: CodingAgent
 │   │   │   │   └── state.py
 │   │   │   ├── agent_brain.py
 │   │   │   ├── event_bus.py
+│   │   │   ├── graph_factory.py
 │   │   │   ├── message_manager.py
 │   │   │   ├── orchestrator.py
+│   │   │   ├── role_config.py
+│   │   │   ├── sandbox.py
 │   │   │   ├── schema.json
-│   │   │   └── tool_parser.py
+│   │   │   ├── tool_contracts.py
+│   │   │   ├── tool_parser.py
+│   │   │   ├── tool_schema.py
+│   │   │   └── workspace_guard.py
 │   │   ├── telemetry
 │   │   │   ├── consumer.py
 │   │   │   └── metrics.py
-│   │   ├── llm_manager.py
 │   │   ├── logger.py
 │   │   ├── startup.py
 │   │   └── user_prefs.py
 │   ├── data
 │   ├── tools
+│   │   ├── toolsets
+│   │   │   ├── coding.yaml
+│   │   │   ├── debug.yaml
+│   │   │   ├── loader.py
+│   │   │   ├── planning.yaml
+│   │   │   └── review.yaml
 │   │   ├── file_tools.py
+│   │   ├── patch_tools.py
 │   │   ├── registry.py
-│   │   └── system_tools.py
+│   │   ├── repo_analysis_tools.py
+│   │   ├── repo_summary.py
+│   │   ├── repo_tools.py
+│   │   ├── role_tools.py
+│   │   ├── state_tools.py
+│   │   ├── symbol_reader.py
+│   │   ├── system_tools.py
+│   │   └── verification_tools.py
 │   ├── ui
 │   │   ├── components
 │   │   │   ├── __init__.py
@@ -108,7 +144,6 @@ Repository: CodingAgent
 │   │   ├── textual_app.py
 │   │   └── textual_app_impl.py
 │   ├── main.py
-│   └── tmp_app_started.log
 ├── pyproject.toml
 ├── README.md
 ├── requirements.txt

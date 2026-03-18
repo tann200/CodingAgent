@@ -9,6 +9,7 @@ from src.core.orchestration.graph.nodes.workflow_nodes import (
     planning_node,
     verification_node,
 )
+from src.core.orchestration.role_config import normalize_role
 
 
 def should_after_planning(state: AgentState) -> str:
@@ -103,7 +104,23 @@ class GraphFactory:
             "reviewer": GraphFactory.create_reviewer_graph,
             "researcher": GraphFactory.create_researcher_graph,
         }
-        creator = graph_creators.get(role)
+        # Accept legacy names or canonical role names
+        if role in graph_creators:
+            creator = graph_creators.get(role)
+            if creator:
+                return creator()
+
+        # Normalize role to canonical, then map canonical -> legacy key
+        canonical = normalize_role(role)
+        canonical_to_legacy = {
+            "strategic": "planner",
+            "operational": "coder",
+            "reviewer": "reviewer",
+            "analyst": "researcher",
+            "debugger": "coder",
+        }
+        legacy_key = canonical_to_legacy.get(canonical)
+        creator = graph_creators.get(legacy_key) if legacy_key else None
         if creator:
             return creator()
         return None
