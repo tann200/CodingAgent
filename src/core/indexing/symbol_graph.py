@@ -126,7 +126,7 @@ class SymbolGraph:
 
         current_hash = self._get_file_hash(p)
 
-        if p in self.file_hashes and self.file_hashes[p] == current_hash:
+        if str(p) in self.file_hashes and self.file_hashes[str(p)] == current_hash:
             logger.debug(f"File unchanged: {path}")
             return
 

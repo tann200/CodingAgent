@@ -12,3 +12,5 @@ tools:
   - grep
   - multi_file_summary
   - batched_file_read
+  - delegate_task
+  - list_subagent_roles

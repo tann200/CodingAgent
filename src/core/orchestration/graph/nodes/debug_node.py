@@ -11,6 +11,32 @@ from src.core.orchestration.agent_brain import get_agent_brain_manager
 logger = logging.getLogger(__name__)
 
 
+def _classify_error(error_summary: str) -> str:
+    """Classify error into a known category for more targeted prompts."""
+    s = error_summary.lower()
+    if "syntaxerror" in s or "indentationerror" in s or "invalid syntax" in s:
+        return "syntax_error"
+    if "importerror" in s or "modulenotfounderror" in s or "no module named" in s:
+        return "import_error"
+    if "assertionerror" in s or ("failed" in s and "test" in s):
+        return "test_failure"
+    if "e501" in s or "e302" in s or "flake8" in s or "pylint" in s or "ruff" in s:
+        return "lint_error"
+    if "typeerror" in s or "attributeerror" in s or "nameerror" in s:
+        return "runtime_error"
+    return "unknown_error"
+
+
+TYPE_GUIDANCE = {
+    "syntax_error": "Fix the syntax error. Check indentation and missing colons/parentheses.",
+    "import_error": "Fix the import. Check module name spelling and that the module is installed.",
+    "test_failure": "A test assertion failed. Read the failing test, understand what it expects, then fix the implementation.",
+    "lint_error": "Fix the lint issue. Common issues: line too long (split it), missing blank lines, unused imports.",
+    "runtime_error": "Fix the runtime error. Check attribute names, type mismatches, and None checks.",
+    "unknown_error": "Analyze the error carefully and generate a targeted fix.",
+}
+
+
 async def debug_node(state: AgentState, config: Any) -> Dict[str, Any]:
     """
     Debug Node: Analyzes verification failures and attempts to fix issues.
@@ -52,26 +78,51 @@ async def debug_node(state: AgentState, config: Any) -> Dict[str, Any]:
 
     if current_attempt >= max_attempts:
         logger.warning("debug_node: max attempts reached, giving up")
+
+        # Step C: Attempt automated rollback when debug retries are exhausted
+        try:
+            rollback_mgr = getattr(orchestrator, "rollback_manager", None)
+            if rollback_mgr and rollback_mgr.current_snapshot:
+                result = rollback_mgr.rollback()
+                logger.info(f"Auto-rollback result: {result}")
+                rollback_mgr.cleanup_old_snapshots(keep_last=5)
+        except Exception as rb_err:
+            logger.warning(f"Rollback failed: {rb_err}")
+
         return {
             "next_action": None,
-            "errors": [f"Max debug attempts ({max_attempts}) reached"],
+            "errors": [
+                f"Max debug attempts ({max_attempts}) reached — rollback attempted"
+            ],
         }
 
     next_attempt = current_attempt + 1
 
-    fix_prompt = f"""You are a debugging assistant. The previous attempt failed.
+    # Classify the error for more targeted fixes
+    error_type = _classify_error(error_summary)
+
+    # Persist error to session store
+    try:
+        orchestrator = config.get("configurable", {}).get("orchestrator") if config else None
+        if orchestrator and hasattr(orchestrator, "session_store"):
+            orchestrator.session_store.add_error(
+                session_id=getattr(orchestrator, "_current_task_id", "unknown"),
+                error_type=error_type,
+                error_message=error_summary[:500],
+                context={"attempt": current_attempt + 1},
+            )
+    except Exception:
+        pass  # never block execution
+
+    fix_prompt = f"""You are a debugging assistant. Attempt {next_attempt}/{max_attempts}.
 
 Task: {task}
+Error type: {error_type}
+Error details: {error_summary}
 
-Error: {error_summary}
+Guidance: {TYPE_GUIDANCE[error_type]}
 
-Analyze the error and generate a FIX tool call to correct the issue.
-If the issue is a test failure, fix the code.
-If the issue is a linter error, fix the formatting.
-If the issue is a syntax error, correct the code.
-
-Generate a tool call to fix the issue. Use the appropriate tool (edit_file, write_file, etc).
-Respond with ONLY a tool call in YAML format."""
+Generate a YAML tool call to fix the issue. Use edit_file, write_file, or bash as appropriate."""
 
     try:
         builder = ContextBuilder()

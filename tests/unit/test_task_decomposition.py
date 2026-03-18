@@ -97,7 +97,7 @@ def test_planning_node_handles_no_plan(tmp_path):
     config = {"configurable": {"orchestrator": orch}}
 
     with patch(
-        "src.core.orchestration.graph.nodes.workflow_nodes.call_model"
+        "src.core.orchestration.graph.nodes.planning_node.call_model"
     ) as mock_call:
         mock_call.return_value = {
             "choices": [{"message": {"content": "1. do something"}}]

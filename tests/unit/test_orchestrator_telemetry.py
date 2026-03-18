@@ -23,8 +23,8 @@ def test_orchestrator_emits_startup_and_model_events(monkeypatch, tmp_path):
     cfg.write_text(json.dumps(providers))
 
     # Monkeypatch LMStudioAdapter.get_models_from_api to simulate models list
-    importlib.reload(importlib.import_module("src.adapters.lm_studio_adapter"))
-    from src.adapters.lm_studio_adapter import LmStudioAdapter as _LM
+    importlib.reload(importlib.import_module("src.core.inference.adapters.lm_studio_adapter"))
+    from src.core.inference.adapters.lm_studio_adapter import LmStudioAdapter as _LM
 
     def fake_get_models(self):
         calls.append(("get_models_called", True))

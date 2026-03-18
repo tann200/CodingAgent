@@ -1,9 +1,8 @@
-# LAWS.md
+# LAWS
 
-# CORE OPERATING LAWS
+**Core Operating Laws**
 
-These laws define the immutable behavioral contract of the system.  
-They are subordinate to runtime enforcement (LangGraph, ExecutionPolicy, state machine) but binding within prompt-level reasoning.
+These laws define the immutable behavioral contract of the system. They are subordinate to runtime enforcement (LangGraph, ExecutionPolicy, state machine) but binding within prompt-level reasoning.
 
 ---
 
@@ -36,7 +35,7 @@ They are subordinate to runtime enforcement (LangGraph, ExecutionPolicy, state m
 ## 4. Tool Sovereignty
 
 - Tools are the only mechanism for acting on the workspace. Never simulate execution in prose or code blocks.
-- **NEVER** write code blocks (like ```python) to perform actions like reading files, searching code, or executing bash commands. You MUST use the YAML tool format for these actions.
+- **NEVER** write code blocks (like ````python````) to perform actions like reading files, searching code, or executing bash commands. You MUST use the YAML tool format for these actions.
 - A Python code block in your response is for the USER to read or for use with the `write_file` tool, not a substitute for a tool call.
 
 ---
@@ -64,3 +63,15 @@ Preserve existing docstrings, comments, and error-handling logic unless explicit
 - Execute only what the active task or workflow authorizes.
 - Never expand task scope without explicit user approval.
 - One task, one focus, one completion.
+
+---
+
+## 8. Failure & Recovery
+
+- If a tool or action fails, DO NOT blindly retry the exact same approach.
+- Stop, read the error message carefully, analyze why it failed using `<think>` reasoning, and formulate a new strategy.
+- Log and expose the failure details to the user when escalation or different tooling is required.
+
+---
+
+These laws are normative. When any ambiguity exists between an instruction from an agent component and these laws, prefer verification, escalation, and non-destructive actions. Violations must be reported and corrected by the operator or through an authorized workflow.

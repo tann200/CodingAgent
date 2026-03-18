@@ -20,7 +20,8 @@ def test_distiller_writes_file_summaries(tmp_path, monkeypatch):
     def dummy_call_model(*args, **kwargs):
         return {"choices": [{"message": {"content": json.dumps({"current_task": "X","completed_steps": [],"next_step": "Y"})}}]}
 
-    monkeypatch.setattr('src.core.llm_manager.call_model', dummy_call_model)
+    monkeypatch.setattr('src.core.memory.distiller._call_llm_sync',
+                        lambda msgs, format_json=False: dummy_call_model()["choices"][0]["message"]["content"])
 
     # call distill_context with a minimal non-empty message so the function proceeds
     res = distill_context([{"role": "user", "content": "summarize"}], working_dir=tmp_path)

@@ -124,7 +124,23 @@ class ContextBuilder:
         system_parts.append(f"<identity>\n{safe_identity}\n</identity>")
         system_parts.append(f"<role>\n{safe_role}\n</role>")
 
-        # 1a. Repository Intelligence block (if any retrieved snippets provided)
+        # 1a. Session summary — auto-injected from TASK_STATE.md so the agent
+        #     always has access to prior context without needing a tool call.
+        #     (Mirrors the compaction injection used by Claude Code / OpenCode.)
+        try:
+            task_state_path = Path.cwd() / ".agent-context" / "TASK_STATE.md"
+            if task_state_path.exists():
+                ts_content = task_state_path.read_text(encoding="utf-8").strip()
+                # Only inject when there is meaningful content beyond the empty template
+                _empty = "# Current Task\n\n# Completed Steps\n\n# Next Step"
+                if ts_content and ts_content.strip() != _empty.strip() and len(ts_content) > 60:
+                    system_parts.append(
+                        f"<session_summary>\n{ts_content}\n</session_summary>"
+                    )
+        except Exception:
+            pass  # never fail prompt building due to missing TASK_STATE.md
+
+        # 1b. Repository Intelligence block (if any retrieved snippets provided)
         repo_block = ""
         if retrieved_snippets:
             try:

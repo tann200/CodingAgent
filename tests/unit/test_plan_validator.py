@@ -208,3 +208,75 @@ class TestPlanValidatorNode:
 
         assert "errors" in result
         assert len(result["errors"]) > 0
+
+def _make_validator_state(plan, enforce_warnings=None):
+    """Helper to build a minimal AgentState for plan_validator_node."""
+    state: AgentState = {
+        "task": "test",
+        "history": [],
+        "verified_reads": [],
+        "next_action": None,
+        "last_result": None,
+        "rounds": 0,
+        "working_dir": ".",
+        "system_prompt": "",
+        "errors": [],
+        "current_plan": plan,
+        "current_step": 0,
+        "deterministic": None,
+        "seed": None,
+        "analysis_summary": None,
+        "relevant_files": None,
+        "key_symbols": None,
+        "debug_attempts": None,
+        "max_debug_attempts": 3,
+        "verification_passed": None,
+        "verification_result": None,
+        "step_controller_enabled": False,
+        "task_decomposed": None,
+        "tool_last_used": None,
+        "tool_call_count": 0,
+        "max_tool_calls": 50,
+        "files_read": None,
+        "repo_summary_data": None,
+        "replan_required": None,
+        "action_failed": None,
+        "plan_progress": None,
+        "evaluation_result": None,
+        "cancel_event": None,
+    }
+    if enforce_warnings is not None:
+        state["plan_enforce_warnings"] = enforce_warnings
+    return state
+
+
+class TestPlanValidatorEnforceWarningsDefault:
+    """Tests that enforce_warnings defaults to True (strict by default)."""
+
+    @pytest.mark.asyncio
+    async def test_plan_without_verification_fails_by_default(self):
+        """A plan missing a verification step should fail when enforce_warnings=True (default)."""
+        plan = [
+            {"description": "Read main.py"},
+            {"description": "Modify the function"},
+        ]
+        state = _make_validator_state(plan)  # no enforce_warnings → defaults to True
+
+        result = await plan_validator_node(state, None)
+
+        # With enforce_warnings=True, missing verification should block
+        assert result.get("action_failed") is True or len(result.get("errors", [])) > 0
+
+    @pytest.mark.asyncio
+    async def test_plan_validator_lenient_mode_via_state_flag(self):
+        """Setting plan_enforce_warnings=False in state allows plans without verification."""
+        plan = [
+            {"description": "Read main.py"},
+            {"description": "Modify the function"},
+        ]
+        state = _make_validator_state(plan, enforce_warnings=False)
+
+        result = await plan_validator_node(state, None)
+
+        # In lenient mode, warnings should not block execution
+        assert result.get("action_failed") is not True

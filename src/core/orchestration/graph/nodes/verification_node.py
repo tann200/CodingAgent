@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import Dict, Any
 
 from src.core.orchestration.graph.state import AgentState
+from src.core.orchestration.graph.nodes.node_utils import _resolve_orchestrator
 from src.tools import verification_tools
 from src.core.orchestration.agent_brain import get_agent_brain_manager
 
@@ -88,5 +89,29 @@ async def verification_node(state: AgentState, config: Any) -> Dict[str, Any]:
     verification_passed = True
     if tests_status == "fail" or linter_status == "fail" or syntax_status == "fail":
         verification_passed = False
+
+    # Step-level atomic rollback: if verification failed, restore all files written
+    # during this step to their pre-edit state.
+    if not verification_passed and need_verify:
+        try:
+            orchestrator = _resolve_orchestrator(state, config)
+            if orchestrator and hasattr(orchestrator, "rollback_step_transaction"):
+                if getattr(orchestrator, "_step_snapshot_id", None):
+                    rb = orchestrator.rollback_step_transaction()
+                    if rb.get("ok"):
+                        logger.info(
+                            f"verification_node: step rollback restored "
+                            f"{rb.get('restored_count', 0)} file(s)"
+                        )
+                        results["step_rollback"] = {
+                            "triggered": True,
+                            "restored_files": rb.get("restored_files", []),
+                        }
+                    else:
+                        logger.warning(
+                            f"verification_node: step rollback failed: {rb.get('error')}"
+                        )
+        except Exception as rb_err:
+            logger.warning(f"verification_node: step rollback error (non-fatal): {rb_err}")
 
     return {"verification_result": results, "verification_passed": verification_passed}

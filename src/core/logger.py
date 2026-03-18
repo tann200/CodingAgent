@@ -8,7 +8,7 @@ from datetime import datetime
 from enum import Enum
 from pathlib import Path
 from queue import Empty, Queue, Full
-from threading import Lock, Thread, Event
+from threading import Lock, Thread, Event, local as threading_local
 from typing import Any, List, Optional, Dict
 import logging
 from src.core.orchestration.event_bus import get_event_bus
@@ -142,7 +142,11 @@ class GUILogger:
             if len(self._logs) > self._max_history:
                 self._logs = self._logs[-self._max_history :]
         # Always put into the transient queue for real-time consumers
-        self._queue.put(entry)
+        # Use put_nowait to avoid blocking when queue is full (prevents hang on recursive logging)
+        try:
+            self._queue.put_nowait(entry)
+        except Full:
+            pass  # Drop oldest-equivalent: queue full means consumer is behind, discard silently
         # Publish to EventBus for UI consumers if available
         try:
             bus = get_event_bus()
@@ -376,11 +380,20 @@ logger = GUILogger()
 
 
 class _GUILoggingHandler(logging.Handler):
+    # Thread-local re-entrancy guard to prevent recursive logging loops.
+    # When GUILogger.log() calls standard_logger.log("agent_tui", ...), that record
+    # propagates back through the root logger and re-enters this handler, filling
+    # the bounded queue until put() blocks forever.
+    _local = threading_local()
+
     def __init__(self):
         super().__init__()
         self.setLevel(logging.DEBUG)
 
     def emit(self, record: logging.LogRecord) -> None:
+        if getattr(self._local, 'active', False):
+            return  # Break recursion: already inside emit on this thread
+        self._local.active = True
         try:
             msg = self.format(record)
             level = record.levelname
@@ -392,6 +405,8 @@ class _GUILoggingHandler(logging.Handler):
                 print(f"[logger_bridge] {level}: {msg}")
         except Exception:
             pass
+        finally:
+            self._local.active = False
 
 
 _installed_handler = False

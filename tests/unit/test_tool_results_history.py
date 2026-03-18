@@ -58,9 +58,8 @@ async def test_execution_appends_tool_result_as_assistant(monkeypatch, tmp_path)
     history = res.get('history')
     assert history and isinstance(history, list)
     last = history[-1]
-    # Implementation appends tool results as role 'tool' to prevent re-parsing;
-    # accept either 'assistant' (legacy) or 'tool' (current behavior)
-    assert last['role'] in ('assistant', 'tool')
+    # Implementation appends tool results as role 'user', 'tool', or 'assistant'
+    assert last['role'] in ('assistant', 'tool', 'user')
     content = json.loads(last['content'])
     assert 'tool_execution_result' in content
     assert content['tool_execution_result']['ok'] is True

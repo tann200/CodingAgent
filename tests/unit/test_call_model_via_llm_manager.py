@@ -19,7 +19,7 @@ def test_call_model_uses_providers_json(tmp_path, monkeypatch):
     p.write_text(json.dumps(data), encoding="utf-8")
     # monkeypatch llm_manager config path resolution to use this tmp providers.json
     monkeypatch.setattr(
-        "src.core.llm_manager.resolve_config_path", lambda path=None: Path(p)
+        "src.core.inference.llm_manager.resolve_config_path", lambda path=None: Path(p)
     )
 
     # monkeypatch OllamaAdapter to a local dummy adapter class
@@ -43,7 +43,7 @@ def test_call_model_uses_providers_json(tmp_path, monkeypatch):
     import importlib
     import types
 
-    modname = "src.adapters.ollama_adapter"
+    modname = "src.core.inference.adapters.ollama_adapter"
     try:
         mod = importlib.import_module(modname)
     except Exception:

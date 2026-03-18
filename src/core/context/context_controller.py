@@ -158,11 +158,13 @@ class ContextController:
 
         # Group consecutive lines
         current_group = []
+        last_idx = None
         for idx in relevant_lines:
-            if current_group and idx != current_group[-1] + 1:
+            if current_group and idx != last_idx + 1:
                 snippets.append("\n".join(current_group))
                 current_group = []
             current_group.append(lines[idx])
+            last_idx = idx
 
         if current_group:
             snippets.append("\n".join(current_group))

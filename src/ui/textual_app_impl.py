@@ -1201,10 +1201,5 @@ except Exception:
             pass
 
         def _render_message_safe(self, text: str) -> str:
-            # Prefer rich escape if available, otherwise strip markup
-            if _rich_escape:
-                try:
-                    return _rich_escape(text)
-                except Exception:
-                    return _strip_markup(text)
+            # Strip markup tags to produce clean plain text
             return _strip_markup(text)

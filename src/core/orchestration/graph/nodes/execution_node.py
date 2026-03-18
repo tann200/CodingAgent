@@ -61,6 +61,16 @@ async def execution_node(state: AgentState, config: Any) -> Dict[str, Any]:
         logger.error(f"execution_node: failed to get next_action: {e}")
         action = None
 
+    # Begin step-level atomic transaction for multi-file rollback support.
+    # All file writes during this execution will be captured in a single snapshot
+    # that can be atomically rolled back by verification_node on failure.
+    try:
+        if hasattr(orchestrator, "begin_step_transaction"):
+            orchestrator.begin_step_transaction()
+            logger.debug("execution_node: step transaction started")
+    except Exception as _tx_err:
+        logger.debug(f"execution_node: step transaction init failed (non-fatal): {_tx_err}")
+
     # Handle multi-step plan execution
     current_plan = state.get("current_plan") or []
     current_step = state.get("current_step") or 0

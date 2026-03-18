@@ -49,7 +49,7 @@ def test_model_routing_emits_event(monkeypatch, tmp_path):
         # return a simple assistant response (no tool calls)
         return {"choices": [{"message": "ok"}]}
 
-    monkeypatch.setattr("src.core.llm_manager.call_model", fake_call_model)
+    monkeypatch.setattr("src.core.inference.llm_manager.call_model", fake_call_model)
 
     orch = Orchestrator(
         adapter=adapter,

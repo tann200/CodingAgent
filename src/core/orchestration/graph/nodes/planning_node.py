@@ -154,6 +154,18 @@ async def planning_node(state: AgentState, config: Any) -> Dict[str, Any]:
         steps = _parse_plan_content(content)
 
         if steps:
+            # Persist plan to session store
+            try:
+                import json as _json
+                orchestrator = config.get("configurable", {}).get("orchestrator") if config else None
+                if orchestrator and hasattr(orchestrator, "session_store"):
+                    orchestrator.session_store.add_plan(
+                        session_id=getattr(orchestrator, "_current_task_id", "unknown"),
+                        plan=_json.dumps(steps),
+                        status="created",
+                    )
+            except Exception:
+                pass  # never block execution
             return {"current_plan": steps, "current_step": 0}
     except Exception as e:
         logger.error(f"planning_node: plan generation failed: {e}")

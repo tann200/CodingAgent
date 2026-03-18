@@ -83,6 +83,40 @@ Use this repository context to plan your deep-dive searches."""
     key_symbols = []
     analysis_summary = ""
 
+    # Phase 1.5: Semantic Search via Vector Store
+    # Use semantic search to find relevant symbols before keyword search
+    semantic_results = []
+    try:
+        from src.core.indexing.vector_store import VectorStore
+        from src.core.indexing.repo_indexer import index_repository
+
+        # First, ensure the repo is indexed
+        index_repository(working_dir)
+
+        # Search the vector store for semantically similar symbols
+        vs = VectorStore(working_dir)
+        semantic_results = vs.search(task, limit=10)
+
+        if semantic_results:
+            logger.info(
+                f"analysis_node: found {len(semantic_results)} semantically similar symbols"
+            )
+
+            # Add semantically relevant files to the search results
+            for result in semantic_results:
+                fp = result.get("file_path")
+                if fp and fp not in relevant_files:
+                    relevant_files.append(fp)
+                sym = result.get("symbol_name")
+                if sym and sym not in key_symbols:
+                    key_symbols.append(sym)
+    except ImportError:
+        logger.debug(
+            "analysis_node: vector_store not available, skipping semantic search"
+        )
+    except Exception as e:
+        logger.warning(f"analysis_node: semantic search failed: {e}")
+
     def _call_tool_if_exists(tool_name, **kwargs):
         try:
             t = orchestrator.tool_registry.get(tool_name)
@@ -131,13 +165,77 @@ Use this repository context to plan your deep-dive searches."""
         logger.info(
             f"analysis_node: found {len(relevant_files)} files, {len(key_symbols)} symbols"
         )
-
     except Exception as e:
         logger.error(f"analysis_node: analysis failed: {e}")
         analysis_summary = f"Analysis failed: {e}"
 
+    # Phase 2.4: Symbol graph enrichment — call graph context for planning
+    symbol_context = ""
+    try:
+        from src.core.indexing.symbol_graph import SymbolGraph
+        from pathlib import Path
+
+        sg = SymbolGraph(working_dir)
+
+        # Update index for all found relevant files
+        for fp in relevant_files[:10]:
+            full_path = Path(working_dir) / fp
+            if full_path.exists() and full_path.suffix == ".py":
+                sg.update_file(str(full_path))
+
+        # Find call sites for key symbols
+        call_info = []
+        for sym in key_symbols[:5]:
+            callers = sg.find_calls(sym)
+            if callers:
+                call_info.append(f"  '{sym}' called by: {', '.join(callers[:5])}")
+
+        # Find related tests for first relevant module
+        test_info = []
+        if relevant_files:
+            module_name = Path(relevant_files[0]).stem
+            tests = sg.find_tests_for_module(module_name)
+            if tests:
+                test_info = tests[:3]
+
+        if call_info or test_info:
+            symbol_context = "Symbol graph:\n"
+            symbol_context += "\n".join(call_info)
+            if test_info:
+                symbol_context += f"\nRelated tests: {', '.join(test_info)}"
+    except Exception as e:
+        logger.warning(f"analysis_node: symbol graph enrichment failed: {e}")
+
+    # Phase 3: ContextController — enforce token budget on relevant_files list
+    # Prioritizes files that appear in semantic search results (higher relevance)
+    try:
+        from src.core.context.context_controller import ContextController
+
+        cc = ContextController()
+        relevance_scores = {}
+        for i, fp in enumerate(relevant_files):
+            # Files from semantic search get higher scores; others get lower
+            relevance_scores[fp] = 1.0 - (i * 0.05)
+
+        file_infos = [
+            {"path": fp, "line_count": 50, "estimated_tokens": 200}
+            for fp in relevant_files
+        ]
+        history = state.get("history", [])
+        included, excluded = cc.enforce_budget(
+            file_infos, history, system_prompt=repo_summary_data
+        )
+        if excluded:
+            logger.info(
+                f"analysis_node: ContextController excluded {len(excluded)} low-priority files"
+            )
+        relevant_files = [f["path"] for f in included]
+    except Exception as e:
+        logger.debug(f"analysis_node: context controller skipped: {e}")
+
     return {
-        "analysis_summary": analysis_summary,
+        "analysis_summary": analysis_summary
+        + ("\n" + symbol_context if symbol_context else ""),
         "relevant_files": relevant_files,
         "key_symbols": key_symbols,
         "repo_summary_data": repo_summary_data,

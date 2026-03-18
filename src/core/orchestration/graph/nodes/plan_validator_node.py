@@ -178,8 +178,12 @@ async def plan_validator_node(state: AgentState, config: Any) -> Dict[str, Any]:
     logger.info("=== plan_validator_node START ===")
 
     # Get validation config from state or use defaults
-    enforce_warnings = state.get("plan_enforce_warnings", False)
-    strict_mode = state.get("plan_strict_mode", False)
+    enforce_warnings = state.get(
+        "plan_enforce_warnings", True
+    )  # Default True - enforce warnings as errors
+    strict_mode = state.get(
+        "plan_strict_mode", False
+    )  # Keep False - strict is aggressive
 
     current_plan = state.get("current_plan")
 

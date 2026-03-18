@@ -13,7 +13,7 @@ def test_orchestrator_inserts_system_prompt(tmp_path, monkeypatch):
         # Return a trivial assistant message
         return {'choices': [{'message': {'role': 'assistant', 'content': 'OK'}}]}
 
-    monkeypatch.setattr('src.core.llm_manager.call_model', fake_call_model)
+    monkeypatch.setattr('src.core.inference.llm_manager.call_model', fake_call_model)
 
     orch = Orchestrator(adapter=adapter, working_dir=str(tmp_path), allow_external_working_dir=True, message_max_tokens=8000)
     # ensure empty history
@@ -36,7 +36,7 @@ def test_system_prompt_replaced_when_different(tmp_path, monkeypatch):
     async def fake_call_model(messages, provider=None, model=None, stream=False, format_json=False, tools=None):
         return {'choices': [{'message': {'role': 'assistant', 'content': 'OK'}}]}
 
-    monkeypatch.setattr('src.core.llm_manager.call_model', fake_call_model)
+    monkeypatch.setattr('src.core.inference.llm_manager.call_model', fake_call_model)
 
     orch = Orchestrator(adapter=adapter, working_dir=str(tmp_path), allow_external_working_dir=True, message_max_tokens=8000)
     # manually insert a different system prompt

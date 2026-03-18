@@ -76,7 +76,7 @@ def test_get_structured_llm_missing_model_emits_event(monkeypatch, tmp_path):
     def _load(path=None):
         return UserPrefs(data=prefs_data, path=prefs_path)
 
-    monkeypatch.setattr("src.core.llm_manager.UserPrefs.load", staticmethod(_load))
+    monkeypatch.setattr("src.core.inference.llm_manager.UserPrefs.load", staticmethod(_load))
 
     # call get_structured_llm
     client, resolved = asyncio.run(get_structured_llm())

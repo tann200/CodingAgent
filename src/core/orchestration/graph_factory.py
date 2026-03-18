@@ -9,7 +9,7 @@ from src.core.orchestration.graph.nodes.workflow_nodes import (
     planning_node,
     verification_node,
 )
-from src.core.orchestration.role_config import normalize_role
+from src.core.orchestration.role_config import normalize_role, CANONICAL_ROLES, ROLE_ALIASES
 
 
 def should_after_planning(state: AgentState) -> str:
@@ -109,6 +109,11 @@ class GraphFactory:
             creator = graph_creators.get(role)
             if creator:
                 return creator()
+
+        # Only normalize if role is a known alias or canonical name
+        r = role.strip().lower() if role else ""
+        if r not in CANONICAL_ROLES and r not in ROLE_ALIASES:
+            return None
 
         # Normalize role to canonical, then map canonical -> legacy key
         canonical = normalize_role(role)

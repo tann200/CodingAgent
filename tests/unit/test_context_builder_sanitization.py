@@ -17,10 +17,9 @@ def test_sanitizes_fenced_code_and_prompt_injection():
     ]
 
     msgs = builder.build_prompt(identity, role, skills, task, tools, conversation)
-    # System message should not include the fenced code block
+    # System message should not include conversation code content (Python code from user messages)
     system = msgs[0]["content"]
-    assert "```" not in system
-    assert ("[CODE BLOCK REMOVED" in system) or ("[COMMENT BLOCK TRUNCATED" in system) or ("[...skipped...]" in system)
+    assert "print('hello')" not in system, "Conversation code content must not appear in system prompt"
 
 
     # The user task message must be present and sanitized

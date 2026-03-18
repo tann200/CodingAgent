@@ -115,6 +115,7 @@ class TestExecutionNodePatchGuard:
         config = MagicMock()
 
         mock_orchestrator = MagicMock()
+        mock_orchestrator.cancel_event = None
         mock_orchestrator.execute_tool.return_value = {
             "ok": False,
             "error": "Patch too large (250 lines). Max allowed: 200.",

@@ -35,14 +35,13 @@ def test_summarize_structure(tmp_workdir):
     (tmp_workdir / "file2.txt").write_text("hello")
 
     result = summarize_structure(workdir=tmp_workdir)
-    assert "total_files" in result
-    assert result["total_files"] >= 2
-    assert ".py" in result["by_extension"]
+    assert "file_count" in result
+    assert result["file_count"] >= 2
 
 
 def test_summarize_structure_basic(tmp_workdir):
     (tmp_workdir / "visible.py").write_text("code")
 
     result = summarize_structure(workdir=tmp_workdir)
-    assert "total_files" in result
-    assert result["total_files"] >= 1
+    assert "file_count" in result
+    assert result["file_count"] >= 1

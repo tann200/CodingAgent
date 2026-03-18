@@ -1,6 +1,7 @@
 import pytest
 from src.core.indexing.repo_indexer import index_repository
 from src.core.indexing.vector_store import VectorStore
+from src.core.indexing.symbol_graph import SymbolGraph
 
 
 @pytest.fixture
@@ -51,3 +52,36 @@ def test_vector_store_indexing_and_search(test_repo):
     assert len(results) > 0
     symbol_names = [r["symbol_name"] for r in results]
     assert "new_func" in symbol_names
+
+
+class TestSymbolGraphHashBug:
+    """Regression tests for the Path vs str hash key bug in SymbolGraph."""
+
+    def test_cache_hits_on_second_update(self, tmp_path):
+        """update_file() must not re-parse an unchanged file (cache should hit)."""
+        py_file = tmp_path / "module.py"
+        py_file.write_text("def foo(): pass\n")
+
+        sg = SymbolGraph(workdir=str(tmp_path))
+        sg.update_file(str(py_file))
+
+        # Manually track parse count via node keys
+        nodes_after_first = dict(sg.nodes)
+
+        sg.update_file(str(py_file))  # second call — file unchanged
+
+        # Node updated_at should be identical (no re-parse happened)
+        assert sg.nodes == nodes_after_first, (
+            "SymbolGraph re-parsed an unchanged file; hash key bug may have regressed"
+        )
+
+    def test_file_hashes_stored_as_str_keys(self, tmp_path):
+        """Keys in file_hashes must be strings, not Path objects."""
+        py_file = tmp_path / "module.py"
+        py_file.write_text("class Bar: pass\n")
+
+        sg = SymbolGraph(workdir=str(tmp_path))
+        sg.update_file(str(py_file))
+
+        for key in sg.file_hashes:
+            assert isinstance(key, str), f"Expected str key, got {type(key)}: {key!r}"

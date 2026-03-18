@@ -119,6 +119,7 @@ class TestLoopPrevention:
 
         orch._append_execution_trace({"tool": "bash", "args": {"command": "ls"}})
         orch._append_execution_trace({"tool": "bash", "args": {"command": "ls"}})
+        orch._append_execution_trace({"tool": "bash", "args": {"command": "ls"}})
 
         assert orch._check_loop_prevention("bash", {"command": "ls"}) is True
 

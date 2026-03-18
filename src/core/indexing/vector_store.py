@@ -3,7 +3,7 @@ import pandas as pd
 from pathlib import Path
 from typing import List, Dict, Any
 from pydantic import Field
-from lancedb.pydantic import LanceModel, vector, pydantic_to_schema
+from lancedb.pydantic import LanceModel, Vector, pydantic_to_schema
 from tqdm import tqdm
 
 import hashlib
@@ -67,17 +67,18 @@ class VectorStore:
         
         data = []
         for symbol in repo_index["symbols"]:
-            text_to_embed = f"File: {symbol['file_path']}\nType: {symbol['symbol_type']}\nName: {symbol['symbol_name']}\nDocstring: {symbol['docstring'] or 'N/A'}"
+            docstring = symbol.get("docstring") or "N/A"
+            text_to_embed = f"File: {symbol['file_path']}\nType: {symbol['symbol_type']}\nName: {symbol['symbol_name']}\nDocstring: {docstring}"
             # Create a stable hash of the content to be embedded
             content_hash = hashlib.sha256(text_to_embed.encode()).hexdigest()
-            
+
             data.append({
                 "text": text_to_embed,
                 "file_path": symbol["file_path"],
                 "symbol_name": symbol["symbol_name"],
                 "symbol_type": symbol["symbol_type"],
-                "start_line": symbol["start_line"],
-                "hash": content_hash
+                "start_line": symbol.get("start_line", 0),
+                "hash": content_hash,
             })
             
         if not data:
@@ -91,7 +92,7 @@ class VectorStore:
 
         class CodeSymbol(LanceModel):
             text: str = Field(default=None)
-            vector: vector(embedding_dim)
+            vector: Vector(embedding_dim)
             file_path: str
             symbol_name: str
             symbol_type: str
@@ -131,7 +132,7 @@ class VectorStore:
             return []
             
         query_vector = self.model.encode(query)
-        results = tbl.search(query_vector).limit(limit).to_df()
+        results = tbl.search(query_vector).limit(limit).to_pandas()
         return results.to_dict("records")
 
 if __name__ == "__main__":

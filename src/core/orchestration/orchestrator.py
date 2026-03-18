@@ -32,6 +32,14 @@ except Exception:
 # Keep the name `ValidationError` for backward compatibility across the module
 ValidationError = PydValidationError
 
+# Tools that require the target file to have been read in the current session before writing
+WRITE_TOOLS_REQUIRING_READ = {
+    "edit_file",
+    "write_file",
+    "edit_by_line_range",
+    "apply_patch",
+}
+
 # Import tool_contracts defensively; many CI/test environments may omit heavy deps
 # Using try/except to handle both environments gracefully
 try:
@@ -462,6 +470,23 @@ def example_registry() -> ToolRegistry:
     except Exception:
         pass
 
+    # Subagent tools
+    try:
+        from src.tools import subagent_tools
+
+        reg.register(
+            "delegate_task",
+            subagent_tools.delegate_task,
+            description="delegate_task(role, subtask_description, working_dir) -> Spawn an isolated subagent to complete a subtask",
+        )
+        reg.register(
+            "list_subagent_roles",
+            subagent_tools.list_subagent_roles,
+            description="list_subagent_roles() -> List available subagent roles",
+        )
+    except Exception:
+        pass
+
     return reg
 
 
@@ -519,9 +544,12 @@ class Orchestrator:
         self._adapter = adapter
         self.tool_registry = tool_registry if tool_registry else example_registry()
         self.event_bus = EventBus()
-        # Wire the MessageManager to the orchestrator event bus so it can emit telemetry
+        # Wire the MessageManager with compaction support so dropped messages
+        # are summarised inline rather than silently discarded.
         self.msg_mgr = MessageManager(
-            max_tokens=message_max_tokens, event_bus=self.event_bus
+            max_tokens=message_max_tokens,
+            event_bus=self.event_bus,
+            compact_callback=self._compact_messages,
         )
 
         self._session_read_files: set = set()
@@ -535,6 +563,19 @@ class Orchestrator:
         self.working_dir = Path(working_dir) if working_dir else default_out
         self._allow_external = bool(allow_external_working_dir)
         self._ensure_working_dir()
+
+        # Initialize RollbackManager for automated rollback on failure
+        from src.core.orchestration.rollback_manager import RollbackManager
+
+        self.rollback_manager = RollbackManager(str(self.working_dir))
+        self._current_snapshot_id: Optional[str] = None
+        # Step-level transaction snapshot for multi-file atomicity
+        self._step_snapshot_id: Optional[str] = None
+
+        # Initialize SessionStore for tool call and plan persistence
+        from src.core.memory.session_store import SessionStore
+
+        self.session_store = SessionStore(str(self.working_dir))
 
         self._current_task_id: Optional[str] = None
 
@@ -767,6 +808,67 @@ class Orchestrator:
 
         return {"ok": True}
 
+    def _compact_messages(self, messages: list) -> str:
+        """
+        Callback passed to MessageManager for inline context compaction.
+
+        When the conversation history overflows the token budget,
+        MessageManager calls this method with the messages that would be
+        dropped.  We generate a prose summary that is injected back into
+        the conversation so the agent always has access to prior context.
+        """
+        try:
+            from src.core.memory.distiller import compact_messages_to_prose
+            return compact_messages_to_prose(messages, working_dir=self.working_dir)
+        except Exception as e:
+            guilogger.warning(f"_compact_messages failed (non-fatal): {e}")
+            return ""
+
+    def begin_step_transaction(self) -> str:
+        """
+        Start a step-level atomic transaction.
+
+        Creates a new snapshot group for the current execution step.
+        All files written during this step are accumulated into this snapshot.
+        Call rollback_step_transaction() to undo all writes in the step.
+
+        Returns:
+            The step snapshot ID.
+        """
+        from datetime import datetime
+
+        step_id = "step_" + datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        self._step_snapshot_id = step_id
+        guilogger.debug(f"begin_step_transaction: started {step_id}")
+        return step_id
+
+    def rollback_step_transaction(self) -> dict:
+        """
+        Rollback all writes made during the current step transaction.
+
+        Restores every file that was written since begin_step_transaction() was called.
+
+        Returns:
+            Rollback result dict with keys ok, restored_files, restored_count.
+        """
+        if not self._step_snapshot_id:
+            return {"ok": False, "error": "No active step transaction"}
+
+        snap_id = self._step_snapshot_id
+        result = self.rollback_manager.rollback(snap_id)
+        if result.get("ok"):
+            guilogger.info(
+                f"rollback_step_transaction: restored {result.get('restored_count', 0)} "
+                f"file(s) from step {snap_id}"
+            )
+        else:
+            guilogger.warning(
+                f"rollback_step_transaction: rollback failed for {snap_id}: "
+                f"{result.get('error')}"
+            )
+        self._step_snapshot_id = None
+        return result
+
     def _get_tool_timeout(self, tool_name: str) -> int:
         """Get timeout in seconds for a tool. T9: Tool Timeout Protection."""
         timeout_map = {
@@ -808,12 +910,15 @@ class Orchestrator:
         except Exception:
             pass
 
-        # Hard Rule Enforcement: Read before Edit
+        # Hard Rule Enforcement: Read before Edit for write tools
         path_arg = args.get("path") or args.get("file_path")
-        if path_arg and name == "edit_file":
+        if path_arg and name in WRITE_TOOLS_REQUIRING_READ:
             try:
-                resolved_path = str((Path(self.working_dir) / path_arg).resolve())
-                if resolved_path not in self._session_read_files:
+                target = Path(self.working_dir) / path_arg
+                resolved_path = str(target.resolve())
+                # Only enforce read-before-write on pre-existing files.
+                # Brand-new files have no prior content to protect.
+                if target.exists() and resolved_path not in self._session_read_files:
                     return {
                         "ok": False,
                         "error": f"Security/Logic violation: You must read '{path_arg}' before editing it to ensure you have the latest context. Use 'read_file' first.",
@@ -867,6 +972,29 @@ class Orchestrator:
                         "error": f"Sandbox validation aborted: {str(e)}. "
                         f"Write operation blocked for safety.",
                     }
+
+            # Step B: Snapshot files before write operations for automated rollback.
+            # If a step-level transaction is active, accumulate into it (multi-file
+            # atomicity). Otherwise create an individual per-write snapshot.
+            if "write" in tool.get("side_effects", []) and path_arg:
+                try:
+                    if self._step_snapshot_id:
+                        # Append to the step-level atomic snapshot
+                        self.rollback_manager.append_to_snapshot(
+                            self._step_snapshot_id, path_arg
+                        )
+                        self._current_snapshot_id = self._step_snapshot_id
+                        guilogger.debug(
+                            f"File added to step snapshot {self._step_snapshot_id}: {path_arg}"
+                        )
+                    else:
+                        # No active transaction — fall back to per-write snapshot
+                        self._current_snapshot_id = self.rollback_manager.snapshot_files(
+                            [path_arg], snapshot_id=None
+                        )
+                        guilogger.debug(f"Individual snapshot created before write: {path_arg}")
+                except Exception as snap_err:
+                    guilogger.warning(f"Snapshot failed (non-blocking): {snap_err}")
 
             # Track files read for read-before-edit enforcement
             if name == "read_file" and path_arg:
@@ -1074,6 +1202,19 @@ class Orchestrator:
             except Exception:
                 pass
 
+            # Step B: Log tool call to SessionStore
+            try:
+                _safe_args = {k: str(v) if isinstance(v, Path) else v for k, v in args.items()}
+                self.session_store.add_tool_call(
+                    session_id=getattr(self, "_current_task_id", "unknown"),
+                    tool_name=name,
+                    args=_safe_args,
+                    result=res,
+                    success=True,
+                )
+            except Exception:
+                pass  # non-fatal
+
             return {"ok": True, "result": res}
         except Exception as e:
             # Publish tool.execute.error event for UI dashboard
@@ -1084,6 +1225,20 @@ class Orchestrator:
                 )
             except Exception:
                 pass
+
+            # Log failed tool call to SessionStore
+            try:
+                _safe_args = {k: str(v) if isinstance(v, Path) else v for k, v in args.items()}
+                self.session_store.add_tool_call(
+                    session_id=getattr(self, "_current_task_id", "unknown"),
+                    tool_name=name,
+                    args=_safe_args,
+                    result={"error": str(e)},
+                    success=False,
+                )
+            except Exception:
+                pass  # non-fatal
+
             return {"ok": False, "error": str(e)}
 
     def _read_execution_trace(self) -> list:

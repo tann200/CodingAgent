@@ -1,7 +1,7 @@
 # CodingAgent Architecture
 
-> **Implementation Status**: Core implemented with LangGraph pipeline, EventBus dashboard, and role-based nodes
-> **Recent Updates**: Fixed infinite loop bug, TUI responsiveness, message duplication, tool result visibility, security fixes (bash allowlist, sandbox fail-closed, symlink traversal), fast-path routing
+> **Implementation Status**: Fully implemented — LangGraph 10-node pipeline, multi-file atomic rollback, advanced memory wired, repository intelligence, 493+ unit tests
+> **Recent Updates**: Multi-file edit atomicity (step transactions), ContextController wired, VectorStore kwarg fix, SymbolGraph enrichment, SkillLearner/SessionStore/plan validator wired, multi-language indexing, scenario evaluator, deterministic mode
 
 ## Implementation Stages
 
@@ -14,6 +14,13 @@
 | Stage 5 - EventBus Dashboard | ✅ Complete | Real-time UI updates via events |
 | Stage 6 - Security Hardening | ✅ Complete | Bash allowlist, sandbox fail-closed, symlink protection |
 | Stage 7 - Fast-Path Routing | ✅ Complete | Conditional routing for simple tasks |
+| Stage 8 - Core Stabilization | ✅ Complete | Context builder fix, robust plan parsing, WorkspaceGuard |
+| Stage 9 - Incremental Indexing | ✅ Complete | SHA256 hash-based change detection, multi-language (15+) |
+| Stage 10 - Repository Intelligence | ✅ Complete | ContextController wired, VectorStore fix, SymbolGraph enrichment |
+| Stage 11 - Wiring Sprint | ✅ Complete | SkillLearner, SessionStore, plan validator defaults wired |
+| Stage 12 - Multi-file Atomicity | ✅ Complete | Step transactions: begin/append/rollback via RollbackManager |
+| Stage 13 - Deterministic Mode | ✅ Complete | temperature=0, seed param, ScenarioEvaluator for regression tests |
+| Stage 14 - Test Coverage | ✅ Complete | 493+ unit tests across 16+ test files |
 
 ## Implementation Gaps (from gap-analysis.md)
 
@@ -28,6 +35,12 @@
 | 7 | **ReplanNode** - Split oversized patches into smaller steps | ✅ Complete |
 | 8 | **EvaluationNode** - Post-verification task completion check | ✅ Complete |
 | 9 | **EventBus Dashboard** - Real-time UI updates for file/tool/plan events | ✅ Complete |
+| 10 | **PlanValidatorNode** - Validates plans before execution | ✅ Complete |
+| 11 | **Advanced Memory Wired** - TrajectoryLogger, DreamConsolidator, ReviewAgent, RefactoringAgent, SkillLearner | ✅ Complete |
+| 12 | **Incremental AST Indexing** - Hash-based, multi-language, SymbolGraph incremental | ✅ Complete |
+| 13 | **Multi-file Atomicity** - Step-level transactional rollback | ✅ Complete |
+| 14 | **ContextController** - Token budget enforcement in analysis_node | ✅ Complete |
+| 15 | **SessionStore Wired** - Tool calls, plans, errors persisted to SQLite | ✅ Complete |
 
 ### Current Pipeline (Fully Implemented)
 
@@ -78,10 +91,10 @@ This document describes the core architecture of the local CodingAgent, includin
 3. **LangGraph Cognitive Pipeline** (`src/core/orchestration/graph/`)
    The system uses a LangGraph state machine with isolated node files in `src/core/orchestration/graph/nodes/`:
    - **perception_node** (`perception_node.py`): Understands user request, performs task decomposition, uses `operational` role with dynamic `context_hygiene` skill injection for debugging/searching tasks.
-   - **analysis_node** (`analysis_node.py`): Explores repository to gather relevant context before planning. Automatically executes `repo_summary()` at start and injects summary into context.
+   - **analysis_node** (`analysis_node.py`): Explores repository to gather relevant context before planning. Runs in 3 phases: (1) VectorStore semantic search (`vs.search(task, limit=10)`), (2) SymbolGraph enrichment (`sg.update_file()` + call graph), (3) ContextController token budget enforcement (`cc.enforce_budget()`). Automatically executes `repo_summary()` at start and injects summary into context.
    - **planning_node** (`planning_node.py`): Converts perception outputs into structured plans using `strategic` role.
-   - **execution_node** (`execution_node.py`): Enforces operational workflows, executes plan steps, uses `operational` role with dynamic `dry` skill injection when `len(relevant_files) > 2`. **Includes patch size guard** - intercepts `requires_split: True` from tool_contracts.py and triggers replan.
-   - **verification_node** (`verification_node.py`): Runs tests/linters/syntax checks on proposed edits.
+   - **execution_node** (`execution_node.py`): Enforces operational workflows, executes plan steps, uses `operational` role with dynamic `dry` skill injection when `len(relevant_files) > 2`. **Includes patch size guard** - intercepts `requires_split: True` from tool_contracts.py and triggers replan. Calls `orchestrator.begin_step_transaction()` at the start of each step to enable atomic multi-file rollback.
+   - **verification_node** (`verification_node.py`): Runs tests/linters/syntax checks on proposed edits. On failure, triggers `orchestrator.rollback_step_transaction()` to atomically restore all files written during the current step.
    - **evaluation_node** (`evaluation_node.py`): Post-verification review to decide if task goal is fully met. Routes to memory_sync (complete), step_controller (more work), or end.
    - **replan_node** (`replan_node.py`): Handles patch size violations by splitting oversized steps into 2-3 smaller, granular steps. Uses `planner` role.
    - **memory_update_node** (`memory_update_node.py`): Persists distilled context to TASK_STATE.md.
@@ -279,8 +292,12 @@ The TUI features:
 ## Repository Intelligence
 
 **Indexing** (`src/core/indexing/`):
-- `repo_indexer.py`: Parses Python files, extracts classes/functions, builds symbol index
-- `vector_store.py`: LanceDB-based semantic search using sentence-transformers
+- `repo_indexer.py`: Multi-language parser (15+ languages via regex), SHA256 hash-based incremental indexing, saves metadata to `repo_index_meta.json`. Version 3.0.
+- `vector_store.py`: LanceDB-based semantic search using sentence-transformers. Search API: `vs.search(query, limit=N)`.
+- `symbol_graph.py`: AST-based call graph. `update_file(path)` for incremental updates; wired in `analysis_node` Phase 2.4.
+
+**Context Management** (`src/core/context/`):
+- `context_controller.py`: Token budget enforcement. `prioritize_files()` assigns relevance scores, `enforce_budget()` trims to token limit, `get_relevant_snippets()` extracts key lines. Wired in `analysis_node` Phase 3.
 
 **Tools:**
 - `initialize_repo_intelligence()` - Indexes repository to .agent-context/repo_index.json
@@ -293,10 +310,14 @@ The TUI features:
 **Working Memory:** MessageManager holds in-memory conversation history.
 
 **Episodic Memory:**
-- `.agent-context/TASK_STATE.md` - Distilled task summary
+- `.agent-context/TASK_STATE.md` - Distilled task summary (LLM-based distillation every 5 steps)
 - `.agent-context/execution_trace.json` - Tool call log (for loop prevention)
 - `.agent-context/usage.json` - Cost tracking (tokens, latency, tool calls)
 - `.agent-context/checkpoints/` - State checkpoints for session recovery
+- `.agent-context/session.db` - SQLite: tool calls, plans, errors, decisions (SessionStore)
+- `.agent-context/snapshots/` - Pre-edit file snapshots for RollbackManager
+- `.agent-context/trajectories/` - Successful run logs (TrajectoryLogger)
+- `src/config/agent-brain/skills/` - Auto-created skill files (SkillLearner, ≥2 tool tasks)
 
 ## Tool Set (35 tools)
 
@@ -354,9 +375,27 @@ Configuration-only toolsets are stored under `src/config/toolsets/` as YAML file
 - `review.yaml` - Code review tools
 - `planning.yaml` - Planning tools
 
-### Session Store (`src/core/memory/session_store.py`)
-- SQLite-based conversation storage
+### Session Store (`src/core/context/session_store.py`)
+- SQLite-based conversation storage persisted to `.agent-context/session.db`
 - Tables: messages, tool_calls, errors, plans, decisions
+- Wired in `orchestrator.execute_tool` (tool calls), `planning_node` (plans), `debug_node` (errors)
+
+### Rollback Manager (`src/core/orchestration/rollback_manager.py`)
+- Pre-edit file snapshots stored in `.agent-context/snapshots/`
+- `snapshot_files(paths)` — capture files before write operations
+- `append_to_snapshot(id, path)` — accumulate additional files into a step transaction
+- `rollback(snapshot_id)` — restore all captured files atomically
+- `cleanup_old_snapshots(keep_last=5)` — housekeeping
+- **Step Transactions (multi-file atomicity):**
+  - `orchestrator.begin_step_transaction()` — called by `execution_node` at step start
+  - `execute_tool` appends each written file to the active step snapshot
+  - `orchestrator.rollback_step_transaction()` — called by `verification_node` on failure
+  - `debug_node` calls `rollback_manager.rollback()` on max retries exhausted
+
+### Scenario Evaluator (`src/core/evaluation/scenario_evaluator.py`)
+- `Scenario` dataclass for standardized test definitions
+- `ScenarioEvaluator` for running evaluation suites deterministically
+- Works with `deterministic=True` Orchestrator mode (temperature=0, seed param)
 
 ### Symbol Graph (`src/core/indexing/symbol_graph.py`)
 - AST-based code indexing
@@ -401,9 +440,12 @@ The inference module is self-contained within `src/core/inference/`:
 ## Reliability Features
 
 - **Tool Contracts** (`src/core/orchestration/tool_contracts.py`): Pydantic validation for tool results.
-- **Deterministic Mode**: Optional temperature=0, seed control for reproducible runs.
+- **Deterministic Mode**: Optional `deterministic=True` flag sets temperature=0 + seed for reproducible runs.
 - **Loop Prevention**: Duplicate action detection, dead-end detection, retry limits.
 - **Cost Tracking**: Tokens, latency, tool calls tracked in usage.json.
+- **Read-Before-Edit Guard**: `WRITE_TOOLS_REQUIRING_READ` frozenset covers `edit_file`, `write_file`, `edit_by_line_range`, `apply_patch` — write blocked if file not read first in current session.
+- **Multi-file Atomicity**: Step-level transactional snapshots — all files written in one execution step are bundled and atomically rolled back if verification fails.
+- **WorkspaceGuard**: Blocks modifications to protected paths for `write_file`, `edit_file`, `delete_file`.
 
 ## Supported Roles
 

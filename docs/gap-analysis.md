@@ -13,9 +13,9 @@ This document lists remaining implementation tasks needed to reach the target ar
 | T3 | Add Step Controller | P0 | ✅ Complete |
 | T4 | Wire Roles Per-Node | P1 | ✅ Complete |
 | T5 | Add Dynamic Skills Injection | P1 | ✅ Complete |
-| T6 | Add Plan Validator Node | P2 | ❌ |
-| T7 | Wire Advanced Memory Features | P2 | ❌ |
-| T8 | Add Incremental AST Indexing | P2 | ❌ |
+| T6 | Add Plan Validator Node | P2 | ✅ Complete |
+| T7 | Wire Advanced Memory Features | P2 | ✅ Complete |
+| T8 | Add Incremental AST Indexing | P2 | ✅ Complete |
 | T9 | Tool Timeout Protection | P1 | ✅ Complete |
 | T10 | Structured Verification Diagnostics | P1 | ✅ Complete |
 
@@ -87,6 +87,33 @@ This document lists remaining implementation tasks needed to reach the target ar
 - Plan references files
 - Plan has verification step
 - Steps are properly formatted
+- `enforce_warnings=True` by default (warnings treated as errors)
+
+**Acceptance criteria:** ✅
+
+---
+
+### T7: Wire Advanced Memory Features (Priority P2) ✅
+
+**Implementation in `memory_update_node.py`:**
+- **TrajectoryLogger**: Logs successful runs for training data
+- **DreamConsolidator**: Consolidates memories to prevent vector store growth
+- **ReviewAgent**: Reviews patches for security issues and TODO comments
+- **RefactoringAgent**: Detects code smells in modified Python files
+- **SkillLearner**: Auto-creates skill files from successful tasks with 2+ tool calls
+
+**Acceptance criteria:** ✅
+
+---
+
+### T8: Incremental AST Indexing (Priority P2) ✅
+
+**Implementation in `repo_indexer.py`:**
+- SHA256-based file hash tracking (version 3.0)
+- Metadata file tracks indexed files (`repo_index_meta.json`)
+- Only re-indexes changed files on subsequent runs
+- Added support for 15+ languages via regex-based symbol extraction
+- `SymbolGraph` wired in `analysis_node` Phase 2.4 for call-graph enrichment
 
 **Acceptance criteria:** ✅
 
@@ -118,114 +145,7 @@ This document lists remaining implementation tasks needed to reach the target ar
 
 ## Remaining Tasks
 
-### T6: Plan Validator Node (Priority P2)
-
-**Problem:** Weak plans can execute without validation.
-
-**Solution:** Add validation node between Planning and Execution.
-
-**Files to create:**
-- `src/core/orchestration/graph/nodes/plan_validator_node.py`
-
-**Validations:**
-- Plan has verification step
-- Plan references files
-- Plan steps are ordered
-
-**Acceptance criteria:**
-- [ ] Invalid plans rejected
-- [ ] Test: weak plan fails validation
-
----
-
-### T7: Wire Advanced Memory Features (Priority P2)
-
-**Problem:** Advanced features implemented but not wired.
-
-**Solution:** Connect TrajectoryLogger, DreamConsolidator, RefactoringAgent, ReviewAgent.
-
-| Feature | Action | Where to wire |
-|---------|--------|---------------|
-| TrajectoryLogger | Log each run | orchestrator.py after run_agent_once |
-| DreamConsolidator | Schedule at session end | orchestrator.py on session end event |
-| RefactoringAgent | Background proposer | New background task |
-| ReviewAgent | After execution | After execution_node in graph |
-| SkillLearner | After success | After successful verification |
-
-**Acceptance criteria:**
-- [ ] Trajectories logged to .agent-context/trajectories/
-- [ ] ReviewAgent runs after edits
-
----
-
-### T8: Incremental AST Indexing (Priority P2)
-
-**Problem:** Full rescan on every run.
-
-**Solution:** Add file watcher + hash comparison.
-
-**Files to create:**
-- `src/core/indexing/file_watcher.py`
-
-**Logic:**
-1. On file save, compute hash
-2. Compare with last indexed hash
-3. Only reparse if hash changed
-4. Update symbol_graph.db incrementally
-
-**Acceptance criteria:**
-- [ ] File changes detected
-- [ ] Only modified files reindexed
-- [ ] Test: modify file, verify incremental update
-
----
-
-### T9: Tool Timeout Protection (Priority P1)
-
-**Problem:** Tools can hang indefinitely.
-
-**Solution:** Add per-tool timeouts.
-
-**Files to modify:**
-- `src/core/orchestration/orchestrator.py`
-
-**Timeouts:**
-- Default tools: 30s
-- bash: 60s
-- run_tests: 120s
-- Output truncation: 500 lines
-
-**Acceptance criteria:**
-- [ ] Long-running tools terminated
-- [ ] Normalized error returned
-
----
-
-### T10: Structured Verification Diagnostics (Priority P1)
-
-**Problem:** Verification failures not structured.
-
-**Solution:** Parse pytest output into diagnostics.
-
-**Files to modify:**
-- `src/tools/verification_tools.py`
-
-**Output structure:**
-```python
-{
-    "error_type": "test_failure",
-    "file": "tests/test_x.py",
-    "line": 42,
-    "function": "test_login",
-    "message": "AssertionError: ..."
-}
-```
-
-**Acceptance criteria:**
-- [ ] Structured diagnostics in verification_result
-- [ ] DebugNode can consume diagnostics
-
----
+> **All tasks complete.** All T1–T10 items have been implemented. No open items remain.
 
 ## Architecture Comparison
 
@@ -244,15 +164,21 @@ perception → analysis → planning → execution → step_controller → verif
 ```
 
 ### Key Improvements
-1. **AnalysisNode** - Repository exploration before planning
-2. **DebugNode** - Self-healing with retry logic
-3. **StepController** - Enforces plan execution
+1. **AnalysisNode** - Repository exploration before planning (3-phase: VectorStore, SymbolGraph, ContextController)
+2. **DebugNode** - Self-healing with retry logic and LLM root-cause analysis
+3. **StepController** - Enforces plan execution one step at a time
 4. **ReplanNode** - Handles oversized patches
 5. **EvaluationNode** - Task completion verification
-6. **Node-Specific Roles** - analyst, debugger, reviewer, strategic, operational
-7. **Dynamic Skills** - Context-aware skill injection
-8. **EventBus Dashboard** - Real-time UI updates
-9. **YAML-only Format** - Tool parser uses YAML exclusively
+6. **PlanValidatorNode** - Validates plans before execution (enforce_warnings=True)
+7. **Node-Specific Roles** - analyst, debugger, reviewer, strategic, operational
+8. **Dynamic Skills** - Context-aware skill injection
+9. **EventBus Dashboard** - Real-time UI updates
+10. **YAML-only Format** - Tool parser uses YAML exclusively
+11. **Advanced Memory Wired** - TrajectoryLogger, DreamConsolidator, ReviewAgent, RefactoringAgent, SkillLearner
+12. **Multi-file Atomicity** - Step-level transactional snapshots via RollbackManager
+13. **ContextController** - Token budget enforcement in analysis_node
+14. **Multi-language Indexing** - 15+ languages (Python, JS/TS, Go, Rust, Java, etc.) via regex
+15. **SessionStore Wired** - Tool calls, plans, errors persisted to SQLite (session.db)
 
 ---
 

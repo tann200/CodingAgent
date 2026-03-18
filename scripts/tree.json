@@ -1,49 +1,17 @@
 {
-  "generated": "2026-03-13 19:10:51Z",
+  "generated": "2026-03-18 00:04:14Z",
   "nodes": {
-    "agent-brain": {
-      "path": "agent-brain",
-      "is_dir": true
-    },
-    "agent-brain/identity": {
-      "path": "agent-brain/identity",
-      "is_dir": true
-    },
-    "agent-brain/identity/LAWS.md": {
-      "path": "agent-brain/identity/LAWS.md",
-      "is_dir": false
-    },
-    "agent-brain/identity/SOUL.md": {
-      "path": "agent-brain/identity/SOUL.md",
-      "is_dir": false
-    },
-    "agent-brain/roles": {
-      "path": "agent-brain/roles",
-      "is_dir": true
-    },
-    "agent-brain/roles/operational.md": {
-      "path": "agent-brain/roles/operational.md",
-      "is_dir": false
-    },
-    "agent-brain/roles/strategic.md": {
-      "path": "agent-brain/roles/strategic.md",
-      "is_dir": false
-    },
-    "agent-brain/skills": {
-      "path": "agent-brain/skills",
-      "is_dir": true
-    },
-    "agent-brain/skills/context_hygiene.md": {
-      "path": "agent-brain/skills/context_hygiene.md",
-      "is_dir": false
-    },
-    "agent-brain/skills/dry.md": {
-      "path": "agent-brain/skills/dry.md",
-      "is_dir": false
-    },
     "docs": {
       "path": "docs",
       "is_dir": true
+    },
+    "docs/audit": {
+      "path": "docs/audit",
+      "is_dir": true
+    },
+    "docs/audit/audit-instructions.md": {
+      "path": "docs/audit/audit-instructions.md",
+      "is_dir": false
     },
     "docs/ARCHITECTURE.md": {
       "path": "docs/ARCHITECTURE.md",
@@ -53,44 +21,20 @@
       "path": "docs/DEVELOPMENT.md",
       "is_dir": false
     },
-    "docs/FINAL_AUDIT_REPORT.md": {
-      "path": "docs/FINAL_AUDIT_REPORT.md",
-      "is_dir": false
-    },
-    "docs/memory-implementation.md": {
-      "path": "docs/memory-implementation.md",
+    "docs/gap-analysis.md": {
+      "path": "docs/gap-analysis.md",
       "is_dir": false
     },
     "docs/MEMORY_ARCHITECTURE.md": {
       "path": "docs/MEMORY_ARCHITECTURE.md",
       "is_dir": false
     },
-    "docs/mvp-tasklist.md": {
-      "path": "docs/mvp-tasklist.md",
-      "is_dir": false
-    },
-    "docs/NEW_AUDIT_INSTRUCTIONS.md": {
-      "path": "docs/NEW_AUDIT_INSTRUCTIONS.md",
-      "is_dir": false
-    },
-    "docs/system_capability_report.md": {
-      "path": "docs/system_capability_report.md",
-      "is_dir": false
-    },
     "docs/system_map.md": {
       "path": "docs/system_map.md",
       "is_dir": false
     },
-    "docs/tooloptimization.md": {
-      "path": "docs/tooloptimization.md",
-      "is_dir": false
-    },
     "docs/tuispec.md": {
       "path": "docs/tuispec.md",
-      "is_dir": false
-    },
-    "docs/unified_plan.md": {
-      "path": "docs/unified_plan.md",
       "is_dir": false
     },
     "scripts": {
@@ -113,6 +57,10 @@
       "path": "scripts/diagnose_lmstudio.py",
       "is_dir": false
     },
+    "scripts/ensure_venv.sh": {
+      "path": "scripts/ensure_venv.sh",
+      "is_dir": false
+    },
     "scripts/fetch_ollama.py": {
       "path": "scripts/fetch_ollama.py",
       "is_dir": false
@@ -123,6 +71,10 @@
     },
     "scripts/list_prompts.py": {
       "path": "scripts/list_prompts.py",
+      "is_dir": false
+    },
+    "scripts/refresh_summaries.py": {
+      "path": "scripts/refresh_summaries.py",
       "is_dir": false
     },
     "scripts/run_generate.py": {
@@ -189,20 +141,88 @@
       "path": "src/adapters",
       "is_dir": true
     },
-    "src/adapters/lm_studio_adapter.py": {
-      "path": "src/adapters/lm_studio_adapter.py",
-      "is_dir": false
-    },
-    "src/adapters/ollama_adapter.py": {
-      "path": "src/adapters/ollama_adapter.py",
-      "is_dir": false
-    },
     "src/config": {
       "path": "src/config",
       "is_dir": true
     },
+    "src/config/agent-brain": {
+      "path": "src/config/agent-brain",
+      "is_dir": true
+    },
+    "src/config/agent-brain/identity": {
+      "path": "src/config/agent-brain/identity",
+      "is_dir": true
+    },
+    "src/config/agent-brain/identity/LAWS.md": {
+      "path": "src/config/agent-brain/identity/LAWS.md",
+      "is_dir": false
+    },
+    "src/config/agent-brain/identity/SOUL.md": {
+      "path": "src/config/agent-brain/identity/SOUL.md",
+      "is_dir": false
+    },
+    "src/config/agent-brain/roles": {
+      "path": "src/config/agent-brain/roles",
+      "is_dir": true
+    },
+    "src/config/agent-brain/roles/analyst.md": {
+      "path": "src/config/agent-brain/roles/analyst.md",
+      "is_dir": false
+    },
+    "src/config/agent-brain/roles/debugger.md": {
+      "path": "src/config/agent-brain/roles/debugger.md",
+      "is_dir": false
+    },
+    "src/config/agent-brain/roles/operational.md": {
+      "path": "src/config/agent-brain/roles/operational.md",
+      "is_dir": false
+    },
+    "src/config/agent-brain/roles/reviewer.md": {
+      "path": "src/config/agent-brain/roles/reviewer.md",
+      "is_dir": false
+    },
+    "src/config/agent-brain/roles/strategic.md": {
+      "path": "src/config/agent-brain/roles/strategic.md",
+      "is_dir": false
+    },
+    "src/config/agent-brain/skills": {
+      "path": "src/config/agent-brain/skills",
+      "is_dir": true
+    },
+    "src/config/agent-brain/skills/context_hygiene.md": {
+      "path": "src/config/agent-brain/skills/context_hygiene.md",
+      "is_dir": false
+    },
+    "src/config/agent-brain/skills/dry.md": {
+      "path": "src/config/agent-brain/skills/dry.md",
+      "is_dir": false
+    },
+    "src/config/toolsets": {
+      "path": "src/config/toolsets",
+      "is_dir": true
+    },
+    "src/config/toolsets/coding.yaml": {
+      "path": "src/config/toolsets/coding.yaml",
+      "is_dir": false
+    },
+    "src/config/toolsets/debug.yaml": {
+      "path": "src/config/toolsets/debug.yaml",
+      "is_dir": false
+    },
+    "src/config/toolsets/planning.yaml": {
+      "path": "src/config/toolsets/planning.yaml",
+      "is_dir": false
+    },
+    "src/config/toolsets/review.yaml": {
+      "path": "src/config/toolsets/review.yaml",
+      "is_dir": false
+    },
     "src/config/providers.json": {
       "path": "src/config/providers.json",
+      "is_dir": false
+    },
+    "src/config/schema.json": {
+      "path": "src/config/schema.json",
       "is_dir": false
     },
     "src/core": {
@@ -217,9 +237,41 @@
       "path": "src/core/context/context_builder.py",
       "is_dir": false
     },
+    "src/core/context/context_controller.py": {
+      "path": "src/core/context/context_controller.py",
+      "is_dir": false
+    },
+    "src/core/indexing": {
+      "path": "src/core/indexing",
+      "is_dir": true
+    },
+    "src/core/indexing/repo_indexer.py": {
+      "path": "src/core/indexing/repo_indexer.py",
+      "is_dir": false
+    },
+    "src/core/indexing/symbol_graph.py": {
+      "path": "src/core/indexing/symbol_graph.py",
+      "is_dir": false
+    },
+    "src/core/indexing/vector_store.py": {
+      "path": "src/core/indexing/vector_store.py",
+      "is_dir": false
+    },
     "src/core/inference": {
       "path": "src/core/inference",
       "is_dir": true
+    },
+    "src/core/inference/adapters": {
+      "path": "src/core/inference/adapters",
+      "is_dir": true
+    },
+    "src/core/inference/adapters/lm_studio_adapter.py": {
+      "path": "src/core/inference/adapters/lm_studio_adapter.py",
+      "is_dir": false
+    },
+    "src/core/inference/adapters/ollama_adapter.py": {
+      "path": "src/core/inference/adapters/ollama_adapter.py",
+      "is_dir": false
     },
     "src/core/inference/__init__.py": {
       "path": "src/core/inference/__init__.py",
@@ -233,6 +285,10 @@
       "path": "src/core/inference/llm_client.py",
       "is_dir": false
     },
+    "src/core/inference/llm_manager.py": {
+      "path": "src/core/inference/llm_manager.py",
+      "is_dir": false
+    },
     "src/core/inference/telemetry.py": {
       "path": "src/core/inference/telemetry.py",
       "is_dir": false
@@ -241,8 +297,20 @@
       "path": "src/core/memory",
       "is_dir": true
     },
+    "src/core/memory/advanced_features.py": {
+      "path": "src/core/memory/advanced_features.py",
+      "is_dir": false
+    },
     "src/core/memory/distiller.py": {
       "path": "src/core/memory/distiller.py",
+      "is_dir": false
+    },
+    "src/core/memory/memory_tools.py": {
+      "path": "src/core/memory/memory_tools.py",
+      "is_dir": false
+    },
+    "src/core/memory/session_store.py": {
+      "path": "src/core/memory/session_store.py",
       "is_dir": false
     },
     "src/core/orchestration": {
@@ -273,6 +341,10 @@
       "path": "src/core/orchestration/event_bus.py",
       "is_dir": false
     },
+    "src/core/orchestration/graph_factory.py": {
+      "path": "src/core/orchestration/graph_factory.py",
+      "is_dir": false
+    },
     "src/core/orchestration/message_manager.py": {
       "path": "src/core/orchestration/message_manager.py",
       "is_dir": false
@@ -281,12 +353,32 @@
       "path": "src/core/orchestration/orchestrator.py",
       "is_dir": false
     },
+    "src/core/orchestration/role_config.py": {
+      "path": "src/core/orchestration/role_config.py",
+      "is_dir": false
+    },
+    "src/core/orchestration/sandbox.py": {
+      "path": "src/core/orchestration/sandbox.py",
+      "is_dir": false
+    },
     "src/core/orchestration/schema.json": {
       "path": "src/core/orchestration/schema.json",
       "is_dir": false
     },
+    "src/core/orchestration/tool_contracts.py": {
+      "path": "src/core/orchestration/tool_contracts.py",
+      "is_dir": false
+    },
     "src/core/orchestration/tool_parser.py": {
       "path": "src/core/orchestration/tool_parser.py",
+      "is_dir": false
+    },
+    "src/core/orchestration/tool_schema.py": {
+      "path": "src/core/orchestration/tool_schema.py",
+      "is_dir": false
+    },
+    "src/core/orchestration/workspace_guard.py": {
+      "path": "src/core/orchestration/workspace_guard.py",
       "is_dir": false
     },
     "src/core/telemetry": {
@@ -299,10 +391,6 @@
     },
     "src/core/telemetry/metrics.py": {
       "path": "src/core/telemetry/metrics.py",
-      "is_dir": false
-    },
-    "src/core/llm_manager.py": {
-      "path": "src/core/llm_manager.py",
       "is_dir": false
     },
     "src/core/logger.py": {
@@ -325,16 +413,72 @@
       "path": "src/tools",
       "is_dir": true
     },
+    "src/tools/toolsets": {
+      "path": "src/tools/toolsets",
+      "is_dir": true
+    },
+    "src/tools/toolsets/coding.yaml": {
+      "path": "src/tools/toolsets/coding.yaml",
+      "is_dir": false
+    },
+    "src/tools/toolsets/debug.yaml": {
+      "path": "src/tools/toolsets/debug.yaml",
+      "is_dir": false
+    },
+    "src/tools/toolsets/loader.py": {
+      "path": "src/tools/toolsets/loader.py",
+      "is_dir": false
+    },
+    "src/tools/toolsets/planning.yaml": {
+      "path": "src/tools/toolsets/planning.yaml",
+      "is_dir": false
+    },
+    "src/tools/toolsets/review.yaml": {
+      "path": "src/tools/toolsets/review.yaml",
+      "is_dir": false
+    },
     "src/tools/file_tools.py": {
       "path": "src/tools/file_tools.py",
+      "is_dir": false
+    },
+    "src/tools/patch_tools.py": {
+      "path": "src/tools/patch_tools.py",
       "is_dir": false
     },
     "src/tools/registry.py": {
       "path": "src/tools/registry.py",
       "is_dir": false
     },
+    "src/tools/repo_analysis_tools.py": {
+      "path": "src/tools/repo_analysis_tools.py",
+      "is_dir": false
+    },
+    "src/tools/repo_summary.py": {
+      "path": "src/tools/repo_summary.py",
+      "is_dir": false
+    },
+    "src/tools/repo_tools.py": {
+      "path": "src/tools/repo_tools.py",
+      "is_dir": false
+    },
+    "src/tools/role_tools.py": {
+      "path": "src/tools/role_tools.py",
+      "is_dir": false
+    },
+    "src/tools/state_tools.py": {
+      "path": "src/tools/state_tools.py",
+      "is_dir": false
+    },
+    "src/tools/symbol_reader.py": {
+      "path": "src/tools/symbol_reader.py",
+      "is_dir": false
+    },
     "src/tools/system_tools.py": {
       "path": "src/tools/system_tools.py",
+      "is_dir": false
+    },
+    "src/tools/verification_tools.py": {
+      "path": "src/tools/verification_tools.py",
       "is_dir": false
     },
     "src/ui": {
@@ -407,10 +551,6 @@
     },
     "src/main.py": {
       "path": "src/main.py",
-      "is_dir": false
-    },
-    "src/tmp_app_started.log": {
-      "path": "src/tmp_app_started.log",
       "is_dir": false
     },
     "pyproject.toml": {
