@@ -46,7 +46,7 @@ def test_build_prompt_token_budgeting_truncation():
         {"name": "tool1", "description": "desc1"},
         {"name": "tool2", "description": "desc2"},
     ]
-    tools_content_len = len(
+    _ = len(
         "<available_tools>\nname: tool1\ndescription: desc1\nname: tool2\ndescription: desc2\n</available_tools>"
     )
 

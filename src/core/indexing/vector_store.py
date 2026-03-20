@@ -1,7 +1,12 @@
+import concurrent.futures
 import lancedb
+import logging
 import pandas as pd
+import sys
 from pathlib import Path
 from typing import List, Dict, Any
+
+logger = logging.getLogger(__name__)
 from pydantic import Field
 from lancedb.pydantic import LanceModel, Vector, pydantic_to_schema
 from tqdm import tqdm
@@ -47,14 +52,20 @@ class VectorStore:
         self.db_path = self.workdir / ".agent-context" / "lancedb"
         self.db_path.mkdir(parents=True, exist_ok=True)
         self.db = lancedb.connect(str(self.db_path))
-        if _HAS_ST_MODEL:
-            try:
-                self.model = SentenceTransformer('all-MiniLM-L6-v2')
-            except Exception:
-                # fallback if loading model fails
-                self.model = _DummyModel()
-        else:
-            self.model = _DummyModel()
+        # Lazy-load SentenceTransformer on first use (#34 fix — avoids ~2s startup penalty)
+        self._model: Any = None
+
+    @property
+    def model(self) -> Any:
+        if self._model is None:
+            if _HAS_ST_MODEL:
+                try:
+                    self._model = SentenceTransformer('all-MiniLM-L6-v2')
+                except Exception:
+                    self._model = _DummyModel()
+            else:
+                self._model = _DummyModel()
+        return self._model
 
     def _get_or_create_table(self, table_name: str, schema: Any):
         try:
@@ -116,7 +127,7 @@ class VectorStore:
 
         # Process in batches
         batch_size = 128
-        for i in tqdm(range(0, len(df_new), batch_size), desc="Embedding new symbols"):
+        for i in tqdm(range(0, len(df_new), batch_size), desc="Embedding new symbols", disable=not sys.stdout.isatty()):
             batch_df = df_new.iloc[i:i+batch_size].copy()
             
             embeddings = self.model.encode(batch_df['text'].tolist())
@@ -132,8 +143,25 @@ class VectorStore:
             return []
             
         query_vector = self.model.encode(query)
-        results = tbl.search(query_vector).limit(limit).to_pandas()
-        return results.to_dict("records")
+        # SentenceTransformer.encode returns 2D array for a list input; flatten to 1D for LanceDB
+        if hasattr(query_vector, "ndim") and query_vector.ndim > 1:
+            query_vector = query_vector.flatten()
+        # Also handle numpy array -> list conversion for LanceDB compatibility
+        if hasattr(query_vector, "tolist"):
+            query_vector = query_vector.tolist()
+        # Run the blocking LanceDB call in a thread so we can enforce a timeout (NEW-26).
+        # On a large index or slow disk the query can block analysis_node indefinitely.
+        def _do_search() -> pd.DataFrame:
+            return tbl.search(query_vector).limit(limit).to_pandas()
+
+        try:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _ex:
+                results = _ex.submit(_do_search).result(timeout=10)
+        except concurrent.futures.TimeoutError:
+            logger.warning("VectorStore.search timed out after 10 s — returning empty results")
+            return []
+        # Drop the raw embedding column — it's large and causes JSON serialisation failures (NEW-22)
+        return results.drop(columns=["vector"], errors="ignore").to_dict("records")
 
 if __name__ == "__main__":
     import json

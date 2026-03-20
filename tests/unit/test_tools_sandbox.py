@@ -6,7 +6,7 @@ ROOT = os.path.dirname(os.path.dirname(__file__))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from src.core.orchestration.orchestrator import Orchestrator, example_registry
+from src.core.orchestration.orchestrator import Orchestrator, example_registry  # noqa: E402
 
 
 def test_write_and_read_within_working_dir(tmp_path):

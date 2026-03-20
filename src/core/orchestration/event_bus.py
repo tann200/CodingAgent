@@ -3,20 +3,53 @@
 API:
 - EventBus.subscribe(event_name: str, callback: Callable[[Any], None]) -> None
 - EventBus.unsubscribe(event_name: str, callback: Callable[[Any], None]) -> None
-- EventBus.publish(event_name: str, payload: Any) -> None
+- EventBus.publish(event_name: str, payload: Any, correlation_id: str | None) -> None
 - EventBus.subscribe_to_agent(agent_id: str, callback) -> None
 - EventBus.publish_to_agent(agent_id: str, payload: Any) -> None
 
 Callbacks are executed synchronously in the publisher's thread. Subscriber exceptions are
 caught and ignored to keep the event bus robust for telemetry.
+
+Correlation IDs (#26):
+- Call ``new_correlation_id()`` at the start of each agent turn to mint and set a UUID.
+- All subsequent ``publish()`` calls in that context automatically stamp dict payloads
+  with ``_correlation_id``, allowing downstream logging to correlate related events.
+- Use ``get_correlation_id()`` / ``set_correlation_id()`` to read/write the current ID.
 """
 
 from __future__ import annotations
 
 import threading
+import uuid
+from contextvars import ContextVar
 from typing import Any, Callable, Dict, List, Optional, Set
 from dataclasses import dataclass, field
 from enum import IntEnum
+
+# ---------------------------------------------------------------------------
+# Correlation-ID context variable — set this at the start of each agent turn
+# so every EventBus.publish() and LLM call within that turn shares the same ID.
+# ---------------------------------------------------------------------------
+_current_correlation_id: ContextVar[Optional[str]] = ContextVar(
+    "_current_correlation_id", default=None
+)
+
+
+def set_correlation_id(correlation_id: str) -> None:
+    """Set the correlation ID for the current async/thread context."""
+    _current_correlation_id.set(correlation_id)
+
+
+def get_correlation_id() -> Optional[str]:
+    """Return the current correlation ID, or None if not set."""
+    return _current_correlation_id.get()
+
+
+def new_correlation_id() -> str:
+    """Generate a new UUID4 correlation ID and set it in the current context."""
+    cid = str(uuid.uuid4())
+    _current_correlation_id.set(cid)
+    return cid
 
 
 class MessagePriority(IntEnum):
@@ -56,7 +89,21 @@ class EventBus:
                 except ValueError:
                     pass
 
-    def publish(self, event_name: str, payload: Any) -> None:
+    def publish(
+        self,
+        event_name: str,
+        payload: Any,
+        correlation_id: Optional[str] = None,
+    ) -> None:
+        """Publish an event.
+
+        If *payload* is a dict and does not already contain ``_correlation_id``,
+        the current context correlation ID (or the supplied *correlation_id*) is
+        injected automatically so every subscriber can trace the event.
+        """
+        cid = correlation_id or _current_correlation_id.get()
+        if cid is not None and isinstance(payload, dict) and "_correlation_id" not in payload:
+            payload = {**payload, "_correlation_id": cid}
         with self._lock:
             subs = list(self._subscribers.get(event_name, []))
         for cb in subs:

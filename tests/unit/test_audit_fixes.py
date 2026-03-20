@@ -10,12 +10,10 @@ Tests for the 7 critical audit fixes:
 """
 
 import pytest
-import asyncio
-import tempfile
 import os
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock, patch, AsyncMock
+from unittest.mock import MagicMock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
 if ROOT not in sys.path:
@@ -62,7 +60,8 @@ class TestShellInjectionFix:
 
         for cmd in safe_commands:
             result = file_tools.bash(cmd, workdir=Path.cwd())
-            assert result["status"] == "ok" or result["status"] == "error"
+            # Safe commands must succeed (status == "ok"), not just return any status
+            assert result.get("status") == "ok", f"Expected 'ok' for safe command '{cmd}', got: {result}"
 
     def test_bash_rejects_unknown_commands(self):
         """Test that bash tool rejects unknown commands."""
@@ -511,7 +510,7 @@ class TestStateFields:
         assert state["debug_attempts"] == 0
         assert state["max_debug_attempts"] == 3
         assert state["verification_passed"] is None
-        assert state["step_controller_enabled"] == True
+        assert state["step_controller_enabled"]
 
 
 class TestSandboxEnforcement:

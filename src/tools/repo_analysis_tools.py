@@ -15,7 +15,11 @@ def analyze_repository(workdir: str) -> Dict[str, Any]:
             "dependency_relationships": {},
         }
 
-        files = list(workdir_path.glob("**/*.py"))
+        _EXCLUDE_DIRS = {".venv", "venv", "__pycache__", ".git", "node_modules", ".mypy_cache", ".pytest_cache", "dist", "build"}
+        files = [
+            f for f in workdir_path.glob("**/*.py")
+            if not any(part in _EXCLUDE_DIRS for part in f.parts)
+        ]
 
         for file in files:
             relative_path = str(file.relative_to(workdir_path))
@@ -48,7 +52,7 @@ def _analyze_file(file_path: Path):
             for node in ast.walk(tree):
                 if isinstance(node, ast.ClassDef):
                     summary["classes"].append(node.name)
-                elif isinstance(node, ast.FunctionDef):
+                elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     summary["functions"].append(node.name)
                 elif isinstance(node, ast.Import):
                     for alias in node.names:

@@ -47,7 +47,7 @@ def get_tools_for_toolset(name: str) -> List[str]:
 def get_toolset_for_role(role: str) -> str:
     """Map an input role name to a toolset name.
 
-    Canonical role names (from docs/gap-analysis.md):
+    Canonical role names:
       - analyst
       - strategic
       - operational

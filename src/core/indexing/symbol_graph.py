@@ -3,11 +3,87 @@ import ast
 import hashlib
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Multi-language regex patterns (#36)
+# Each entry maps suffix → {"function": pattern, "class": pattern}
+# Capture group 1 must be the symbol name.
+# ---------------------------------------------------------------------------
+_LANG_PATTERNS: Dict[str, Dict[str, re.Pattern]] = {
+    # JavaScript / TypeScript
+    ".js": {
+        "function": re.compile(
+            r"(?:^|\s)(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(",
+            re.MULTILINE,
+        ),
+        "class": re.compile(
+            r"(?:^|\s)(?:export\s+)?class\s+([A-Za-z_$][A-Za-z0-9_$]*)",
+            re.MULTILINE,
+        ),
+    },
+    ".ts": {
+        "function": re.compile(
+            r"(?:^|\s)(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*[<(]",
+            re.MULTILINE,
+        ),
+        "class": re.compile(
+            r"(?:^|\s)(?:export\s+)?(?:abstract\s+)?class\s+([A-Za-z_$][A-Za-z0-9_$]*)",
+            re.MULTILINE,
+        ),
+    },
+    ".tsx": {  # same as .ts
+        "function": re.compile(
+            r"(?:^|\s)(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*[<(]",
+            re.MULTILINE,
+        ),
+        "class": re.compile(
+            r"(?:^|\s)(?:export\s+)?(?:abstract\s+)?class\s+([A-Za-z_$][A-Za-z0-9_$]*)",
+            re.MULTILINE,
+        ),
+    },
+    ".jsx": {  # same as .js
+        "function": re.compile(
+            r"(?:^|\s)(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(",
+            re.MULTILINE,
+        ),
+        "class": re.compile(
+            r"(?:^|\s)(?:export\s+)?class\s+([A-Za-z_$][A-Za-z0-9_$]*)",
+            re.MULTILINE,
+        ),
+    },
+    # Go
+    ".go": {
+        "function": re.compile(r"^func\s+(?:\([^)]+\)\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*\(", re.MULTILINE),
+        "class": re.compile(r"^type\s+([A-Za-z_][A-Za-z0-9_]*)\s+struct\b", re.MULTILINE),
+    },
+    # Rust
+    ".rs": {
+        "function": re.compile(r"^(?:pub\s+)?(?:async\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*)\s*[<(]", re.MULTILINE),
+        "class": re.compile(r"^(?:pub\s+)?struct\s+([A-Za-z_][A-Za-z0-9_]*)", re.MULTILINE),
+    },
+    # Java
+    ".java": {
+        "function": re.compile(
+            r"(?:public|protected|private|static|\s)+[\w<>\[\]]+\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(",
+            re.MULTILINE,
+        ),
+        "class": re.compile(
+            r"(?:public\s+|private\s+|protected\s+|abstract\s+|final\s+)*class\s+([A-Za-z_][A-Za-z0-9_]*)",
+            re.MULTILINE,
+        ),
+    },
+}
+
+# All supported suffixes (Python handled separately via AST)
+_SUPPORTED_SUFFIXES = {".py"} | set(_LANG_PATTERNS.keys())
+
+_SKIP_DIRS = {".agent-context", "__pycache__", ".git", "node_modules", ".venv", "venv", "dist", "build"}
 
 
 class SymbolGraph:
@@ -58,6 +134,26 @@ class SymbolGraph:
         if not path.exists():
             return ""
         return hashlib.md5(path.read_bytes()).hexdigest()
+
+    def _parse_file_regex(self, path: Path) -> Dict[str, Any]:
+        """Extract symbols from non-Python files using language-specific regex patterns."""
+        patterns = _LANG_PATTERNS.get(path.suffix)
+        if not patterns:
+            return {"classes": [], "functions": [], "imports": [], "docstring": ""}
+        try:
+            source = path.read_text(encoding="utf-8", errors="ignore")
+            functions = [
+                {"name": m.group(1), "line": source[: m.start()].count("\n") + 1, "args": [], "docstring": ""}
+                for m in patterns["function"].finditer(source)
+            ]
+            classes = [
+                {"name": m.group(1), "line": source[: m.start()].count("\n") + 1, "bases": [], "methods": [], "docstring": ""}
+                for m in patterns["class"].finditer(source)
+            ]
+            return {"classes": classes, "functions": functions, "imports": [], "docstring": ""}
+        except Exception as e:
+            logger.warning(f"Failed to parse {path}: {e}")
+            return {"classes": [], "functions": [], "imports": [], "docstring": ""}
 
     def _parse_file(self, path: Path) -> Dict[str, Any]:
         """Extract symbols from Python file using AST."""
@@ -121,7 +217,7 @@ class SymbolGraph:
     def update_file(self, path: str):
         """Update symbols for a single file."""
         p = Path(path)
-        if not p.exists() or p.suffix != ".py":
+        if not p.exists() or p.suffix not in _SUPPORTED_SUFFIXES:
             return
 
         current_hash = self._get_file_hash(p)
@@ -131,7 +227,7 @@ class SymbolGraph:
             return
 
         logger.info(f"Updating symbol graph for: {path}")
-        symbols = self._parse_file(p)
+        symbols = self._parse_file(p) if p.suffix == ".py" else self._parse_file_regex(p)
 
         rel_path = str(p.relative_to(self.workdir))
         self.nodes[rel_path] = {
@@ -161,12 +257,53 @@ class SymbolGraph:
         self._save_graph()
 
     def find_calls(self, function_name: str) -> List[Dict]:
-        """Find functions that call a given function."""
+        """Find call sites where function_name is called.
+
+        Searches file contents (text scan) for occurrences of `function_name(` to
+        locate actual call sites, excluding function definitions.
+        """
+        import re
+
+        results = []
+        call_pattern = re.compile(r"\b" + re.escape(function_name) + r"\s*\(")
+        # Pattern to match function definitions (def function_name(...)
+        def_pattern = re.compile(
+            r"^\s*(?:async\s+)?def\s+" + re.escape(function_name) + r"\s*\("
+        )
+        for file_path in self.nodes.keys():
+            try:
+                p = Path(file_path)
+                if not p.is_absolute():
+                    p = self.workdir / p
+                if not p.exists():
+                    continue
+                text = p.read_text(encoding="utf-8", errors="ignore")
+                for i, line in enumerate(text.splitlines(), start=1):
+                    # Skip the function definition itself
+                    if def_pattern.match(line):
+                        continue
+                    if call_pattern.search(line):
+                        results.append(
+                            {
+                                "file": file_path,
+                                "line": i,
+                                "snippet": line.strip(),
+                            }
+                        )
+            except Exception:
+                continue
+        return results
+
+    def find_definitions(self, function_name: str) -> List[Dict]:
+        """Find definition sites for a given function or class name."""
         results = []
         for file_path, data in self.nodes.items():
             for func in data.get("symbols", {}).get("functions", []):
                 if func["name"] == function_name:
                     results.append({"file": file_path, "line": func["line"]})
+            for cls in data.get("symbols", {}).get("classes", []):
+                if cls["name"] == function_name:
+                    results.append({"file": file_path, "line": cls["line"]})
         return results
 
     def find_tests_for_module(self, module_name: str) -> List[Dict]:
@@ -220,8 +357,10 @@ class SymbolGraph:
         logger.info(f"Rebuilding symbol graph from {root}")
         self._init_empty()
 
-        for path in root.rglob("*.py"):
-            if ".agent-context" in str(path) or "__pycache__" in str(path):
+        for path in root.rglob("*"):
+            if not path.is_file() or path.suffix not in _SUPPORTED_SUFFIXES:
+                continue
+            if any(skip in path.parts for skip in _SKIP_DIRS):
                 continue
             self.update_file(str(path))
 
@@ -239,11 +378,13 @@ class IncrementalIndexer:
     def check_and_update(self, file_path: str = None):
         """Check for changes and update index."""
         if file_path:
-            if Path(file_path).suffix == ".py":
+            if Path(file_path).suffix in _SUPPORTED_SUFFIXES:
                 self.symbol_graph.update_file(file_path)
         else:
-            for path in self.workdir.rglob("*.py"):
-                if ".agent-context" in str(path) or "__pycache__" in str(path):
+            for path in self.workdir.rglob("*"):
+                if not path.is_file() or path.suffix not in _SUPPORTED_SUFFIXES:
+                    continue
+                if any(skip in path.parts for skip in _SKIP_DIRS):
                     continue
 
                 try:

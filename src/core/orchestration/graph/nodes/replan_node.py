@@ -23,7 +23,9 @@ async def replan_node(state: AgentState, config: Any) -> Dict[str, Any]:
     current_step = state.get("current_step") or 0
 
     brain = get_agent_brain_manager()
-    planner_role = brain.get_role("planner") or "You are a coding assistant."
+    # Use "strategic" — the canonical planning role. "planner" is a legacy alias that
+    # has no corresponding .md file and returns an empty string from get_role().
+    planner_role = brain.get_role("strategic") or "You are a strategic planner."
 
     orchestrator = _resolve_orchestrator(state, config)
     if orchestrator is None:
@@ -43,7 +45,7 @@ async def replan_node(state: AgentState, config: Any) -> Dict[str, Any]:
 
     # Build prompt for splitting the step
     try:
-        builder = ContextBuilder()
+        builder = ContextBuilder(working_dir=state.get("working_dir"))
         tools_list = [
             {"name": n, "description": m.get("description", "")}
             for n, m in orchestrator.tool_registry.tools.items()
@@ -106,11 +108,12 @@ Respond ONLY with the JSON array, no other text."""
         if new_steps and len(new_steps) > 0:
             # Replace the failed step with the new smaller steps
             if current_plan and current_step < len(current_plan):
-                # Insert new steps at current position
+                # Deep-copy existing step dicts to avoid sharing references with
+                # the original state list (LangGraph immutability requirement, NEW-17)
                 new_plan = (
-                    current_plan[:current_step]
+                    [dict(s) for s in current_plan[:current_step]]
                     + new_steps
-                    + current_plan[current_step + 1 :]
+                    + [dict(s) for s in current_plan[current_step + 1 :]]
                 )
             else:
                 new_plan = new_steps

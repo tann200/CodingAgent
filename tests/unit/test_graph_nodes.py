@@ -5,21 +5,15 @@ These tests verify the async behavior of LangGraph nodes.
 """
 
 import pytest
-from unittest.mock import MagicMock, patch, AsyncMock
-from typing import Any, Dict
+from unittest.mock import MagicMock
+from typing import Any
 
 from src.core.orchestration.graph.state import AgentState
 from src.core.orchestration.graph.nodes import (
-    planning_node,
     analysis_node,
-    execution_node,
-    perception_node,
     debug_node,
     verification_node,
-    evaluation_node,
     replan_node,
-    step_controller_node,
-    memory_update_node,
 )
 from src.core.orchestration.graph.builder import route_after_perception
 
@@ -74,12 +68,12 @@ class TestPlanningNode:
     @pytest.mark.asyncio
     async def test_planning_with_json_response(self):
         """Test planning node parses JSON correctly."""
-        state = _make_state(
+        _state = _make_state(
             task="Create a function to add numbers",
             history=[],
             system_prompt="You are a planner.",
         )
-        config = {}
+        __config = {}
 
         # The planning_node should handle the response
         # We test the parsing function directly
@@ -135,6 +129,31 @@ Let me know if you need anything else!"""
 
         # Should parse the steps, not the filler
         assert len(result) >= 1
+
+    def test_parse_plan_rejects_metadata_output(self):
+        """Strategy 4 must NOT convert Qwen-style metadata output to a plan."""
+        from src.core.orchestration.graph.nodes.planning_node import _parse_plan_content
+
+        # Typical Qwen3.5 planning metadata (not a real plan)
+        content = "PLAN_STEPS: 1\nCOMPLEXITY: simple\nDELEGATION_NEEDED: no"
+        result = _parse_plan_content(content)
+        assert result == [], f"Metadata must not become plan steps, got: {result}"
+
+    def test_parse_plan_rejects_file_listing_rows(self):
+        """File listing lines like '.DS_Store (file)' must not become plan steps."""
+        from src.core.orchestration.graph.nodes.planning_node import _parse_plan_content
+
+        content = ".DS_Store (file)\n.agent-context (directory)\ntest_dir (directory)"
+        result = _parse_plan_content(content)
+        assert result == [], f"File listing must not become plan steps, got: {result}"
+
+    def test_parse_plan_rejects_markdown_table_rows(self):
+        """Markdown table rows must not become plan steps."""
+        from src.core.orchestration.graph.nodes.planning_node import _parse_plan_content
+
+        content = "| File | Type |\n|------|------|\n| .DS_Store | file |\n| src | directory |"
+        result = _parse_plan_content(content)
+        assert result == [], f"Table rows must not become plan steps, got: {result}"
 
 
 class TestAnalysisNode:
@@ -237,7 +256,6 @@ class TestVerificationNode:
     @pytest.mark.asyncio
     async def test_verification_node_imports(self):
         """Test verification_node can be imported."""
-        from src.core.orchestration.graph.nodes import verification_node
 
         assert verification_node is not None
 
@@ -262,7 +280,6 @@ class TestDebugNode:
     @pytest.mark.asyncio
     async def test_debug_node_imports(self):
         """Test debug_node can be imported."""
-        from src.core.orchestration.graph.nodes import debug_node
 
         assert debug_node is not None
 
@@ -277,9 +294,7 @@ class TestEvaluationNode:
             evaluation_result="complete",
             verification_passed=True,
         )
-        config = {}
 
-        from src.core.orchestration.graph.nodes.evaluation_node import evaluation_node
 
         # Should handle the state
         assert state.get("evaluation_result") == "complete"
@@ -291,7 +306,6 @@ class TestReplanNode:
     @pytest.mark.asyncio
     async def test_replan_node_imports(self):
         """Test replan_node can be imported."""
-        from src.core.orchestration.graph.nodes import replan_node
 
         assert replan_node is not None
 
@@ -342,6 +356,40 @@ class TestMemoryUpdateNode:
         except Exception:
             # May fail if distiller has issues - that's ok for this test
             pass
+
+    @pytest.mark.asyncio
+    async def test_memory_update_node_returns_dict_on_failure(self, tmp_path):
+        """H14: memory_update_node must return a dict even when all sub-tasks fail.
+
+        Previously, bare except clauses swallowed all errors silently.
+        Now return_exceptions=True + logging ensures failures are captured.
+        """
+        from unittest.mock import patch
+        from src.core.orchestration.graph.nodes.memory_update_node import memory_update_node as mn
+
+        state = _make_state(
+            history=[{"role": "user", "content": "do something"}],
+            working_dir=str(tmp_path),
+            evaluation_result="complete",
+            task="do something",
+        )
+        config = {}
+
+        # Force distill_context to raise an exception
+        with patch("src.core.orchestration.graph.nodes.memory_update_node.distill_context",
+                   side_effect=RuntimeError("distiller exploded")):
+            result = await mn(state, config)
+
+        # Must still return a dict (not raise)
+        assert isinstance(result, dict)
+
+    @pytest.mark.asyncio
+    async def test_memory_update_uses_return_exceptions(self):
+        """H14: asyncio.gather must use return_exceptions=True so one failure doesn't abort others."""
+        import inspect
+        from src.core.orchestration.graph.nodes import memory_update_node as mn_module
+        src = inspect.getsource(mn_module)
+        assert "return_exceptions=True" in src, "gather must use return_exceptions=True (H14)"
 
 
 class TestPlanValidatorNode:

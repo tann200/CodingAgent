@@ -110,15 +110,15 @@ async def perception_node(state: AgentState, config: Any) -> Dict[str, Any]:
         if needs_decomposition:
             logger.info("Task appears multi-step, attempting decomposition")
             try:
-                builder = ContextBuilder()
-                decomp_prompt = f"""Analyze this task and break it down into small, independent steps. 
+                builder = ContextBuilder(working_dir=state.get("working_dir"))
+                decomp_prompt = f"""Analyze this task and break it down into small, independent steps.
 For each step, provide a brief description (max 10 words).
 Return ONLY a JSON array of step objects with format:
 [{{"description": "step 1 description"}}, {{"description": "step 2 description"}}, ...]
 
 Task: {task}
 
-Respond with ONLY valid JSON, no markdown, no explanation."""
+Respond with ONLY valid JSON, no markdown, no explanation. /no_think"""
 
                 messages = [
                     {
@@ -128,14 +128,40 @@ Respond with ONLY valid JSON, no markdown, no explanation."""
                     {"role": "user", "content": decomp_prompt},
                 ]
 
-                resp = await call_model(messages, stream=False, format_json=False)
+                from src.core.inference.thinking_utils import (
+                    budget_max_tokens,
+                    get_active_model_id,
+                    strip_thinking,
+                )
+                _model_id = get_active_model_id()
+                # Use a generous budget: thinking models may emit a reasoning
+                # block before the JSON even with /no_think in the prompt.
+                # 600 tokens gives ~400 for thinking + ~200 for the JSON array.
+                _decomp_max_tok = budget_max_tokens(600, _model_id)
+                resp = await call_model(messages, stream=False, format_json=False, max_tokens=_decomp_max_tok)
 
                 content = ""
+                finish_reason = ""
                 if isinstance(resp, dict):
                     if resp.get("choices"):
-                        ch = resp["choices"][0].get("message")
-                        if isinstance(ch, dict):
-                            content = ch.get("content") or ""
+                        ch = resp["choices"][0]
+                        finish_reason = ch.get("finish_reason", "")
+                        msg = ch.get("message")
+                        if isinstance(msg, dict):
+                            content = msg.get("content") or ""
+                # Part A: strip <think> blocks from reasoning models
+                if content:
+                    content = strip_thinking(content)
+
+                # If the response was truncated (finish_reason="length"), the
+                # JSON is likely incomplete — skip decomposition rather than
+                # parse garbage.  planning_node will handle it instead.
+                if finish_reason == "length":
+                    logger.warning(
+                        "perception_node: decomposition truncated (finish_reason=length); "
+                        "skipping — planning_node will decompose"
+                    )
+                    content = ""
 
                 # Parse the response
                 plan_steps = []
@@ -159,11 +185,13 @@ Respond with ONLY valid JSON, no markdown, no explanation."""
 
                 if plan_steps:
                     logger.info(f"Decomposed task into {len(plan_steps)} steps")
-                    # Store the plan and set first step as current
+                    # Store the plan and set first step as current.
+                    # Increment rounds (not reset to 0) so re-entry after plan_validator
+                    # rejection does not re-trigger decomposition (guard checks rounds == 0).
                     return {
                         "history": [],
                         "next_action": None,
-                        "rounds": 0,
+                        "rounds": (state.get("rounds") or 0) + 1,
                         "current_plan": plan_steps,
                         "current_step": 0,
                         "task": plan_steps[0]["description"],  # Focus on first step
@@ -260,7 +288,7 @@ Respond with ONLY valid JSON, no markdown, no explanation."""
         retrieved_snippets = []
 
     # Setup prompt
-    builder = ContextBuilder()
+    builder = ContextBuilder(working_dir=state.get("working_dir"))
     tools_list = [
         {"name": n, "description": m.get("description", "")}
         for n, m in orchestrator.tool_registry.tools.items()
@@ -488,18 +516,13 @@ Respond with ONLY valid JSON, no markdown, no explanation."""
         # 1. The current content itself contains tool_execution_result (we're re-parsing the same thing)
         # 2. NOT because the last message was a tool result (we need to parse new responses!)
         prior_history = state.get("history") or []
-        prior_had_tool_result = False
         try:
             if isinstance(prior_history, list) and prior_history:
                 last_msg = prior_history[-1]
-                last_role = last_msg.get("role", "")
-                last_content = str(last_msg.get("content", ""))
-                # Check if the PREVIOUS message was a tool result
-                prior_had_tool_result = last_role == "tool" or (
-                    last_role == "user" and "tool_execution_result" in last_content
-                )
+                if last_msg.get("role") == "tool":
+                    logger.info("perception_node: last message was a tool result")
         except Exception:
-            prior_had_tool_result = False
+            pass
 
         # Parse if: content exists AND content doesn't contain tool_execution_result
         # We should ALWAYS try to parse, even after tool results - we need new tool calls!

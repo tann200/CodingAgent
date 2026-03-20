@@ -4,7 +4,7 @@ class DummyEventBus:
     def publish(self, name, payload):
         self.events.append((name, payload))
 
-from src.core.inference.adapter_wrappers import AdapterWrapper
+from src.core.inference.adapter_wrappers import AdapterWrapper  # noqa: E402
 
 
 def test_publish_model_response_on_wrapper():

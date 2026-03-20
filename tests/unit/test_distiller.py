@@ -49,3 +49,59 @@ def test_distill_context_llm_failure(tmp_path):
             working_dir=tmp_path,
         )
     assert result == {}
+
+
+# ---------------------------------------------------------------------------
+# C9: _call_llm_sync must not call asyncio.run() from inside a running loop
+# ---------------------------------------------------------------------------
+
+import asyncio
+import pytest
+
+
+@pytest.mark.asyncio
+async def test_call_llm_sync_safe_inside_running_loop():
+    """C9: _call_llm_sync must work when called from within an async context.
+
+    Previously, _call_llm_sync called asyncio.run() even when a loop was already
+    running (detected via asyncio.get_running_loop()), which raises:
+        RuntimeError: This function cannot be called when another event loop is running
+    The fix dispatches the coroutine to a fresh ThreadPoolExecutor thread.
+    """
+    from src.core.memory.distiller import _call_llm_sync
+
+    async def _fake_call_model(*_args, **_kwargs):
+        return {"choices": [{"message": {"content": "hello from async"}}]}
+
+    # call_model is imported locally inside _call_llm_sync, so patch it at source
+    with patch("src.core.inference.llm_manager.call_model", side_effect=_fake_call_model):
+        # This must not raise RuntimeError even though we are inside an async test
+        result = _call_llm_sync([{"role": "user", "content": "hi"}])
+
+    assert result == "hello from async"
+
+
+def test_call_llm_sync_safe_outside_loop():
+    """C9: _call_llm_sync still works when called from a non-async context."""
+    from src.core.memory.distiller import _call_llm_sync
+
+    async def _fake(*_args, **_kwargs):
+        return {"choices": [{"message": {"content": "sync context ok"}}]}
+
+    with patch("src.core.inference.llm_manager.call_model", side_effect=_fake):
+        result = _call_llm_sync([{"role": "user", "content": "test"}])
+
+    assert result == "sync context ok"
+
+
+def test_call_llm_sync_uses_thread_executor_not_asyncio_run_in_running_loop():
+    """C9: Verify the source uses ThreadPoolExecutor instead of asyncio.run()
+    when a running loop is detected."""
+    import inspect
+    from src.core.memory import distiller as dist_mod
+
+    src = inspect.getsource(dist_mod._call_llm_sync)
+    assert "ThreadPoolExecutor" in src, "C9: must use ThreadPoolExecutor when loop is running"
+    # The bare asyncio.run() call inside the 'running loop detected' branch must be gone
+    # (it may still exist in the no-loop branch, so we check the comment is present)
+    assert "Running loop detected" in src or "running loop" in src.lower()

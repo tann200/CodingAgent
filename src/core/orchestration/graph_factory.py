@@ -2,14 +2,16 @@ from typing import Dict, Any, Optional
 from langgraph.graph import StateGraph, END
 from langchain_core.runnables import RunnableConfig
 from src.core.orchestration.graph.state import AgentState
-from src.core.orchestration.graph.nodes.workflow_nodes import (
-    perception_node,
-    execution_node,
-    memory_update_node,
-    planning_node,
-    verification_node,
+from src.core.orchestration.graph.nodes.perception_node import perception_node
+from src.core.orchestration.graph.nodes.execution_node import execution_node
+from src.core.orchestration.graph.nodes.memory_update_node import memory_update_node
+from src.core.orchestration.graph.nodes.planning_node import planning_node
+from src.core.orchestration.graph.nodes.verification_node import verification_node
+from src.core.orchestration.role_config import (
+    normalize_role,
+    CANONICAL_ROLES,
+    ROLE_ALIASES,
 )
-from src.core.orchestration.role_config import normalize_role, CANONICAL_ROLES, ROLE_ALIASES
 
 
 def should_after_planning(state: AgentState) -> str:
@@ -17,9 +19,9 @@ def should_after_planning(state: AgentState) -> str:
         return "end"
     if state.get("next_action"):
         return "execute"
-    if state.get("current_plan"):
-        if len(state.get("current_plan", [])) > 0:
-            return "execute"
+    current_plan = state.get("current_plan")
+    if current_plan and len(current_plan) > 0:
+        return "execute"
     if state.get("last_result"):
         return "memory_sync"
     return "end"
@@ -45,13 +47,15 @@ class GraphFactory:
         workflow = StateGraph(AgentState)
         workflow.add_node("perception", _create_wrapper(perception_node))
         workflow.add_node("planning", _create_wrapper(planning_node))
+        workflow.add_node("memory_sync", _create_wrapper(memory_update_node))
         workflow.set_entry_point("perception")
         workflow.add_edge("perception", "planning")
         workflow.add_conditional_edges(
             "planning",
             should_after_planning,
-            {"execute": "planning", "memory_sync": "planning", "end": END},
+            {"execute": END, "memory_sync": "memory_sync", "end": END},
         )
+        workflow.add_edge("memory_sync", END)
         return workflow.compile()
 
     @staticmethod
@@ -154,7 +158,7 @@ class HubAndSpokeCoordinator:
             "config": config or {},
             "status": "idle",
         }
-        if self.event_bus:
+        if self.event_bus and hasattr(self.event_bus, "_agent_ids"):
             self.event_bus._agent_ids.add(agent_id)
         return True
 
@@ -181,17 +185,22 @@ class HubAndSpokeCoordinator:
             return None
         agent["status"] = "running"
         try:
-            result = agent["graph"].ainvoke(
-                {
-                    "task": item["task"],
-                    "history": [],
-                    "verified_reads": [],
-                    "rounds": 0,
-                    "working_dir": orchestrator.working_dir,
-                    "system_prompt": orchestrator.msg_mgr.get_system_prompt(),
-                },
-                {"configurable": {"orchestrator": orchestrator}},
-            )
+            import concurrent.futures
+
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future = executor.submit(
+                    agent["graph"].ainvoke,
+                    {
+                        "task": item["task"],
+                        "history": [],
+                        "verified_reads": [],
+                        "rounds": 0,
+                        "working_dir": orchestrator.working_dir,
+                        "system_prompt": orchestrator.msg_mgr.get_system_prompt(),
+                    },
+                    {"configurable": {"orchestrator": orchestrator}},
+                )
+                result = future.result()
             agent["status"] = "completed"
             self.results[agent_id] = result
             return result

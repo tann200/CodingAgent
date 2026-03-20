@@ -1,6 +1,4 @@
-import pytest
 from src.core.indexing.vector_store import VectorStore
-from pathlib import Path
 import json
 
 

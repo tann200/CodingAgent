@@ -1,18 +1,84 @@
 from __future__ import annotations
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Tuple
 import math
 import json
-import re
 from pathlib import Path
+from functools import lru_cache
+
+# Module-level caches keyed by absolute file path (NEW-20).
+# ContextBuilder is re-instantiated on every node call, so instance-level caches
+# were always empty and provided zero benefit.  Module-level caches persist across
+# calls as long as the process is alive and the file has not changed on disk.
+_TEXT_CACHE: Dict[str, Tuple[float, str]] = {}   # path → (mtime, content)
+_JSON_CACHE: Dict[str, Tuple[float, Dict]] = {}   # path → (mtime, parsed)
+
+
+def _today_iso() -> str:
+    """Return today's date as YYYY-MM-DD (local time)."""
+    from datetime import date
+    return date.today().isoformat()
 
 
 class ContextBuilder:
-    def __init__(self, token_estimator: Optional[Callable[[str], int]] = None):
+    def __init__(
+        self,
+        token_estimator: Optional[Callable[[str], int]] = None,
+        working_dir: Optional[str] = None,
+    ):
         self.token_estimator: Callable[[str], int] = (
             token_estimator
             if token_estimator is not None
             else (lambda s: math.ceil(len(s) / 4))
         )  # Default to len/4 if no estimator provided
+        # Resolve working directory — use provided path, else cwd.
+        # Nodes should pass state["working_dir"] so files are found in the right location (NEW-10).
+        self._agent_context_dir: Path = (
+            Path(working_dir) if working_dir else Path.cwd()
+        ) / ".agent-context"
+
+    @staticmethod
+    def _read_text_cached(path: Path) -> Optional[str]:
+        """Read a text file, returning cached content if mtime unchanged."""
+        if not path.exists():
+            return None
+        try:
+            key = str(path)
+            mtime = path.stat().st_mtime
+            if key in _TEXT_CACHE and _TEXT_CACHE[key][0] == mtime:
+                return _TEXT_CACHE[key][1]
+            content = path.read_text(encoding="utf-8").strip()
+            _TEXT_CACHE[key] = (mtime, content)
+            return content
+        except Exception:
+            return None
+
+    @staticmethod
+    def _read_json_cached(path: Path) -> Dict:
+        """Read a JSON file, returning cached parsed dict if mtime unchanged."""
+        if not path.exists():
+            return {}
+        try:
+            key = str(path)
+            mtime = path.stat().st_mtime
+            if key in _JSON_CACHE and _JSON_CACHE[key][0] == mtime:
+                return _JSON_CACHE[key][1]
+            data = json.loads(path.read_text(encoding="utf-8"))
+            _JSON_CACHE[key] = (mtime, data)
+            return data
+        except Exception:
+            return {}
+
+    def _get_task_state_content(self) -> Optional[str]:
+        """Get TASK_STATE.md content with module-level mtime caching."""
+        return self._read_text_cached(self._agent_context_dir / "TASK_STATE.md")
+
+    def _get_todo_content(self) -> Optional[str]:
+        """Get TODO.md content with module-level mtime caching."""
+        return self._read_text_cached(self._agent_context_dir / "TODO.md")
+
+    def _get_summary_cache(self) -> Dict:
+        """Get file_summaries.json with module-level mtime caching."""
+        return self._read_json_cached(self._agent_context_dir / "file_summaries.json")
 
     def _sanitize_text(self, text: str) -> str:
         """Sanitize file / conversation text to reduce prompt-injection risk.
@@ -128,33 +194,38 @@ class ContextBuilder:
         #     always has access to prior context without needing a tool call.
         #     (Mirrors the compaction injection used by Claude Code / OpenCode.)
         try:
-            task_state_path = Path.cwd() / ".agent-context" / "TASK_STATE.md"
-            if task_state_path.exists():
-                ts_content = task_state_path.read_text(encoding="utf-8").strip()
-                # Only inject when there is meaningful content beyond the empty template
-                _empty = "# Current Task\n\n# Completed Steps\n\n# Next Step"
-                if ts_content and ts_content.strip() != _empty.strip() and len(ts_content) > 60:
-                    system_parts.append(
-                        f"<session_summary>\n{ts_content}\n</session_summary>"
-                    )
+            ts_content = self._get_task_state_content()
+            # Only inject when there is meaningful content beyond the empty template
+            _empty = "# Current Task\n\n# Completed Steps\n\n# Next Step"
+            if (
+                ts_content
+                and ts_content.strip() != _empty.strip()
+                and len(ts_content) > 60
+            ):
+                system_parts.append(
+                    f"<session_summary>\n{ts_content}\n</session_summary>"
+                )
         except Exception:
             pass  # never fail prompt building due to missing TASK_STATE.md
+
+        # 1b. Task progress — auto-injected from TODO.md when it exists.
+        #     TODO.md is the authoritative, deterministic plan tracker (written by planning_node,
+        #     updated by execution_node). It takes precedence over TASK_STATE.md for step status.
+        try:
+            todo_content = self._get_todo_content()
+            if todo_content and len(todo_content) > 20:
+                system_parts.append(
+                    f"<task_progress>\n{todo_content}\n</task_progress>"
+                )
+        except Exception:
+            pass  # never fail prompt building due to missing TODO.md
 
         # 1b. Repository Intelligence block (if any retrieved snippets provided)
         repo_block = ""
         if retrieved_snippets:
             try:
-                # Try reading summary cache
-                cwd = Path.cwd()
-                summary_cache = {}
-                cache_path = cwd / ".agent-context" / "file_summaries.json"
-                if cache_path.exists():
-                    try:
-                        summary_cache = json.loads(
-                            cache_path.read_text(encoding="utf-8")
-                        )
-                    except Exception:
-                        summary_cache = {}
+                # Use cached file summaries
+                summary_cache = self._get_summary_cache()
 
                 repo_entries = []
                 for snip in retrieved_snippets[:10]:
@@ -206,7 +277,10 @@ class ContextBuilder:
             "  arg_name: arg_value\n"
             "```\n"
             "IMPORTANT: Use markdown YAML format (not XML). Do not use <tool> tags.\n"
-            "Wait for the user to provide the tool execution result before proceeding.\n"
+            "After executing a tool, your response will include the tool's result.\n"
+            "If the tool result completes the user's task, do NOT make more tool calls.\n"
+            "Simply summarize the result or indicate task completion.\n"
+            "Only call another tool if the result requires follow-up action.\n"
             "</output_format>"
         )
         system_parts.append(format_instr)
@@ -252,12 +326,12 @@ class ContextBuilder:
             and truncated_conversation[0].get("role") == "assistant"
         ):
             # Insert task as user message before the assistant messages
-            prompt_content = f"<task>\n{safe_task_description}\n</task>\n\nExecute the next action using the YAML tool format."
+            prompt_content = f"<task>\n{safe_task_description}\n</task>\n<context>\nToday's date: {_today_iso()}\n</context>\n\nExecute the next action using the YAML tool format."
             # Insert at index 1 (after system message)
             built_messages.insert(1, {"role": "user", "content": prompt_content})
         # Final check: is the last message Assistant or is the list missing User?
         elif not built_messages or built_messages[-1].get("role") != "user":
-            prompt_content = f"<task>\n{safe_task_description}\n</task>\n\nExecute the next action using the YAML tool format."
+            prompt_content = f"<task>\n{safe_task_description}\n</task>\n<context>\nToday's date: {_today_iso()}\n</context>\n\nExecute the next action using the YAML tool format."
             built_messages.append({"role": "user", "content": prompt_content})
         else:
             # If the last message is already User, we can either wrap it in <task>

@@ -7,8 +7,8 @@ def test_audit_file_writer(tmp_path):
     # ensure clean
     set_audit_log_path(logpath)
     # enqueue some audit events
-    ok1 = audit_file_access(str(tmp_path / 'a.txt'), 'write', allowed=True)
-    ok2 = audit_file_access(str(tmp_path / 'b.txt'), 'read', allowed=True)
+    _ok1 = audit_file_access(str(tmp_path / 'a.txt'), 'write', allowed=True)
+    _ok2 = audit_file_access(str(tmp_path / 'b.txt'), 'read', allowed=True)
     # wait up to 5 seconds for background worker to flush
     timeout = 5.0
     waited = 0.0

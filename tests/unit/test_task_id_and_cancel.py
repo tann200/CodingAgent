@@ -1,7 +1,4 @@
-import pytest
 import threading
-from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 from src.core.orchestration.orchestrator import Orchestrator
 
@@ -66,7 +63,6 @@ class TestCancelEvent:
 
     def test_cancel_event_is_set_on_interrupt(self, tmp_path):
         """Test that cancel event can be set and checked."""
-        orch = Orchestrator(working_dir=str(tmp_path))
 
         cancel_event = threading.Event()
 
@@ -78,7 +74,6 @@ class TestCancelEvent:
 
     def test_cancel_event_cleared_for_new_task(self, tmp_path):
         """Test that cancel event is cleared when starting a new task."""
-        orch = Orchestrator(working_dir=str(tmp_path))
 
         cancel_event = threading.Event()
         cancel_event.set()

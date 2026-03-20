@@ -1,5 +1,5 @@
 import logging
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List
 
 from src.core.orchestration.graph.state import AgentState
 
@@ -177,10 +177,14 @@ async def plan_validator_node(state: AgentState, config: Any) -> Dict[str, Any]:
     """
     logger.info("=== plan_validator_node START ===")
 
-    # Get validation config from state or use defaults
+    # Get validation config from state or use defaults.
+    # enforce_warnings=False: warnings are advisory only and do NOT block execution.
+    # Previously defaulted to True, which caused an infinite loop: any plan lacking
+    # an explicit "test/verify" step was rejected → routed back to perception →
+    # LLM re-generated the same plan → rejected again → loop forever.
     enforce_warnings = state.get(
-        "plan_enforce_warnings", True
-    )  # Default True - enforce warnings as errors
+        "plan_enforce_warnings", False
+    )  # Default False - warnings do not block execution
     strict_mode = state.get(
         "plan_strict_mode", False
     )  # Keep False - strict is aggressive

@@ -82,7 +82,7 @@ class ExecutionSandbox:
             return {"status": "error", "error": "File not found"}
 
         try:
-            source = target_file.read_text()
+            source = target_file.read_text(encoding="utf-8")
             ast.parse(source)
             return {"status": "ok", "valid": True}
         except SyntaxError as e:

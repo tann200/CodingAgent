@@ -27,7 +27,12 @@ def delegate_task(
     to keep your own context window clean.
 
     Args:
-        role: The role of the subagent ('researcher', 'coder', 'reviewer', 'planner')
+        role: The role of the subagent. Valid values:
+              'analyst'    (or 'researcher') - deep research / repo exploration
+              'operational' (or 'coder')     - code implementation and edits
+              'reviewer'                     - code review and QA
+              'strategic'  (or 'planner')    - task decomposition and planning
+              'debugger'                     - root-cause analysis and fixes
         subtask_description: Highly detailed instructions for the subtask
         working_dir: The directory to execute in (defaults to current directory)
 
@@ -37,7 +42,8 @@ def delegate_task(
     Raises:
         ValueError: If an invalid role is provided
     """
-    valid_roles = {"researcher", "coder", "reviewer", "planner"}
+    valid_roles = {"researcher", "coder", "reviewer", "planner",
+                   "analyst", "operational", "strategic", "debugger"}
     if role not in valid_roles:
         return (
             f"Error: Invalid role '{role}'. Valid roles are: {', '.join(valid_roles)}"
@@ -58,11 +64,25 @@ def delegate_task(
             return f"Error: Could not create graph for role '{role}'"
 
         # 2. Setup the isolated initial state
+        # Map legacy role names to canonical so AgentBrainManager finds the right prompts
+        _legacy_to_canonical = {
+            "researcher": "analyst",
+            "coder": "operational",
+            "planner": "strategic",
+            "reviewer": "reviewer",
+            # canonical names pass through unchanged
+            "analyst": "analyst",
+            "operational": "operational",
+            "strategic": "strategic",
+            "debugger": "debugger",
+        }
+        canonical_role = _legacy_to_canonical.get(role, role)
         brain = get_agent_brain_manager()
-        system_prompt = brain.compile_system_prompt(role)
+        system_prompt = brain.compile_system_prompt(canonical_role)
 
         initial_state = {
             "task": subtask_description,
+            "session_id": None,
             "working_dir": str(workdir_path),
             "history": [],
             "system_prompt": system_prompt,
@@ -76,32 +96,27 @@ def delegate_task(
             "plan_validation": None,
             "verification_result": None,
             "evaluation_result": None,
+            "delegations": [],
+            "delegation_results": None,
         }
 
-        # 3. Execute the subagent synchronously (blocking until done)
-        # Note: In production with real async, use graph.ainvoke()
+        # 3. Execute the subagent synchronously (blocking until done).
+        # Always run in a dedicated thread so we never conflict with an existing event loop.
+        # The lambda ensures the coroutine is created inside the worker thread, not on the
+        # calling thread (which would be unsafe when passed across threads).
+        import concurrent.futures
+
         try:
-            # Try async first
-            try:
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    # We're in an async context, can't block - use run_in_executor
-                    import concurrent.futures
-
-                    with concurrent.futures.ThreadPoolExecutor() as executor:
-                        future = executor.submit(
-                            asyncio.run, graph.ainvoke(initial_state)
-                        )
-                        final_state = future.result()
-                else:
-                    final_state = asyncio.run(graph.ainvoke(initial_state))
-            except RuntimeError:
-                # No event loop, run directly
-                final_state = asyncio.run(graph.ainvoke(initial_state))
-
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(
+                    lambda: asyncio.run(graph.ainvoke(initial_state))
+                )
+                final_state = future.result()
         except AttributeError:
             # Fallback to sync invoke if ainvoke not available
-            final_state = graph.invoke(initial_state)
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(lambda: graph.invoke(initial_state))
+                final_state = future.result()
 
         # 4. Extract and summarize the result
         if isinstance(final_state, dict):
@@ -171,27 +186,37 @@ def list_subagent_roles() -> Dict[str, Any]:
         Dictionary of available roles and descriptions
     """
     roles = {
-        "researcher": {
+        "analyst": {
             "description": "Deep research and repository analysis",
             "best_for": "Exploring codebase, finding patterns, understanding architecture",
+            "aliases": ["researcher"],
         },
-        "coder": {
+        "operational": {
             "description": "Code implementation and refactoring",
-            "best_for": "Writing new code, implementing features, refactoring",
+            "best_for": "Writing new code, implementing features, editing files",
+            "aliases": ["coder"],
+        },
+        "strategic": {
+            "description": "Task decomposition and planning",
+            "best_for": "Breaking down complex tasks, creating execution plans",
+            "aliases": ["planner"],
         },
         "reviewer": {
             "description": "Code review and verification",
             "best_for": "Reviewing patches, checking for issues, verifying changes",
+            "aliases": [],
         },
-        "planner": {
-            "description": "Task decomposition and planning",
-            "best_for": "Breaking down complex tasks, creating execution plans",
+        "debugger": {
+            "description": "Root-cause analysis and bug fixing",
+            "best_for": "Diagnosing failures, analysing tracebacks, producing fixes",
+            "aliases": [],
         },
     }
 
     return {
         "status": "ok",
         "available_roles": roles,
+        "note": "Pass the canonical role name (e.g. 'analyst') or any alias to delegate_task.",
     }
 
 
@@ -211,10 +236,11 @@ async def delegate_task_async(
     Returns:
         Summary of the subagent's work
     """
-    # Run the sync version in a thread to avoid blocking
+    # Run the sync version in a thread to avoid blocking.
+    # max_workers=1: only one task is submitted per executor, no need for an unbounded pool (NEW-16).
     import concurrent.futures
 
-    with concurrent.futures.ThreadPoolExecutor() as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
         future = executor.submit(
             delegate_task,
             role,

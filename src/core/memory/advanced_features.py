@@ -1,11 +1,15 @@
 from __future__ import annotations
 import json
 import logging
+import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
+
+# Lock protecting concurrent trajectory file writes (NEW-21)
+_trajectory_lock = threading.Lock()
 
 
 class TrajectoryLogger:
@@ -43,8 +47,9 @@ class TrajectoryLogger:
         filename = f"trajectory_{session_id}.json"
         filepath = self.trajectory_dir / filename
 
-        with open(filepath, "w") as f:
-            json.dump(trajectory, f, indent=2)
+        with _trajectory_lock:
+            with open(filepath, "w", encoding="utf-8") as f:
+                json.dump(trajectory, f, indent=2)
 
         logger.info(f"Trajectory logged: {filename}")
         return str(filepath)
@@ -87,7 +92,7 @@ class TrajectoryLogger:
             Path(output_path) if output_path else self.workdir / "training_data.json"
         )
 
-        with open(output, "w") as f:
+        with open(output, "w", encoding="utf-8") as f:
             json.dump(trajectories, f, indent=2)
 
         return str(output)
@@ -111,12 +116,22 @@ class DreamConsolidator:
 
         task_state = self.workdir / ".agent-context" / "TASK_STATE.md"
         if task_state.exists():
-            content = task_state.read_text()
+            content = task_state.read_text(encoding="utf-8")
 
             if "def " in content or "class " in content:
                 consolidated["patterns"].append("code_generation")
 
-            if "error" in content.lower() or "failed" in content.lower():
+            # Use more specific patterns to avoid false positives on section headings
+            if any(
+                p in content.lower()
+                for p in [
+                    "traceback",
+                    "exception:",
+                    "fixerror",
+                    "fix error",
+                    "debug attempt",
+                ]
+            ):
                 consolidated["patterns"].append("error_recovery")
 
             if "test" in content.lower():
@@ -125,7 +140,7 @@ class DreamConsolidator:
         summary_file = (
             self.memory_dir / f"consolidated_{datetime.now().strftime('%Y%m%d')}.json"
         )
-        with open(summary_file, "w") as f:
+        with open(summary_file, "w", encoding="utf-8") as f:
             json.dump(consolidated, f, indent=2)
 
         return consolidated
@@ -161,19 +176,24 @@ class RefactoringAgent:
         smells = []
 
         try:
-            source = p.read_text()
+            source = p.read_text(encoding="utf-8")
             tree = ast.parse(source)
 
             for node in ast.walk(tree):
-                if isinstance(node, ast.FunctionDef):
-                    if len(node.body) > 50:
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    # Use actual line span (end_lineno - lineno) rather than body node count
+                    line_span = (
+                        getattr(node, "end_lineno", node.lineno) - node.lineno + 1
+                    )
+                    if line_span > 50:
                         smells.append(
                             {
                                 "type": "long_function",
+                                "file_path": str(p.relative_to(self.workdir)),
                                 "name": node.name,
                                 "line": node.lineno,
                                 "severity": "medium",
-                                "suggestion": f"Function {node.name} has {len(node.body)} lines. Consider splitting.",
+                                "suggestion": f"Function {node.name} is {line_span} lines long. Consider splitting.",
                             }
                         )
 
@@ -181,6 +201,7 @@ class RefactoringAgent:
                         smells.append(
                             {
                                 "type": "too_many_parameters",
+                                "file_path": str(p.relative_to(self.workdir)),
                                 "name": node.name,
                                 "line": node.lineno,
                                 "severity": "low",
@@ -189,14 +210,20 @@ class RefactoringAgent:
                         )
 
                 if isinstance(node, ast.ClassDef):
-                    if len(node.body) > 20:
+                    method_count = sum(
+                        1
+                        for n in node.body
+                        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    )
+                    if method_count > 20:
                         smells.append(
                             {
                                 "type": "large_class",
+                                "file_path": str(p.relative_to(self.workdir)),
                                 "name": node.name,
                                 "line": node.lineno,
                                 "severity": "medium",
-                                "suggestion": f"Class {node.name} has {len(node.body)} members.",
+                                "suggestion": f"Class {node.name} has {method_count} methods.",
                             }
                         )
 
@@ -204,6 +231,31 @@ class RefactoringAgent:
             logger.warning(f"Failed to analyze {file_path}: {e}")
 
         return smells
+
+    def save_smells(self, smells: List[Dict], append: bool = True) -> Optional[Path]:
+        """Save detected smells to .agent-context/code_smells.json."""
+        if not smells:
+            return None
+
+        smells_path = self.workdir / ".agent-context" / "code_smells.json"
+        smells_path.parent.mkdir(parents=True, exist_ok=True)
+
+        existing_smells = {}
+        if append and smells_path.exists():
+            try:
+                existing_smells = json.loads(smells_path.read_text())
+            except Exception:
+                pass
+
+        for smell in smells:
+            file_path = smell.get("file_path")
+            if file_path:
+                if file_path not in existing_smells:
+                    existing_smells[file_path] = []
+                existing_smells[file_path].append(smell)
+
+        smells_path.write_text(json.dumps(existing_smells, indent=2))
+        return smells_path
 
     def suggest_refactoring(self, file_path: str) -> Dict[str, Any]:
         """Generate refactoring suggestions."""
@@ -273,6 +325,13 @@ class ReviewAgent:
 
         return review
 
+    def save_review(self, review: Dict[str, Any], append: bool = False) -> Path:
+        """Save review to .agent-context/last_review.json."""
+        review_path = self.workdir / ".agent-context" / "last_review.json"
+        review_path.parent.mkdir(parents=True, exist_ok=True)
+        review_path.write_text(json.dumps(review, indent=2))
+        return review_path
+
 
 class SkillLearner:
     """Learns and creates new skills from successful task completion."""
@@ -309,7 +368,7 @@ class SkillLearner:
         safe_name = name.lower().replace(" ", "_")
         filepath = self.skill_dir / f"{safe_name}.md"
 
-        with open(filepath, "w") as f:
+        with open(filepath, "w", encoding="utf-8") as f:
             f.write(content)
 
         return str(filepath)

@@ -2,8 +2,6 @@
 Dedicated tests for SymbolGraph and IncrementalIndexer.
 """
 
-import pytest
-from pathlib import Path
 from src.core.indexing.symbol_graph import SymbolGraph, IncrementalIndexer
 
 
@@ -20,7 +18,9 @@ class TestSymbolGraphParsePython:
 
     def test_parse_class_methods(self, tmp_path):
         f = tmp_path / "mod.py"
-        f.write_text("class MyClass:\n    def method_a(self): pass\n    def method_b(self): pass\n")
+        f.write_text(
+            "class MyClass:\n    def method_a(self): pass\n    def method_b(self): pass\n"
+        )
         sg = SymbolGraph(workdir=str(tmp_path))
         symbols = sg._parse_file(f)
         cls = symbols["classes"][0]
@@ -56,7 +56,12 @@ class TestSymbolGraphParsePython:
         f.write_text("def (:\n    pass\n")
         sg = SymbolGraph(workdir=str(tmp_path))
         symbols = sg._parse_file(f)
-        assert symbols == {"classes": [], "functions": [], "imports": [], "docstring": ""}
+        assert symbols == {
+            "classes": [],
+            "functions": [],
+            "imports": [],
+            "docstring": "",
+        }
 
 
 class TestSymbolGraphIncrementalUpdate:
@@ -86,7 +91,9 @@ class TestSymbolGraphIncrementalUpdate:
         sg.update_file(str(f))
         f.write_text("def updated(): pass\ndef added(): pass\n")
         sg.update_file(str(f))
-        fn_names = [fn["name"] for fn in sg.nodes["evolving.py"]["symbols"]["functions"]]
+        fn_names = [
+            fn["name"] for fn in sg.nodes["evolving.py"]["symbols"]["functions"]
+        ]
         assert "updated" in fn_names
         assert "added" in fn_names
 
@@ -214,9 +221,118 @@ class TestIncrementalIndexer:
         assert info["type"] == "function"
 
     def test_find_references(self, tmp_path):
+        """Test find_references (which uses find_calls) finds call sites, not definitions."""
+        # File with function definition and a call to it
         f = tmp_path / "ref.py"
-        f.write_text("def ref_func(): pass\n")
+        f.write_text("def ref_func(): pass\nresult = ref_func()\n")
         indexer = IncrementalIndexer(workdir=str(tmp_path))
         indexer.check_and_update(str(f))
+        # Should find the call site (line 2), not the definition (line 1)
         refs = indexer.find_references("ref_func")
         assert len(refs) >= 1
+        assert refs[0]["line"] == 2  # Should be the call, not the definition
+
+
+# ---------------------------------------------------------------------------
+# #36: Multi-language SymbolGraph support
+# ---------------------------------------------------------------------------
+
+class TestSymbolGraphMultiLanguage:
+    """#36: SymbolGraph regex-based parsing for JS/TS/Go/Rust/Java."""
+
+    def test_parse_js_function(self, tmp_path):
+        f = tmp_path / "app.js"
+        f.write_text("function greet(name) { return name; }\n")
+        sg = SymbolGraph(workdir=str(tmp_path))
+        symbols = sg._parse_file_regex(f)
+        names = [fn["name"] for fn in symbols["functions"]]
+        assert "greet" in names
+
+    def test_parse_js_class(self, tmp_path):
+        f = tmp_path / "widget.js"
+        f.write_text("class MyWidget extends Base { }\n")
+        sg = SymbolGraph(workdir=str(tmp_path))
+        symbols = sg._parse_file_regex(f)
+        names = [c["name"] for c in symbols["classes"]]
+        assert "MyWidget" in names
+
+    def test_parse_ts_async_function(self, tmp_path):
+        f = tmp_path / "service.ts"
+        f.write_text("export async function fetchData(url: string): Promise<any> { }\n")
+        sg = SymbolGraph(workdir=str(tmp_path))
+        symbols = sg._parse_file_regex(f)
+        names = [fn["name"] for fn in symbols["functions"]]
+        assert "fetchData" in names
+
+    def test_parse_go_function_and_struct(self, tmp_path):
+        f = tmp_path / "main.go"
+        f.write_text("func handleRequest(w http.ResponseWriter) {}\ntype Server struct {}\n")
+        sg = SymbolGraph(workdir=str(tmp_path))
+        symbols = sg._parse_file_regex(f)
+        fn_names = [fn["name"] for fn in symbols["functions"]]
+        cls_names = [c["name"] for c in symbols["classes"]]
+        assert "handleRequest" in fn_names
+        assert "Server" in cls_names
+
+    def test_parse_rust_fn_and_struct(self, tmp_path):
+        f = tmp_path / "lib.rs"
+        f.write_text("pub fn compute(x: i32) -> i32 { x }\npub struct Config {}\n")
+        sg = SymbolGraph(workdir=str(tmp_path))
+        symbols = sg._parse_file_regex(f)
+        fn_names = [fn["name"] for fn in symbols["functions"]]
+        cls_names = [c["name"] for c in symbols["classes"]]
+        assert "compute" in fn_names
+        assert "Config" in cls_names
+
+    def test_parse_java_class_and_method(self, tmp_path):
+        f = tmp_path / "Service.java"
+        f.write_text(
+            "public class UserService {\n"
+            "    public String getName(String id) { return id; }\n"
+            "}\n"
+        )
+        sg = SymbolGraph(workdir=str(tmp_path))
+        symbols = sg._parse_file_regex(f)
+        cls_names = [c["name"] for c in symbols["classes"]]
+        assert "UserService" in cls_names
+
+    def test_update_file_indexes_js(self, tmp_path):
+        f = tmp_path / "index.js"
+        f.write_text("function init() {}\n")
+        sg = SymbolGraph(workdir=str(tmp_path))
+        sg.update_file(str(f))
+        assert "index.js" in sg.nodes
+        fn_names = [fn["name"] for fn in sg.nodes["index.js"]["symbols"]["functions"]]
+        assert "init" in fn_names
+
+    def test_update_file_skips_unsupported_extension(self, tmp_path):
+        f = tmp_path / "notes.txt"
+        f.write_text("not code\n")
+        sg = SymbolGraph(workdir=str(tmp_path))
+        sg.update_file(str(f))
+        assert len(sg.nodes) == 0
+
+    def test_rebuild_index_includes_non_python(self, tmp_path):
+        (tmp_path / "a.py").write_text("def alpha(): pass\n")
+        (tmp_path / "b.js").write_text("function beta() {}\n")
+        (tmp_path / "c.ts").write_text("export class Gamma {}\n")
+        sg = SymbolGraph(workdir=str(tmp_path))
+        sg.rebuild_index(str(tmp_path))
+        assert len(sg.nodes) == 3
+
+    def test_rebuild_index_skips_node_modules(self, tmp_path):
+        nm = tmp_path / "node_modules"
+        nm.mkdir()
+        (nm / "lib.js").write_text("function dep() {}\n")
+        (tmp_path / "app.js").write_text("function app() {}\n")
+        sg = SymbolGraph(workdir=str(tmp_path))
+        sg.rebuild_index(str(tmp_path))
+        assert "app.js" in sg.nodes
+        assert not any("node_modules" in k for k in sg.nodes)
+
+    def test_incremental_indexer_picks_up_ts_file(self, tmp_path):
+        f = tmp_path / "handler.ts"
+        f.write_text("async function handleEvent(e: Event) {}\n")
+        indexer = IncrementalIndexer(workdir=str(tmp_path))
+        indexer.check_and_update(str(f))
+        assert "handler.ts" in indexer.symbol_graph.nodes

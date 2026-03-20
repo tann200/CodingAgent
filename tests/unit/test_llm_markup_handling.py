@@ -1,4 +1,3 @@
-import pytest
 from src.ui.textual_app_impl import TextualAppImpl
 
 

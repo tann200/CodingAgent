@@ -1,7 +1,8 @@
 # CodingAgent Architecture
 
-> **Implementation Status**: Fully implemented — LangGraph 10-node pipeline, multi-file atomic rollback, advanced memory wired, repository intelligence, 493+ unit tests
-> **Recent Updates**: Signal-based timeout fix (non-main-thread safety), multi-file edit atomicity (step transactions), ContextController wired, SkillLearner/SessionStore/plan validator wired, deterministic mode, telemetry layer
+> **Implementation Status**: Fully implemented — LangGraph 12-node pipeline, multi-file atomic rollback, advanced memory wired, repository intelligence, 560+ unit tests
+> **Recent Updates (2026-03)**: Role prompts rewritten for small-model optimization (9B); verification node upgraded with JS/TS auto-detection and proactive test trigger; bash tool expanded with platform-specific commands; tool audit fixes (patch_tools, symbol_reader, subagent_tools canonical roles); new JS/TS verification tools (run_js_tests, run_ts_check, run_eslint)
+> **Audit Fixes (2026-03)**: All Phase 1 (Critical) and Phase 2 (Robustness) findings from security audit have been implemented. See Security Audit Fixes section for details.
 
 ## Implementation Stages
 
@@ -20,8 +21,66 @@
 | Stage 11 - Wiring Sprint | ✅ Complete | SkillLearner, SessionStore, plan validator defaults wired |
 | Stage 12 - Multi-file Atomicity | ✅ Complete | Step transactions: begin/append/rollback via RollbackManager |
 | Stage 13 - Deterministic Mode | ✅ Complete | temperature=0, seed param, ScenarioEvaluator for regression tests |
-| Stage 14 - Test Coverage | ✅ Complete | 493+ unit tests across 16+ test files |
+| Stage 14 - Test Coverage | ✅ Complete | 470+ unit tests across 16 test files |
 | Stage 15 - Thread Safety | ✅ Complete | Signal-based timeout guarded by main-thread check |
+| Stage 16 - Delegation & Parallel Memory | ✅ Complete | Delegation node for subagent spawning, parallel memory ops, auto-save methods |
+| Stage 17 - Security Audit Fixes | ✅ Complete | All Critical and High severity audit findings resolved |
+
+---
+
+## Security Audit Fixes (2026-03)
+
+All Phase 1 (Critical Stability) and Phase 2 (Robustness) findings from the system audit have been implemented:
+
+### Phase 1 — Critical Stability Fixes
+
+| Finding | Fix Applied | File |
+|---------|-------------|------|
+| C1 — Delegation Node Infinite Loop | Edge now goes directly from `delegation` to `END` instead of routing back to `memory_sync` | `graph/builder.py:519` |
+| C2 — State Mutation Bug | Removed in-place state mutation; routing functions now return string labels only | `graph/builder.py:110-170` |
+| C3 — Shell Injection via bash() | Added code-execution flag blocking (`-c`, `-e`, `-r`, `--eval`, `--execute`) for interpreters | `file_tools.py:516-527` |
+| C4 — Path Traversal in grep() | Replaced `startswith()` with `Path.is_relative_to()` for proper boundary checking | `system_tools.py:57` |
+| C5 — Path Traversal in checkpoint restore | Added regex validation `^[a-zA-Z0-9_\-]+$` for checkpoint_id | `state_tools.py:97-98` |
+| C6 — Path Traversal in preflight_check | Replaced `startswith()` with `Path.is_relative_to()` | `orchestrator.py:1072` |
+| C10 — Python Version Hard Pin | Changed `!= (3, 11)` to `< (3, 11)` to allow Python 3.11+ | `tests/conftest.py:8` |
+| C8/C11 — SQLite WAL Mode | Enabled `PRAGMA journal_mode=WAL` and `busy_timeout=5000` for concurrent access | `session_store.py:30-32, 39-41` |
+
+### Phase 2 — Robustness Fixes
+
+| Finding | Fix Applied | File |
+|---------|-------------|------|
+| C9 — distiller.py ThreadPoolExecutor Leak | Simplified async handling to remove ThreadPoolExecutor + asyncio.run() pattern | `distiller.py:9-50` |
+| H8 — _MODEL_CACHE Thread Safety | Added `threading.RLock` around all cache access | `llm_manager.py:37, 73-78, 117-119` |
+| H3 — startup.py Timeout | Applied timeout using `asyncio.wait_for()` | `startup.py:49` |
+| H4 — TextualAppBase History Race | Added `threading.Lock` around `self.history` access | `textual_app_impl.py:80, 93-94, 143-144` |
+| H8 — repo_indexer Regex Group Access | Used `match.lastindex` to safely iterate available groups | `repo_indexer.py:110-111` |
+| H2 — VectorStore Vector Shape | Added `.flatten()` and `.tolist()` for 2D→1D conversion | `vector_store.py:141-146` |
+| H1 — debug_node Orchestrator Resolution | Now uses `_resolve_orchestrator()` helper | `debug_node.py:51` |
+| T5 — Patch Size Counter | Fixed to count diff lines (not characters), excluding headers | `tool_contracts.py:42-44` |
+| H16 — session_store Message Order | Changed `ORDER BY` to `ASC` for chronological order | `session_store.py:114` |
+| Test — Always-passing Assertion | Fixed to check specific status `"ok"` not union | `test_audit_fixes.py:64` |
+
+### Phase 3 — Capability Improvements
+
+| # | Fix | Status | File |
+|---|-----|--------|------|
+| 24 | Fix repo_indexer type classification regex | ✅ Done | `repo_indexer.py:128-143` |
+| 28 | Single-pass directory scan in repo_summary.py | ✅ Done | `repo_summary.py:63-71` |
+| 25 | Add encoding='utf-8' to file opens | ✅ Done | `advanced_features.py`, `orchestrator.py`, `sandbox.py` |
+| 23 | Fix SymbolGraph.find_calls | ✅ Done | `symbol_graph.py:163-200` |
+| 27 | Cache TASK_STATE.md in ContextBuilder | ✅ Done | `context_builder.py:8-75` |
+| 29 | Extract _safe_resolve utility | Pending | Multiple tools |
+| 30 | Standardize tool return format | ✅ Done (grep) | `system_tools.py` — `status:"ok"` added to success paths |
+| 22 | Implement scenario_evaluator.run_scenario() | ✅ Done | `scenario_evaluator.py:163-178` — agent_factory() invoked |
+| 26 | Add correlation IDs | Pending | Multiple files |
+
+### Security Improvements Summary
+
+- **Path Traversal**: All path checks now use `Path.is_relative_to()` instead of prefix matching
+- **Shell Injection**: Interpreter commands with code-execution flags are now blocked
+- **Thread Safety**: All shared state (caches, history, connections) now protected by locks
+- **SQLite Concurrency**: WAL mode enabled with busy timeout prevents database locked errors
+- **Python Compatibility**: Tests now run on Python 3.11, 3.12, and 3.13
 
 ---
 
@@ -29,11 +88,11 @@
 
 ```
 Fast-Path (simple 1-step task):
-  perception → execution → verification → evaluation → (memory_sync | end)
+  perception → execution → verification → evaluation → (memory_sync | delegation | end)
 
 Full Pipeline (complex multi-step task):
   perception → analysis → planning → execution → step_controller
-            → verification → evaluation → (memory_sync | step_controller | end)
+            → verification → evaluation → (memory_sync | delegation | step_controller | end)
 
 Patch-too-large path:
   execution → replan → step_controller → execution (smaller step)
@@ -46,16 +105,30 @@ Patch-too-large path:
 
 **Node Role Mapping:**
 
-| Node | Role |
-|------|------|
-| `perception_node` | operational |
-| `analysis_node` | analyst |
-| `planning_node` | strategic |
-| `execution_node` | operational |
-| `debug_node` | debugger |
-| `verification_node` | reviewer |
-| `evaluation_node` | reviewer |
-| `replan_node` | planner |
+| Node | Role | LLM Calls | Notes |
+|------|------|-----------|-------|
+| `perception_node` | `operational` | ✅ Yes | Main reasoning node — task parsing, tool call generation |
+| `planning_node` | `strategic` | ✅ Yes | Generates structured JSON plan via LLM |
+| `debug_node` | `debugger` | ✅ Yes | Error analysis and fix generation via LLM |
+| `replan_node` | `strategic` | ✅ Yes | Step splitting for oversized patches |
+| `analysis_node` | N/A | ❌ Tool-based | VectorStore + SymbolGraph + ContextController |
+| `execution_node` | `operational` | ⚠️ Optional | LLM call only if no pre-set action |
+| `verification_node` | N/A | ❌ Tool-based | pytest/ruff/tsc/jest — deterministic |
+| `evaluation_node` | N/A | ❌ State-based | Pure routing logic |
+| `step_controller_node` | N/A | ❌ State-based | Step gating; rarely active in main happy path |
+| `plan_validator_node` | N/A | ❌ State-based | Plan structure validation |
+| `delegation_node` | N/A | ❌ Spawns subagents | Post-execution parallel subagent launch |
+| `memory_update_node` | N/A | ❌ Tool-based | Distillation + parallel memory ops |
+
+**Subagent Roles** (via `delegate_task` tool):
+
+| Role | Canonical Name | Best For |
+|------|---------------|----------|
+| `analyst` (alias: `researcher`) | `analyst` | Deep repo exploration before planning |
+| `operational` (alias: `coder`) | `operational` | Isolated code implementation |
+| `strategic` (alias: `planner`) | `strategic` | Subtask decomposition |
+| `reviewer` | `reviewer` | Post-execution QA, code review |
+| `debugger` | `debugger` | Root-cause analysis in isolation |
 
 ---
 
@@ -87,17 +160,18 @@ Patch-too-large path:
 
    | File | Node | Description |
    |------|------|-------------|
-   | `perception_node.py` | `perception_node` | Understands the user request, decomposes tasks, extracts tool calls from YAML. Uses `operational` role. Injects `context_hygiene` skill for debug/search tasks. |
-   | `analysis_node.py` | `analysis_node` | Explores the repository before planning. Three phases: (1) VectorStore semantic search, (2) SymbolGraph call graph enrichment, (3) ContextController token budget enforcement. Runs `repo_summary()` at start. Uses `analyst` role. |
-   | `planning_node.py` | `planning_node` | Converts perception outputs into a structured step-by-step plan. Cross-session plan persistence via `last_plan.json`. Uses `strategic` role. |
-   | `execution_node.py` | `execution_node` | Executes plan steps. Calls `begin_step_transaction()`, dispatches tools, advances plan state. Intercepts `requires_split` flag for replan. Uses `operational` role; injects `dry` skill when >2 relevant files. |
-   | `verification_node.py` | `verification_node` | Runs tests, linter, and syntax checks. On failure calls `rollback_step_transaction()` to atomically restore all files written in the step. Uses `reviewer` role. |
-   | `evaluation_node.py` | `evaluation_node` | Post-verification review — decides if the goal is fully met. Routes to `memory_sync` (complete), `step_controller` (more work), or `end`. Uses `reviewer` role. |
-   | `debug_node.py` | `debug_node` | Analyses verification failures and attempts fixes. Enforces max 3 retry limit; on exhaustion calls `rollback_manager.rollback()`. Uses `debugger` role. |
-   | `replan_node.py` | `replan_node` | Splits oversized patches (>200 lines) into 2–3 smaller targeted steps. Uses `planner` role. |
-   | `step_controller_node.py` | `step_controller_node` | Enforces single-step execution from the plan; gates next-step dispatch. |
-   | `memory_update_node.py` | `memory_update_node` | Persists distilled context to `.agent-context/TASK_STATE.md`. |
-   | `plan_validator_node.py` | `validate_plan()` | Standalone function validating a plan before execution: checks step count, file references, verification step (strict mode). |
+   | `perception_node.py` | `perception_node` | Understands the user request, decomposes tasks, extracts tool calls from YAML. Uses `operational` role for LLM calls. Injects `context_hygiene` skill for debug/search tasks. |
+   | `analysis_node.py` | `analysis_node` | Explores the repository before planning using tool calls (not LLM). Three phases: (1) VectorStore semantic search, (2) SymbolGraph call graph enrichment, (3) ContextController token budget enforcement. Runs `repo_summary()` at start. |
+   | `planning_node.py` | `planning_node` | Converts perception outputs into a structured step-by-step plan via LLM. Cross-session plan persistence via `last_plan.json`. Uses `strategic` role. |
+   | `execution_node.py` | `execution_node` | Executes plan steps via tool calls. Calls `begin_step_transaction()`, dispatches tools, advances plan state. Intercepts `requires_split` flag for replan. Injects `dry` skill when >2 relevant files. |
+   | `verification_node.py` | `verification_node` | Runs tests, linter, and syntax checks via tool calls. On failure calls `rollback_step_transaction()` to atomically restore all files written in the step. |
+   | `evaluation_node.py` | `evaluation_node` | Post-verification review — decides if the goal is fully met based on state. Routes to `memory_sync` (complete), `step_controller` (more work), or `end`. |
+   | `debug_node.py` | `debug_node` | Analyses verification failures and attempts fixes via LLM. Enforces max 3 retry limit; on exhaustion calls `rollback_manager.rollback()`. Uses `debugger` role. |
+   | `replan_node.py` | `replan_node` | Splits oversized patches (>200 lines) into 2–3 smaller targeted steps via LLM. Uses `planner` role. |
+    | `step_controller_node.py` | `step_controller_node` | Enforces single-step execution from the plan; gates next-step dispatch. |
+    | `delegation_node.py` | `delegation_node` | Spawns subagents for independent parallel tasks (background memory ops, code analysis). Reads `state["delegations"]`, uses `asyncio.gather()` for parallel execution. |
+    | `memory_update_node.py` | `memory_update_node` | Persists distilled context to `.agent-context/TASK_STATE.md`. Parallelizes all memory operations via `asyncio.gather()`: TrajectoryLogger, DreamConsolidator, ReviewAgent, RefactoringAgent. |
+    | `plan_validator_node.py` | `validate_plan()` | Standalone function validating a plan before execution: checks step count, file references, verification step (strict mode). |
    | `node_utils.py` | — | Shared utilities: `_resolve_orchestrator()` (robust config/state lookup), `_notify_provider_limit()` (UI event for provider errors). |
    | `workflow_nodes.py` | — | Re-export shim for backward compatibility — imports all nodes and re-exports them from one place. |
 
@@ -191,6 +265,11 @@ Central registry of named tools. Tools are small functions registered with metad
 - `run_tests(workdir, test_files)` — runs pytest with structured output (passed/failed counts, tracebacks)
 - `run_linter(workdir)` — runs ruff/flake8
 - `syntax_check(workdir)` — quick `py_compile` across repo
+- `run_js_tests(workdir)` — auto-detects jest/vitest/mocha from `package.json` and runs them via npx
+- `run_ts_check(workdir)` — TypeScript type-check via `tsc --noEmit`
+- `run_eslint(workdir, paths)` — ESLint with compact output parsing
+
+**Auto-detection:** `verification_node` checks for `package.json` at startup. JS/TS projects automatically use the JS test suite instead of pytest/ruff.
 
 ### State Tools (`src/tools/state_tools.py`)
 - `create_state_checkpoint(...)` — saves agent state snapshot to `.agent-context/checkpoints/`
@@ -255,9 +334,16 @@ SQLite-based persistence to `.agent-context/session.db`. Tables: `messages`, `to
 ### Advanced Features (`src/core/memory/advanced_features.py`)
 - `TrajectoryLogger` — stores successful run logs to `.agent-context/trajectories/`
 - `DreamConsolidator` — background memory consolidation
-- `RefactoringAgent` — code smell detection and suggestions
-- `ReviewAgent` — patch review and feedback
+- `RefactoringAgent` — code smell detection and suggestions; `save_smells()` writes to `.agent-context/code_smells.json`
+- `ReviewAgent` — patch review and feedback; `save_review()` writes to `.agent-context/last_review.json`
 - `SkillLearner` — auto-creates skill files in `src/config/agent-brain/skills/` from successful ≥2-tool tasks
+
+**Parallel Memory Operations:**
+`memory_update_node` runs all memory operations concurrently via `asyncio.gather()`:
+- TrajectoryLogger (file I/O)
+- DreamConsolidator (background consolidation)
+- ReviewAgent (async via ThreadPoolExecutor)
+- RefactoringAgent (parallel file analysis)
 
 ### Episodic Memory files
 | Path | Description |

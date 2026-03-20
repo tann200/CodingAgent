@@ -33,6 +33,7 @@ class DashboardState:
     tool_activity: List[Dict[str, Any]] = field(default_factory=list)
     plan_progress: Dict[str, Any] = field(default_factory=dict)
     verification_status: Optional[str] = None
+    last_tool_result: Optional[str] = None  # formatted result of last tool call
 
 
 class MainViewController:
@@ -107,11 +108,17 @@ class MainViewController:
         if isinstance(payload, dict):
             tool = payload.get("tool", "unknown")
             ok = payload.get("ok", True)
+            # Capture formatted result for display
+            result_formatted = payload.get("result_formatted")
+            if result_formatted:
+                self.dashboard.last_tool_result = result_formatted
             # Update last activity for this tool
             for activity in reversed(self.dashboard.tool_activity):
                 if activity.get("tool") == tool and activity.get("status") == "running":
                     activity["status"] = "ok" if ok else "error"
                     activity["timestamp"] = datetime.now().isoformat()
+                    if result_formatted:
+                        activity["result"] = result_formatted
                     break
 
     def _on_tool_error(self, payload: Dict[str, Any]):
@@ -145,4 +152,5 @@ class MainViewController:
             "recent_activities": self.dashboard.tool_activity[-5:],
             "plan_progress": self.dashboard.plan_progress,
             "verification_status": self.dashboard.verification_status,
+            "last_tool_result": self.dashboard.last_tool_result,
         }

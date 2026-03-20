@@ -4,11 +4,9 @@ RefactoringAgent, ReviewAgent, and SkillLearner.
 """
 
 import pytest
-import tempfile
 import shutil
 import json
 from pathlib import Path
-from typing import Any, Dict
 
 from src.core.memory.advanced_features import (
     TrajectoryLogger,

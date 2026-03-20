@@ -1,4 +1,3 @@
-from unittest.mock import patch, mock_open
 import json
 from src.core.inference.adapters.lm_studio_adapter import LmStudioAdapter
 from src.core.inference.adapters.ollama_adapter import OllamaAdapter

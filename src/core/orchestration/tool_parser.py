@@ -72,7 +72,54 @@ def parse_tool_block(text: str) -> Optional[Dict[str, Any]]:
 
 
 def _parse_yaml_block(yaml_content: str) -> Optional[Dict[str, Any]]:
-    """Parse YAML content from a code block."""
+    """Parse YAML content from a code block.
+
+    Tries yaml.safe_load() first (handles block scalars, quoted strings,
+    multi-line content) then falls back to the custom line-by-line parser
+    for malformed or partial YAML that safe_load rejects.
+    """
+    # --- Primary path: yaml.safe_load ----------------------------------
+    try:
+        import yaml
+        import datetime
+
+        def _normalize(v: Any) -> Any:
+            """Convert YAML-native types (date, datetime) to strings so
+            tool arguments are always JSON-serialisable primitives."""
+            if isinstance(v, (datetime.date, datetime.datetime)):
+                return v.isoformat()
+            if isinstance(v, dict):
+                return {str(k): _normalize(val) for k, val in v.items()}
+            if isinstance(v, list):
+                return [_normalize(i) for i in v]
+            return v
+
+        parsed = yaml.safe_load(yaml_content)
+        if isinstance(parsed, dict):
+            # Standard format: {name: "tool", arguments: {...}}
+            if "name" in parsed:
+                name = str(parsed["name"])
+                raw_args = parsed.get("arguments") or parsed.get("args")
+                if isinstance(raw_args, dict):
+                    return {"name": name, "arguments": _normalize(raw_args)}
+                # arguments key absent — collect remaining keys as args
+                remaining = {
+                    k: _normalize(v) for k, v in parsed.items()
+                    if k not in ("name", "arguments", "args")
+                }
+                return {"name": name, "arguments": remaining}
+
+            # Compact format: {tool_name: {arg: val}} — single top-level key
+            keys = [k for k in parsed if parsed[k] is not None]
+            if len(keys) == 1:
+                tool_name = keys[0]
+                tool_args = parsed[tool_name]
+                if isinstance(tool_args, dict):
+                    return {"name": str(tool_name), "arguments": _normalize(tool_args)}
+    except Exception:
+        pass  # fall through to custom parser
+
+    # --- Fallback: custom line-by-line parser --------------------------
     lines = yaml_content.split("\n")
 
     # Check for compact format: tool_name:\n  key: value
@@ -124,8 +171,6 @@ def _parse_yaml_block(yaml_content: str) -> Optional[Dict[str, Any]]:
             current_value_lines = []
             continue
 
-        # Check indentation level
-        indent = len(line) - len(line.lstrip())
 
         if ":" in stripped:
             # Save previous key-value if any

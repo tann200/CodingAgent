@@ -1,6 +1,5 @@
 """Tests for enhanced plan validator (strict mode, read-before-edit)."""
 
-import pytest
 from src.core.orchestration.graph.nodes.plan_validator_node import validate_plan
 
 

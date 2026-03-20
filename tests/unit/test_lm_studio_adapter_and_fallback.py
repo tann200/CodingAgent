@@ -91,33 +91,34 @@ def test_llm_manager_fallback(monkeypatch):
 
     # Register mock adapter in provider manager
     pm = get_provider_manager()
-    # ensure initialized state
-    pm._providers["lm_studio"] = MockAdapter()
-    pm._initialized = True
+    _orig_providers = dict(pm._providers)
+    _orig_initialized = pm._initialized
+    try:
+        pm._providers["lm_studio"] = MockAdapter()
+        pm._initialized = True
 
-    # enable fallback via env
-    monkeypatch.setenv("LLM_MANAGER_ENABLE_MODEL_FALLBACK", "1")
+        # enable fallback via env
+        monkeypatch.setenv("LLM_MANAGER_ENABLE_MODEL_FALLBACK", "1")
 
-    messages = [
-        {"role": "system", "content": "sys"},
-        {"role": "user", "content": "hello"},
-    ]
+        messages = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "hello"},
+        ]
 
-    # run the async call_model via asyncio.run with long id
-    resp = asyncio.run(
-        call_model(
-            messages,
-            provider="lm_studio",
-            model="qwen/qwen3.5-9b",
-            stream=False,
-            format_json=False,
+        # run the async call_model via asyncio.run with long id
+        resp = asyncio.run(
+            call_model(
+                messages,
+                provider="lm_studio",
+                model="qwen/qwen3.5-9b",
+                stream=False,
+                format_json=False,
+            )
         )
-    )
-    assert isinstance(resp, dict)
-    # should have retried with smallmodel
-    assert "message" in resp
-    assert "ok from" in resp["message"]["content"]
-
-    # cleanup
-    pm._providers.pop("lm_studio", None)
-    pm._initialized = False
+        assert isinstance(resp, dict)
+        # should have retried with smallmodel
+        assert "message" in resp
+        assert "ok from" in resp["message"]["content"]
+    finally:
+        pm._providers = _orig_providers
+        pm._initialized = _orig_initialized

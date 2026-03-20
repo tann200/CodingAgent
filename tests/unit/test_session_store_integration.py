@@ -2,9 +2,7 @@
 Integration tests for SessionStore wiring in Orchestrator, planning_node, and debug_node.
 """
 
-import pytest
 import json
-from pathlib import Path
 from src.core.memory.session_store import SessionStore
 from src.core.orchestration.orchestrator import Orchestrator
 
@@ -94,3 +92,56 @@ class TestSessionStoreOrchestratorWiring:
         summary = orch.session_store.get_session_summary("fail_session")
         # Logged regardless of success flag
         assert summary["tool_call_count"] >= 1
+
+
+# ---------------------------------------------------------------------------
+# #32: Concurrent write safety — thread-local connections + WAL mode
+# ---------------------------------------------------------------------------
+
+class TestSessionStoreConcurrency:
+    """#32: Verify SessionStore is safe under concurrent multi-thread writes."""
+
+    def test_concurrent_writes_no_corruption(self, tmp_path):
+        """Multiple threads writing simultaneously must not corrupt the DB."""
+        import threading
+        store = SessionStore(workdir=str(tmp_path))
+        errors = []
+
+        def _write(n):
+            try:
+                for i in range(5):
+                    store.add_tool_call(
+                        session_id=f"thread_{n}",
+                        tool_name="read_file",
+                        args={"path": f"file_{i}.py"},
+                        result={"status": "ok"},
+                        success=True,
+                    )
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=_write, args=(n,)) for n in range(5)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert errors == [], f"Concurrent write errors: {errors}"
+
+        # Each thread wrote 5 tool calls → total 25
+        all_summary = store.get_session_summary("thread_0")
+        assert all_summary["tool_call_count"] == 5
+
+    def test_wal_mode_enabled(self, tmp_path):
+        """#32: Each thread-local connection must use WAL journal mode."""
+        store = SessionStore(workdir=str(tmp_path))
+        conn = store._get_connection()
+        row = conn.execute("PRAGMA journal_mode").fetchone()
+        assert row[0] == "wal", f"Expected WAL mode, got: {row[0]}"
+
+    def test_busy_timeout_set(self, tmp_path):
+        """#32: busy_timeout PRAGMA must be set to prevent immediate lock errors."""
+        store = SessionStore(workdir=str(tmp_path))
+        conn = store._get_connection()
+        row = conn.execute("PRAGMA busy_timeout").fetchone()
+        assert int(row[0]) >= 1000, f"Expected busy_timeout >= 1000ms, got: {row[0]}"

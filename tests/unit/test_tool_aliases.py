@@ -10,7 +10,7 @@ def test_tool_aliases_read_write(tmp_path):
 
     # write a file using canonical write_file
     write_fn = reg.get("write_file").get("fn")
-    write_res = write_fn(str(tmp_path / "foo.txt"), "hello-alias", workdir=tmp_path)
+    _write_res = write_fn(str(tmp_path / "foo.txt"), "hello-alias", workdir=tmp_path)
     # verify file exists
     p = tmp_path / "foo.txt"
     assert p.exists()

@@ -44,14 +44,18 @@ async def provider_health_check(timeout: float = 5.0) -> Dict[str, Dict[str, Any
                 getattr(adapter, "get_models_from_api")
             ):
                 try:
-                    models_resp = adapter.get_models_from_api()
-                except Exception:
-                    # Some adapters may expose async get_models_from_api
-                    maybe = adapter.get_models_from_api
-                    if inspect.isawaitable(maybe):
-                        models_resp = await maybe()
+                    _raw = adapter.get_models_from_api()
+                    if inspect.isawaitable(_raw):
+                        models_resp = await asyncio.wait_for(_raw, timeout=timeout)
                     else:
-                        raise
+                        models_resp = _raw
+                except asyncio.TimeoutError:
+                    res["error"] = f"timeout after {timeout}s"
+                    guilogger.warning(f"Startup: provider '{key}' timed out after {timeout}s")
+                    results[key] = res
+                    continue
+                except Exception:
+                    raise
 
                 if isinstance(models_resp, dict):
                     models = models_resp.get("models") or []

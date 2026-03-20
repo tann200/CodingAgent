@@ -1,12 +1,9 @@
 import logging
-import asyncio
-from pathlib import Path
 from typing import Dict, Any
 
 from src.core.orchestration.graph.state import AgentState
 from src.core.orchestration.graph.nodes.node_utils import _resolve_orchestrator
 from src.tools.repo_summary import generate_repo_summary
-from src.core.orchestration.agent_brain import get_agent_brain_manager
 
 logger = logging.getLogger(__name__)
 
@@ -36,8 +33,6 @@ async def analysis_node(state: AgentState, config: Any) -> Dict[str, Any]:
             "repo_summary_data": "Skipped for efficiency",
         }
 
-    brain = get_agent_brain_manager()
-    analyst_role = brain.get_role("analyst") or "You are a repository analyst."
 
     orchestrator = _resolve_orchestrator(state, config)
     if orchestrator is None:
@@ -147,12 +142,14 @@ Use this repository context to plan your deep-dive searches."""
             if sym and sym not in key_symbols:
                 key_symbols.append(sym)
 
-        gl = _call_tool_if_exists("glob", pattern="**/*.py", workdir=working_dir)
+        from pathlib import Path as _Path
+        from src.core.indexing.symbol_graph import _SUPPORTED_SUFFIXES as _SG_SUFFIXES
+        gl = _call_tool_if_exists("glob", pattern="**/*", workdir=working_dir)
         if gl and isinstance(gl, dict):
-            items = gl.get("items", [])
-            for item in items[:20]:
+            items = gl.get("matches", [])
+            for item in items[:40]:
                 fp = item.get("name") if isinstance(item, dict) else item
-                if fp and fp.endswith(".py") and fp not in relevant_files:
+                if fp and _Path(fp).suffix in _SG_SUFFIXES and fp not in relevant_files:
                     relevant_files.append(fp)
 
         if relevant_files:
@@ -177,10 +174,10 @@ Use this repository context to plan your deep-dive searches."""
 
         sg = SymbolGraph(working_dir)
 
-        # Update index for all found relevant files
+        # Update index for all found relevant files (multi-lang: update_file handles suffix check)
         for fp in relevant_files[:10]:
             full_path = Path(working_dir) / fp
-            if full_path.exists() and full_path.suffix == ".py":
+            if full_path.exists():
                 sg.update_file(str(full_path))
 
         # Find call sites for key symbols

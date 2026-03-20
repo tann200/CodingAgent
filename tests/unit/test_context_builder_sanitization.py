@@ -1,4 +1,3 @@
-import pytest
 from src.core.context.context_builder import ContextBuilder
 
 

@@ -1,8 +1,7 @@
 import logging
-from typing import Dict, Any, Literal
+from typing import Dict, Any
 
 from src.core.orchestration.graph.state import AgentState
-from src.core.orchestration.agent_brain import get_agent_brain_manager
 
 logger = logging.getLogger(__name__)
 
@@ -16,8 +15,6 @@ async def evaluation_node(state: AgentState, config: Any) -> Dict[str, Any]:
     """
     logger.info("=== evaluation_node START ===")
 
-    brain = get_agent_brain_manager()
-    reviewer_role = brain.get_role("reviewer") or "You are a QA reviewer."
 
     verification_result = state.get("verification_result") or {}
     current_plan = state.get("current_plan") or []
@@ -59,6 +56,14 @@ async def evaluation_node(state: AgentState, config: Any) -> Dict[str, Any]:
         e for e in errors if e not in ["canceled", "orchestrator not found"]
     ]
 
+    # Read debug_attempts to gate debug routing — this prevents an unbounded loop.
+    # Previously evaluation routed to "replan" on verification failure, which sent to
+    # step_controller → execution → verification → evaluation (rounds never incremented
+    # in this path, so the rounds < 10 guard never fired → infinite loop).
+    # Now: route to "debug" for verification failures (bounded by debug_attempts).
+    debug_attempts = int(state.get("debug_attempts") or 0)
+    max_debug_attempts = int(state.get("max_debug_attempts") or 3)
+
     # Determine outcome
     if verification_passed and plan_completed and not critical_errors:
         logger.info("evaluation_node: TASK COMPLETE - all checks passed")
@@ -68,16 +73,19 @@ async def evaluation_node(state: AgentState, config: Any) -> Dict[str, Any]:
         }
     elif not verification_passed:
         logger.info(f"evaluation_node: VERIFICATION FAILED - {failure_reasons}")
-        # Check if we should replan or end
-        if rounds < 10 and len(current_plan) > 0:
+        # Route to debug if we have debug attempts remaining — this is the bounded fix path.
+        # debug_node generates a fix → execution → verification → evaluation cycle,
+        # but is capped by debug_attempts so it cannot loop indefinitely.
+        if debug_attempts < max_debug_attempts:
+            logger.info(
+                f"evaluation_node: routing to debug (attempt {debug_attempts + 1}/{max_debug_attempts})"
+            )
             return {
-                "evaluation_result": "replan",
-                "replan_required": f"Verification failed: {'; '.join(failure_reasons)}",
-                "action_failed": True,
+                "evaluation_result": "debug",
             }
         else:
             logger.warning(
-                "evaluation_node: max rounds reached, ending despite failures"
+                f"evaluation_node: max debug attempts ({max_debug_attempts}) reached, ending"
             )
             return {
                 "evaluation_result": "end",
@@ -91,11 +99,15 @@ async def evaluation_node(state: AgentState, config: Any) -> Dict[str, Any]:
             "errors": critical_errors,
         }
     else:
-        # Partial completion - check if we should continue
+        # Partial completion — plan has remaining steps (shouldn't normally happen since
+        # execution only reaches verification after the last step, but guard defensively).
         logger.info(
             "evaluation_node: PARTIAL COMPLETION - checking if more work needed"
         )
         if current_plan and current_step < len(current_plan):
+            # There are pending steps: re-enter execution via step_controller.
+            # This is bounded because plan steps are finite; as steps complete,
+            # current_step advances until current_step >= len(current_plan).
             return {
                 "evaluation_result": "replan",
                 "replan_required": "Additional steps remain in plan",

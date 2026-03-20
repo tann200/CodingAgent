@@ -4,6 +4,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List
 
+from src.tools._path_utils import safe_resolve as _safe_resolve
+
 
 def create_state_checkpoint(
     current_task: str,
@@ -93,6 +95,9 @@ def restore_state_checkpoint(
     Returns:
         status, checkpoint_data or error
     """
+    import re as _re
+    if not _re.match(r'^[a-zA-Z0-9_\-]+$', checkpoint_id):
+        return {"status": "error", "error": "Invalid checkpoint_id: only alphanumeric, underscore, and dash are allowed"}
     wd = Path(workdir) if workdir else Path.cwd()
     checkpoint_dir = wd / ".agent-context" / "checkpoints"
     checkpoint_path = checkpoint_dir / f"{checkpoint_id}.json"
@@ -120,6 +125,10 @@ def diff_state(
     workdir: str = None,
 ) -> Dict[str, Any]:
     """Compare two state checkpoints."""
+    import re as _re
+    _id_pattern = r'^[a-zA-Z0-9_\-]+$'
+    if not _re.match(_id_pattern, checkpoint_id1) or not _re.match(_id_pattern, checkpoint_id2):
+        return {"status": "error", "error": "Invalid checkpoint_id: only alphanumeric, underscore, and dash are allowed"}
     wd = Path(workdir) if workdir else Path.cwd()
     checkpoint_dir = wd / ".agent-context" / "checkpoints"
 
@@ -170,7 +179,11 @@ def batched_file_read(
 
     for path in paths:
         try:
-            p = wd / path
+            try:
+                p = _safe_resolve(path, wd)
+            except PermissionError as _pe:
+                results[path] = {"error": str(_pe)}
+                continue
             if not p.exists():
                 results[path] = {"error": "File not found"}
                 continue
@@ -206,7 +219,11 @@ def multi_file_summary(
 
     for path in paths:
         try:
-            p = wd / path
+            try:
+                p = _safe_resolve(path, wd)
+            except PermissionError as pe:
+                results[path] = {"error": str(pe)}
+                continue
             if not p.exists():
                 results[path] = {"error": "File not found"}
                 continue

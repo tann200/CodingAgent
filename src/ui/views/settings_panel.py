@@ -20,6 +20,10 @@ import json
 import time
 import threading
 
+# Module-level lock to prevent concurrent reads/writes to providers.json from
+# background model-fetch threads (H10 fix).
+_providers_json_lock = threading.Lock()
+
 
 class SettingsPanelController:
     def __init__(self):
@@ -90,40 +94,39 @@ class SettingsPanelController:
                 import src.core.inference.llm_manager as _llm_manager
 
                 cfg_path = _llm_manager.resolve_config_path(None)
-                raw_text = cfg_path.read_text(encoding="utf-8")
-                raw = json.loads(raw_text)
+                # Lock the entire read-modify-write cycle to prevent concurrent
+                # background fetch threads from corrupting providers.json (H10 fix).
                 changed = False
-                if isinstance(raw, list):
-                    for p in raw:
-                        name = (p.get("name") or "").lower().replace(" ", "_")
+                with _providers_json_lock:
+                    raw_text = cfg_path.read_text(encoding="utf-8")
+                    raw = json.loads(raw_text)
+                    if isinstance(raw, list):
+                        for p in raw:
+                            name = (p.get("name") or "").lower().replace(" ", "_")
+                            if name == provider_key:
+                                p["models"] = models
+                                changed = True
+                                break
+                    elif isinstance(raw, dict):
+                        name = (raw.get("name") or "").lower().replace(" ", "_")
                         if name == provider_key:
-                            p["models"] = models
+                            raw["models"] = models
                             changed = True
-                            break
-                elif isinstance(raw, dict):
-                    name = (raw.get("name") or "").lower().replace(" ", "_")
-                    if name == provider_key:
-                        raw["models"] = models
-                        changed = True
-                if changed:
-                    try:
+                    if changed:
                         cfg_path.write_text(json.dumps(raw, indent=2), encoding="utf-8")
-                        guilogger.info(
-                            f"SettingsPanel: updated models for provider {provider_key} in {cfg_path}"
-                        )
-                        # publish event so ProviderManager/Orchestrator and UI can refresh
-                        try:
-                            if self.event_bus:
-                                self.event_bus.publish(
-                                    "provider.models.updated",
-                                    {"provider": provider_key, "models": models},
-                                )
-                        except Exception:
-                            pass
-                    except Exception as e:
-                        guilogger.warning(
-                            f"SettingsPanel: failed to write providers.json: {e}"
-                        )
+                if changed:
+                    guilogger.info(
+                        f"SettingsPanel: updated models for provider {provider_key} in {cfg_path}"
+                    )
+                    # publish event so ProviderManager/Orchestrator and UI can refresh
+                    try:
+                        if self.event_bus:
+                            self.event_bus.publish(
+                                "provider.models.updated",
+                                {"provider": provider_key, "models": models},
+                            )
+                    except Exception:
+                        pass
                 return models
             except Exception as e:
                 guilogger.warning(

@@ -205,11 +205,18 @@ class SymbolReader:
         }
 
     def _resolve_path(self, file_path: str) -> Path:
-        """Resolve file path relative to workdir."""
+        """Resolve file path relative to workdir, enforcing workdir boundary."""
         p = Path(file_path)
-        if p.is_absolute():
-            return p
-        return (self.workdir / p).resolve()
+        if not p.is_absolute():
+            p = self.workdir / p
+        resolved = p.resolve()
+        workdir_resolved = self.workdir.resolve()
+        # Boundary check: resolved path must be inside workdir
+        if not (resolved == workdir_resolved or str(resolved).startswith(str(workdir_resolved) + "/")):
+            raise PermissionError(
+                f"Path '{file_path}' resolves outside working directory '{workdir_resolved}'."
+            )
+        return resolved
 
 
 # Tool wrappers for integration

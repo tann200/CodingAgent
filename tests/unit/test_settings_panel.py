@@ -1,9 +1,22 @@
 import json
 import time
-
+import pytest
 
 from src.ui.views.settings_panel import SettingsPanelController
 import src.core.inference.llm_manager as llm
+
+
+@pytest.fixture(autouse=True)
+def restore_provider_manager():
+    """Save and restore global _provider_manager state between tests."""
+    pm = llm._provider_manager
+    saved_providers = dict(pm._providers)
+    saved_models_cache = dict(pm._models_cache)
+    saved_initialized = pm._initialized
+    yield
+    pm._providers = saved_providers
+    pm._models_cache = saved_models_cache
+    pm._initialized = saved_initialized
 
 
 class MockAdapter:
@@ -72,6 +85,33 @@ def test_fetch_models_background_updates(monkeypatch, tmp_path):
         time.sleep(0.05)
     raw = json.loads(cfg.read_text(encoding="utf-8"))
     assert raw[0].get("models") and "X" in raw[0]["models"]
+
+
+def test_providers_json_lock_exists():
+    """H10: settings_panel must have a module-level lock guarding providers.json writes."""
+    import src.ui.views.settings_panel as sp_mod
+    import threading
+    assert hasattr(sp_mod, "_providers_json_lock"), "H10: _providers_json_lock must exist"
+    assert isinstance(sp_mod._providers_json_lock, type(threading.Lock()))
+
+
+def test_providers_json_is_array_format():
+    """#19: providers.json must be an array, not a single object.
+
+    An array format lets multiple providers coexist and is handled consistently
+    across all load_provider() call sites.
+    """
+    import json
+    from pathlib import Path
+    providers_path = Path(__file__).parent.parent.parent / "src" / "config" / "providers.json"
+    raw = json.loads(providers_path.read_text(encoding="utf-8"))
+    assert isinstance(raw, list), f"providers.json must be an array, got: {type(raw).__name__}"
+    assert len(raw) >= 1
+    # Each entry must be a dict with required keys
+    for p in raw:
+        assert isinstance(p, dict)
+        assert "name" in p
+        assert "type" in p
 
 
 def test_select_provider_and_model_persists(monkeypatch):

@@ -1,7 +1,5 @@
 from src.core.context.context_builder import ContextBuilder
 import json
-from unittest.mock import patch
-from pathlib import Path
 
 
 def test_context_builder_uses_summary_cache(tmp_path):
@@ -11,7 +9,8 @@ def test_context_builder_uses_summary_cache(tmp_path):
     summaries = {"src/main.py": "SHORT SUMMARY FROM CACHE"}
     (ac / "file_summaries.json").write_text(json.dumps(summaries))
 
-    builder = ContextBuilder()
+    # Pass working_dir so the builder finds the cache without needing to mock cwd (NEW-10 fix)
+    builder = ContextBuilder(working_dir=str(tmp_path))
     identity = "I am agent"
     role = "assistant"
     skills = []
@@ -20,11 +19,9 @@ def test_context_builder_uses_summary_cache(tmp_path):
     # retrieved snippet provides a different snippet; builder should prefer cache
     retrieved = [{"file_path": "src/main.py", "snippet": "RAW LONG FILE CONTENT"}]
 
-    # Mock Path.cwd() to return tmp_path so the builder can find the cache
-    with patch("pathlib.Path.cwd", return_value=tmp_path):
-        msgs = builder.build_prompt(
-            identity, role, skills, task, tools, [], retrieved_snippets=retrieved
-        )
-        system = msgs[0]["content"]
-        assert "SHORT SUMMARY FROM CACHE" in system
-        assert "RAW LONG FILE CONTENT" not in system
+    msgs = builder.build_prompt(
+        identity, role, skills, task, tools, [], retrieved_snippets=retrieved
+    )
+    system = msgs[0]["content"]
+    assert "SHORT SUMMARY FROM CACHE" in system
+    assert "RAW LONG FILE CONTENT" not in system

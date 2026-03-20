@@ -1,5 +1,5 @@
 {
-  "generated": "2026-03-18 17:05:27Z",
+  "generated": "2026-03-18 20:10:18Z",
   "nodes": {
     "docs": {
       "path": "docs",
@@ -13,28 +13,12 @@
       "path": "docs/audit/audit-instructions.md",
       "is_dir": false
     },
-    "docs/audit/audit-report.md": {
-      "path": "docs/audit/audit-report.md",
-      "is_dir": false
-    },
-    "docs/audit/fixes-applied.md": {
-      "path": "docs/audit/fixes-applied.md",
-      "is_dir": false
-    },
-    "docs/audit/fixing-findings.md": {
-      "path": "docs/audit/fixing-findings.md",
-      "is_dir": false
-    },
     "docs/ARCHITECTURE.md": {
       "path": "docs/ARCHITECTURE.md",
       "is_dir": false
     },
     "docs/DEVELOPMENT.md": {
       "path": "docs/DEVELOPMENT.md",
-      "is_dir": false
-    },
-    "docs/gap-analysis.md": {
-      "path": "docs/gap-analysis.md",
       "is_dir": false
     },
     "docs/MEMORY_ARCHITECTURE.md": {

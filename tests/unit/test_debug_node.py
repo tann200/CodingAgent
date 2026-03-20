@@ -3,8 +3,7 @@ Tests for debug node with LLM-enhanced analysis.
 """
 
 import pytest
-from unittest.mock import patch, MagicMock, AsyncMock
-from typing import Dict, Any
+from unittest.mock import MagicMock
 
 
 class TestDebugNode:
@@ -166,23 +165,104 @@ class TestClassifyError:
 class TestDebugNodeRetry:
     """Tests for debug node retry logic."""
 
-    def test_retry_increments_attempt(self):
-        """Test that retry increments the attempt counter."""
-        current_attempt = 0
-        next_attempt = current_attempt + 1
-        assert next_attempt == 1
+    @pytest.mark.asyncio
+    async def test_retry_increments_debug_attempts(self):
+        """Test that debug_node increments debug_attempts in returned state."""
+        from unittest.mock import MagicMock, patch
+        from src.core.orchestration.graph.nodes.debug_node import debug_node
+        from src.core.orchestration.graph.state import AgentState
 
-    def test_max_attempts_respected(self):
-        """Test max attempts boundary."""
-        current_attempt = 2
-        max_attempts = 3
+        mock_orch = MagicMock()
+        mock_orch.tool_registry.tools = {}
+        mock_orch.adapter = None
 
-        # Should still allow this attempt
-        assert current_attempt < max_attempts
+        state: AgentState = {
+            "task": "fix bug",
+            "history": [],
+            "verified_reads": [],
+            "next_action": None,
+            "last_result": {"error": "Test failed"},
+            "rounds": 0,
+            "working_dir": ".",
+            "system_prompt": "",
+            "errors": [],
+            "current_plan": None,
+            "current_step": 0,
+            "deterministic": None,
+            "seed": None,
+            "analysis_summary": None,
+            "relevant_files": None,
+            "key_symbols": None,
+            "debug_attempts": 0,
+            "max_debug_attempts": 3,
+            "verification_passed": None,
+            "verification_result": None,
+            "step_controller_enabled": False,
+            "task_decomposed": None,
+            "tool_last_used": None,
+            "tool_call_count": 0,
+            "max_tool_calls": 50,
+            "files_read": None,
+            "repo_summary_data": None,
+            "replan_required": None,
+            "action_failed": None,
+            "plan_progress": None,
+            "evaluation_result": None,
+            "cancel_event": None,
+        }
+        config = {"configurable": {"orchestrator": mock_orch}}
+        result = await debug_node(state, config)
+        # debug_attempts should be incremented
+        assert result.get("debug_attempts", 0) > 0
 
-        # Next attempt would exceed
-        next_attempt = current_attempt + 1
-        assert next_attempt == max_attempts
+    @pytest.mark.asyncio
+    async def test_max_attempts_stops_debug(self):
+        """Test that debug_node stops when max_debug_attempts is reached."""
+        from unittest.mock import MagicMock
+        from src.core.orchestration.graph.nodes.debug_node import debug_node
+        from src.core.orchestration.graph.state import AgentState
+
+        mock_orch = MagicMock()
+        mock_orch.tool_registry.tools = {}
+
+        state: AgentState = {
+            "task": "fix bug",
+            "history": [],
+            "verified_reads": [],
+            "next_action": None,
+            "last_result": {"error": "Test failed"},
+            "rounds": 0,
+            "working_dir": ".",
+            "system_prompt": "",
+            "errors": [],
+            "current_plan": None,
+            "current_step": 0,
+            "deterministic": None,
+            "seed": None,
+            "analysis_summary": None,
+            "relevant_files": None,
+            "key_symbols": None,
+            "debug_attempts": 3,  # already at max
+            "max_debug_attempts": 3,
+            "verification_passed": None,
+            "verification_result": None,
+            "step_controller_enabled": False,
+            "task_decomposed": None,
+            "tool_last_used": None,
+            "tool_call_count": 0,
+            "max_tool_calls": 50,
+            "files_read": None,
+            "repo_summary_data": None,
+            "replan_required": None,
+            "action_failed": None,
+            "plan_progress": None,
+            "evaluation_result": None,
+            "cancel_event": None,
+        }
+        config = {"configurable": {"orchestrator": mock_orch}}
+        result = await debug_node(state, config)
+        # When at max attempts, should not set next_action (no more retries)
+        assert result.get("next_action") is None or len(result.get("errors", [])) > 0
 
 
 class TestDebugNodePromptEnrichment:
@@ -190,7 +270,7 @@ class TestDebugNodePromptEnrichment:
 
     def test_error_type_embedded_in_prompt_guidance(self):
         """TYPE_GUIDANCE provides targeted strings for all 6 error categories."""
-        from src.core.orchestration.graph.nodes.debug_node import _classify_error, TYPE_GUIDANCE
+        from src.core.orchestration.graph.nodes.debug_node import TYPE_GUIDANCE
 
         expected_categories = {
             "syntax_error", "import_error", "test_failure",

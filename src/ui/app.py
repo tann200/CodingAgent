@@ -49,19 +49,9 @@ class CodingAgentApp:
         pm = get_provider_manager()
         pm.set_event_bus(self.event_bus)
 
-        # Wire GUILogger to EventBus for real-time log forwarding
-        from src.core.logger import logger as _guilogger
-        from src.core.orchestration.event_bus import get_event_bus
-
-        try:
-            get_event_bus().subscribe(
-                "log.new",
-                lambda payload: _guilogger.log(
-                    str(payload.get("message", "")), payload.get("level", "INFO")
-                ),
-            )
-        except Exception:
-            pass
+        # GUILogger already publishes log.new events; subscribing back to log.new
+        # and calling _guilogger.log() would create a recursive publish loop.
+        # The TUI consumes log.new directly via EventBus subscriptions in the view layer.
 
         # instantiate orchestrator with the shared event bus and message window
         self.orchestrator = Orchestrator(
@@ -92,6 +82,27 @@ class CodingAgentApp:
                     guilogger.exception("Failed to initialize TelemetryConsumer")
         except Exception:
             pass
+        # W11: Run provider health check at startup — warn immediately if no provider is reachable
+        try:
+            from src.core.startup import run_provider_health_check_sync
+            health = run_provider_health_check_sync(timeout=5.0)
+            reachable = [k for k, v in health.items() if not v.get("error")]
+            if reachable:
+                guilogger.info(f"Provider health check: {len(reachable)} provider(s) reachable: {reachable}")
+            else:
+                guilogger.warning(
+                    "Provider health check: NO providers reachable. "
+                    "Start LM Studio or Ollama before sending tasks. "
+                    f"Results: {health}"
+                )
+                self.event_bus.publish("ui.notification", {
+                    "level": "warning",
+                    "message": "No LLM providers reachable. Start LM Studio or Ollama.",
+                    "source": "startup",
+                })
+        except Exception as e:
+            guilogger.warning(f"Provider health check failed (non-fatal): {e}")
+
         guilogger.info("CodingAgentApp initialized")
 
     def run(self) -> None:
@@ -140,10 +151,4 @@ class CodingAgentApp:
             print("CodingAgentApp started (headless mode)", flush=True)
         except Exception:
             pass
-        try:
-            root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            p = os.path.join(root, "tmp_app_started.log")
-            with open(p, "w", encoding="utf-8") as f:
-                f.write("started")
-        except Exception:
-            guilogger.debug("Failed to write tmp_app_started.log")
+        # tmp_app_started.log was leftover debug scaffolding — removed (usability fix)

@@ -77,6 +77,7 @@ class TextualAppBase:
         self.orchestrator = orchestrator or Orchestrator()
         # internal chat history as tuple(role, text)
         self.history: List[tuple] = []
+        self._history_lock = threading.Lock()  # H4: protects concurrent history access
         # event bus
         try:
             self.event_bus = get_event_bus()
@@ -89,7 +90,8 @@ class TextualAppBase:
 
     def send_prompt(self, prompt: str) -> None:
         """Send a prompt to the orchestrator in a background thread."""
-        self.history.append(("user", prompt))
+        with self._history_lock:
+            self.history.append(("user", prompt))
         self._agent_thread = threading.Thread(
             target=self._run_agent, args=(prompt,), daemon=True
         )
@@ -138,7 +140,8 @@ class TextualAppBase:
             if work_summary:
                 assistant_msg = assistant_msg + "\n" + work_summary
             # append
-            self.history.append(("assistant", assistant_msg))
+            with self._history_lock:
+                self.history.append(("assistant", assistant_msg))
             # notify UI thread by calling `on_agent_result` if present
             try:
                 # schedule callback safely on the main loop
@@ -697,77 +700,146 @@ else:
         def _append_assistant(self, content: str) -> None:
             if not self.output:
                 return
-
             import re
 
-            processed_content = content
-            if "<think>" in content and "</think>" in content:
-                match = re.search(r"<think>(.*?)</think>", content, re.DOTALL)
-                if match:
-                    thinking = match.group(1).strip()
-                    rest = content.replace(match.group(0), "").strip()
-                    # Use Rich Text with markup so styles are applied in the RichLog
-                    try:
-                        # Use Text.from_markup if rich.text is available; otherwise fall back to plain writes
+            diff_pattern = re.compile(r"```diff\n(.*?)\n```", re.DOTALL)
+            diff_matches = list(diff_pattern.finditer(content))
+
+            if diff_matches:
+                last_end = 0
+                for match in diff_matches:
+                    before_diff = content[last_end : match.start()]
+                    if before_diff.strip():
                         try:
-                            from rich.text import Text  # type: ignore
+                            from rich.text import Text
 
                             self.output.write(
-                                Text.from_markup("[dim italic]Thinking:[/dim italic]")
+                                Text.from_markup(
+                                    f"[bold]Assistant:[/bold] {before_diff}"
+                                )
                             )
-                            self.output.write(
-                                Text.from_markup(f"[dim]{thinking}[/dim]")
-                            )
-                            self.output.write("")
                         except Exception:
-                            self.output.write("Thinking:")
-                            self.output.write(thinking)
-                            self.output.write("")
-                    except Exception:
-                        # Fallback to plain text if Rich isn't available
-                        self.output.write("Thinking:")
-                        self.output.write(thinking)
-                        self.output.write("")
-                    processed_content = rest
+                            self._safe_write(f"Assistant: {before_diff}")
 
-            def _strip_rich_markup(s: str) -> str:
-                # Remove simple [tag]...[/tag] style markup so it doesn't appear verbatim
-                try:
-                    import re
+                    self._render_side_by_side_diff(match.group(1))
+                    last_end = match.end()
 
-                    return re.sub(r"\[/?[^\]]+\]", "", s)
-                except Exception:
-                    return s
-
-            if processed_content:
-                try:
-                    from rich.text import Text  # type: ignore
-
-                    # If processed_content already contains markup tags, create a Text from markup
+                remaining = content[last_end:]
+                if remaining.strip():
                     try:
-                        txt = Text.from_markup(
-                            f"[bold]Assistant:[/bold] {processed_content}"
+                        from rich.text import Text
+
+                        self.output.write(Text.from_markup(remaining))
+                    except Exception:
+                        self._safe_write(remaining)
+                return
+
+            thinking_pattern = re.compile(r"<think>(.*?)</think>", re.DOTALL)
+            thinking_match = thinking_pattern.search(content)
+
+            if thinking_match:
+                thinking = thinking_match.group(1).strip()
+                rest = content[thinking_match.end() :].strip()
+
+                try:
+                    from rich.text import Text
+
+                    self.output.write(
+                        Text.from_markup("[dim italic]Thinking:[/dim italic]")
+                    )
+                    self.output.write(Text.from_markup(f"[dim]{thinking}[/dim]"))
+                    self.output.write("")
+                except Exception:
+                    self.output.write("Thinking:")
+                    self.output.write(thinking)
+                    self.output.write("")
+
+                if rest:
+                    try:
+                        from rich.text import Text
+
+                        self.output.write(
+                            Text.from_markup(f"[bold]Assistant:[/bold] {rest}")
                         )
                     except Exception:
-                        # fallback: create bold prefix and plain content
-                        prefix = Text.from_markup("[bold]Assistant:[/bold] ")
-                        content_plain = _strip_rich_markup(processed_content)
-                        txt = prefix + Text(content_plain)
+                        self._safe_write(f"Assistant: {rest}")
+            else:
+                try:
+                    from rich.text import Text
 
-                    # Use the widget write with a Text object
-                    try:
-                        self.output.write(txt)
-                    except Exception:
-                        # If RichLog doesn't accept Text, fall back to safe write with stripped markup
-                        self._safe_write(str(txt))
-                except Exception:
-                    # As a last resort, strip markup and write plain text
-                    self._safe_write(
-                        f"Assistant: {_strip_rich_markup(processed_content)}"
+                    self.output.write(
+                        Text.from_markup(f"[bold]Assistant:[/bold] {content}")
                     )
+                except Exception:
+                    self._safe_write(f"Assistant: {content}")
 
             if hasattr(self, "task_state_label"):
                 self._refresh_task_state()
+
+        def _render_side_by_side_diff(self, diff_content: str) -> None:
+            """Render a unified diff as a side-by-side view using Rich Tables."""
+            import re
+
+            try:
+                from rich.table import Table
+                from rich.text import Text
+
+                lines = diff_content.strip().split("\n")
+                left_lines = []
+                right_lines = []
+                current_left = []
+                current_right = []
+
+                for line in lines:
+                    if line.startswith("---"):
+                        continue
+                    if line.startswith("+++"):
+                        continue
+                    if line.startswith("@@"):
+                        if current_left or current_right:
+                            left_lines.append(current_left)
+                            right_lines.append(current_right)
+                        current_left = []
+                        current_right = []
+                        match = re.search(r"@@ -(\\d+),?\\d* \\+(\\d+),?\\d* @@", line)
+                        if match:
+                            current_left.append(f"@@ -{match.group(1)}")
+                            current_right.append(f"@@ +{match.group(2)}")
+                    elif line.startswith("-"):
+                        current_left.append(line[1:] if len(line) > 1 else "")
+                    elif line.startswith("+"):
+                        current_right.append(line[1:] if len(line) > 1 else "")
+                    elif line.startswith(" "):
+                        current_left.append(line[1:] if len(line) > 1 else "")
+                        current_right.append(line[1:] if len(line) > 1 else "")
+                    else:
+                        current_left.append(line)
+
+                if current_left or current_right:
+                    left_lines.append(current_left)
+                    right_lines.append(current_right)
+
+                table = Table(show_header=True, show_lines=True, expand=True)
+                table.add_column("Before", style="red", ratio=1)
+                table.add_column("After", style="green", ratio=1)
+
+                for block_left, block_right in zip(left_lines, right_lines):
+                    for line in block_left:
+                        if line.startswith("@@"):
+                            table.add_row(Text(line, style="cyan bold"), "")
+                        elif line:
+                            table.add_row(Text(line), "")
+                        else:
+                            table.add_row("", "")
+                    for line in block_right:
+                        if line.startswith("@@"):
+                            table.add_row("", Text(line, style="cyan bold"))
+                        elif line:
+                            table.add_row("", Text(line))
+
+                self.output.write(table)
+            except Exception:
+                self._safe_write(diff_content)
 
         def _refresh_task_state(self):
             try:
@@ -1193,7 +1265,7 @@ def _strip_markup(text: str) -> str:
 
 # If the module provides a TextualAppImpl class, add a compatibility method to it
 try:
-    TextualAppImpl  # type: ignore
+    TextualAppImpl  # type: ignore  # noqa: F821
 except Exception:
     # Define a minimal shim if class not present (for test compatibility)
     class TextualAppImpl:

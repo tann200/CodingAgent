@@ -4,11 +4,6 @@ Tests for verification tools: run_tests, run_linter, syntax_check.
 These tests verify the tool verification functionality.
 """
 
-import pytest
-import subprocess
-import tempfile
-import os
-from pathlib import Path
 
 
 class TestVerificationTools:

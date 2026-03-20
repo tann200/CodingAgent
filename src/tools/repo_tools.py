@@ -3,6 +3,7 @@ from typing import Dict, Any
 from src.core.indexing.repo_indexer import index_repository
 from src.core.indexing.vector_store import VectorStore
 from pathlib import Path
+from src.tools._path_utils import safe_resolve as _safe_resolve
 
 def initialize_repo_intelligence(workdir: str) -> Dict[str, Any]:
     """
@@ -39,7 +40,7 @@ def find_symbol(name: str, workdir: str) -> Dict[str, Any]:
     if not index_path.exists():
         return {"status": "error", "error": "Repo index not found. Run initialize_repo_intelligence first."}
         
-    with open(index_path, "r") as f:
+    with open(index_path, "r", encoding="utf-8") as f:
         repo_index = json.load(f)
         
     results = [s for s in repo_index["symbols"] if s["symbol_name"] == name]
@@ -62,11 +63,18 @@ def find_references(name: str, workdir: str) -> Dict[str, Any]:
         files = [f.get('path') for f in repo_index.get('files', [])]
         refs = []
         for rel in files:
-            p = base / rel
+            try:
+                p = _safe_resolve(str(rel), base)
+            except PermissionError:
+                continue
             try:
                 text = p.read_text(encoding='utf-8')
                 if name in text:
-                    refs.append({"file": str(rel), "snippet": text[:300]})
+                    # Extract context around the first match, not always the file top (NEW-18)
+                    idx = text.find(name)
+                    start = max(0, idx - 100)
+                    end = min(len(text), idx + 200)
+                    refs.append({"file": str(rel), "snippet": text[start:end]})
             except Exception:
                 continue
         return {"status": "ok", "results": refs}

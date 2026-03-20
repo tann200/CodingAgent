@@ -1,6 +1,9 @@
 from typing import Dict, Any
 from pathlib import Path
 import difflib
+import os
+
+from src.tools._path_utils import safe_resolve as _safe_resolve
 
 
 def generate_patch(path: str, new_content: str, workdir: Path) -> Dict[str, Any]:
@@ -8,9 +11,10 @@ def generate_patch(path: str, new_content: str, workdir: Path) -> Dict[str, Any]
     Returns {'status':'ok','patch': '...'} or error.
     """
     try:
-        p = Path(path)
-        if not p.is_absolute():
-            p = workdir / p
+        try:
+            p = _safe_resolve(path, workdir)
+        except PermissionError as pe:
+            return {"status": "error", "error": str(pe)}
         if not p.exists():
             return {"status": "error", "error": "file not found"}
         old = p.read_text(encoding="utf-8").splitlines(keepends=True)
@@ -41,24 +45,39 @@ def edit_code_block(
 ) -> Dict[str, Any]:
     """
     Edits a code block in a file by replacing an existing block with a new one.
+    block_to_find must appear exactly once — ambiguous matches are rejected.
     """
     try:
+        from src.tools import file_tools
+
         workdir_path = Path(workdir)
-        file_path = workdir_path / path
+
+        # C1: Path safety — use _safe_resolve to prevent path traversal
+        try:
+            file_path = file_tools._safe_resolve(path, workdir_path)
+        except PermissionError as e:
+            return {"status": "error", "error": str(e)}
+
         if not file_path.exists():
-            return {"status": "error", "error": f"File not found: {path}"}
+            return {"status": "not_found", "error": f"File not found: {path}"}
 
-        old_content = file_path.read_text()
+        old_content = file_path.read_text(encoding="utf-8")
 
-        if block_to_find not in old_content:
+        # C2: Uniqueness check — reject if 0 or >1 occurrences
+        count = old_content.count(block_to_find)
+        if count == 0:
             return {
                 "status": "error",
-                "error": f"Block to find not found in file: {path}",
+                "error": f"block_to_find not found in file: {path}",
+            }
+        if count > 1:
+            return {
+                "status": "error",
+                "error": f"block_to_find appears {count} times in {path}. "
+                         "Provide more context to make it unique.",
             }
 
-        new_content = old_content.replace(block_to_find, new_block)
-
-        from src.tools import file_tools
+        new_content = old_content.replace(block_to_find, new_block, 1)
 
         return file_tools.write_file(
             path=path, content=new_content, workdir=workdir_path

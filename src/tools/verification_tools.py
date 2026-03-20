@@ -74,20 +74,27 @@ def _parse_pytest_summary(output: str) -> tuple:
 
 
 def _extract_failed_tests(output: str) -> List[str]:
-    """Extract list of failed test names."""
+    """Extract list of failed test names from pytest -v output.
+
+    Handles:
+    - path/test_file.py::test_func FAILED
+    - path/test_file.py::TestClass::test_method FAILED
+    - path/test_file.py::test_func[param-id] FAILED  (parametrized)
+    """
     failed = []
-    # Pattern: "test_filename.py::test_function FAILED"
     for line in output.split("\n"):
-        if "FAILED" in line and "::" in line:
-            # Extract test name
-            match = re.search(r"(test_\S+) FAILED", line)
-            if match:
-                failed.append(match.group(1))
-            else:
-                # Just take the part after ::
-                parts = line.split("::")
-                if len(parts) >= 2:
-                    failed.append(parts[-1].split()[0])
+        if "FAILED" not in line:
+            continue
+        # Match full pytest node id: file.py::anything FAILED
+        # The node id can contain :: separators and [param] brackets
+        match = re.search(r"(\S+\.py(?:::\S+?)+(?:\[.*?\])?)\s+FAILED", line)
+        if match:
+            failed.append(match.group(1))
+        elif "::" in line:
+            # Fallback: grab everything before " FAILED"
+            parts = line.split(" FAILED")[0].strip().split()
+            if parts:
+                failed.append(parts[-1])
     return failed
 
 
@@ -146,7 +153,7 @@ def run_linter(workdir: str, fix: bool = False) -> Dict[str, Any]:
             cmd.append("--fix")
 
         proc = subprocess.run(
-            cmd, cwd=workdir, capture_output=True, text=True, check=False
+            cmd, cwd=workdir, capture_output=True, text=True, check=False, timeout=60
         )
 
         # Parse ruff output
@@ -236,6 +243,176 @@ def syntax_check(workdir: str) -> Dict[str, Any]:
         return out
     except Exception as e:
         return {"status": "error", "error": str(e)}
+
+
+def run_js_tests(workdir: str, test_files: Optional[List[str]] = None) -> Dict[str, Any]:
+    """Run JS/TypeScript tests using jest, vitest, or mocha (whichever is available).
+
+    Returns normalized dict with:
+    - status: ok | fail | error | skipped
+    - runner: the test runner used
+    - passed/failed counts where parseable
+    - summary: last 1000 chars of output
+    """
+    try:
+        # Detect package.json to find configured test runner
+        import json as _json
+        pkg_path = os.path.join(workdir, "package.json")
+        preferred: Optional[str] = None
+        if os.path.exists(pkg_path):
+            try:
+                pkg = _json.loads(open(pkg_path).read())
+                scripts = pkg.get("scripts", {})
+                test_script = scripts.get("test", "")
+                for runner in ("vitest", "jest", "mocha", "jasmine"):
+                    if runner in test_script:
+                        preferred = runner
+                        break
+            except Exception:
+                pass
+
+        runner_order = [preferred] if preferred else []
+        runner_order += ["npx jest", "npx vitest run", "npx mocha"]
+
+        for runner_cmd in runner_order:
+            if runner_cmd is None:
+                continue
+            parts = runner_cmd.split()
+            if not shutil.which(parts[0]):
+                continue
+            cmd = parts[:]
+            if test_files:
+                cmd.extend(test_files)
+            proc = subprocess.run(
+                cmd, cwd=workdir, capture_output=True, text=True, check=False, timeout=120
+            )
+            stdout = proc.stdout + proc.stderr
+            passed_m = re.search(r"(\d+)\s+(?:tests? )?passed", stdout, re.IGNORECASE)
+            failed_m = re.search(r"(\d+)\s+(?:tests? )?failed", stdout, re.IGNORECASE)
+            return {
+                "status": "ok" if proc.returncode == 0 else "fail",
+                "runner": runner_cmd,
+                "returncode": proc.returncode,
+                "passed": int(passed_m.group(1)) if passed_m else None,
+                "failed": int(failed_m.group(1)) if failed_m else None,
+                "summary": stdout[-1000:],
+            }
+
+        return {"status": "skipped", "reason": "No JS test runner found (jest/vitest/mocha). Install via npm."}
+    except subprocess.TimeoutExpired:
+        return {"status": "error", "error": "JS tests timed out after 120 seconds"}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
+def run_ts_check(workdir: str) -> Dict[str, Any]:
+    """Run TypeScript type-checking via tsc --noEmit.
+
+    Returns:
+    - status: ok | fail | error | skipped
+    - error_count: number of type errors
+    - errors: list of {file, line, message} dicts
+    - summary: raw tsc output
+    """
+    try:
+        if not shutil.which("tsc") and not shutil.which("npx"):
+            return {"status": "skipped", "reason": "tsc not found and npx not available"}
+
+        # Prefer local tsc via npx, fall back to global tsc
+        if shutil.which("npx"):
+            cmd = ["npx", "--no-install", "tsc", "--noEmit"]
+        else:
+            cmd = ["tsc", "--noEmit"]
+
+        proc = subprocess.run(
+            cmd, cwd=workdir, capture_output=True, text=True, check=False, timeout=120
+        )
+        stdout = proc.stdout + proc.stderr
+        errors = _parse_tsc_output(stdout)
+        return {
+            "status": "ok" if proc.returncode == 0 else "fail",
+            "returncode": proc.returncode,
+            "error_count": len(errors),
+            "errors": errors,
+            "summary": stdout[-2000:],
+        }
+    except subprocess.TimeoutExpired:
+        return {"status": "error", "error": "tsc timed out after 120 seconds"}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
+def _parse_tsc_output(output: str) -> List[Dict[str, Any]]:
+    """Parse tsc output: path(line,col): error TSxxxx: message"""
+    errors = []
+    pattern = r"^(.+?)\((\d+),(\d+)\):\s+error\s+(TS\d+):\s+(.+)$"
+    for line in output.splitlines():
+        m = re.match(pattern, line.strip())
+        if m:
+            errors.append({
+                "file": m.group(1),
+                "line": int(m.group(2)),
+                "column": int(m.group(3)),
+                "code": m.group(4),
+                "message": m.group(5),
+            })
+    return errors
+
+
+def run_eslint(workdir: str, paths: Optional[List[str]] = None) -> Dict[str, Any]:
+    """Run ESLint on JS/TypeScript files.
+
+    Returns:
+    - status: ok | fail | error | skipped
+    - error_count / warning_count
+    - errors: list of {file, line, message, severity} dicts
+    """
+    try:
+        runner = None
+        if shutil.which("eslint"):
+            runner = ["eslint"]
+        elif shutil.which("npx"):
+            runner = ["npx", "--no-install", "eslint"]
+        else:
+            return {"status": "skipped", "reason": "eslint not found"}
+
+        cmd = runner + ["--format=compact"] + (paths or ["."])
+        proc = subprocess.run(
+            cmd, cwd=workdir, capture_output=True, text=True, check=False, timeout=60
+        )
+        stdout = proc.stdout + proc.stderr
+        errors = _parse_eslint_compact(stdout)
+        error_count = sum(1 for e in errors if e.get("severity") == "error")
+        warning_count = sum(1 for e in errors if e.get("severity") == "warning")
+        return {
+            "status": "ok" if proc.returncode == 0 else "fail",
+            "returncode": proc.returncode,
+            "error_count": error_count,
+            "warning_count": warning_count,
+            "errors": errors,
+            "summary": stdout[-1000:],
+        }
+    except subprocess.TimeoutExpired:
+        return {"status": "error", "error": "eslint timed out after 60 seconds"}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
+def _parse_eslint_compact(output: str) -> List[Dict[str, Any]]:
+    """Parse ESLint --format=compact: path: line N, col M, severity - message"""
+    errors = []
+    pattern = r"^(.+?):\s+line\s+(\d+),\s+col\s+(\d+),\s+(Error|Warning)\s+-\s+(.+)$"
+    for line in output.splitlines():
+        m = re.match(pattern, line.strip())
+        if m:
+            errors.append({
+                "file": m.group(1),
+                "line": int(m.group(2)),
+                "column": int(m.group(3)),
+                "severity": m.group(4).lower(),
+                "message": m.group(5),
+            })
+    return errors
 
 
 # Alias for backwards compatibility

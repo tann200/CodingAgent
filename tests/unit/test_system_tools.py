@@ -1,8 +1,4 @@
 import pytest
-import tempfile
-import os
-import subprocess
-from pathlib import Path
 from src.tools.system_tools import grep, summarize_structure
 
 

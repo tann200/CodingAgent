@@ -2,8 +2,6 @@
 Tests for AgentBrainManager.
 """
 
-import pytest
-from unittest.mock import patch, MagicMock
 from src.core.orchestration.agent_brain import (
     AgentBrainManager,
     get_agent_brain_manager,
@@ -131,7 +129,7 @@ class TestAgentBrainManager:
     def test_reload_clears_and_reloads(self):
         """Test reload clears caches and reloads."""
         manager = AgentBrainManager()
-        roles_before = manager.get_all_roles()
+        _ = manager.get_all_roles()
         manager.reload()
         roles_after = manager.get_all_roles()
         assert isinstance(roles_after, dict)

@@ -15,6 +15,8 @@ from src.core.orchestration.graph.nodes.debug_node import debug_node
 from src.core.orchestration.graph.nodes.memory_update_node import memory_update_node
 from src.core.orchestration.graph.nodes.replan_node import replan_node
 from src.core.orchestration.graph.nodes.evaluation_node import evaluation_node
+from src.core.orchestration.graph.nodes.delegation_node import delegation_node
+from src.core.orchestration.graph.nodes.analyst_delegation_node import analyst_delegation_node
 
 logger = logging.getLogger(__name__)
 
@@ -23,33 +25,24 @@ def should_after_planning(
     state: AgentState,
 ) -> Literal["execute", "memory_sync", "end"]:
     """
-    Decide routing after the planning node.
-    If a current_plan or next_action exists, execute. If last_result exists, memory_sync. Otherwise end.
+    Routing after planning node.
+
+    NOTE: This function is not wired as a conditional edge in compile_agent_graph().
+    Routing from planning is handled by plan_validator_node instead.
+    Kept for GraphFactory subgraphs and tests (W9 — low priority).
     """
     logger.info(
-        f"should_after_planning: rounds={state.get('rounds')}, next_action={state.get('next_action')}, current_plan={state.get('current_plan')}, last_result={state.get('last_result')}"
+        f"should_after_planning: rounds={state.get('rounds')}, next_action={state.get('next_action')}, current_plan={state.get('current_plan')}"
     )
-
-    # Safety cap
-    if state["rounds"] >= 15:
-        logger.info("should_after_planning: returning end (rounds >= 15)")
+    if state.get("rounds", 0) >= 15:
         return "end"
     if state.get("next_action"):
-        logger.info("should_after_planning: returning execute (next_action exists)")
         return "execute"
-    current_plan = state.get("current_plan")
+    current_plan = state.get("current_plan") or []
     if current_plan:
-        # If current_plan has actionable steps
-        plan_len = len(current_plan) if current_plan else 0
-        if plan_len > 0:
-            logger.info(
-                "should_after_planning: returning execute (current_plan has steps)"
-            )
-            return "execute"
+        return "execute"
     if state.get("last_result"):
-        logger.info("should_after_planning: returning memory_sync (last_result exists)")
         return "memory_sync"
-    logger.info("should_after_planning: returning end (no conditions met)")
     return "end"
 
 
@@ -59,13 +52,26 @@ def should_after_plan_validator(
     """
     Decide routing after plan_validator node.
     If plan is valid, execute. If plan is invalid, go back to perception.
+
+    Loop guard: if rounds >= 8, force execution with whatever plan we have to avoid
+    infinite plan_validator → perception → planning → plan_validator loops.
+    Rounds only increments in perception_node, so this cap is reliable.
     """
     plan_validation = state.get("plan_validation")
     action_failed = state.get("action_failed")
+    rounds = state.get("rounds", 0)
 
     logger.info(
-        f"should_after_plan_validator: validation={plan_validation}, action_failed={action_failed}"
+        f"should_after_plan_validator: validation={plan_validation}, action_failed={action_failed}, rounds={rounds}"
     )
+
+    # Loop guard: after 8 perception rounds, accept the plan regardless of warnings/errors
+    # to prevent the plan_validator → perception cycle from running indefinitely.
+    if rounds >= 8:
+        logger.warning(
+            f"should_after_plan_validator: rounds={rounds} >= 8, forcing execution to break potential loop"
+        )
+        return "execute"
 
     if action_failed or not plan_validation or not plan_validation.get("valid", False):
         logger.info("should_after_plan_validator: plan invalid, going to perception")
@@ -75,19 +81,68 @@ def should_after_plan_validator(
     return "execute"
 
 
+_COMPLEXITY_KEYWORDS = (
+    "refactor", "rewrite", "implement", "migrate", "redesign",
+    "add feature", "add support", "create module", "create system",
+    "integrate", "replace all", "convert all", "update all",
+    "multi-step", "multiple files", "entire", "codebase",
+)
+
+
+def _task_is_complex(state: AgentState) -> bool:
+    """
+    W3: Heuristic to detect tasks that are too complex for the fast-path.
+
+    Returns True when ANY of the following are true:
+    - task description contains a complexity keyword
+    - relevant_files list has more than 3 entries (analysis already ran and found scope)
+    - current_plan is already set with 2+ steps (planning already ran)
+
+    This prevents the fast-path from executing a single generated action when the
+    true task requires coordinated analysis → planning → multi-step execution.
+    """
+    task: str = (state.get("task") or "").lower()
+    if any(kw in task for kw in _COMPLEXITY_KEYWORDS):
+        logger.info(f"route_after_perception: task classified as complex (keyword match)")
+        return True
+
+    relevant_files = state.get("relevant_files") or []
+    if len(relevant_files) > 3:
+        logger.info(
+            f"route_after_perception: task classified as complex ({len(relevant_files)} relevant files)"
+        )
+        return True
+
+    current_plan = state.get("current_plan") or []
+    if len(current_plan) >= 2:
+        logger.info(
+            f"route_after_perception: task classified as complex ({len(current_plan)}-step plan already set)"
+        )
+        return True
+
+    return False
+
+
 def route_after_perception(state: AgentState) -> Literal["execution", "analysis"]:
     """
     Phase 2.1: Fast-Path Routing
-    If perception already generated a valid tool call (next_action), skip heavy
-    analysis and planning and go directly to execution.
+    If perception already generated a valid tool call (next_action) AND the task is
+    simple, skip heavy analysis and planning and go directly to execution.
 
-    This prevents over-engineering simple 1-step tasks that just need a quick tool call.
+    W3 fix: complex tasks (multi-step keywords, large file scope, or existing plan)
+    are forced through analysis even when next_action is already set, to avoid
+    executing a single hastily-generated action when coordinated planning is required.
     """
     next_action = state.get("next_action")
     logger.info(f"route_after_perception: next_action={next_action is not None}")
 
     if next_action:
-        logger.info("route_after_perception: Fast-path - going directly to execution")
+        if _task_is_complex(state):
+            logger.info(
+                "route_after_perception: complex task detected — overriding fast-path, going to analysis"
+            )
+            return "analysis"
+        logger.info("route_after_perception: simple task fast-path — going directly to execution")
         return "execution"
 
     logger.info("route_after_perception: Standard path - going to analysis")
@@ -96,13 +151,27 @@ def route_after_perception(state: AgentState) -> Literal["execution", "analysis"
 
 def should_after_execution(
     state: AgentState,
-) -> Literal["perception", "execution", "verification"]:
+) -> Literal["perception", "step_controller", "verification", "memory_sync"]:
     """
     Decide routing after execution node.
-    If there's no plan, go back to perception to generate next action.
-    If there's a plan with more steps that haven't been completed, execute the next step directly.
+    If there's no plan and execution succeeded, task is complete - go to memory_sync.
+    If there's a plan with more steps that haven't been completed, route to step_controller
+    so it can load the next step description before execution (W5 fix).
+    If execution failed, go back to perception to try again.
     Otherwise go to verification.
+
+    W12: If tool_call_count >= max_tool_calls, bail to memory_sync to prevent runaway execution.
     """
+    # W12: Enforce tool call budget
+    tool_call_count = int(state.get("tool_call_count") or 0)
+    max_tool_calls = int(state.get("max_tool_calls") or 30)
+    if tool_call_count >= max_tool_calls:
+        logger.warning(
+            f"should_after_execution: tool budget exhausted "
+            f"({tool_call_count}/{max_tool_calls}), routing to memory_sync"
+        )
+        return "memory_sync"
+
     current_plan = state.get("current_plan") or []
     current_step = state.get("current_step") or 0
     last_result = state.get("last_result")
@@ -118,17 +187,18 @@ def should_after_execution(
             execution_ok = last_result.get("ok") or last_result.get("status") == "ok"
 
         if execution_ok:
-            current_step_data = current_plan[current_step]
-            current_step_data["completed"] = True
+            # Don't mutate state in place — LangGraph state must be updated via returned dicts
+            # The execution_node already returns an updated current_plan copy; this router
+            # just uses the current state to decide routing without needing to mutate.
             next_step = current_step + 1
 
             if next_step < len(current_plan):
-                # More steps - execute next step directly without going through perception
+                # W5 fix: route through step_controller so it sets step_description
+                # and planned_action for the next step before execution.
                 logger.info(
-                    f"should_after_execution: step completed, executing next step {next_step + 1}/{len(current_plan)}"
+                    f"should_after_execution: step completed, routing to step_controller for step {next_step + 1}/{len(current_plan)}"
                 )
-                # Update state for next execution
-                return "execution"
+                return "step_controller"
             else:
                 # All steps complete, go to verification
                 logger.info(
@@ -140,18 +210,29 @@ def should_after_execution(
             logger.info("should_after_execution: step failed, going to perception")
             return "perception"
 
-    # No plan - go back to perception to generate next action
+    # No plan - check if execution succeeded
+    if last_result:
+        execution_ok = last_result.get("ok") or last_result.get("status") == "ok"
+        if execution_ok:
+            # Task completed successfully (single-step or final step)
+            logger.info(
+                "should_after_execution: no plan, task complete, going to memory_sync"
+            )
+            return "memory_sync"
+
+    # No plan or execution not ok - go back to perception
     logger.info("should_after_execution: no plan, going to perception")
     return "perception"
 
 
 def should_after_execution_with_replan(
     state: AgentState,
-) -> Literal["perception", "execution", "verification", "replan"]:
+) -> Literal["perception", "step_controller", "verification", "replan", "memory_sync"]:
     """
     Decide routing after execution node with replan support.
     If replan_required is set, route to replan_node.
     Otherwise use standard execution routing.
+    W12 budget check is delegated to should_after_execution.
     """
     replan_required = state.get("replan_required")
     if replan_required:
@@ -171,6 +252,12 @@ def should_after_verification(
     If verification passed, go to memory_sync.
     If verification failed and debug attempts remain, go to debug.
     Otherwise end.
+
+    NOTE (NEW-15): This function is NOT wired in compile_agent_graph().
+    The main graph uses a fixed edge: workflow.add_edge("verification", "evaluation").
+    This function is used only in GraphFactory subgraphs.
+    To make the main graph use this routing, replace the fixed edge with:
+        workflow.add_conditional_edges("verification", should_after_verification, {...})
     """
     verification_result = state.get("verification_result") or {}
     debug_attempts: int = int(state.get("debug_attempts") or 0)
@@ -253,12 +340,13 @@ def should_after_replan(
 
 def should_after_evaluation(
     state: AgentState,
-) -> Literal["memory_sync", "step_controller", "end"]:
+) -> Literal["memory_sync", "step_controller", "debug", "end"]:
     """
     Decide routing after evaluation node.
-    If task is complete, go to memory_sync.
-    If more work needed, go to step_controller.
-    Otherwise end.
+    - complete  → memory_sync (task done)
+    - replan    → step_controller (remaining plan steps to execute)
+    - debug     → debug (verification failed, generate a targeted fix)
+    - anything else → end
     """
     evaluation_result = state.get("evaluation_result", "complete")
 
@@ -272,6 +360,9 @@ def should_after_evaluation(
             "should_after_evaluation: more work needed, going to step_controller"
         )
         return "step_controller"
+    elif evaluation_result == "debug":
+        logger.info("should_after_evaluation: verification failed, going to debug")
+        return "debug"
     else:
         logger.info("should_after_evaluation: ending task")
         return "end"
@@ -301,16 +392,18 @@ def should_after_step_controller(
         # Check if last result exists and was successful
         if last_result and isinstance(last_result, dict):
             if last_result.get("ok"):
-                # Last execution was successful, check if we need to advance
-                if current_step + 1 < len(current_plan):
-                    # More steps after current, go to execution
+                # execution_node already advanced current_step to next_step before
+                # step_controller runs, so current_step IS the next unexecuted step.
+                # Check current_step < len (not +1) to avoid the off-by-one (NEW-8).
+                if current_step < len(current_plan):
+                    # More steps remaining, go to execution
                     logger.info(
-                        f"should_after_step_controller: step {current_step + 1} done, more steps pending, going to execution"
+                        f"should_after_step_controller: advancing to step {current_step + 1}, more steps pending, going to execution"
                     )
                     return "execution"
-                # Current is the last step, go to verification
+                # All steps done, go to verification
                 logger.info(
-                    f"should_after_step_controller: step {current_step + 1} done, last step, going to verification"
+                    f"should_after_step_controller: all {len(current_plan)} steps done, going to verification"
                 )
                 return "verification"
             else:
@@ -330,15 +423,24 @@ def should_after_step_controller(
     logger.info("should_after_step_controller: no pending steps, going to verification")
     return "verification"
 
-    # Only go to execution if there's an uncompleted pending step
-    if current_plan and current_step < len(current_plan):
-        logger.info(
-            f"should_after_step_controller: step {current_step + 1} pending, going to execution"
-        )
-        return "execution"
 
-    logger.info("should_after_step_controller: no pending steps, going to verification")
-    return "verification"
+def should_after_analysis(
+    state: AgentState,
+) -> Literal["analyst_delegation", "planning"]:
+    """
+    #56: Route after analysis.
+
+    Complex tasks (same heuristic as _task_is_complex) are sent through the
+    analyst_delegation_node to get a deep-dive <findings> report before planning.
+    Simple tasks go directly to planning to avoid the subagent overhead.
+    """
+    if _task_is_complex(state):
+        logger.info(
+            "should_after_analysis: complex task → analyst_delegation before planning"
+        )
+        return "analyst_delegation"
+    logger.info("should_after_analysis: simple task → planning directly")
+    return "planning"
 
 
 def compile_agent_graph():
@@ -384,6 +486,12 @@ def compile_agent_graph():
     async def _plan_validator(state: AgentState, config: RunnableConfig):
         return await plan_validator_node(state, config)
 
+    async def _delegation(state: AgentState, config: RunnableConfig):
+        return await delegation_node(state, config)
+
+    async def _analyst_delegation(state: AgentState, config: RunnableConfig):
+        return await analyst_delegation_node(state, config)
+
     workflow.add_node("perception", _perception)
     workflow.add_node("analysis", _analysis)
     workflow.add_node("planning", _planning)
@@ -393,6 +501,8 @@ def compile_agent_graph():
     workflow.add_node("verification", _verification)
     workflow.add_node("debug", _debug)
     workflow.add_node("memory_sync", _memory_sync)
+    workflow.add_node("delegation", _delegation)
+    workflow.add_node("analyst_delegation", _analyst_delegation)
     workflow.add_node("replan", _replan)
     workflow.add_node("evaluation", _evaluation)
 
@@ -408,8 +518,15 @@ def compile_agent_graph():
         {"execution": "execution", "analysis": "analysis"},
     )
 
-    # analysis -> planning
-    workflow.add_edge("analysis", "planning")
+    # analysis -> analyst_delegation (complex) or planning (simple) — #56
+    workflow.add_conditional_edges(
+        "analysis",
+        should_after_analysis,
+        {"analyst_delegation": "analyst_delegation", "planning": "planning"},
+    )
+
+    # analyst_delegation -> planning (always — provides findings for planning prompt)
+    workflow.add_edge("analyst_delegation", "planning")
 
     # planning -> plan_validator (validate plan before execution)
     workflow.add_edge("planning", "plan_validator")
@@ -429,15 +546,19 @@ def compile_agent_graph():
     #     {"execute": "execution", "memory_sync": "memory_sync", "end": END},
     # )
 
-    # After execution, decide whether to continue with plan, replan, or go back to perception or verification
+    # After execution, decide whether to continue via step_controller, replan,
+    # go back to perception, or go to verification/memory_sync.
+    # W5 fix: "execution" self-loop replaced with "step_controller" so the step
+    # controller always loads the next step's description before execution.
     workflow.add_conditional_edges(
         "execution",
         should_after_execution_with_replan,
         {
             "perception": "perception",
-            "execution": "execution",
+            "step_controller": "step_controller",
             "verification": "verification",
             "replan": "replan",
+            "memory_sync": "memory_sync",
         },
     )
 
@@ -448,8 +569,7 @@ def compile_agent_graph():
         {"step_controller": "step_controller", "perception": "perception"},
     )
 
-    # Step controller can still be used for enforcement but not in the main loop
-    # Step controller -> execution or verification (only called from planning)
+    # Step controller -> execution or verification
     workflow.add_conditional_edges(
         "step_controller",
         should_after_step_controller,
@@ -460,25 +580,38 @@ def compile_agent_graph():
     # Evaluation will check if task is complete or needs more work
     workflow.add_edge("verification", "evaluation")
 
-    # Evaluation decides: memory_sync (complete), step_controller (more work), or end
+    # Evaluation decides:
+    #   complete     → memory_sync
+    #   replan       → step_controller (remaining plan steps)
+    #   debug        → debug (verification failed, generate fix — bounded by debug_attempts)
+    #   end          → END
     workflow.add_conditional_edges(
         "evaluation",
         should_after_evaluation,
         {
             "memory_sync": "memory_sync",
             "step_controller": "step_controller",
+            "debug": "debug",
             "end": END,
         },
     )
 
-    # Debug -> execution (retry) or memory_sync (NEW)
+    # Debug → execution (apply fix) or memory_sync (give up) or end
+    # debug_attempts is incremented by evaluation_node before routing here,
+    # so this path is bounded to max_debug_attempts iterations.
     workflow.add_conditional_edges(
         "debug",
         should_after_debug,
         {"execution": "execution", "memory_sync": "memory_sync", "end": END},
     )
 
-    # After memory sync, end
-    workflow.add_edge("memory_sync", END)
+    # After memory sync, check if there are delegations to spawn
+    # Delegations run after memory_sync for background tasks
+    workflow.add_edge("memory_sync", "delegation")
+
+    # After delegation, always end — delegations are terminal (fire-and-forget after memory_sync).
+    # Routing back to memory_sync caused an infinite loop because delegation_results is
+    # always set (even as an empty dict) after the first delegation run.
+    workflow.add_edge("delegation", END)
 
     return workflow.compile()

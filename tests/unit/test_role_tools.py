@@ -1,4 +1,3 @@
-import pytest
 from src.core.orchestration.orchestrator import Orchestrator
 from src.tools import role_tools
 from src.core.orchestration.event_bus import get_event_bus

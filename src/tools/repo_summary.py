@@ -60,9 +60,13 @@ def detect_languages(workdir: str) -> List[str]:
         ".kt": "Kotlin",
     }
 
-    for ext, lang in extensions.items():
-        if list(workdir_path.rglob(f"*{ext}")):
-            languages.add(lang)
+    # Single-pass directory scan instead of one rglob per extension (performance fix)
+    _EXCLUDE_DIRS = {".venv", "venv", "__pycache__", ".git", "node_modules"}
+    for f in workdir_path.rglob("*"):
+        if f.is_file() and not any(part in _EXCLUDE_DIRS for part in f.parts):
+            lang = extensions.get(f.suffix.lower())
+            if lang:
+                languages.add(lang)
 
     return sorted(list(languages))
 

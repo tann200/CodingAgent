@@ -2,8 +2,6 @@
 Tests for WorkspaceGuard - protects critical files from modification.
 """
 
-import pytest
-from pathlib import Path
 from src.core.orchestration.workspace_guard import WorkspaceGuard
 
 

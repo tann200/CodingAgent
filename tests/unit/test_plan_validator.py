@@ -254,13 +254,30 @@ class TestPlanValidatorEnforceWarningsDefault:
     """Tests that enforce_warnings defaults to True (strict by default)."""
 
     @pytest.mark.asyncio
-    async def test_plan_without_verification_fails_by_default(self):
-        """A plan missing a verification step should fail when enforce_warnings=True (default)."""
+    async def test_plan_without_verification_warns_by_default(self):
+        """A plan missing a verification step generates a warning but does NOT block by default.
+        (enforce_warnings defaults to False to prevent infinite plan-validation loops)."""
         plan = [
             {"description": "Read main.py"},
             {"description": "Modify the function"},
         ]
-        state = _make_validator_state(plan)  # no enforce_warnings → defaults to True
+        state = _make_validator_state(plan)  # no enforce_warnings → defaults to False
+
+        result = await plan_validator_node(state, None)
+
+        # With enforce_warnings=False (default), plan should pass with a warning only
+        assert result.get("action_failed") is not True
+        plan_validation = result.get("plan_validation", {})
+        assert len(plan_validation.get("warnings", [])) > 0  # warning is present but not blocking
+
+    @pytest.mark.asyncio
+    async def test_plan_without_verification_fails_when_enforce_warnings_true(self):
+        """A plan missing a verification step should fail when enforce_warnings=True is set explicitly."""
+        plan = [
+            {"description": "Read main.py"},
+            {"description": "Modify the function"},
+        ]
+        state = _make_validator_state(plan, enforce_warnings=True)
 
         result = await plan_validator_node(state, None)
 

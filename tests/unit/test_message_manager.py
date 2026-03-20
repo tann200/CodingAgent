@@ -244,7 +244,7 @@ class TestDistillerRicherFormat:
             "src.core.memory.distiller._call_llm_sync",
             return_value=json.dumps(rich_state),
         ):
-            result = distill_context(
+            _ = distill_context(
                 [{"role": "user", "content": "fix auth"}],
                 working_dir=tmp_path,
             )

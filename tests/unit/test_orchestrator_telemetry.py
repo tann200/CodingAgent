@@ -61,7 +61,7 @@ def test_orchestrator_emits_startup_and_model_events(monkeypatch, tmp_path):
     # Import and create orchestrator (this will trigger non-blocking background probe)
     from src.core.orchestration.orchestrator import Orchestrator
 
-    orch = Orchestrator()
+    _orch = Orchestrator()
 
     # wait briefly for background probe to run
     time.sleep(1)

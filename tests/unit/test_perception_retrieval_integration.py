@@ -1,7 +1,6 @@
 import asyncio
-import json
-from unittest.mock import MagicMock
-from src.core.orchestration.graph.nodes.workflow_nodes import perception_node
+from unittest.mock import MagicMock, patch
+from src.core.orchestration.graph.nodes.perception_node import perception_node
 from src.core.orchestration.orchestrator import ToolRegistry
 
 
@@ -43,7 +42,9 @@ def test_perception_injects_retrieved_snippets(tmp_path):
 
     config = {"configurable": {"orchestrator": orch}}
 
-    res = run_async(perception_node(state, config))
+    fake_resp = {"choices": [{"message": {"content": ""}}]}
+    with patch("src.core.orchestration.graph.nodes.perception_node.call_model", return_value=fake_resp):
+        res = run_async(perception_node(state, config))
     # Check that the returned history contains assistant message (empty content is allowed)
     assert "history" in res
     # The builder puts repository intelligence in system message; here we check that the returned next_action is present (none expected) and no error

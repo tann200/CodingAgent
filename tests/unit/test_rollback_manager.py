@@ -229,7 +229,7 @@ class TestMultiFileAtomicity:
         f3.write_text("orig c")
 
         # Simulate step transaction: start with first file, append others
-        snap_id = mgr.snapshot_files(["a.py"], snapshot_id="step_001")
+        _snap_id = mgr.snapshot_files(["a.py"], snapshot_id="step_001")
         mgr.append_to_snapshot("step_001", "b.py")
         mgr.append_to_snapshot("step_001", "c.py")
 

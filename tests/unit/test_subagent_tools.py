@@ -2,9 +2,6 @@
 Tests for subagent tools.
 """
 
-import pytest
-from unittest.mock import patch, MagicMock
-from pathlib import Path
 
 
 class TestDelegateTask:
@@ -75,17 +72,30 @@ class TestListSubagentRoles:
         assert "available_roles" in result
 
     def test_list_subagent_roles_has_all_roles(self):
-        """Test all expected roles are listed."""
+        """Test all canonical roles are listed."""
         from src.tools.subagent_tools import list_subagent_roles
 
         result = list_subagent_roles()
         roles = result["available_roles"]
 
-        expected_roles = ["researcher", "coder", "reviewer", "planner"]
+        # Canonical role names (legacy aliases are in the 'aliases' field)
+        expected_roles = ["analyst", "operational", "strategic", "reviewer", "debugger"]
         for role in expected_roles:
-            assert role in roles
+            assert role in roles, f"Role '{role}' missing from available_roles"
             assert "description" in roles[role]
             assert "best_for" in roles[role]
+
+    def test_list_subagent_roles_has_aliases(self):
+        """Test legacy alias names are documented in each role's aliases list."""
+        from src.tools.subagent_tools import list_subagent_roles
+
+        result = list_subagent_roles()
+        roles = result["available_roles"]
+
+        # Legacy aliases must be documented
+        assert "researcher" in roles["analyst"]["aliases"]
+        assert "coder" in roles["operational"]["aliases"]
+        assert "planner" in roles["strategic"]["aliases"]
 
     def test_list_subagent_roles_descriptions(self):
         """Test role descriptions are meaningful."""
@@ -95,10 +105,10 @@ class TestListSubagentRoles:
         roles = result["available_roles"]
 
         # Check that descriptions contain relevant keywords
-        assert "research" in roles["researcher"]["description"].lower()
-        assert "code" in roles["coder"]["description"].lower()
+        assert "research" in roles["analyst"]["description"].lower() or "analysis" in roles["analyst"]["description"].lower()
+        assert "code" in roles["operational"]["description"].lower() or "implement" in roles["operational"]["description"].lower()
         assert "review" in roles["reviewer"]["description"].lower()
-        assert "plan" in roles["planner"]["description"].lower()
+        assert "plan" in roles["strategic"]["description"].lower() or "decompos" in roles["strategic"]["description"].lower()
 
 
 class TestGraphFactoryIntegration:

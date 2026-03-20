@@ -11,7 +11,7 @@ import shutil
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 from datetime import datetime
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 

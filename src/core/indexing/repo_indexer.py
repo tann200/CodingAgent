@@ -107,7 +107,15 @@ def parse_with_regex(path: Path, language: str) -> Dict[str, Any]:
     func_pattern = patterns.get("function")
     if func_pattern:
         for match in re.finditer(func_pattern, content):
-            name = match.group(1) or match.group(2) or match.group(3)
+            # Use lastindex to avoid IndexError on patterns with fewer than 3 groups
+            name = next(
+                (
+                    match.group(i)
+                    for i in range(1, (match.lastindex or 0) + 1)
+                    if match.group(i)
+                ),
+                None,
+            )
             if name:
                 symbols.append(
                     {
@@ -117,20 +125,18 @@ def parse_with_regex(path: Path, language: str) -> Dict[str, Any]:
                     }
                 )
 
-    # Find classes/structs
-    class_pattern = (
-        patterns.get("class") or patterns.get("struct") or patterns.get("impl")
-    )
-    if class_pattern:
-        for match in re.finditer(class_pattern, content):
+    # Find classes/structs/impls - iterate over all type patterns
+    for type_key in ["class", "struct", "impl"]:
+        type_pattern = patterns.get(type_key)
+        if not type_pattern:
+            continue
+        for match in re.finditer(type_pattern, content):
             name = match.group(1)
             if name:
                 symbols.append(
                     {
                         "name": name,
-                        "type": "class"
-                        if class_pattern in ["class", "struct"]
-                        else "impl",
+                        "type": type_key,
                         "language": language,
                     }
                 )

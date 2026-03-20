@@ -3,7 +3,6 @@ Tests for scenario evaluation framework.
 """
 
 import pytest
-import tempfile
 import shutil
 from pathlib import Path
 

@@ -1,5 +1,4 @@
 import pytest
-import asyncio
 from src.core.orchestration.graph.nodes import workflow_nodes
 from src.core.context.context_builder import ContextBuilder
 
@@ -41,6 +40,13 @@ async def test_perception_injects_retrieved_snippets(monkeypatch):
 
     monkeypatch.setattr(ContextBuilder, 'build_prompt', fake_build_prompt)
 
+    # Mock call_model to avoid real LLM calls
+    fake_resp = {"choices": [{"message": {"content": ""}}]}
+    monkeypatch.setattr(
+        "src.core.orchestration.graph.nodes.perception_node.call_model",
+        lambda *args, **kwargs: fake_resp,
+    )
+
     state = {
         'task': 'find foo',
         'history': [],
@@ -51,7 +57,7 @@ async def test_perception_injects_retrieved_snippets(monkeypatch):
 
     conf = {'configurable': {'orchestrator': FakeOrch()}}
 
-    res = await workflow_nodes.perception_node(state, conf)
+    _ = await workflow_nodes.perception_node(state, conf)
 
     assert 'retrieved_snippets' in captured
     snippets = captured['retrieved_snippets']

@@ -35,6 +35,7 @@ ValidationError = PydValidationError
 # Tools that require the target file to have been read in the current session before writing
 WRITE_TOOLS_REQUIRING_READ = {
     "edit_file",
+    "edit_file_atomic",
     "write_file",
     "edit_by_line_range",
     "apply_patch",
@@ -56,15 +57,15 @@ except ImportError:
             return obj
 
 
-from src.core.inference.llm_manager import (
+from src.core.inference.llm_manager import (  # noqa: E402
     get_provider_manager,
     _ensure_provider_manager_initialized_sync,
 )
-from src.core.orchestration.event_bus import EventBus
-from src.core.orchestration.message_manager import MessageManager
-from src.core.logger import logger as guilogger
-from src.tools import file_tools
-from src.tools.registry import register_tool
+from src.core.orchestration.event_bus import EventBus, new_correlation_id  # noqa: E402
+from src.core.orchestration.message_manager import MessageManager  # noqa: E402
+from src.core.logger import logger as guilogger  # noqa: E402
+from src.tools import file_tools  # noqa: E402
+from src.tools.registry import register_tool  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -120,6 +121,225 @@ def _generate_work_summary(
         lines.append(f"- Pending steps: {len(pending_steps)}")
 
     return "\n".join(lines)
+
+
+# Tool result formatting - organized by tool category
+TOOL_RESULT_FORMATTERS = {
+    # Display-only tools: format for user-friendly output
+    "list_files": lambda r: _format_list_files_result(r),
+    "list_dir": lambda r: _format_list_files_result(r),
+    "read_file": lambda r: _format_read_file_result(r),
+    "grep": lambda r: _format_grep_result(r),
+    "search_code": lambda r: _format_search_result(r),
+    "find_symbol": lambda r: _format_symbol_result(r),
+    # Future: file modification tools with diff support
+    "edit_file": lambda r: _format_edit_result(r),
+    "edit_file_atomic": lambda r: _format_edit_result(r),
+    "write_file": lambda r: _format_write_result(r),
+}
+
+
+def _format_list_files_result(result: Dict[str, Any]) -> str:
+    """Format list_files/list_dir results with icons."""
+    if not isinstance(result, dict):
+        return str(result)
+
+    if "items" in result:
+        items = result["items"]
+        if not items:
+            return "Empty directory"
+
+        output = ""
+        for item in items:
+            if isinstance(item, dict):
+                name = item.get("name", "?")
+                is_dir = item.get("is_dir", False)
+                marker = "📁" if is_dir else "📄"
+                output += f"  {marker} {name}\n"
+            else:
+                output += f"  {item}\n"
+        return output.strip()
+
+    return str(result)
+
+
+def _format_read_file_result(result: Dict[str, Any]) -> str:
+    """Format read_file results."""
+    if not isinstance(result, dict):
+        return str(result)
+
+    if "content" in result:
+        content = result["content"]
+        path = result.get("path", "unknown")
+        truncated = result.get("truncated", False)
+
+        output = f"File: {path}\n"
+        if truncated:
+            output += "[Content truncated]\n"
+        output += content
+        return output
+
+    return str(result)
+
+
+def _format_grep_result(result: Dict[str, Any]) -> str:
+    """Format grep results."""
+    if not isinstance(result, dict):
+        return str(result)
+
+    if "matches" in result:
+        matches = result["matches"]
+        if not matches:
+            return "No matches found"
+
+        output = f"Found {len(matches)} match(es):\n"
+        for match in matches[:20]:  # Limit to 20 matches
+            if isinstance(match, dict):
+                file_path = match.get("file_path", "?")
+                line_num = match.get("line_number", "?")
+                content = match.get("content", "").strip()
+                output += f"  {file_path}:{line_num}: {content}\n"
+            else:
+                output += f"  {match}\n"
+
+        if len(matches) > 20:
+            output += f"  ... and {len(matches) - 20} more\n"
+        return output.strip()
+
+    return str(result)
+
+
+def _format_search_result(result: Dict[str, Any]) -> str:
+    """Format search_code results."""
+    if not isinstance(result, dict):
+        return str(result)
+
+    if "results" in result:
+        results = result["results"]
+        if not results:
+            return "No results found"
+
+        output = f"Found {len(results)} result(s):\n"
+        for r in results[:10]:  # Limit to 10
+            if isinstance(r, dict):
+                file_path = r.get("file_path", "?")
+                content = r.get("content", "").strip()
+                output += f"  📄 {file_path}\n"
+                if content:
+                    output += f"     {content[:100]}\n"
+            else:
+                output += f"  {r}\n"
+
+        return output.strip()
+
+    return str(result)
+
+
+def _format_symbol_result(result: Dict[str, Any]) -> str:
+    """Format find_symbol results."""
+    if not isinstance(result, dict):
+        return str(result)
+
+    name = result.get("symbol_name", "?")
+    file_path = result.get("file_path", "?")
+    symbol_type = result.get("symbol_type", "symbol")
+    line = result.get("start_line", "?")
+
+    return f"Found {symbol_type} `{name}` at {file_path}:{line}"
+
+
+def _format_edit_result(result: Dict[str, Any]) -> str:
+    """Format edit_file results. Shows diff if available, otherwise minimal info."""
+    if not isinstance(result, dict):
+        return str(result)
+
+    path = result.get("path", "unknown")
+    status = result.get("status", "unknown")
+
+    if status == "ok":
+        lines_added = result.get("lines_added", 0)
+        lines_removed = result.get("lines_removed", 0)
+        diff = result.get("diff", "")
+
+        stats = ""
+        if lines_added or lines_removed:
+            stats = f" [+{lines_added}/-{lines_removed}]"
+
+        if diff:
+            return f"✓ Modified {path}{stats}\n```diff\n{diff}\n```"
+        return f"✓ Modified {path}"
+
+    if status == "error":
+        error = result.get("error", "Unknown error")
+        return f"✗ Edit failed for {path}: {error}"
+
+    if status == "not_found":
+        return f"✗ File not found: {path}"
+
+    return str(result)
+
+
+def _format_write_result(result: Dict[str, Any]) -> str:
+    """Format write_file results. Shows diff if available, otherwise minimal info."""
+    if not isinstance(result, dict):
+        return str(result)
+
+    path = result.get("path", "unknown")
+    status = result.get("status", "unknown")
+
+    if status == "ok":
+        lines_added = result.get("lines_added", 0)
+        lines_removed = result.get("lines_removed", 0)
+        diff = result.get("diff", "")
+        is_new_file = result.get("is_new_file", False)
+
+        prefix = "📄 New file" if is_new_file else "📝 Updated"
+        stats = ""
+        if lines_added or lines_removed:
+            stats = f" [+{lines_added}/-{lines_removed}]"
+
+        if diff:
+            return f"✓ {prefix} {path}{stats}\n```diff\n{diff}\n```"
+        return f"✓ {prefix} {path}"
+
+    if status == "error":
+        error = result.get("error", "Unknown error")
+        return f"✗ Write failed for {path}: {error}"
+
+    if status == "not_found":
+        return f"✗ Directory not found for: {path}"
+
+    return str(result)
+
+
+def _format_tool_result(result: Any, tool_name: str = None) -> str:
+    """Format a tool result for display based on the tool type."""
+    if tool_name and tool_name in TOOL_RESULT_FORMATTERS:
+        return TOOL_RESULT_FORMATTERS[tool_name](result)
+
+    # Default formatting for dict results
+    if isinstance(result, dict):
+        # Check if there's a formatter for any key
+        for key in ["items", "content", "matches", "results"]:
+            if key in result and key in TOOL_RESULT_FORMATTERS:
+                return TOOL_RESULT_FORMATTERS[key](result)
+
+        # Check for diff/patch (future file modification support)
+        if "diff" in result:
+            return f"```diff\n{result['diff']}\n```"
+        if "patch" in result:
+            return f"```diff\n{result['patch']}\n```"
+
+        # Generic dict - show as formatted string
+        status = result.get("status", "ok")
+        if status == "ok":
+            path = result.get("path", "")
+            return f"✓ {path}" if path else "✓ Done"
+        else:
+            error = result.get("error", "Unknown error")
+            return f"✗ {error}"
+
+    return str(result) if result else ""
 
 
 class ToolRegistry:
@@ -247,6 +467,16 @@ def example_registry() -> ToolRegistry:
         description="edit_file(path, patch) -> Edit a file using a unified diff patch",
     )
     reg.register(
+        "edit_file_atomic",
+        file_tools.edit_file_atomic,
+        side_effects=["write"],
+        description=(
+            "edit_file_atomic(path, old_string, new_string) -> "
+            "Replace old_string (must appear exactly once) with new_string. "
+            "Preferred for surgical edits: no line-number drift, fails loudly if ambiguous."
+        ),
+    )
+    reg.register(
         "delete_file",
         file_tools.delete_file,
         side_effects=["write"],
@@ -263,7 +493,7 @@ def example_registry() -> ToolRegistry:
         "bash",
         file_tools.bash,
         side_effects=["execute"],
-        description="bash(command) -> Execute a shell command",
+        description="bash(command) -> Execute a safe, allowlisted shell command (read-only system queries, git, test runners, compilers). Shell operators (|, &&, >) and destructive commands are blocked.",
     )
     reg.register(
         "glob",
@@ -330,7 +560,8 @@ def example_registry() -> ToolRegistry:
             return {"status": "error", "error": "File not found"}
 
         try:
-            lines = p.read_text().splitlines()
+            original_content = p.read_text(encoding="utf-8")
+            lines = original_content.splitlines()
             if start_line < 1 or end_line > len(lines):
                 return {
                     "status": "error",
@@ -346,7 +577,11 @@ def example_registry() -> ToolRegistry:
             else:
                 # Replace the lines
                 new_lines = lines[: start_line - 1] + [new_content] + lines[end_line:]
-                p.write_text("\n".join(new_lines))
+                result_text = "\n".join(new_lines)
+                # Preserve trailing newline if original had one
+                if original_content.endswith("\n") and not result_text.endswith("\n"):
+                    result_text += "\n"
+                p.write_text(result_text)
                 return {"status": "ok", "path": str(p)}
         except Exception as e:
             return {"status": "error", "error": str(e)}
@@ -421,6 +656,21 @@ def example_registry() -> ToolRegistry:
             verification_tools.syntax_check,
             description="syntax_check(workdir) -> Quick py_compile across repo",
         )
+        reg.register(
+            "run_js_tests",
+            verification_tools.run_js_tests,
+            description="run_js_tests(workdir) -> Run JS/TypeScript tests via jest/vitest/mocha",
+        )
+        reg.register(
+            "run_ts_check",
+            verification_tools.run_ts_check,
+            description="run_ts_check(workdir) -> TypeScript type-check via tsc --noEmit",
+        )
+        reg.register(
+            "run_eslint",
+            verification_tools.run_eslint,
+            description="run_eslint(workdir, paths) -> Run ESLint on JS/TypeScript files",
+        )
     except Exception:
         pass
 
@@ -477,12 +727,33 @@ def example_registry() -> ToolRegistry:
         reg.register(
             "delegate_task",
             subagent_tools.delegate_task,
-            description="delegate_task(role, subtask_description, working_dir) -> Spawn an isolated subagent to complete a subtask",
+            description="delegate_task(role, subtask_description, working_dir) -> Spawn an isolated subagent (analyst/strategic/reviewer/operational/debugger) to complete a subtask and return a summary",
         )
         reg.register(
             "list_subagent_roles",
             subagent_tools.list_subagent_roles,
             description="list_subagent_roles() -> List available subagent roles",
+        )
+    except Exception:
+        pass
+
+    # TODO tracking tool
+    try:
+        from src.tools.todo_tools import manage_todo
+
+        reg.register(
+            "manage_todo",
+            manage_todo,
+            side_effects=["write"],
+            description=(
+                "manage_todo(action, workdir, steps, step_id, description) -> "
+                "Manage the task TODO list. "
+                "action='create': create TODO from steps list. "
+                "action='check': mark step_id as done. "
+                "action='update': update step_id description. "
+                "action='read': return current TODO. "
+                "action='clear': remove TODO."
+            ),
         )
     except Exception:
         pass
@@ -798,7 +1069,7 @@ class Orchestrator:
                 # Resolve the path and see if it's inside working_dir
                 target_path = (Path(self.working_dir) / path_arg).resolve()
                 work_dir = Path(self.working_dir).resolve()
-                if not str(target_path).startswith(str(work_dir)):
+                if not target_path.is_relative_to(work_dir):
                     return {
                         "ok": False,
                         "error": f"Path '{path_arg}' is outside working directory.",
@@ -819,6 +1090,7 @@ class Orchestrator:
         """
         try:
             from src.core.memory.distiller import compact_messages_to_prose
+
             return compact_messages_to_prose(messages, working_dir=self.working_dir)
         except Exception as e:
             guilogger.warning(f"_compact_messages failed (non-fatal): {e}")
@@ -876,8 +1148,12 @@ class Orchestrator:
             "run_tests": 120,
             "run_linter": 60,
             "syntax_check": 30,
+            "run_js_tests": 120,
+            "run_ts_check": 120,
+            "run_eslint": 60,
             "search_code": 30,
             "grep": 30,
+            "edit_file_atomic": 30,
             "find_symbol": 30,
             "list_files": 10,
             "glob": 10,
@@ -989,10 +1265,14 @@ class Orchestrator:
                         )
                     else:
                         # No active transaction — fall back to per-write snapshot
-                        self._current_snapshot_id = self.rollback_manager.snapshot_files(
-                            [path_arg], snapshot_id=None
+                        self._current_snapshot_id = (
+                            self.rollback_manager.snapshot_files(
+                                [path_arg], snapshot_id=None
+                            )
                         )
-                        guilogger.debug(f"Individual snapshot created before write: {path_arg}")
+                        guilogger.debug(
+                            f"Individual snapshot created before write: {path_arg}"
+                        )
                 except Exception as snap_err:
                     guilogger.warning(f"Snapshot failed (non-blocking): {snap_err}")
 
@@ -1028,10 +1308,14 @@ class Orchestrator:
                 try:
                     res = tool["fn"](**args)
                 finally:
-                    if timeout_seconds > 0 and in_main_thread and old_handler is not None:
+                    if (
+                        timeout_seconds > 0
+                        and in_main_thread
+                        and old_handler is not None
+                    ):
                         signal.alarm(0)
                         signal.signal(signal.SIGALRM, old_handler)
-            except TimeoutError as te:
+            except TimeoutError:
                 guilogger.warning(f"Tool '{name}' timed out after {timeout_seconds}s")
                 return {
                     "ok": False,
@@ -1196,18 +1480,27 @@ class Orchestrator:
             except Exception:
                 pass
 
-            # Publish tool.execute.finish event for UI dashboard
+            # Publish tool.execute.finish event for UI dashboard — include formatted result
             try:
+                formatted = _format_tool_result(res, name)
                 self.event_bus.publish(
                     "tool.execute.finish",
-                    {"tool": name, "ok": True, "workdir": str(self.working_dir)},
+                    {
+                        "tool": name,
+                        "ok": True,
+                        "workdir": str(self.working_dir),
+                        "result": res,
+                        "result_formatted": formatted,
+                    },
                 )
             except Exception:
                 pass
 
             # Step B: Log tool call to SessionStore
             try:
-                _safe_args = {k: str(v) if isinstance(v, Path) else v for k, v in args.items()}
+                _safe_args = {
+                    k: str(v) if isinstance(v, Path) else v for k, v in args.items()
+                }
                 self.session_store.add_tool_call(
                     session_id=getattr(self, "_current_task_id", "unknown"),
                     tool_name=name,
@@ -1231,7 +1524,9 @@ class Orchestrator:
 
             # Log failed tool call to SessionStore
             try:
-                _safe_args = {k: str(v) if isinstance(v, Path) else v for k, v in args.items()}
+                _safe_args = {
+                    k: str(v) if isinstance(v, Path) else v for k, v in args.items()
+                }
                 self.session_store.add_tool_call(
                     session_id=getattr(self, "_current_task_id", "unknown"),
                     tool_name=name,
@@ -1514,6 +1809,7 @@ class Orchestrator:
 
         initial_state = {
             "task": prompt,
+            "session_id": self._current_task_id,
             "history": self.msg_mgr.messages,
             "verified_reads": list(self._session_read_files),
             "next_action": None,
@@ -1522,6 +1818,9 @@ class Orchestrator:
             "working_dir": str(self.working_dir),
             "system_prompt": full_system_prompt,
             "errors": [],
+            # delegation tracking
+            "delegations": [],
+            "delegation_results": None,
             # planning fields
             "current_plan": [],
             "current_step": 0,
@@ -1556,7 +1855,10 @@ class Orchestrator:
         # 2. Compile and Run Graph
         graph = compile_agent_graph()
 
-        guilogger.info(f"run_agent_once: starting with task: {prompt[:80]}")
+        # Mint a fresh correlation ID for this agent turn so all EventBus events
+        # and LLM call logs share the same trace token (#26).
+        cid = new_correlation_id()
+        guilogger.info(f"run_agent_once: starting with task: {prompt[:80]} [cid={cid}]")
 
         # Initialize final_state before try to satisfy LSP
         final_state: dict = {}
@@ -1642,11 +1944,12 @@ class Orchestrator:
 
                 handled = False
                 if last_assistant_idx is not None:
-                    # Check if there's a 'tool' entry after this assistant msg
+                    # Check if there's an execution result after this assistant msg.
+                    # execution_node stores results with role="user" (not "tool"), so we
+                    # match on content alone — any message containing "tool_execution_result"
+                    # means the tool was already executed and we should stop looping.
                     for later in history[last_assistant_idx + 1 :]:
-                        if later.get("role") == "tool" and "tool_execution_result" in (
-                            later.get("content") or ""
-                        ):
+                        if "tool_execution_result" in (later.get("content") or ""):
                             handled = True
                             break
 
@@ -1715,12 +2018,75 @@ class Orchestrator:
 
             # Construct final response
             assistant_msgs = []
+            tool_results = []
+            last_tool_name = None
             if final_state and "history" in final_state:
                 assistant_msgs = [
                     m["content"]
                     for m in final_state["history"]
                     if m["role"] == "assistant"
                 ]
+                # Extract tool results for display with tool name.
+                # execution_node stores results with role="user", not "tool".
+                # Accept either role as long as content contains "tool_execution_result".
+                for i, m in enumerate(final_state["history"]):
+                    is_tool_result = m.get("role") == "tool" or (
+                        m.get("role") == "user"
+                        and "tool_execution_result" in (m.get("content") or "")
+                    )
+                    if is_tool_result:
+                        content = m.get("content", "")
+                        # Try to find the tool name from preceding assistant message
+                        tool_name = None
+                        if i > 0:
+                            prev_msg = final_state["history"][i - 1]
+                            if prev_msg.get("role") == "assistant":
+                                try:
+                                    from src.core.orchestration.tool_parser import (
+                                        parse_tool_block,
+                                    )
+
+                                    parsed = parse_tool_block(
+                                        prev_msg.get("content", "")
+                                    )
+                                    if parsed and parsed.get("name"):
+                                        tool_name = parsed["name"]
+                                except Exception:
+                                    pass
+
+                        # Extract the result from tool_execution_result wrapper.
+                        # execution_node wraps: {"tool_execution_result": {"ok": True, "result": {...}}}
+                        # We want the inner "result" dict for formatting.
+                        if "tool_execution_result" in content:
+                            import json
+
+                            try:
+                                data = json.loads(content)
+                                # Unwrap the outer "tool_execution_result" envelope first
+                                if isinstance(data, dict) and "tool_execution_result" in data:
+                                    ter = data["tool_execution_result"]
+                                    if isinstance(ter, dict) and "result" in ter:
+                                        result = ter["result"]
+                                    elif isinstance(ter, dict):
+                                        result = ter
+                                    else:
+                                        result = ter
+                                    tool_results.append(result)
+                                    if tool_name:
+                                        last_tool_name = tool_name
+                                # Legacy flat format: {"result": {...}}
+                                elif isinstance(data, dict) and "result" in data:
+                                    tool_results.append(data["result"])
+                                    if tool_name:
+                                        last_tool_name = tool_name
+                                elif isinstance(data, dict) and data.get("ok"):
+                                    tool_results.append(data)
+                                    if tool_name:
+                                        last_tool_name = tool_name
+                            except (json.JSONDecodeError, TypeError):
+                                tool_results.append(content)
+                        elif content:
+                            tool_results.append(content)
             guilogger.info(
                 f"Graph execution completed in {final_state.get('rounds', 0) if final_state else 0} rounds"
                 if final_state
@@ -1729,10 +2095,45 @@ class Orchestrator:
 
             history = final_state.get("history", []) if final_state else []
             work_summary = _generate_work_summary(final_state, history)
+
+            # Build assistant_message: prefer tool result over raw YAML tool call
+            last_assistant = assistant_msgs[-1] if assistant_msgs else ""
+
+            # If last assistant message is just a tool call and we have results, show formatted result.
+            # YAML blocks may start with ```yaml or bare "name:" (no fences).
+            # LM Studio/Qwen models prefix the block with <think>...</think> — strip it first.
+            import re as _re
+            _last_stripped = _re.sub(r"<think>.*?</think>", "", last_assistant, flags=_re.DOTALL).strip()
+            _is_tool_call_msg = (
+                not last_assistant
+                or _last_stripped.startswith("name:")
+                or _last_stripped.startswith("```yaml")
+                or _last_stripped.startswith("```\nname:")
+                or (_last_stripped.startswith("```") and "name:" in _last_stripped)
+            )
+            if tool_results and _is_tool_call_msg:
+                # Use enhanced formatting based on tool type
+                assistant_message = ""
+
+                # Format each tool result using the appropriate formatter
+                for i, result in enumerate(tool_results):
+                    # Determine which tool this result belongs to
+                    tool_name = None
+                    if i == len(tool_results) - 1 and last_tool_name:
+                        tool_name = last_tool_name
+
+                    formatted = _format_tool_result(result, tool_name)
+                    if formatted:
+                        if assistant_message and not assistant_message.endswith("\n"):
+                            assistant_message += "\n"
+                        assistant_message += formatted + "\n"
+
+                assistant_message = assistant_message.strip()
+            else:
+                assistant_message = last_assistant
+
             return {
-                "assistant_message": "\n".join(assistant_msgs[-1:])
-                if assistant_msgs
-                else "",
+                "assistant_message": assistant_message.strip(),
                 "work_summary": work_summary,
             }
         except StopAsyncIteration:

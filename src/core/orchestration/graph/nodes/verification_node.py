@@ -5,9 +5,23 @@ from typing import Dict, Any
 from src.core.orchestration.graph.state import AgentState
 from src.core.orchestration.graph.nodes.node_utils import _resolve_orchestrator
 from src.tools import verification_tools
-from src.core.orchestration.agent_brain import get_agent_brain_manager
 
 logger = logging.getLogger(__name__)
+
+
+def _has_js_project(workdir: Path) -> bool:
+    """Return True if workdir contains a package.json (JS/TS project)."""
+    return (workdir / "package.json").exists()
+
+
+def _step_requests_verification(state: Dict[str, Any]) -> bool:
+    """Return True if the current plan step explicitly asks for test/verify/lint."""
+    current_plan = state.get("current_plan") or []
+    current_step = state.get("current_step") or 0
+    if current_plan and current_step < len(current_plan):
+        desc = current_plan[current_step].get("description", "").lower()
+        return any(k in desc for k in ("run_tests", "run_linter", "verify", "test", "lint", "run_js_tests", "run_ts_check"))
+    return False
 
 
 async def verification_node(state: AgentState, config: Any) -> Dict[str, Any]:
@@ -20,8 +34,6 @@ async def verification_node(state: AgentState, config: Any) -> Dict[str, Any]:
     """
     logger.info("=== verification_node START ===")
 
-    brain = get_agent_brain_manager()
-    reviewer_role = brain.get_role("reviewer") or "You are a QA reviewer."
 
     # Decide whether verification is needed
     last_result = state.get("last_result") or {}
@@ -62,33 +74,63 @@ async def verification_node(state: AgentState, config: Any) -> Dict[str, Any]:
                         }
                     }
 
-    # If the last action was an edit_file that reported ok, run verification
+    # W1: Trigger verification for any side-effecting tool that reported success.
+    # Previously only edit_file with a "path" field was caught; bash, write_file, and
+    # patch tools were silently skipped.  Widen the check to cover all write tools.
+    SIDE_EFFECT_TOOLS = {
+        "write_file", "edit_file", "edit_file_atomic", "bash",
+        "patch_apply", "apply_patch", "create_file", "delete_file",
+    }
+    last_tool_name: str = state.get("last_tool_name") or ""
     try:
         if isinstance(last_result, dict):
-            r = last_result.get("result") or {}
-            if isinstance(r, dict) and r.get("status") == "ok" and r.get("path"):
-                need_verify = True
+            r = last_result.get("result") or last_result  # handle both wrapped and flat results
+            if isinstance(r, dict) and r.get("status") == "ok":
+                # Any side-effecting tool that succeeded triggers verification
+                if last_tool_name in SIDE_EFFECT_TOOLS:
+                    need_verify = True
+                # Fallback: path present → legacy edit_file shape
+                elif r.get("path"):
+                    need_verify = True
+                # Fallback: bash success (returncode present and == 0)
+                elif "returncode" in r and r["returncode"] == 0:
+                    need_verify = True
     except Exception:
         pass
+
+    # Also trigger verification when the current plan step explicitly requests it
+    if not need_verify and _step_requests_verification(state):
+        need_verify = True
+        logger.info("verification_node: step explicitly requests verification — running tests")
 
     results = {}
     if need_verify:
         try:
             wd = Path(state.get("working_dir"))
-            results["tests"] = verification_tools.run_tests(str(wd))
-            results["linter"] = verification_tools.run_linter(str(wd))
-            results["syntax"] = verification_tools.syntax_check(str(wd))
+            is_js = _has_js_project(wd)
+            if is_js:
+                # JS/TS project: run JS tests + TypeScript check + linter
+                logger.info("verification_node: JS/TS project detected — running JS test suite")
+                results["js_tests"] = verification_tools.run_js_tests(str(wd))
+                results["ts_check"] = verification_tools.run_ts_check(str(wd))
+                results["eslint"] = verification_tools.run_eslint(str(wd))
+            else:
+                # Python project: run pytest + ruff + syntax check
+                results["tests"] = verification_tools.run_tests(str(wd))
+                results["linter"] = verification_tools.run_linter(str(wd))
+                results["syntax"] = verification_tools.syntax_check(str(wd))
         except Exception as e:
             results["error"] = str(e)
 
-    # Determine if verification passed
-    tests_status = results.get("tests", {}).get("status")
-    linter_status = results.get("linter", {}).get("status")
-    syntax_status = results.get("syntax", {}).get("status")
+    # Determine if verification passed (handles both Python and JS/TS result shapes)
+    def _failed(r: Dict) -> bool:
+        return isinstance(r, dict) and r.get("status") == "fail"
 
     verification_passed = True
-    if tests_status == "fail" or linter_status == "fail" or syntax_status == "fail":
-        verification_passed = False
+    for key in ("tests", "linter", "syntax", "js_tests", "ts_check", "eslint"):
+        if _failed(results.get(key, {})):
+            verification_passed = False
+            break
 
     # Step-level atomic rollback: if verification failed, restore all files written
     # during this step to their pre-edit state.

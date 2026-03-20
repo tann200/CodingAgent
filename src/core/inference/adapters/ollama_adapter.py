@@ -91,7 +91,7 @@ class OllamaAdapter(LLMClient):
     # Increased timeout from 5 to 120 to allow for local model loading into VRAM
     DEFAULT_TIMEOUT = 120.0
 
-    def __init__(self, config_path=None, name=None, base_url=None, api_key=None):
+    def __init__(self, config_path=None, name=None, base_url=None, api_key=None, models=None):
         # Keep initial_config_path for save semantics
         self._initial_config_path = Path(config_path) if config_path else None
         # Resolve provider from config_path only if no explicit base_url provided
@@ -121,12 +121,13 @@ class OllamaAdapter(LLMClient):
         self.api_key = api_key or (
             self.provider.get("api_key") if self.provider else None
         )
-        # models: prefer explicit provider.models if loaded from config, otherwise empty list
-        self.models = (
-            self.provider.get("models")
-            if self.provider and isinstance(self.provider.get("models"), list)
-            else []
-        )
+        # models: prefer explicit models arg, then provider.models from config, otherwise empty list
+        if models is not None:
+            self.models = list(models)
+        elif self.provider and isinstance(self.provider.get("models"), list):
+            self.models = self.provider.get("models")
+        else:
+            self.models = []
         # missing_provider: False if either provider config exists or a base_url was explicitly provided
         self.missing_provider = False if (self.provider or base_url) else True
 
@@ -139,6 +140,8 @@ class OllamaAdapter(LLMClient):
         return lm_select_model_name(self.models, model)
 
     def _base_variants(self) -> List[str]:
+        if not self.base_url:
+            return ["http://localhost:11434"]
         b = self.base_url.rstrip("/")
         variants = [b]
         if b.endswith("/api"):
@@ -246,6 +249,8 @@ class OllamaAdapter(LLMClient):
                 normalized.append(m.get("name"))
             elif isinstance(m, str):
                 normalized.append(m)
+        if self.provider is None:
+            self.provider = {}
         self.provider["models"] = normalized
         # Attempt to persist but don't fail tests if write fails
         self._save_provider()

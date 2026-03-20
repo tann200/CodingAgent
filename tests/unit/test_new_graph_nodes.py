@@ -1,11 +1,10 @@
 import pytest
-from unittest.mock import MagicMock, AsyncMock, patch
+from unittest.mock import MagicMock, patch
 from src.core.orchestration.graph.nodes.analysis_node import analysis_node
 from src.core.orchestration.graph.nodes.execution_node import execution_node
 from src.core.orchestration.graph.nodes.replan_node import replan_node
 from src.core.orchestration.graph.nodes.evaluation_node import evaluation_node
 from src.core.orchestration.graph.state import AgentState
-from src.tools.repo_summary import generate_repo_summary
 
 
 class TestAnalysisNode:
@@ -226,8 +225,10 @@ class TestEvaluationNode:
         config = MagicMock()
         result = await evaluation_node(state, config)
 
-        assert result["evaluation_result"] == "replan"
-        assert result["replan_required"] is not None
+        # Verification failure now routes to "debug" (bounded by debug_attempts) not "replan"
+        # debug_attempts is NOT incremented by evaluation_node (NEW-4 fix); debug_node owns the counter.
+        assert result["evaluation_result"] == "debug"
+        assert "debug_attempts" not in result
 
 
 class TestReplanNode:

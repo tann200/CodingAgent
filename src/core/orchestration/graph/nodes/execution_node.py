@@ -69,7 +69,9 @@ async def execution_node(state: AgentState, config: Any) -> Dict[str, Any]:
             orchestrator.begin_step_transaction()
             logger.debug("execution_node: step transaction started")
     except Exception as _tx_err:
-        logger.debug(f"execution_node: step transaction init failed (non-fatal): {_tx_err}")
+        logger.debug(
+            f"execution_node: step transaction init failed (non-fatal): {_tx_err}"
+        )
 
     # Handle multi-step plan execution
     current_plan = state.get("current_plan") or []
@@ -86,7 +88,7 @@ async def execution_node(state: AgentState, config: Any) -> Dict[str, Any]:
 
         # Call LLM to generate a tool for this step
         try:
-            builder = ContextBuilder()
+            builder = ContextBuilder(working_dir=state.get("working_dir"))
             tools_list = [
                 {"name": n, "description": m.get("description", "")}
                 for n, m in orchestrator.tool_registry.tools.items()
@@ -124,31 +126,27 @@ Generate the appropriate tool call to complete this step. Respond with ONLY a to
             if not cancel_event:
                 cancel_event = getattr(orchestrator, "cancel_event", None)
 
-            raw_resp = call_model(messages, stream=False, format_json=False)
-
-            # Interrupt Polling: Check cancel_event every 0.2s during LLM generation
-            if hasattr(raw_resp, "__await__"):
-                llm_task = asyncio.create_task(raw_resp)
-                while not llm_task.done():
-                    if (
-                        cancel_event
-                        and hasattr(cancel_event, "is_set")
-                        and cancel_event.is_set()
-                    ):
-                        llm_task.cancel()
-                        logger.info("execution_node: Task canceled mid-generation")
-                        return {
-                            "last_result": {
-                                "ok": False,
-                                "error": "Task canceled by user",
-                            },
-                            "next_action": None,
-                            "errors": ["canceled"],
-                        }
-                    await asyncio.sleep(0.2)
-                resp = await llm_task
-            else:
-                resp = raw_resp
+            # call_model is always async; create a task so we can poll for cancellation (NEW-12).
+            # The else branch was dead code and has been removed.
+            llm_task = asyncio.create_task(call_model(messages, stream=False, format_json=False))
+            while not llm_task.done():
+                if (
+                    cancel_event
+                    and hasattr(cancel_event, "is_set")
+                    and cancel_event.is_set()
+                ):
+                    llm_task.cancel()
+                    logger.info("execution_node: Task canceled mid-generation")
+                    return {
+                        "last_result": {
+                            "ok": False,
+                            "error": "Task canceled by user",
+                        },
+                        "next_action": None,
+                        "errors": ["canceled"],
+                    }
+                await asyncio.sleep(0.2)
+            resp = await llm_task
 
             content = ""
             if isinstance(resp, dict):
@@ -290,8 +288,6 @@ Generate the appropriate tool call to complete this step. Respond with ONLY a to
     # UI Sync: Forward tool result to TUI so user can see execution result
     if orchestrator and hasattr(orchestrator, "msg_mgr"):
         try:
-            import json
-
             orchestrator.msg_mgr.append(
                 "user", json.dumps({"tool_execution_result": res})
             )
@@ -307,16 +303,17 @@ Generate the appropriate tool call to complete this step. Respond with ONLY a to
         # Check if execution was successful (handle both {"ok": True} and {"status": "ok"} formats)
         execution_ok = res.get("ok") or res.get("status") == "ok"
         if execution_ok:
-            # Mark current step as completed
-            current_plan[current_step]["completed"] = True
+            # Build an immutable copy with the completed step marked — never mutate state in place
+            updated_plan = [dict(s) for s in current_plan]
+            updated_plan[current_step]["completed"] = True
             next_step = current_step + 1
 
-            if next_step < len(current_plan):
+            if next_step < len(updated_plan):
                 # Move to next step
                 plan_advance = {
                     "current_step": next_step,
-                    "current_plan": current_plan,
-                    "task": current_plan[next_step].get("description", ""),
+                    "current_plan": updated_plan,
+                    "task": updated_plan[next_step].get("description", ""),
                 }
                 logger.info(
                     f"Step {current_step + 1} complete, advancing to step {next_step + 1}"
@@ -325,7 +322,7 @@ Generate the appropriate tool call to complete this step. Respond with ONLY a to
                 # Plan complete
                 plan_advance = {
                     "current_step": next_step,
-                    "current_plan": current_plan,
+                    "current_plan": updated_plan,
                     "task": original_task or "Task complete",
                 }
                 logger.info("All plan steps completed")
@@ -402,20 +399,43 @@ Generate the appropriate tool call to complete this step. Respond with ONLY a to
     plan_progress_event = {}
     if current_plan and current_step < len(current_plan):
         step_desc = current_plan[current_step].get("description", "Unknown step")
-        plan_progress_event = {
-            "plan_progress": {
-                "current_step": current_step + 1,
-                "total_steps": len(current_plan),
-                "step_description": step_desc,
-                "completed": execution_ok,
-            }
+        progress_payload = {
+            "current_step": current_step + 1,
+            "total_steps": len(current_plan),
+            "step_description": step_desc,
+            "completed": execution_ok,
         }
+        plan_progress_event = {"plan_progress": progress_payload}
+        # Fire EventBus event so TUI plan panel updates in real time
+        try:
+            if hasattr(orchestrator, "event_bus"):
+                orchestrator.event_bus.publish("plan.progress", progress_payload)
+        except Exception:
+            pass
+
+        # Check off the completed step in TODO.md
+        if execution_ok:
+            try:
+                from src.tools.todo_tools import manage_todo
+
+                manage_todo(
+                    action="check",
+                    workdir=str(state.get("working_dir", ".")),
+                    step_id=current_step,
+                )
+            except Exception:
+                pass
+
+    # W12: Increment tool call budget counter on every execution
+    tool_call_count = int(state.get("tool_call_count") or 0) + 1
 
     return {
         "last_result": res,
+        "last_tool_name": tool_name,  # W1: enables verification_node to detect side-effecting tools
         "verified_reads": verified_update,
         "history": new_messages,
         "next_action": None,  # Reset after execution
+        "tool_call_count": tool_call_count,
         **plan_advance,
         **replan_triggered,
         **plan_progress_event,

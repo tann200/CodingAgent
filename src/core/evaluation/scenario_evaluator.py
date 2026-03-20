@@ -7,9 +7,9 @@ similar to SWE-bench style evaluations.
 
 import json
 import logging
+import shlex
 import subprocess
 import tempfile
-import shutil
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Callable
 from dataclasses import dataclass, field
@@ -125,12 +125,13 @@ class ScenarioEvaluator:
             if expected_content.strip() not in actual_content.strip():
                 return False, f"File content mismatch: {filename}"
 
-        # Run test command if provided
+        # Run test command if provided (shell=False for security — C11 fix)
         if scenario.test_command:
             try:
+                cmd_parts = shlex.split(scenario.test_command)
                 result = subprocess.run(
-                    scenario.test_command,
-                    shell=True,
+                    cmd_parts,
+                    shell=False,
                     cwd=scenario_dir,
                     capture_output=True,
                     text=True,
@@ -159,15 +160,22 @@ class ScenarioEvaluator:
             # Setup
             scenario_dir = self._setup_scenario(scenario)
 
-            # Create agent
-            agent = agent_factory()
-
-            # Run agent on task
-            # Note: This is a placeholder - actual implementation depends on agent API
+            # Run agent on task (C7 fix — agent_factory result is now actually invoked)
             logger.info(f"Running scenario: {scenario.name}")
-
-            # For now, we'll just verify the setup files exist
-            # In a real implementation, this would call agent.run(scenario.task)
+            agent = agent_factory()
+            try:
+                if hasattr(agent, "run"):
+                    agent.run(scenario.task, working_dir=str(scenario_dir))
+                elif callable(agent):
+                    agent(scenario.task)
+                else:
+                    logger.warning(
+                        f"ScenarioEvaluator: agent has no 'run' method and is not callable — skipping agent execution for '{scenario.name}'"
+                    )
+            except Exception as agent_err:
+                logger.warning(
+                    f"ScenarioEvaluator: agent raised during scenario '{scenario.name}': {agent_err}"
+                )
 
             # Verify
             passed, verification_output = self._verify_scenario(scenario, scenario_dir)
@@ -199,8 +207,8 @@ class ScenarioEvaluator:
             if scenario_dir and scenario.cleanup_command:
                 try:
                     subprocess.run(
-                        scenario.cleanup_command,
-                        shell=True,
+                        shlex.split(scenario.cleanup_command),
+                        shell=False,
                         cwd=scenario_dir,
                         capture_output=True,
                         timeout=30,

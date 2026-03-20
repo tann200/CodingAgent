@@ -51,7 +51,8 @@ class LmStudioAdapter(LLMClient):
             except Exception:
                 providers_config_path = None
 
-        # Try loading providers.json to fill missing values
+        # Try loading providers.json to fill missing values (single read, reused below)
+        _providers_from_config: list = []
         if providers_config_path:
             try:
                 ppath = Path(providers_config_path)
@@ -59,12 +60,12 @@ class LmStudioAdapter(LLMClient):
                     import json
 
                     raw = json.loads(ppath.read_text(encoding="utf-8"))
-                    providers = (
+                    _providers_from_config = (
                         raw
                         if isinstance(raw, list)
                         else ([raw] if isinstance(raw, dict) else [])
                     )
-                    for p in providers:
+                    for p in _providers_from_config:
                         try:
                             ptype = str(p.get("type") or "").lower()
                             pname = str(p.get("name") or "").lower()
@@ -111,7 +112,7 @@ class LmStudioAdapter(LLMClient):
         if not self.default_model:
             self.default_model = None
 
-        # Load provider dict if a config_path was provided and exists
+        # Load provider dict — reuse data already parsed above to avoid a second file read
         self.config_path = Path(config_path) if config_path else None
         self.provider: Optional[Dict[str, Any]] = None
         if self.config_path and self.config_path.exists():
@@ -127,36 +128,37 @@ class LmStudioAdapter(LLMClient):
                     f"LMStudioAdapter: failed to read provider config at {self.config_path}"
                 )
                 self.provider = None
-        # If no provider config was provided, try to load from project's src/config/providers.json
+        # If no explicit config_path was given, reuse the providers already parsed from
+        # providers_config_path above (avoids a second disk read of the same file).
         if not self.provider:
-            try:
-                cfg = Path(__file__).parents[3] / "config" / "providers.json"
-                if cfg.exists():
-                    raw = json.loads(cfg.read_text(encoding="utf-8"))
-                    candidates = raw if isinstance(raw, list) else [raw]
-                    for p in candidates:
-                        # match by type/name or base_url
-                        try:
-                            ptype = (p.get("type") or "").lower()
-                            pname = (p.get("name") or "").lower()
-                            if ptype == "lm_studio" or pname == "lm_studio":
-                                # prefer exact base_url match if provided
-                                b = p.get("base_url")
-                                if (
-                                    base_url
-                                    and b
-                                    and str(base_url).rstrip("/") == str(b).rstrip("/")
-                                ):
-                                    self.provider = p
-                                    break
-                                # otherwise take first lm_studio provider
-                                if ptype == "lm_studio" or pname == "lm_studio":
-                                    self.provider = p
-                                    break
-                        except Exception:
-                            continue
-            except Exception:
-                pass
+            candidates = _providers_from_config
+            if not candidates:
+                # Only fall back to a fresh read if _providers_from_config is empty
+                # (e.g. providers_config_path was None / not found)
+                try:
+                    cfg = Path(__file__).parents[3] / "config" / "providers.json"
+                    if cfg.exists():
+                        raw = json.loads(cfg.read_text(encoding="utf-8"))
+                        candidates = raw if isinstance(raw, list) else [raw]
+                except Exception:
+                    pass
+            for p in candidates:
+                try:
+                    ptype = (p.get("type") or "").lower()
+                    pname = (p.get("name") or "").lower()
+                    if ptype == "lm_studio" or pname == "lm_studio":
+                        b = p.get("base_url")
+                        if (
+                            base_url
+                            and b
+                            and str(base_url).rstrip("/") == str(b).rstrip("/")
+                        ):
+                            self.provider = p
+                            break
+                        self.provider = p
+                        break
+                except Exception:
+                    continue
 
         # configure fields
         self.name = name or (

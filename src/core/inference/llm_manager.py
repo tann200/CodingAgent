@@ -22,6 +22,12 @@ import re
 # If the central logger isn't importable (tests or early import), fall back to the standard
 # library logger but use a generic project-like name so messages are grouped consistently.
 try:
+    from src.core.orchestration.event_bus import get_correlation_id as _get_correlation_id
+except Exception:  # pragma: no cover — circular import guard for early tests
+    def _get_correlation_id():  # type: ignore[misc]
+        return None
+
+try:
     # Prefer the app's central logger object (recommended)
     from src.core.logger import logger as guilogger
 except Exception:
@@ -30,9 +36,11 @@ except Exception:
     # Fallback: use a sensible logger name that maps to the project (so logs remain centralized)
     guilogger = logging.getLogger("coding_agent")
 
-# Simple in-memory caches
+# Simple in-memory caches (protected by RLock for thread safety - C8 fix)
+import threading as _threading
 _MODEL_CACHE: Dict[str, List[str]] = {}
 _MODEL_CACHE_TIME: Dict[str, float] = {}
+_MODEL_CACHE_LOCK = _threading.RLock()
 _CACHE_TTL = 300
 
 # --- Helper functions ---
@@ -66,13 +74,14 @@ def _get_models_for_provider_key(provider_key: str) -> List[str]:
     """
     out: List[str] = []
     try:
-        # 1) module-level cache
+        # 1) module-level cache (RLock-protected)
         now = time.time()
-        if (
-            provider_key in _MODEL_CACHE
-            and (now - _MODEL_CACHE_TIME.get(provider_key, 0)) < _CACHE_TTL
-        ):
-            return _MODEL_CACHE[provider_key]
+        with _MODEL_CACHE_LOCK:
+            if (
+                provider_key in _MODEL_CACHE
+                and (now - _MODEL_CACHE_TIME.get(provider_key, 0)) < _CACHE_TTL
+            ):
+                return _MODEL_CACHE[provider_key]
 
         mgr = _provider_manager
         # 2) ProviderManager cache
@@ -111,8 +120,9 @@ def _get_models_for_provider_key(provider_key: str) -> List[str]:
                     if models:
                         if provider_key == "lm_studio":
                             models = [_lmstudio_full_id(x) for x in models]
-                        _MODEL_CACHE[provider_key] = models
-                        _MODEL_CACHE_TIME[provider_key] = time.time()
+                        with _MODEL_CACHE_LOCK:
+                            _MODEL_CACHE[provider_key] = models
+                            _MODEL_CACHE_TIME[provider_key] = time.time()
                         return models
         except Exception:
             pass
@@ -509,8 +519,9 @@ class ProviderManager:
                     models_list_static = normalize_models_for_provider(p)
                     if models_list_static:
                         self._models_cache[key] = models_list_static
-                        _MODEL_CACHE[key] = models_list_static
-                        _MODEL_CACHE_TIME[key] = time.time()
+                        with _MODEL_CACHE_LOCK:
+                            _MODEL_CACHE[key] = models_list_static
+                            _MODEL_CACHE_TIME[key] = time.time()
                         if self._event_bus:
                             try:
                                 self._event_bus.publish(
@@ -530,7 +541,8 @@ class ProviderManager:
             for prov_key, adapter in list(self._providers.items()):
                 try:
                     if not adapter:
-                        self._models_cache[prov_key] = []
+                        if not self._models_cache.get(prov_key):
+                            self._models_cache[prov_key] = []
                         if self._event_bus:
                             try:
                                 self._event_bus.publish(
@@ -568,8 +580,9 @@ class ProviderManager:
 
                         if models_list:
                             self._models_cache[prov_key] = models_list
-                            _MODEL_CACHE[prov_key] = models_list
-                            _MODEL_CACHE_TIME[prov_key] = time.time()
+                            with _MODEL_CACHE_LOCK:
+                                _MODEL_CACHE[prov_key] = models_list
+                                _MODEL_CACHE_TIME[prov_key] = time.time()
                             guilogger.info(
                                 f"ProviderManager: cached models for {prov_key}: {models_list}"
                             )
@@ -590,7 +603,9 @@ class ProviderManager:
                                 except Exception:
                                     pass
                         else:
-                            self._models_cache[prov_key] = []
+                            # Don't overwrite static models cached from providers.json
+                            if not self._models_cache.get(prov_key):
+                                self._models_cache[prov_key] = []
                             if self._event_bus:
                                 try:
                                     self._event_bus.publish(
@@ -606,7 +621,9 @@ class ProviderManager:
                                 except Exception:
                                     pass
                     else:
-                        self._models_cache[prov_key] = []
+                        # Don't overwrite static models cached from providers.json
+                        if not self._models_cache.get(prov_key):
+                            self._models_cache[prov_key] = []
                         if self._event_bus:
                             try:
                                 self._event_bus.publish(
@@ -655,13 +672,28 @@ def get_provider_manager() -> ProviderManager:
     return _provider_manager
 
 
+_INIT_TASK: "asyncio.Task | None" = None  # held so GC cannot collect it (NEW-11)
+
+
 def _ensure_provider_manager_initialized_sync():
+    global _INIT_TASK
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
         loop = None
     if loop and loop.is_running():
-        asyncio.create_task(_provider_manager.initialize())
+        # Store the task so it is not garbage-collected before it completes.
+        # Exceptions are logged via the done-callback.
+        _INIT_TASK = asyncio.create_task(_provider_manager.initialize())
+
+        def _log_init_exc(t: "asyncio.Task") -> None:
+            if not t.cancelled() and t.exception():
+                import logging as _logging
+                _logging.getLogger(__name__).warning(
+                    "ProviderManager async init failed: %s", t.exception()
+                )
+
+        _INIT_TASK.add_done_callback(_log_init_exc)
     else:
         try:
             asyncio.run(_provider_manager.initialize())
@@ -920,6 +952,93 @@ async def _call_model_internal(
         return {"ok": False, "error": str(e)}
 
 
+# ---------------------------------------------------------------------------
+# #31: Circuit Breaker for LLM adapters
+# ---------------------------------------------------------------------------
+
+class CircuitBreaker:
+    """
+    Simple three-state circuit breaker (CLOSED → OPEN → HALF_OPEN → CLOSED).
+
+    States:
+        CLOSED   — requests pass through normally.
+        OPEN     — requests are rejected immediately (fast-fail) after
+                   *failure_threshold* consecutive failures.
+        HALF_OPEN — after *recovery_timeout* seconds the breaker lets ONE probe
+                   request through.  If it succeeds → CLOSED; if it fails → OPEN.
+
+    Thread-safe: all state mutations are protected by an RLock.
+    """
+
+    CLOSED = "closed"
+    OPEN = "open"
+    HALF_OPEN = "half_open"
+
+    def __init__(
+        self,
+        failure_threshold: int = 3,
+        recovery_timeout: float = 60.0,
+    ) -> None:
+        self.failure_threshold = failure_threshold
+        self.recovery_timeout = recovery_timeout
+        self._state = self.CLOSED
+        self._failure_count = 0
+        self._opened_at: float = 0.0
+        self._lock = _threading.RLock()
+
+    # -- public interface ---------------------------------------------------
+
+    @property
+    def state(self) -> str:
+        with self._lock:
+            return self._current_state()
+
+    def is_open(self) -> bool:
+        """Return True when the breaker will reject the next call."""
+        with self._lock:
+            return self._current_state() == self.OPEN
+
+    def record_success(self) -> None:
+        with self._lock:
+            self._failure_count = 0
+            self._state = self.CLOSED
+
+    def record_failure(self) -> None:
+        with self._lock:
+            self._failure_count += 1
+            if self._failure_count >= self.failure_threshold:
+                self._state = self.OPEN
+                self._opened_at = time.time()
+
+    # -- internal -----------------------------------------------------------
+
+    def _current_state(self) -> str:
+        if self._state == self.OPEN:
+            if time.time() - self._opened_at >= self.recovery_timeout:
+                self._state = self.HALF_OPEN
+                return self.HALF_OPEN
+        return self._state
+
+
+# Per-provider circuit breaker registry (provider_key → CircuitBreaker)
+_CIRCUIT_BREAKERS: Dict[str, "CircuitBreaker"] = {}
+_CB_LOCK = _threading.RLock()
+
+_CB_FAILURE_THRESHOLD = int(os.getenv("LLM_CB_FAILURE_THRESHOLD", "3"))
+_CB_RECOVERY_TIMEOUT = float(os.getenv("LLM_CB_RECOVERY_TIMEOUT", "60"))
+
+
+def get_circuit_breaker(provider_key: str) -> "CircuitBreaker":
+    """Return (creating if necessary) the CircuitBreaker for *provider_key*."""
+    with _CB_LOCK:
+        if provider_key not in _CIRCUIT_BREAKERS:
+            _CIRCUIT_BREAKERS[provider_key] = CircuitBreaker(
+                failure_threshold=_CB_FAILURE_THRESHOLD,
+                recovery_timeout=_CB_RECOVERY_TIMEOUT,
+            )
+        return _CIRCUIT_BREAKERS[provider_key]
+
+
 async def call_model(
     messages: List[Dict[str, Any]],
     provider: Optional[str] = None,
@@ -929,6 +1048,21 @@ async def call_model(
     tools: Optional[List[Any]] = None,
     **kwargs,
 ) -> Any:
+    # Log correlation ID so LLM calls can be traced back to the originating agent turn (#26)
+    _cid = _get_correlation_id()
+    if _cid:
+        guilogger.debug(f"call_model: cid={_cid} provider={provider!r} model={model!r}")
+
+    # #31: Circuit-breaker fast-fail — skip call entirely when provider is known-bad
+    _cb_key = canonical_provider(provider) if provider else ""
+    if _cb_key:
+        _cb = get_circuit_breaker(_cb_key)
+        if _cb.is_open():
+            guilogger.warning(
+                f"call_model: circuit breaker OPEN for provider '{_cb_key}' — fast-failing"
+            )
+            return {"ok": False, "error": f"circuit_breaker_open:{_cb_key}"}
+
     res = await _call_model_internal(
         messages, provider, model, stream, format_json, tools, **kwargs
     )
@@ -948,37 +1082,56 @@ async def call_model(
                 is_error = True
 
         if is_error:
-            # Attempt fallback
+            # Attempt fallback — limit attempts to avoid N×120s cascading timeouts (H5 fix)
+            _max_fallbacks = int(os.getenv("LLM_MANAGER_MAX_FALLBACKS", "2"))
             try:
                 models = await get_available_models("", "", provider or "")
                 if models:
+                    _attempts = 0
                     for m in models:
-                        if m != model:
-                            fb_res = await _call_model_internal(
-                                messages,
-                                provider,
-                                m,
-                                stream,
-                                format_json,
-                                tools,
-                                **kwargs,
-                            )
-                            is_fb_err = False
-                            if isinstance(fb_res, dict):
-                                if (
-                                    fb_res.get("ok") is False
-                                    or "error" in fb_res
-                                    or (
-                                        fb_res.get("meta")
-                                        and isinstance(fb_res.get("meta"), dict)
-                                        and fb_res["meta"].get("error")
-                                    )
-                                ):
-                                    is_fb_err = True
-                            if not is_fb_err:
-                                return fb_res
+                        if m == model:
+                            continue
+                        if _attempts >= _max_fallbacks:
+                            break
+                        _attempts += 1
+                        fb_res = await _call_model_internal(
+                            messages,
+                            provider,
+                            m,
+                            stream,
+                            format_json,
+                            tools,
+                            **kwargs,
+                        )
+                        is_fb_err = False
+                        if isinstance(fb_res, dict):
+                            if (
+                                fb_res.get("ok") is False
+                                or "error" in fb_res
+                                or (
+                                    fb_res.get("meta")
+                                    and isinstance(fb_res.get("meta"), dict)
+                                    and fb_res["meta"].get("error")
+                                )
+                            ):
+                                is_fb_err = True
+                        if not is_fb_err:
+                            if _cb_key:
+                                get_circuit_breaker(_cb_key).record_success()
+                            return fb_res
             except Exception:
                 pass
+
+    # #31: Record success/failure in the circuit breaker
+    if _cb_key:
+        _cb = get_circuit_breaker(_cb_key)
+        _is_err = isinstance(res, dict) and (
+            res.get("ok") is False or res.get("error")
+        )
+        if _is_err:
+            _cb.record_failure()
+        else:
+            _cb.record_success()
 
     return res
 

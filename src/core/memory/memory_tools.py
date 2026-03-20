@@ -29,6 +29,7 @@ def memory_search(query: str, workdir: str) -> Dict[str, Any]:
             for entry in rev:
                 if query.lower() in json.dumps(entry).lower():
                     out["results"].append({"source": "execution_trace", "entry": entry})
+        out["status"] = "ok"
         return out
     except Exception as e:
-        return {"error": str(e)}
+        return {"status": "error", "error": str(e)}

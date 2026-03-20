@@ -5,8 +5,8 @@ from src.core.orchestration.graph.state import AgentState
 from src.core.context.context_builder import ContextBuilder
 from src.core.inference.llm_manager import call_model
 from src.core.orchestration.tool_parser import parse_tool_block
-from src.core.orchestration.graph.nodes.node_utils import _resolve_orchestrator
 from src.core.orchestration.agent_brain import get_agent_brain_manager
+from src.core.orchestration.graph.nodes.node_utils import _resolve_orchestrator
 
 logger = logging.getLogger(__name__)
 
@@ -48,17 +48,14 @@ async def debug_node(state: AgentState, config: Any) -> Dict[str, Any]:
 
     logger.info("=== debug_node START ===")
 
-    try:
-        orchestrator = config.get("configurable", {}).get("orchestrator")
-        if orchestrator is None:
-            logger.error("debug_node: orchestrator is None")
-            return {"next_action": None, "errors": ["orchestrator not found"]}
-    except Exception as e:
-        logger.error(f"debug_node: failed to get orchestrator: {e}")
-        return {"next_action": None, "errors": [str(e)]}
+    orchestrator = _resolve_orchestrator(state, config)
+    if orchestrator is None:
+        logger.error("debug_node: orchestrator is None")
+        return {"next_action": None, "errors": ["orchestrator not found"]}
 
     current_attempt: int = int(state.get("debug_attempts") or 0)
     max_attempts: int = int(state.get("max_debug_attempts") or 3)
+    last_error_type: str = state.get("last_debug_error_type") or ""
     last_result = state.get("last_result") or {}
     verification_result = state.get("verification_result") or {}
     task = str(state.get("task") or "")
@@ -101,9 +98,15 @@ async def debug_node(state: AgentState, config: Any) -> Dict[str, Any]:
     # Classify the error for more targeted fixes
     error_type = _classify_error(error_summary)
 
+    # W6 fix: reset attempt counter when error type changes between debug cycles
+    if last_error_type and error_type != last_error_type:
+        logger.info(
+            f"debug_node: error type changed {last_error_type!r} → {error_type!r}, resetting attempt counter"
+        )
+        current_attempt = 0
+
     # Persist error to session store
     try:
-        orchestrator = config.get("configurable", {}).get("orchestrator") if config else None
         if orchestrator and hasattr(orchestrator, "session_store"):
             orchestrator.session_store.add_error(
                 session_id=getattr(orchestrator, "_current_task_id", "unknown"),
@@ -125,7 +128,7 @@ Guidance: {TYPE_GUIDANCE[error_type]}
 Generate a YAML tool call to fix the issue. Use edit_file, write_file, or bash as appropriate."""
 
     try:
-        builder = ContextBuilder()
+        builder = ContextBuilder(working_dir=state.get("working_dir"))
         tools_list = [
             {"name": n, "description": m.get("description", "")}
             for n, m in orchestrator.tool_registry.tools.items()
@@ -151,7 +154,7 @@ Generate a YAML tool call to fix the issue. Use edit_file, write_file, or bash a
             if hasattr(orchestrator.adapter, "models") and orchestrator.adapter.models:
                 model = orchestrator.adapter.models[0]
 
-        resp = call_model(
+        resp = await call_model(
             messages, provider=provider, model=model, stream=False, format_json=False
         )
 
@@ -168,12 +171,14 @@ Generate a YAML tool call to fix the issue. Use edit_file, write_file, or bash a
             return {
                 "next_action": tool_call,
                 "debug_attempts": next_attempt,
+                "last_debug_error_type": error_type,
             }
         else:
             logger.warning("debug_node: no tool generated for fix")
             return {
                 "next_action": None,
                 "debug_attempts": next_attempt,
+                "last_debug_error_type": error_type,
                 "errors": ["Debug node could not generate fix"],
             }
 
@@ -182,5 +187,6 @@ Generate a YAML tool call to fix the issue. Use edit_file, write_file, or bash a
         return {
             "next_action": None,
             "debug_attempts": next_attempt,
+            "last_debug_error_type": error_type,
             "errors": [str(e)],
         }

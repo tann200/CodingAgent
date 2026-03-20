@@ -73,7 +73,7 @@ def add(a, b):
     def test_incremental_indexing_file_modified(self, temp_repo):
         """Test that modified files are re-indexed."""
         # First indexing
-        index1 = index_repository(temp_repo)
+        _index1 = index_repository(temp_repo)
 
         # Modify a file
         repo_path = Path(temp_repo)
@@ -92,7 +92,7 @@ class Greeter:
 """)
 
         # Re-index (should detect change)
-        index2 = index_repository(temp_repo)
+        _index2 = index_repository(temp_repo)
 
         stats = get_index_stats(temp_repo)
 
@@ -141,7 +141,7 @@ def new_function():
         index_repository(temp_repo)
 
         # Force full reindex
-        index = force_full_reindex(temp_repo)
+        _index = force_full_reindex(temp_repo)
 
         stats = get_index_stats(temp_repo)
 
@@ -258,3 +258,57 @@ type MyStruct struct {
         assert result["language"] == "go"
         symbols = result["symbols"]
         assert any(s["name"] == "Add" for s in symbols)
+
+    def test_parse_with_regex_type_classification(self, tmp_path):
+        """Test that type classification correctly identifies class/struct/impl."""
+        from src.core.indexing.repo_indexer import parse_with_regex
+        from pathlib import Path
+
+        # Test Go struct (should be "struct", not "impl")
+        go_file = tmp_path / "test.go"
+        go_file.write_text("""
+package main
+
+type MyStruct struct {
+    Name string
+}
+""")
+        result = parse_with_regex(Path(go_file), "go")
+        symbols = result.get("symbols", [])
+        struct_symbols = [s for s in symbols if s.get("type") == "struct"]
+        assert len(struct_symbols) > 0, "Go struct should be classified as 'struct'"
+
+        # Test Rust impl (should be "impl")
+        rust_file = tmp_path / "test.rs"
+        rust_file.write_text("""
+pub struct MyStruct {
+    name: String,
+}
+
+impl MyStruct {
+    pub fn new() -> Self {
+        MyStruct { name: String::new() }
+    }
+}
+""")
+        result = parse_with_regex(Path(rust_file), "rust")
+        symbols = result.get("symbols", [])
+        impl_symbols = [s for s in symbols if s.get("type") == "impl"]
+        struct_symbols = [s for s in symbols if s.get("type") == "struct"]
+        assert len(impl_symbols) > 0, "Rust impl should be classified as 'impl'"
+        assert len(struct_symbols) > 0, "Rust struct should be classified as 'struct'"
+
+        # Test JavaScript class (should be "class")
+        js_file = tmp_path / "test.js"
+        js_file.write_text("""
+class MyClass {
+    constructor() {}
+    method() {}
+}
+""")
+        result = parse_with_regex(Path(js_file), "javascript")
+        symbols = result.get("symbols", [])
+        class_symbols = [s for s in symbols if s.get("type") == "class"]
+        assert len(class_symbols) > 0, (
+            "JavaScript class should be classified as 'class'"
+        )

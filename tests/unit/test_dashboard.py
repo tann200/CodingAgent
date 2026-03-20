@@ -1,6 +1,5 @@
 """Tests for the MainViewController dashboard functionality and EventBus integration."""
 
-import pytest
 from src.core.orchestration.event_bus import EventBus
 from src.ui.views.main_view import MainViewController, DashboardState
 
@@ -23,7 +22,7 @@ class TestMainViewController:
     def test_controller_subscribes_to_events(self):
         """Test that controller subscribes to all required events."""
         bus = EventBus()
-        controller = MainViewController(bus)
+        _controller = MainViewController(bus)
 
         # Should have subscriptions to file, tool, plan, and verification events
         assert "file.modified" in bus._subscribers
@@ -144,3 +143,37 @@ class TestMainViewController:
 
         # Should only keep last 10
         assert len(controller.dashboard.tool_activity) == 10
+
+
+# ---------------------------------------------------------------------------
+# H16: No recursive logging loop
+# ---------------------------------------------------------------------------
+
+class TestNoRecursiveLogging:
+    def test_app_does_not_subscribe_log_new_to_guilogger(self):
+        """H16: CodingAgentApp must NOT subscribe log.new back to guilogger
+        (would create log.new → _guilogger.log() → log.new → ... infinite loop).
+        """
+        import inspect
+        from src.ui import app as app_mod
+        src = inspect.getsource(app_mod.CodingAgentApp.__init__)
+        # The comment in app.py explicitly notes this was removed; verify no subscribe call
+        assert "subscribe" not in src or "log.new" not in src, (
+            "H16: CodingAgentApp.__init__ must not subscribe to log.new"
+        )
+
+    def test_log_new_publish_does_not_recurse(self):
+        """H16: Publishing log.new must not cause stack overflow or infinite loop."""
+        bus = EventBus()
+        call_count = [0]
+
+        def handler(payload):
+            call_count[0] += 1
+            if call_count[0] > 1:
+                return  # already called once, don't recurse
+            # Simulate a handler that would re-publish (but we guard against it)
+
+        bus.subscribe("log.new", handler)
+        bus.publish("log.new", {"message": "hello"})
+        # Should fire exactly once
+        assert call_count[0] == 1

@@ -12,19 +12,20 @@ import sys
 from typing import Optional
 
 
-# tiny debug helper
+# tiny debug helper — only writes to file when DEBUG env var is set
 def _dbg(msg: str) -> None:
     try:
         print(msg, flush=True)
     except Exception:
         pass
-    try:
-        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        p = os.path.join(root, "tmp_debug_main.log")
-        with open(p, "a", encoding="utf-8") as f:
-            f.write(msg + "\n")
-    except Exception:
-        pass
+    if os.getenv("CODING_AGENT_DEBUG"):
+        try:
+            root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            p = os.path.join(root, "tmp_debug_main.log")
+            with open(p, "a", encoding="utf-8") as f:
+                f.write(msg + "\n")
+        except Exception:
+            pass
 
 
 # Ensure project root is on sys.path when executed as script

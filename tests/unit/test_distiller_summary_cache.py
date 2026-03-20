@@ -21,10 +21,10 @@ def test_distiller_writes_file_summaries(tmp_path, monkeypatch):
         return {"choices": [{"message": {"content": json.dumps({"current_task": "X","completed_steps": [],"next_step": "Y"})}}]}
 
     monkeypatch.setattr('src.core.memory.distiller._call_llm_sync',
-                        lambda msgs, format_json=False: dummy_call_model()["choices"][0]["message"]["content"])
+                        lambda msgs, format_json=False, **kw: dummy_call_model()["choices"][0]["message"]["content"])
 
     # call distill_context with a minimal non-empty message so the function proceeds
-    res = distill_context([{"role": "user", "content": "summarize"}], working_dir=tmp_path)
+    _ = distill_context([{"role": "user", "content": "summarize"}], working_dir=tmp_path)
     # check that file_summaries.json exists
     s_path = ac / "file_summaries.json"
     assert s_path.exists()

@@ -94,8 +94,8 @@ async def planning_node(state: AgentState, config: Any) -> Dict[str, Any]:
             loaded_task = last_plan_data.get("task", "")
             loaded_step = last_plan_data.get("current_step", 0)
 
-            # Check if the loaded plan is for the same task or if we should resume
-            if loaded_plan and (loaded_task == task or not task):
+            # Only resume if the task matches exactly — never resume for an unrelated task
+            if loaded_plan and task and loaded_task == task:
                 logger.info(
                     f"planning_node: resuming from saved plan with {len(loaded_plan)} steps"
                 )
@@ -145,7 +145,7 @@ async def planning_node(state: AgentState, config: Any) -> Dict[str, Any]:
 
     # Fallback: ask the model for a short plan (non-blocking best effort)
     try:
-        builder = ContextBuilder()
+        builder = ContextBuilder(working_dir=state.get("working_dir"))
         history = s.get("history")
         if not isinstance(history, list):
             history = []
@@ -167,7 +167,14 @@ async def planning_node(state: AgentState, config: Any) -> Dict[str, Any]:
             if analysis_summary and analysis_summary != "No analysis available":
                 repo_context += f"- Analysis: {analysis_summary}\n"
 
-        full_task = f"Task: {task}{repo_context}\n\nGenerate a step-by-step plan. Each step must reference specific files explicitly."
+        # #56: Inject analyst subagent deep-dive findings when available
+        analyst_findings = s.get("analyst_findings") or ""
+        analyst_context = ""
+        if analyst_findings:
+            analyst_context = f"\n\nAnalyst Findings:\n{analyst_findings}\n"
+            logger.info("planning_node: injecting analyst_findings into prompt")
+
+        full_task = f"Task: {task}{repo_context}{analyst_context}\n\nGenerate a step-by-step plan. Each step must reference specific files explicitly."
 
         # Use strategic role from AgentBrainManager
         messages = builder.build_prompt(
@@ -224,11 +231,8 @@ async def planning_node(state: AgentState, config: Any) -> Dict[str, Any]:
             try:
                 import json as _json
 
-                orchestrator = (
-                    config.get("configurable", {}).get("orchestrator")
-                    if config
-                    else None
-                )
+                # Use the orchestrator already resolved at the top of the function (NEW-9).
+                # The previous re-fetch via config.get() failed on RunnableConfig objects.
                 if orchestrator and hasattr(orchestrator, "session_store"):
                     orchestrator.session_store.add_plan(
                         session_id=getattr(orchestrator, "_current_task_id", "unknown"),
@@ -240,6 +244,19 @@ async def planning_node(state: AgentState, config: Any) -> Dict[str, Any]:
 
             # 4.4: Persist plan to JSON file for cross-session persistence
             _save_last_plan(working_dir, steps, task, 0)
+
+            # Write human-readable TODO.md so user can see the plan
+            try:
+                from src.tools.todo_tools import manage_todo
+
+                step_descriptions = [
+                    s.get("description", f"Step {i+1}")
+                    for i, s in enumerate(steps)
+                ]
+                manage_todo(action="create", workdir=working_dir, steps=step_descriptions)
+                logger.info(f"planning_node: wrote TODO.md with {len(steps)} steps")
+            except Exception as _te:
+                logger.warning(f"planning_node: failed to write TODO.md: {_te}")
 
             return {"current_plan": steps, "current_step": 0}
     except Exception as e:
@@ -324,9 +341,35 @@ def _parse_plan_content(content: str) -> list:
     # Pattern for bullet items: -, *, •, etc.
     bullet_pattern = r"^\s*([\-\*•]\s+)(.+)$"
 
+    action_words = [
+        "read",
+        "write",
+        "edit",
+        "create",
+        "delete",
+        "update",
+        "modify",
+        "add",
+        "remove",
+        "run",
+        "test",
+        "check",
+        "verify",
+        "install",
+        "import",
+    ]
+
     for line in content.splitlines():
         line = line.strip()
         if not line:
+            continue
+
+        # Skip markdown table rows (start and end with |)
+        if line.startswith("|") and line.endswith("|"):
+            continue
+
+        # Skip file/directory listing lines e.g. ".DS_Store (file)", "src/ (directory)"
+        if re.match(r"^\.?\S+\s+\((?:file|directory|dir)\)$", line, re.IGNORECASE):
             continue
 
         # Skip conversational filler lines
@@ -346,6 +389,10 @@ def _parse_plan_content(content: str) -> list:
         if lower_line in ["no steps needed", "no plan needed", "i cannot", "i'm sorry"]:
             continue
 
+        # Skip metadata lines (e.g. PLAN_STEPS: 1, COMPLEXITY: simple)
+        if re.match(r"^[A-Z_]+\s*[:=]\s*\S", line):
+            continue
+
         # Try numbered pattern
         match = re.match(numbered_pattern, line)
         if match:
@@ -363,23 +410,6 @@ def _parse_plan_content(content: str) -> list:
             continue
 
         # If line looks like a step description (not too long, has action words)
-        action_words = [
-            "read",
-            "write",
-            "edit",
-            "create",
-            "delete",
-            "update",
-            "modify",
-            "add",
-            "remove",
-            "run",
-            "test",
-            "check",
-            "verify",
-            "install",
-            "import",
-        ]
         if len(line) < 200 and any(word in lower_line for word in action_words):
             plan_lines.append(line)
 
@@ -388,12 +418,29 @@ def _parse_plan_content(content: str) -> list:
         logger.info(f"planning_node: parsed regex plan with {len(steps)} steps")
         return steps
 
-    # Strategy 4: Last resort - treat entire content as single step if it's reasonable
+    # Strategy 4: Last resort - only if content looks like a genuine task description
+    # (contains action words and is not metadata / file listing output)
     if content and len(content.strip()) < 500:
-        # Check if it looks like a valid response
         stripped = content.strip()
-        if stripped and not stripped.startswith("```"):
-            logger.info(f"planning_node: falling back to single-step plan")
+        lower_stripped = stripped.lower()
+        # Reject metadata-style output (PLAN_STEPS: 1 etc.)
+        if re.match(r"^[A-Z_]+\s*[:=]", stripped):
+            return []
+        # Reject if the content looks like a file/directory listing
+        # (every non-empty line matches the "name (file|directory)" pattern)
+        non_empty_lines = [ln.strip() for ln in stripped.splitlines() if ln.strip()]
+        if non_empty_lines and all(
+            re.match(r"^\.?\S+\s+\((?:file|directory|dir)\)$", ln, re.IGNORECASE)
+            for ln in non_empty_lines
+        ):
+            return []
+        # Require at least one action word so bare file listings / status messages
+        # don't become single-step plans; count whole-word occurrences to avoid
+        # false positives like "test_dir" matching "test".
+        if stripped and not stripped.startswith("```") and any(
+            re.search(r"\b" + word + r"\b", lower_stripped) for word in action_words
+        ):
+            logger.info("planning_node: falling back to single-step plan")
             return [{"description": stripped[:200], "action": None}]
 
     return []

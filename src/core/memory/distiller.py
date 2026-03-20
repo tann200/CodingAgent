@@ -6,10 +6,18 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
-def _call_llm_sync(messages: list, format_json: bool = False) -> str:
-    """Shared helper: call the LLM synchronously and return content string."""
+def _call_llm_sync(messages: list, format_json: bool = False, **kwargs) -> str:
+    """Shared helper: call the LLM synchronously and return content string.
+
+    C9 fix: asyncio.run() cannot be called when another event loop is already
+    running (e.g. when distill_context is invoked from an async node via
+    asyncio.gather).  When a running loop is detected we spin up a fresh
+    ThreadPoolExecutor thread — that thread has no event loop, so asyncio.run()
+    works correctly and the coroutine gets its own isolated loop.
+    """
     import asyncio
     import inspect
+    import concurrent.futures
     from src.core.inference.llm_manager import call_model
 
     try:
@@ -18,6 +26,7 @@ def _call_llm_sync(messages: list, format_json: bool = False) -> str:
             format_json=format_json,
             stream=False,
             tools=None,
+            **kwargs,
         )
     except Exception as e:
         logger.error(f"_call_llm_sync: call_model raised: {e}")
@@ -25,25 +34,35 @@ def _call_llm_sync(messages: list, format_json: bool = False) -> str:
 
     if inspect.isawaitable(candidate):
         try:
-            loop = asyncio.get_running_loop()
-            if loop.is_running():
-                import concurrent.futures
-                with concurrent.futures.ThreadPoolExecutor() as executor:
-                    future = executor.submit(asyncio.run, candidate)
-                    resp = future.result()
-            else:
-                resp = asyncio.run(candidate)
+            asyncio.get_running_loop()
+            # Running loop detected — must NOT call asyncio.run() here (C9).
+            # Submit to a new thread that has no event loop so asyncio.run() is safe.
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _pool:
+                future = _pool.submit(asyncio.run, candidate)
+                try:
+                    resp = future.result(timeout=120)
+                except Exception as thread_err:
+                    logger.error(f"_call_llm_sync: thread executor failed: {thread_err}")
+                    return ""
         except RuntimeError:
+            # No running loop — safe to call asyncio.run() directly.
             resp = asyncio.run(candidate)
     else:
         resp = candidate
 
+    content = ""
     if isinstance(resp, dict):
         if resp.get("choices") and isinstance(resp.get("choices"), list):
-            return resp["choices"][0].get("message", {}).get("content", "")
+            content = resp["choices"][0].get("message", {}).get("content", "") or ""
         elif resp.get("message"):
-            return resp.get("message", {}).get("content", "")
-    return ""
+            content = resp.get("message", {}).get("content", "") or ""
+
+    # Part A: strip <think>...</think> blocks produced by reasoning models
+    # (Qwen3, DeepSeek-R1-Distill, QwQ).  Safe no-op for all other models.
+    if content:
+        from src.core.inference.thinking_utils import strip_thinking
+        content = strip_thinking(content)
+    return content
 
 
 def compact_messages_to_prose(
@@ -101,7 +120,10 @@ def compact_messages_to_prose(
 
 def _fallback_compact(messages: List[Dict]) -> str:
     """Simple text dump used when LLM summarization fails."""
-    lines = [f"[CONTEXT COMPACTED — {len(messages)} messages summarized, LLM unavailable]", ""]
+    lines = [
+        f"[CONTEXT COMPACTED — {len(messages)} messages summarized, LLM unavailable]",
+        "",
+    ]
     for m in messages[-8:]:
         role = m.get("role", "?")
         content = str(m.get("content", ""))[:300]
@@ -151,17 +173,26 @@ def distill_context(
         "}\n\n"
         "Keep each string under 15 words. Use relative file paths.\n\n"
         f"User: Here are the recent messages:\n{msg_str}\n\n"
-        "OUTPUT ONLY VALID JSON. NO MARKDOWN. NO EXPLANATION."
+        "OUTPUT ONLY VALID JSON. NO MARKDOWN. NO EXPLANATION. /no_think"
     )
 
     distilled_state: Dict[str, Any] = {}
 
+    # Part B: reasoning models (DeepSeek-R1-Distill) cannot suppress thinking
+    # tokens, so they consume max_tokens budget before the real answer starts.
+    # Double the allocation for those models; base budget is sufficient for
+    # Qwen3 (where /no_think works) and all non-thinking models.
+    from src.core.inference.thinking_utils import budget_max_tokens, get_active_model_id
+    _model_id = get_active_model_id()
+    _max_tok = budget_max_tokens(400, _model_id)
+
     try:
         content = _call_llm_sync(
-            [{"role": "user", "content": prompt}], format_json=True
+            [{"role": "user", "content": prompt}], format_json=True, max_tokens=_max_tok
         )
         if content:
             import re
+
             match = re.search(r"\{.*\}", content, re.DOTALL)
             if match:
                 distilled_state = json.loads(match.group(0))
@@ -188,15 +219,51 @@ def distill_context(
                 lines.extend(["", "# Files Modified"])
                 for f in files_modified:
                     lines.append(f"- {f}")
-            lines.extend(["", "# Completed Steps"])
-            for step in distilled_state.get("completed_steps", []):
-                lines.append(f"- {step}")
+
+            # Prefer TODO.json for step completion — it is deterministic and exact.
+            # Fall back to LLM-inferred completed_steps only when no TODO exists.
+            todo_json_path = agent_context / "todo.json"
+            if todo_json_path.exists():
+                try:
+                    import json as _json
+
+                    todo_steps = _json.loads(todo_json_path.read_text())
+                    done_steps = [s["description"] for s in todo_steps if s.get("done")]
+                    pending_steps = [
+                        s["description"] for s in todo_steps if not s.get("done")
+                    ]
+                    lines.extend(["", "# Completed Steps (from TODO)"])
+                    for step in done_steps:
+                        lines.append(f"- [x] {step}")
+                    if pending_steps:
+                        lines.extend(["", "# Pending Steps"])
+                        for step in pending_steps:
+                            lines.append(f"- [ ] {step}")
+                        lines.extend(["", "# Next Step", pending_steps[0]])
+                    else:
+                        lines.extend(["", "# Next Step", "All steps complete"])
+                except Exception:
+                    # Fallback to LLM-inferred steps if todo.json is unreadable
+                    lines.extend(["", "# Completed Steps"])
+                    for step in distilled_state.get("completed_steps", []):
+                        lines.append(f"- {step}")
+                    lines.extend(
+                        ["", "# Next Step", distilled_state.get("next_step", "None")]
+                    )
+            else:
+                lines.extend(["", "# Completed Steps"])
+                for step in distilled_state.get("completed_steps", []):
+                    lines.append(f"- {step}")
+                lines.extend(
+                    ["", "# Next Step", distilled_state.get("next_step", "None")]
+                )
+
             errors = distilled_state.get("errors_resolved", [])
             if errors:
                 lines.extend(["", "# Errors Resolved"])
                 for err in errors:
                     lines.append(f"- {err}")
-            lines.extend(["", "# Next Step", distilled_state.get("next_step", "None")])
+
             task_state_path.write_text("\n".join(lines))
         except Exception as e:
             logger.error(f"Failed to write TASK_STATE.md: {e}")
