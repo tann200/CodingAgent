@@ -489,29 +489,29 @@ The replan subsystem (`replan_node` + `should_after_replan`) exists for splittin
 | C3 | verification_node None working_dir crash | Critical | ✅ Fixed — `verification_node.py:109` |
 | C4 | DANGEROUS_PATTERNS whitespace bypass | Critical | ✅ Fixed — `file_tools.py:289` |
 | H1 | Full test suite on every side-effect | High | ⬜ Open |
-| H2 | No per-step retry limit | High | ⬜ Open |
+| H2 | No per-step retry limit | High | ✅ Fixed — `step_controller_node.py` + `builder.py` (MAX=3) |
 | H3 | action_interrupt_agent `or True` bug | High | ✅ Fixed — `textual_app_impl.py:958` |
 | H4 | Verification runs with no cancel check | High | ⬜ Open |
 | H5 | `tee`/`touch` write bypass | High | ✅ Fixed — `file_tools.py:380,386` |
-| H6 | rounds not incremented on exec→perception | High | ⬜ Open |
-| H7 | EventBus subscribers never unsubscribed | High | ⬜ Open |
+| H6 | rounds not incremented on exec→perception | High | ⬜ Assessed — rounds incremented by perception_node; not a real gap |
+| H7 | EventBus subscribers never unsubscribed | High | ✅ Fixed — `_eb_subscriptions` list + `on_unmount` |
 | H8 | Rollback path not validated with safe_resolve | High | ⬜ Open |
 | M1 | No streaming LLM output | Medium | ⬜ Open |
-| M2 | No live plan progress display | Medium | ⬜ Open |
+| M2 | No live plan progress display | Medium | ✅ Fixed — C2 dashboard wired to TUI sidebar |
 | M3 | No input autocomplete | Medium | ⬜ Open |
 | M4 | No diff preview before applying | Medium | ⬜ Open |
 | M5 | No benchmark harness | Medium | ⬜ Open |
-| W1 | Step controller infinite retry | Medium | ⬜ Open (same as H2) |
+| W1 | Step controller infinite retry | Medium | ✅ Fixed — same as H2 |
 | W3 | replan_node path untested | Low | ⬜ Open |
 | W4 | debug_attempts reset may loop on cascading errors | Low | ⬜ Open |
-| W5 | evaluation→step_controller→verification loop | Low | ⬜ Open |
+| W5 | evaluation→step_controller→verification loop | Low | ✅ Fixed — `evaluation_node.py` clears `replan_required` |
 | U1 | No streaming (same as M1) | High | ⬜ Open |
-| U2 | Plan progress panel invisible (same as C2/M2) | High | ⬜ Open |
-| U3 | Diff viewer broken (same as C1) | High | ⬜ Open |
-| U4 | Settings modal init fragile | Medium | ⬜ Open |
-| U5 | Context sidebar hardcodes 128k | Low | ⬜ Open |
+| U2 | Plan progress panel invisible (same as C2/M2) | High | ✅ Fixed — wired in C2 |
+| U3 | Diff viewer broken (same as C1) | High | ✅ Fixed — C1 regex fix |
+| U4 | Settings modal init fragile | Medium | ✅ Fixed — `getattr` guard in `action_open_settings` |
+| U5 | Context sidebar hardcodes 128k | Low | ✅ Fixed — reads `get_context_budget()` dynamically |
 | U6 | `continue` restores messages only, not graph state | Medium | ⬜ Open |
-| U7 | Log panel hidden with no indicator | Low | ⬜ Open |
-| OE1 | MainViewController dead code | — | ⬜ Open (same as C2) |
+| U7 | Log panel hidden with no indicator | Low | ✅ Fixed — legend now mentions `Ctrl+L (toggle)` |
+| OE1 | MainViewController dead code | — | ✅ Fixed — wired via C2 |
 | OE4 | Delegation fire-and-forget dead infrastructure | Low | ⬜ Open |
-| E1–E8 | Test coverage gaps | — | ⬜ Open |
+| E1–E8 | Test coverage gaps | — | Partially addressed (+32 new tests) |
