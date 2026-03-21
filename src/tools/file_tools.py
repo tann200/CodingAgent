@@ -286,7 +286,8 @@ def bash(command: str, workdir: Path = DEFAULT_WORKDIR) -> Dict[str, Any]:
         "halt",
         "poweroff",
     ]
-    cmd_lower = command.lower()
+    import re as _re
+    cmd_lower = _re.sub(r"\s+", " ", command).lower()
     for pattern in DANGEROUS_PATTERNS:
         if pattern in cmd_lower:
             return {
@@ -377,13 +378,12 @@ def bash(command: str, workdir: Path = DEFAULT_WORKDIR) -> Dict[str, Any]:
         "column",
         "cut",
         "tr",
-        "tee",
         "xargs",
         "test",
         "[",
         "true",
         "false",
-        "touch",         # update timestamp / create empty file — non-destructive
+        # NOTE: touch removed — creates files, bypasses WorkspaceGuard (vol4 H5)
     }
 
     # Tier 2: Test and compile commands (auto-allowed - needed for verification)
@@ -483,7 +483,7 @@ def bash(command: str, workdir: Path = DEFAULT_WORKDIR) -> Dict[str, Any]:
 
     # Check for restricted commands first.
     # Normalise whitespace before matching so double-space bypass is blocked (NEW-7).
-    import re as _re
+    # NOTE: _re already imported above for DANGEROUS_PATTERNS check.
     cmd_lower = _re.sub(r"\s+", " ", command).lower()
     for pattern in RESTRICTED_COMMANDS:
         if pattern in cmd_lower:

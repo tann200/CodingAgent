@@ -801,7 +801,7 @@ else:
                             right_lines.append(current_right)
                         current_left = []
                         current_right = []
-                        match = re.search(r"@@ -(\\d+),?\\d* \\+(\\d+),?\\d* @@", line)
+                        match = re.search(r"@@ -(\d+),?\d* \+(\d+),?\d* @@", line)
                         if match:
                             current_left.append(f"@@ -{match.group(1)}")
                             current_right.append(f"@@ +{match.group(2)}")
@@ -954,9 +954,7 @@ else:
             # Check if agent is running - more robust check
             if self._agent_running:
                 thread_alive = self._agent_thread and self._agent_thread.is_alive()
-                if (
-                    thread_alive or True
-                ):  # Be more permissive - if _agent_running is True, try to interrupt
+                if thread_alive:
                     guilogger.info("User interrupted agent (Escape pressed)")
                     self._cancel_event.set()
                     self.output.write(

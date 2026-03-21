@@ -106,7 +106,7 @@ async def verification_node(state: AgentState, config: Any) -> Dict[str, Any]:
     results = {}
     if need_verify:
         try:
-            wd = Path(state.get("working_dir"))
+            wd = Path(state.get("working_dir") or ".")
             is_js = _has_js_project(wd)
             if is_js:
                 # JS/TS project: run JS tests + TypeScript check + linter
