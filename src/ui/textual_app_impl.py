@@ -1077,6 +1077,8 @@ else:
             try:
                 if self.orchestrator and hasattr(self.orchestrator, "msg_mgr"):
                     msg_mgr = self.orchestrator.msg_mgr
+                    # U6: persist full AgentState fields so continue can resume mid-plan
+                    agent_state = getattr(self.orchestrator, "_last_agent_state", {}) or {}
                     self._continue_state = {
                         "history": msg_mgr.messages.copy()
                         if hasattr(msg_mgr, "messages")
@@ -1084,6 +1086,10 @@ else:
                         "session_read_files": list(
                             getattr(self.orchestrator, "_session_read_files", [])
                         ),
+                        "current_plan": agent_state.get("current_plan"),
+                        "current_step": agent_state.get("current_step"),
+                        "working_dir": agent_state.get("working_dir"),
+                        "step_retry_counts": agent_state.get("step_retry_counts"),
                     }
                     guilogger.info("State saved for continue")
             except Exception as e:
@@ -1104,6 +1110,13 @@ else:
                         self.orchestrator._session_read_files = set(
                             self._continue_state.get("session_read_files", [])
                         )
+                    # U6: restore full AgentState fields for mid-plan resume
+                    if not hasattr(self.orchestrator, "_last_agent_state"):
+                        self.orchestrator._last_agent_state = {}
+                    for key in ("current_plan", "current_step", "working_dir", "step_retry_counts"):
+                        val = self._continue_state.get(key)
+                        if val is not None:
+                            self.orchestrator._last_agent_state[key] = val
                     guilogger.info("State restored for continue")
                     return True
             except Exception as e:

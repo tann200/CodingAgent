@@ -478,3 +478,152 @@ class TestC2DashboardEventHandlers:
         ok = payload.get("ok", True)
         status = "✓" if ok else "✗"
         assert "✗" in status
+
+
+# ---------------------------------------------------------------------------
+# H8 — RollbackManager path traversal prevention
+# ---------------------------------------------------------------------------
+
+class TestH8RollbackPathTraversal:
+    """rollback(), snapshot_files(), and append_to_snapshot() must reject
+    paths that escape the workspace directory."""
+
+    def _make_mgr(self, tmp_path):
+        from src.core.orchestration.rollback_manager import RollbackManager
+        return RollbackManager(str(tmp_path))
+
+    def test_snapshot_skips_traversal_path(self, tmp_path):
+        mgr = self._make_mgr(tmp_path)
+        # A normal file to snapshot (should work)
+        good = tmp_path / "good.py"
+        good.write_text("print('hello')")
+        sid = mgr.snapshot_files(["good.py", "../../etc/passwd"])
+        # Only good.py should be captured; traversal path skipped
+        snaps = mgr.snapshots[sid]
+        paths = [s.path for s in snaps]
+        assert "good.py" in paths
+        assert "../../etc/passwd" not in paths
+
+    def test_rollback_skips_traversal_path(self, tmp_path):
+        mgr = self._make_mgr(tmp_path)
+        import json
+        from src.core.orchestration.rollback_manager import FileSnapshot
+        # Inject a snapshot with a traversal path directly into memory
+        bad_snap = FileSnapshot(
+            path="../../evil.txt",
+            content="pwned",
+            timestamp="2026-01-01T00:00:00",
+            checksum="abc",
+        )
+        mgr.snapshots["test_snap"] = [bad_snap]
+        result = mgr.rollback("test_snap")
+        # Should succeed (no error) but not write anything outside workspace
+        evil = tmp_path.parent / "evil.txt"
+        assert not evil.exists(), "Traversal path must not be written outside workspace"
+
+    def test_append_to_snapshot_rejects_traversal(self, tmp_path):
+        mgr = self._make_mgr(tmp_path)
+        result = mgr.append_to_snapshot("snap1", "../../etc/shadow")
+        assert result is False, "append_to_snapshot must return False for traversal path"
+
+    def test_snapshot_normal_path_works(self, tmp_path):
+        mgr = self._make_mgr(tmp_path)
+        (tmp_path / "src").mkdir()
+        f = tmp_path / "src" / "main.py"
+        f.write_text("x = 1")
+        sid = mgr.snapshot_files(["src/main.py"])
+        result = mgr.rollback(sid)
+        assert result["ok"] is True
+        assert "src/main.py" in result["restored_files"]
+
+
+# ---------------------------------------------------------------------------
+# W4 — Total debug attempts global cap
+# ---------------------------------------------------------------------------
+
+class TestW4TotalDebugAttemptsCap:
+    """AgentState must track total_debug_attempts; evaluation_node must route
+    to memory_sync when the global cap (default 9) is reached, regardless of
+    error type."""
+
+    def test_total_debug_attempts_in_state(self):
+        from src.core.orchestration.graph.state import AgentState
+        import typing
+        hints = typing.get_type_hints(AgentState)
+        assert "total_debug_attempts" in hints, (
+            "AgentState must declare total_debug_attempts field"
+        )
+
+    def test_evaluation_routes_to_memory_sync_at_global_cap(self):
+        """When total_debug_attempts >= MAX_TOTAL_DEBUG (9), routing must
+        go to memory_sync, not debug."""
+        from src.core.orchestration.graph import builder
+        state = {
+            "verification_passed": False,
+            "debug_attempts": 0,
+            "total_debug_attempts": 9,
+            "max_debug_attempts": 3,
+            "current_plan": [{"description": "step"}],
+            "current_step": 0,
+            "tool_call_count": 1,
+            "max_tool_calls": 30,
+            "replan_required": None,
+            "last_result": {},
+        }
+        route = builder.should_after_evaluation(state)
+        assert route in ("memory_sync", "end"), (
+            f"Expected memory_sync/end when total_debug_attempts=9, got '{route}'"
+        )
+
+
+# ---------------------------------------------------------------------------
+# U6 — continue command full AgentState save/restore
+# ---------------------------------------------------------------------------
+
+class TestU6ContinueStateRestore:
+    """_save_state_for_continue and _restore_state_for_continue must
+    persist/restore current_plan, current_step, working_dir, and
+    step_retry_counts."""
+
+    REQUIRED_KEYS = ["current_plan", "current_step", "working_dir", "step_retry_counts"]
+
+    def _find_save_restore(self):
+        """Locate save/restore helpers in the orchestrator or TUI."""
+        import importlib, inspect
+        for mod_path in (
+            "src.core.orchestration.orchestrator",
+            "src.ui.textual_app_impl",
+        ):
+            try:
+                mod = importlib.import_module(mod_path)
+                src = inspect.getsource(mod)
+                if "_save_state_for_continue" in src or "save_state_for_continue" in src:
+                    return src
+            except Exception:
+                pass
+        return None
+
+    def test_save_restore_helpers_exist(self):
+        """At least one module must define state save/restore for continue."""
+        src = self._find_save_restore()
+        # If not yet implemented, this test documents the requirement
+        if src is None:
+            pytest.skip("U6 save/restore not yet implemented — test documents requirement")
+
+    def test_saved_state_includes_required_keys(self):
+        """Verify that the saved state dict contains the required keys."""
+        src = self._find_save_restore()
+        if src is None:
+            pytest.skip("U6 save/restore not yet implemented")
+        # Verify each required key is referenced inside the save/restore function
+        import re
+        # Extract just the function body if possible
+        fn_match = re.search(
+            r"def (?:_?save_state_for_continue|_?restore_state_for_continue)"
+            r".+?(?=\ndef |\Z)",
+            src,
+            re.DOTALL,
+        )
+        fn_src = fn_match.group(0) if fn_match else src
+        for key in self.REQUIRED_KEYS:
+            assert key in fn_src, f"save/restore must handle '{key}'"

@@ -55,6 +55,7 @@ async def debug_node(state: AgentState, config: Any) -> Dict[str, Any]:
 
     current_attempt: int = int(state.get("debug_attempts") or 0)
     max_attempts: int = int(state.get("max_debug_attempts") or 3)
+    total_debug_attempts: int = int(state.get("total_debug_attempts") or 0)
     last_error_type: str = state.get("last_debug_error_type") or ""
     last_result = state.get("last_result") or {}
     verification_result = state.get("verification_result") or {}
@@ -94,6 +95,7 @@ async def debug_node(state: AgentState, config: Any) -> Dict[str, Any]:
         }
 
     next_attempt = current_attempt + 1
+    next_total = total_debug_attempts + 1
 
     # Classify the error for more targeted fixes
     error_type = _classify_error(error_summary)
@@ -171,6 +173,7 @@ Generate a YAML tool call to fix the issue. Use edit_file, write_file, or bash a
             return {
                 "next_action": tool_call,
                 "debug_attempts": next_attempt,
+                "total_debug_attempts": next_total,
                 "last_debug_error_type": error_type,
             }
         else:
@@ -178,6 +181,7 @@ Generate a YAML tool call to fix the issue. Use edit_file, write_file, or bash a
             return {
                 "next_action": None,
                 "debug_attempts": next_attempt,
+                "total_debug_attempts": next_total,
                 "last_debug_error_type": error_type,
                 "errors": ["Debug node could not generate fix"],
             }
@@ -187,6 +191,7 @@ Generate a YAML tool call to fix the issue. Use edit_file, write_file, or bash a
         return {
             "next_action": None,
             "debug_attempts": next_attempt,
+            "total_debug_attempts": next_total,
             "last_debug_error_type": error_type,
             "errors": [str(e)],
         }

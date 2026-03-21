@@ -13,6 +13,8 @@ from typing import Dict, Any, List, Optional
 from datetime import datetime
 from dataclasses import dataclass
 
+from src.tools._path_utils import safe_resolve
+
 logger = logging.getLogger(__name__)
 
 
@@ -73,7 +75,11 @@ class RollbackManager:
         snapshots: List[FileSnapshot] = []
 
         for file_path in file_paths:
-            path = self.workdir / file_path
+            try:
+                path = safe_resolve(file_path, self.workdir)
+            except (PermissionError, ValueError):
+                logger.warning(f"snapshot_files: path '{file_path}' escapes workspace — skipping")
+                continue
             if not path.exists():
                 continue
 
@@ -149,7 +155,11 @@ class RollbackManager:
 
         restored_files = []
         for snap in snapshots:
-            file_path = self.workdir / snap.path
+            try:
+                file_path = safe_resolve(snap.path, self.workdir)
+            except (PermissionError, ValueError):
+                logger.warning(f"rollback: path '{snap.path}' escapes workspace — skipping")
+                continue
             try:
                 # Create backup before restoring
                 if file_path.exists():
@@ -189,7 +199,11 @@ class RollbackManager:
         Returns:
             True if the file was added, False if skipped or snapshot not found.
         """
-        path = self.workdir / file_path
+        try:
+            path = safe_resolve(file_path, self.workdir)
+        except (PermissionError, ValueError):
+            logger.warning(f"append_to_snapshot: path '{file_path}' escapes workspace — skipping")
+            return False
         if not path.exists():
             return False
 

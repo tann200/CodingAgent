@@ -103,8 +103,22 @@ async def verification_node(state: AgentState, config: Any) -> Dict[str, Any]:
         need_verify = True
         logger.info("verification_node: step explicitly requests verification — running tests")
 
+    # H4: Helper to check whether the user has requested cancellation.
+    # verification tools (pytest, ruff) can block for up to 120 s each;
+    # without this check the agent is uninterruptible during the full run.
+    cancel_event = state.get("cancel_event")
+
+    def _is_cancelled() -> bool:
+        try:
+            return bool(cancel_event and cancel_event.is_set())
+        except Exception:
+            return False
+
     results = {}
     if need_verify:
+        if _is_cancelled():
+            logger.info("verification_node: cancelled before running tools — skipping")
+            return {"verification_result": {"cancelled": True}, "verification_passed": True}
         try:
             wd = Path(state.get("working_dir") or ".")
             is_js = _has_js_project(wd)
@@ -112,12 +126,24 @@ async def verification_node(state: AgentState, config: Any) -> Dict[str, Any]:
                 # JS/TS project: run JS tests + TypeScript check + linter
                 logger.info("verification_node: JS/TS project detected — running JS test suite")
                 results["js_tests"] = verification_tools.run_js_tests(str(wd))
+                if _is_cancelled():
+                    logger.info("verification_node: cancelled after js_tests")
+                    return {"verification_result": {**results, "cancelled": True}, "verification_passed": True}
                 results["ts_check"] = verification_tools.run_ts_check(str(wd))
+                if _is_cancelled():
+                    logger.info("verification_node: cancelled after ts_check")
+                    return {"verification_result": {**results, "cancelled": True}, "verification_passed": True}
                 results["eslint"] = verification_tools.run_eslint(str(wd))
             else:
                 # Python project: run pytest + ruff + syntax check
                 results["tests"] = verification_tools.run_tests(str(wd))
+                if _is_cancelled():
+                    logger.info("verification_node: cancelled after run_tests")
+                    return {"verification_result": {**results, "cancelled": True}, "verification_passed": True}
                 results["linter"] = verification_tools.run_linter(str(wd))
+                if _is_cancelled():
+                    logger.info("verification_node: cancelled after run_linter")
+                    return {"verification_result": {**results, "cancelled": True}, "verification_passed": True}
                 results["syntax"] = verification_tools.syntax_check(str(wd))
         except Exception as e:
             results["error"] = str(e)

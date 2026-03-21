@@ -49,6 +49,8 @@ class AgentState(TypedDict):
     # Debug retry tracking
     debug_attempts: Optional[int]
     max_debug_attempts: int
+    # W4: Global debug attempts cap across all error types (prevents 3×N loop on alternating errors)
+    total_debug_attempts: Optional[int]
     # Tracks error type from previous debug attempt for W6 fix (reset attempts on error-type change)
     last_debug_error_type: Optional[str]
     # Verification result

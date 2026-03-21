@@ -361,6 +361,15 @@ def should_after_evaluation(
         )
         return "step_controller"
     elif evaluation_result == "debug":
+        # W4: Global cap prevents alternating-error-type loops (3 types × 3 attempts = 9)
+        MAX_TOTAL_DEBUG = 9
+        total_debug = int(state.get("total_debug_attempts") or 0)
+        if total_debug >= MAX_TOTAL_DEBUG:
+            logger.warning(
+                f"should_after_evaluation: total_debug_attempts={total_debug} >= "
+                f"{MAX_TOTAL_DEBUG}, routing to memory_sync to prevent infinite loop"
+            )
+            return "memory_sync"
         logger.info("should_after_evaluation: verification failed, going to debug")
         return "debug"
     else:
