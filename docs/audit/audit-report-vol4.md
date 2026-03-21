@@ -498,9 +498,9 @@ The replan subsystem (`replan_node` + `should_after_replan`) exists for splittin
 | H8 | Rollback path not validated with safe_resolve | High | ✅ Fixed — `rollback_manager.py` safe_resolve in snapshot/rollback/append |
 | M1 | No streaming LLM output | Medium | ⬜ Open |
 | M2 | No live plan progress display | Medium | ✅ Fixed — C2 dashboard wired to TUI sidebar |
-| M3 | No input autocomplete | Medium | ⬜ Open |
-| M4 | No diff preview before applying | Medium | ⬜ Open |
-| M5 | No benchmark harness | Medium | ⬜ Open |
+| M3 | No input autocomplete | Medium | ✅ Fixed — Tab autocomplete for SLASH_COMMANDS in ChatInput |
+| M4 | No diff preview before applying | Medium | ✅ Fixed — file.diff.preview EventBus event + TUI coloured diff block |
+| M5 | No benchmark harness | Medium | ✅ Fixed — benchmarks/scenarios.json (10 tasks) + scripts/run_benchmark.py CLI |
 | W1 | Step controller infinite retry | Medium | ✅ Fixed — same as H2 |
 | W3 | replan_node path untested | Low | ⬜ Open |
 | W4 | debug_attempts reset may loop on cascading errors | Low | ✅ Fixed — `total_debug_attempts` global cap (9) in `should_after_evaluation` |
