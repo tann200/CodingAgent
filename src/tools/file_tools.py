@@ -8,6 +8,24 @@ from src.core.orchestration.workspace_guard import WorkspaceGuard
 from src.tools._path_utils import safe_resolve
 
 
+def _publish_diff_preview(path: str, diff: str, is_new_file: bool = False) -> None:
+    """M4: Publish a diff preview event before a file write is applied.
+
+    Subscribers (e.g. TUI) receive this to show the user what is about
+    to change, giving them a chance to see (and in future, reject) edits.
+    """
+    try:
+        from src.core.orchestration.event_bus import get_event_bus
+        bus = get_event_bus()
+        bus.publish("file.diff.preview", {
+            "path": path,
+            "diff": diff,
+            "is_new_file": is_new_file,
+        })
+    except Exception:
+        pass  # Never block the write if event bus is unavailable
+
+
 # Default working directory used by tools (project root /output)
 DEFAULT_WORKDIR = Path.cwd() / "output"
 DEFAULT_WORKDIR.mkdir(parents=True, exist_ok=True)
@@ -68,6 +86,9 @@ def write_file(
         diff = "".join(diff_lines)
         lines_added = len(new_lines)
         lines_removed = 0
+
+    # M4: Publish diff preview BEFORE writing so the TUI can show what will change
+    _publish_diff_preview(str(p), diff, is_new_file=not bool(original_content))
 
     result: Dict[str, Any] = {
         "path": str(p),
@@ -237,6 +258,10 @@ def edit_file(
 
         lines_added = len([line for line in diff_lines if line.startswith("+")])
         lines_removed = len([line for line in diff_lines if line.startswith("-")])
+
+        # M4: Publish diff preview (post-apply for edit_file since patch is atomic)
+        _publish_diff_preview(str(p), diff, is_new_file=False)
+
         result: Dict[str, Any] = {
             "path": str(p),
             "status": "ok",
@@ -666,6 +691,9 @@ def edit_by_line_range(
         )
     )
     diff = "".join(diff_lines)
+
+    # M4: Publish diff preview (post-write since diff requires splice result)
+    _publish_diff_preview(str(p), diff, is_new_file=False)
 
     return {
         "path": str(p),

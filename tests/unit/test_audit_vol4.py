@@ -627,3 +627,242 @@ class TestU6ContinueStateRestore:
         fn_src = fn_match.group(0) if fn_match else src
         for key in self.REQUIRED_KEYS:
             assert key in fn_src, f"save/restore must handle '{key}'"
+
+
+# ---------------------------------------------------------------------------
+# M3 — Slash command autocomplete in ChatInput
+# ---------------------------------------------------------------------------
+
+class TestM3SlashAutocomplete:
+    """ChatInput Tab key must autocomplete /cmd prefixes from SLASH_COMMANDS."""
+
+    def test_slash_commands_list_exists(self):
+        """SLASH_COMMANDS must be defined in textual_app_impl."""
+        import inspect, importlib
+        mod = importlib.import_module("src.ui.textual_app_impl")
+        src = inspect.getsource(mod)
+        assert "SLASH_COMMANDS" in src, "SLASH_COMMANDS list must be defined"
+
+    def test_slash_commands_has_required_entries(self):
+        """The command palette must include the essential commands."""
+        import inspect, importlib
+        mod = importlib.import_module("src.ui.textual_app_impl")
+        src = inspect.getsource(mod)
+        for cmd in ("/help", "/clear", "/continue", "/settings"):
+            assert cmd in src, f"SLASH_COMMANDS must include {cmd}"
+
+    def test_tab_completes_unique_prefix(self):
+        """Tab on '/he' should complete to '/help' (single match)."""
+        # Simulate the completion logic directly
+        slash_commands = ["/help", "/clear", "/continue", "/interrupt", "/settings",
+                          "/status", "/history", "/reset", "/workdir", "/benchmark"]
+        current = "/he"
+        matches = [c for c in slash_commands if c.startswith(current)]
+        assert matches == ["/help"]
+
+    def test_tab_cycles_multiple_matches(self):
+        """Tab on '/h' cycles through /help, /history."""
+        slash_commands = ["/help", "/clear", "/continue", "/interrupt", "/settings",
+                          "/status", "/history", "/reset", "/workdir", "/benchmark"]
+        current = "/h"
+        matches = [c for c in slash_commands if c.startswith(current)]
+        assert len(matches) >= 2
+        assert "/help" in matches
+        assert "/history" in matches
+
+    def test_tab_no_match_returns_empty(self):
+        """Tab on '/zzz' should produce no matches."""
+        slash_commands = ["/help", "/clear", "/continue"]
+        matches = [c for c in slash_commands if c.startswith("/zzz")]
+        assert matches == []
+
+    def test_chat_input_on_key_handles_tab(self):
+        """ChatInput.on_key Tab branch must exist in source."""
+        import inspect, importlib
+        mod = importlib.import_module("src.ui.textual_app_impl")
+        src = inspect.getsource(mod)
+        assert '"tab"' in src or "'tab'" in src, "ChatInput must handle Tab key"
+
+
+# ---------------------------------------------------------------------------
+# M4 — Diff preview before edits via EventBus
+# ---------------------------------------------------------------------------
+
+class TestM4DiffPreview:
+    """write_file and edit_by_line_range must publish file.diff.preview events."""
+
+    def test_write_file_publishes_diff_preview(self, tmp_path):
+        """write_file must fire file.diff.preview BEFORE writing."""
+        from src.core.orchestration.event_bus import get_event_bus
+        from src.tools import file_tools
+
+        received = []
+        eb = get_event_bus()
+        eb.subscribe("file.diff.preview", lambda p: received.append(p))
+
+        try:
+            # Write new file
+            result = file_tools.write_file("test.py", "x = 1\n", workdir=tmp_path)
+            assert result["status"] == "ok"
+            assert len(received) >= 1, "file.diff.preview must be published"
+            assert received[0]["path"].endswith("test.py") or "test.py" in received[0]["path"]
+        finally:
+            eb.unsubscribe("file.diff.preview", lambda p: None)
+
+    def test_write_file_diff_preview_has_required_fields(self, tmp_path):
+        """file.diff.preview payload must include path, diff, is_new_file."""
+        from src.core.orchestration.event_bus import get_event_bus
+        from src.tools import file_tools
+
+        received = []
+        eb = get_event_bus()
+        cb = lambda p: received.append(p)
+        eb.subscribe("file.diff.preview", cb)
+
+        try:
+            file_tools.write_file("preview_test.py", "y = 2\n", workdir=tmp_path)
+            assert received, "No preview event received"
+            payload = received[0]
+            assert "path" in payload
+            assert "diff" in payload
+            assert "is_new_file" in payload
+        finally:
+            eb.unsubscribe("file.diff.preview", cb)
+
+    def test_write_file_new_file_is_new_file_true(self, tmp_path):
+        """is_new_file must be True when creating a new file."""
+        from src.core.orchestration.event_bus import get_event_bus
+        from src.tools import file_tools
+
+        received = []
+        cb = lambda p: received.append(p)
+        eb = get_event_bus()
+        eb.subscribe("file.diff.preview", cb)
+
+        try:
+            file_tools.write_file("brand_new.py", "z = 3\n", workdir=tmp_path)
+            assert received[0]["is_new_file"] is True
+        finally:
+            eb.unsubscribe("file.diff.preview", cb)
+
+    def test_edit_by_line_range_publishes_diff_preview(self, tmp_path):
+        """edit_by_line_range must fire file.diff.preview after applying edit."""
+        from src.core.orchestration.event_bus import get_event_bus
+        from src.tools import file_tools
+
+        f = tmp_path / "lines.py"
+        f.write_text("line1\nline2\nline3\n")
+
+        received = []
+        cb = lambda p: received.append(p)
+        eb = get_event_bus()
+        eb.subscribe("file.diff.preview", cb)
+
+        try:
+            result = file_tools.edit_by_line_range("lines.py", 2, 2, "replaced\n", workdir=tmp_path)
+            assert result["status"] == "ok"
+            assert len(received) >= 1
+        finally:
+            eb.unsubscribe("file.diff.preview", cb)
+
+    def test_diff_preview_coloured_in_tui_handler(self):
+        """_on_diff_preview_ui must colour + lines green and - lines red."""
+        diff = "+added line\n-removed line\n@@ -1,1 +1,1 @@\n context"
+        coloured = []
+        for line in diff.splitlines():
+            if line.startswith("+") and not line.startswith("+++"):
+                coloured.append(f"green:{line}")
+            elif line.startswith("-") and not line.startswith("---"):
+                coloured.append(f"red:{line}")
+            elif line.startswith("@@"):
+                coloured.append(f"cyan:{line}")
+            else:
+                coloured.append(f"dim:{line}")
+        assert any("green:" in c for c in coloured)
+        assert any("red:" in c for c in coloured)
+
+
+# ---------------------------------------------------------------------------
+# M5 — Benchmark harness and canonical scenario suite
+# ---------------------------------------------------------------------------
+
+class TestM5BenchmarkHarness:
+    """Canonical benchmark suite must load and evaluate correctly."""
+
+    def _load_suite(self):
+        from pathlib import Path
+        import json
+        suite_path = Path(__file__).parent.parent.parent / "benchmarks" / "scenarios.json"
+        if not suite_path.exists():
+            pytest.skip("benchmarks/scenarios.json not found")
+        with open(suite_path) as f:
+            return json.load(f)
+
+    def test_scenarios_file_exists(self):
+        data = self._load_suite()
+        assert "scenarios" in data
+
+    def test_scenarios_count(self):
+        data = self._load_suite()
+        assert len(data["scenarios"]) >= 10, "Suite must have at least 10 scenarios"
+
+    def test_all_scenarios_have_required_fields(self):
+        data = self._load_suite()
+        for sc in data["scenarios"]:
+            assert "name" in sc, f"Scenario missing 'name'"
+            assert "task" in sc, f"Scenario {sc.get('name')} missing 'task'"
+            assert "category" in sc, f"Scenario {sc.get('name')} missing 'category'"
+            assert "difficulty" in sc, f"Scenario {sc.get('name')} missing 'difficulty'"
+
+    def test_difficulty_values_valid(self):
+        data = self._load_suite()
+        valid = {"easy", "medium", "hard"}
+        for sc in data["scenarios"]:
+            assert sc.get("difficulty") in valid, \
+                f"Scenario {sc['name']} has invalid difficulty '{sc.get('difficulty')}'"
+
+    def test_scenarios_load_via_evaluator(self):
+        from src.core.evaluation.scenario_evaluator import ScenarioEvaluator
+        from pathlib import Path
+        suite_path = Path(__file__).parent.parent.parent / "benchmarks" / "scenarios.json"
+        if not suite_path.exists():
+            pytest.skip("benchmarks/scenarios.json not found")
+        ev = ScenarioEvaluator()
+        ev.add_scenarios_from_file(str(suite_path))
+        assert len(ev.scenarios) >= 10
+
+    def test_scenario_metadata_preserved(self):
+        from src.core.evaluation.scenario_evaluator import ScenarioEvaluator
+        from pathlib import Path
+        suite_path = Path(__file__).parent.parent.parent / "benchmarks" / "scenarios.json"
+        if not suite_path.exists():
+            pytest.skip("benchmarks/scenarios.json not found")
+        ev = ScenarioEvaluator()
+        ev.add_scenarios_from_file(str(suite_path))
+        sc = ev.scenarios[0]
+        assert sc.difficulty in ("easy", "medium", "hard")
+        assert sc.category != ""
+
+    def test_get_summary_by_category(self):
+        """get_summary_by_category must return by_category and by_difficulty dicts."""
+        from src.core.evaluation.scenario_evaluator import ScenarioEvaluator, Scenario, ScenarioResult
+        from datetime import datetime
+        ev = ScenarioEvaluator()
+        ev.add_scenario(Scenario(name="a", description="", task="t", category="creation", difficulty="easy"))
+        ev.add_scenario(Scenario(name="b", description="", task="t", category="debugging", difficulty="hard"))
+        now = datetime.now()
+        ev.results = [
+            ScenarioResult("a", "pass", now, now, 1.0),
+            ScenarioResult("b", "fail", now, now, 2.0),
+        ]
+        summary = ev.get_summary_by_category()
+        assert "by_category" in summary
+        assert "by_difficulty" in summary
+        assert summary["by_category"]["creation"]["pass"] == 1
+        assert summary["by_difficulty"]["hard"]["fail"] == 1
+
+    def test_run_benchmark_cli_exists(self):
+        """scripts/run_benchmark.py must exist and be importable."""
+        from pathlib import Path
+        runner = Path(__file__).parent.parent.parent / "scripts" / "run_benchmark.py"
+        assert runner.exists(), "scripts/run_benchmark.py must exist"

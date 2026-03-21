@@ -29,6 +29,10 @@ class Scenario:
     expected_files: Dict[str, str] = field(default_factory=dict)
     test_command: Optional[str] = None
     cleanup_command: Optional[str] = None
+    # M5: Metadata for filtering and reporting
+    difficulty: str = "medium"
+    category: str = "general"
+    tags: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -94,6 +98,9 @@ class ScenarioEvaluator:
                         expected_files=item.get("expected_files", {}),
                         test_command=item.get("test_command"),
                         cleanup_command=item.get("cleanup_command"),
+                        difficulty=item.get("difficulty", "medium"),
+                        category=item.get("category", "general"),
+                        tags=item.get("tags", []),
                     )
                 )
 
@@ -252,6 +259,31 @@ class ScenarioEvaluator:
             "pass_rate": passed / len(results) if results else 0,
             "total_duration_seconds": total_duration,
             "average_duration_seconds": total_duration / len(results) if results else 0,
+        }
+
+    def get_summary_by_category(
+        self, results: Optional[List[ScenarioResult]] = None
+    ) -> Dict[str, Any]:
+        """M5: Break summary down by scenario category and difficulty."""
+        results = results or self.results
+        # Build name→scenario map for metadata lookup
+        sc_map = {s.name: s for s in self.scenarios}
+
+        by_category: Dict[str, Dict[str, int]] = {}
+        by_difficulty: Dict[str, Dict[str, int]] = {}
+        for r in results:
+            sc = sc_map.get(r.scenario_name)
+            cat = sc.category if sc else "unknown"
+            diff = sc.difficulty if sc else "unknown"
+
+            by_category.setdefault(cat, {"pass": 0, "fail": 0, "error": 0})
+            by_difficulty.setdefault(diff, {"pass": 0, "fail": 0, "error": 0})
+            by_category[cat][r.status] = by_category[cat].get(r.status, 0) + 1
+            by_difficulty[diff][r.status] = by_difficulty[diff].get(r.status, 0) + 1
+
+        return {
+            "by_category": by_category,
+            "by_difficulty": by_difficulty,
         }
 
     def export_results(self, filepath: str):

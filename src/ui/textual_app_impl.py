@@ -259,13 +259,53 @@ else:
         Key = object
         Paste = object
 
+    # M3: Known slash commands for Tab autocomplete
+    SLASH_COMMANDS = [
+        "/help",
+        "/clear",
+        "/continue",
+        "/interrupt",
+        "/settings",
+        "/status",
+        "/history",
+        "/reset",
+        "/workdir",
+        "/benchmark",
+    ]
+
     class ChatInput(Input):
         def __init__(self, *args, **kwargs):
             super().__init__(*args, **kwargs)
             self.history = []
             self.history_index = -1
+            self._tab_matches: list = []
+            self._tab_index: int = -1
 
         def on_key(self, event: Key) -> None:
+            if event.key == "tab":
+                # M3: Slash command autocomplete
+                current = self.value
+                if current.startswith("/"):
+                    matches = [c for c in SLASH_COMMANDS if c.startswith(current)]
+                    if matches:
+                        # Cycle through matches on repeated Tab
+                        if self._tab_matches != matches:
+                            self._tab_matches = matches
+                            self._tab_index = 0
+                        else:
+                            self._tab_index = (self._tab_index + 1) % len(matches)
+                        self.value = self._tab_matches[self._tab_index]
+                        self.cursor_position = len(self.value)
+                    event.prevent_default()
+                else:
+                    # Reset tab state when not completing slash commands
+                    self._tab_matches = []
+                    self._tab_index = -1
+            else:
+                # Any non-Tab key resets completion state
+                if event.key not in ("shift+tab",):
+                    self._tab_matches = []
+                    self._tab_index = -1
             if event.key == "up":
                 if self.history and self.history_index < len(self.history) - 1:
                     if self.history_index == -1:
@@ -358,7 +398,7 @@ else:
 
                         with Horizontal(id="input_legend"):
                             yield Static(
-                                "⌨️  Ctrl+O Settings | Ctrl+L Log (toggle) | Esc Interrupt | Double-Esc Force Stop | Enter Send",
+                                "⌨️  Tab /cmd | Ctrl+O Settings | Ctrl+L Log (toggle) | Esc Interrupt | Double-Esc Force Stop | Enter Send",
                                 id="legend_info",
                             )
 
@@ -440,6 +480,8 @@ else:
                         ("plan.progress", self._on_plan_progress_ui),
                         ("tool.execute.finish", self._on_tool_finish_ui),
                         ("tool.execute.error", self._on_tool_error_ui),
+                        # M4: Diff preview before file edits
+                        ("file.diff.preview", self._on_diff_preview_ui),
                     ]
                     for event_name, cb in _subs:
                         eb.subscribe(event_name, cb)
@@ -1019,6 +1061,45 @@ else:
                 self._schedule_callback(
                     self.tool_activity_label.update, f"✗ {tool} (error)"
                 )
+            except Exception:
+                pass
+
+        def _on_diff_preview_ui(self, payload: Dict[str, Any]) -> None:
+            """M4: Show diff preview in the output log before/after a file write.
+
+            Receives file.diff.preview events published by write_file / edit_file /
+            edit_by_line_range in file_tools.py.
+            """
+            try:
+                if not self.output or not isinstance(payload, dict):
+                    return
+                path = payload.get("path", "?")
+                diff = payload.get("diff", "")
+                is_new = payload.get("is_new_file", False)
+                if not diff:
+                    return
+                label = "🆕 New file" if is_new else "✏️  Edit"
+                header = f"[bold cyan]{label}:[/bold cyan] [dim]{path}[/dim]"
+
+                # Colour the diff lines: + green, - red, @@ cyan, rest dim
+                coloured_lines = []
+                for line in diff.splitlines()[:60]:  # cap at 60 lines for readability
+                    if line.startswith("+") and not line.startswith("+++"):
+                        coloured_lines.append(f"[green]{line}[/green]")
+                    elif line.startswith("-") and not line.startswith("---"):
+                        coloured_lines.append(f"[red]{line}[/red]")
+                    elif line.startswith("@@"):
+                        coloured_lines.append(f"[cyan]{line}[/cyan]")
+                    else:
+                        coloured_lines.append(f"[dim]{line}[/dim]")
+
+                total_lines = len(diff.splitlines())
+                if total_lines > 60:
+                    coloured_lines.append(f"[dim]… {total_lines - 60} more lines[/dim]")
+
+                diff_block = "\n".join(coloured_lines)
+                text = f"{header}\n{diff_block}"
+                self._schedule_callback(self.output.write, text)
             except Exception:
                 pass
 
