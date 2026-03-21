@@ -92,3 +92,5 @@ class AgentState(TypedDict):
     plan_strict_mode: Optional[bool]
     # Snapshot history for rollback manager (create_state_checkpoint)
     task_history: Optional[List[Dict[str, Any]]]
+    # H2: Per-step retry counter keyed by str(step_index) — prevents infinite retry on a broken step
+    step_retry_counts: Optional[Dict[str, int]]

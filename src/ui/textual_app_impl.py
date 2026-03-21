@@ -321,6 +321,11 @@ else:
             self._continue_state: Optional[Dict[str, Any]] = None
             self.context_label: Optional[Static] = None
             self.input_widget: Optional[Input] = None
+            # C2: Dashboard labels wired to EventBus plan/tool events
+            self.plan_progress_label: Optional[Static] = None
+            self.tool_activity_label: Optional[Static] = None
+            # H7: Track EventBus subscriptions for cleanup in on_unmount
+            self._eb_subscriptions: List[tuple] = []
 
             self._current_provider = "None"
             self._current_model = "None"
@@ -353,15 +358,22 @@ else:
 
                         with Horizontal(id="input_legend"):
                             yield Static(
-                                "⌨️  Ctrl+O Settings | Ctrl+L Log | Esc Interrupt | Double-Esc Force Stop | Enter Send",
+                                "⌨️  Ctrl+O Settings | Ctrl+L Log (toggle) | Esc Interrupt | Double-Esc Force Stop | Enter Send",
                                 id="legend_info",
                             )
 
                 with Container(id="sidebar"):
                     with Container(id="sidebar_top"):
                         yield Static("📊 Context", classes="sidebar_title")
+                        # U5: Context limit is read dynamically from provider config
+                        try:
+                            from src.core.inference.provider_context import get_context_budget
+                            ctx_limit = get_context_budget()
+                            ctx_limit_str = f"{ctx_limit // 1000}k" if ctx_limit >= 1000 else str(ctx_limit)
+                        except Exception:
+                            ctx_limit_str = "?"
                         self.context_label = Static(
-                            "Used: 0\nLimit: 128k\n0%", id="context_info"
+                            f"Used: 0\nLimit: {ctx_limit_str}\n0%", id="context_info"
                         )
                         yield self.context_label
 
@@ -370,6 +382,20 @@ else:
                             "No active task", id="task_state_info"
                         )
                         yield self.task_state_label
+
+                        # C2: Plan progress panel — updated by plan.progress EventBus events
+                        yield Static("📋 Plan Progress", classes="sidebar_title")
+                        self.plan_progress_label = Static(
+                            "No active plan", id="plan_progress_info"
+                        )
+                        yield self.plan_progress_label
+
+                        # C2: Tool activity panel — updated by tool.execute events
+                        yield Static("🔧 Last Tool", classes="sidebar_title")
+                        self.tool_activity_label = Static(
+                            "—", id="tool_activity_info"
+                        )
+                        yield self.tool_activity_label
 
                     with Container(id="sidebar_bottom"):
                         yield Static("📁 Workspace", classes="sidebar_title")
@@ -399,18 +425,25 @@ else:
             except Exception:
                 pass
 
-            # subscribe to events
+            # subscribe to events — H7: track all subscriptions for cleanup in on_unmount
             try:
                 eb = get_event_bus()
                 if eb:
-                    eb.subscribe(
-                        "provider.status.changed", self._on_provider_status_changed
-                    )
-                    eb.subscribe("provider.models.list", self._on_provider_models)
-                    eb.subscribe("log.new", self._on_log_new)
-                    eb.subscribe("model.response", self._on_token_usage)
-                    eb.subscribe("model.routing", self._on_model_routing)
-                    eb.subscribe("session.new", self._on_session_new)
+                    _subs = [
+                        ("provider.status.changed", self._on_provider_status_changed),
+                        ("provider.models.list", self._on_provider_models),
+                        ("log.new", self._on_log_new),
+                        ("model.response", self._on_token_usage),
+                        ("model.routing", self._on_model_routing),
+                        ("session.new", self._on_session_new),
+                        # C2: Dashboard events
+                        ("plan.progress", self._on_plan_progress_ui),
+                        ("tool.execute.finish", self._on_tool_finish_ui),
+                        ("tool.execute.error", self._on_tool_error_ui),
+                    ]
+                    for event_name, cb in _subs:
+                        eb.subscribe(event_name, cb)
+                        self._eb_subscriptions.append((event_name, cb))
             except Exception:
                 pass
 
@@ -930,11 +963,74 @@ else:
             except Exception as e:
                 guilogger.error(f"Failed to clear task state on new session: {e}")
 
+        async def on_unmount(self) -> None:
+            """H7: Unsubscribe all EventBus callbacks to prevent memory leaks."""
+            try:
+                eb = get_event_bus()
+                if eb:
+                    for event_name, cb in self._eb_subscriptions:
+                        try:
+                            eb.unsubscribe(event_name, cb)
+                        except Exception:
+                            pass
+                    self._eb_subscriptions.clear()
+            except Exception:
+                pass
+
+        # C2: Dashboard event handlers — update sidebar plan progress and tool activity labels
+
+        def _on_plan_progress_ui(self, payload: Dict[str, Any]) -> None:
+            """Update the plan progress sidebar label from plan.progress events."""
+            try:
+                if not self.plan_progress_label or not isinstance(payload, dict):
+                    return
+                step = payload.get("step", 0)
+                total = payload.get("total", 0)
+                desc = payload.get("description", "")
+                if total:
+                    bar = "█" * step + "░" * (total - step)
+                    text = f"Step {step}/{total}\n{bar}\n{desc[:30]}" if desc else f"Step {step}/{total}\n{bar}"
+                else:
+                    text = desc[:40] if desc else "Running…"
+                self._schedule_callback(self.plan_progress_label.update, text)
+            except Exception:
+                pass
+
+        def _on_tool_finish_ui(self, payload: Dict[str, Any]) -> None:
+            """Update the tool activity sidebar label on tool completion."""
+            try:
+                if not self.tool_activity_label or not isinstance(payload, dict):
+                    return
+                tool = payload.get("tool", "?")
+                ok = payload.get("ok", True)
+                status = "✓" if ok else "✗"
+                self._schedule_callback(
+                    self.tool_activity_label.update, f"{status} {tool}"
+                )
+            except Exception:
+                pass
+
+        def _on_tool_error_ui(self, payload: Dict[str, Any]) -> None:
+            """Update the tool activity sidebar label on tool error."""
+            try:
+                if not self.tool_activity_label or not isinstance(payload, dict):
+                    return
+                tool = payload.get("tool", "?")
+                self._schedule_callback(
+                    self.tool_activity_label.update, f"✗ {tool} (error)"
+                )
+            except Exception:
+                pass
+
         def action_toggle_log(self) -> None:
             if self.sys_log:
                 self.sys_log.display = not self.sys_log.display
 
         def action_open_settings(self) -> None:
+            # U4: Guard against _settings_modal not yet initialised (compose() not yet run)
+            if not getattr(self, "_settings_modal", None):
+                guilogger.warning("action_open_settings: settings modal not yet initialised")
+                return
             try:
                 providers = []
                 try:

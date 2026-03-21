@@ -108,9 +108,13 @@ async def evaluation_node(state: AgentState, config: Any) -> Dict[str, Any]:
             # There are pending steps: re-enter execution via step_controller.
             # This is bounded because plan steps are finite; as steps complete,
             # current_step advances until current_step >= len(current_plan).
+            # W5 fix: do NOT set replan_required here — that field is consumed by
+            # should_after_execution_with_replan and would route subsequent execution
+            # steps to replan_node (splitting) instead of step_controller (advancing).
+            # Clear it explicitly to prevent stale value from a prior F13 trigger.
             return {
                 "evaluation_result": "replan",
-                "replan_required": "Additional steps remain in plan",
+                "replan_required": None,
                 "action_failed": False,
             }
         else:

@@ -407,10 +407,20 @@ def should_after_step_controller(
                 )
                 return "verification"
             else:
-                # F2: Last execution failed — retry the step by going back to execution,
-                # not to verification (which would silently accept the failure).
+                # F2: Last execution failed — retry, but cap retries per step (H2).
+                MAX_STEP_RETRIES = 3
+                step_retry_counts: dict = state.get("step_retry_counts") or {}
+                retries = int(step_retry_counts.get(str(current_step), 0))
+                if retries >= MAX_STEP_RETRIES:
+                    logger.warning(
+                        f"should_after_step_controller: step {current_step + 1} retry "
+                        f"budget ({MAX_STEP_RETRIES}) exhausted, routing to verification "
+                        f"(will trigger debug via evaluation)"
+                    )
+                    return "verification"
                 logger.info(
-                    f"should_after_step_controller: step {current_step + 1} execution failed, going to execution (retry)"
+                    f"should_after_step_controller: step {current_step + 1} execution "
+                    f"failed (retry {retries}/{MAX_STEP_RETRIES}), going to execution"
                 )
                 return "execution"
         else:

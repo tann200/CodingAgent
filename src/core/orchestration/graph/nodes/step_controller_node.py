@@ -36,6 +36,21 @@ async def step_controller_node(state: AgentState, config: Any) -> Dict[str, Any]
     step_description = str(current_step_data.get("description", ""))
     planned_action = current_step_data.get("action")
 
+    # H2: Track per-step retry counts so should_after_step_controller can cap retries.
+    step_retry_counts: dict = dict(state.get("step_retry_counts") or {})
+    step_key = str(current_step)
+    last_result = state.get("last_result")
+    step_failed = bool(
+        last_result
+        and isinstance(last_result, dict)
+        and not (last_result.get("ok") or last_result.get("status") == "ok")
+    )
+    if step_failed:
+        step_retry_counts[step_key] = int(step_retry_counts.get(step_key, 0)) + 1
+        logger.info(
+            f"step_controller_node: step {current_step + 1} retry #{step_retry_counts[step_key]}"
+        )
+
     logger.info(
         f"step_controller_node: enforcing step {current_step + 1}/{plan_len}: {step_description}"
     )
@@ -43,4 +58,5 @@ async def step_controller_node(state: AgentState, config: Any) -> Dict[str, Any]
     return {
         "step_description": step_description,
         "planned_action": planned_action,
+        "step_retry_counts": step_retry_counts,
     }
