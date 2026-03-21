@@ -2,15 +2,26 @@ from __future__ import annotations
 from typing import Callable, Dict, List, Optional, Tuple
 import math
 import json
+from collections import OrderedDict
 from pathlib import Path
 from functools import lru_cache
+
+# F10: Import dynamic token budget helper (lazy — avoids circular imports at module load).
+def _default_max_tokens() -> int:
+    try:
+        from src.core.inference.provider_context import get_context_budget
+        return get_context_budget()
+    except Exception:
+        return 6000
 
 # Module-level caches keyed by absolute file path (NEW-20).
 # ContextBuilder is re-instantiated on every node call, so instance-level caches
 # were always empty and provided zero benefit.  Module-level caches persist across
 # calls as long as the process is alive and the file has not changed on disk.
-_TEXT_CACHE: Dict[str, Tuple[float, str]] = {}   # path → (mtime, content)
-_JSON_CACHE: Dict[str, Tuple[float, Dict]] = {}   # path → (mtime, parsed)
+# F15: Use OrderedDict with a max-size cap to prevent unbounded memory growth.
+_TEXT_CACHE: OrderedDict = OrderedDict()   # path → (mtime, content); max 256 entries
+_JSON_CACHE: OrderedDict = OrderedDict()   # path → (mtime, parsed);  max 256 entries
+_CACHE_MAX = 256
 
 
 def _today_iso() -> str:
@@ -45,8 +56,12 @@ class ContextBuilder:
             key = str(path)
             mtime = path.stat().st_mtime
             if key in _TEXT_CACHE and _TEXT_CACHE[key][0] == mtime:
+                _TEXT_CACHE.move_to_end(key)
                 return _TEXT_CACHE[key][1]
             content = path.read_text(encoding="utf-8").strip()
+            # F15: Evict oldest entry when cache is full
+            if len(_TEXT_CACHE) >= _CACHE_MAX:
+                _TEXT_CACHE.popitem(last=False)
             _TEXT_CACHE[key] = (mtime, content)
             return content
         except Exception:
@@ -61,8 +76,12 @@ class ContextBuilder:
             key = str(path)
             mtime = path.stat().st_mtime
             if key in _JSON_CACHE and _JSON_CACHE[key][0] == mtime:
+                _JSON_CACHE.move_to_end(key)
                 return _JSON_CACHE[key][1]
             data = json.loads(path.read_text(encoding="utf-8"))
+            # F15: Evict oldest entry when cache is full
+            if len(_JSON_CACHE) >= _CACHE_MAX:
+                _JSON_CACHE.popitem(last=False)
             _JSON_CACHE[key] = (mtime, data)
             return data
         except Exception:
@@ -165,9 +184,12 @@ class ContextBuilder:
         task_description: str,
         tools: List[Dict],
         conversation: List[Dict],
-        max_tokens: int = 6000,
+        max_tokens: Optional[int] = None,
         retrieved_snippets: Optional[List[Dict]] = None,
     ) -> List[Dict[str, str]]:
+        # F10: Use dynamic token budget when max_tokens is not explicitly provided.
+        if max_tokens is None:
+            max_tokens = _default_max_tokens()
         # Token budgeting rules
         identity_quota = min(math.ceil(0.12 * max_tokens), 800)
         role_quota = min(math.ceil(0.12 * max_tokens), 800)

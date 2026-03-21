@@ -56,7 +56,9 @@ async def execution_node(state: AgentState, config: Any) -> Dict[str, Any]:
         }
 
     try:
-        action = state["next_action"]
+        # F1: Use planned_action (set by step_controller) before falling back to next_action.
+        # This avoids an unnecessary LLM call when step_controller already prepared the action.
+        action = state.get("next_action") or state.get("planned_action")
     except Exception as e:
         logger.error(f"execution_node: failed to get next_action: {e}")
         action = None
@@ -161,8 +163,10 @@ Generate the appropriate tool call to complete this step. Respond with ONLY a to
             tool_call = parse_tool_block(content)
             if tool_call:
                 logger.info(f"Generated tool call for step: {tool_call}")
-                # Update the step with the action
-                current_plan[current_step]["action"] = tool_call
+                # F3: Build an immutable copy before updating — never mutate state in place.
+                updated_plan = [dict(s) for s in current_plan]
+                updated_plan[current_step]["action"] = tool_call
+                current_plan = updated_plan
                 action = tool_call
         except Exception as e:
             logger.error(f"Failed to generate tool for step: {e}")

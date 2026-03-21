@@ -7,6 +7,10 @@ from src.tools.repo_summary import generate_repo_summary
 
 logger = logging.getLogger(__name__)
 
+# F8: Cache of already-indexed directories so index_repository() is called at most
+# once per working directory per process lifetime (it is expensive: file walk + embeddings).
+_INDEXED_DIRS: set = set()
+
 
 async def analysis_node(state: AgentState, config: Any) -> Dict[str, Any]:
     """
@@ -85,8 +89,10 @@ Use this repository context to plan your deep-dive searches."""
         from src.core.indexing.vector_store import VectorStore
         from src.core.indexing.repo_indexer import index_repository
 
-        # First, ensure the repo is indexed
-        index_repository(working_dir)
+        # F8: Only index once per working_dir per process — indexing is expensive.
+        if working_dir not in _INDEXED_DIRS:
+            index_repository(working_dir)
+            _INDEXED_DIRS.add(working_dir)
 
         # Search the vector store for semantically similar symbols
         vs = VectorStore(working_dir)
@@ -131,16 +137,30 @@ Use this repository context to plan your deep-dive searches."""
                     if fp and fp not in relevant_files:
                         relevant_files.append(fp)
 
-        fs = _call_tool_if_exists(
-            "find_symbol", name=task.split()[0] if task else "", workdir=working_dir
+        # F11: Extract identifiers (CamelCase / snake_case) from the task description
+        # instead of blindly using the first word (which is usually a verb like "implement").
+        import re as _re
+        symbol_candidates = _re.findall(
+            r'\b[A-Z][a-zA-Z0-9]{2,}\b|\b[a-z_][a-z0-9_]{2,}\b', task
         )
-        if fs and isinstance(fs, dict):
-            fp = fs.get("file_path")
-            if fp and fp not in relevant_files:
-                relevant_files.append(fp)
-            sym = fs.get("symbol_name")
-            if sym and sym not in key_symbols:
-                key_symbols.append(sym)
+        # Filter out common English stopwords / verbs that are not identifiers
+        _SKIP_WORDS = {
+            "the", "and", "for", "with", "that", "this", "from", "into", "add",
+            "fix", "use", "run", "get", "set", "new", "old", "all", "make",
+            "update", "create", "delete", "remove", "implement", "change",
+        }
+        symbol_candidates = [s for s in symbol_candidates if s.lower() not in _SKIP_WORDS]
+        for candidate in symbol_candidates[:3]:
+            fs = _call_tool_if_exists(
+                "find_symbol", name=candidate, workdir=working_dir
+            )
+            if fs and isinstance(fs, dict):
+                fp = fs.get("file_path")
+                if fp and fp not in relevant_files:
+                    relevant_files.append(fp)
+                sym = fs.get("symbol_name")
+                if sym and sym not in key_symbols:
+                    key_symbols.append(sym)
 
         from pathlib import Path as _Path
         from src.core.indexing.symbol_graph import _SUPPORTED_SUFFIXES as _SG_SUFFIXES

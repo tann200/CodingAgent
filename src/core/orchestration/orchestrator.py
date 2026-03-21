@@ -476,6 +476,16 @@ def example_registry() -> ToolRegistry:
             "Preferred for surgical edits: no line-number drift, fails loudly if ambiguous."
         ),
     )
+    # F6: edit_by_line_range — precise multi-line replacement without full-file rewrite
+    reg.register(
+        "edit_by_line_range",
+        file_tools.edit_by_line_range,
+        side_effects=["write"],
+        description=(
+            "edit_by_line_range(path, start_line, end_line, new_content) -> "
+            "Replace lines [start_line, end_line] (1-indexed, inclusive) with new_content."
+        ),
+    )
     reg.register(
         "delete_file",
         file_tools.delete_file,
@@ -1175,7 +1185,11 @@ class Orchestrator:
         if not isinstance(name_raw, str):
             return {"ok": False, "error": "Tool name must be a string."}
         name = name_raw
-        args = tool_call.get("arguments", {})
+        args = dict(tool_call.get("arguments", {}))
+
+        # F4: Strip LLM-injected user_approved to prevent WorkspaceGuard bypass.
+        # user_approved is enforced at the orchestrator / UI level, not via LLM arguments.
+        args.pop("user_approved", None)
 
         # Publish tool.execute.start event for UI dashboard
         try:
@@ -1769,6 +1783,10 @@ class Orchestrator:
         """
         # Store cancel_event on orchestrator instance so nodes can access it via getattr
         self.cancel_event = cancel_event
+
+        # F16: Reset session read-file tracking at the start of each new task so reads
+        # from a previous task cannot bypass the read-before-edit guard in a new task.
+        self._session_read_files = set()
 
         # Check if canceled before starting
         if cancel_event and hasattr(cancel_event, "is_set") and cancel_event.is_set():

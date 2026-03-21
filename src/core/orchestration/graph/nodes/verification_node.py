@@ -78,7 +78,7 @@ async def verification_node(state: AgentState, config: Any) -> Dict[str, Any]:
     # Previously only edit_file with a "path" field was caught; bash, write_file, and
     # patch tools were silently skipped.  Widen the check to cover all write tools.
     SIDE_EFFECT_TOOLS = {
-        "write_file", "edit_file", "edit_file_atomic", "bash",
+        "write_file", "edit_file", "edit_file_atomic", "edit_by_line_range", "bash",
         "patch_apply", "apply_patch", "create_file", "delete_file",
     }
     last_tool_name: str = state.get("last_tool_name") or ""

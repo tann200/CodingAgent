@@ -69,7 +69,7 @@ def write_file(
         lines_added = len(new_lines)
         lines_removed = 0
 
-    return {
+    result: Dict[str, Any] = {
         "path": str(p),
         "status": "ok",
         "diff": diff,
@@ -77,6 +77,14 @@ def write_file(
         "lines_removed": lines_removed,
         "is_new_file": not bool(original_content),
     }
+    # F13: Signal when a file write is unreasonably large — agent should split the task.
+    if lines_added > 200:
+        result["requires_split"] = True
+        result["error"] = (
+            f"write_file wrote {lines_added} lines in a single call. "
+            "Split into multiple targeted function/section writes."
+        )
+    return result
 
 
 def read_file(
@@ -227,13 +235,24 @@ def edit_file(
         )
         diff = "".join(diff_lines)
 
-        return {
+        lines_added = len([line for line in diff_lines if line.startswith("+")])
+        lines_removed = len([line for line in diff_lines if line.startswith("-")])
+        result: Dict[str, Any] = {
             "path": str(p),
             "status": "ok",
             "diff": diff,
-            "lines_added": len([line for line in diff_lines if line.startswith("+")]),
-            "lines_removed": len([line for line in diff_lines if line.startswith("-")]),
+            "lines_added": lines_added,
+            "lines_removed": lines_removed,
         }
+        # F13: Signal when a patch is unreasonably large — agent should split the task.
+        net_changed = lines_added + lines_removed
+        if net_changed > 200:
+            result["requires_split"] = True
+            result["error"] = (
+                f"edit_file patch changed {net_changed} lines in a single call. "
+                "Split into multiple targeted edits."
+            )
+        return result
     finally:
         try:
             os.remove(patch_file)
@@ -503,6 +522,33 @@ def bash(command: str, workdir: Path = DEFAULT_WORKDIR) -> Dict[str, Any]:
                     "Run a script file instead (e.g. python3 script.py).",
                 }
 
+    # F5: Block in-place edit / extract flags for commands in the safe-command list.
+    # `sed` is allowed for text transformation but `-i`/`--in-place` writes files.
+    # `tar` is allowed for listing archives but `-x`/`--extract` unpacks arbitrary content.
+    # `unzip` without `-l` (list-only) extracts files — block it.
+    if first_cmd == "sed":
+        if "-i" in cmd_parts[1:] or "--in-place" in cmd_parts[1:]:
+            return {
+                "status": "error",
+                "error": "sed -i (in-place edit) is not allowed. Use edit_file or edit_file_atomic instead.",
+            }
+    elif first_cmd == "tar":
+        TAR_EXTRACT_FLAGS = {"-x", "--extract", "-xf", "-xvf", "-xzf", "-xjf", "-xJf"}
+        for part in cmd_parts[1:]:
+            # Handle combined short flags like -xvf or separate -x
+            stripped = part.lstrip("-")
+            if part in TAR_EXTRACT_FLAGS or (part.startswith("-") and not part.startswith("--") and "x" in stripped):
+                return {
+                    "status": "error",
+                    "error": "tar extract is not allowed. Use tar -t / --list to inspect archives.",
+                }
+    elif first_cmd == "unzip":
+        if "-l" not in cmd_parts[1:]:
+            return {
+                "status": "error",
+                "error": "unzip without -l (list) is not allowed. Use unzip -l to inspect archive contents.",
+            }
+
     if first_cmd in SAFE_COMMANDS:
         pass  # Auto-allowed
     elif first_cmd in TEST_COMPILE_COMMANDS:
@@ -554,6 +600,80 @@ def bash(command: str, workdir: Path = DEFAULT_WORKDIR) -> Dict[str, Any]:
         return {"status": "error", "error": f"Permission denied: {cmd_parts[0]}"}
     except OSError as e:
         return {"status": "error", "error": f"OS error: {e}"}
+
+
+def edit_by_line_range(
+    path: str,
+    start_line: int,
+    end_line: int,
+    new_content: str,
+    workdir: Path = DEFAULT_WORKDIR,
+    user_approved: bool = False,
+) -> Dict[str, Any]:
+    """
+    Replace lines [start_line, end_line] (1-indexed, inclusive) in a file with new_content.
+    Returns a unified diff identical in shape to edit_file.
+
+    F6: Required for precise multi-line replacements without full-file rewrites.
+    Integrated with WorkspaceGuard and safe_resolve for security.
+    """
+    import difflib
+
+    guard = WorkspaceGuard()
+    guard_result = guard.guard_operation("edit_by_line_range", path, user_approved)
+    if guard_result.get("status") == "error":
+        return {"path": path, "status": "error", "error": guard_result.get("error")}
+
+    try:
+        p = _safe_resolve(path, workdir)
+    except (PermissionError, ValueError) as exc:
+        return {"path": path, "status": "error", "error": str(exc)}
+
+    if not p.exists():
+        return {"path": str(p), "status": "not_found"}
+
+    original_content = p.read_text(encoding="utf-8")
+    original_lines = original_content.splitlines(keepends=True)
+    total_lines = len(original_lines)
+
+    if start_line < 1 or end_line < start_line or start_line > total_lines:
+        return {
+            "path": str(p),
+            "status": "error",
+            "error": (
+                f"Invalid line range [{start_line}, {end_line}] for file with {total_lines} lines. "
+                "start_line must be >= 1 and <= total_lines, end_line >= start_line."
+            ),
+        }
+
+    # Clamp end_line to file length
+    end_line = min(end_line, total_lines)
+
+    # Build replacement lines (ensure trailing newline on last line)
+    replacement = new_content
+    if replacement and not replacement.endswith("\n"):
+        replacement += "\n"
+    replacement_lines = replacement.splitlines(keepends=True) if replacement else []
+
+    # Splice: lines before + replacement + lines after
+    new_lines = original_lines[:start_line - 1] + replacement_lines + original_lines[end_line:]
+    new_content_str = "".join(new_lines)
+    p.write_text(new_content_str, encoding="utf-8")
+
+    diff_lines = list(
+        difflib.unified_diff(
+            original_lines, new_lines, fromfile=str(p), tofile=str(p), lineterm=""
+        )
+    )
+    diff = "".join(diff_lines)
+
+    return {
+        "path": str(p),
+        "status": "ok",
+        "diff": diff,
+        "lines_added": len([l for l in diff_lines if l.startswith("+")]),
+        "lines_removed": len([l for l in diff_lines if l.startswith("-")]),
+    }
 
 
 def glob(pattern: str, workdir: Path = DEFAULT_WORKDIR) -> Dict[str, Any]:

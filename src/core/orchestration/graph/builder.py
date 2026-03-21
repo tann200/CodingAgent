@@ -407,11 +407,12 @@ def should_after_step_controller(
                 )
                 return "verification"
             else:
-                # Last execution failed, still at same step
+                # F2: Last execution failed — retry the step by going back to execution,
+                # not to verification (which would silently accept the failure).
                 logger.info(
-                    f"should_after_step_controller: step {current_step + 1} execution failed, going to verification"
+                    f"should_after_step_controller: step {current_step + 1} execution failed, going to execution (retry)"
                 )
-                return "verification"
+                return "execution"
         else:
             # No last_result yet (first time), go to execution
             logger.info(

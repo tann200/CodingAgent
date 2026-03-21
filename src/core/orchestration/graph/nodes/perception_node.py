@@ -79,12 +79,16 @@ async def perception_node(state: AgentState, config: Any) -> Dict[str, Any]:
         }
 
     # Task Decomposition: Check if this is a fresh task (round 0) that needs decomposition
+    # F12: Decomposition in perception_node is redundant because planning_node already
+    # handles multi-step decomposition and has better context.  Keep the block so existing
+    # tests continue to work, but gate it to ensure it never runs (always False).
+    # planning_node is the canonical home for decomposition going forward.
     task = state.get("task") or ""
     current_plan = state.get("current_plan") or []
     current_step = state.get("current_step") or 0
 
-    # Only decompose on fresh task (first round)
-    if state.get("rounds", 0) == 0 and task and (not current_plan or current_step == 0):
+    # F12: Decomposition disabled in perception_node — planning_node owns this responsibility.
+    if False and state.get("rounds", 0) == 0 and task and (not current_plan or current_step == 0):
         # Heuristic: check if task looks multi-step
         multi_step_indicators = [
             # Multiple imperative verbs or "and" connecting actions
@@ -202,9 +206,11 @@ Respond with ONLY valid JSON, no markdown, no explanation. /no_think"""
                 logger.warning(f"Task decomposition failed: {e}")
 
     # Pre-retrieval: consult repo intelligence tools if available (search_code, find_symbol, find_references)
+    # F9: Skip pre-retrieval on rounds > 0 — context was already gathered in round 0.
+    # Repeated pre-retrieval adds tokens and latency without new information.
     retrieved_snippets = []
     try:
-        if orchestrator and hasattr(orchestrator, "tool_registry"):
+        if state.get("rounds", 0) == 0 and orchestrator and hasattr(orchestrator, "tool_registry"):
             # helper to call a tool if registered
             def _call_tool_if_exists(tool_name, **kwargs):
                 try:
@@ -360,37 +366,35 @@ Respond with ONLY valid JSON, no markdown, no explanation. /no_think"""
         cancel_event = getattr(orchestrator, "cancel_event", None)
 
     try:
-        raw_resp = call_model(
-            messages,
-            provider=provider,
-            model=model,
-            stream=False,
-            format_json=False,
-            tools=None,
-            **llm_kwargs,
+        # F14: call_model is always async; use create_task directly.
+        llm_task = asyncio.create_task(
+            call_model(
+                messages,
+                provider=provider,
+                model=model,
+                stream=False,
+                format_json=False,
+                tools=None,
+                **llm_kwargs,
+            )
         )
-
         # Interrupt Polling: Check cancel_event every 0.2s during LLM generation
-        if hasattr(raw_resp, "__await__"):
-            llm_task = asyncio.create_task(raw_resp)
-            while not llm_task.done():
-                if (
-                    cancel_event
-                    and hasattr(cancel_event, "is_set")
-                    and cancel_event.is_set()
-                ):
-                    llm_task.cancel()
-                    logger.info("perception_node: Task canceled mid-generation")
-                    return {
-                        "history": state.get("history", []),
-                        "next_action": None,
-                        "rounds": state.get("rounds", 0) + 1,
-                        "errors": ["canceled"],
-                    }
-                await asyncio.sleep(0.2)
-            resp = await llm_task
-        else:
-            resp = raw_resp
+        while not llm_task.done():
+            if (
+                cancel_event
+                and hasattr(cancel_event, "is_set")
+                and cancel_event.is_set()
+            ):
+                llm_task.cancel()
+                logger.info("perception_node: Task canceled mid-generation")
+                return {
+                    "history": state.get("history", []),
+                    "next_action": None,
+                    "rounds": state.get("rounds", 0) + 1,
+                    "errors": ["canceled"],
+                }
+            await asyncio.sleep(0.2)
+        resp = await llm_task
     except asyncio.CancelledError:
         logger.info("perception_node: Task cancelled")
         return {

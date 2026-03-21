@@ -191,28 +191,23 @@ async def planning_node(state: AgentState, config: Any) -> Dict[str, Any]:
         if not cancel_event:
             cancel_event = getattr(orchestrator, "cancel_event", None)
 
-        raw_resp = call_model(messages, stream=False, format_json=False)
-
-        # Interrupt Polling: Check cancel_event every 0.2s during LLM generation
-        if hasattr(raw_resp, "__await__"):
-            llm_task = asyncio.create_task(raw_resp)
-            while not llm_task.done():
-                if (
-                    cancel_event
-                    and hasattr(cancel_event, "is_set")
-                    and cancel_event.is_set()
-                ):
-                    llm_task.cancel()
-                    logger.info("planning_node: Task canceled mid-generation")
-                    return {
-                        "current_plan": current_plan,
-                        "current_step": current_step,
-                        "errors": ["canceled"],
-                    }
-                await asyncio.sleep(0.2)
-            resp = await llm_task
-        else:
-            resp = raw_resp
+        # F14: call_model is always async; use create_task directly.
+        llm_task = asyncio.create_task(call_model(messages, stream=False, format_json=False))
+        while not llm_task.done():
+            if (
+                cancel_event
+                and hasattr(cancel_event, "is_set")
+                and cancel_event.is_set()
+            ):
+                llm_task.cancel()
+                logger.info("planning_node: Task canceled mid-generation")
+                return {
+                    "current_plan": current_plan,
+                    "current_step": current_step,
+                    "errors": ["canceled"],
+                }
+            await asyncio.sleep(0.2)
+        resp = await llm_task
 
         content = ""
         if isinstance(resp, dict):
@@ -262,7 +257,15 @@ async def planning_node(state: AgentState, config: Any) -> Dict[str, Any]:
     except Exception as e:
         logger.error(f"planning_node: plan generation failed: {e}")
 
-    # Default: no plan
+    # F7: Guaranteed fallback — never return an empty plan.
+    # An empty plan causes perception → planning → perception loops.
+    # Return a single-step plan from the task description so execution can proceed.
+    if not current_plan and task:
+        fallback_plan = [{"description": task[:200], "action": None}]
+        logger.warning("planning_node: plan parse failed, using single-step fallback")
+        return {"current_plan": fallback_plan, "current_step": 0}
+
+    # Default: preserve existing plan (may be empty only if task is also empty)
     return {"current_plan": current_plan, "current_step": current_step}
 
 
