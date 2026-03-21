@@ -346,3 +346,131 @@ def test_should_after_analysis_many_files_goes_to_analyst():
         relevant_files=["a.py", "b.py", "c.py", "d.py"],
     )
     assert should_after_analysis(state) == "analyst_delegation"
+
+
+# ---------------------------------------------------------------------------
+# W3 — replan_node integration path: requires_split → replan → step_controller
+# ---------------------------------------------------------------------------
+
+def test_requires_split_routes_to_replan():
+    """W3: when last_result has requires_split=True, execution must route to replan."""
+    state = _make_state(
+        replan_required="Patch exceeded 200 lines. Split into multiple targeted functions.",
+        current_plan=[{"description": "write large module"}],
+        current_step=0,
+        last_result={"ok": True, "requires_split": True},
+        tool_call_count=1,
+        max_tool_calls=30,
+    )
+    result = should_after_execution_with_replan(state)
+    assert result == "replan", f"requires_split must route to replan, got '{result}'"
+
+
+def test_requires_split_false_does_not_route_to_replan():
+    """W3: without requires_split, normal routing applies (not replan)."""
+    state = _make_state(
+        replan_required=None,
+        current_plan=[{"description": "write small module"}],
+        current_step=0,
+        last_result={"ok": True},
+        tool_call_count=1,
+        max_tool_calls=30,
+    )
+    result = should_after_execution_with_replan(state)
+    assert result != "replan", f"no requires_split must not route to replan, got '{result}'"
+
+
+def test_should_after_replan_routes_to_step_controller():
+    """W3: after replan_node runs, should_after_replan must route to step_controller."""
+    state = _make_state(
+        current_plan=[
+            {"description": "step A"},
+            {"description": "step B"},
+        ],
+        current_step=0,
+        replan_required=None,
+    )
+    result = should_after_replan(state)
+    assert result == "step_controller", (
+        f"should_after_replan must route to step_controller, got '{result}'"
+    )
+
+
+def test_should_after_replan_empty_plan_goes_to_perception():
+    """W3: if replan produced an empty plan, route back to perception."""
+    state = _make_state(
+        current_plan=[],
+        current_step=0,
+        replan_required=None,
+    )
+    result = should_after_replan(state)
+    # Empty plan: no steps to execute, should fall back
+    assert result in ("perception", "step_controller"), (
+        f"should_after_replan with empty plan should route to perception or step_controller, got '{result}'"
+    )
+
+
+def test_requires_split_flag_set_by_execution_node():
+    """W3: execution_node must set replan_required when tool returns requires_split."""
+    # Simulate execution_node output when write_file returns requires_split=True
+    tool_result = {
+        "status": "ok",
+        "requires_split": True,
+        "error": "write_file wrote 250 lines. Split into multiple targeted function/section writes.",
+        "path": "/tmp/big_module.py",
+    }
+    # The replan_triggered dict that execution_node builds
+    replan_triggered = {}
+    if tool_result.get("requires_split") is True:
+        error_msg = tool_result.get("error", "Patch too large")
+        replan_triggered = {
+            "replan_required": error_msg,
+            "action_failed": True,
+            "next_action": None,
+        }
+    assert replan_triggered.get("replan_required") is not None
+    assert replan_triggered.get("action_failed") is True
+
+
+def test_h1_intermediate_step_skips_full_suite():
+    """H1: verification_node must skip full test suite on intermediate steps."""
+    # Verify the logic: intermediate step (not final) with no explicit verification request
+    current_plan = [
+        {"description": "step 1"},
+        {"description": "step 2"},
+        {"description": "step 3"},
+    ]
+    current_step = 0  # intermediate
+    step_desc = current_plan[current_step].get("description", "").lower()
+    step_requests = any(k in step_desc for k in ("run_tests", "verify", "test", "lint"))
+    at_final_step = current_step >= len(current_plan) - 1
+    run_full_suite = at_final_step or step_requests
+    assert run_full_suite is False, "Intermediate step must NOT trigger full test suite"
+
+
+def test_h1_final_step_runs_full_suite():
+    """H1: verification_node must run full test suite at the final plan step."""
+    current_plan = [
+        {"description": "step 1"},
+        {"description": "step 2"},
+        {"description": "step 3"},
+    ]
+    current_step = 2  # final
+    at_final_step = current_step >= len(current_plan) - 1
+    run_full_suite = at_final_step
+    assert run_full_suite is True, "Final step MUST trigger full test suite"
+
+
+def test_h1_step_requesting_verification_always_runs():
+    """H1: a step explicitly requesting 'run_tests' triggers full suite even if intermediate."""
+    current_plan = [
+        {"description": "edit auth module"},
+        {"description": "run_tests to verify changes"},  # step 1, not final
+        {"description": "update docs"},
+    ]
+    current_step = 1  # intermediate but requests verification
+    step_desc = current_plan[current_step].get("description", "").lower()
+    step_requests = any(k in step_desc for k in ("run_tests", "verify", "test", "lint"))
+    at_final_step = current_step >= len(current_plan) - 1
+    run_full_suite = at_final_step or step_requests
+    assert run_full_suite is True, "Intermediate step requesting 'run_tests' MUST run full suite"

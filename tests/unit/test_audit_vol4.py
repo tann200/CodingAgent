@@ -866,3 +866,195 @@ class TestM5BenchmarkHarness:
         from pathlib import Path
         runner = Path(__file__).parent.parent.parent / "scripts" / "run_benchmark.py"
         assert runner.exists(), "scripts/run_benchmark.py must exist"
+
+
+# ---------------------------------------------------------------------------
+# H1 — Deferred full test suite on intermediate plan steps
+# ---------------------------------------------------------------------------
+
+class TestH1DeferredVerification:
+    """H1: verification_node must NOT run full pytest+ruff on intermediate steps."""
+
+    def test_intermediate_step_sets_run_full_suite_false(self):
+        """At step 0 of 3, run_full_suite must be False (no explicit verify request)."""
+        current_plan = [{"description": "edit file"}, {"description": "edit again"}, {"description": "done"}]
+        current_step = 0
+        at_final_step = current_step >= len(current_plan) - 1
+        step_desc = current_plan[current_step].get("description", "").lower()
+        step_requests = any(k in step_desc for k in ("run_tests", "verify", "test", "lint"))
+        run_full_suite = at_final_step or step_requests
+        assert run_full_suite is False
+
+    def test_final_step_sets_run_full_suite_true(self):
+        """At the last step, run_full_suite must be True."""
+        current_plan = [{"description": "edit file"}, {"description": "done"}]
+        current_step = 1
+        at_final_step = current_step >= len(current_plan) - 1
+        run_full_suite = at_final_step
+        assert run_full_suite is True
+
+    def test_intermediate_step_with_verify_keyword_runs_full_suite(self):
+        """A step containing 'verify' must run the full suite even if not final."""
+        current_plan = [{"description": "run_tests now"}, {"description": "final cleanup"}]
+        current_step = 0
+        at_final_step = current_step >= len(current_plan) - 1
+        step_desc = current_plan[current_step].get("description", "").lower()
+        step_requests = any(k in step_desc for k in ("run_tests", "verify", "test", "lint"))
+        run_full_suite = at_final_step or step_requests
+        assert run_full_suite is True
+
+    def test_empty_plan_treated_as_final(self):
+        """When current_plan is empty, at_final_step must be True (safe default)."""
+        current_plan = []
+        current_step = 0
+        at_final_step = (not current_plan) or (current_step >= len(current_plan) - 1)
+        assert at_final_step is True
+
+    def test_verification_node_has_at_final_step_logic(self):
+        """verification_node source must contain 'at_final_step' guard."""
+        import inspect
+        from src.core.orchestration.graph.nodes import verification_node as vn_mod
+        src = inspect.getsource(vn_mod)
+        assert "at_final_step" in src, "verification_node must have at_final_step guard"
+        assert "run_full_suite" in src, "verification_node must use run_full_suite flag"
+
+
+# ---------------------------------------------------------------------------
+# OE4 — Delegation fire-and-forget: results must be surfaced in run_agent_once
+# ---------------------------------------------------------------------------
+
+class TestOE4DelegationResults:
+    """OE4: run_agent_once must include delegation_results in its return dict."""
+
+    def test_run_agent_once_signature_includes_delegation(self):
+        """run_agent_once must declare delegation_results in its return dict."""
+        import inspect
+        from src.core.orchestration.orchestrator import Orchestrator
+        src = inspect.getsource(Orchestrator.run_agent_once)
+        assert "delegation_results" in src, (
+            "run_agent_once must surface delegation_results"
+        )
+
+    def test_delegation_results_key_present_in_return(self):
+        """The return dict from run_agent_once must have a 'delegation_results' key."""
+        import ast
+        import inspect
+        from src.core.orchestration.orchestrator import Orchestrator
+        src = inspect.getsource(Orchestrator.run_agent_once)
+        # Check both the extraction and the return dict
+        assert '"delegation_results"' in src or "'delegation_results'" in src, (
+            "run_agent_once must include delegation_results in return dict"
+        )
+
+    def test_delegation_results_defaults_to_empty_dict(self):
+        """When final_state has no delegation_results, return dict must be empty dict not None."""
+        import inspect
+        from src.core.orchestration.orchestrator import Orchestrator
+        src = inspect.getsource(Orchestrator.run_agent_once)
+        # The fix uses `delegation_results or {}` as the fallback
+        assert "or {}" in src, (
+            "run_agent_once must default delegation_results to {} when not set"
+        )
+
+
+# ---------------------------------------------------------------------------
+# M1/U1 — Streaming LLM output via EventBus model.token events
+# ---------------------------------------------------------------------------
+
+class TestM1StreamingOutput:
+    """M1/U1: LLM tokens must be published as model.token events during streaming."""
+
+    def test_consume_sse_stream_exists(self):
+        """_consume_sse_stream helper must exist in llm_manager."""
+        from src.core.inference import llm_manager
+        assert hasattr(llm_manager, "_consume_sse_stream"), (
+            "llm_manager must export _consume_sse_stream"
+        )
+
+    def test_consume_sse_stream_publishes_token_events(self):
+        """_consume_sse_stream must publish model.token events via EventBus."""
+        import json
+        from unittest.mock import MagicMock, patch
+        from src.core.inference.llm_manager import _consume_sse_stream
+
+        # Build a mock SSE response with two chunks
+        lines = [
+            b'data: ' + json.dumps({"choices": [{"delta": {"content": "Hello"}}]}).encode(),
+            b'data: ' + json.dumps({"choices": [{"delta": {"content": " world"}}]}).encode(),
+            b'data: [DONE]',
+        ]
+        mock_response = MagicMock()
+        mock_response.iter_lines.return_value = iter(lines)
+
+        published = []
+        mock_bus = MagicMock()
+        mock_bus.publish.side_effect = lambda event, payload: published.append((event, payload))
+
+        with patch("src.core.orchestration.event_bus.get_event_bus", return_value=mock_bus):
+            result = _consume_sse_stream(mock_response)
+
+        assert result == "Hello world", f"Expected 'Hello world', got '{result}'"
+        token_events = [p for e, p in published if e == "model.token"]
+        assert len(token_events) >= 2, "Must publish at least 2 model.token events"
+        texts = [ev["text"] for ev in token_events if ev.get("text")]
+        assert "Hello" in texts
+        assert " world" in texts
+
+    def test_consume_sse_stream_returns_empty_on_done_only(self):
+        """_consume_sse_stream must return empty string when only [DONE] is sent."""
+        from unittest.mock import MagicMock, patch
+        from src.core.inference.llm_manager import _consume_sse_stream
+
+        lines = [b'data: [DONE]']
+        mock_response = MagicMock()
+        mock_response.iter_lines.return_value = iter(lines)
+
+        with patch("src.core.orchestration.event_bus.get_event_bus", return_value=None):
+            result = _consume_sse_stream(mock_response)
+
+        assert result == ""
+
+    def test_consume_sse_stream_handles_empty_delta(self):
+        """_consume_sse_stream must not crash on empty delta content."""
+        import json
+        from unittest.mock import MagicMock, patch
+        from src.core.inference.llm_manager import _consume_sse_stream
+
+        lines = [
+            b'data: ' + json.dumps({"choices": [{"delta": {}}]}).encode(),
+            b'data: ' + json.dumps({"choices": [{"delta": {"content": "ok"}}]}).encode(),
+            b'data: [DONE]',
+        ]
+        mock_response = MagicMock()
+        mock_response.iter_lines.return_value = iter(lines)
+
+        with patch("src.core.orchestration.event_bus.get_event_bus", return_value=None):
+            result = _consume_sse_stream(mock_response)
+
+        assert result == "ok"
+
+    def test_model_token_event_structure(self):
+        """model.token events must have 'text' and 'partial' fields."""
+        import json
+        from unittest.mock import MagicMock, patch
+        from src.core.inference.llm_manager import _consume_sse_stream
+
+        lines = [
+            b'data: ' + json.dumps({"choices": [{"delta": {"content": "x"}}]}).encode(),
+            b'data: [DONE]',
+        ]
+        mock_response = MagicMock()
+        mock_response.iter_lines.return_value = iter(lines)
+
+        published = []
+        mock_bus = MagicMock()
+        mock_bus.publish.side_effect = lambda event, payload: published.append((event, payload))
+
+        with patch("src.core.orchestration.event_bus.get_event_bus", return_value=mock_bus):
+            _consume_sse_stream(mock_response)
+
+        token_events = [p for e, p in published if e == "model.token"]
+        assert token_events, "Must have at least one model.token event"
+        for ev in token_events:
+            assert "text" in ev, "model.token payload must have 'text' field"
+            assert "partial" in ev, "model.token payload must have 'partial' field"

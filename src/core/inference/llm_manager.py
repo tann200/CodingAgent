@@ -916,6 +916,11 @@ async def _call_model_internal(
                     **(kwargs or {}),
                 )
                 res = await loop.run_in_executor(None, fn)
+                # M1: If stream=True the adapter may return a raw requests.Response;
+                # consume the SSE stream and return the accumulated text as a dict.
+                if stream and hasattr(res, "iter_lines"):
+                    text = await loop.run_in_executor(None, _consume_sse_stream, res)
+                    return {"ok": True, "text": text, "streamed": True}
                 return res
             except Exception as e:
                 last_err = e
@@ -934,6 +939,10 @@ async def _call_model_internal(
                     **(kwargs or {}),
                 )
                 res = await loop.run_in_executor(None, fn)
+                # M1: Same SSE consumption for generate path
+                if stream and hasattr(res, "iter_lines"):
+                    text = await loop.run_in_executor(None, _consume_sse_stream, res)
+                    return {"ok": True, "text": text, "streamed": True}
                 return res
             except TypeError:
                 try:
@@ -1037,6 +1046,61 @@ def get_circuit_breaker(provider_key: str) -> "CircuitBreaker":
                 recovery_timeout=_CB_RECOVERY_TIMEOUT,
             )
         return _CIRCUIT_BREAKERS[provider_key]
+
+
+def _consume_sse_stream(raw_response: Any) -> str:
+    """M1: Iterate an OpenAI-compatible SSE stream, publish model.token events per chunk.
+
+    Parses lines of the form:
+        data: {"choices": [{"delta": {"content": "token"}, "finish_reason": null}]}
+        data: [DONE]
+
+    Returns the fully accumulated response text.
+    """
+    import json as _json
+
+    try:
+        from src.core.orchestration.event_bus import get_event_bus
+        bus = get_event_bus()
+    except Exception:
+        bus = None
+
+    accumulated = []
+    try:
+        for raw_line in raw_response.iter_lines():
+            if not raw_line:
+                continue
+            line = raw_line if isinstance(raw_line, str) else raw_line.decode("utf-8", errors="replace")
+            if not line.startswith("data:"):
+                continue
+            data = line[5:].strip()
+            if data == "[DONE]":
+                break
+            try:
+                chunk = _json.loads(data)
+                choices = chunk.get("choices") or []
+                if choices:
+                    delta = choices[0].get("delta") or {}
+                    token_text = delta.get("content") or ""
+                    if token_text:
+                        accumulated.append(token_text)
+                        if bus:
+                            try:
+                                bus.publish("model.token", {"text": token_text, "partial": True})
+                            except Exception:
+                                pass
+            except (_json.JSONDecodeError, KeyError, IndexError):
+                continue
+    except Exception as e:
+        guilogger.warning(f"_consume_sse_stream: stream iteration error: {e}")
+
+    full_text = "".join(accumulated)
+    if bus and full_text:
+        try:
+            bus.publish("model.token", {"text": "", "partial": False, "full": full_text})
+        except Exception:
+            pass
+    return full_text
 
 
 async def call_model(

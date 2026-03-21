@@ -485,10 +485,10 @@ The replan subsystem (`replan_node` + `should_after_replan`) exists for splittin
 | ID | Finding | Severity | Status |
 |----|---------|----------|--------|
 | C1 | Diff rendering regex broken | Critical | ✅ Fixed — `textual_app_impl.py:804` |
-| C2 | MainViewController not wired | Critical | ⬜ Open |
+| C2 | MainViewController not wired | Critical | ✅ Fixed — plan_progress_label + tool_activity_label wired via EventBus in TUI sidebar |
 | C3 | verification_node None working_dir crash | Critical | ✅ Fixed — `verification_node.py:109` |
 | C4 | DANGEROUS_PATTERNS whitespace bypass | Critical | ✅ Fixed — `file_tools.py:289` |
-| H1 | Full test suite on every side-effect | High | ⬜ Open |
+| H1 | Full test suite on every side-effect | High | ✅ Fixed — `verification_node.py` defers full suite to final step; intermediate steps run syntax check only |
 | H2 | No per-step retry limit | High | ✅ Fixed — `step_controller_node.py` + `builder.py` (MAX=3) |
 | H3 | action_interrupt_agent `or True` bug | High | ✅ Fixed — `textual_app_impl.py:958` |
 | H4 | Verification runs with no cancel check | High | ✅ Fixed — `verification_node.py` cancel_event checks between each tool |
@@ -496,16 +496,16 @@ The replan subsystem (`replan_node` + `should_after_replan`) exists for splittin
 | H6 | rounds not incremented on exec→perception | High | ⬜ Assessed — rounds incremented by perception_node; not a real gap |
 | H7 | EventBus subscribers never unsubscribed | High | ✅ Fixed — `_eb_subscriptions` list + `on_unmount` |
 | H8 | Rollback path not validated with safe_resolve | High | ✅ Fixed — `rollback_manager.py` safe_resolve in snapshot/rollback/append |
-| M1 | No streaming LLM output | Medium | ⬜ Open |
+| M1 | No streaming LLM output | Medium | ✅ Fixed — `_consume_sse_stream` in `llm_manager.py` publishes `model.token` events; TUI renders tokens live |
 | M2 | No live plan progress display | Medium | ✅ Fixed — C2 dashboard wired to TUI sidebar |
 | M3 | No input autocomplete | Medium | ✅ Fixed — Tab autocomplete for SLASH_COMMANDS in ChatInput |
 | M4 | No diff preview before applying | Medium | ✅ Fixed — file.diff.preview EventBus event + TUI coloured diff block |
 | M5 | No benchmark harness | Medium | ✅ Fixed — benchmarks/scenarios.json (10 tasks) + scripts/run_benchmark.py CLI |
 | W1 | Step controller infinite retry | Medium | ✅ Fixed — same as H2 |
-| W3 | replan_node path untested | Low | ⬜ Open |
+| W3 | replan_node path untested | Low | ✅ Fixed — 8 integration tests in `test_graph_builder_routing.py` covering requires_split→replan→step_controller path |
 | W4 | debug_attempts reset may loop on cascading errors | Low | ✅ Fixed — `total_debug_attempts` global cap (9) in `should_after_evaluation` |
 | W5 | evaluation→step_controller→verification loop | Low | ✅ Fixed — `evaluation_node.py` clears `replan_required` |
-| U1 | No streaming (same as M1) | High | ⬜ Open |
+| U1 | No streaming (same as M1) | High | ✅ Fixed — same as M1 |
 | U2 | Plan progress panel invisible (same as C2/M2) | High | ✅ Fixed — wired in C2 |
 | U3 | Diff viewer broken (same as C1) | High | ✅ Fixed — C1 regex fix |
 | U4 | Settings modal init fragile | Medium | ✅ Fixed — `getattr` guard in `action_open_settings` |
@@ -513,5 +513,5 @@ The replan subsystem (`replan_node` + `should_after_replan`) exists for splittin
 | U6 | `continue` restores messages only, not graph state | Medium | ✅ Fixed — `_save/_restore_state_for_continue` now persists current_plan/step/working_dir/step_retry_counts |
 | U7 | Log panel hidden with no indicator | Low | ✅ Fixed — legend now mentions `Ctrl+L (toggle)` |
 | OE1 | MainViewController dead code | — | ✅ Fixed — wired via C2 |
-| OE4 | Delegation fire-and-forget dead infrastructure | Low | ⬜ Open |
+| OE4 | Delegation fire-and-forget dead infrastructure | Low | ✅ Fixed — `run_agent_once` now surfaces `delegation_results` in return dict |
 | E1–E8 | Test coverage gaps | — | Partially addressed (+32 new tests) |

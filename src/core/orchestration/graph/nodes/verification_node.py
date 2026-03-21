@@ -103,6 +103,23 @@ async def verification_node(state: AgentState, config: Any) -> Dict[str, Any]:
         need_verify = True
         logger.info("verification_node: step explicitly requests verification — running tests")
 
+    # H1: Determine whether we are at the final plan step.
+    # Running the full test suite after every single tool call (pytest + ruff +
+    # syntax) means a 5-step plan triggers 5 full pytest runs — very slow.
+    # Fix: on intermediate steps run only the cheap syntax check; reserve the
+    # full suite for the final step or when the step explicitly requests it.
+    current_plan = state.get("current_plan") or []
+    current_step = int(state.get("current_step") or 0)
+    at_final_step = (not current_plan) or (current_step >= len(current_plan) - 1)
+    step_requests_verification = _step_requests_verification(state)
+    run_full_suite = at_final_step or step_requests_verification
+
+    if need_verify and not run_full_suite:
+        logger.info(
+            f"verification_node: intermediate step {current_step + 1}/{len(current_plan)} "
+            "— deferring full test suite to final step; running syntax check only"
+        )
+
     # H4: Helper to check whether the user has requested cancellation.
     # verification tools (pytest, ruff) can block for up to 120 s each;
     # without this check the agent is uninterruptible during the full run.
@@ -123,27 +140,31 @@ async def verification_node(state: AgentState, config: Any) -> Dict[str, Any]:
             wd = Path(state.get("working_dir") or ".")
             is_js = _has_js_project(wd)
             if is_js:
-                # JS/TS project: run JS tests + TypeScript check + linter
-                logger.info("verification_node: JS/TS project detected — running JS test suite")
-                results["js_tests"] = verification_tools.run_js_tests(str(wd))
-                if _is_cancelled():
-                    logger.info("verification_node: cancelled after js_tests")
-                    return {"verification_result": {**results, "cancelled": True}, "verification_passed": True}
-                results["ts_check"] = verification_tools.run_ts_check(str(wd))
-                if _is_cancelled():
-                    logger.info("verification_node: cancelled after ts_check")
-                    return {"verification_result": {**results, "cancelled": True}, "verification_passed": True}
-                results["eslint"] = verification_tools.run_eslint(str(wd))
+                if run_full_suite:
+                    # JS/TS project: run JS tests + TypeScript check + linter
+                    logger.info("verification_node: JS/TS project detected — running JS test suite")
+                    results["js_tests"] = verification_tools.run_js_tests(str(wd))
+                    if _is_cancelled():
+                        logger.info("verification_node: cancelled after js_tests")
+                        return {"verification_result": {**results, "cancelled": True}, "verification_passed": True}
+                    results["ts_check"] = verification_tools.run_ts_check(str(wd))
+                    if _is_cancelled():
+                        logger.info("verification_node: cancelled after ts_check")
+                        return {"verification_result": {**results, "cancelled": True}, "verification_passed": True}
+                    results["eslint"] = verification_tools.run_eslint(str(wd))
+                # No cheap JS-only check available; skip on intermediate steps
             else:
-                # Python project: run pytest + ruff + syntax check
-                results["tests"] = verification_tools.run_tests(str(wd))
-                if _is_cancelled():
-                    logger.info("verification_node: cancelled after run_tests")
-                    return {"verification_result": {**results, "cancelled": True}, "verification_passed": True}
-                results["linter"] = verification_tools.run_linter(str(wd))
-                if _is_cancelled():
-                    logger.info("verification_node: cancelled after run_linter")
-                    return {"verification_result": {**results, "cancelled": True}, "verification_passed": True}
+                if run_full_suite:
+                    # Python project full suite: pytest + ruff + syntax
+                    results["tests"] = verification_tools.run_tests(str(wd))
+                    if _is_cancelled():
+                        logger.info("verification_node: cancelled after run_tests")
+                        return {"verification_result": {**results, "cancelled": True}, "verification_passed": True}
+                    results["linter"] = verification_tools.run_linter(str(wd))
+                    if _is_cancelled():
+                        logger.info("verification_node: cancelled after run_linter")
+                        return {"verification_result": {**results, "cancelled": True}, "verification_passed": True}
+                # Always run cheap syntax check (fast, catches import errors early)
                 results["syntax"] = verification_tools.syntax_check(str(wd))
         except Exception as e:
             results["error"] = str(e)

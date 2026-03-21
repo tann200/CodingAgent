@@ -2150,9 +2150,17 @@ class Orchestrator:
             else:
                 assistant_message = last_assistant
 
+            # OE4: Surface delegation_results so callers can read subagent outputs.
+            # Previously the delegation_node populated this field but it was never
+            # included in the return dict (fire-and-forget). Now callers can access it.
+            delegation_results = final_state.get("delegation_results") if final_state else None
+            if delegation_results:
+                guilogger.info(f"run_agent_once: delegation_results keys={list(delegation_results.keys())}")
+
             return {
                 "assistant_message": assistant_message.strip(),
                 "work_summary": work_summary,
+                "delegation_results": delegation_results or {},
             }
         except StopAsyncIteration:
             # This is expected when the graph finishes successfully.

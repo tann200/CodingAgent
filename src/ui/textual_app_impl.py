@@ -482,6 +482,8 @@ else:
                         ("tool.execute.error", self._on_tool_error_ui),
                         # M4: Diff preview before file edits
                         ("file.diff.preview", self._on_diff_preview_ui),
+                        # M1: Real-time streaming token output
+                        ("model.token", self._on_model_token_ui),
                     ]
                     for event_name, cb in _subs:
                         eb.subscribe(event_name, cb)
@@ -1061,6 +1063,26 @@ else:
                 self._schedule_callback(
                     self.tool_activity_label.update, f"✗ {tool} (error)"
                 )
+            except Exception:
+                pass
+
+        def _on_model_token_ui(self, payload: Dict[str, Any]) -> None:
+            """M1: Append streaming tokens from the LLM to the output log in real time.
+
+            Receives model.token events from _consume_sse_stream in llm_manager.py.
+            partial=True  → incremental token chunk (append without newline)
+            partial=False → stream complete (flush / no-op since chunks already written)
+            """
+            try:
+                if not self.output or not isinstance(payload, dict):
+                    return
+                if not payload.get("partial", True):
+                    # Stream completed — nothing more to do (tokens already appended)
+                    return
+                token_text = payload.get("text", "")
+                if token_text:
+                    # Use _schedule_callback to safely write from the background thread
+                    self._schedule_callback(self.output.write, token_text)
             except Exception:
                 pass
 
