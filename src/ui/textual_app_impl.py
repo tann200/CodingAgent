@@ -259,6 +259,12 @@ else:
         Key = object
         Paste = object
 
+    # Fix 4: Module-level compiled regex patterns — avoid recompiling per message
+    import re as _re
+    _DIFF_PATTERN = _re.compile(r"```diff\n(.*?)\n```", _re.DOTALL)
+    _THINKING_PATTERN = _re.compile(r"<think>(.*?)</think>", _re.DOTALL)
+    _HUNK_PATTERN = _re.compile(r"@@ -(\d+),?\d* \+(\d+),?\d* @@")
+
     # M3: Known slash commands for Tab autocomplete
     SLASH_COMMANDS = [
         "/help",
@@ -369,6 +375,16 @@ else:
 
             self._current_provider = "None"
             self._current_model = "None"
+
+        def _schedule_callback(self, fn, *args, **kwargs):
+            """Fix 3: Override base class to use Textual's call_from_thread (Python 3.10+ safe)."""
+            try:
+                self.call_from_thread(fn, *args, **kwargs)
+            except Exception:
+                try:
+                    fn(*args, **kwargs)
+                except Exception:
+                    pass
 
         def compose(self) -> ComposeResult:
             yield Header()
@@ -734,9 +750,12 @@ else:
             self._show_progress()
 
             # send to orchestrator in background
+            # Fix: target _run_agent directly — send_prompt would spawn a second thread
             self._agent_running = True
+            with self._history_lock:
+                self.history.append(("user", text))
             self._agent_thread = threading.Thread(
-                target=self.send_prompt, args=(text,), daemon=True
+                target=self._run_agent, args=(text,), daemon=True
             )
             self._agent_thread.start()
             # clear input
@@ -777,10 +796,8 @@ else:
         def _append_assistant(self, content: str) -> None:
             if not self.output:
                 return
-            import re
 
-            diff_pattern = re.compile(r"```diff\n(.*?)\n```", re.DOTALL)
-            diff_matches = list(diff_pattern.finditer(content))
+            diff_matches = list(_DIFF_PATTERN.finditer(content))
 
             if diff_matches:
                 last_end = 0
@@ -811,8 +828,7 @@ else:
                         self._safe_write(remaining)
                 return
 
-            thinking_pattern = re.compile(r"<think>(.*?)</think>", re.DOTALL)
-            thinking_match = thinking_pattern.search(content)
+            thinking_match = _THINKING_PATTERN.search(content)
 
             if thinking_match:
                 thinking = thinking_match.group(1).strip()
@@ -855,8 +871,6 @@ else:
 
         def _render_side_by_side_diff(self, diff_content: str) -> None:
             """Render a unified diff as a side-by-side view using Rich Tables."""
-            import re
-
             try:
                 from rich.table import Table
                 from rich.text import Text
@@ -878,7 +892,7 @@ else:
                             right_lines.append(current_right)
                         current_left = []
                         current_right = []
-                        match = re.search(r"@@ -(\d+),?\d* \+(\d+),?\d* @@", line)
+                        match = _HUNK_PATTERN.search(line)
                         if match:
                             current_left.append(f"@@ -{match.group(1)}")
                             current_right.append(f"@@ +{match.group(2)}")
@@ -896,23 +910,30 @@ else:
                     left_lines.append(current_left)
                     right_lines.append(current_right)
 
+                from itertools import zip_longest
+
                 table = Table(show_header=True, show_lines=True, expand=True)
-                table.add_column("Before", style="red", ratio=1)
-                table.add_column("After", style="green", ratio=1)
+                table.add_column("Before", ratio=1)
+                table.add_column("After", ratio=1)
 
                 for block_left, block_right in zip(left_lines, right_lines):
-                    for line in block_left:
-                        if line.startswith("@@"):
-                            table.add_row(Text(line, style="cyan bold"), "")
-                        elif line:
-                            table.add_row(Text(line), "")
-                        else:
-                            table.add_row("", "")
-                    for line in block_right:
-                        if line.startswith("@@"):
-                            table.add_row("", Text(line, style="cyan bold"))
-                        elif line:
-                            table.add_row("", Text(line))
+                    bl = list(block_left)
+                    br = list(block_right)
+                    # hunk header (@@ line) — show in both columns
+                    if bl and bl[0].startswith("@@"):
+                        hdr_r = br[0] if br and br[0].startswith("@@") else (br[0] if br else "")
+                        table.add_row(
+                            Text(bl[0], style="cyan bold"),
+                            Text(hdr_r, style="cyan bold"),
+                        )
+                        bl = bl[1:]
+                        br = br[1:] if len(br) > 1 else []
+                    # pair deleted/added lines side-by-side with padding
+                    for l, r in zip_longest(bl, br, fillvalue=""):
+                        table.add_row(
+                            Text(l, style="red") if l else Text(""),
+                            Text(r, style="green") if r else Text(""),
+                        )
 
                 self.output.write(table)
             except Exception:
@@ -1033,7 +1054,8 @@ else:
                 desc = payload.get("description", "")
                 if total:
                     bar = "█" * step + "░" * (total - step)
-                    text = f"Step {step}/{total}\n{bar}\n{desc[:30]}" if desc else f"Step {step}/{total}\n{bar}"
+                    desc_display = (desc[:38] + "…") if len(desc) > 40 else desc
+                    text = f"Step {step}/{total}\n{bar}\n{desc_display}" if desc else f"Step {step}/{total}\n{bar}"
                 else:
                     text = desc[:40] if desc else "Running…"
                 self._schedule_callback(self.plan_progress_label.update, text)
@@ -1077,7 +1099,8 @@ else:
                 if not self.output or not isinstance(payload, dict):
                     return
                 if not payload.get("partial", True):
-                    # Stream completed — nothing more to do (tokens already appended)
+                    # Stream complete — write trailing newline so next output starts fresh
+                    self._schedule_callback(self.output.write, "")
                     return
                 token_text = payload.get("text", "")
                 if token_text:
@@ -1406,11 +1429,24 @@ else:
                     self.app.output.write("[System] Started new session.")
                 self.app.pop_screen()
             elif id_ == "settings_compact_session":
-                if hasattr(self.app, "output") and self.app.output:
-                    self.app.output.write(
-                        "[System] Compacting session... (Placeholder)"
-                    )
                 self.app.pop_screen()
+                # Fix 9: actually compact the session via distiller
+                try:
+                    from src.core.memory.distiller import compact_messages_to_prose
+                    orch = getattr(self.app, "orchestrator", None)
+                    msg_mgr = getattr(orch, "msg_mgr", None) if orch else None
+                    if msg_mgr and getattr(msg_mgr, "messages", None):
+                        msgs = list(msg_mgr.messages[-40:])
+                        prose = compact_messages_to_prose(msgs)
+                        msg_mgr.messages = [{"role": "user", "content": prose}]
+                        if hasattr(self.app, "_safe_write"):
+                            self.app._safe_write("[dim]Session compacted.[/dim]")
+                    else:
+                        if hasattr(self.app, "_safe_write"):
+                            self.app._safe_write("[dim]Nothing to compact.[/dim]")
+                except Exception as e:
+                    if hasattr(self.app, "_safe_write"):
+                        self.app._safe_write(f"[red]Compact failed: {e}[/red]")
             elif id_ == "settings_connect_provider":
                 self.app.pop_screen()
                 self.app.push_screen(
