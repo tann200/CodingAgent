@@ -1,5 +1,5 @@
 {
-  "generated": "2026-03-18 20:10:18Z",
+  "generated": "2026-03-22 12:04:40Z",
   "nodes": {
     "docs": {
       "path": "docs",
@@ -11,6 +11,10 @@
     },
     "docs/audit/audit-instructions.md": {
       "path": "docs/audit/audit-instructions.md",
+      "is_dir": false
+    },
+    "docs/audit/audit-report-vol5.md": {
+      "path": "docs/audit/audit-report-vol5.md",
       "is_dir": false
     },
     "docs/ARCHITECTURE.md": {
@@ -79,6 +83,10 @@
     },
     "scripts/refresh_summaries.py": {
       "path": "scripts/refresh_summaries.py",
+      "is_dir": false
+    },
+    "scripts/run_benchmark.py": {
+      "path": "scripts/run_benchmark.py",
       "is_dir": false
     },
     "scripts/run_generate.py": {
@@ -297,8 +305,16 @@
       "path": "src/core/inference/llm_manager.py",
       "is_dir": false
     },
+    "src/core/inference/provider_context.py": {
+      "path": "src/core/inference/provider_context.py",
+      "is_dir": false
+    },
     "src/core/inference/telemetry.py": {
       "path": "src/core/inference/telemetry.py",
+      "is_dir": false
+    },
+    "src/core/inference/thinking_utils.py": {
+      "path": "src/core/inference/thinking_utils.py",
       "is_dir": false
     },
     "src/core/memory": {
@@ -385,10 +401,6 @@
       "path": "src/core/orchestration/tool_parser.py",
       "is_dir": false
     },
-    "src/core/orchestration/tool_schema.py": {
-      "path": "src/core/orchestration/tool_schema.py",
-      "is_dir": false
-    },
     "src/core/orchestration/workspace_guard.py": {
       "path": "src/core/orchestration/workspace_guard.py",
       "is_dir": false
@@ -449,6 +461,10 @@
       "path": "src/tools/toolsets/review.yaml",
       "is_dir": false
     },
+    "src/tools/_path_utils.py": {
+      "path": "src/tools/_path_utils.py",
+      "is_dir": false
+    },
     "src/tools/file_tools.py": {
       "path": "src/tools/file_tools.py",
       "is_dir": false
@@ -491,6 +507,10 @@
     },
     "src/tools/system_tools.py": {
       "path": "src/tools/system_tools.py",
+      "is_dir": false
+    },
+    "src/tools/todo_tools.py": {
+      "path": "src/tools/todo_tools.py",
       "is_dir": false
     },
     "src/tools/verification_tools.py": {
@@ -555,10 +575,6 @@
     },
     "src/ui/README.md": {
       "path": "src/ui/README.md",
-      "is_dir": false
-    },
-    "src/ui/textual_app.py": {
-      "path": "src/ui/textual_app.py",
       "is_dir": false
     },
     "src/ui/textual_app_impl.py": {

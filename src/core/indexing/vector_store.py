@@ -1,17 +1,17 @@
 import concurrent.futures
-import lancedb
+import hashlib
 import logging
-import pandas as pd
 import sys
 from pathlib import Path
 from typing import List, Dict, Any
 
-logger = logging.getLogger(__name__)
-from pydantic import Field
+import lancedb
+import pandas as pd
 from lancedb.pydantic import LanceModel, Vector, pydantic_to_schema
+from pydantic import Field
 from tqdm import tqdm
 
-import hashlib
+logger = logging.getLogger(__name__)
 
 # Try importing SentenceTransformer, fall back to a deterministic dummy encoder for tests/environments without heavy deps
 try:

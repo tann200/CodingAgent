@@ -152,7 +152,27 @@ async def verification_node(state: AgentState, config: Any) -> Dict[str, Any]:
                         logger.info("verification_node: cancelled after ts_check")
                         return {"verification_result": {**results, "cancelled": True}, "verification_passed": True}
                     results["eslint"] = verification_tools.run_eslint(str(wd))
-                # No cheap JS-only check available; skip on intermediate steps
+                else:
+                    # F21/W4: Intermediate JS/TS step — run eslint on the modified file only
+                    # (faster than full suite; catches syntax errors and obvious mistakes early)
+                    modified_path: str | None = None
+                    try:
+                        lr = state.get("last_result") or {}
+                        r = lr.get("result") or lr
+                        modified_path = r.get("path")
+                    except Exception:
+                        pass
+                    if modified_path:
+                        logger.info(
+                            f"verification_node: intermediate JS/TS step — running eslint on {modified_path}"
+                        )
+                        results["eslint"] = verification_tools.run_eslint(
+                            str(wd), paths=[modified_path]
+                        )
+                    else:
+                        logger.info(
+                            "verification_node: intermediate JS/TS step — no modified path; skipping eslint"
+                        )
             else:
                 if run_full_suite:
                     # Python project full suite: pytest + ruff + syntax

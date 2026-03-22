@@ -541,6 +541,29 @@ Respond with ONLY valid JSON, no markdown, no explanation. /no_think"""
                 "perception_node: skipping parse_tool_block because content contains tool_execution_result"
             )
             tool_call = None
+
+        # F8: Prompt injection guard — reject tool calls that are verbatim copies of
+        # user-role history messages. A user submitting YAML-tool-looking text could
+        # trick the LLM into reflecting it back, causing unintended tool execution.
+        if tool_call is not None:
+            tool_name_extracted = tool_call.get("name", "")
+            user_messages = [
+                m.get("content", "")
+                for m in (state.get("history") or [])
+                if m.get("role") == "user"
+            ]
+            # Build a minimal YAML fingerprint for the parsed tool call to compare
+            _inj_fingerprint = f"name: {tool_name_extracted}"
+            _inj_detected = any(
+                _inj_fingerprint in (um or "") for um in user_messages
+            )
+            if _inj_detected:
+                logger.warning(
+                    f"perception_node: F8 injection guard — tool call '{tool_name_extracted}' "
+                    "matches a user-role message; rejecting to prevent prompt injection"
+                )
+                tool_call = None
+
     except Exception:
         tool_call = None
     try:

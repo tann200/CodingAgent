@@ -60,13 +60,9 @@ class AgentState(TypedDict):
     step_controller_enabled: bool
     # Task decomposition
     task_decomposed: Optional[bool]
-    # Tool cooldowns to prevent spam
-    tool_last_used: Optional[Dict[str, int]]
-    # Tool call budget (tracked in state and session_store, but routing enforcement is TODO — W12)
+    # Tool call budget — enforced in should_after_execution (W12 fix: bails to memory_sync when count >= max)
     tool_call_count: int
     max_tool_calls: int
-    # Files read tracking for read-before-edit
-    files_read: Optional[Dict[str, bool]]
     # Last tool name executed (W1: used by verification_node to detect side-effecting tools)
     last_tool_name: Optional[str]
     # Repo summary data (automatically generated in analysis phase)
@@ -96,3 +92,9 @@ class AgentState(TypedDict):
     task_history: Optional[List[Dict[str, Any]]]
     # H2: Per-step retry counter keyed by str(step_index) — prevents infinite retry on a broken step
     step_retry_counts: Optional[Dict[str, int]]
+    # Tool cooldown: keyed by "tool_name:path_arg", value = tool_call_count at last use.
+    # Prevents repeated identical read-tool calls (spam) within COOLDOWN_GAP tool executions.
+    tool_last_used: Optional[Dict[str, int]]
+    # Fast read-before-edit lookup: maps resolved_abs_path → True when file has been read.
+    # Complements verified_reads (cumulative list) with O(1) dict access for MODIFYING_TOOLS check.
+    files_read: Optional[Dict[str, bool]]

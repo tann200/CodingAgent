@@ -206,9 +206,12 @@ Generate the appropriate tool call to complete this step. Respond with ONLY a to
     if tool_name in MODIFYING_TOOLS and path_arg:
         try:
             resolved = str((Path(state["working_dir"]) / path_arg).resolve())
-            # Check both the state (immutability) AND the orchestrator (current session)
+            # files_read dict gives O(1) lookup; fall back to verified_reads list and session set.
+            files_read_map = state.get("files_read") or {}
+            verified_reads = state.get("verified_reads") or []
             if (
-                resolved not in state.get("verified_reads", [])
+                resolved not in files_read_map
+                and resolved not in verified_reads
                 and resolved not in orchestrator._session_read_files
             ):
                 err_msg = (
@@ -234,6 +237,37 @@ Generate the appropriate tool call to complete this step. Respond with ONLY a to
                 }
         except Exception:
             pass
+
+    # Tool cooldown: block repeated identical read-tool calls that add no new context.
+    # A pure-read tool called with the same path within COOLDOWN_GAP executions already
+    # has its result in the LLM context — re-fetching wastes tokens and budget.
+    _COOLDOWN_READ_TOOLS = {"read_file", "fs.read", "grep", "search_code", "find_symbol", "glob"}
+    _COOLDOWN_GAP = 3  # must wait at least this many tool calls before repeating
+    if tool_name in _COOLDOWN_READ_TOOLS:
+        _cooldown_key = f"{tool_name}:{path_arg or ''}"
+        _tool_last_used = state.get("tool_last_used") or {}
+        _current_count = int(state.get("tool_call_count") or 0)
+        _last_count = _tool_last_used.get(_cooldown_key, _current_count - _COOLDOWN_GAP - 1)
+        if _current_count - _last_count < _COOLDOWN_GAP:
+            _cooldown_msg = (
+                f"Tool '{tool_name}'"
+                + (f" on '{path_arg}'" if path_arg else "")
+                + f" was called {_current_count - _last_count} execution(s) ago. "
+                "The result is already in context — please use the existing context "
+                "instead of re-fetching. Try a different approach or proceed with what you have."
+            )
+            logger.warning(f"execution_node: cooldown for {_cooldown_key} ({_current_count - _last_count} < {_COOLDOWN_GAP})")
+            return {
+                "last_result": {"ok": False, "error": _cooldown_msg},
+                "history": [
+                    {
+                        "role": "user",
+                        "content": json.dumps({"tool_execution_result": {"ok": False, "error": _cooldown_msg}}),
+                    }
+                ],
+                "next_action": None,
+                "tool_call_count": _current_count + 1,  # count the blocked attempt
+            }
 
     # Loop Prevention: Check for repeated tool calls
     if orchestrator and hasattr(orchestrator, "_check_loop_prevention"):
@@ -301,6 +335,13 @@ Generate the appropriate tool call to complete this step. Respond with ONLY a to
     # Successful tool execution
     verified_update = []
     plan_advance = {}
+    # Build updated tool_last_used and files_read dicts for state return
+    _tool_last_used_update = dict(state.get("tool_last_used") or {})
+    _files_read_update = dict(state.get("files_read") or {})
+    _current_count = int(state.get("tool_call_count") or 0)
+    # Record this tool execution in cooldown tracker (use pre-increment count as key)
+    _cooldown_key = f"{tool_name}:{path_arg or ''}"
+    _tool_last_used_update[_cooldown_key] = _current_count
 
     # Check for multi-step plan completion
     if current_plan and current_step < len(current_plan):
@@ -369,6 +410,8 @@ Generate the appropriate tool call to complete this step. Respond with ONLY a to
                 try:
                     resolved = str((Path(state["working_dir"]) / path_arg).resolve())
                     verified_update = [resolved]
+                    # files_read dict: O(1) lookup complement to verified_reads list
+                    _files_read_update[resolved] = True
                 except Exception:
                     pass
 
@@ -440,6 +483,9 @@ Generate the appropriate tool call to complete this step. Respond with ONLY a to
         "history": new_messages,
         "next_action": None,  # Reset after execution
         "tool_call_count": tool_call_count,
+        # Cooldown + read-before-edit tracking dicts
+        "tool_last_used": _tool_last_used_update,
+        "files_read": _files_read_update,
         **plan_advance,
         **replan_triggered,
         **plan_progress_event,

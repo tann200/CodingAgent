@@ -1,7 +1,8 @@
 import logging
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional, Set
 
 from src.core.orchestration.graph.state import AgentState
+from src.core.orchestration.graph.nodes.node_utils import _resolve_orchestrator
 
 logger = logging.getLogger(__name__)
 
@@ -10,6 +11,7 @@ def validate_plan(
     plan: List[Dict[str, Any]],
     enforce_warnings: bool = False,
     strict_mode: bool = False,
+    registered_tools: Optional[Set[str]] = None,
 ) -> Dict[str, Any]:
     """
     Validate a plan before execution.
@@ -20,11 +22,13 @@ def validate_plan(
     - Plan has verification step (in strict mode)
     - Steps are properly formatted
     - No dangerous operations without safety measures
+    - W1: action.name refers to a registered tool (when registered_tools is provided)
 
     Args:
         plan: The plan to validate
         enforce_warnings: If True, warnings will block execution (treat warnings as errors)
         strict_mode: If True, enforces verification steps and other best practices
+        registered_tools: Set of known tool names; unknown names become errors (W1 fix)
 
     Returns:
         {
@@ -45,9 +49,6 @@ def validate_plan(
             "warnings": warnings,
             "severity": "error",
         }
-
-    if len(plan) == 0:
-        errors.append("Plan has no steps")
 
     # Check each step
     has_verification = False
@@ -70,6 +71,13 @@ def validate_plan(
         tool_name = None
         if action and isinstance(action, dict):
             tool_name = action.get("name", "")
+
+        # W1: Validate tool name exists in registry
+        if tool_name and registered_tools is not None and tool_name not in registered_tools:
+            errors.append(
+                f"Step {i + 1} references unknown tool '{tool_name}'. "
+                f"Available tools: {', '.join(sorted(registered_tools)[:10])}{'…' if len(registered_tools) > 10 else ''}"
+            )
 
         # Track read operations
         if tool_name in ["read_file", "fs.read", "list_files", "list_dir", "glob"]:
@@ -174,6 +182,7 @@ async def plan_validator_node(state: AgentState, config: Any) -> Dict[str, Any]:
 
     Ensures plans are well-formed and complete before being passed to execution.
     In strict mode, enforces verification steps and read-before-edit patterns.
+    W1: Checks that action.name values refer to registered tools.
     """
     logger.info("=== plan_validator_node START ===")
 
@@ -203,10 +212,20 @@ async def plan_validator_node(state: AgentState, config: Any) -> Dict[str, Any]:
             "errors": ["No plan to validate"],
         }
 
+    # W1: Collect registered tool names from orchestrator for existence check
+    registered_tools: Optional[Set[str]] = None
+    try:
+        orchestrator = _resolve_orchestrator(state, config)
+        if orchestrator and hasattr(orchestrator, "tool_registry"):
+            registered_tools = set(orchestrator.tool_registry.tools.keys())
+    except Exception:
+        pass  # Tool existence check is best-effort; don't block on failure
+
     validation_result = validate_plan(
         current_plan,
         enforce_warnings=enforce_warnings,
         strict_mode=strict_mode,
+        registered_tools=registered_tools,
     )
 
     logger.info(f"plan_validator_node: validation result = {validation_result}")

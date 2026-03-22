@@ -143,24 +143,23 @@ class EventBus:
         )
         with self._lock:
             subs = list(self._agent_subscribers.get(agent_id, []))
-            priority_subs = list(self._agent_subscribers.get("*", []))
-        for cb in priority_subs:
+            wildcard_subs = list(self._agent_subscribers.get("*", []))
+        # C5 fix: deduplicate so callbacks registered on both "*" and the specific
+        # agent_id are invoked exactly once (wildcard first, then specific-only).
+        called: set = set()
+        for cb in wildcard_subs:
+            called.add(id(cb))
             try:
                 cb(msg)
             except Exception:
                 continue
-        if priority >= MessagePriority.HIGH:
-            for cb in sorted(subs, key=lambda x: 0):
-                try:
-                    cb(msg)
-                except Exception:
-                    continue
-        else:
-            for cb in subs:
-                try:
-                    cb(msg)
-                except Exception:
-                    continue
+        for cb in subs:
+            if id(cb) in called:
+                continue
+            try:
+                cb(msg)
+            except Exception:
+                continue
 
     def broadcast_to_agents(
         self, payload: Any, priority: MessagePriority = MessagePriority.NORMAL

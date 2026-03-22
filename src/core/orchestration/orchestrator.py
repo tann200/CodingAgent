@@ -714,21 +714,10 @@ def example_registry() -> ToolRegistry:
     except Exception:
         pass
 
-    try:
-        from src.tools import role_tools
-
-        reg.register(
-            "set_role",
-            role_tools.set_role,
-            description="set_role(role) -> Set current role for simple role-based access",
-        )
-        reg.register(
-            "get_role",
-            role_tools.get_role,
-            description="get_role() -> Get current role",
-        )
-    except Exception:
-        pass
+    # O4: role_tools (set_role / get_role) intentionally NOT registered.
+    # Allowing the LLM to change its own role at runtime via a tool call is dangerous:
+    # an adversarial prompt could switch to "operational" mid-debug.
+    # Role management belongs to AgentBrainManager, not the tool interface.
 
     # Subagent tools
     try:
@@ -743,6 +732,46 @@ def example_registry() -> ToolRegistry:
             "list_subagent_roles",
             subagent_tools.list_subagent_roles,
             description="list_subagent_roles() -> List available subagent roles",
+        )
+    except Exception:
+        pass
+
+    # Git tools (F19)
+    try:
+        from src.tools import git_tools
+
+        reg.register(
+            "git_status",
+            git_tools.git_status,
+            description="git_status(workdir) -> Show working-tree status (branch + modified/untracked files)",
+        )
+        reg.register(
+            "git_log",
+            git_tools.git_log,
+            description="git_log(workdir, max_count=10) -> Show last N commits (hash + subject)",
+        )
+        reg.register(
+            "git_diff",
+            git_tools.git_diff,
+            description="git_diff(workdir, staged=False, path=None) -> Show unified diff of working-tree or staged changes",
+        )
+        reg.register(
+            "git_commit",
+            git_tools.git_commit,
+            side_effects=["write"],
+            description="git_commit(message, workdir, add_all=True) -> Stage all changes and create a commit",
+        )
+        reg.register(
+            "git_stash",
+            git_tools.git_stash,
+            side_effects=["write"],
+            description="git_stash(workdir, message=None) -> Stash all local modifications",
+        )
+        reg.register(
+            "git_restore",
+            git_tools.git_restore,
+            side_effects=["write"],
+            description="git_restore(path, workdir, staged=False) -> Discard working-tree changes to a file",
         )
     except Exception:
         pass
@@ -836,6 +865,8 @@ class Orchestrator:
         self._session_read_files: set = set()
         self._session_modified_files: set = set()
         self._max_files_per_task = 10
+        # F17: In-memory usage counter — flushed once per run_agent_once() instead of per tool call
+        self._usage_buffer: dict = {}
         self.deterministic = bool(deterministic)
         self.seed = seed
 
@@ -1239,23 +1270,28 @@ class Orchestrator:
                         "error": "Tool not permitted for role 'reviewer'",
                     }
 
-            # Sandbox validation for write operations
+            # Sandbox validation for write operations — C2 fix: validate the NEW content
+            # being written, not the pre-existing file.  The previous approach copied the
+            # workspace to a temp dir and ran ast.parse on the OLD file, which always passed.
+            # Now we extract the new content from the tool args and parse it directly.
             if "write" in tool.get("side_effects", []) and path_arg:
                 try:
-                    from src.core.orchestration.sandbox import ExecutionSandbox
-
-                    sandbox = ExecutionSandbox(str(self.working_dir))
-
-                    # Validate AST for Python files
                     if path_arg.endswith(".py"):
-                        ast_result = sandbox.validate_ast(path_arg)
-                        if ast_result.get("status") == "error":
-                            return {
-                                "ok": False,
-                                "error": f"Sandbox validation error: {ast_result.get('error')}",
-                            }
+                        import ast as _ast
+
+                        # Extract the new Python content from the tool call args.
+                        # edit_file uses 'content'; write_file uses 'content'.
+                        new_py_content: str | None = args.get("content")
+                        if new_py_content and isinstance(new_py_content, str):
+                            try:
+                                _ast.parse(new_py_content)
+                            except SyntaxError as _syn:
+                                return {
+                                    "ok": False,
+                                    "error": f"Sandbox validation error: new content has a syntax error at line {_syn.lineno}: {_syn.msg}",
+                                }
                 except Exception as e:
-                    # Phase 1.2: Fail-closed - do not allow writes if validation fails
+                    # Fail-closed — do not allow writes if validation itself crashes.
                     guilogger.error(f"Sandbox validation failed (fail-closed): {e}")
                     return {
                         "ok": False,
@@ -1298,37 +1334,26 @@ class Orchestrator:
                 except Exception:
                     pass
 
-            # T9: Tool Timeout Protection
+            # T9: Tool Timeout Protection — C1 fix: use ThreadPoolExecutor so timeouts
+            # work in any thread (SIGALRM only worked in the main thread, which meant all
+            # timeouts were silently disabled when the agent ran from the TUI daemon thread).
             timeout_seconds = self._get_tool_timeout(name)
 
             try:
-                import signal
-                import threading
+                import concurrent.futures as _cf
 
-                # signal.SIGALRM only works in the main thread; skip it otherwise
-                in_main_thread = threading.current_thread() is threading.main_thread()
-
-                def timeout_handler(signum, frame):
-                    raise TimeoutError(
-                        f"Tool '{name}' timed out after {timeout_seconds} seconds"
-                    )
-
-                # Set timeout alarm for bash commands and long-running tools
-                old_handler = None
-                if timeout_seconds > 0 and in_main_thread:
-                    old_handler = signal.signal(signal.SIGALRM, timeout_handler)
-                    signal.alarm(timeout_seconds)
-
-                try:
+                if timeout_seconds > 0:
+                    with _cf.ThreadPoolExecutor(max_workers=1) as _tex:
+                        _future = _tex.submit(tool["fn"], **args)
+                        try:
+                            res = _future.result(timeout=timeout_seconds)
+                        except _cf.TimeoutError:
+                            _future.cancel()
+                            raise TimeoutError(
+                                f"Tool '{name}' timed out after {timeout_seconds} seconds"
+                            )
+                else:
                     res = tool["fn"](**args)
-                finally:
-                    if (
-                        timeout_seconds > 0
-                        and in_main_thread
-                        and old_handler is not None
-                    ):
-                        signal.alarm(0)
-                        signal.signal(signal.SIGALRM, old_handler)
             except TimeoutError:
                 guilogger.warning(f"Tool '{name}' timed out after {timeout_seconds}s")
                 return {
@@ -1340,21 +1365,8 @@ class Orchestrator:
             # Normalize the result to a dict contract
             res = self._normalize_tool_result(res)
 
-            # If this is a role setter call, apply to orchestrator runtime
-            try:
-                if name == "set_role" and isinstance(res, dict):
-                    # extract role and apply
-                    role = None
-                    if res and "role" in res:
-                        role = res.get("role")
-                    else:
-                        result = res.get("result") if res else None
-                        if isinstance(result, dict) and "role" in result:
-                            role = result.get("role")
-                    if role:
-                        self.current_role = role
-            except Exception:
-                pass
+            # (O4: set_role handler removed — role_tools not registered; runtime role
+            # changes via tool calls are disallowed)
 
             # Validate tool contract if registered. If validation fails, return an error to the caller.
             try:
@@ -1392,22 +1404,8 @@ class Orchestrator:
                     # (call_info reserved for future telemetry use)
                     _ts = _time.time()
 
-                    # load usage file
-                    usage_path = self.working_dir / ".agent-context" / "usage.json"
-                    import json as _json
-
-                    usage = {}
-                    if usage_path.exists():
-                        try:
-                            usage = _json.loads(usage_path.read_text())
-                        except Exception:
-                            usage = {}
-                    tool_stats = usage.get("tools", {})
-                    stats = tool_stats.get(name, {"calls": 0})
-                    stats["calls"] = stats.get("calls", 0) + 1
-                    tool_stats[name] = stats
-                    usage["tools"] = tool_stats
-                    usage_path.write_text(_json.dumps(usage, indent=2))
+                    # F17: Accumulate in memory — flushed to usage.json at end of run_agent_once()
+                    self._usage_buffer[name] = self._usage_buffer.get(name, 0) + 1
 
                     # Telemetry: publish event for tool invocation
                     try:
@@ -1697,6 +1695,27 @@ class Orchestrator:
 
         return False
 
+    def _flush_usage_buffer(self) -> None:
+        """F17: Flush in-memory tool call counters to .agent-context/usage.json once per task."""
+        if not self._usage_buffer:
+            return
+        try:
+            import json as _json
+            usage_path = self.working_dir / ".agent-context" / "usage.json"
+            usage: dict = {}
+            if usage_path.exists():
+                try:
+                    usage = _json.loads(usage_path.read_text())
+                except Exception:
+                    usage = {}
+            tool_stats = usage.get("tools", {})
+            for tool_name, count in self._usage_buffer.items():
+                tool_stats[tool_name] = {"calls": tool_stats.get(tool_name, {}).get("calls", 0) + count}
+            usage["tools"] = tool_stats
+            usage_path.write_text(_json.dumps(usage, indent=2))
+        except Exception:
+            pass
+
     def _ensure_working_dir(self):
         try:
             self.working_dir.mkdir(parents=True, exist_ok=True)
@@ -1787,6 +1806,8 @@ class Orchestrator:
         # F16: Reset session read-file tracking at the start of each new task so reads
         # from a previous task cannot bypass the read-before-edit guard in a new task.
         self._session_read_files = set()
+        # F17: Reset per-task usage buffer; will be flushed to disk once at task end.
+        self._usage_buffer = {}
 
         # Check if canceled before starting
         if cancel_event and hasattr(cancel_event, "is_set") and cancel_event.is_set():
@@ -1805,7 +1826,7 @@ class Orchestrator:
             prompt = messages[-1].get("content", "")
 
         from .agent_brain import load_system_prompt
-        from src.core.orchestration.graph.builder import compile_agent_graph
+        from src.core.orchestration.graph.builder import _get_compiled_graph
 
         # 1. Prepare Initial State
         # Ensure current model routing is published in case tests replace the event_bus after instantiation
@@ -1862,16 +1883,18 @@ class Orchestrator:
             "step_controller_enabled": True,
             # task decomposition
             "task_decomposed": False,
-            # tool cooldowns and budgeting
-            "tool_last_used": {},
+            # tool call budgeting
             "tool_call_count": 0,
             "max_tool_calls": 30,
-            # files read tracking
+            # Tool cooldown tracker: keyed by "tool_name:path_arg", value = tool_call_count at last use
+            "tool_last_used": {},
+            # Fast read-before-edit lookup: resolved_path → True
             "files_read": {},
         }
 
-        # 2. Compile and Run Graph
-        graph = compile_agent_graph()
+        # 2. Compile and Run Graph — P1 fix: use module-level cached graph so compilation
+        # happens once per process instead of once per run_agent_once() call.
+        graph = _get_compiled_graph()
 
         # Mint a fresh correlation ID for this agent turn so all EventBus events
         # and LLM call logs share the same trace token (#26).
@@ -1882,6 +1905,11 @@ class Orchestrator:
         final_state: dict = {}
 
         try:
+            # P2 fix: reuse a single ThreadPoolExecutor across all graph rounds instead of
+            # creating (and destroying) a new OS thread pool per round.
+            import concurrent.futures as _cf_pool
+            _graph_executor = _cf_pool.ThreadPoolExecutor(max_workers=1)
+
             # We use the same safe asyncio execution logic
             def _run_graph(state_to_run):
                 # Run the langgraph for the provided state and return the resulting state
@@ -1895,109 +1923,120 @@ class Orchestrator:
                     )
                 )
 
-            # Allow multiple graph rounds to consume multi-turn tool sequences (bounded)
-            max_rounds = 12
-            current_state = initial_state
-            for round_idx in range(max_rounds):
-                # Check for cancellation at the start of each round
-                if (
-                    cancel_event
-                    and hasattr(cancel_event, "is_set")
-                    and cancel_event.is_set()
-                ):
-                    guilogger.info(
-                        "Orchestrator: Task canceled by user during round loop"
-                    )
-                    break
-
-                try:
-                    asyncio.get_running_loop()
-                    import concurrent.futures
-
-                    with concurrent.futures.ThreadPoolExecutor() as executor:
-                        future = executor.submit(_run_graph, current_state)
-                        next_state = future.result()
-                except RuntimeError:
-                    next_state = _run_graph(current_state)
-
-                guilogger.info(
-                    f"Graph round {round_idx}: next_state keys: {list(next_state.keys()) if next_state else 'None'}"
-                )
-
-                # If nothing changed (no new assistant turn) or no next action, stop early
-                final_state = next_state
-
-                # Determine last assistant content produced in this run
-                assistant_msgs = [
-                    m["content"]
-                    for m in final_state.get("history", [])
-                    if m.get("role") == "assistant"
-                ]
-                last_assistant = assistant_msgs[-1] if assistant_msgs else ""
-
-                # Determine whether the assistant suggested a tool that still needs execution.
-                # If the assistant message contains a tool block but a 'tool' role entry with
-                # execution results exists after that assistant message, consider it handled.
-                try:
-                    from src.core.orchestration.tool_parser import (
-                        parse_tool_block as _parse_tool_block,
-                    )
-
-                    has_tool_block = (
-                        True if _parse_tool_block(last_assistant) else False
-                    )
-                except Exception:
-                    has_tool_block = False
-
-                # Find index of last assistant message in the full history
-                history = final_state.get("history", [])
-                last_assistant_idx = None
-                for idx in range(len(history) - 1, -1, -1):
+            try:
+                # Allow multiple graph rounds to consume multi-turn tool sequences (bounded)
+                max_rounds = 12
+                current_state = initial_state
+                for round_idx in range(max_rounds):
+                    # Check for cancellation at the start of each round
                     if (
-                        history[idx].get("role") == "assistant"
-                        and history[idx].get("content") == last_assistant
+                        cancel_event
+                        and hasattr(cancel_event, "is_set")
+                        and cancel_event.is_set()
                     ):
-                        last_assistant_idx = idx
+                        guilogger.info(
+                            "Orchestrator: Task canceled by user during round loop"
+                        )
                         break
 
-                handled = False
-                if last_assistant_idx is not None:
-                    # Check if there's an execution result after this assistant msg.
-                    # execution_node stores results with role="user" (not "tool"), so we
-                    # match on content alone — any message containing "tool_execution_result"
-                    # means the tool was already executed and we should stop looping.
-                    for later in history[last_assistant_idx + 1 :]:
-                        if "tool_execution_result" in (later.get("content") or ""):
-                            handled = True
+                    try:
+                        asyncio.get_running_loop()
+                        # Running loop detected — submit to the reused executor (P2 fix)
+                        future = _graph_executor.submit(_run_graph, current_state)
+                        next_state = future.result()
+                    except RuntimeError:
+                        next_state = _run_graph(current_state)
+
+                    guilogger.info(
+                        f"Graph round {round_idx}: next_state keys: {list(next_state.keys()) if next_state else 'None'}"
+                    )
+
+                    # If nothing changed (no new assistant turn) or no next action, stop early
+                    final_state = next_state
+
+                    # Determine last assistant content produced in this run
+                    assistant_msgs = [
+                        m["content"]
+                        for m in final_state.get("history", [])
+                        if m.get("role") == "assistant"
+                    ]
+                    last_assistant = assistant_msgs[-1] if assistant_msgs else ""
+
+                    # Determine whether the assistant suggested a tool that still needs execution.
+                    # If the assistant message contains a tool block but a 'tool' role entry with
+                    # execution results exists after that assistant message, consider it handled.
+                    try:
+                        from src.core.orchestration.tool_parser import (
+                            parse_tool_block as _parse_tool_block,
+                        )
+
+                        has_tool_block = (
+                            True if _parse_tool_block(last_assistant) else False
+                        )
+                    except Exception:
+                        has_tool_block = False
+
+                    # Find index of last assistant message in the full history
+                    history = final_state.get("history", [])
+                    last_assistant_idx = None
+                    for idx in range(len(history) - 1, -1, -1):
+                        if (
+                            history[idx].get("role") == "assistant"
+                            and history[idx].get("content") == last_assistant
+                        ):
+                            last_assistant_idx = idx
                             break
 
-                # If there's no unhandled tool block, we're done
-                if not has_tool_block or handled:
-                    break
+                    handled = False
+                    if last_assistant_idx is not None:
+                        # Check if there's an execution result after this assistant msg.
+                        # execution_node stores results with role="user" (not "tool"), so we
+                        # match on content alone — any message containing "tool_execution_result"
+                        # means the tool was already executed and we should stop looping.
+                        for later in history[last_assistant_idx + 1 :]:
+                            if "tool_execution_result" in (later.get("content") or ""):
+                                handled = True
+                                break
 
-                # Prepare next iteration: feed the graph with the new history and verified reads
-                current_state = {
-                    "task": current_state.get("task"),
-                    "history": final_state.get("history", []),
-                    "verified_reads": final_state.get("verified_reads", [])
-                    or list(self._session_read_files),
-                    "next_action": None,
-                    "last_result": None,
-                    "rounds": final_state.get("rounds", 0),
-                    "working_dir": current_state.get("working_dir"),
-                    "system_prompt": current_state.get("system_prompt"),
-                    "errors": [],
-                    "current_plan": final_state.get("current_plan", []),
-                    "current_step": final_state.get("current_step", 0),
-                    "task_decomposed": final_state.get("task_decomposed", False),
-                    "original_task": final_state.get("original_task"),
-                    "deterministic": getattr(self, "deterministic", False),
-                    "seed": getattr(self, "seed", None),
-                    "cancel_event": cancel_event,
-                    "max_tool_calls": final_state.get("max_tool_calls", 30),
-                    "tool_call_count": final_state.get("tool_call_count", 0),
-                    "files_read": final_state.get("files_read", {}),
-                }
+                    # If there's no unhandled tool block, we're done
+                    if not has_tool_block or handled:
+                        break
+
+                    # Prepare next iteration: feed the graph with the new history and verified reads
+                    current_state = {
+                        "task": current_state.get("task"),
+                        "history": final_state.get("history", []),
+                        "verified_reads": final_state.get("verified_reads", [])
+                        or list(self._session_read_files),
+                        "next_action": None,
+                        "last_result": None,
+                        "rounds": final_state.get("rounds", 0),
+                        "working_dir": current_state.get("working_dir"),
+                        "system_prompt": current_state.get("system_prompt"),
+                        "errors": [],
+                        "current_plan": final_state.get("current_plan", []),
+                        "current_step": final_state.get("current_step", 0),
+                        "task_decomposed": final_state.get("task_decomposed", False),
+                        "original_task": final_state.get("original_task"),
+                        "deterministic": getattr(self, "deterministic", False),
+                        "seed": getattr(self, "seed", None),
+                        "cancel_event": cancel_event,
+                        "max_tool_calls": final_state.get("max_tool_calls", 30),
+                        "tool_call_count": final_state.get("tool_call_count", 0),
+                        # F7/H9 fix: propagate debug budgets across graph rounds so the
+                        # 3-attempt cap is not silently reset at the start of each round.
+                        "debug_attempts": final_state.get("debug_attempts", 0),
+                        "max_debug_attempts": final_state.get("max_debug_attempts", 3),
+                        "total_debug_attempts": final_state.get("total_debug_attempts", 0),
+                        "last_debug_error_type": final_state.get("last_debug_error_type"),
+                        "step_retry_counts": final_state.get("step_retry_counts") or {},
+                        # Propagate cooldown + read-tracking dicts across rounds
+                        "tool_last_used": final_state.get("tool_last_used") or {},
+                        "files_read": final_state.get("files_read") or {},
+                    }
+            finally:
+                # P2 fix: shut down the reused executor after all rounds complete.
+                _graph_executor.shutdown(wait=False)
 
             # Check if we broke out due to cancellation
             if (
@@ -2157,6 +2196,7 @@ class Orchestrator:
             if delegation_results:
                 guilogger.info(f"run_agent_once: delegation_results keys={list(delegation_results.keys())}")
 
+            self._flush_usage_buffer()
             return {
                 "assistant_message": assistant_message.strip(),
                 "work_summary": work_summary,
@@ -2168,6 +2208,7 @@ class Orchestrator:
                 final_state.get("history", []) if isinstance(final_state, dict) else []
             )
             work_summary = _generate_work_summary(final_state, history)
+            self._flush_usage_buffer()
             return {
                 "assistant_message": "Graph finished.",
                 "work_summary": work_summary,
@@ -2241,10 +2282,12 @@ class Orchestrator:
                     except Exception:
                         pass
 
+                self._flush_usage_buffer()
                 return {
                     "assistant_message": content if content else "",
                     "error": "graph_failed",
                     "exception": str(e),
                 }
             except Exception:
+                self._flush_usage_buffer()
                 return {"error": "graph_failed", "exception": str(e)}

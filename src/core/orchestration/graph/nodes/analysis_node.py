@@ -1,4 +1,5 @@
 import logging
+import os
 from typing import Dict, Any
 
 from src.core.orchestration.graph.state import AgentState
@@ -7,9 +8,30 @@ from src.tools.repo_summary import generate_repo_summary
 
 logger = logging.getLogger(__name__)
 
-# F8: Cache of already-indexed directories so index_repository() is called at most
-# once per working directory per process lifetime (it is expensive: file walk + embeddings).
-_INDEXED_DIRS: set = set()
+# F8 / F15 fix: Cache indexed directories keyed by (resolved_path, mtime) so
+# index_repository() is skipped on repeated calls to the same unchanged directory,
+# but re-runs when the working dir changes or its mtime changes (stale cache fix).
+_INDEXED_DIRS: dict = {}  # {resolved_path: mtime_ns}
+
+
+def _is_already_indexed(working_dir: str) -> bool:
+    """Return True if working_dir was indexed and its mtime has not changed."""
+    try:
+        resolved = str(os.path.realpath(working_dir))
+        mtime = os.stat(resolved).st_mtime_ns
+        return _INDEXED_DIRS.get(resolved) == mtime
+    except Exception:
+        return False
+
+
+def _mark_indexed(working_dir: str) -> None:
+    """Record that working_dir has been indexed at its current mtime."""
+    try:
+        resolved = str(os.path.realpath(working_dir))
+        mtime = os.stat(resolved).st_mtime_ns
+        _INDEXED_DIRS[resolved] = mtime
+    except Exception:
+        pass
 
 
 async def analysis_node(state: AgentState, config: Any) -> Dict[str, Any]:
@@ -19,23 +41,37 @@ async def analysis_node(state: AgentState, config: Any) -> Dict[str, Any]:
     Automatically generates repo summary at the start and injects it into context.
     Uses the 'analyst' role for repository exploration.
 
-    FAST-PATH: If perception already decided on an action (simple 1-step task),
-    bypass heavy repository analysis to save tokens and time.
+    FAST-PATH: If perception already decided on an action AND the task is NOT complex,
+    bypass heavy repository analysis.  C3 fix: complex tasks are always analysed even
+    when next_action is set, so the builder's W3 routing is not nullified.
     """
     logger.info("=== analysis_node START ===")
 
-    # FAST-PATH BYPASS: If perception already decided on an action (e.g. simple 1-step task),
-    # bypass the heavy and expensive repository analysis.
+    # C3 fix: only bypass for genuinely simple tasks.  Import the same complexity
+    # heuristic used by the builder so the two layers stay in sync.
     if state.get("next_action"):
-        logger.info(
-            "analysis_node: Fast path active (Action already determined). Bypassing heavy analysis."
-        )
-        return {
-            "analysis_summary": "Skipped (Fast Path)",
-            "relevant_files": [],
-            "key_symbols": [],
-            "repo_summary_data": "Skipped for efficiency",
-        }
+        try:
+            from src.core.orchestration.graph.builder import _task_is_complex
+            is_complex = _task_is_complex(state)
+        except Exception:
+            is_complex = False
+
+        if not is_complex:
+            logger.info(
+                "analysis_node: Fast path active (simple task, action already determined). "
+                "Bypassing heavy analysis."
+            )
+            return {
+                "analysis_summary": "Skipped (Fast Path)",
+                "relevant_files": [],
+                "key_symbols": [],
+                "repo_summary_data": "Skipped for efficiency",
+            }
+        else:
+            logger.info(
+                "analysis_node: Complex task detected — running full analysis despite next_action "
+                "(C3: W3 fast-path bypass suppressed for complex tasks)"
+            )
 
 
     orchestrator = _resolve_orchestrator(state, config)
@@ -89,10 +125,10 @@ Use this repository context to plan your deep-dive searches."""
         from src.core.indexing.vector_store import VectorStore
         from src.core.indexing.repo_indexer import index_repository
 
-        # F8: Only index once per working_dir per process — indexing is expensive.
-        if working_dir not in _INDEXED_DIRS:
+        # F8/F15: Only index when the directory has not been indexed yet or its mtime changed.
+        if not _is_already_indexed(working_dir):
             index_repository(working_dir)
-            _INDEXED_DIRS.add(working_dir)
+            _mark_indexed(working_dir)
 
         # Search the vector store for semantically similar symbols
         vs = VectorStore(working_dir)

@@ -45,10 +45,8 @@ def _make_state(**kwargs: Any) -> AgentState:
         "verification_result": None,
         "step_controller_enabled": True,
         "task_decomposed": False,
-        "tool_last_used": {},
         "tool_call_count": 0,
         "max_tool_calls": 30,
-        "files_read": {},
         "repo_summary_data": None,
         "replan_required": None,
         "action_failed": False,
@@ -309,7 +307,7 @@ class TestF8IndexCache:
         import src.core.indexing.repo_indexer as _ri
 
         # Clear the cache before test
-        _an._INDEXED_DIRS.discard(str(tmp_path))
+        _an._INDEXED_DIRS.pop(str(tmp_path.resolve()), None)
 
         call_count = []
 
@@ -319,10 +317,19 @@ class TestF8IndexCache:
         # index_repository is imported inside the function from repo_indexer
         monkeypatch.setattr(_ri, "index_repository", _mock_index)
 
-        # Patch VectorStore to avoid disk I/O
+        # Patch entire VectorStore class to avoid disk I/O that would mutate tmp_path
+        # (mutating mtime would break F15 stale-cache detection and cause false cache misses).
         try:
             import src.core.indexing.vector_store as _vs
-            monkeypatch.setattr(_vs.VectorStore, "search", lambda *a, **kw: [])
+
+            class _MockVS:
+                def __init__(self, *a, **kw):
+                    pass
+
+                def search(self, *a, **kw):
+                    return []
+
+            monkeypatch.setattr(_vs, "VectorStore", _MockVS)
         except Exception:
             pass
 
@@ -344,7 +351,7 @@ class TestF8IndexCache:
             f"index_repository called {len(call_count)} times; expected at most 1 (cached after first call)"
         )
         # Clean up
-        _an._INDEXED_DIRS.discard(str(tmp_path))
+        _an._INDEXED_DIRS.pop(str(tmp_path.resolve()), None)
 
 
 # ---------------------------------------------------------------------------
@@ -469,7 +476,7 @@ class TestF11SymbolLookup:
             pass
 
         # Clear index cache
-        an._INDEXED_DIRS.discard(str(tmp_path))
+        an._INDEXED_DIRS.pop(str(tmp_path.resolve()), None)
 
         state = _make_state(
             task="implement authentication module",
@@ -482,7 +489,7 @@ class TestF11SymbolLookup:
         assert "implement" not in found_names, (
             f"'implement' should be filtered as a stopword, but got calls: {found_names}"
         )
-        an._INDEXED_DIRS.discard(str(tmp_path))
+        an._INDEXED_DIRS.pop(str(tmp_path.resolve()), None)
 
 
 # ---------------------------------------------------------------------------

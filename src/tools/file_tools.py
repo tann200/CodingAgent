@@ -59,10 +59,7 @@ def write_file(
     if p.exists():
         original_content = p.read_text(encoding="utf-8")
 
-    # Write new content
-    p.write_text(content, encoding="utf-8")
-
-    # Generate unified diff for TUI display (show as new file if no original)
+    # Generate unified diff BEFORE writing so preview shows what *will* change (F14 fix)
     original_lines = (
         original_content.splitlines(keepends=True) if original_content else []
     )
@@ -87,8 +84,11 @@ def write_file(
         lines_added = len(new_lines)
         lines_removed = 0
 
-    # M4: Publish diff preview BEFORE writing so the TUI can show what will change
+    # F14: Publish diff preview BEFORE writing so the TUI can show the proposed change
     _publish_diff_preview(str(p), diff, is_new_file=not bool(original_content))
+
+    # Write new content after the preview event so the user sees it first
+    p.write_text(content, encoding="utf-8")
 
     result: Dict[str, Any] = {
         "path": str(p),
@@ -290,26 +290,13 @@ def bash(command: str, workdir: Path = DEFAULT_WORKDIR) -> Dict[str, Any]:
     import subprocess
     import shlex
 
-    # Check for dangerous patterns BEFORE parsing
+    # F12 fix: single canonical DANGEROUS_PATTERNS list — previously duplicated with
+    # slightly different membership and different normalization, causing inconsistencies.
+    # Checked on whitespace-normalized, lowercased command so spacing tricks don't bypass.
     DANGEROUS_PATTERNS = [
-        "&&",
-        "||",
-        ";",
-        "|",
-        ">",
-        ">>",
-        "<",
-        "$(",
-        "`",
-        "rm -rf",
-        "rm -r",
-        "rm -f",
-        "del ",
-        "format ",
-        "shutdown",
-        "reboot",
-        "halt",
-        "poweroff",
+        "&&", "||", ";", "|", ">", ">>", "<", "$(", "`",
+        "rm -rf", "rm -r", "rm -f", "del ", "format ",
+        "shutdown", "reboot", "halt", "poweroff",
     ]
     import re as _re
     cmd_lower = _re.sub(r"\s+", " ", command).lower()
@@ -552,7 +539,17 @@ def bash(command: str, workdir: Path = DEFAULT_WORKDIR) -> Dict[str, Any]:
     # `tar` is allowed for listing archives but `-x`/`--extract` unpacks arbitrary content.
     # `unzip` without `-l` (list-only) extracts files — block it.
     if first_cmd == "sed":
-        if "-i" in cmd_parts[1:] or "--in-place" in cmd_parts[1:]:
+        # F6 fix: detect -i in any form — bare "-i", bundled "-ni", or "--in-place[=...]"
+        _sed_inplace = False
+        for _part in cmd_parts[1:]:
+            if _part == "-i" or _part == "--in-place" or _part.startswith("--in-place="):
+                _sed_inplace = True
+                break
+            # Bundled short options: -ni, -rni, etc.  Any short-option group containing 'i'.
+            if _part.startswith("-") and not _part.startswith("--") and "i" in _part[1:]:
+                _sed_inplace = True
+                break
+        if _sed_inplace:
             return {
                 "status": "error",
                 "error": "sed -i (in-place edit) is not allowed. Use edit_file or edit_file_atomic instead.",
@@ -593,13 +590,9 @@ def bash(command: str, workdir: Path = DEFAULT_WORKDIR) -> Dict[str, Any]:
             "error": f"Command '{cmd_parts[0]}' not allowed. Allowed: {sorted(SAFE_COMMANDS | TEST_COMPILE_COMMANDS)}",
         }
 
-    # Block shell operators
-    DANGEROUS_PATTERNS = ["&&", "||", ";", "|", ">", ">>", "<", "$(", "`"]
-    if any(p in command for p in DANGEROUS_PATTERNS):
-        return {
-            "status": "error",
-            "error": "Command contains dangerous pattern. No shell operators allowed.",
-        }
+    # F12 fix: removed duplicate DANGEROUS_PATTERNS check here — the canonical check above
+    # (whitespace-normalized, lowercased) already covers all shell operators before we
+    # reach this point. Keeping two inconsistent checks caused confusing bypass edge-cases.
 
     try:
         result = subprocess.run(
@@ -699,8 +692,8 @@ def edit_by_line_range(
         "path": str(p),
         "status": "ok",
         "diff": diff,
-        "lines_added": len([l for l in diff_lines if l.startswith("+")]),
-        "lines_removed": len([l for l in diff_lines if l.startswith("-")]),
+        "lines_added": len([ln for ln in diff_lines if ln.startswith("+")]),
+        "lines_removed": len([ln for ln in diff_lines if ln.startswith("-")]),
     }
 
 
@@ -708,16 +701,30 @@ def glob(pattern: str, workdir: Path = DEFAULT_WORKDIR) -> Dict[str, Any]:
     """Find files matching a glob pattern. Supports ** for recursive matching."""
     LIMIT = 500
     try:
-        base = Path(workdir)
+        base = Path(workdir).resolve()
+        # F13 fix: reject patterns that escape the working directory via ".."
+        if ".." in pattern:
+            return {
+                "status": "error",
+                "error": "Glob pattern must not contain '..'. Path traversal outside the working directory is not allowed.",
+            }
         if "**" in pattern:
             # Pattern already expresses recursion; use Path.glob() verbatim so ** is honoured
             raw = base.glob(pattern)
         else:
             # Simple pattern — search the whole tree recursively
             raw = base.rglob(pattern)
-        matches = sorted(
-            str(p.relative_to(base)) for p in raw if p.is_file()
-        )[:LIMIT]
+        matches = []
+        for p in raw:
+            if not p.is_file():
+                continue
+            try:
+                rel = str(p.resolve().relative_to(base))
+                matches.append(rel)
+            except ValueError:
+                # Path resolved to outside base — skip silently (prevents path traversal exfiltration)
+                continue
+        matches = sorted(matches)[:LIMIT]
         return {"status": "ok", "pattern": pattern, "matches": matches}
     except Exception as e:
         return {"status": "error", "error": str(e)}
@@ -787,6 +794,6 @@ def edit_file_atomic(
         "path": str(p),
         "status": "ok",
         "diff": diff,
-        "lines_added": len([l for l in diff_lines if l.startswith("+")]),
-        "lines_removed": len([l for l in diff_lines if l.startswith("-")]),
+        "lines_added": len([ln for ln in diff_lines if ln.startswith("+")]),
+        "lines_removed": len([ln for ln in diff_lines if ln.startswith("-")]),
     }

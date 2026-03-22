@@ -78,6 +78,11 @@ class TextualAppBase:
         # internal chat history as tuple(role, text)
         self.history: List[tuple] = []
         self._history_lock = threading.Lock()  # H4: protects concurrent history access
+        # H3 fix: mutex that prevents two send_prompt() calls from running simultaneously.
+        # Without this, concurrent calls race on _session_read_files, msg_mgr, and
+        # _step_snapshot_id on the shared orchestrator.
+        self._agent_lock = threading.Lock()
+        self._agent_running = False
         # event bus
         try:
             self.event_bus = get_event_bus()
@@ -88,8 +93,27 @@ class TextualAppBase:
         # cancel event for interrupting agent
         self._cancel_event = threading.Event()
 
+    @property
+    def is_agent_running(self) -> bool:
+        """Return True if an agent task is currently running."""
+        with self._agent_lock:
+            return self._agent_running
+
     def send_prompt(self, prompt: str) -> None:
-        """Send a prompt to the orchestrator in a background thread."""
+        """Send a prompt to the orchestrator in a background thread.
+
+        H3 fix: rejects new prompts while the agent is already running to prevent
+        concurrent access to shared orchestrator state (race conditions on
+        _session_read_files, msg_mgr, _step_snapshot_id, etc.).
+        """
+        with self._agent_lock:
+            if self._agent_running:
+                guilogger.warning(
+                    "send_prompt: agent already running, ignoring duplicate submission"
+                )
+                return
+            self._agent_running = True
+
         with self._history_lock:
             self.history.append(("user", prompt))
         self._agent_thread = threading.Thread(
@@ -154,9 +178,13 @@ class TextualAppBase:
         except Exception as e:
             guilogger.error(f"TextualApp: _run_agent failed: {e}")
             try:
-                self.on_agent_result(f"[ERROR] {e}")
+                self.on_agent_result("[ERROR] Agent encountered an unexpected error. Check logs for details.")
             except Exception:
                 pass
+        finally:
+            # H3 fix: always release the running lock so subsequent prompts are accepted.
+            with self._agent_lock:
+                self._agent_running = False
 
     def on_agent_result(self, content: str) -> None:
         """Hook executed in the UI thread when agent result is ready.
@@ -929,9 +957,9 @@ else:
                         bl = bl[1:]
                         br = br[1:] if len(br) > 1 else []
                     # pair deleted/added lines side-by-side with padding
-                    for l, r in zip_longest(bl, br, fillvalue=""):
+                    for ln, r in zip_longest(bl, br, fillvalue=""):
                         table.add_row(
-                            Text(l, style="red") if l else Text(""),
+                            Text(ln, style="red") if ln else Text(""),
                             Text(r, style="green") if r else Text(""),
                         )
 

@@ -80,8 +80,36 @@ async def delegation_node(state: AgentState, config: Any) -> Dict[str, Any]:
             key, value = result
             results["delegation_results"][key] = value
 
+    # C4 fix: inject completed delegation results into conversation history so the next
+    # perception/planning cycle can see and use the subagent output.  Without this, results
+    # were write-only — stored in state["delegation_results"] but never read by any node.
+    delegation_history_msgs = []
+    completed = results.get("delegation_results", {})
+    if completed:
+        summary_parts = []
+        for key, val in completed.items():
+            status = val.get("status", "unknown")
+            if status == "completed":
+                result_text = str(val.get("result", ""))[:500]
+                summary_parts.append(f"**{key}**: {result_text}")
+            else:
+                summary_parts.append(f"**{key}**: [error] {val.get('error', 'unknown error')}")
+
+        if summary_parts:
+            delegation_summary = (
+                "<delegation_results>\n"
+                + "\n\n".join(summary_parts)
+                + "\n</delegation_results>"
+            )
+            delegation_history_msgs.append(
+                {"role": "user", "content": delegation_summary}
+            )
+            logger.info(
+                f"delegation_node: injected {len(summary_parts)} result(s) into history"
+            )
+
     logger.info("=== delegation_node END ===")
-    return results
+    return {**results, "history": delegation_history_msgs}
 
 
 def create_delegation(

@@ -1,7 +1,6 @@
 from typing import Dict, Any
 from pathlib import Path
 import difflib
-import os
 
 from src.tools._path_utils import safe_resolve as _safe_resolve
 

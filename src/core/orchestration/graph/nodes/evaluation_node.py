@@ -20,7 +20,6 @@ async def evaluation_node(state: AgentState, config: Any) -> Dict[str, Any]:
     current_plan = state.get("current_plan") or []
     current_step = state.get("current_step") or 0
     errors = state.get("errors") or []
-    rounds = state.get("rounds", 0)
 
     # Check verification status
     tests = verification_result.get("tests", {})

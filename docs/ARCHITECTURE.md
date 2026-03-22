@@ -1,8 +1,8 @@
 # CodingAgent Architecture
 
-> **Implementation Status**: Fully implemented — LangGraph 12-node pipeline, multi-file atomic rollback, advanced memory wired, repository intelligence, 560+ unit tests
-> **Recent Updates (2026-03)**: Role prompts rewritten for small-model optimization (9B); verification node upgraded with JS/TS auto-detection and proactive test trigger; bash tool expanded with platform-specific commands; tool audit fixes (patch_tools, symbol_reader, subagent_tools canonical roles); new JS/TS verification tools (run_js_tests, run_ts_check, run_eslint)
-> **Audit Fixes (2026-03)**: All Phase 1 (Critical) and Phase 2 (Robustness) findings from security audit have been implemented. See Security Audit Fixes section for details.
+> **Implementation Status**: Fully implemented — LangGraph 13-node pipeline, multi-file atomic rollback, advanced memory wired, repository intelligence, 1040+ unit tests
+> **Recent Updates (2026-03)**: Analyst delegation node added (vol9); tool cooldown enforcement + files_read O(1) dict in execution_node; plan_validator now routes to planning (not perception) on failure; delegation results injected into conversation history (C4); prompt injection guard in perception_node (F8); ThreadPoolExecutor-based tool timeouts (C1); thinking-token stripping for Qwen3/DeepSeek-R1; multi-language SymbolGraph (JS/TS/Go/Rust/Java); telemetry log rotation
+> **Audit Fixes (2026-03)**: 9 audit cycles completed (vol1–vol5). All Critical and High severity findings resolved. See Security Audit Fixes section.
 
 ## Implementation Stages
 
@@ -25,62 +25,65 @@
 | Stage 15 - Thread Safety | ✅ Complete | Signal-based timeout guarded by main-thread check |
 | Stage 16 - Delegation & Parallel Memory | ✅ Complete | Delegation node for subagent spawning, parallel memory ops, auto-save methods |
 | Stage 17 - Security Audit Fixes | ✅ Complete | All Critical and High severity audit findings resolved |
+| Stage 18 - Multi-Cycle Hardening | ✅ Complete | Audit vol2–vol5: 100+ fixes across loop safety, tool reliability, TUI race conditions, prompt injection |
+| Stage 19 - Analyst Delegation | ✅ Complete | `analyst_delegation_node` gates complex tasks; findings injected into planning (vol9) |
+| Stage 20 - Tool Cooldown & Read Tracking | ✅ Complete | `tool_last_used` cooldown map, `files_read` O(1) dict, cooldown gap enforcement in execution_node |
+| Stage 21 - Thinking-Token Optimization | ✅ Complete | `thinking_utils.py`: strip `<think>` blocks, model-aware max_tokens budget, /no_think injection |
 
 ---
 
-## Security Audit Fixes (2026-03)
+## Security & Stability Audit Fixes (vol1–vol5, 2026-03)
 
-All Phase 1 (Critical Stability) and Phase 2 (Robustness) findings from the system audit have been implemented:
+Nine audit cycles completed. All Critical and High severity findings are resolved. Full reports: `docs/audit/audit-report.md`, `audit-report-vol2.md` … `audit-report-vol5.md`.
 
-### Phase 1 — Critical Stability Fixes
+### Critical Fixes (selected)
 
-| Finding | Fix Applied | File |
-|---------|-------------|------|
-| C1 — Delegation Node Infinite Loop | Edge now goes directly from `delegation` to `END` instead of routing back to `memory_sync` | `graph/builder.py:519` |
-| C2 — State Mutation Bug | Removed in-place state mutation; routing functions now return string labels only | `graph/builder.py:110-170` |
-| C3 — Shell Injection via bash() | Added code-execution flag blocking (`-c`, `-e`, `-r`, `--eval`, `--execute`) for interpreters | `file_tools.py:516-527` |
-| C4 — Path Traversal in grep() | Replaced `startswith()` with `Path.is_relative_to()` for proper boundary checking | `system_tools.py:57` |
-| C5 — Path Traversal in checkpoint restore | Added regex validation `^[a-zA-Z0-9_\-]+$` for checkpoint_id | `state_tools.py:97-98` |
-| C6 — Path Traversal in preflight_check | Replaced `startswith()` with `Path.is_relative_to()` | `orchestrator.py:1072` |
-| C10 — Python Version Hard Pin | Changed `!= (3, 11)` to `< (3, 11)` to allow Python 3.11+ | `tests/conftest.py:8` |
-| C8/C11 — SQLite WAL Mode | Enabled `PRAGMA journal_mode=WAL` and `busy_timeout=5000` for concurrent access | `session_store.py:30-32, 39-41` |
+| Finding | Fix | Location |
+|---------|-----|----------|
+| C1 (vol5) — Tool timeout no-op in TUI | `ThreadPoolExecutor` + `future.result(timeout=n)` replaces `signal.SIGALRM` | `orchestrator.py` |
+| C2 (vol5) — Sandbox validates old file | `ast.parse(new_content)` validates new content directly | `orchestrator.py` |
+| C3 (vol5) — analysis fast-path nullifies W3 | `_task_is_complex()` gate added; fast-path skipped for complex tasks | `analysis_node.py` |
+| C4 (vol5) — Delegation results write-only | Results injected as system messages into `history` | `delegation_node.py` |
+| C5 (vol5) — EventBus double delivery | Dedup via `called` set in `publish_to_agent` | `event_bus.py` |
+| delegation loop (vol1) | `delegation → END` direct edge; removed `memory_sync` routing | `graph/builder.py` |
+| debug_node unreachable (vol1) | `evaluation_node` returns `"debug"` on failure; edge wired | `graph/builder.py` |
+| plan_validator infinite loop (vol1) | `enforce_warnings=False` default; round≥8 cap | `plan_validator_node.py` |
+| debug_node missing await (vol2) | `resp = await call_model(...)` | `debug_node.py` |
+| debug_attempts double-increment (vol2) | Removed `+1` from `evaluation_node`; `debug_node` owns counter | `evaluation_node.py` |
+| orchestrator loop (vol13) | `handled` check now matches `"tool_execution_result"` in content | `orchestrator.py` |
 
-### Phase 2 — Robustness Fixes
+### High-Risk Fixes (selected)
 
-| Finding | Fix Applied | File |
-|---------|-------------|------|
-| C9 — distiller.py ThreadPoolExecutor Leak | Simplified async handling to remove ThreadPoolExecutor + asyncio.run() pattern | `distiller.py:9-50` |
-| H8 — _MODEL_CACHE Thread Safety | Added `threading.RLock` around all cache access | `llm_manager.py:37, 73-78, 117-119` |
-| H3 — startup.py Timeout | Applied timeout using `asyncio.wait_for()` | `startup.py:49` |
-| H4 — TextualAppBase History Race | Added `threading.Lock` around `self.history` access | `textual_app_impl.py:80, 93-94, 143-144` |
-| H8 — repo_indexer Regex Group Access | Used `match.lastindex` to safely iterate available groups | `repo_indexer.py:110-111` |
-| H2 — VectorStore Vector Shape | Added `.flatten()` and `.tolist()` for 2D→1D conversion | `vector_store.py:141-146` |
-| H1 — debug_node Orchestrator Resolution | Now uses `_resolve_orchestrator()` helper | `debug_node.py:51` |
-| T5 — Patch Size Counter | Fixed to count diff lines (not characters), excluding headers | `tool_contracts.py:42-44` |
-| H16 — session_store Message Order | Changed `ORDER BY` to `ASC` for chronological order | `session_store.py:114` |
-| Test — Always-passing Assertion | Fixed to check specific status `"ok"` not union | `test_audit_fixes.py:64` |
+| Finding | Fix |
+|---------|-----|
+| H1 (vol5) — sed -i position-independent detection | `startswith("-i")` + bundled-flag scan (`-ni`, `-rni`, `--in-place=`) |
+| H2 (vol5) — Prompt injection via tool result | F8: perception_node rejects tool blocks matching user-role history |
+| H3 (vol5) — Concurrent send_prompt() | `_agent_lock` mutex + `_agent_running` flag; input disabled while running |
+| H4 (vol5) — plan_validator → perception waste | F10: routes directly to `planning` on failure (saves 2 LLM calls) |
+| H6 (vol5) — Dead state fields | `tool_last_used` and `files_read` re-added with active functionality |
+| H9 (vol5) — debug_attempts reset per round | `debug_attempts`, `total_debug_attempts`, `step_retry_counts` propagated across rounds |
+| NEW-1 (vol2) — debug_node missing await | Fixed; entire debug/fix loop was silently broken |
+| NEW-6 (vol2) — perception decomposition resets rounds | Returns `rounds + 1` instead of `0` |
+| F1 (vol3) — execution_node extra LLM call | Uses `planned_action` directly; skips LLM call when action pre-set |
+| F8 (vol3) — `_INDEXED_DIRS` stale cache | Keyed by `(resolved_path, mtime_ns)` tuple |
+| F15 (vol3) — `_TEXT_CACHE` LRU eviction | Max 256 entries; module-level static dict |
 
-### Phase 3 — Capability Improvements
+### AgentState Fields Added (vol2–vol5)
 
-| # | Fix | Status | File |
-|---|-----|--------|------|
-| 24 | Fix repo_indexer type classification regex | ✅ Done | `repo_indexer.py:128-143` |
-| 28 | Single-pass directory scan in repo_summary.py | ✅ Done | `repo_summary.py:63-71` |
-| 25 | Add encoding='utf-8' to file opens | ✅ Done | `advanced_features.py`, `orchestrator.py`, `sandbox.py` |
-| 23 | Fix SymbolGraph.find_calls | ✅ Done | `symbol_graph.py:163-200` |
-| 27 | Cache TASK_STATE.md in ContextBuilder | ✅ Done | `context_builder.py:8-75` |
-| 29 | Extract _safe_resolve utility | Pending | Multiple tools |
-| 30 | Standardize tool return format | ✅ Done (grep) | `system_tools.py` — `status:"ok"` added to success paths |
-| 22 | Implement scenario_evaluator.run_scenario() | ✅ Done | `scenario_evaluator.py:163-178` — agent_factory() invoked |
-| 26 | Add correlation IDs | Pending | Multiple files |
-
-### Security Improvements Summary
-
-- **Path Traversal**: All path checks now use `Path.is_relative_to()` instead of prefix matching
-- **Shell Injection**: Interpreter commands with code-execution flags are now blocked
-- **Thread Safety**: All shared state (caches, history, connections) now protected by locks
-- **SQLite Concurrency**: WAL mode enabled with busy timeout prevents database locked errors
-- **Python Compatibility**: Tests now run on Python 3.11, 3.12, and 3.13
+| Field | Type | Purpose |
+|-------|------|---------|
+| `original_task` | `Optional[str]` | Task before step-level decomposition |
+| `step_description` | `Optional[str]` | Current step hint from step_controller |
+| `planned_action` | `Optional[Dict]` | Pre-set tool action from planning |
+| `plan_validation` | `Optional[Dict]` | Result dict from plan_validator_node |
+| `plan_enforce_warnings` | `Optional[bool]` | External override for plan validator |
+| `plan_strict_mode` | `Optional[bool]` | External override for plan validator |
+| `task_history` | `Optional[List]` | State snapshot history for rollback |
+| `step_retry_counts` | `Optional[Dict[str, int]]` | Per-step retry counter |
+| `tool_last_used` | `Optional[Dict[str, int]]` | Cooldown map: `"tool:path"` → count at last call |
+| `files_read` | `Optional[Dict[str, bool]]` | O(1) read-before-edit lookup: resolved path → True |
+| `analyst_findings` | `Optional[str]` | Analyst subagent output injected into planning |
+| `plan_resumed` | `Optional[bool]` | Set when stale plan is resumed from `last_plan.json` |
 
 ---
 
@@ -88,37 +91,50 @@ All Phase 1 (Critical Stability) and Phase 2 (Robustness) findings from the syst
 
 ```
 Fast-Path (simple 1-step task):
-  perception → execution → verification → evaluation → (memory_sync | delegation | end)
+  perception → execution → verification → evaluation → (memory_sync | delegation | END)
 
 Full Pipeline (complex multi-step task):
-  perception → analysis → planning → execution → step_controller
-            → verification → evaluation → (memory_sync | delegation | step_controller | end)
+  perception → analysis → [analyst_delegation →] planning → plan_validator
+            → execution → step_controller → verification → evaluation
+            → (memory_sync | delegation | step_controller | END)
+
+Plan validation failure (F10 fix):
+  plan_validator → planning  (direct re-planning, saves 2 LLM calls vs old → perception path)
 
 Patch-too-large path:
   execution → replan → step_controller → execution (smaller step)
+
+Verification failure / debug path:
+  verification → evaluation → debug → (execution | END)
 ```
 
-**Conditional Routing (Fast-Path):**
-`route_after_perception` checks if `next_action` is set after perception:
-- Tool call ready → skip to `execution` (fast-path)
-- No tool call → go through `analysis` + `planning` (full pipeline)
+**Conditional Routing (Fast-Path / W3):**
+`route_after_perception` checks `next_action` and task complexity:
+- Tool call ready + **simple task** → skip to `execution` (fast-path)
+- Tool call ready + **complex task** (refactor/rewrite/multi-step keyword, >3 relevant files, or 2+ step plan) → force through `analysis` (W3 fix)
+- No tool call → `analysis` (full pipeline)
+
+`should_after_analysis` checks task complexity:
+- Complex task → `analyst_delegation` → `planning`
+- Simple task → `planning` directly
 
 **Node Role Mapping:**
 
 | Node | Role | LLM Calls | Notes |
 |------|------|-----------|-------|
-| `perception_node` | `operational` | ✅ Yes | Main reasoning node — task parsing, tool call generation |
-| `planning_node` | `strategic` | ✅ Yes | Generates structured JSON plan via LLM |
-| `debug_node` | `debugger` | ✅ Yes | Error analysis and fix generation via LLM |
-| `replan_node` | `strategic` | ✅ Yes | Step splitting for oversized patches |
-| `analysis_node` | N/A | ❌ Tool-based | VectorStore + SymbolGraph + ContextController |
-| `execution_node` | `operational` | ⚠️ Optional | LLM call only if no pre-set action |
-| `verification_node` | N/A | ❌ Tool-based | pytest/ruff/tsc/jest — deterministic |
-| `evaluation_node` | N/A | ❌ State-based | Pure routing logic |
-| `step_controller_node` | N/A | ❌ State-based | Step gating; rarely active in main happy path |
-| `plan_validator_node` | N/A | ❌ State-based | Plan structure validation |
-| `delegation_node` | N/A | ❌ Spawns subagents | Post-execution parallel subagent launch |
-| `memory_update_node` | N/A | ❌ Tool-based | Distillation + parallel memory ops |
+| `perception_node` | `operational` | ✅ Yes | Task parsing, tool call generation; F8 prompt injection guard rejects reflected YAML tool blocks from user-role history |
+| `planning_node` | `strategic` | ✅ Yes | Structured JSON plan via LLM; `max_tokens=3000`; fallback plan on parse failure; injects `analyst_findings` when present |
+| `debug_node` | `debugger` | ✅ Yes | Error analysis and fix generation; resets counter on error-type change |
+| `replan_node` | `strategic` | ✅ Yes | Step splitting for oversized patches (>200 lines) |
+| `analysis_node` | N/A | ❌ Tool-based | VectorStore + SymbolGraph + ContextController; fast-path bypassed for complex tasks (C3 fix); `_INDEXED_DIRS` keyed by `(path, mtime_ns)` |
+| `analyst_delegation_node` | `analyst` | ✅ Yes | Spawned for complex tasks only; injects `<findings>` into `analyst_findings`; result feeds `planning_node` |
+| `execution_node` | `operational` | ⚠️ Optional | Uses `planned_action` when set (F1); enforces read-before-edit via `files_read` O(1) dict + `verified_reads` fallback; tool cooldown via `tool_last_used` (COOLDOWN_GAP=3); LLM call only if no pre-set action |
+| `verification_node` | N/A | ❌ Tool-based | pytest/ruff/tsc/jest — deterministic; rollback on failure |
+| `evaluation_node` | N/A | ❌ State-based | Routes to `debug` on failure (bounded by `debug_attempts`); never routes directly to step_controller on failure |
+| `step_controller_node` | N/A | ❌ State-based | Step gating; failed step retries via `execution` not `verification` |
+| `plan_validator_node` | N/A | ❌ State-based | Plan structure validation; on failure routes to `planning` (F10 fix — saves 2 LLM calls); emergency round≥8 guard forces execution |
+| `delegation_node` | N/A | ❌ Spawns subagents | C4 fix: results injected into conversation history (not write-only); `delegation_results` also kept in state for backward compat |
+| `memory_update_node` | N/A | ❌ Tool-based | Distillation + parallel memory ops via `asyncio.gather()` |
 
 **Subagent Roles** (via `delegate_task` tool):
 
@@ -148,7 +164,7 @@ Patch-too-large path:
    - Primary action loop (`run_agent_once`): compiles and invokes the LangGraph pipeline.
    - Tool execution via `execute_tool` with preflight, snapshots, signal-safe timeout, contract validation, and loop detection.
    - Role-based tool filtering; multi-file step transactions via `RollbackManager`.
-   - **Thread-safe timeout**: `signal.SIGALRM` is only armed when executing in the main thread; skipped in `ThreadPoolExecutor` workers (the common TUI path).
+   - **Thread-safe timeout**: `execute_tool` uses `concurrent.futures.ThreadPoolExecutor` + `future.result(timeout=n)` — works from any thread including the TUI daemon thread. (C1: old `signal.SIGALRM` approach was a no-op in non-main threads.)
 
 3. **LangGraph Cognitive Pipeline** (`src/core/orchestration/graph/`)
 
@@ -160,18 +176,19 @@ Patch-too-large path:
 
    | File | Node | Description |
    |------|------|-------------|
-   | `perception_node.py` | `perception_node` | Understands the user request, decomposes tasks, extracts tool calls from YAML. Uses `operational` role for LLM calls. Injects `context_hygiene` skill for debug/search tasks. |
-   | `analysis_node.py` | `analysis_node` | Explores the repository before planning using tool calls (not LLM). Three phases: (1) VectorStore semantic search, (2) SymbolGraph call graph enrichment, (3) ContextController token budget enforcement. Runs `repo_summary()` at start. |
-   | `planning_node.py` | `planning_node` | Converts perception outputs into a structured step-by-step plan via LLM. Cross-session plan persistence via `last_plan.json`. Uses `strategic` role. |
-   | `execution_node.py` | `execution_node` | Executes plan steps via tool calls. Calls `begin_step_transaction()`, dispatches tools, advances plan state. Intercepts `requires_split` flag for replan. Injects `dry` skill when >2 relevant files. |
+   | `perception_node.py` | `perception_node` | Understands the user request, decomposes tasks, extracts tool calls from YAML. Uses `operational` role. Injects `context_hygiene` skill for debug/search tasks. F8 prompt injection guard: rejects tool blocks whose `name:` appears verbatim in any user-role history message. |
+   | `analysis_node.py` | `analysis_node` | Explores the repository before planning via tool calls (no LLM). Three phases: (1) VectorStore semantic search, (2) SymbolGraph call graph enrichment, (3) ContextController token budget enforcement. Runs `repo_summary()` at start. Fast-path bypass suppressed for complex tasks (C3). `_INDEXED_DIRS` keyed by `(path, mtime_ns)` to avoid stale cache across sessions (F15). |
+   | `analyst_delegation_node.py` | `analyst_delegation_node` | Spawned for complex tasks only (vol9 #56). Delegates deep repo analysis to `analyst` subagent. Stores `<findings>` in `state["analyst_findings"]`; `planning_node` injects findings into its LLM prompt. |
+   | `planning_node.py` | `planning_node` | Converts perception/analysis outputs into a structured step-by-step plan via LLM. `max_tokens=3000` (P5). Injects `analyst_findings` when present. Guaranteed fallback plan on parse failure (F7). Cross-session plan persistence via `last_plan.json`. Uses `strategic` role. |
+   | `execution_node.py` | `execution_node` | Executes plan steps via tool calls. Uses `planned_action` when set (F1 — eliminates extra LLM call per step). Read-before-edit enforced via `files_read` O(1) dict + `verified_reads` list + `_session_read_files`. Tool cooldown: `tool_last_used` map blocks repeated identical read-tool calls within `COOLDOWN_GAP=3` executions. Calls `begin_step_transaction()`, dispatches tools, advances plan state. Intercepts `requires_split` flag for replan. |
    | `verification_node.py` | `verification_node` | Runs tests, linter, and syntax checks via tool calls. On failure calls `rollback_step_transaction()` to atomically restore all files written in the step. |
-   | `evaluation_node.py` | `evaluation_node` | Post-verification review — decides if the goal is fully met based on state. Routes to `memory_sync` (complete), `step_controller` (more work), or `end`. |
-   | `debug_node.py` | `debug_node` | Analyses verification failures and attempts fixes via LLM. Enforces max 3 retry limit; on exhaustion calls `rollback_manager.rollback()`. Uses `debugger` role. |
-   | `replan_node.py` | `replan_node` | Splits oversized patches (>200 lines) into 2–3 smaller targeted steps via LLM. Uses `planner` role. |
-    | `step_controller_node.py` | `step_controller_node` | Enforces single-step execution from the plan; gates next-step dispatch. |
-    | `delegation_node.py` | `delegation_node` | Spawns subagents for independent parallel tasks (background memory ops, code analysis). Reads `state["delegations"]`, uses `asyncio.gather()` for parallel execution. |
-    | `memory_update_node.py` | `memory_update_node` | Persists distilled context to `.agent-context/TASK_STATE.md`. Parallelizes all memory operations via `asyncio.gather()`: TrajectoryLogger, DreamConsolidator, ReviewAgent, RefactoringAgent. |
-    | `plan_validator_node.py` | `validate_plan()` | Standalone function validating a plan before execution: checks step count, file references, verification step (strict mode). |
+   | `evaluation_node.py` | `evaluation_node` | Post-verification routing. Routes to `debug` on verification failure (bounded by `debug_attempts < max_debug_attempts`), `memory_sync` on completion, or `step_controller` for more steps. |
+   | `debug_node.py` | `debug_node` | Analyses verification failures and attempts fixes via LLM. Resets counter when `error_type` changes. On exhaustion calls `rollback_manager.rollback()`. Uses `debugger` role. |
+   | `replan_node.py` | `replan_node` | Splits oversized patches (>200 lines) into 2–3 smaller targeted steps via LLM. Uses `strategic` role. Deep-copies step dicts to prevent aliasing bugs. |
+   | `step_controller_node.py` | `step_controller_node` | Enforces single-step execution from the plan; gates next-step dispatch. Failed steps retry via `execution` (not `verification`). |
+   | `delegation_node.py` | `delegation_node` | Spawns subagents for independent parallel tasks. Reads `state["delegations"]`, uses `asyncio.gather()`. C4 fix: results injected as system messages into `history` so downstream nodes can read them; `delegation_results` also stored in state. |
+   | `memory_update_node.py` | `memory_update_node` | Persists distilled context to `.agent-context/TASK_STATE.md`. Parallelizes all memory operations via `asyncio.gather()`: TrajectoryLogger, DreamConsolidator, ReviewAgent, RefactoringAgent. |
+   | `plan_validator_node.py` | `validate_plan()` | Validates plan structure before execution: step count, file references, verification step (strict mode). On failure routes to `planning` directly (F10 — saves 2 LLM calls). Emergency round≥8 guard forces execution to break infinite loops. |
    | `node_utils.py` | — | Shared utilities: `_resolve_orchestrator()` (robust config/state lookup), `_notify_provider_limit()` (UI event for provider errors). |
    | `workflow_nodes.py` | — | Re-export shim for backward compatibility — imports all nodes and re-exports them from one place. |
 
@@ -235,13 +252,21 @@ Central registry of named tools. Tools are small functions registered with metad
 - `read_file_chunk` — read a byte range of a file
 - `write_file` / `fs.write` — write file (tiered bash allowlist enforced)
 - `edit_file` — apply a patch/diff to a file
+- `edit_file_atomic` — replace an exact unique string in a file (like Claude Code's `Edit` tool)
 - `edit_by_line_range` — replace specific line ranges
 - `delete_file` — delete a file
-- `glob` — file pattern matching
+- `glob` — file pattern matching; rejects `..` traversal patterns (F13); all returned paths are relative to workdir
 - `batched_file_read` — read multiple files efficiently
 - `multi_file_summary` — get file metadata without full reads
+- `bash` — shell execution with allowlist; `sed -i` blocked in all forms (`-ni`, `--in-place=`); `DANGEROUS_PATTERNS` applied once, whitespace-normalised (F12)
 
-**Security:** Tiered bash allowlist (Tier 1: safe read-only, Tier 2: test/compile, Tier 3: restricted with `requires_approval`). Shell operators blocked pre-parse. Symlink path traversal protection via `os.path.realpath`.
+**Security:** Tiered bash allowlist (Tier 1: safe read-only, Tier 2: test/compile, Tier 3: restricted with `requires_approval`). Shell operators blocked pre-parse. `safe_resolve()` shared utility for all path validation. `sed -i` bundled-flag detection handles `-ni`, `-rni`, `--in-place[=...]`.
+
+### TODO Tools (`src/tools/todo_tools.py`)
+- `manage_todo(action, workdir, steps, step_id, description)` — manage `TODO.md` task tracker
+- Actions: `create` (write plan), `check` (mark step done), `update` (modify step), `read` (return current state), `clear`
+- `planning_node` writes `TODO.md` on plan creation; `execution_node` checks off completed steps
+- `ContextBuilder` injects `TODO.md` as `<task_progress>` into the system prompt
 
 ### Search Tools (`src/tools/system_tools.py`)
 - `grep(pattern, path)` — regex pattern search; uses system `grep` with pure-Python fallback. Constrained to workdir.
@@ -315,6 +340,8 @@ Loads YAML toolset files; checks `src/config/toolsets/` first, falls back to `sr
 | `adapters/lm_studio_adapter.py` | LM Studio HTTP adapter — calls `/v1/chat/completions`; minimal deps, test-friendly. |
 | `adapters/ollama_adapter.py` | Ollama HTTP adapter — calls Ollama REST API; delegates config helpers to `llm_manager`. |
 | `telemetry.py` | `publish_model_response()` — emits model response telemetry (tokens, latency) to EventBus. `with_telemetry()` decorator wraps adapter calls. |
+| `thinking_utils.py` | Model-agnostic thinking-token utilities: `is_reasoning_model()`, `supports_no_think()`, `strip_thinking()` (strips `<think>…</think>`), `budget_max_tokens()` (doubles budget for DeepSeek-R1), `get_active_model_id()`. Applied in `distiller.py` and `perception_node.py`. |
+| `provider_context.py` | `get_context_budget()` — dynamic token budget based on active provider's context window. |
 
 **ModelRouter**: Predicts payload complexity to toggle between small/fast (7B-9B) vs larger (32B-70B) models based on task characteristics.
 
@@ -523,15 +550,19 @@ src/config/
 
 ## Reliability Features
 
-- **Tool Timeout Protection**: `signal.SIGALRM` armed only in main thread; worker threads (TUI path via `ThreadPoolExecutor`) run tools without signal-based timeout to avoid `ValueError`.
+- **Tool Timeout Protection**: `ThreadPoolExecutor` + `future.result(timeout=n)` — thread-safe; works from TUI daemon thread. (C1 fix: replaced `signal.SIGALRM` which was a no-op outside the main thread.)
 - **Tool Contracts** (`tool_contracts.py`): Pydantic validation for tool results.
 - **Loop Prevention**: `execution_trace.json` tracks tool+args pairs; blocks repeated calls after 3 consecutive identical actions; injects `[LOOP DETECTED]` message.
-- **Read-Before-Edit Guard**: `WRITE_TOOLS_REQUIRING_READ` frozenset (edit_file, write_file, edit_by_line_range, apply_patch) — write blocked if file not read first in current session.
+- **Tool Cooldown**: `tool_last_used` dict in `AgentState` tracks last execution count per `"tool_name:path"` key; blocks identical read-tool calls within `COOLDOWN_GAP=3` executions to prevent context spam.
+- **Read-Before-Edit Guard**: `files_read` O(1) dict + `verified_reads` list + `_session_read_files` set — three-tier fallback ensures file is read before any modifying tool can write it.
 - **Multi-file Atomicity**: Step-level transactional snapshots via `RollbackManager` — all files written in one step are bundled and atomically rolled back on verification failure.
 - **WorkspaceGuard**: Blocks modifications to `.git/`, `.env`, `pyproject.toml`, `requirements.txt`, and other critical paths.
 - **Deterministic Mode**: `deterministic=True` sets temperature=0 + seed for reproducible runs.
 - **Cost Tracking**: Tokens, latency, tool calls tracked in `.agent-context/usage.json`.
-- **Sandbox Fail-Closed**: Write operations blocked if AST validation fails (not just warned).
+- **AST Sandbox**: `execute_tool` validates `new_content` via `ast.parse(new_content)` directly — validates the new content being written, not the old file on disk. (C2 fix.)
+- **Prompt Injection Guard**: `perception_node` rejects any tool block whose `name:` value appears verbatim in a user-role history message. (F8.)
+- **Thinking-Token Stripping**: `thinking_utils.strip_thinking()` removes `<think>…</think>` blocks from all LLM responses. `budget_max_tokens()` doubles budget for DeepSeek-R1 (cannot suppress thinking). `/no_think` injected into prompts for Qwen3/QwQ models.
+- **Compiled Graph Singleton**: `_get_compiled_graph()` compiles the LangGraph pipeline once at module level — not per invocation. (P1 fix.)
 
 ---
 
@@ -542,3 +573,8 @@ src/config/
 - **`src/core/memory/session_store.py`** is the correct location; not `src/core/context/session_store.py`.
 - **`plan_validator_node.py`** exposes a standalone `validate_plan()` function, not an async node — called directly by `planning_node` or `orchestrator` before executing a plan.
 - The **`graph/nodes/__init__.py`** is empty; all node imports are explicit in `workflow_nodes.py` and `graph/builder.py`.
+- **`sandbox.py`** (`ExecutionSandbox`) is instantiated in `execute_tool` only for AST validation — `SelfDebugLoop` inside it is never used at runtime (O1: over-engineered dead code).
+- **`advanced_features.py`** (`src/core/memory/`) is not imported by any orchestration node — it is a standalone utility file. `TrajectoryLogger`, `DreamConsolidator`, `ReviewAgent`, `RefactoringAgent`, and `SkillLearner` are all instantiated directly in `memory_update_node`.
+- **`providers.json`** must be an array `[{...}]` not a top-level object. The settings panel and provider loader both require array format.
+- **`replan_node`** uses the `strategic` role (not `planner` — which does not exist). Subagent `GraphFactory` creates `researcher`, `coder`, `reviewer`, `planner` graphs via canonical-name mapping.
+- **Correlation IDs**: `new_correlation_id()` is minted per agent turn in `orchestrator.run_agent_once()`; `event_bus.publish()` auto-stamps dict payloads with `_correlation_id`; `call_model()` logs `cid=` for end-to-end tracing.

@@ -184,7 +184,7 @@ async def planning_node(state: AgentState, config: Any) -> Dict[str, Any]:
             task_description=full_task,
             tools=[],
             conversation=history,
-            max_tokens=1500,
+            max_tokens=3000,  # P5 fix: 1500 truncated complex multi-step plans
         )
 
         cancel_event = state.get("cancel_event")

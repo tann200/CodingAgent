@@ -48,14 +48,17 @@ def should_after_planning(
 
 def should_after_plan_validator(
     state: AgentState,
-) -> Literal["execute", "perception"]:
+) -> Literal["execute", "planning", "perception"]:
     """
     Decide routing after plan_validator node.
-    If plan is valid, execute. If plan is invalid, go back to perception.
 
-    Loop guard: if rounds >= 8, force execution with whatever plan we have to avoid
-    infinite plan_validator → perception → planning → plan_validator loops.
-    Rounds only increments in perception_node, so this cap is reliable.
+    Valid plan → execute directly.
+    Invalid plan → planning (F10 fix: was "perception" which added 2 extra LLM calls
+    for context-gathering that planning already has).  Perception is reserved for the
+    emergency loop-guard fallback when rounds ≥ 8.
+
+    Loop guard: if rounds >= 8, route to perception (which will force-execute) to break
+    any infinite plan_validator → planning → plan_validator cycle.
     """
     plan_validation = state.get("plan_validation")
     action_failed = state.get("action_failed")
@@ -65,17 +68,18 @@ def should_after_plan_validator(
         f"should_after_plan_validator: validation={plan_validation}, action_failed={action_failed}, rounds={rounds}"
     )
 
-    # Loop guard: after 8 perception rounds, accept the plan regardless of warnings/errors
-    # to prevent the plan_validator → perception cycle from running indefinitely.
+    # Emergency loop guard: after 8 rounds (perception cycles), force execution.
     if rounds >= 8:
         logger.warning(
-            f"should_after_plan_validator: rounds={rounds} >= 8, forcing execution to break potential loop"
+            f"should_after_plan_validator: rounds={rounds} >= 8, forcing execution to break loop"
         )
         return "execute"
 
     if action_failed or not plan_validation or not plan_validation.get("valid", False):
-        logger.info("should_after_plan_validator: plan invalid, going to perception")
-        return "perception"
+        # F10 fix: route directly to planning (not perception) to save 2 LLM calls.
+        # planning_node already has repo context from analysis; no need for re-perception.
+        logger.info("should_after_plan_validator: plan invalid, re-planning (F10)")
+        return "planning"
 
     logger.info("should_after_plan_validator: plan valid, executing")
     return "execute"
@@ -103,7 +107,7 @@ def _task_is_complex(state: AgentState) -> bool:
     """
     task: str = (state.get("task") or "").lower()
     if any(kw in task for kw in _COMPLEXITY_KEYWORDS):
-        logger.info(f"route_after_perception: task classified as complex (keyword match)")
+        logger.info("route_after_perception: task classified as complex (keyword match)")
         return True
 
     relevant_files = state.get("relevant_files") or []
@@ -151,13 +155,16 @@ def route_after_perception(state: AgentState) -> Literal["execution", "analysis"
 
 def should_after_execution(
     state: AgentState,
-) -> Literal["perception", "step_controller", "verification", "memory_sync"]:
+) -> Literal["perception", "analysis", "step_controller", "verification", "memory_sync"]:
     """
     Decide routing after execution node.
     If there's no plan and execution succeeded, task is complete - go to memory_sync.
     If there's a plan with more steps that haven't been completed, route to step_controller
     so it can load the next step description before execution (W5 fix).
-    If execution failed, go back to perception to try again.
+    If execution failed on a planned step, go back to perception to try again.
+    If execution failed on the fast-path (no plan), go to analysis (W2 fix) so the
+    agent performs deeper repo analysis before retrying instead of re-generating the
+    same failing action from perception alone.
     Otherwise go to verification.
 
     W12: If tool_call_count >= max_tool_calls, bail to memory_sync to prevent runaway execution.
@@ -220,9 +227,10 @@ def should_after_execution(
             )
             return "memory_sync"
 
-    # No plan or execution not ok - go back to perception
-    logger.info("should_after_execution: no plan, going to perception")
-    return "perception"
+    # W2 fix: fast-path failure — route to analysis so the agent has repo context
+    # before retrying, rather than re-issuing the same failing tool call from perception.
+    logger.info("should_after_execution: no plan, execution failed — going to analysis (W2)")
+    return "analysis"
 
 
 def should_after_execution_with_replan(
@@ -551,11 +559,11 @@ def compile_agent_graph():
     # planning -> plan_validator (validate plan before execution)
     workflow.add_edge("planning", "plan_validator")
 
-    # After plan_validator, execute or handle validation failure
+    # After plan_validator, execute or re-plan (F10: was "perception", now "planning" saves 2 LLM calls)
     workflow.add_conditional_edges(
         "plan_validator",
         should_after_plan_validator,
-        {"execute": "execution", "perception": "perception"},
+        {"execute": "execution", "planning": "planning", "perception": "perception"},
     )
 
     # After planning decide if we execute, sync memory, or end
@@ -575,6 +583,7 @@ def compile_agent_graph():
         should_after_execution_with_replan,
         {
             "perception": "perception",
+            "analysis": "analysis",  # W2: fast-path failure → analysis for deeper context
             "step_controller": "step_controller",
             "verification": "verification",
             "replan": "replan",
@@ -635,3 +644,23 @@ def compile_agent_graph():
     workflow.add_edge("delegation", END)
 
     return workflow.compile()
+
+
+# P1 fix: module-level singleton so the graph is compiled once per process.
+# compile_agent_graph() does non-trivial work (validates edges, builds state machine);
+# calling it on every run_agent_once() call added unnecessary startup latency.
+_COMPILED_GRAPH = None
+
+
+def _get_compiled_graph():
+    """Return the cached compiled agent graph, compiling it on first call."""
+    global _COMPILED_GRAPH
+    if _COMPILED_GRAPH is None:
+        _COMPILED_GRAPH = compile_agent_graph()
+    return _COMPILED_GRAPH
+
+
+def _reset_compiled_graph() -> None:
+    """Reset the cached graph (for tests that need a fresh compile)."""
+    global _COMPILED_GRAPH
+    _COMPILED_GRAPH = None

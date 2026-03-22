@@ -1,10 +1,9 @@
 from __future__ import annotations
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional
 import math
 import json
 from collections import OrderedDict
 from pathlib import Path
-from functools import lru_cache
 
 # F10: Import dynamic token budget helper (lazy — avoids circular imports at module load).
 def _default_max_tokens() -> int:

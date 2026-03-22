@@ -36,10 +36,8 @@ def _make_state(**kwargs: Any) -> AgentState:
         "verification_result": None,
         "step_controller_enabled": True,
         "task_decomposed": False,
-        "tool_last_used": None,
         "tool_call_count": 0,
         "max_tool_calls": 50,
-        "files_read": None,
         "repo_summary_data": None,
         "replan_required": None,
         "action_failed": False,
@@ -135,7 +133,7 @@ def test_should_after_execution_no_more_steps():
 
 
 def test_should_after_execution_empty_plan():
-    """Test routing after execution with empty plan."""
+    """W2: fallback with empty plan routes to analysis (not perception) for deeper context."""
     state = _make_state(
         current_plan=[],
         current_step=0,
@@ -143,7 +141,7 @@ def test_should_after_execution_empty_plan():
         replan_required=None,
     )
     result = should_after_execution_with_replan(state)
-    assert result == "perception"
+    assert result == "analysis"
 
 
 def test_should_after_replan_success():
