@@ -67,10 +67,13 @@ def validate_plan(
         description = step.get("description", "")
         action = step.get("action")
 
-        # Extract tool name from action if present
+        # Extract tool name from action if present.
+        # TS-4 fix: planning_node always sets action=None, so we also scan
+        # the description for backtick- or quote-wrapped tool names
+        # (e.g. `read_file`, "edit_file") as a supplementary W1 source.
         tool_name = None
         if action and isinstance(action, dict):
-            tool_name = action.get("name", "")
+            tool_name = action.get("name", "") or None
 
         # W1: Validate tool name exists in registry
         if tool_name and registered_tools is not None and tool_name not in registered_tools:
@@ -78,6 +81,20 @@ def validate_plan(
                 f"Step {i + 1} references unknown tool '{tool_name}'. "
                 f"Available tools: {', '.join(sorted(registered_tools)[:10])}{'…' if len(registered_tools) > 10 else ''}"
             )
+
+        # TS-4 fix: when action is None, scan description for tool references.
+        # Matches `tool_name` or 'tool_name' patterns — catches cases like
+        # "Use `write_file` to …" where the LLM named a non-existent tool.
+        if tool_name is None and registered_tools is not None and description:
+            import re as _re
+            for m in _re.findall(r"[`'\"]([a-z_][a-z0-9_]{2,})[`'\"]", description):
+                # Only flag tokens that look like tool names (contain underscore)
+                # and are NOT in the registry — avoids false positives on file names.
+                if "_" in m and m not in registered_tools:
+                    warnings.append(
+                        f"Step {i + 1} description mentions unknown identifier '{m}' "
+                        f"— verify this is not a tool name."
+                    )
 
         # Track read operations
         if tool_name in ["read_file", "fs.read", "list_files", "list_dir", "glob"]:

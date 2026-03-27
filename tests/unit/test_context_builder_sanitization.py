@@ -15,7 +15,13 @@ def test_sanitizes_fenced_code_and_prompt_injection():
         {"role": "assistant", "content": "I will run this code:\n```python\nprint('hello')\n```\nEnd."},
     ]
 
-    msgs = builder.build_prompt(identity, role, skills, task, tools, conversation)
+    msgs = builder.build_prompt(
+        role_name=role,
+        active_skills=skills,
+        task_description=task,
+        tools=tools,
+        conversation=conversation,
+    )
     # System message should not include conversation code content (Python code from user messages)
     system = msgs[0]["content"]
     assert "print('hello')" not in system, "Conversation code content must not appear in system prompt"

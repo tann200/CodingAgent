@@ -1,5 +1,5 @@
 {
-  "generated": "2026-03-22 12:04:40Z",
+  "generated": "2026-03-25 23:30:32Z",
   "nodes": {
     "docs": {
       "path": "docs",
@@ -13,8 +13,8 @@
       "path": "docs/audit/audit-instructions.md",
       "is_dir": false
     },
-    "docs/audit/audit-report-vol5.md": {
-      "path": "docs/audit/audit-report-vol5.md",
+    "docs/audit/audit-report-vol9.md": {
+      "path": "docs/audit/audit-report-vol9.md",
       "is_dir": false
     },
     "docs/ARCHITECTURE.md": {
@@ -25,24 +25,8 @@
       "path": "docs/DEVELOPMENT.md",
       "is_dir": false
     },
-    "docs/MEMORY_ARCHITECTURE.md": {
-      "path": "docs/MEMORY_ARCHITECTURE.md",
-      "is_dir": false
-    },
     "docs/system_map.md": {
       "path": "docs/system_map.md",
-      "is_dir": false
-    },
-    "docs/test-coverage-analysis.md": {
-      "path": "docs/test-coverage-analysis.md",
-      "is_dir": false
-    },
-    "docs/test-plan.md": {
-      "path": "docs/test-plan.md",
-      "is_dir": false
-    },
-    "docs/tuispec.md": {
-      "path": "docs/tuispec.md",
       "is_dir": false
     },
     "scripts": {
@@ -185,12 +169,24 @@
       "path": "src/config/agent-brain/roles/operational.md",
       "is_dir": false
     },
+    "src/config/agent-brain/roles/researcher.md": {
+      "path": "src/config/agent-brain/roles/researcher.md",
+      "is_dir": false
+    },
     "src/config/agent-brain/roles/reviewer.md": {
       "path": "src/config/agent-brain/roles/reviewer.md",
       "is_dir": false
     },
+    "src/config/agent-brain/roles/scout.md": {
+      "path": "src/config/agent-brain/roles/scout.md",
+      "is_dir": false
+    },
     "src/config/agent-brain/roles/strategic.md": {
       "path": "src/config/agent-brain/roles/strategic.md",
+      "is_dir": false
+    },
+    "src/config/agent-brain/roles/tester.md": {
+      "path": "src/config/agent-brain/roles/tester.md",
       "is_dir": false
     },
     "src/config/agent-brain/skills": {
@@ -215,6 +211,10 @@
     },
     "src/config/toolsets/debug.yaml": {
       "path": "src/config/toolsets/debug.yaml",
+      "is_dir": false
+    },
+    "src/config/toolsets/loader.py": {
+      "path": "src/config/toolsets/loader.py",
       "is_dir": false
     },
     "src/config/toolsets/planning.yaml": {
@@ -289,6 +289,14 @@
       "path": "src/core/inference/adapters/ollama_adapter.py",
       "is_dir": false
     },
+    "src/core/inference/adapters/openai_compat_adapter.py": {
+      "path": "src/core/inference/adapters/openai_compat_adapter.py",
+      "is_dir": false
+    },
+    "src/core/inference/adapters/openrouter_adapter.py": {
+      "path": "src/core/inference/adapters/openrouter_adapter.py",
+      "is_dir": false
+    },
     "src/core/inference/__init__.py": {
       "path": "src/core/inference/__init__.py",
       "is_dir": false
@@ -361,12 +369,32 @@
       "path": "src/core/orchestration/agent_brain.py",
       "is_dir": false
     },
+    "src/core/orchestration/agent_session_manager.py": {
+      "path": "src/core/orchestration/agent_session_manager.py",
+      "is_dir": false
+    },
+    "src/core/orchestration/cross_session_bus.py": {
+      "path": "src/core/orchestration/cross_session_bus.py",
+      "is_dir": false
+    },
+    "src/core/orchestration/dag_parser.py": {
+      "path": "src/core/orchestration/dag_parser.py",
+      "is_dir": false
+    },
     "src/core/orchestration/event_bus.py": {
       "path": "src/core/orchestration/event_bus.py",
       "is_dir": false
     },
+    "src/core/orchestration/file_lock_manager.py": {
+      "path": "src/core/orchestration/file_lock_manager.py",
+      "is_dir": false
+    },
     "src/core/orchestration/graph_factory.py": {
       "path": "src/core/orchestration/graph_factory.py",
+      "is_dir": false
+    },
+    "src/core/orchestration/mcp_stdio_server.py": {
+      "path": "src/core/orchestration/mcp_stdio_server.py",
       "is_dir": false
     },
     "src/core/orchestration/message_manager.py": {
@@ -377,6 +405,18 @@
       "path": "src/core/orchestration/orchestrator.py",
       "is_dir": false
     },
+    "src/core/orchestration/plan_mode.py": {
+      "path": "src/core/orchestration/plan_mode.py",
+      "is_dir": false
+    },
+    "src/core/orchestration/preview_service.py": {
+      "path": "src/core/orchestration/preview_service.py",
+      "is_dir": false
+    },
+    "src/core/orchestration/prsw_topics.py": {
+      "path": "src/core/orchestration/prsw_topics.py",
+      "is_dir": false
+    },
     "src/core/orchestration/role_config.py": {
       "path": "src/core/orchestration/role_config.py",
       "is_dir": false
@@ -385,12 +425,24 @@
       "path": "src/core/orchestration/rollback_manager.py",
       "is_dir": false
     },
-    "src/core/orchestration/sandbox.py": {
-      "path": "src/core/orchestration/sandbox.py",
-      "is_dir": false
-    },
     "src/core/orchestration/schema.json": {
       "path": "src/core/orchestration/schema.json",
+      "is_dir": false
+    },
+    "src/core/orchestration/session_lifecycle.py": {
+      "path": "src/core/orchestration/session_lifecycle.py",
+      "is_dir": false
+    },
+    "src/core/orchestration/session_registry.py": {
+      "path": "src/core/orchestration/session_registry.py",
+      "is_dir": false
+    },
+    "src/core/orchestration/session_watcher.py": {
+      "path": "src/core/orchestration/session_watcher.py",
+      "is_dir": false
+    },
+    "src/core/orchestration/token_budget.py": {
+      "path": "src/core/orchestration/token_budget.py",
       "is_dir": false
     },
     "src/core/orchestration/tool_contracts.py": {
@@ -399,6 +451,10 @@
     },
     "src/core/orchestration/tool_parser.py": {
       "path": "src/core/orchestration/tool_parser.py",
+      "is_dir": false
+    },
+    "src/core/orchestration/wave_coordinator.py": {
+      "path": "src/core/orchestration/wave_coordinator.py",
       "is_dir": false
     },
     "src/core/orchestration/workspace_guard.py": {
@@ -437,36 +493,16 @@
       "path": "src/tools",
       "is_dir": true
     },
-    "src/tools/toolsets": {
-      "path": "src/tools/toolsets",
-      "is_dir": true
-    },
-    "src/tools/toolsets/coding.yaml": {
-      "path": "src/tools/toolsets/coding.yaml",
-      "is_dir": false
-    },
-    "src/tools/toolsets/debug.yaml": {
-      "path": "src/tools/toolsets/debug.yaml",
-      "is_dir": false
-    },
-    "src/tools/toolsets/loader.py": {
-      "path": "src/tools/toolsets/loader.py",
-      "is_dir": false
-    },
-    "src/tools/toolsets/planning.yaml": {
-      "path": "src/tools/toolsets/planning.yaml",
-      "is_dir": false
-    },
-    "src/tools/toolsets/review.yaml": {
-      "path": "src/tools/toolsets/review.yaml",
-      "is_dir": false
-    },
     "src/tools/_path_utils.py": {
       "path": "src/tools/_path_utils.py",
       "is_dir": false
     },
     "src/tools/file_tools.py": {
       "path": "src/tools/file_tools.py",
+      "is_dir": false
+    },
+    "src/tools/git_tools.py": {
+      "path": "src/tools/git_tools.py",
       "is_dir": false
     },
     "src/tools/patch_tools.py": {

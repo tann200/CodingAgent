@@ -7,6 +7,7 @@ from src.core.orchestration.graph.builder import (
     route_after_perception,
     should_after_analysis,
     _task_is_complex,
+    _task_has_more_steps,
 )
 from src.core.orchestration.graph.state import AgentState
 
@@ -212,6 +213,7 @@ def test_route_after_perception_standard_path():
 # W3: Fast-path complexity guard
 # ---------------------------------------------------------------------------
 
+
 def test_task_is_complex_keyword_refactor():
     """W3: 'refactor' keyword marks task as complex."""
     state = _make_state(task="refactor the authentication module")
@@ -238,7 +240,7 @@ def test_task_is_complex_existing_plan():
 
 def test_task_is_not_complex_simple():
     """W3: simple one-line task is not complex."""
-    state = _make_state(task="show me the contents of main.py")
+    state = _make_state(task="read main.py")
     assert _task_is_complex(state) is False
 
 
@@ -266,6 +268,7 @@ def test_route_after_perception_simple_task_fast_path_ok():
 # W12: Tool call budget enforcement
 # ---------------------------------------------------------------------------
 
+
 def test_budget_exhausted_routes_to_memory_sync():
     """W12: when tool_call_count >= max_tool_calls, route to memory_sync."""
     state = _make_state(
@@ -279,8 +282,8 @@ def test_budget_exhausted_routes_to_memory_sync():
     assert result == "memory_sync"
 
 
-def test_budget_not_exhausted_routes_normally():
-    """W12: below budget limit, routing proceeds normally."""
+def test_budget_not_exhausted_routes_to_perception():
+    """After successful execution, route to perception to continue the task."""
     state = _make_state(
         tool_call_count=5,
         max_tool_calls=30,
@@ -289,9 +292,10 @@ def test_budget_not_exhausted_routes_normally():
         last_result={"ok": True},
         replan_required=None,
     )
-    # no plan + success → memory_sync via normal routing, not budget
     result = should_after_execution_with_replan(state)
-    assert result == "memory_sync"
+    # Successful execution goes to perception to continue, not memory_sync
+    # Task completion is detected by route_after_perception
+    assert result == "perception"
 
 
 def test_budget_one_over_limit_routes_to_memory_sync():
@@ -322,8 +326,105 @@ def test_budget_zero_max_falls_back_to_default():
 
 
 # ---------------------------------------------------------------------------
+# Task Completion Detection
+# ---------------------------------------------------------------------------
+
+
+def test_route_after_perception_task_complete_routes_to_memory_sync():
+    """After successful execution with no next_action, route to memory_sync (task complete)."""
+    state = _make_state(
+        task="create a readme file",
+        next_action=None,  # No next action = task likely complete
+        last_result={"ok": True, "status": "ok"},
+        rounds=2,  # rounds > 0 to avoid triggering on initial perception
+    )
+    result = route_after_perception(state)
+    assert result == "memory_sync"
+
+
+def test_route_after_perception_continues_with_next_action():
+    """With next_action set, continue to execution."""
+    state = _make_state(
+        task="create a readme file",
+        next_action={
+            "name": "write_file",
+            "arguments": {"path": "README.md", "content": "# Hello"},
+        },
+    )
+    result = route_after_perception(state)
+    assert result == "execution"
+
+
+def test_route_after_perception_first_round_continues():
+    """On first round (rounds=0), continue even without next_action."""
+    state = _make_state(
+        task="read main.py",
+        next_action=None,
+        rounds=0,  # First perception round
+        last_result=None,  # No previous result
+    )
+    result = route_after_perception(state)
+    # Should go to analysis, not memory_sync
+    assert result == "analysis"
+
+
+def test_route_after_perception_multistep_continues():
+    """Multi-step tasks continue execution after first tool succeeds."""
+    state = _make_state(
+        task="create docs folder and create ARCHITECTURE.md inside it",
+        next_action=None,
+        last_result={"ok": True, "status": "ok"},
+        rounds=1,
+        tool_call_count=1,
+    )
+    result = route_after_perception(state)
+    assert result == "analysis"
+
+
+def test_route_after_perception_multistep_then_keyword():
+    """Tasks with 'then' keyword continue after first tool succeeds."""
+    state = _make_state(
+        task="first do X then do Y",
+        next_action=None,
+        last_result={"ok": True, "status": "ok"},
+        rounds=1,
+        tool_call_count=1,
+    )
+    result = route_after_perception(state)
+    assert result == "analysis"
+
+
+def test_task_has_more_steps_with_and():
+    """'and' keyword indicates multi-step task."""
+    state = _make_state(
+        task="create folder and file",
+        tool_call_count=1,
+    )
+    assert _task_has_more_steps(state) is True
+
+
+def test_task_has_more_steps_single_step():
+    """Single-step task returns False."""
+    state = _make_state(
+        task="read main.py",
+        tool_call_count=1,
+    )
+    assert _task_has_more_steps(state) is False
+
+
+def test_task_has_more_steps_max_tool_calls():
+    """At max tool calls, don't continue even for multi-step."""
+    state = _make_state(
+        task="create folder and file",
+        tool_call_count=10,
+    )
+    assert _task_has_more_steps(state) is False
+
+
+# ---------------------------------------------------------------------------
 # #56: should_after_analysis routing
 # ---------------------------------------------------------------------------
+
 
 def test_should_after_analysis_simple_task_goes_to_planning():
     """#56: simple task routes directly to planning."""
@@ -350,6 +451,7 @@ def test_should_after_analysis_many_files_goes_to_analyst():
 # W3 — replan_node integration path: requires_split → replan → step_controller
 # ---------------------------------------------------------------------------
 
+
 def test_requires_split_routes_to_replan():
     """W3: when last_result has requires_split=True, execution must route to replan."""
     state = _make_state(
@@ -375,7 +477,9 @@ def test_requires_split_false_does_not_route_to_replan():
         max_tool_calls=30,
     )
     result = should_after_execution_with_replan(state)
-    assert result != "replan", f"no requires_split must not route to replan, got '{result}'"
+    assert result != "replan", (
+        f"no requires_split must not route to replan, got '{result}'"
+    )
 
 
 def test_should_after_replan_routes_to_step_controller():
@@ -471,4 +575,6 @@ def test_h1_step_requesting_verification_always_runs():
     step_requests = any(k in step_desc for k in ("run_tests", "verify", "test", "lint"))
     at_final_step = current_step >= len(current_plan) - 1
     run_full_suite = at_final_step or step_requests
-    assert run_full_suite is True, "Intermediate step requesting 'run_tests' MUST run full suite"
+    assert run_full_suite is True, (
+        "Intermediate step requesting 'run_tests' MUST run full suite"
+    )

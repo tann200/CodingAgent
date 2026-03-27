@@ -1,5 +1,10 @@
-from typing import TypedDict, List, Dict, Any, Annotated, Optional
+from typing import TypedDict, List, Dict, Any, Annotated, Optional, Literal
 import operator
+
+# Import the authoritative PlanDAG from dag_parser — state.py previously had
+# an incompatible duplicate dataclass definition (different fields) which
+# caused AttributeErrors at runtime when code mixed both.
+from src.core.orchestration.dag_parser import PlanDAG  # noqa: F401
 
 
 class AgentState(TypedDict):
@@ -46,6 +51,8 @@ class AgentState(TypedDict):
     plan_resumed: Optional[bool]
     # Delegations to spawn for background tasks
     delegations: Optional[List[Dict[str, Any]]]
+    # HR-5: Depth counter to prevent unbounded recursive delegation (max 3)
+    delegation_depth: Optional[int]
     # Debug retry tracking
     debug_attempts: Optional[int]
     max_debug_attempts: int
@@ -98,3 +105,46 @@ class AgentState(TypedDict):
     # Fast read-before-edit lookup: maps resolved_abs_path → True when file has been read.
     # Complements verified_reads (cumulative list) with O(1) dict access for MODIFYING_TOOLS check.
     files_read: Optional[Dict[str, bool]]
+    # Phase A: Dependency DAG (replaces flat current_plan)
+    plan_dag: Optional[Dict[str, Any]]
+    execution_waves: Optional[List[List[str]]]
+    current_wave: int
+    # Phase 3: Preview Mode
+    pending_preview_id: Optional[str]
+    preview_mode_enabled: bool
+    awaiting_user_input: bool
+    preview_confirmed: Optional[bool]
+    # Token Auto-Compact triggers
+    _should_distill: Optional[bool]
+    _force_compact: Optional[bool]
+    _budget_compaction: Optional[bool]
+    # P2P context buffering
+    _p2p_context: Optional[List[Dict[str, Any]]]
+    # Plan Mode: plan-first development gate
+    plan_mode_enabled: bool  # True: write tools blocked until plan approved
+    awaiting_plan_approval: bool  # True: graph suspended pending user plan approval
+    plan_mode_approved: Optional[bool]  # Set by wait_for_user_node after user decision
+    plan_mode_blocked_tool: Optional[str]  # Which tool triggered the plan mode gate
+    # PRSW: FileLockManager reference for parallel read / sequential write coordination
+    _file_lock_manager: Optional[Any]
+    # PRSW: Pending write operations queued for sequential execution
+    _write_queue: Optional[List[Dict[str, Any]]]
+    # Phase B: P2P session tracking references (singletons, not serialised)
+    _agent_session_manager: Optional[Any]
+    _agent_messages: Optional[List[Dict[str, Any]]]
+    _context_controller: Optional[Any]
+    # Phase 4: Token auto-compact tracking
+    last_compact_at: Optional[
+        Any
+    ]  # datetime | None — avoids importing datetime at module level
+    last_compact_turn: int  # turn counter when last compaction occurred
+    context_degradation_detected: (
+        bool  # True when model quality degradation is detected
+    )
+    # P1-2: planning→validator→planning inner-loop counter (separate from rounds)
+    plan_attempts: int
+    # P1-3: evaluation→replan inner-loop counter
+    replan_attempts: int
+    # P3-1: Structured call graph and test map from analysis phase (JSON dicts, not prose)
+    call_graph: Optional[Dict[str, Any]]
+    test_map: Optional[Dict[str, Any]]

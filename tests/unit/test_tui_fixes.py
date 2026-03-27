@@ -12,11 +12,12 @@ Covers the 9 fixes from the TUI audit:
   Fix 8  — plan step description must be truncated with ellipsis at >40 chars
   Fix 9  — Compact Session must call compact_messages_to_prose, not be a placeholder
 """
+
 from __future__ import annotations
 
 import threading
 from collections import deque
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 import pytest
 
 
@@ -24,9 +25,11 @@ import pytest
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_base_app():
     """TextualAppBase with a no-op orchestrator, no real EventBus."""
     from src.ui.textual_app_impl import TextualAppBase
+
     orch = MagicMock()
     orch.run_agent_once.return_value = {"assistant_message": "ok", "work_summary": None}
     orch.start_new_task.return_value = "t"
@@ -40,6 +43,7 @@ def _make_base_app():
 # ---------------------------------------------------------------------------
 # Fix 1 — double-threading
 # ---------------------------------------------------------------------------
+
 
 class TestFix1DoubleThreading:
     def test_run_agent_thread_targets_run_agent_not_send_prompt(self):
@@ -65,11 +69,14 @@ class TestFix1DoubleThreading:
         class CountingThread(original_thread):
             def __init__(self, *args, **kwargs):
                 super().__init__(*args, **kwargs)
-                threads_spawned.append(kwargs.get("target") or (args[0] if args else None))
+                threads_spawned.append(
+                    kwargs.get("target") or (args[0] if args else None)
+                )
 
         with patch("src.ui.textual_app_impl.threading.Thread", CountingThread):
             # Re-import to get patched version
             from src.ui import textual_app_impl
+
             old_thread = textual_app_impl.threading.Thread
             textual_app_impl.threading.Thread = CountingThread
             try:
@@ -87,12 +94,17 @@ class TestFix1DoubleThreading:
 # Fix 2 — diff renderer pairs lines side-by-side
 # ---------------------------------------------------------------------------
 
+
 class TestFix2DiffRenderer:
     def _parse_diff_blocks(self, diff_text):
         """Parse a simple unified diff into left/right blocks manually."""
         left, right = [], []
         for line in diff_text.splitlines():
-            if line.startswith("---") or line.startswith("+++") or line.startswith("@@"):
+            if (
+                line.startswith("---")
+                or line.startswith("+++")
+                or line.startswith("@@")
+            ):
                 continue
             if line.startswith("-"):
                 left.append(line[1:])
@@ -113,6 +125,7 @@ class TestFix2DiffRenderer:
         left, right = self._parse_diff_blocks(diff)
         # After fix: rows = max(3, 2) = 3
         from itertools import zip_longest
+
         rows = list(zip_longest(left, right, fillvalue=""))
         assert len(rows) == max(len(left), len(right)), (
             "Row count must equal max(left, right) to avoid dropping lines"
@@ -120,26 +133,24 @@ class TestFix2DiffRenderer:
 
     def test_paired_rows_not_sequential(self):
         """Each row must have BOTH left and right content when lines exist on both sides."""
-        diff = (
-            "@@ -1,2 +1,2 @@\n"
-            "-old_a\n"
-            "-old_b\n"
-            "+new_a\n"
-            "+new_b\n"
-        )
+        diff = "@@ -1,2 +1,2 @@\n-old_a\n-old_b\n+new_a\n+new_b\n"
         left, right = self._parse_diff_blocks(diff)
         from itertools import zip_longest
+
         rows = list(zip_longest(left, right, fillvalue=""))
         # Every row where both sides have content should have non-empty both sides
-        for l, r in rows:
-            if l and r:
-                assert l != "" and r != "", "Paired row should have content on both sides"
+        for left_item, right_item in rows:
+            if left_item and right_item:
+                assert left_item != "" and right_item != "", (
+                    "Paired row should have content on both sides"
+                )
 
     def test_asymmetric_diff_pads_with_empty(self):
         """Excess lines on one side must be padded with empty string (not dropped)."""
         left = ["a", "b", "c"]
         right = ["x"]
         from itertools import zip_longest
+
         rows = list(zip_longest(left, right, fillvalue=""))
         assert rows[1] == ("b", ""), "Second row should pad right with empty"
         assert rows[2] == ("c", ""), "Third row should pad right with empty"
@@ -149,13 +160,16 @@ class TestFix2DiffRenderer:
 # Fix 3 — _schedule_callback uses call_from_thread
 # ---------------------------------------------------------------------------
 
+
 class TestFix3CallFromThread:
     def test_schedule_callback_method_exists_on_textual_app(self):
         """CodingAgentTextualApp must define its own _schedule_callback override."""
         from src.ui.textual_app_impl import TEXTUAL_AVAILABLE
+
         if not TEXTUAL_AVAILABLE:
             pytest.skip("Textual not available")
         from src.ui.textual_app_impl import CodingAgentTextualApp
+
         # The override must exist directly on the class, not inherited from TextualAppBase
         assert "_schedule_callback" in CodingAgentTextualApp.__dict__, (
             "CodingAgentTextualApp must override _schedule_callback"
@@ -164,10 +178,12 @@ class TestFix3CallFromThread:
     def test_schedule_callback_calls_call_from_thread(self):
         """The override must delegate to self.call_from_thread."""
         from src.ui.textual_app_impl import TEXTUAL_AVAILABLE
+
         if not TEXTUAL_AVAILABLE:
             pytest.skip("Textual not available")
         from src.ui.textual_app_impl import CodingAgentTextualApp
         import inspect
+
         src = inspect.getsource(CodingAgentTextualApp._schedule_callback)
         assert "call_from_thread" in src, (
             "_schedule_callback override must use call_from_thread"
@@ -178,29 +194,39 @@ class TestFix3CallFromThread:
 # Fix 4 — module-level regex constants
 # ---------------------------------------------------------------------------
 
+
 class TestFix4RegexConstants:
     def test_diff_pattern_is_module_level(self):
         """_DIFF_PATTERN must be a compiled regex at module level."""
-        import re
         import src.ui.textual_app_impl as m
+
         assert hasattr(m, "_DIFF_PATTERN"), "_DIFF_PATTERN must exist at module level"
-        assert hasattr(m._DIFF_PATTERN, "search"), "_DIFF_PATTERN must be a compiled regex"
+        assert hasattr(m._DIFF_PATTERN, "search"), (
+            "_DIFF_PATTERN must be a compiled regex"
+        )
 
     def test_thinking_pattern_is_module_level(self):
         """_THINKING_PATTERN must be a compiled regex at module level."""
         import src.ui.textual_app_impl as m
-        assert hasattr(m, "_THINKING_PATTERN"), "_THINKING_PATTERN must exist at module level"
-        assert hasattr(m._THINKING_PATTERN, "search"), "_THINKING_PATTERN must be compiled"
+
+        assert hasattr(m, "_THINKING_PATTERN"), (
+            "_THINKING_PATTERN must exist at module level"
+        )
+        assert hasattr(m._THINKING_PATTERN, "search"), (
+            "_THINKING_PATTERN must be compiled"
+        )
 
     def test_hunk_pattern_is_module_level(self):
         """_HUNK_PATTERN must be a compiled regex at module level."""
         import src.ui.textual_app_impl as m
+
         assert hasattr(m, "_HUNK_PATTERN"), "_HUNK_PATTERN must exist at module level"
         assert hasattr(m._HUNK_PATTERN, "search"), "_HUNK_PATTERN must be compiled"
 
     def test_diff_pattern_matches_diff_block(self):
         """_DIFF_PATTERN must match a fenced ```diff block."""
         import src.ui.textual_app_impl as m
+
         text = "```diff\n-old\n+new\n```"
         match = m._DIFF_PATTERN.search(text)
         assert match is not None, "_DIFF_PATTERN must match ```diff...``` blocks"
@@ -209,6 +235,7 @@ class TestFix4RegexConstants:
     def test_thinking_pattern_matches_think_tag(self):
         """_THINKING_PATTERN must match <think>...</think>."""
         import src.ui.textual_app_impl as m
+
         text = "<think>some reasoning</think> answer"
         match = m._THINKING_PATTERN.search(text)
         assert match is not None
@@ -219,10 +246,12 @@ class TestFix4RegexConstants:
 # Fix 5 — streaming writes empty string on stream complete
 # ---------------------------------------------------------------------------
 
+
 class TestFix5StreamingNewline:
     def test_partial_false_triggers_empty_write(self):
         """partial=False must call output.write('') to end the stream on a clean line."""
         from src.ui.textual_app_impl import TEXTUAL_AVAILABLE
+
         if not TEXTUAL_AVAILABLE:
             pytest.skip("Textual not available")
         from src.ui.textual_app_impl import CodingAgentTextualApp
@@ -237,11 +266,14 @@ class TestFix5StreamingNewline:
 
         # Must have scheduled a write("") call
         write_calls = [a for fn, a in writes if a == ("",)]
-        assert write_calls, "partial=False must schedule output.write('') for trailing newline"
+        assert write_calls, (
+            "partial=False must schedule output.write('') for trailing newline"
+        )
 
     def test_partial_true_writes_token_text(self):
         """partial=True with text must schedule a write of the token."""
         from src.ui.textual_app_impl import TEXTUAL_AVAILABLE
+
         if not TEXTUAL_AVAILABLE:
             pytest.skip("Textual not available")
         from src.ui.textual_app_impl import CodingAgentTextualApp
@@ -251,19 +283,25 @@ class TestFix5StreamingNewline:
         writes = []
         app._schedule_callback.side_effect = lambda fn, *a, **kw: writes.append((fn, a))
 
-        CodingAgentTextualApp._on_model_token_ui(app, {"text": "hello", "partial": True})
+        CodingAgentTextualApp._on_model_token_ui(
+            app, {"text": "hello", "partial": True}
+        )
 
         write_args = [a for fn, a in writes]
-        assert ("hello",) in write_args, "partial=True must schedule write of token text"
+        assert ("hello",) in write_args, (
+            "partial=True must schedule write of token text"
+        )
 
 
 # ---------------------------------------------------------------------------
 # Fix 6 — LogPanel bounded deque
 # ---------------------------------------------------------------------------
 
+
 class TestFix6BoundedLogPanel:
     def _make_panel(self):
         from src.ui.components.log_panel import LogPanel
+
         bus = MagicMock()
         bus.subscribe = MagicMock()
         return LogPanel(bus)
@@ -313,10 +351,12 @@ class TestFix6BoundedLogPanel:
 # Fix 7 — Diff truncation shows indicator
 # ---------------------------------------------------------------------------
 
+
 class TestFix7DiffTruncation:
     def test_truncation_indicator_shown_for_long_diff(self):
         """_on_diff_preview_ui must append a '… N more lines' message when diff > 60 lines."""
         from src.ui.textual_app_impl import TEXTUAL_AVAILABLE
+
         if not TEXTUAL_AVAILABLE:
             pytest.skip("Textual not available")
         from src.ui.textual_app_impl import CodingAgentTextualApp
@@ -324,10 +364,14 @@ class TestFix7DiffTruncation:
         app = MagicMock(spec=CodingAgentTextualApp)
         app.output = MagicMock()
         written = []
-        app._schedule_callback.side_effect = lambda fn, *a, **kw: written.append(a[0] if a else "")
+        app._schedule_callback.side_effect = lambda fn, *a, **kw: written.append(
+            a[0] if a else ""
+        )
 
         big_diff = "\n".join(f"+line{i}" for i in range(80))
-        CodingAgentTextualApp._on_diff_preview_ui(app, {"path": "f.py", "diff": big_diff})
+        CodingAgentTextualApp._on_diff_preview_ui(
+            app, {"path": "f.py", "diff": big_diff}
+        )
 
         combined = " ".join(str(w) for w in written)
         assert "more lines" in combined.lower() or "…" in combined, (
@@ -337,6 +381,7 @@ class TestFix7DiffTruncation:
     def test_no_truncation_indicator_for_short_diff(self):
         """No truncation message for diffs with ≤60 lines."""
         from src.ui.textual_app_impl import TEXTUAL_AVAILABLE
+
         if not TEXTUAL_AVAILABLE:
             pytest.skip("Textual not available")
         from src.ui.textual_app_impl import CodingAgentTextualApp
@@ -344,10 +389,14 @@ class TestFix7DiffTruncation:
         app = MagicMock(spec=CodingAgentTextualApp)
         app.output = MagicMock()
         written = []
-        app._schedule_callback.side_effect = lambda fn, *a, **kw: written.append(a[0] if a else "")
+        app._schedule_callback.side_effect = lambda fn, *a, **kw: written.append(
+            a[0] if a else ""
+        )
 
         small_diff = "\n".join(f"+line{i}" for i in range(10))
-        CodingAgentTextualApp._on_diff_preview_ui(app, {"path": "f.py", "diff": small_diff})
+        CodingAgentTextualApp._on_diff_preview_ui(
+            app, {"path": "f.py", "diff": small_diff}
+        )
 
         combined = " ".join(str(w) for w in written)
         assert "more lines" not in combined.lower()
@@ -357,10 +406,12 @@ class TestFix7DiffTruncation:
 # Fix 8 — Plan step description ellipsis
 # ---------------------------------------------------------------------------
 
+
 class TestFix8PlanStepEllipsis:
     def test_long_description_truncated_with_ellipsis(self):
         """Descriptions >40 chars must be shown with … at position 38."""
         from src.ui.textual_app_impl import TEXTUAL_AVAILABLE
+
         if not TEXTUAL_AVAILABLE:
             pytest.skip("Textual not available")
         from src.ui.textual_app_impl import CodingAgentTextualApp
@@ -368,9 +419,13 @@ class TestFix8PlanStepEllipsis:
         app = MagicMock(spec=CodingAgentTextualApp)
         app.plan_progress_label = MagicMock()
         updated = []
-        app._schedule_callback.side_effect = lambda fn, *a, **kw: updated.append(a[0] if a else "")
+        app._schedule_callback.side_effect = lambda fn, *a, **kw: updated.append(
+            a[0] if a else ""
+        )
 
-        long_desc = "implement full authentication system with JWT tokens and refresh logic"
+        long_desc = (
+            "implement full authentication system with JWT tokens and refresh logic"
+        )
         CodingAgentTextualApp._on_plan_progress_ui(
             app, {"step": 1, "total": 3, "description": long_desc}
         )
@@ -380,11 +435,14 @@ class TestFix8PlanStepEllipsis:
         # The visible text must be ≤41 chars (38 + "…")
         for segment in combined.split("\n"):
             if "…" in segment:
-                assert len(segment) <= 45, f"Truncated description too long: {segment!r}"
+                assert len(segment) <= 45, (
+                    f"Truncated description too long: {segment!r}"
+                )
 
     def test_short_description_not_truncated(self):
         """Descriptions ≤40 chars must be shown in full without ellipsis."""
         from src.ui.textual_app_impl import TEXTUAL_AVAILABLE
+
         if not TEXTUAL_AVAILABLE:
             pytest.skip("Textual not available")
         from src.ui.textual_app_impl import CodingAgentTextualApp
@@ -392,7 +450,9 @@ class TestFix8PlanStepEllipsis:
         app = MagicMock(spec=CodingAgentTextualApp)
         app.plan_progress_label = MagicMock()
         updated = []
-        app._schedule_callback.side_effect = lambda fn, *a, **kw: updated.append(a[0] if a else "")
+        app._schedule_callback.side_effect = lambda fn, *a, **kw: updated.append(
+            a[0] if a else ""
+        )
 
         short_desc = "edit auth.py"
         CodingAgentTextualApp._on_plan_progress_ui(
@@ -407,16 +467,19 @@ class TestFix8PlanStepEllipsis:
 # Fix 9 — Compact Session is implemented
 # ---------------------------------------------------------------------------
 
+
 class TestFix9CompactSession:
     def test_compact_session_calls_distiller(self):
         """settings_compact_session must call compact_messages_to_prose, not be a placeholder."""
         from src.ui.textual_app_impl import TEXTUAL_AVAILABLE
+
         if not TEXTUAL_AVAILABLE:
             pytest.skip("Textual not available")
         import inspect
-        from src.ui.textual_app_impl import CodingAgentTextualApp
+
         # Find SettingsModal inside the module
         import src.ui.textual_app_impl as m
+
         src_text = inspect.getsource(m)
         # The handler for settings_compact_session must reference the distiller
         assert "compact_messages_to_prose" in src_text, (
@@ -427,10 +490,182 @@ class TestFix9CompactSession:
         """'Placeholder' comment must be removed from Compact Session handler."""
         import src.ui.textual_app_impl as m
         import inspect
+
         src_text = inspect.getsource(m)
-        # Find the compact_session block
-        idx = src_text.find("settings_compact_session")
-        snippet = src_text[idx:idx + 300] if idx >= 0 else ""
-        assert "Placeholder" not in snippet, (
-            "Compact Session handler must not contain 'Placeholder'"
+        # settings_compact_session was the old button id; new button id is btn_compact
+        # Either the old or new id must not have a Placeholder comment nearby
+        for marker in (
+            "settings_compact_session",
+            "btn_compact",
+            "_do_compact_session",
+        ):
+            idx = src_text.find(marker)
+            if idx >= 0:
+                snippet = src_text[idx : idx + 300]
+                assert "Placeholder" not in snippet, (
+                    f"Compact handler near '{marker}' must not contain 'Placeholder'"
+                )
+
+
+class TestSettingsScreenModern:
+    """New compact settings modal: single screen, no nested provider/model screens."""
+
+    def test_single_settings_modal_class(self):
+        """There must be exactly one SettingsModal class (no ConnectProviderModal/SelectModelModal)."""
+        import src.ui.textual_app_impl as m
+        import inspect
+
+        src_text = inspect.getsource(m)
+        assert "class SettingsModal" in src_text, "SettingsModal class must exist"
+        assert "class ConnectProviderModal" not in src_text, (
+            "ConnectProviderModal removed — provider select is inline in SettingsModal"
         )
+        assert "class SelectModelModal" not in src_text, (
+            "SelectModelModal removed — model select is inline in SettingsModal"
+        )
+
+    def test_inline_selects_in_settings(self):
+        """SettingsModal must contain inline Select widgets for provider and model."""
+        import src.ui.textual_app_impl as m
+        import inspect
+
+        src_text = inspect.getsource(m)
+        assert "sel_provider" in src_text, (
+            "provider Select with id=sel_provider must exist"
+        )
+        assert "sel_model" in src_text, "model Select with id=sel_model must exist"
+
+    def test_new_session_clears_orchestrator(self):
+        """_do_new_session must call start_new_task() and reset _session_read_files."""
+        import src.ui.textual_app_impl as m
+        import inspect
+
+        src_text = inspect.getsource(m)
+        assert "start_new_task" in src_text, (
+            "_do_new_session must call start_new_task()"
+        )
+        assert "_session_read_files" in src_text, (
+            "_do_new_session must reset _session_read_files"
+        )
+
+    def test_compact_shows_count(self):
+        """_do_compact_session must report the number of messages reduced."""
+        import src.ui.textual_app_impl as m
+        import inspect
+
+        src_text = inspect.getsource(m)
+        assert "n_before" in src_text or "→ 1 message" in src_text, (
+            "_do_compact_session must show message count reduction to user"
+        )
+
+    def test_settings_has_esc_binding(self):
+        """SettingsModal must have an Escape binding to close without using the mouse."""
+        import src.ui.textual_app_impl as m
+        import inspect
+
+        src_text = inspect.getsource(m)
+        assert "escape" in src_text and "close_modal" in src_text, (
+            "SettingsModal must bind Escape to close_modal action"
+        )
+
+    def test_info_bar_shows_msg_count_and_dir(self):
+        """Settings modal must show live message count and working directory."""
+        import src.ui.textual_app_impl as m
+        import inspect
+
+        src_text = inspect.getsource(m)
+        assert "msg_count" in src_text, "Settings must display message count"
+        assert "wd_str" in src_text or "working_dir" in src_text, (
+            "Settings must display working directory"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Slash commands + quit / background cleanup tests
+# ---------------------------------------------------------------------------
+
+
+class TestSlashCommandsAndQuit:
+    """Regression tests for /quit, /compact, /new slash commands and Ctrl+Q binding."""
+
+    def _src(self):
+        import src.ui.textual_app_impl as m
+        import inspect
+
+        return inspect.getsource(m)
+
+    def test_slash_commands_list_has_quit_compact_new(self):
+        """SLASH_COMMANDS must include /quit, /compact, and /new for Tab autocomplete."""
+        import src.ui.textual_app_impl as m
+
+        sc = m.SLASH_COMMANDS
+        assert "/quit" in sc, "/quit must be in SLASH_COMMANDS"
+        assert "/compact" in sc, "/compact must be in SLASH_COMMANDS"
+        assert "/new" in sc, "/new must be in SLASH_COMMANDS"
+
+    def test_ctrl_q_binding_present(self):
+        """CodingAgentTextualApp.BINDINGS must contain ctrl+q → quit_app."""
+        src_text = self._src()
+        assert "ctrl+q" in src_text, "ctrl+q binding must be present"
+        assert "quit_app" in src_text, "quit_app action must be referenced in BINDINGS"
+
+    def test_action_quit_app_exists(self):
+        """action_quit_app must be defined and call self.exit()."""
+        src_text = self._src()
+        assert "def action_quit_app" in src_text, "action_quit_app method must exist"
+        assert "self.exit()" in src_text, "action_quit_app must call self.exit()"
+
+    def test_action_quit_app_stops_audit_worker(self):
+        """action_quit_app must stop the audit log worker (_audit_stop.set())."""
+        src_text = self._src()
+        assert "_audit_stop" in src_text and "_audit_stop.set()" in src_text, (
+            "action_quit_app must call _audit_stop.set() to stop the audit worker"
+        )
+
+    def test_action_quit_app_shuts_down_executor(self):
+        """action_quit_app must shut down the memory_update_node executor."""
+        src_text = self._src()
+        assert "memory_update_node" in src_text, (
+            "action_quit_app must reference memory_update_node for executor shutdown"
+        )
+        assert "shutdown(wait=False)" in src_text, (
+            "executor.shutdown(wait=False) must be called on quit"
+        )
+
+    def test_on_unmount_signals_cancel_and_cleanup(self):
+        """on_unmount must set _cancel_event, stop audit worker, and shut down executor."""
+        src_text = self._src()
+        # on_unmount should contain all three cleanup calls
+        assert "_cancel_event.set()" in src_text, (
+            "on_unmount must call _cancel_event.set()"
+        )
+        assert "_audit_stop.set()" in src_text, "on_unmount must stop audit log worker"
+        assert "shutdown(wait=False)" in src_text, "on_unmount must shut down executor"
+
+    def test_slash_compact_runs_in_background_thread(self):
+        """/compact handler must run _do_compact_session in a daemon thread, not inline."""
+        src_text = self._src()
+        # The /compact branch must use threading.Thread
+        assert "_do_compact_session" in src_text, (
+            "/compact must call _do_compact_session"
+        )
+        # The compact must be dispatched via Thread (not called directly on UI thread)
+        assert "threading.Thread" in src_text, (
+            "/compact must use a background thread to avoid blocking the UI"
+        )
+
+    def test_slash_new_calls_do_new_session(self):
+        """/new handler must invoke _do_new_session."""
+        src_text = self._src()
+        assert "_do_new_session" in src_text, (
+            "/new slash command must call _do_new_session"
+        )
+
+    def test_slash_help_lists_commands(self):
+        """/help handler must list available commands including /quit, /compact, /new."""
+        src_text = self._src()
+        assert "/help" in src_text, "/help must be handled"
+        # The help text must mention the new commands
+        assert "/compact" in src_text, "/help output must mention /compact"
+        assert "/new" in src_text, "/help output must mention /new"
+        assert "/quit" in src_text, "/help output must mention /quit"

@@ -9,7 +9,10 @@ pytestmark = pytest.mark.lmstudio
 
 # Enable integration tests when RUN_INTEGRATION=1 or when an lm_studio provider is configured
 RUN = os.getenv('RUN_INTEGRATION') == '1'
-if not RUN:
+# Auto-detect a configured lmstudio provider only when NOT running in CI.
+# GitHub Actions and the project's python-tests.yml both set CI=true, so
+# live-backend tests are always skipped there.
+if not RUN and not os.getenv('CI'):
     try:
         cfg_path = Path(__file__).parents[2] / 'src' / 'config' / 'providers.json'
         if cfg_path.exists():

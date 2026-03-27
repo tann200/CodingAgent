@@ -3,8 +3,10 @@ from pathlib import Path
 import difflib
 
 from src.tools._path_utils import safe_resolve as _safe_resolve
+from src.tools._tool import tool
 
 
+@tool(tags=["coding"])
 def generate_patch(path: str, new_content: str, workdir: Path) -> Dict[str, Any]:
     """Generate a unified diff patch between existing file content and new_content.
     Returns {'status':'ok','patch': '...'} or error.
@@ -27,6 +29,7 @@ def generate_patch(path: str, new_content: str, workdir: Path) -> Dict[str, Any]
         return {"status": "error", "error": str(e)}
 
 
+@tool(side_effects=["write"], tags=["coding"])
 def apply_patch(path: str, patch: str, workdir: Path) -> Dict[str, Any]:
     """Apply a unified diff patch to a file by delegating to file_tools.edit_file logic.
     This function is a thin wrapper meant to be registered as a tool.
@@ -39,6 +42,7 @@ def apply_patch(path: str, patch: str, workdir: Path) -> Dict[str, Any]:
         return {"status": "error", "error": str(e)}
 
 
+@tool(side_effects=["write"], tags=["coding"])
 def edit_code_block(
     path: str, block_to_find: str, new_block: str, workdir: str
 ) -> Dict[str, Any]:
@@ -61,6 +65,14 @@ def edit_code_block(
             return {"status": "not_found", "error": f"File not found: {path}"}
 
         old_content = file_path.read_text(encoding="utf-8")
+
+        # Mark as read so write_file guardrail is satisfied
+        try:
+            from src.tools.guardrails import mark_file_read
+
+            mark_file_read(str(file_path.resolve()))
+        except Exception:
+            pass
 
         # C2: Uniqueness check — reject if 0 or >1 occurrences
         count = old_content.count(block_to_find)

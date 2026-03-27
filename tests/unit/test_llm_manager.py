@@ -147,7 +147,6 @@ class TestCircuitBreaker:
     def test_call_model_fast_fails_when_open(self):
         """call_model must return an error dict immediately when CB is open."""
         import asyncio
-        from unittest.mock import patch, AsyncMock
         from src.core.inference.llm_manager import call_model
 
         cb = get_circuit_breaker("ollama")

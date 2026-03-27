@@ -12,3 +12,11 @@ tools:
   - grep
   - multi_file_summary
   - batched_file_read
+  - delegate_task
+  - list_subagent_roles
+  - bash_readonly
+  - ask_user
+  - submit_plan_for_review
+  - web_search
+  - read_web_page
+  - fingerprint_tech_stack

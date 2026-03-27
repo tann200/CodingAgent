@@ -40,6 +40,35 @@ These laws define the immutable behavioral contract of the system. They are subo
 
 ---
 
+## 4.1 File Content Formatting
+
+When using `write_file` tool with content argument:
+
+**CORRECT** - Use literal newlines with pipe `|`:
+```yaml
+name: write_file
+arguments:
+  path: /path/to/file.md
+  content: |
+    # Heading
+    
+    Content here
+    More content
+```
+
+**INCORRECT** - Do NOT escape newlines:
+```yaml
+# WRONG - will create extra newlines:
+content: "# Heading\n\nContent here\n"
+
+# WRONG - double escaping:
+content: "# Heading\\n\\nContent here\\n"
+```
+
+The YAML pipe `|` character preserves literal newlines. Do NOT use `\n` or `\\n` in content fields.
+
+---
+
 ## 5. Zero-Elision Mandate
 
 When rewriting or updating a file:

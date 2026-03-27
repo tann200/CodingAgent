@@ -1,8 +1,6 @@
 """Tests for src/tools/repo_analysis_tools.py — AST-based repo analysis."""
 
 import json
-import pytest
-from pathlib import Path
 
 from src.tools.repo_analysis_tools import analyze_repository, _analyze_file
 

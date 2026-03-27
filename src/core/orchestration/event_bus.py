@@ -19,10 +19,13 @@ Correlation IDs (#26):
 
 from __future__ import annotations
 
+import logging
 import threading
 import uuid
 from contextvars import ContextVar
 from typing import Any, Callable, Dict, List, Optional, Set
+
+_logger = logging.getLogger(__name__)
 from dataclasses import dataclass, field
 from enum import IntEnum
 
@@ -102,14 +105,24 @@ class EventBus:
         injected automatically so every subscriber can trace the event.
         """
         cid = correlation_id or _current_correlation_id.get()
-        if cid is not None and isinstance(payload, dict) and "_correlation_id" not in payload:
+        if (
+            cid is not None
+            and isinstance(payload, dict)
+            and "_correlation_id" not in payload
+        ):
             payload = {**payload, "_correlation_id": cid}
         with self._lock:
             subs = list(self._subscribers.get(event_name, []))
         for cb in subs:
             try:
                 cb(payload)
-            except Exception:
+            except Exception as _exc:
+                _logger.debug(
+                    "EventBus: subscriber %r raised on event %r: %s",
+                    cb,
+                    event_name,
+                    _exc,
+                )
                 continue
 
     def subscribe_to_agent(
@@ -190,6 +203,30 @@ class EventBus:
         meta = {"sender_id": sender_id, "priority": priority}
         full = {"meta": meta, "payload": payload}
         return self.publish(event_name, full)
+
+    def subscribe_to_topic(
+        self, topic: str, callback: Callable[[Dict[str, Any]], None]
+    ) -> None:
+        """Subscribe to a topic (e.g., 'agent.scout.broadcast')."""
+        self.subscribe(f"topic.{topic}", callback)
+
+    def publish_to_topic(
+        self, topic: str, payload: Dict[str, Any], sender_id: Optional[str] = None
+    ) -> None:
+        """Publish to a topic."""
+        full_topic = f"topic.{topic}"
+
+        if sender_id:
+            payload = {**payload, "sender_id": sender_id}
+
+        self.publish(full_topic, payload)
+
+    def subscribe_to_preview_complete(
+        self, callback: Callable[[Dict[str, Any]], None]
+    ) -> None:
+        """Subscribe to preview confirmed/rejected events."""
+        self.subscribe("preview.confirmed", callback)
+        self.subscribe("preview.rejected", callback)
 
 
 _default_bus: EventBus | None = None

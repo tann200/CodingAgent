@@ -60,7 +60,7 @@ class VectorStore:
         if self._model is None:
             if _HAS_ST_MODEL:
                 try:
-                    self._model = SentenceTransformer('all-MiniLM-L6-v2')
+                    self._model = SentenceTransformer("all-MiniLM-L6-v2")
                 except Exception:
                     self._model = _DummyModel()
             else:
@@ -75,7 +75,7 @@ class VectorStore:
 
     def index_code(self, repo_index: Dict[str, Any]):
         table_name = "code_symbols"
-        
+
         data = []
         for symbol in repo_index["symbols"]:
             docstring = symbol.get("docstring") or "N/A"
@@ -83,20 +83,22 @@ class VectorStore:
             # Create a stable hash of the content to be embedded
             content_hash = hashlib.sha256(text_to_embed.encode()).hexdigest()
 
-            data.append({
-                "text": text_to_embed,
-                "file_path": symbol["file_path"],
-                "symbol_name": symbol["symbol_name"],
-                "symbol_type": symbol["symbol_type"],
-                "start_line": symbol.get("start_line", 0),
-                "hash": content_hash,
-            })
-            
+            data.append(
+                {
+                    "text": text_to_embed,
+                    "file_path": symbol["file_path"],
+                    "symbol_name": symbol["symbol_name"],
+                    "symbol_type": symbol["symbol_type"],
+                    "start_line": symbol.get("start_line", 0),
+                    "hash": content_hash,
+                }
+            )
+
         if not data:
             return
-            
+
         df = pd.DataFrame(data)
-        
+
         embedding_dim = self.model.get_sentence_embedding_dimension()
         if not isinstance(embedding_dim, int):
             raise TypeError("Could not determine sentence embedding dimension.")
@@ -111,28 +113,32 @@ class VectorStore:
             hash: str
 
         tbl = self._get_or_create_table(table_name, pydantic_to_schema(CodeSymbol))
-        
+
         # Check for existing hashes to avoid re-embedding
         existing_hashes = set()
         try:
             if tbl.count_rows() > 0:
-                existing_hashes = set(tbl.to_pandas()['hash'].tolist())
+                existing_hashes = set(tbl.to_pandas()["hash"].tolist())
         except Exception:
             existing_hashes = set()
 
-        df_new = df[~df['hash'].isin(existing_hashes)]
-        
+        df_new = df[~df["hash"].isin(existing_hashes)]
+
         if df_new.empty:
-            return # Nothing to index
+            return  # Nothing to index
 
         # Process in batches
         batch_size = 128
-        for i in tqdm(range(0, len(df_new), batch_size), desc="Embedding new symbols", disable=not sys.stdout.isatty()):
-            batch_df = df_new.iloc[i:i+batch_size].copy()
-            
-            embeddings = self.model.encode(batch_df['text'].tolist())
-            batch_df['vector'] = list(embeddings)
-            
+        for i in tqdm(
+            range(0, len(df_new), batch_size),
+            desc="Embedding new symbols",
+            disable=not sys.stdout.isatty(),
+        ):
+            batch_df = df_new.iloc[i : i + batch_size].copy()
+
+            embeddings = self.model.encode(batch_df["text"].tolist())
+            batch_df["vector"] = list(embeddings)
+
             tbl.add(data=batch_df)
 
     def search(self, query: str, limit: int = 5) -> List[Dict[str, Any]]:
@@ -141,7 +147,7 @@ class VectorStore:
             tbl = self.db.open_table(table_name)
         except (FileNotFoundError, ValueError):
             return []
-            
+
         query_vector = self.model.encode(query)
         # SentenceTransformer.encode returns 2D array for a list input; flatten to 1D for LanceDB
         if hasattr(query_vector, "ndim") and query_vector.ndim > 1:
@@ -149,6 +155,7 @@ class VectorStore:
         # Also handle numpy array -> list conversion for LanceDB compatibility
         if hasattr(query_vector, "tolist"):
             query_vector = query_vector.tolist()
+
         # Run the blocking LanceDB call in a thread so we can enforce a timeout (NEW-26).
         # On a large index or slow disk the query can block analysis_node indefinitely.
         def _do_search() -> pd.DataFrame:
@@ -158,29 +165,111 @@ class VectorStore:
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _ex:
                 results = _ex.submit(_do_search).result(timeout=10)
         except concurrent.futures.TimeoutError:
-            logger.warning("VectorStore.search timed out after 10 s — returning empty results")
+            logger.warning(
+                "VectorStore.search timed out after 10 s — returning empty results"
+            )
             return []
         # Drop the raw embedding column — it's large and causes JSON serialisation failures (NEW-22)
         return results.drop(columns=["vector"], errors="ignore").to_dict("records")
 
+    def add_memory(self, text: str, metadata: Dict[str, Any]):
+        """Add a memory entry (e.g., session summary) to the vector store.
+
+        Args:
+            text: The text content to embed and store
+            metadata: Additional metadata (e.g., {"type": "session", "session_id": "..."})
+        """
+        table_name = "memories"
+
+        embedding_dim = self.model.get_sentence_embedding_dimension()
+        if not isinstance(embedding_dim, int):
+            embedding_dim = 8  # Fallback for dummy model
+
+        # Use a flexible vector type for compatibility
+        from typing import List as PyList
+
+        class MemoryEntry(LanceModel):
+            text: str = Field(default=None)
+            vector: PyList[float] = Field(default_factory=lambda: [0.0] * embedding_dim)
+            type: str
+            session_id: str
+
+        try:
+            tbl = self._get_or_create_table(table_name, pydantic_to_schema(MemoryEntry))
+        except Exception:
+            return
+
+        # Create embedding
+        embedding = self.model.encode(text)
+        if hasattr(embedding, "ndim") and embedding.ndim > 1:
+            embedding = embedding.flatten()
+        if hasattr(embedding, "tolist"):
+            embedding = embedding.tolist()
+
+        # Add to table
+        data = [
+            {
+                "text": text,
+                "vector": embedding,
+                "type": metadata.get("type", "unknown"),
+                "session_id": metadata.get("session_id", "unknown"),
+            }
+        ]
+
+        try:
+            tbl.add(data=data)
+            logger.info(f"Added memory to vector store: {metadata.get('session_id')}")
+        except Exception as e:
+            logger.error(f"Failed to add memory: {e}")
+
+    def search_memories(self, query: str, limit: int = 5) -> List[Dict[str, Any]]:
+        """Search memories (e.g., session summaries) in the vector store."""
+        table_name = "memories"
+        try:
+            tbl = self.db.open_table(table_name)
+        except (FileNotFoundError, ValueError):
+            return []
+
+        query_vector = self.model.encode(query)
+        if hasattr(query_vector, "ndim") and query_vector.ndim > 1:
+            query_vector = query_vector.flatten()
+        if hasattr(query_vector, "tolist"):
+            query_vector = query_vector.tolist()
+
+        def _do_search() -> pd.DataFrame:
+            return tbl.search(query_vector).limit(limit).to_pandas()
+
+        try:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _ex:
+                results = _ex.submit(_do_search).result(timeout=10)
+        except concurrent.futures.TimeoutError:
+            return []
+
+        return results.drop(columns=["vector"], errors="ignore").to_dict("records")
+
+
 if __name__ == "__main__":
     import json
-    workdir = '.'
-    
+
+    workdir = "."
+
     index_path = Path(workdir) / ".agent-context" / "repo_index.json"
     if not index_path.exists():
         from repo_indexer import index_repository
+
         print("Generating repo index...")
         index_repository(workdir)
-        
+
     with open(index_path, "r") as f:
         repo_index = json.load(f)
-        
+
     vs = VectorStore(workdir)
     print("Indexing code symbols into LanceDB...")
     vs.index_code(repo_index)
-    
+
     print("\nSearching for 'read file':")
     search_results = vs.search("read file")
     for res in search_results:
-        print(f"- {res['symbol_name']} in {res['file_path']} (Score: {res['_distance']:.2f})")
+        print(
+            f"- {res['symbol_name']} in {res['file_path']} (Score: {res['_distance']:.2f})"
+        )

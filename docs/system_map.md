@@ -1,6 +1,6 @@
 # System Map
 
-Generated: 2026-03-22 12:04:40Z
+Generated: 2026-03-25 23:30:32Z
 
 ```text
 Repository: CodingAgent
@@ -8,14 +8,10 @@ Repository: CodingAgent
 ├── docs
 │   ├── audit
 │   │   ├── audit-instructions.md
-│   │   └── audit-report-vol5.md
+│   │   └── audit-report-vol9.md
 │   ├── ARCHITECTURE.md
 │   ├── DEVELOPMENT.md
-│   ├── MEMORY_ARCHITECTURE.md
-│   ├── system_map.md
-│   ├── test-coverage-analysis.md
-│   ├── test-plan.md
-│   └── tuispec.md
+│   └── system_map.md
 ├── scripts
 │   ├── add_provider.py
 │   ├── analyze_tokens.py
@@ -51,14 +47,18 @@ Repository: CodingAgent
 │   │   │   │   ├── analyst.md
 │   │   │   │   ├── debugger.md
 │   │   │   │   ├── operational.md
+│   │   │   │   ├── researcher.md
 │   │   │   │   ├── reviewer.md
-│   │   │   │   └── strategic.md
+│   │   │   │   ├── scout.md
+│   │   │   │   ├── strategic.md
+│   │   │   │   └── tester.md
 │   │   │   └── skills
 │   │   │       ├── context_hygiene.md
 │   │   │       └── dry.md
 │   │   ├── toolsets
 │   │   │   ├── coding.yaml
 │   │   │   ├── debug.yaml
+│   │   │   ├── loader.py
 │   │   │   ├── planning.yaml
 │   │   │   └── review.yaml
 │   │   ├── providers.json
@@ -76,7 +76,9 @@ Repository: CodingAgent
 │   │   ├── inference
 │   │   │   ├── adapters
 │   │   │   │   ├── lm_studio_adapter.py
-│   │   │   │   └── ollama_adapter.py
+│   │   │   │   ├── ollama_adapter.py
+│   │   │   │   ├── openai_compat_adapter.py
+│   │   │   │   └── openrouter_adapter.py
 │   │   │   ├── __init__.py
 │   │   │   ├── adapter_wrappers.py
 │   │   │   ├── llm_client.py
@@ -96,16 +98,28 @@ Repository: CodingAgent
 │   │   │   │   ├── builder.py
 │   │   │   │   └── state.py
 │   │   │   ├── agent_brain.py
+│   │   │   ├── agent_session_manager.py
+│   │   │   ├── cross_session_bus.py
+│   │   │   ├── dag_parser.py
 │   │   │   ├── event_bus.py
+│   │   │   ├── file_lock_manager.py
 │   │   │   ├── graph_factory.py
+│   │   │   ├── mcp_stdio_server.py
 │   │   │   ├── message_manager.py
 │   │   │   ├── orchestrator.py
+│   │   │   ├── plan_mode.py
+│   │   │   ├── preview_service.py
+│   │   │   ├── prsw_topics.py
 │   │   │   ├── role_config.py
 │   │   │   ├── rollback_manager.py
-│   │   │   ├── sandbox.py
 │   │   │   ├── schema.json
+│   │   │   ├── session_lifecycle.py
+│   │   │   ├── session_registry.py
+│   │   │   ├── session_watcher.py
+│   │   │   ├── token_budget.py
 │   │   │   ├── tool_contracts.py
 │   │   │   ├── tool_parser.py
+│   │   │   ├── wave_coordinator.py
 │   │   │   └── workspace_guard.py
 │   │   ├── telemetry
 │   │   │   ├── consumer.py
@@ -115,14 +129,9 @@ Repository: CodingAgent
 │   │   └── user_prefs.py
 │   ├── data
 │   ├── tools
-│   │   ├── toolsets
-│   │   │   ├── coding.yaml
-│   │   │   ├── debug.yaml
-│   │   │   ├── loader.py
-│   │   │   ├── planning.yaml
-│   │   │   └── review.yaml
 │   │   ├── _path_utils.py
 │   │   ├── file_tools.py
+│   │   ├── git_tools.py
 │   │   ├── patch_tools.py
 │   │   ├── registry.py
 │   │   ├── repo_analysis_tools.py

@@ -10,7 +10,7 @@ The fix: return `"rounds": (state.get("rounds") or 0) + 1` so rounds advances
 past 0 and re-entry does not re-trigger decomposition.
 """
 import pytest
-from unittest.mock import MagicMock, AsyncMock
+from unittest.mock import MagicMock
 
 
 def _make_state(**kwargs):

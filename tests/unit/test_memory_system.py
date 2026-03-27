@@ -102,7 +102,6 @@ class TestMemoryTools:
     def test_memory_search_error_returns_status_error(self, tmp_path):
         """memory_search on broken JSON returns status='error'."""
         from src.core.memory.memory_tools import memory_search
-        from unittest.mock import patch
 
         ctx_dir = tmp_path / ".agent-context"
         ctx_dir.mkdir()

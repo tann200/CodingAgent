@@ -21,27 +21,55 @@ async def evaluation_node(state: AgentState, config: Any) -> Dict[str, Any]:
     current_step = state.get("current_step") or 0
     errors = state.get("errors") or []
 
-    # Check verification status
-    tests = verification_result.get("tests", {})
-    linter = verification_result.get("linter", {})
-    syntax = verification_result.get("syntax", {})
+    # Prefer the authoritative boolean already computed by verification_node.
+    # Fall back to recomputing only when the field is absent (e.g. the first run
+    # before verification_node has ever executed).
+    _state_vp = state.get("verification_passed")
+    if _state_vp is not None:
+        verification_passed = bool(_state_vp)
+        failure_reasons: list = []
+        # Still collect human-readable reasons for the log even when using the flag.
+        def _failed(r: dict) -> bool:
+            return isinstance(r, dict) and r.get("status") == "fail"
+        # Python keys
+        for key, label in (
+            ("tests", "Tests"), ("linter", "Linter"), ("syntax", "Syntax"),
+        ):
+            r = verification_result.get(key, {})
+            if _failed(r):
+                failure_reasons.append(f"{label} failed: {r.get('message', r.get('stdout', 'Unknown error'))[:200]}")
+        # JS/TS keys
+        for key, label in (
+            ("js_tests", "JS tests"), ("ts_check", "TypeScript check"), ("eslint", "ESLint"),
+        ):
+            r = verification_result.get(key, {})
+            if _failed(r):
+                failure_reasons.append(f"{label} failed: {r.get('message', r.get('stdout', 'Unknown error'))[:200]}")
+    else:
+        # Recompute from scratch — covers both Python and JS/TS result keys.
+        verification_passed = True
+        failure_reasons = []
 
-    verification_passed = True
-    failure_reasons = []
+        def _failed(r: dict) -> bool:  # type: ignore[misc]
+            return isinstance(r, dict) and r.get("status") == "fail"
 
-    if tests.get("status") == "fail":
-        verification_passed = False
-        failure_reasons.append(f"Tests failed: {tests.get('message', 'Unknown error')}")
-    if linter.get("status") == "fail":
-        verification_passed = False
-        failure_reasons.append(
-            f"Linter failed: {linter.get('message', 'Unknown error')}"
-        )
-    if syntax.get("status") == "fail":
-        verification_passed = False
-        failure_reasons.append(
-            f"Syntax errors: {syntax.get('message', 'Unknown error')}"
-        )
+        # Python verification keys
+        for key, label in (
+            ("tests", "Tests"), ("linter", "Linter"), ("syntax", "Syntax"),
+        ):
+            r = verification_result.get(key, {})
+            if _failed(r):
+                verification_passed = False
+                failure_reasons.append(f"{label} failed: {r.get('message', r.get('stdout', 'Unknown error'))[:200]}")
+
+        # JS/TS verification keys (CF-2 fix: previously invisible to evaluation)
+        for key, label in (
+            ("js_tests", "JS tests"), ("ts_check", "TypeScript check"), ("eslint", "ESLint"),
+        ):
+            r = verification_result.get(key, {})
+            if _failed(r):
+                verification_passed = False
+                failure_reasons.append(f"{label} failed: {r.get('message', r.get('stdout', 'Unknown error'))[:200]}")
 
     # Check plan completion
     plan_completed = (
@@ -66,6 +94,21 @@ async def evaluation_node(state: AgentState, config: Any) -> Dict[str, Any]:
     # Determine outcome
     if verification_passed and plan_completed and not critical_errors:
         logger.info("evaluation_node: TASK COMPLETE - all checks passed")
+        # MC-3 fix: record the task decision in the session store so historical
+        # reasoning traces are available for debugging and cross-task learning.
+        try:
+            from src.core.orchestration.graph.nodes.node_utils import _resolve_orchestrator
+            _orch = _resolve_orchestrator(state, config)
+            if _orch and hasattr(_orch, "session_store") and _orch.session_store:
+                _session_id = state.get("session_id") or "unknown"
+                _task_desc = (state.get("task") or "")[:200]
+                _orch.session_store.add_decision(
+                    session_id=_session_id,
+                    decision=f"complete: {_task_desc}",
+                    rationale="All verification checks passed; plan fully executed.",
+                )
+        except Exception as _de:
+            logger.debug(f"evaluation_node: add_decision failed (non-critical): {_de}")
         return {
             "evaluation_result": "complete",
             "next_action": None,

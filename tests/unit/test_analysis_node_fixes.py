@@ -5,7 +5,6 @@ Tests for analysis_node fixes:
 - Bug: .suffix == ".py" guard on SymbolGraph update blocked non-Python files
 """
 import pytest
-from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 from src.core.orchestration.graph.nodes import analysis_node as _mod

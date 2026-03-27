@@ -3,10 +3,20 @@ import json
 from src.core.orchestration.orchestrator import Orchestrator
 from tests.integration.mocks.deterministic_adapter import DeterministicAdapter
 
+# Modules that import call_model directly at module load time — all must be patched.
+_CALL_MODEL_TARGETS = [
+    "src.core.orchestration.graph.nodes.execution_node.call_model",
+    "src.core.orchestration.graph.nodes.planning_node.call_model",
+    "src.core.orchestration.graph.nodes.perception_node.call_model",
+    "src.core.orchestration.graph.nodes.debug_node.call_model",
+    "src.core.orchestration.graph.nodes.replan_node.call_model",
+    "src.core.inference.llm_manager.call_model",
+]
+
 SCENARIOS = {
     "provider_probe": [
         "```yaml\nname: search_code\narguments:\n  query: ProviderManager\n```",
-        "```yaml\nname: read_file\narguments:\n  path: src/core/llm_manager.py\n```",
+        "```yaml\nname: read_file\narguments:\n  path: src/core/inference/llm_manager.py\n```",
         "I have found and read the ProviderManager.",
     ],
     "fix_syntax": [
@@ -24,15 +34,6 @@ SCENARIOS = {
 }
 
 
-@pytest.fixture
-def mock_llm_manager():
-    import src.core.llm_manager
-
-    original_call_model = src.core.llm_manager.call_model
-    yield
-    src.core.llm_manager.call_model = original_call_model
-
-
 @pytest.mark.parametrize(
     "scenario_name, expected_sequence",
     [
@@ -42,24 +43,20 @@ def mock_llm_manager():
     ],
 )
 def test_agent_loop_plaintext_tools(
-    tmp_path, mock_llm_manager, scenario_name, expected_sequence
+    tmp_path, monkeypatch, scenario_name, expected_sequence
 ):
     adapter = DeterministicAdapter(scenarios=SCENARIOS)
     adapter.set_scenario(scenario_name)
 
-    import src.core.llm_manager
-
     async def mock_call_model(messages, model=None, provider=None, *largs, **kwargs):
         return adapter.generate(messages, model=model, provider=provider, **kwargs)
 
-    src.core.llm_manager.call_model = mock_call_model
-    # Also patch the locally imported call_model in the workflow nodes so perception_node uses our mock
-    try:
-        import src.core.orchestration.graph.nodes.workflow_nodes as _wn
-
-        _wn.call_model = mock_call_model
-    except Exception as e:
-        pass  # Best effort patch
+    # Patch call_model in every node module that imported it at load time
+    for target in _CALL_MODEL_TARGETS:
+        try:
+            monkeypatch.setattr(target, mock_call_model)
+        except AttributeError:
+            pass  # module not yet imported — skip
 
     orchestrator = Orchestrator(adapter=adapter, working_dir=str(tmp_path))
 
@@ -129,7 +126,6 @@ def test_agent_loop_plaintext_tools(
         if executed_tools == expected_sequence:
             break
         if getattr(adapter, "step_index", 0) >= scenario_len:
-            # adapter exhausted, stop retrying
             break
 
     # Ensure trace exists and at least one tool executed

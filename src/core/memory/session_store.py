@@ -24,7 +24,9 @@ class SessionStore:
             self._local.connection = sqlite3.connect(
                 str(self.db_path),
                 timeout=30.0,
-                check_same_thread=False,
+                # check_same_thread omitted (default True): threading.local() already
+                # guarantees each thread creates and owns its own connection, so
+                # allowing cross-thread use would be a contradictory no-op (SCAN2-5).
             )
             self._local.connection.row_factory = sqlite3.Row
             # Enable WAL mode and busy timeout for concurrent access

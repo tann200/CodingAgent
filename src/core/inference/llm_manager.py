@@ -326,7 +326,22 @@ def save_provider(
         if target is None:
             target = resolve_config_path(path)
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(json.dumps(data), encoding="utf-8")
+        # Preserve array format: if file already holds an array and data is a single dict,
+        # wrap it so the file stays as [{...}] rather than reverting to {...}.
+        to_write = data
+        if isinstance(data, dict) and target.exists():
+            try:
+                existing = json.loads(target.read_text(encoding="utf-8"))
+                if isinstance(existing, list):
+                    # Replace provider with matching name, or append if new
+                    name = data.get("name")
+                    updated = [p if (not isinstance(p, dict) or p.get("name") != name) else data for p in existing]
+                    if not any(isinstance(p, dict) and p.get("name") == name for p in existing):
+                        updated.append(data)
+                    to_write = updated
+            except Exception:
+                pass
+        target.write_text(json.dumps(to_write), encoding="utf-8")
         return True
     except Exception:
         return False
@@ -1110,6 +1125,7 @@ async def call_model(
     stream: bool = False,
     format_json: bool = False,
     tools: Optional[List[Any]] = None,
+    session_id: Optional[str] = None,
     **kwargs,
 ) -> Any:
     # Log correlation ID so LLM calls can be traced back to the originating agent turn (#26)
@@ -1196,6 +1212,23 @@ async def call_model(
             _cb.record_failure()
         else:
             _cb.record_success()
+
+    # HR-6: Record actual token usage in the budget monitor so check_budget() has
+    # real counts rather than rough character-length estimates.
+    if session_id and isinstance(res, dict):
+        _usage = res.get("usage") or {}
+        if not _usage:
+            # Some adapters nest usage under meta
+            _usage = (res.get("meta") or {}).get("usage") or {}
+        _pt = _usage.get("prompt_tokens", 0) or _usage.get("input_tokens", 0)
+        _ct = _usage.get("completion_tokens", 0) or _usage.get("output_tokens", 0)
+        _tt = _usage.get("total_tokens", 0) or (_pt + _ct)
+        if _tt > 0:
+            try:
+                from src.core.orchestration.token_budget import get_token_budget_monitor
+                get_token_budget_monitor().record_usage(session_id, _pt, _ct, _tt)
+            except Exception:
+                pass  # never let budget tracking break LLM calls
 
     return res
 

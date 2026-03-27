@@ -5,9 +5,7 @@ Tests for the tool fixes:
   - edit_file_atomic: exact-once replacement, ambiguity rejection, diff output
   - safe_resolve: shared path-safety utility (#29)
 """
-import os
 import pytest
-from pathlib import Path
 from src.tools.file_tools import glob, edit_file_atomic, write_file
 from src.tools.system_tools import grep
 
@@ -246,7 +244,6 @@ class TestSafeResolve:
     def test_file_tools_uses_shared_utility(self):
         """file_tools._safe_resolve delegates to _path_utils.safe_resolve."""
         from src.tools import file_tools
-        from src.tools._path_utils import safe_resolve
         # _safe_resolve must be a thin wrapper, not a duplicate implementation
         import inspect
         src = inspect.getsource(file_tools._safe_resolve)

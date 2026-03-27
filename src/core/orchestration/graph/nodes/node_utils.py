@@ -1,5 +1,5 @@
 import logging
-from typing import Any, Dict, Union
+from typing import Any, Dict, Optional, Union
 
 from src.core.orchestration.graph.state import AgentState
 
@@ -74,6 +74,49 @@ def _resolve_orchestrator(state: Union[Dict[str, Any], AgentState], config: Any)
             return orch
     except Exception:
         pass
+    return None
+
+
+def get_current_role(
+    state: Union[Dict[str, Any], AgentState], config: Any
+) -> Optional[str]:
+    """
+    Get the current role from orchestrator, config, or state.
+
+    Priority:
+    1. Orchestrator.current_role
+    2. Config.current_role (for SubagentOrchestrator)
+    3. State.current_role
+
+    Returns:
+        Role string or None if not set
+    """
+    orch = _resolve_orchestrator(state, config)
+    if orch:
+        role = getattr(orch, "current_role", None)
+        if role:
+            return role
+
+    # Check config directly for SubagentOrchestrator
+    try:
+        if hasattr(config, "current_role"):
+            return getattr(config, "current_role")
+        cfg = getattr(config, "configurable", None) or config
+        if hasattr(cfg, "get"):
+            role = cfg.get("current_role")
+            if role:
+                return role
+    except Exception:
+        pass
+
+    # Check state
+    try:
+        if isinstance(state, dict):
+            return state.get("current_role")
+        return getattr(state, "current_role", None)
+    except Exception:
+        pass
+
     return None
 
 

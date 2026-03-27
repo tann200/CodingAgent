@@ -6,9 +6,11 @@ tools:
   - run_tests
   - run_linter
   - syntax_check
-  - get_git_diff
   - grep
   - find_symbol
   - find_references
   - multi_file_summary
   - search_code
+  - bash_readonly
+  - ask_user
+  - memory_search

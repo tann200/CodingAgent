@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Dict, Any
 
@@ -53,11 +54,13 @@ def _save_last_plan(workdir: str, plan: list, task: str, step: int = 0) -> None:
 async def planning_node(state: AgentState, config: Any) -> Dict[str, Any]:
     """
     Planning Layer: Converts perception outputs into a structured plan.
-    Uses the 'strategic' role from AgentBrainManager for planning-specific context.
+    Uses the 'strategic' role from ContextBuilder (loaded from agent-brain).
     """
-    # Get AgentBrainManager for role-specific prompts
-    brain = get_agent_brain_manager()
-    strategic_role = brain.get_role("strategic") or "You are a strategic planner."
+    # P1-2: Increment inner planning-loop counter FIRST so all return paths carry it
+    plan_attempts = int(state.get("plan_attempts") or 0) + 1
+
+    # P2-9: Reset plan_mode_approved so each fresh plan requires re-approval.
+    # Without this, a stale True from a prior approval skips the gate on subsequent plan cycles.
 
     # Validate orchestrator
     try:
@@ -67,6 +70,8 @@ async def planning_node(state: AgentState, config: Any) -> Dict[str, Any]:
             return {
                 "current_plan": state.get("current_plan", []),
                 "current_step": state.get("current_step", 0),
+                "plan_attempts": plan_attempts,
+                "plan_mode_approved": None,
                 "errors": ["orchestrator not found"],
             }
     except Exception as e:
@@ -74,11 +79,14 @@ async def planning_node(state: AgentState, config: Any) -> Dict[str, Any]:
         return {
             "current_plan": state.get("current_plan", []),
             "current_step": state.get("current_step", 0),
+            "plan_attempts": plan_attempts,
+            "plan_mode_approved": None,
             "errors": [f"config error: {e}"],
         }
 
     # Treat state as a plain dict for flexible lookups
     s = dict(state)
+    s["plan_attempts"] = plan_attempts
 
     # 4.4: Cross-session plan persistence - Load last plan if current is empty
     working_dir = s.get("working_dir", ".")
@@ -94,8 +102,20 @@ async def planning_node(state: AgentState, config: Any) -> Dict[str, Any]:
             loaded_task = last_plan_data.get("task", "")
             loaded_step = last_plan_data.get("current_step", 0)
 
-            # Only resume if the task matches exactly — never resume for an unrelated task
-            if loaded_plan and task and loaded_task == task:
+            # Only resume if the task is similar enough — exact match or high word overlap.
+            # Exact match handles identical re-submissions; fuzzy match handles minor
+            # rephrasing of the same task (e.g. trimmed whitespace, punctuation).
+            def _task_similar(a: str, b: str) -> bool:
+                if a == b:
+                    return True
+                a_words = set(re.sub(r"[^a-z0-9]", " ", a.lower()).split())
+                b_words = set(re.sub(r"[^a-z0-9]", " ", b.lower()).split())
+                if not a_words or not b_words:
+                    return False
+                overlap = len(a_words & b_words) / max(len(a_words), len(b_words))
+                return overlap >= 0.8
+
+            if loaded_plan and task and _task_similar(loaded_task, task):
                 logger.info(
                     f"planning_node: resuming from saved plan with {len(loaded_plan)} steps"
                 )
@@ -104,6 +124,8 @@ async def planning_node(state: AgentState, config: Any) -> Dict[str, Any]:
                     "current_step": loaded_step,
                     "task_decomposed": True,
                     "plan_resumed": True,
+                    "plan_attempts": plan_attempts,
+                    "plan_mode_approved": None,
                 }
 
     # If the perception already provided a next_action, try to build a simple plan
@@ -128,6 +150,8 @@ async def planning_node(state: AgentState, config: Any) -> Dict[str, Any]:
             "current_plan": current_plan,
             "current_step": current_step,
             "task": step_desc,
+            "plan_attempts": plan_attempts,
+            "plan_mode_approved": None,
         }
 
     next_action = s.get("next_action")
@@ -141,7 +165,7 @@ async def planning_node(state: AgentState, config: Any) -> Dict[str, Any]:
         current_step = 0
         # 4.4: Persist simple plan for cross-session persistence
         _save_last_plan(working_dir, current_plan, task, current_step)
-        return {"current_plan": current_plan, "current_step": current_step}
+        return {"current_plan": current_plan, "current_step": current_step, "plan_attempts": plan_attempts, "plan_mode_approved": None}
 
     # Fallback: ask the model for a short plan (non-blocking best effort)
     try:
@@ -174,17 +198,117 @@ async def planning_node(state: AgentState, config: Any) -> Dict[str, Any]:
             analyst_context = f"\n\nAnalyst Findings:\n{analyst_findings}\n"
             logger.info("planning_node: injecting analyst_findings into prompt")
 
-        full_task = f"Task: {task}{repo_context}{analyst_context}\n\nGenerate a step-by-step plan. Each step must reference specific files explicitly."
+        # P3-1: Inject call graph and test map as structured JSON blocks
+        import json as _json
+        call_graph = s.get("call_graph")
+        test_map = s.get("test_map")
+        graph_context = ""
+        if call_graph:
+            graph_context += (
+                f"\n\nCall Graph (symbol → callers):\n"
+                f"```json\n{_json.dumps(call_graph, indent=2)}\n```"
+            )
+        if test_map:
+            graph_context += (
+                f"\n\nTest Map (module → test files):\n"
+                f"```json\n{_json.dumps(test_map, indent=2)}\n```"
+            )
+        if graph_context:
+            logger.info("planning_node: injecting call_graph/test_map into prompt")
+
+        # P4-5: Auto-suggest test steps when test_map identifies relevant test files.
+        test_hint = ""
+        if test_map:
+            test_files = []
+            for module, tests in test_map.items():
+                if isinstance(tests, list):
+                    test_files.extend(tests[:2])
+            if test_files:
+                unique_tests = list(dict.fromkeys(test_files))[:4]
+                test_hint = (
+                    f"\n\nTest Coverage Hint: The following test files are relevant to "
+                    f"the modules being modified. Consider adding a verification step "
+                    f"to run these tests after the implementation steps: "
+                    f"{', '.join(unique_tests)}"
+                )
+                logger.info(f"planning_node: injecting test hint ({len(unique_tests)} files)")
+
+        # MC-4 fix: Request structured JSON output with specific schema to eliminate
+        # 4-strategy parsing fragility. The LLM is more likely to produce consistent
+        # JSON when explicitly instructed with the expected format.
+        # P3-6: Few-shot DAG examples increase valid JSON DAG output rate.
+        full_task = f"""Task: {task}{repo_context}{analyst_context}{graph_context}{test_hint}
+
+Analyze the task and create a dependency graph of subtasks.
+
+Output format (JSON DAG):
+```json
+{{
+  "root_task": "Original task description",
+  "steps": [
+    {{
+      "step_id": "step_0",
+      "description": "Independent task that can run first",
+      "files": ["file1.py", "file2.py"],
+      "depends_on": []
+    }},
+    {{
+      "step_id": "step_1",
+      "description": "Task depending on step_0",
+      "files": ["file3.py"],
+      "depends_on": ["step_0"]
+    }}
+  ]
+}}
+```
+
+Rules:
+- Tasks modifying the SAME file must have dependency relationship
+- A task can start when ALL tasks in its `depends_on` list are complete
+- Identify the MAXIMUM parallelism possible
+- List all files affected by each step
+
+--- EXAMPLES ---
+
+Example 1 (sequential dependency):
+```json
+{{
+  "root_task": "Update authentication to use JWT",
+  "steps": [
+    {{"step_id": "step_0", "description": "Read auth/models.py to understand existing User model", "files": ["auth/models.py"], "depends_on": []}},
+    {{"step_id": "step_1", "description": "Add JWT token fields to User model", "files": ["auth/models.py"], "depends_on": ["step_0"]}},
+    {{"step_id": "step_2", "description": "Update login view to issue JWT tokens", "files": ["auth/views.py"], "depends_on": ["step_1"]}}
+  ]
+}}
+```
+
+Example 2 (parallel tasks):
+```json
+{{
+  "root_task": "Add input validation to registration and login forms",
+  "steps": [
+    {{"step_id": "step_0", "description": "Add email validation to registration form", "files": ["forms/register.py"], "depends_on": []}},
+    {{"step_id": "step_1", "description": "Add password strength check to registration form", "files": ["forms/register.py"], "depends_on": ["step_0"]}},
+    {{"step_id": "step_2", "description": "Add rate limiting to login form (independent)", "files": ["forms/login.py"], "depends_on": []}}
+  ]
+}}
+```
+
+Respond ONLY with valid JSON, no additional text."""
 
         # Use strategic role from AgentBrainManager
+        provider_capabilities = {}
+        if orchestrator and hasattr(orchestrator, "get_provider_capabilities"):
+            provider_capabilities = orchestrator.get_provider_capabilities()
+
         messages = builder.build_prompt(
-            identity=strategic_role,
-            role=f"Planner for task: {task}",
+            role_name="strategic",
             active_skills=[],
             task_description=full_task,
             tools=[],
             conversation=history,
             max_tokens=3000,  # P5 fix: 1500 truncated complex multi-step plans
+            provider_capabilities=provider_capabilities,
         )
 
         cancel_event = state.get("cancel_event")
@@ -192,7 +316,16 @@ async def planning_node(state: AgentState, config: Any) -> Dict[str, Any]:
             cancel_event = getattr(orchestrator, "cancel_event", None)
 
         # F14: call_model is always async; use create_task directly.
-        llm_task = asyncio.create_task(call_model(messages, stream=False, format_json=False))
+        # GAP 2: Hardcode temperature for planning (0.3 for slight creativity)
+        llm_task = asyncio.create_task(
+            call_model(
+                messages,
+                stream=False,
+                format_json=False,
+                temperature=0.3,
+                session_id=state.get("session_id"),
+            )
+        )
         while not llm_task.done():
             if (
                 cancel_event
@@ -204,10 +337,15 @@ async def planning_node(state: AgentState, config: Any) -> Dict[str, Any]:
                 return {
                     "current_plan": current_plan,
                     "current_step": current_step,
+                    "plan_attempts": plan_attempts,
+                    "plan_mode_approved": None,
                     "errors": ["canceled"],
                 }
             await asyncio.sleep(0.2)
-        resp = await llm_task
+        try:
+            resp = await llm_task
+        except asyncio.CancelledError:
+            raise  # propagate — node itself was cancelled; do not swallow
 
         content = ""
         if isinstance(resp, dict):
@@ -220,6 +358,41 @@ async def planning_node(state: AgentState, config: Any) -> Dict[str, Any]:
 
         # Robust plan parsing with multiple fallback strategies
         steps = _parse_plan_content(content)
+
+        # Try to parse as DAG first
+        from src.core.orchestration.dag_parser import (
+            _parse_dag_content,
+            _convert_flat_to_dag,
+        )
+
+        dag = _parse_dag_content(content)
+        if dag:
+            # Successfully parsed DAG format
+            steps = [
+                {
+                    "step_id": s.step_id,
+                    "description": s.description,
+                    "files": s.files,
+                    "depends_on": s.depends_on,
+                }
+                for s in dag.steps.values()
+            ]
+            logger.info(f"planning_node: parsed DAG plan with {len(steps)} steps")
+        elif steps:
+            # Fall back to flat list converted to DAG
+            dag = _convert_flat_to_dag(steps)
+            logger.info(
+                f"planning_node: converted flat plan to DAG with {len(steps)} steps"
+            )
+
+        # MC-6: Guard against runaway plans that would never complete.
+        MAX_PLAN_STEPS = 50
+        if steps and len(steps) > MAX_PLAN_STEPS:
+            logger.warning(
+                f"planning_node: plan has {len(steps)} steps which exceeds "
+                f"MAX_PLAN_STEPS={MAX_PLAN_STEPS}; truncating to first {MAX_PLAN_STEPS} steps"
+            )
+            steps = steps[:MAX_PLAN_STEPS]
 
         if steps:
             # Persist plan to session store
@@ -245,15 +418,28 @@ async def planning_node(state: AgentState, config: Any) -> Dict[str, Any]:
                 from src.tools.todo_tools import manage_todo
 
                 step_descriptions = [
-                    s.get("description", f"Step {i+1}")
-                    for i, s in enumerate(steps)
+                    s.get("description", f"Step {i + 1}") for i, s in enumerate(steps)
                 ]
-                manage_todo(action="create", workdir=working_dir, steps=step_descriptions)
+                manage_todo(
+                    action="create", workdir=working_dir, steps=step_descriptions
+                )
                 logger.info(f"planning_node: wrote TODO.md with {len(steps)} steps")
             except Exception as _te:
                 logger.warning(f"planning_node: failed to write TODO.md: {_te}")
 
-            return {"current_plan": steps, "current_step": 0}
+            from src.core.orchestration.dag_parser import _convert_flat_to_dag
+
+            dag = _convert_flat_to_dag(steps)
+            waves = dag.topological_sort_waves() if dag.validate() else None
+            return {
+                "current_plan": steps,
+                "current_step": 0,
+                "plan_dag": {"steps": steps},
+                "execution_waves": waves,
+                "current_wave": 0,
+                "plan_attempts": plan_attempts,
+                "plan_mode_approved": None,
+            }
     except Exception as e:
         logger.error(f"planning_node: plan generation failed: {e}")
 
@@ -263,10 +449,33 @@ async def planning_node(state: AgentState, config: Any) -> Dict[str, Any]:
     if not current_plan and task:
         fallback_plan = [{"description": task[:200], "action": None}]
         logger.warning("planning_node: plan parse failed, using single-step fallback")
-        return {"current_plan": fallback_plan, "current_step": 0}
+        from src.core.orchestration.dag_parser import _convert_flat_to_dag
 
-    # Default: preserve existing plan (may be empty only if task is also empty)
-    return {"current_plan": current_plan, "current_step": current_step}
+        dag = _convert_flat_to_dag(fallback_plan)
+        waves = dag.topological_sort_waves() if dag.validate() else None
+        return {
+            "current_plan": fallback_plan,
+            "current_step": 0,
+            "plan_dag": {"steps": fallback_plan},
+            "execution_waves": waves,
+            "current_wave": 0,
+            "plan_attempts": plan_attempts,
+            "plan_mode_approved": None,
+        }
+
+    from src.core.orchestration.dag_parser import _convert_flat_to_dag
+
+    dag = _convert_flat_to_dag(current_plan)
+    waves = dag.topological_sort_waves() if dag.validate() else None
+    return {
+        "current_plan": current_plan,
+        "current_step": current_step,
+        "plan_dag": {"steps": current_plan},
+        "execution_waves": waves,
+        "plan_attempts": plan_attempts,
+        "current_wave": 0,
+        "plan_mode_approved": None,  # P2-9: reset approval gate for each new plan cycle
+    }
 
 
 def _parse_plan_content(content: str) -> list:
@@ -337,7 +546,12 @@ def _parse_plan_content(content: str) -> list:
 
     # Strategy 3: Structured regex for numbered/bulleted lists
     # Match patterns like: "1. Step description" or "- Step description" or "* Step description"
-    plan_lines = []
+    # WR-5 fix: collect structured lines (numbered/bullet) and free-text lines
+    # separately.  If ANY structured lines are found, use only those — this
+    # prevents analysis-context preamble sentences (which appear BEFORE the
+    # numbered list) from becoming spurious plan steps.
+    structured_lines = []
+    freetext_lines = []
 
     # Pattern for numbered items: 1., 2., 1), 2), etc.
     numbered_pattern = r"^\s*(\d+[\.\)]\s+)(.+)$"
@@ -401,7 +615,7 @@ def _parse_plan_content(content: str) -> list:
         if match:
             desc = match.group(2).strip()
             if desc:
-                plan_lines.append(desc)
+                structured_lines.append(desc)
             continue
 
         # Try bullet pattern
@@ -409,12 +623,15 @@ def _parse_plan_content(content: str) -> list:
         if match:
             desc = match.group(2).strip()
             if desc:
-                plan_lines.append(desc)
+                structured_lines.append(desc)
             continue
 
-        # If line looks like a step description (not too long, has action words)
+        # Free-text fallback (only used when no structured lines found)
         if len(line) < 200 and any(word in lower_line for word in action_words):
-            plan_lines.append(line)
+            freetext_lines.append(line)
+
+    # Prefer structured lines; fall back to free-text only when none were found.
+    plan_lines = structured_lines if structured_lines else freetext_lines
 
     if plan_lines:
         steps = [{"description": desc, "action": None} for desc in plan_lines]
@@ -440,8 +657,12 @@ def _parse_plan_content(content: str) -> list:
         # Require at least one action word so bare file listings / status messages
         # don't become single-step plans; count whole-word occurrences to avoid
         # false positives like "test_dir" matching "test".
-        if stripped and not stripped.startswith("```") and any(
-            re.search(r"\b" + word + r"\b", lower_stripped) for word in action_words
+        if (
+            stripped
+            and not stripped.startswith("```")
+            and any(
+                re.search(r"\b" + word + r"\b", lower_stripped) for word in action_words
+            )
         ):
             logger.info("planning_node: falling back to single-step plan")
             return [{"description": stripped[:200], "action": None}]

@@ -6,9 +6,7 @@ Tests for verification_node improvements:
 
 Also tests new verification tools: run_js_tests, run_ts_check, run_eslint.
 """
-import pytest
-from unittest.mock import patch, MagicMock
-from pathlib import Path
+from unittest.mock import patch
 
 
 # ---------------------------------------------------------------------------
@@ -211,7 +209,6 @@ class TestVerificationTriggerW1:
     def test_bash_success_triggers_verification(self):
         """Bash with returncode=0 must trigger verification (W1)."""
         from src.core.orchestration.graph.nodes import verification_node as vn_mod
-        from unittest.mock import MagicMock
 
         # The node checks last_result + last_tool_name; patch verification tools to avoid real runs
         state = self._state_with_tool(

@@ -153,8 +153,7 @@ class TestContextBuilderSessionSummary:
 
         cb = ContextBuilder()
         msgs = cb.build_prompt(
-            identity="I am an agent",
-            role="coder",
+            role_name="coder",
             active_skills=[],
             task_description="do something",
             tools=[],
@@ -175,8 +174,7 @@ class TestContextBuilderSessionSummary:
 
         cb = ContextBuilder()
         msgs = cb.build_prompt(
-            identity="I am an agent",
-            role="coder",
+            role_name="coder",
             active_skills=[],
             task_description="do something",
             tools=[],
@@ -192,8 +190,7 @@ class TestContextBuilderSessionSummary:
 
         cb = ContextBuilder()
         msgs = cb.build_prompt(
-            identity="I am an agent",
-            role="coder",
+            role_name="coder",
             active_skills=[],
             task_description="do something",
             tools=[],

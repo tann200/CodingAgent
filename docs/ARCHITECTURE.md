@@ -1,8 +1,8 @@
 # CodingAgent Architecture
 
-> **Implementation Status**: Fully implemented — LangGraph 13-node pipeline, multi-file atomic rollback, advanced memory wired, repository intelligence, 1040+ unit tests
-> **Recent Updates (2026-03)**: Analyst delegation node added (vol9); tool cooldown enforcement + files_read O(1) dict in execution_node; plan_validator now routes to planning (not perception) on failure; delegation results injected into conversation history (C4); prompt injection guard in perception_node (F8); ThreadPoolExecutor-based tool timeouts (C1); thinking-token stripping for Qwen3/DeepSeek-R1; multi-language SymbolGraph (JS/TS/Go/Rust/Java); telemetry log rotation
-> **Audit Fixes (2026-03)**: 9 audit cycles completed (vol1–vol5). All Critical and High severity findings resolved. See Security Audit Fixes section.
+> **Implementation Status**: Fully implemented — LangGraph pipeline, multi-file atomic rollback, advanced memory, repository intelligence, PRSW (Parallel Reads, Sequential Writes), DAG-based wave execution, Native Tool Support (frontier + local models), Role-Based Prompt Injection, Hardcoded Temperature Routing, ACP/MCP Compliance (GAP 1-3), 1587 unit tests passing.
+> **Recent Updates (2026-03)**: Stage 30 Tool System Overhaul: `@tool` decorator, `build_registry()` (60 auto-discovered tools), 7 new tool modules (web, AST, interaction, guardrails, lint, memory, project). Gap analysis vs LocalCodingAgent — 17 bugs identified and fixed.
+> **Audit Fixes (2026-03)**: 10 audit cycles completed (vol1–vol10 + gap analysis). All Critical and High severity findings resolved. Last validation: 2026-03-27 — 1587 unit tests passing, 0 failed.
 
 ## Implementation Stages
 
@@ -18,23 +18,52 @@
 | Stage 8 - Core Stabilization | ✅ Complete | Context builder fix, robust plan parsing, WorkspaceGuard |
 | Stage 9 - Incremental Indexing | ✅ Complete | SHA256 hash-based change detection, multi-language (15+) |
 | Stage 10 - Repository Intelligence | ✅ Complete | ContextController wired, VectorStore fix, SymbolGraph enrichment |
-| Stage 11 - Wiring Sprint | ✅ Complete | SkillLearner, SessionStore, plan validator defaults wired |
-| Stage 12 - Multi-file Atomicity | ✅ Complete | Step transactions: begin/append/rollback via RollbackManager |
-| Stage 13 - Deterministic Mode | ✅ Complete | temperature=0, seed param, ScenarioEvaluator for regression tests |
-| Stage 14 - Test Coverage | ✅ Complete | 470+ unit tests across 16 test files |
-| Stage 15 - Thread Safety | ✅ Complete | Signal-based timeout guarded by main-thread check |
-| Stage 16 - Delegation & Parallel Memory | ✅ Complete | Delegation node for subagent spawning, parallel memory ops, auto-save methods |
-| Stage 17 - Security Audit Fixes | ✅ Complete | All Critical and High severity audit findings resolved |
-| Stage 18 - Multi-Cycle Hardening | ✅ Complete | Audit vol2–vol5: 100+ fixes across loop safety, tool reliability, TUI race conditions, prompt injection |
-| Stage 19 - Analyst Delegation | ✅ Complete | `analyst_delegation_node` gates complex tasks; findings injected into planning (vol9) |
-| Stage 20 - Tool Cooldown & Read Tracking | ✅ Complete | `tool_last_used` cooldown map, `files_read` O(1) dict, cooldown gap enforcement in execution_node |
-| Stage 21 - Thinking-Token Optimization | ✅ Complete | `thinking_utils.py`: strip `<think>` blocks, model-aware max_tokens budget, /no_think injection |
+| Stage 11 - PRSW (Parallel Reads, Sequential Writes) | ✅ Complete | FileLockManager, WaveCoordinator, PRSW events, delegation_node updates |
+| Stage 12 - DAG-Based Execution | ✅ Complete | DAG parser, wave computation, execution_waves in state |
+| Stage 13 - Native Tool Support | ✅ Complete | `supports_native_tools` flag, format-aware ContextBuilder, native tool_calls parsing |
+| Stage 14 - Wiring Sprint | ✅ Complete | SkillLearner, SessionStore, plan validator defaults wired |
+| Stage 15 - Multi-file Atomicity | ✅ Complete | Step transactions: begin/append/rollback via RollbackManager |
+| Stage 16 - Deterministic Mode | ✅ Complete | temperature=0, seed param, ScenarioEvaluator for regression tests |
+| Stage 17 - Thread Safety | ✅ Complete | ThreadPoolExecutor timeout replaces signal.SIGALRM |
+| Stage 18 - Delegation & Parallel Memory | ✅ Complete | Delegation node for subagent spawning, parallel memory ops, auto-save methods |
+| Stage 19 - Security Audit Fixes | ✅ Complete | All Critical and High severity audit findings resolved (vol1–vol9) |
+| Stage 20 - Analyst Delegation | ✅ Complete | `analyst_delegation_node` gates complex tasks; findings injected into planning |
+| Stage 21 - Tool Cooldown & Read Tracking | ✅ Complete | `tool_last_used` cooldown map, `files_read` O(1) dict, cooldown gap enforcement |
+| Stage 22 - Thinking-Token Optimization | ✅ Complete | `thinking_utils.py`: strip `<think>` blocks, model-aware max_tokens budget, /no_think injection |
+| Stage 23 - Role Blurring Fix | ✅ Complete | ContextBuilder accepts `role_name`; loads single role; eliminates prompt contamination |
+| Stage 24 - Temperature Routing | ✅ Complete | Hardcoded `temperature=0.3` in planning_node, `temperature=0.0` in execution_node |
+| Stage 25 - Anti-Yap & Few-Shot | ✅ Complete | SOUL.md strict formatting + operational.md YAML execution examples |
+| Stage 26 - Session State Hydration (GAP 1) | ✅ Complete | `session.request_state` / `session.hydrated` handshake; AgentSessionManager |
+| Stage 27 - ACP Payload Schema (GAP 2) | ✅ Complete | `tool.execute.*` events use ACP schema: `sessionUpdate`, `toolCallId`, `status`, `content` |
+| Stage 28 - MCP STDIO Server (GAP 3) | ✅ Complete | `mcp_stdio_server.py` bridges EventBus to stdin/stdout JSON-RPC; supports IDE integration |
+| Stage 29 - Structured Planning Context | ✅ Complete | P3-1 call_graph/test_map JSON from analysis→planning; P3-2 test pre-retrieval; P3-6 few-shot DAG examples; P3-10 TUI history persistence |
+| Stage 30 - Tool System Overhaul | ✅ Complete | `@tool` decorator + `build_registry()` auto-discovery (60 tools across 16 modules); 7 new modules: web, AST, interaction, guardrails, post-write lint, memory search, tech-stack fingerprint; gap analysis vs LocalCodingAgent; 17 bugs found and fixed |
 
 ---
 
-## Security & Stability Audit Fixes (vol1–vol5, 2026-03)
+## GAP Compliance (ACP/MCP)
 
-Nine audit cycles completed. All Critical and High severity findings are resolved. Full reports: `docs/audit/audit-report.md`, `audit-report-vol2.md` … `audit-report-vol5.md`.
+### GAP 1: Session State Hydration
+- TUI subscribes to `session.request_state` on mount
+- AgentSessionManager publishes `session.hydrated` with full state
+- `_sync_session_state()` called after tool execution in orchestrator
+
+### GAP 2: ACP Payload Standardization
+- `tool.execute.start`: `sessionUpdate: "tool_call_update"`, `toolCallId`, `title`, `status: "in_progress"`, `rawInput`
+- `tool.execute.finish`: `status: "completed"`, `content: [{"type": "text", "text": ...}]`, `rawOutput`
+- `tool.execute.error`: `status: "failed"`, `content`, `error`
+- `plan.progress`: `sessionUpdate: "plan_progress"`, `planId`, `currentStep`, `totalSteps`
+
+### GAP 3: MCP STDIO Server
+- Bridges EventBus to stdin/stdout JSON-RPC 2.0
+- Supports: `initialize`, `session/request_state`, `tools/list`, `tools/call`, `resources/*`, `prompts/*`
+- Forwards all EventBus events as JSON-RPC notifications
+
+---
+
+## Security & Stability Audit Fixes (vol1–vol9, 2026-03)
+
+Nine audit cycles completed. All Critical and High severity findings are resolved. Latest report: `docs/audit/audit-report-vol9.md`.
 
 ### Critical Fixes (selected)
 
@@ -45,6 +74,10 @@ Nine audit cycles completed. All Critical and High severity findings are resolve
 | C3 (vol5) — analysis fast-path nullifies W3 | `_task_is_complex()` gate added; fast-path skipped for complex tasks | `analysis_node.py` |
 | C4 (vol5) — Delegation results write-only | Results injected as system messages into `history` | `delegation_node.py` |
 | C5 (vol5) — EventBus double delivery | Dedup via `called` set in `publish_to_agent` | `event_bus.py` |
+| CF-1 (vol9) — async delegation_node in sync LangGraph | LangGraph wrapper async `_delegation` calls `await delegation_node` | `graph/builder.py:724` |
+| CF-2 (vol9) — planning→validator→planning loop | `plan_attempts` counter; guard at ≥3 forces execution | `builder.py:65-79` |
+| CF-3 (vol9) — evaluation→replan bypass rounds | `replan_attempts` counter; cap at 5 routes to memory_sync | `builder.py:445-451` |
+| CF-4 (vol9) — asyncio.Event misuse in preview_service | `confirmed_event` created lazily inside coroutine, not at field default | `preview_service.py:81-83` |
 | delegation loop (vol1) | `delegation → END` direct edge; removed `memory_sync` routing | `graph/builder.py` |
 | debug_node unreachable (vol1) | `evaluation_node` returns `"debug"` on failure; edge wired | `graph/builder.py` |
 | plan_validator infinite loop (vol1) | `enforce_warnings=False` default; round≥8 cap | `plan_validator_node.py` |
@@ -62,13 +95,19 @@ Nine audit cycles completed. All Critical and High severity findings are resolve
 | H4 (vol5) — plan_validator → perception waste | F10: routes directly to `planning` on failure (saves 2 LLM calls) |
 | H6 (vol5) — Dead state fields | `tool_last_used` and `files_read` re-added with active functionality |
 | H9 (vol5) — debug_attempts reset per round | `debug_attempts`, `total_debug_attempts`, `step_retry_counts` propagated across rounds |
+| HR-5 (vol9) — manage_todo duplicate code | Removed unreachable duplicate branch (lines 123-132) | `todo_tools.py` |
+| HR-8 (vol9) — providers.json write not atomic | Write to tmp-file + `os.replace()` | `settings_panel.py:116-131` |
+| P2-1 (vol9) — No retry in LLM adapters | Exponential backoff (3 retries: 1s, 2s, 4s) | `openai_compat_adapter.py:291-325` |
+| P2-5 (vol9) — run_tests workdir not safe_resolve'd | Uses `_safe_resolve_workdir()` | `verification_tools.py:42` |
+| P2-6 (vol9) — edit_by_line_range missing int coercion | `start_line = int(start_line)` | `file_tools.py:688` |
+| P2-9 (vol9) — plan_mode_approved never reset | Reset to `None` in planning_node | `planning_node.py:62,74,83` |
 | NEW-1 (vol2) — debug_node missing await | Fixed; entire debug/fix loop was silently broken |
 | NEW-6 (vol2) — perception decomposition resets rounds | Returns `rounds + 1` instead of `0` |
 | F1 (vol3) — execution_node extra LLM call | Uses `planned_action` directly; skips LLM call when action pre-set |
 | F8 (vol3) — `_INDEXED_DIRS` stale cache | Keyed by `(resolved_path, mtime_ns)` tuple |
 | F15 (vol3) — `_TEXT_CACHE` LRU eviction | Max 256 entries; module-level static dict |
 
-### AgentState Fields Added (vol2–vol5)
+### AgentState Fields Added (vol2–vol6)
 
 | Field | Type | Purpose |
 |-------|------|---------|
@@ -84,6 +123,16 @@ Nine audit cycles completed. All Critical and High severity findings are resolve
 | `files_read` | `Optional[Dict[str, bool]]` | O(1) read-before-edit lookup: resolved path → True |
 | `analyst_findings` | `Optional[str]` | Analyst subagent output injected into planning |
 | `plan_resumed` | `Optional[bool]` | Set when stale plan is resumed from `last_plan.json` |
+| `execution_waves` | `Optional[List[List[str]]]` | DAG-computed execution wave order |
+| `current_wave` | `int` | Current wave index (0-based) |
+| `plan_dag` | `Optional[Dict]` | DAG representation of execution plan |
+| `_file_lock_manager` | `Optional[Any]` | FileLockManager for PRSW coordination |
+| `plan_attempts` | `int` | planning→validator→planning inner-loop counter (guard: ≥3 forces execute) |
+| `replan_attempts` | `int` | execution→replan cycle counter (guard: ≥5 routes to memory_sync) |
+| `call_graph` | `Optional[Dict]` | P3-1: Symbol→callers JSON from analysis_node → injected into planning prompt |
+| `test_map` | `Optional[Dict]` | P3-1: Module→test files JSON from analysis_node → injected into planning prompt |
+| `plan_enforce_warnings` | `Optional[bool]` | External override for plan validator (default True) |
+| `plan_strict_mode` | `Optional[bool]` | External override for plan validator strict mode |
 
 ---
 
@@ -98,15 +147,140 @@ Full Pipeline (complex multi-step task):
             → execution → step_controller → verification → evaluation
             → (memory_sync | delegation | step_controller | END)
 
-Plan validation failure (F10 fix):
-  plan_validator → planning  (direct re-planning, saves 2 LLM calls vs old → perception path)
+Plan validation failure (F10):
+  plan_validator → planning  (direct re-planning, saves 2 LLM calls)
+  Guard: plan_attempts ≥ 3 → force execution (prevents planning infinite loop)
 
 Patch-too-large path:
-  execution → replan → step_controller → execution (smaller step)
+  execution → replan → step_controller → execution (smaller steps)
+  Guard: replan_attempts ≥ 5 → memory_sync (prevents replan infinite loop)
 
 Verification failure / debug path:
   verification → evaluation → debug → (execution | END)
+  Guard: total_debug_attempts ≥ max → memory_sync
+
+Tool budget path:
+  execution → memory_sync (when tool_call_count ≥ max_tool_calls)
 ```
+
+---
+
+## Phase 6: PRSW - Parallel Reads, Sequential Writes
+
+### Core Principle
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                    PARALLEL READS, SEQUENTIAL WRITES                 │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│   READ-ONLY AGENTS (can run in parallel)                           │
+│   ┌──────────┐  ┌──────────┐  ┌──────────┐                        │
+│   │  Scout   │  │Researcher│  │ Reviewer │                        │
+│   │  read()  │  │  read()  │  │  read()  │                        │
+│   └────┬─────┘  └────┬─────┘  └────┬─────┘                        │
+│        │             │             │                               │
+│        └─────────────┼─────────────┘                               │
+│                      │                                             │
+│                      ▼                                             │
+│           ┌──────────────────────┐                                 │
+│           │   EventBus P2P     │                                 │
+│           │ (files.discovered)  │                                 │
+│           │ (docs.fetched)     │                                 │
+│           │ (bugs.found)       │                                 │
+│           └──────────┬───────────┘                                 │
+│                      │                                             │
+│                      ▼                                             │
+│   WRITE-ONLY AGENT (sequential)                                    │
+│   ┌──────────────────────────────────────────┐                     │
+│   │              CODER AGENT                  │                     │
+│   │                                           │                     │
+│   │  1. Wait for Scout/Researcher results    │                     │
+│   │  2. Apply changes ONE AT A TIME          │                     │
+│   │  3. Wait for confirmation before next    │                     │
+│   │  4. Notify Reviewer/Tester via P2P      │                     │
+│   └──────────────────────────────────────────┘                     │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### Components
+
+| Component | File | Description |
+|-----------|------|-------------|
+| **FileLockManager** | `file_lock_manager.py` | Async file locking with read/write separation. Multiple read locks allowed; single write lock exclusive. |
+| **WaveCoordinator** | `wave_coordinator.py` | Manages wave execution: parallel read agents → sequential write agents. |
+| **PRSWTopics** | `prsw_topics.py` | Event topics: `files.ready`, `context.gathered`, `write.complete`, `blocked.on.write`. |
+| **should_use_prsw** | `graph/builder.py` | Routing function that detects when PRSW should be used (mixed read/write delegations). |
+
+### State Fields Added
+
+| Field | Type | Purpose |
+|-------|------|---------|
+| `execution_waves` | `Optional[List[List[str]]]` | Computed DAG wave execution order |
+| `current_wave` | `Optional[int]` | Current wave index being executed |
+| `plan_dag` | `Optional[Dict]` | DAG representation of the execution plan |
+| `_file_lock_manager` | `Optional[FileLockManager]` | File lock manager instance for PRSW |
+| `preview_mode` | `Optional[bool]` | Preview/dry-run mode flag |
+
+### Integration Points
+
+- **delegation_node**: Detects PRSW delegations, executes read agents in parallel, writes sequentially
+- **execution_node**: Tracks wave progression, advances to next wave when current wave completes
+- **planning_node**: Computes execution waves from DAG when generating plans
+- **orchestrator**: Initializes FileLockManager, exposes via `get_file_lock_manager()`
+
+---
+
+## DAG-Based Execution
+
+### Overview
+
+Plans are now parsed into a DAG to compute optimal execution order:
+- Dependency analysis identifies which steps can run in parallel
+- Wave computation groups independent steps into execution waves
+- Wave advancement ensures all steps in a wave complete before next wave starts
+
+### DAG Parser (`dag_parser.py`)
+
+| Function | Description |
+|----------|-------------|
+| `PlanDAG` | DAG representation with nodes and edges |
+| `add_edge(from, to)` | Add dependency edge |
+| `validate()` | Check for cycles |
+| `topological_sort_waves()` | Compute execution waves (list of step ID lists) |
+| `_convert_flat_to_dag(steps)` | Convert flat plan to DAG based on file dependencies |
+
+### Wave Execution Flow
+
+```
+planning_node generates plan
+         │
+         ▼
+   ┌─────────────┐
+   │dag_parser   │
+   │converts to  │
+   │DAG + waves  │
+   └─────────────┘
+         │
+         ▼
+   State stores:
+   - plan_dag: {steps: [...]}
+   - execution_waves: [[step_0, step_1], [step_2], [step_3]]
+   - current_wave: 0
+         │
+         ▼
+   execution_node executes steps
+         │
+         ▼
+   Step completes → check if all steps in wave done
+         │
+         ├── Yes → current_wave += 1
+         │
+         └── No → continue to next step
+```
+
+---
 
 **Conditional Routing (Fast-Path / W3):**
 `route_after_perception` checks `next_action` and task complexity:
@@ -120,21 +294,157 @@ Verification failure / debug path:
 
 **Node Role Mapping:**
 
-| Node | Role | LLM Calls | Notes |
-|------|------|-----------|-------|
-| `perception_node` | `operational` | ✅ Yes | Task parsing, tool call generation; F8 prompt injection guard rejects reflected YAML tool blocks from user-role history |
-| `planning_node` | `strategic` | ✅ Yes | Structured JSON plan via LLM; `max_tokens=3000`; fallback plan on parse failure; injects `analyst_findings` when present |
-| `debug_node` | `debugger` | ✅ Yes | Error analysis and fix generation; resets counter on error-type change |
-| `replan_node` | `strategic` | ✅ Yes | Step splitting for oversized patches (>200 lines) |
-| `analysis_node` | N/A | ❌ Tool-based | VectorStore + SymbolGraph + ContextController; fast-path bypassed for complex tasks (C3 fix); `_INDEXED_DIRS` keyed by `(path, mtime_ns)` |
-| `analyst_delegation_node` | `analyst` | ✅ Yes | Spawned for complex tasks only; injects `<findings>` into `analyst_findings`; result feeds `planning_node` |
-| `execution_node` | `operational` | ⚠️ Optional | Uses `planned_action` when set (F1); enforces read-before-edit via `files_read` O(1) dict + `verified_reads` fallback; tool cooldown via `tool_last_used` (COOLDOWN_GAP=3); LLM call only if no pre-set action |
-| `verification_node` | N/A | ❌ Tool-based | pytest/ruff/tsc/jest — deterministic; rollback on failure |
-| `evaluation_node` | N/A | ❌ State-based | Routes to `debug` on failure (bounded by `debug_attempts`); never routes directly to step_controller on failure |
-| `step_controller_node` | N/A | ❌ State-based | Step gating; failed step retries via `execution` not `verification` |
-| `plan_validator_node` | N/A | ❌ State-based | Plan structure validation; on failure routes to `planning` (F10 fix — saves 2 LLM calls); emergency round≥8 guard forces execution |
-| `delegation_node` | N/A | ❌ Spawns subagents | C4 fix: results injected into conversation history (not write-only); `delegation_results` also kept in state for backward compat |
-| `memory_update_node` | N/A | ❌ Tool-based | Distillation + parallel memory ops via `asyncio.gather()` |
+| Node | Role | Temperature | LLM Calls | Notes |
+|------|------|-------------|-----------|-------|
+| `perception_node` | `operational` | (config) | ✅ Yes | Task parsing, tool call generation; F8 prompt injection guard rejects reflected YAML tool blocks from user-role history |
+| `planning_node` | `strategic` | **0.3** | ✅ Yes | Structured JSON plan via LLM; `max_tokens=3000`; fallback plan on parse failure; injects `analyst_findings` when present |
+| `debug_node` | `debugger` | (config) | ✅ Yes | Error analysis and fix generation; resets counter on error-type change |
+| `replan_node` | `strategic` | (config) | ✅ Yes | Step splitting for oversized patches (>200 lines) |
+| `analysis_node` | N/A | N/A | ❌ Tool-based | VectorStore + SymbolGraph + ContextController; fast-path bypassed for complex tasks (C3 fix); `_INDEXED_DIRS` keyed by `(path, mtime_ns)` |
+| `analyst_delegation_node` | `analyst` | (config) | ✅ Yes | Spawned for complex tasks only; injects `<findings>` into `analyst_findings`; result feeds `planning_node` |
+| `execution_node` | `operational` | **0.0** | ⚠️ Optional | Uses `planned_action` when set (F1); enforces read-before-edit via `files_read` O(1) dict + `verified_reads` fallback; tool cooldown via `tool_last_used` (COOLDOWN_GAP=3); LLM call only if no pre-set action |
+| `verification_node` | N/A | N/A | ❌ Tool-based | pytest/ruff/tsc/jest — deterministic; rollback on failure |
+| `evaluation_node` | N/A | N/A | ❌ State-based | Routes to `debug` on failure (bounded by `debug_attempts`); never routes directly to step_controller on failure |
+| `step_controller_node` | N/A | N/A | ❌ State-based | Step gating; failed step retries via `execution` not `verification` |
+| `plan_validator_node` | N/A | N/A | ❌ State-based | Plan structure validation; on failure routes to `planning` (F10 fix — saves 2 LLM calls); emergency round≥8 guard forces execution |
+| `delegation_node` | N/A | N/A | ❌ Spawns subagents | C4 fix: results injected into conversation history (not write-only); `delegation_results` also kept in state for backward compat |
+| `memory_update_node` | N/A | N/A | ❌ Tool-based | Distillation + parallel memory ops via `asyncio.gather()` |
+
+---
+
+## Phase 13: Native Tool Support (Frontier vs Local Models)
+
+### Overview
+
+Support both local models (YAML tool format) and frontier models (native JSON function calling) in the same codebase.
+
+### Configuration
+
+**providers.json** - `supports_native_tools` flag:
+```json
+[
+  {"name": "lm_studio", "supports_native_tools": false},
+  {"name": "openai", "supports_native_tools": true}
+]
+```
+
+### ContextBuilder Format-Aware
+
+The `ContextBuilder.build_prompt()` method accepts `provider_capabilities` parameter:
+- `supports_native_tools: true` → Injects native function calling instructions
+- `supports_native_tools: false` → Injects YAML tool format instructions
+
+### Node Integration
+
+All graph nodes pass provider capabilities to ContextBuilder:
+- `perception_node` - Handles native tool_calls from API responses
+- `execution_node` - Handles native tool_calls from API responses  
+- `planning_node` - Uses format-aware prompts
+- `debug_node` - Uses format-aware prompts
+- `replan_node` - Uses format-aware prompts
+
+### Tool Call Parsing
+
+Nodes check for native tool_calls first, then fall back to YAML parsing:
+```python
+# 1. Check for Native JSON Tool Calls (Frontier Models)
+if "tool_calls" in message_obj:
+    tool_call = {"name": name, "arguments": args}
+
+# 2. Fallback to YAML parsing (Local Models)
+else:
+    tool_call = parse_tool_block(content)
+```
+
+---
+
+## Stage 22-25: Role Blurring Fix, Temperature Routing & Anti-Yap
+
+### GAP 1: Role Blurring Fix (Prompt Contamination)
+
+**The Problem:** Previous `ContextBuilder.build_prompt()` concatenated SOUL + operational + strategic prompts for every LLM call, causing local models to suffer from cognitive dissonance.
+
+**The Fix:** Refactored `ContextBuilder.build_prompt()` to accept `role_name` parameter and inject only the selected role:
+
+```python
+def build_prompt(
+    self,
+    role_name: str,  # NEW: single role instead of identity+role
+    active_skills: List[str],
+    task_description: str,
+    tools: List[Dict],
+    conversation: List[Dict],
+    ...
+):
+    role_content = self.roles.get(role_name, "")  # Load from agent-brain/roles/
+    system_parts = [self.soul, role_content]  # Only SOUL + selected role
+```
+
+**Roles loaded from `agent-brain/roles/*.md`:**
+- `operational` - Tool execution and implementation
+- `strategic` - Task decomposition and planning
+- `debugger` - Error analysis and fix generation
+- `analyst` - Repository exploration
+- `reviewer` - Quality assurance
+- `tester`, `researcher`, `scout` - PRSW subagents
+
+### GAP 2: Dynamic Temperature Routing
+
+**The Problem:** Using global temperature (e.g., 0.7) caused:
+- Execution node: random hallucinations of file paths
+- Planning node: not creative enough for complex task decomposition
+
+**The Fix:** Hardcoded temperatures at node level:
+- `planning_node.py`: `temperature=0.3` (allows slight creativity)
+- `execution_node.py`: `temperature=0.0` (strict determinism)
+
+### GAP 3: Few-Shot Examples in Roles
+
+**The Problem:** Local models learn from examples, not principles. Role prompts had good principles but no examples.
+
+**The Fix:** Added execution format examples to `operational.md`:
+```markdown
+## Execution Format Example
+
+USER: Read the auth.py file to check the login logic.
+ASSISTANT:
+```yaml
+name: read_file
+arguments:
+  path: src/auth.py
+```
+RESULT: File read successfully
+STATUS: partial
+FILES_CHANGED: none
+OBSERVE: The login function validates credentials...
+```
+
+### GAP 4: Anti-Yap Directive
+
+**The Problem:** SOUL.md told the agent to "Be concise" but local models still output "Certainly! I will now list the directory..." wasting tokens.
+
+**The Fix:** Added strict formatting constraints to `SOUL.md` and `strategic.md`:
+```markdown
+## Strict Formatting Constraints
+- **NO CONVERSATIONAL FILLER:** Never say "Certainly!", "Here is the plan", "I will now execute..."
+- **ACTION ONLY:** Your response must ONLY contain the required YAML tool block or JSON structure.
+- **ZERO PREAMBLE:** Do not describe what you are about to do. Just execute.
+```
+
+### Node Integration
+
+All graph nodes updated to use new `role_name` parameter:
+- `planning_node.py` → `role_name="strategic"`, `temperature=0.3`
+- `execution_node.py` → `role_name="operational"`, `temperature=0.0`
+- `perception_node.py` → `role_name="operational"`
+- `replan_node.py` → `role_name="strategic"`
+- `debug_node.py` → `role_name="debugger"`
+
+**Dynamic Skill Injection:** Skills now passed by name and loaded from `agent-brain/skills/*.md`:
+- `perception_node`: injects `"context_hygiene"` for debug/search tasks
+- `execution_node`: injects `"dry"` when `len(relevant_files) > 2`
+
+---
 
 **Subagent Roles** (via `delegate_task` tool):
 
@@ -176,10 +486,10 @@ Verification failure / debug path:
 
    | File | Node | Description |
    |------|------|-------------|
-   | `perception_node.py` | `perception_node` | Understands the user request, decomposes tasks, extracts tool calls from YAML. Uses `operational` role. Injects `context_hygiene` skill for debug/search tasks. F8 prompt injection guard: rejects tool blocks whose `name:` appears verbatim in any user-role history message. |
-   | `analysis_node.py` | `analysis_node` | Explores the repository before planning via tool calls (no LLM). Three phases: (1) VectorStore semantic search, (2) SymbolGraph call graph enrichment, (3) ContextController token budget enforcement. Runs `repo_summary()` at start. Fast-path bypass suppressed for complex tasks (C3). `_INDEXED_DIRS` keyed by `(path, mtime_ns)` to avoid stale cache across sessions (F15). |
+   | `perception_node.py` | `perception_node` | Understands the user request, decomposes tasks, extracts tool calls from YAML or native tool_calls. Uses `operational` role. Injects `context_hygiene` skill for debug/search tasks. F8 prompt injection guard: rejects tool blocks whose `name:` appears verbatim in any user-role history message. Pre-retrieval (round 0): concurrent `asyncio.gather()` across `search_code`, `find_symbol`, `find_references`, and `find_tests_for_module` (P3-2). |
+   | `analysis_node.py` | `analysis_node` | Explores the repository before planning via tool calls (no LLM). Three phases: (1) VectorStore semantic search, (2) SymbolGraph call graph enrichment (outputs `call_graph` + `test_map` as JSON dicts — P3-1), (3) ContextController token budget enforcement. Runs `repo_summary()` at start. Fast-path bypass suppressed for complex tasks (C3). `_INDEXED_DIRS` keyed by `(path, mtime_ns)` (F15). |
    | `analyst_delegation_node.py` | `analyst_delegation_node` | Spawned for complex tasks only (vol9 #56). Delegates deep repo analysis to `analyst` subagent. Stores `<findings>` in `state["analyst_findings"]`; `planning_node` injects findings into its LLM prompt. |
-   | `planning_node.py` | `planning_node` | Converts perception/analysis outputs into a structured step-by-step plan via LLM. `max_tokens=3000` (P5). Injects `analyst_findings` when present. Guaranteed fallback plan on parse failure (F7). Cross-session plan persistence via `last_plan.json`. Uses `strategic` role. |
+   | `planning_node.py` | `planning_node` | Converts perception/analysis outputs into a structured step-by-step plan via LLM. `max_tokens=3000` (P5). Injects `analyst_findings`, `call_graph`, and `test_map` JSON blocks when present (P3-1). Includes few-shot DAG examples in prompt (P3-6). Guaranteed fallback plan on parse failure (F7). Cross-session plan persistence via `last_plan.json`. Uses `strategic` role. Increments `plan_attempts` counter. |
    | `execution_node.py` | `execution_node` | Executes plan steps via tool calls. Uses `planned_action` when set (F1 — eliminates extra LLM call per step). Read-before-edit enforced via `files_read` O(1) dict + `verified_reads` list + `_session_read_files`. Tool cooldown: `tool_last_used` map blocks repeated identical read-tool calls within `COOLDOWN_GAP=3` executions. Calls `begin_step_transaction()`, dispatches tools, advances plan state. Intercepts `requires_split` flag for replan. |
    | `verification_node.py` | `verification_node` | Runs tests, linter, and syntax checks via tool calls. On failure calls `rollback_step_transaction()` to atomically restore all files written in the step. |
    | `evaluation_node.py` | `evaluation_node` | Post-verification routing. Routes to `debug` on verification failure (bounded by `debug_attempts < max_debug_attempts`), `memory_sync` on completion, or `step_controller` for more steps. |
@@ -190,7 +500,6 @@ Verification failure / debug path:
    | `memory_update_node.py` | `memory_update_node` | Persists distilled context to `.agent-context/TASK_STATE.md`. Parallelizes all memory operations via `asyncio.gather()`: TrajectoryLogger, DreamConsolidator, ReviewAgent, RefactoringAgent. |
    | `plan_validator_node.py` | `validate_plan()` | Validates plan structure before execution: step count, file references, verification step (strict mode). On failure routes to `planning` directly (F10 — saves 2 LLM calls). Emergency round≥8 guard forces execution to break infinite loops. |
    | `node_utils.py` | — | Shared utilities: `_resolve_orchestrator()` (robust config/state lookup), `_notify_provider_limit()` (UI event for provider errors). |
-   | `workflow_nodes.py` | — | Re-export shim for backward compatibility — imports all nodes and re-exports them from one place. |
 
 4. **Message & Token Manager** (`src/core/orchestration/message_manager.py`)
    Tracks conversation history. Auto-drops oldest non-system messages when the window exceeds `max_tokens` (sliding window). System prompt is always preserved.
@@ -243,24 +552,55 @@ Verification failure / debug path:
 
 ## Tools
 
-### Tool Registry (`src/tools/registry.py`)
-Central registry of named tools. Tools are small functions registered with metadata (description, side_effects). Converted to a YAML `<available_tools>` block injected into the system prompt.
+### Tool Registry (`src/tools/_registry.py`)
+Central registry of named tools. Uses the `@tool` decorator (`src/tools/_tool.py`) for auto-discovery. `build_registry()` discovers all 60 built-in tools across 16 modules in one call. Tool schemas are auto-generated from function signatures and injected into the system prompt as YAML or native JSON function definitions.
+
+```python
+from src.tools import build_registry
+registry = build_registry(working_dir="/path/to/project")
+# or with extra modules:
+registry = build_registry(extra_modules=[my_custom_module])
+```
+
+**`@tool` decorator** marks a function for auto-discovery:
+```python
+@tool(side_effects=["write"], tags=["coding"])
+def my_tool(path: str, content: str) -> Dict[str, Any]:
+    """Description injected into the system prompt."""
+    ...
+```
+
+`tags` control which toolset the tool appears in (`"coding"`, `"planning"`, `"debug"`, `"review"`). `side_effects` flags write tools for guardrail enforcement.
 
 ### File Operations (`src/tools/file_tools.py`)
 - `list_files` / `fs.list` — directory listing
-- `read_file` / `fs.read` — read file content
+- `read_file` / `fs.read` — read file content; calls `mark_file_read()` on success
 - `read_file_chunk` — read a byte range of a file
-- `write_file` / `fs.write` — write file (tiered bash allowlist enforced)
+- `write_file` / `fs.write` — write file; 500-line hard guard fires **before** write; publishes `file.diff.preview` event before writing
 - `edit_file` — apply a patch/diff to a file
 - `edit_file_atomic` — replace an exact unique string in a file (like Claude Code's `Edit` tool)
-- `edit_by_line_range` — replace specific line ranges
+- `edit_by_line_range` — replace specific line ranges; `start_line`/`end_line` coerced to `int`
 - `delete_file` — delete a file
-- `glob` — file pattern matching; rejects `..` traversal patterns (F13); all returned paths are relative to workdir
+- `glob` — pattern matching; rejects `..` traversal; truncates at 200 results with `truncated: true`
 - `batched_file_read` — read multiple files efficiently
 - `multi_file_summary` — get file metadata without full reads
-- `bash` — shell execution with allowlist; `sed -i` blocked in all forms (`-ni`, `--in-place=`); `DANGEROUS_PATTERNS` applied once, whitespace-normalised (F12)
+- `bash` — shell execution with allowlist; `DANGEROUS_PATTERNS` whitespace-normalised before matching; `sed -i` blocked in all flag forms (`-ni`, `-rni`, `--in-place=`)
+- `bash_readonly` — read-only bash; blocks any command matching DANGEROUS_PATTERNS or write operators; safe for analysis tasks
+- `tail_log_file` — tail the last N lines of a log file (default 50); safe alternative to `bash("tail ...")`
+- `create_directory` — create a directory (and parents); respects safe_resolve path guard
 
-**Security:** Tiered bash allowlist (Tier 1: safe read-only, Tier 2: test/compile, Tier 3: restricted with `requires_approval`). Shell operators blocked pre-parse. `safe_resolve()` shared utility for all path validation. `sed -i` bundled-flag detection handles `-ni`, `-rni`, `--in-place[=...]`.
+**Diff Preview:** All write tools publish `file.diff.preview` before the write. TUI renders as side-by-side table with line numbers.
+
+**Post-Write Lint (`src/tools/lint_dispatch.py`):** `quick_lint(path, workdir)` dispatches a fast syntax check after every write based on file extension (10 s timeout, never raises):
+- `.py` → `py_compile`
+- `.js/.mjs/.jsx` → `node --check`
+- `.ts/.tsx` → `tsc --noEmit --module commonjs --target es2020` (falls back to `node --check`)
+- `.go` → `go build -o /dev/null .` in the file's own directory
+- `.rs` → `rustc --edition=2021 --emit=metadata`
+
+Results returned as `lint_warnings` in the tool result dict.
+
+**Security:** Tiered bash allowlist (Tier 1: safe read-only, Tier 2: test/compile, Tier 3: restricted). Shell operators blocked pre-parse. `safe_resolve()` shared utility for all path validation.
 
 ### TODO Tools (`src/tools/todo_tools.py`)
 - `manage_todo(action, workdir, steps, step_id, description)` — manage `TODO.md` task tracker
@@ -274,10 +614,10 @@ Central registry of named tools. Tools are small functions registered with metad
 ### Code Intelligence (`src/tools/repo_tools.py`)
 - `initialize_repo_intelligence(workdir)` — indexes repo to `.agent-context/repo_index.json` + LanceDB vector store
 - `search_code(query, workdir)` — semantic search over codebase via VectorStore
-- `find_symbol(name)`, `find_references(name)` — symbol lookup via SymbolGraph
+- `find_symbol(name)`, `find_references(name)` — symbol lookup via SymbolGraph; `find_references` uses word-boundary regex (`\b{name}\b`) to avoid false positives
 
 ### Repository Analysis (`src/tools/repo_analysis_tools.py`)
-- `analyze_repository(workdir)` — scans Python files, extracts module summaries and import relationships, writes `.agent-context/repo_memory.json`
+- `analyze_repository(workdir)` — scans Python, JS/TS, Go, and Rust files; extracts module summaries, import relationships, and per-language stats; writes `.agent-context/repo_memory.json`
 
 ### Repository Summary (`src/tools/repo_summary.py`)
 - `repo_summary(workdir)` — fast overview of project structure; detects framework (FastAPI, Flask, React, etc.) and generates a tree overview. Used by `analysis_node` at startup.
@@ -310,22 +650,59 @@ Central registry of named tools. Tools are small functions registered with metad
 - `get_role()` — returns current in-memory role
 - `set_role(role, orchestrator)` — sets role on in-memory holder and optionally on the orchestrator; publishes `role.change` event
 
-### Memory Tools (`src/core/memory/memory_tools.py`)
+### Memory Tools (`src/tools/memory_tools.py`)
 - `memory_search(query, workdir)` — searches `TASK_STATE.md` and `execution_trace.json`; returns ranked matches (exact lines first, then trace entries by recency)
 
 ### Subagent Tools (`src/tools/subagent_tools.py`)
 - `delegate_task(role, subtask_description, working_dir)` — spawns an isolated autonomous subagent via `GraphFactory` for a specific subtask, keeping the main agent's context window clean
+- Supports PRSW roles: `scout`, `researcher`, `reviewer` (read-only, parallel), `coder`, `tester` (write, sequential)
 
-### Git Tools
-- `get_git_diff(workdir)` — returns `git diff` output for tracking changes
+**Subagent Roles (Phase 6 PRSW):**
 
-### Echo Tool
-- `echo(message)` — test/debug echo tool
+| Role | Type | Description |
+|------|------|-------------|
+| `scout` | Read-only | Discovers files and project structure |
+| `researcher` | Read-only | Analyzes code and gathers context |
+| `reviewer` | Read-only | Reviews changes, finds bugs |
+| `coder` | Write | Implements changes sequentially |
+| `tester` | Write | Runs tests, validates changes |
 
-### Toolset Loader (`src/tools/toolsets/loader.py`)
-Loads YAML toolset files; checks `src/config/toolsets/` first, falls back to `src/tools/toolsets/` for backward compatibility. Caches loaded toolsets.
+### Web Tools (`src/tools/web_tools.py`)
+- `web_search(query, max_results)` — DuckDuckGo search (duckduckgo-search package, HTML fallback); returns `{title, url, snippet}` list
+- `read_web_page(url)` — fetches and extracts text (up to 10,000 chars); uses html2text when available
 
-**Toolsets** (`src/config/toolsets/` and `src/tools/toolsets/`):
+**SSRF protection:** `_is_url_blocked()` rejects non-HTTP schemes (`file://`, `ftp://`, etc.) and private/internal IP ranges (`127.x`, `10.x`, `192.168.x`, `172.16-31.x`, `169.254.x`, `localhost`). Fails closed on parse error.
+
+### AST Tools (`src/tools/ast_tools.py`)
+- `ast_rename(path, old_name, new_name)` — renames a symbol using AST line-number discovery + word-boundary regex on affected lines only. Preserves all comments, blank lines, and formatting. Calls `mark_file_read()` + `check_read_before_write()` before writing (guardrail-compliant). For non-Python files falls back to full-text word-boundary regex.
+- `ast_list_symbols(path, symbol_type)` — lists all function/class/variable definitions with line numbers. Python: full AST walk. Non-Python: regex fallback for JS/TS patterns.
+
+### Interaction Tools (`src/tools/interaction_tools.py`)
+- `ask_user(question)` — pauses execution and presents a question to the user via EventBus; blocks up to 5 minutes for a response. Unsubscribes in `finally` so no callback leaks on exception.
+- `submit_plan_for_review(plan_summary, plan_steps, risk_level)` — HITL plan approval gate; blocks until user approves, rejects, or requests changes. Unsubscribes in `finally`.
+
+### Project Tools (`src/tools/project_tools.py`)
+- `fingerprint_tech_stack(workdir)` — detects languages (Python, JavaScript, TypeScript, Go, Rust, Java, Ruby, C/C++) and frameworks (FastAPI, Flask, Django, React, Vue, Express, etc.) from file patterns and config files. Uses separate `glob("**/*.ts")` and `glob("**/*.tsx")` calls (pathlib does not support `{}` brace expansion).
+
+### Read-Before-Write Guardrail (`src/tools/guardrails.py`)
+Enforces that every existing file must be read before it can be written. Dual-tracking for correctness across threading models:
+- **ContextVar** (`_read_files_var`) — propagates through async chains
+- **Global Lock-protected set** (`_global_read_files`) — visible from any thread, including `run_in_executor` workers on Python 3.11
+
+`mark_file_read(path)` — called by `read_file`, `read_file_chunk`, and `ast_rename` after successful reads.
+`check_read_before_write(path)` — called by all write tools; returns `{}` if OK or `{error, requires_read_first: True}`.
+`reset_guardrail_state()` — called by `Orchestrator.start_new_task()` to clear state between tasks.
+
+New files (non-existent on disk) are always allowed through without a prior read.
+
+### Git Tools (`src/tools/git_tools.py`)
+- `git_status`, `git_log`, `git_diff`, `git_commit`, `git_stash`, `git_restore` — structured git operations
+- `get_git_diff` (in `system_tools.py`) — **deprecated**; use `git_diff` from `git_tools` instead
+
+### Toolset Loader (`src/config/toolsets/loader.py`)
+Loads YAML toolset files from `src/config/toolsets/`. Caches loaded toolsets. Role → toolset mapping: `coding`, `planning`, `debug`, `review`.
+
+**Toolsets** (`src/config/toolsets/`):
 - `coding.yaml`, `debug.yaml`, `review.yaml`, `planning.yaml`
 
 ---
@@ -337,7 +714,9 @@ Loads YAML toolset files; checks `src/config/toolsets/` first, falls back to `sr
 | `llm_manager.py` | `ProviderManager` — provider registry, model discovery, `call_model()`, routing helpers. Singleton via `get_provider_manager()`. |
 | `llm_client.py` | Abstract `LLMClient` base class — defines `generate()` and `agenerate()` interface. |
 | `adapter_wrappers.py` | `AdapterWrapper` — wraps existing adapters into a uniform `generate()` API; normalizes model lists. |
-| `adapters/lm_studio_adapter.py` | LM Studio HTTP adapter — calls `/v1/chat/completions`; minimal deps, test-friendly. |
+| `adapters/openai_compat_adapter.py` | **Base class** for any OpenAI-compatible REST endpoint — full chat/completions wire protocol, model discovery, Bearer auth, streaming, tool_calls extraction. Extended by `LmStudioAdapter` and `OpenRouterAdapter`. |
+| `adapters/lm_studio_adapter.py` | LM Studio HTTP adapter — extends `OpenAICompatibleAdapter`; overrides config loading (providers.json, env vars) and short-name model resolution. |
+| `adapters/openrouter_adapter.py` | OpenRouter adapter — extends `OpenAICompatibleAdapter`; hardcoded BASE_URL, API key from UserPrefs, required `HTTP-Referer`/`X-Title` headers, public `/models` endpoint. |
 | `adapters/ollama_adapter.py` | Ollama HTTP adapter — calls Ollama REST API; delegates config helpers to `llm_manager`. |
 | `telemetry.py` | `publish_model_response()` — emits model response telemetry (tokens, latency) to EventBus. `with_telemetry()` decorator wraps adapter calls. |
 | `thinking_utils.py` | Model-agnostic thinking-token utilities: `is_reasoning_model()`, `supports_no_think()`, `strip_thinking()` (strips `<think>…</think>`), `budget_max_tokens()` (doubles budget for DeepSeek-R1), `get_active_model_id()`. Applied in `distiller.py` and `perception_node.py`. |
@@ -410,11 +789,24 @@ SQLite-based persistence to `.agent-context/session.db`. Tables: `messages`, `to
 | `event_bus.py` | Topic-based pub/sub + agent messaging; `get_event_bus()` singleton. |
 | `graph_factory.py` | Role-specific graph composition via `GraphFactory`; used for subagent spawning. |
 | `rollback_manager.py` | File snapshot + atomic rollback. `snapshot_files()`, `append_to_snapshot()`, `rollback()`, `cleanup_old_snapshots()`. |
-| `sandbox.py` | `ExecutionSandbox` — temp workspace for patch validation (AST, ruff, mypy, pytest). `SelfDebugLoop` — max 3 retries with error analysis. |
 | `workspace_guard.py` | Protected path patterns (`.git/`, `.env`, `pyproject.toml`, etc.) — blocks writes to critical files. |
 | `role_config.py` | Role-based access control: planner (read-only), coder (full), reviewer (read+verify), researcher (search). `normalize_role()`, `CANONICAL_ROLES`, `ROLE_ALIASES`. |
 | `tool_contracts.py` | Pydantic result schemas for specific tools (e.g. `ListFilesResult`). Validated in `execute_tool`. Includes `requires_split` flag for patch size guard. |
 | `tool_schema.py` | Base `ToolContract` pydantic model: `{tool, args, result, error}`. |
+| `file_lock_manager.py` | **Phase 6**: Async file locking for PRSW (Parallel Reads, Sequential Writes). Multiple read locks per file, single write lock. |
+| `wave_coordinator.py` | **Phase 6**: Wave-based execution coordinator. Manages parallel read agents and sequential write agents. |
+| `dag_parser.py` | DAG-based plan parsing. Converts flat plans to dependency graph, computes topological wave execution order. |
+| `token_budget.py` | Token budget tracking per phase. Monitors prompt/completion tokens and warns approaching limits. |
+| `prsw_topics.py` | **Phase 6**: PRSW event topics for multi-agent coordination (`files.ready`, `write.complete`, etc.). |
+| `session_lifecycle.py` | Session lifecycle management. Handles graceful shutdown, snapshot creation on exit. |
+| `session_registry.py` | Registry of active sessions. Tracks session IDs, timestamps, and metadata. |
+| `agent_session_manager.py` | P2P agent session management. Enables cross-agent context sharing via EventBus. |
+| `preview_service.py` | Preview mode service. Handles dry-run mode for validation without execution. |
+| `plan_mode.py` | Plan-only mode. Parses and validates plans without executing them. |
+| `cross_session_bus.py` | Cross-session event bus. Enables events to span multiple sessions. |
+| `session_watcher.py` | File system watcher for session-related files. Triggers reload on file changes. |
+| `token_budget.py` | Token budget monitor per phase. Records prompt/completion usage; warns approaching context window limits. |
+| `mcp_stdio_server.py` | MCP STDIO server — bridges EventBus to stdin/stdout JSON-RPC 2.0; supports IDE integration (GAP 3). |
 
 ---
 
@@ -433,6 +825,7 @@ Topic-based pub/sub with agent-level messaging:
 |-------|-----------|---------|
 | `file.modified` | `orchestrator.execute_tool` | `{path, tool, workdir}` |
 | `file.deleted` | `orchestrator.execute_tool` | `{path, workdir}` |
+| `file.diff.preview` | `file_tools.write_file` | `{path, diff, is_new_file}` |
 | `tool.execute.start` | `orchestrator.execute_tool` | `{tool, args, workdir}` |
 | `tool.execute.finish` | `orchestrator.execute_tool` | `{tool, ok, workdir}` |
 | `tool.execute.error` | `orchestrator.execute_tool` | `{tool, error, workdir}` |
@@ -444,6 +837,26 @@ Topic-based pub/sub with agent-level messaging:
 | `message.truncation` | `MessageManager` | `{dropped_count, remaining}` |
 | `role.change` | `role_tools.set_role` | `{role}` |
 | `ui.notification` | various | `{level, message, source}` |
+
+### PRSW Events (Phase 6)
+
+| Event | Publisher | Payload |
+|-------|-----------|---------|
+| `prsw.files.ready` | Scout/Researcher | `{files, agent_id}` |
+| `prsw.context` | Researcher | `{summary, agent_id}` |
+| `prsw.changes` | Coder | `{files, status}` |
+| `prsw.new_files` | Coder | `{files, agent_id}` |
+| `prsw.blocked` | FileLockManager | `{path, agent_id}` |
+| `prsw.write_done` | Coder | `{files, status, agent_id}` |
+
+### Agent Topics (P2P)
+
+| Event | Publisher | Payload |
+|-------|-----------|---------|
+| `agent.scout.broadcast` | Scout agent | `{files, agent_id}` |
+| `agent.researcher.broadcast` | Researcher agent | `{summary, agent_id}` |
+| `agent.reviewer.broadcast` | Reviewer agent | `{bugs, agent_id}` |
+| `agent.tester.broadcast` | Tester agent | `{results, agent_id}` |
 
 ---
 
@@ -568,13 +981,17 @@ src/config/
 
 ## Known Architecture Notes
 
-- **`workflow_nodes.py`** is a pure re-export shim for backward compatibility. New code imports directly from individual node files.
-- **`src/tools/toolsets/`** (legacy) and **`src/config/toolsets/`** (canonical) both exist; the loader prefers `src/config/toolsets/`.
-- **`src/core/memory/session_store.py`** is the correct location; not `src/core/context/session_store.py`.
-- **`plan_validator_node.py`** exposes a standalone `validate_plan()` function, not an async node — called directly by `planning_node` or `orchestrator` before executing a plan.
-- The **`graph/nodes/__init__.py`** is empty; all node imports are explicit in `workflow_nodes.py` and `graph/builder.py`.
-- **`sandbox.py`** (`ExecutionSandbox`) is instantiated in `execute_tool` only for AST validation — `SelfDebugLoop` inside it is never used at runtime (O1: over-engineered dead code).
-- **`advanced_features.py`** (`src/core/memory/`) is not imported by any orchestration node — it is a standalone utility file. `TrajectoryLogger`, `DreamConsolidator`, `ReviewAgent`, `RefactoringAgent`, and `SkillLearner` are all instantiated directly in `memory_update_node`.
-- **`providers.json`** must be an array `[{...}]` not a top-level object. The settings panel and provider loader both require array format.
-- **`replan_node`** uses the `strategic` role (not `planner` — which does not exist). Subagent `GraphFactory` creates `researcher`, `coder`, `reviewer`, `planner` graphs via canonical-name mapping.
-- **Correlation IDs**: `new_correlation_id()` is minted per agent turn in `orchestrator.run_agent_once()`; `event_bus.publish()` auto-stamps dict payloads with `_correlation_id`; `call_model()` logs `cid=` for end-to-end tracing.
+- **`workflow_nodes.py`** has been deleted. New code imports directly from individual node files in `graph/nodes/`.
+- **`sandbox.py`** has been deleted. AST pre-write validation uses `ast.parse(new_content)` inline in `execute_tool` (C2 fix). `ExecutionSandbox` and `SelfDebugLoop` are both gone.
+- **Toolset loader** is at `src/config/toolsets/loader.py` (canonical). `src/tools/toolsets/` (legacy) has been deleted.
+- **`providers.json`** must be an array `[{...}]` not a top-level object.
+- **`plan_validator_node.py`** exposes a standalone `validate_plan()` function; called directly by `planning_node` or `orchestrator` before executing a plan.
+- **`replan_node`** uses the `strategic` role (not `planner`). Increments `replan_attempts` counter.
+- **`graph/nodes/__init__.py`** does not exist; all node imports are explicit in `graph/builder.py`.
+- **`advanced_features.py`** (`src/core/memory/`) provides `TrajectoryLogger`, `DreamConsolidator`, `ReviewAgent`, `RefactoringAgent`, `SkillLearner` — all used in `memory_update_node`.
+- **Correlation IDs**: `new_correlation_id()` minted per agent turn; `event_bus.publish()` auto-stamps dict payloads; `call_model()` logs `cid=` for end-to-end tracing.
+- **`call_graph` / `test_map`** flow: `analysis_node` populates → `AgentState` carries → `planning_node` injects as JSON blocks into the planning prompt (P3-1).
+- **Phase 1 audit fixes (2026-03)**: P1-1 async delegation_node wrapped in LangGraph async wrapper; P1-2 plan_attempts counter prevents infinite planning→validator loop; P1-3 replan_attempts caps inner replan cycle at 5; P1-4 asyncio.Event created lazily in preview_service; P1-5 duplicate code removed from todo_tools; P1-6 plan_enforce_warnings defaults False to avoid infinite loop; P1-7 atomic providers.json write via tmp-file + rename; P1-8 Textual shutdown in finally block.
+- **Phase 2 audit fixes (2026-03)**: P2-1 retry logic in openai_compat_adapter; P2-2 token budget wired to distiller via should_after_execution_with_replan; P2-5 run_tests uses _safe_resolve_workdir; P2-6 edit_by_line_range coerces start_line to int; P2-9 plan_mode_approved reset to None in planning_node.
+- **TokenBudgetMonitor**: Integrated into graph flow via builder.py `should_after_execution_with_replan` — checks budget and routes to memory_sync for compaction when usage exceeds threshold.
+- **Session Hydration**: TUI publishes `session.request_state` on mount; AgentSessionManager responds with `session.hydrated` containing full state; orchestrator calls `_sync_session_state()` after tool execution.

@@ -1,5 +1,4 @@
 import asyncio
-import json
 import logging
 import re
 from typing import Dict, Any
@@ -12,7 +11,6 @@ from src.core.orchestration.graph.nodes.node_utils import (
     _resolve_orchestrator,
     _notify_provider_limit,
 )
-from src.core.orchestration.agent_brain import get_agent_brain_manager
 
 logger = logging.getLogger(__name__)
 
@@ -20,13 +18,9 @@ logger = logging.getLogger(__name__)
 async def perception_node(state: AgentState, config: Any) -> Dict[str, Any]:
     """
     Perception Layer: Responsible for generating the next action or thought.
-    Uses the 'operational' role from AgentBrainManager.
+    Uses the 'operational' role from ContextBuilder (loaded from agent-brain).
     Dynamic skill injection: If task involves debugging/searching, injects 'context_hygiene' skill.
     """
-    # Get AgentBrainManager for role-specific prompts
-    brain = get_agent_brain_manager()
-    operational_role = brain.get_role("operational") or "You are a coding assistant."
-
     logger.info("=== perception_node START ===")
 
     # Resolve orchestrator first (needed for dynamic cancel_event lookup)
@@ -78,141 +72,39 @@ async def perception_node(state: AgentState, config: Any) -> Dict[str, Any]:
             "errors": [f"adapter error: {e}"],
         }
 
-    # Task Decomposition: Check if this is a fresh task (round 0) that needs decomposition
-    # F12: Decomposition in perception_node is redundant because planning_node already
-    # handles multi-step decomposition and has better context.  Keep the block so existing
-    # tests continue to work, but gate it to ensure it never runs (always False).
-    # planning_node is the canonical home for decomposition going forward.
-    task = state.get("task") or ""
-    current_plan = state.get("current_plan") or []
-    current_step = state.get("current_step") or 0
-
-    # F12: Decomposition disabled in perception_node — planning_node owns this responsibility.
-    if False and state.get("rounds", 0) == 0 and task and (not current_plan or current_step == 0):
-        # Heuristic: check if task looks multi-step
-        multi_step_indicators = [
-            # Multiple imperative verbs or "and" connecting actions
-            re.search(r"\band\b", task, re.IGNORECASE),
-            # Numbered lists
-            re.search(r"^\d+[\.\)]\s", task, re.MULTILINE),
-            # Commas with multiple distinct actions
-            re.search(
-                r",.*?(?:then|and|after|before|also|add|create|delete|update|modify|fix)",
-                task,
-                re.IGNORECASE,
-            ),
-            # Common multi-action patterns
-            re.search(
-                r"(?:create|delete|update|modify|fix|add|remove).*(?:and|then|after).*(?:create|delete|update|modify|fix|add|remove)",
-                task,
-                re.IGNORECASE,
-            ),
-        ]
-
-        needs_decomposition = any(multi_step_indicators)
-
-        if needs_decomposition:
-            logger.info("Task appears multi-step, attempting decomposition")
-            try:
-                builder = ContextBuilder(working_dir=state.get("working_dir"))
-                decomp_prompt = f"""Analyze this task and break it down into small, independent steps.
-For each step, provide a brief description (max 10 words).
-Return ONLY a JSON array of step objects with format:
-[{{"description": "step 1 description"}}, {{"description": "step 2 description"}}, ...]
-
-Task: {task}
-
-Respond with ONLY valid JSON, no markdown, no explanation. /no_think"""
-
-                messages = [
-                    {
-                        "role": "system",
-                        "content": "You are a task planning assistant. Break down complex tasks into simple steps.",
-                    },
-                    {"role": "user", "content": decomp_prompt},
-                ]
-
-                from src.core.inference.thinking_utils import (
-                    budget_max_tokens,
-                    get_active_model_id,
-                    strip_thinking,
-                )
-                _model_id = get_active_model_id()
-                # Use a generous budget: thinking models may emit a reasoning
-                # block before the JSON even with /no_think in the prompt.
-                # 600 tokens gives ~400 for thinking + ~200 for the JSON array.
-                _decomp_max_tok = budget_max_tokens(600, _model_id)
-                resp = await call_model(messages, stream=False, format_json=False, max_tokens=_decomp_max_tok)
-
-                content = ""
-                finish_reason = ""
-                if isinstance(resp, dict):
-                    if resp.get("choices"):
-                        ch = resp["choices"][0]
-                        finish_reason = ch.get("finish_reason", "")
-                        msg = ch.get("message")
-                        if isinstance(msg, dict):
-                            content = msg.get("content") or ""
-                # Part A: strip <think> blocks from reasoning models
-                if content:
-                    content = strip_thinking(content)
-
-                # If the response was truncated (finish_reason="length"), the
-                # JSON is likely incomplete — skip decomposition rather than
-                # parse garbage.  planning_node will handle it instead.
-                if finish_reason == "length":
-                    logger.warning(
-                        "perception_node: decomposition truncated (finish_reason=length); "
-                        "skipping — planning_node will decompose"
-                    )
-                    content = ""
-
-                # Parse the response
-                plan_steps = []
-                try:
-                    # Try to extract JSON from response
-                    json_match = re.search(r"\[.*\]", content, re.DOTALL)
-                    if json_match:
-                        steps_data = json.loads(json_match.group(0))
-                        if isinstance(steps_data, list):
-                            for step in steps_data:
-                                if isinstance(step, dict) and step.get("description"):
-                                    plan_steps.append(
-                                        {
-                                            "description": step["description"],
-                                            "action": None,
-                                            "pending": True,
-                                        }
-                                    )
-                except Exception as e:
-                    logger.warning(f"Failed to parse decomposition response: {e}")
-
-                if plan_steps:
-                    logger.info(f"Decomposed task into {len(plan_steps)} steps")
-                    # Store the plan and set first step as current.
-                    # Increment rounds (not reset to 0) so re-entry after plan_validator
-                    # rejection does not re-trigger decomposition (guard checks rounds == 0).
-                    return {
-                        "history": [],
-                        "next_action": None,
-                        "rounds": (state.get("rounds") or 0) + 1,
-                        "current_plan": plan_steps,
-                        "current_step": 0,
-                        "task": plan_steps[0]["description"],  # Focus on first step
-                        "task_decomposed": True,
-                        "original_task": task,  # Keep original for reference
-                    }
-            except Exception as e:
-                logger.warning(f"Task decomposition failed: {e}")
-
     # Pre-retrieval: consult repo intelligence tools if available (search_code, find_symbol, find_references)
     # F9: Skip pre-retrieval on rounds > 0 — context was already gathered in round 0.
-    # Repeated pre-retrieval adds tokens and latency without new information.
+    # PB-3 fix: run all retrieval tasks concurrently with asyncio.gather so the total
+    # latency is max(individual latencies) rather than sum(individual latencies).
     retrieved_snippets = []
     try:
-        if state.get("rounds", 0) == 0 and orchestrator and hasattr(orchestrator, "tool_registry"):
-            # helper to call a tool if registered
-            def _call_tool_if_exists(tool_name, **kwargs):
+        if (
+            state.get("rounds", 0) == 0
+            and orchestrator
+            and hasattr(orchestrator, "tool_registry")
+        ):
+            raw_task = state.get("task") or ""
+            # Extract CamelCase identifiers, snake_case names, and quoted tokens
+            # from the raw task so retrieval targets symbols rather than prose.
+            _sym_re = re.compile(
+                r"`([^`]+)`"  # backtick-quoted tokens
+                r"|\"([A-Za-z_]\w*)\""  # double-quoted identifiers
+                r"|([A-Z][a-z]+(?:[A-Z][a-z]+)+)"  # CamelCase (≥2 words)
+                r"|([a-z_][a-z0-9]*(?:_[a-z0-9]+){1,})"  # snake_case (≥2 parts)
+            )
+            _extracted: list = []
+            for m in _sym_re.finditer(raw_task):
+                tok = next(g for g in m.groups() if g)
+                if tok and tok not in _extracted:
+                    _extracted.append(tok)
+            query = _extracted[0] if _extracted else raw_task
+            symbol_queries = _extracted if _extracted else [raw_task]
+
+            # Build coroutines for each retrieval operation so they run concurrently.
+            # Tool fns are synchronous, so wrap each in run_in_executor.
+            loop = asyncio.get_running_loop()
+
+            def _safe_call(tool_name, **kwargs):
                 try:
                     t = orchestrator.tool_registry.get(tool_name)
                     if t and callable(t.get("fn")):
@@ -221,75 +113,134 @@ Respond with ONLY valid JSON, no markdown, no explanation. /no_think"""
                     pass
                 return None
 
-            query = state.get("task") or ""
-            # search_code
-            try:
-                sc = _call_tool_if_exists(
-                    "search_code", query=query, workdir=state.get("working_dir")
-                )
-                if sc:
-                    # support both dict{results:[]} and list
-                    results = sc.get("results") if isinstance(sc, dict) else None
-                    if results:
-                        for r in results:
-                            retrieved_snippets.append(
-                                {
-                                    "file_path": r.get("file_path") or r.get("file"),
-                                    "snippet": r.get("snippet")
-                                    or r.get("text")
-                                    or r.get("content"),
-                                    "reason": "search_code",
-                                }
-                            )
-                    elif isinstance(sc, list):
-                        for r in sc:
-                            if isinstance(r, dict):
-                                retrieved_snippets.append(
-                                    {
-                                        "file_path": r.get("file_path")
-                                        or r.get("file"),
-                                        "snippet": r.get("snippet")
-                                        or r.get("text")
-                                        or r.get("content"),
-                                        "reason": "search_code",
-                                    }
-                                )
-            except Exception:
-                pass
+            _workdir = state.get("working_dir")
 
-            # find_symbol
-            try:
-                fs = _call_tool_if_exists(
-                    "find_symbol", name=query, workdir=state.get("working_dir")
+            async def _fetch_search_code():
+                # RA-2 fix: issue parallel search_code calls for all extracted
+                # symbols (up to 3) instead of only the first one.  Concurrent
+                # requests share the same asyncio.gather below.
+                _queries = symbol_queries[:3] if symbol_queries else [query]
+                results = await asyncio.gather(
+                    *[
+                        loop.run_in_executor(
+                            None,
+                            lambda _q=_q: _safe_call(
+                                "search_code", query=_q, workdir=_workdir
+                            ),
+                        )
+                        for _q in _queries
+                    ],
+                    return_exceptions=True,
                 )
-                if fs and isinstance(fs, dict) and fs.get("file_path"):
-                    retrieved_snippets.append(
-                        {
-                            "file_path": fs.get("file_path"),
-                            "snippet": fs.get("snippet"),
-                            "reason": "find_symbol",
-                        }
-                    )
-            except Exception:
-                pass
-
-            # find_references
-            try:
-                fr = _call_tool_if_exists(
-                    "find_references", name=query, workdir=state.get("working_dir")
-                )
-                if fr and isinstance(fr, list):
-                    for r in fr:
+                # Merge all non-error results into a single list-style response
+                merged: list = []
+                for r in results:
+                    if r and not isinstance(r, Exception):
                         if isinstance(r, dict):
-                            retrieved_snippets.append(
-                                {
-                                    "file_path": r.get("file_path"),
-                                    "snippet": r.get("excerpt") or r.get("context"),
-                                    "reason": "find_references",
-                                }
-                            )
-            except Exception:
-                pass
+                            merged.extend(r.get("results", []))
+                        elif isinstance(r, list):
+                            merged.extend(r)
+                return {"results": merged} if merged else None
+
+            async def _fetch_symbols():
+                results = []
+                for _sq in symbol_queries[:3]:
+                    r = await loop.run_in_executor(
+                        None,
+                        lambda sq=_sq: _safe_call(
+                            "find_symbol", name=sq, workdir=_workdir
+                        ),
+                    )
+                    results.append(r)
+                return results
+
+            async def _fetch_references():
+                return await loop.run_in_executor(
+                    None,
+                    lambda: _safe_call("find_references", name=query, workdir=_workdir),
+                )
+
+            # P3-2: Pre-retrieve test files for the queried symbols so test context
+            # is available from round 0 without waiting for analysis_node.
+            async def _fetch_test_files():
+                results = []
+                try:
+                    from src.core.indexing.symbol_graph import SymbolGraph
+                    sg = SymbolGraph(_workdir)
+                    for _sq in symbol_queries[:2]:
+                        tests = await loop.run_in_executor(
+                            None, lambda sq=_sq: sg.find_tests_for_module(sq)
+                        )
+                        if tests and isinstance(tests, list):
+                            results.extend(tests[:2])
+                except Exception:
+                    pass
+                return results
+
+            sc_result, sym_results, fr_result, test_file_results = await asyncio.gather(
+                _fetch_search_code(),
+                _fetch_symbols(),
+                _fetch_references(),
+                _fetch_test_files(),
+                return_exceptions=True,
+            )
+
+            # Process search_code result
+            if sc_result and not isinstance(sc_result, Exception):
+                raw_list = (
+                    sc_result.get("results") if isinstance(sc_result, dict) else None
+                ) or (sc_result if isinstance(sc_result, list) else [])
+                for r in raw_list:
+                    if isinstance(r, dict):
+                        retrieved_snippets.append(
+                            {
+                                "file_path": r.get("file_path") or r.get("file"),
+                                "snippet": r.get("snippet")
+                                or r.get("text")
+                                or r.get("content"),
+                                "reason": "search_code",
+                            }
+                        )
+
+            # Process find_symbol results
+            if sym_results and not isinstance(sym_results, Exception):
+                for fs in sym_results:
+                    if fs and isinstance(fs, dict) and fs.get("file_path"):
+                        retrieved_snippets.append(
+                            {
+                                "file_path": fs.get("file_path"),
+                                "snippet": fs.get("snippet"),
+                                "reason": "find_symbol",
+                            }
+                        )
+
+            # Process find_references result
+            if (
+                fr_result
+                and not isinstance(fr_result, Exception)
+                and isinstance(fr_result, list)
+            ):
+                for r in fr_result:
+                    if isinstance(r, dict):
+                        retrieved_snippets.append(
+                            {
+                                "file_path": r.get("file_path"),
+                                "snippet": r.get("excerpt") or r.get("context"),
+                                "reason": "find_references",
+                            }
+                        )
+
+            # P3-2: Process test file results
+            if test_file_results and not isinstance(test_file_results, Exception):
+                for test_path in test_file_results[:3]:
+                    if isinstance(test_path, str) and test_path:
+                        retrieved_snippets.append(
+                            {
+                                "file_path": test_path,
+                                "snippet": None,
+                                "reason": "find_tests_for_module",
+                            }
+                        )
     except Exception:
         retrieved_snippets = []
 
@@ -300,30 +251,32 @@ Respond with ONLY valid JSON, no markdown, no explanation. /no_think"""
         for n, m in orchestrator.tool_registry.tools.items()
     ]
 
-    # Dynamic skill injection: if task involves debugging or deep searching
+    # Dynamic skill injection: if task involves debugging or deep searching, inject by name
     active_skills = []
     task_lower = state.get("task", "").lower()
     if any(
         kw in task_lower
         for kw in ["debug", "fix", "error", "bug", "search", "find", "analyze"]
     ):
-        context_hygiene_skill = brain.get_skill("context_hygiene")
-        if context_hygiene_skill:
-            active_skills.append(context_hygiene_skill)
-            logger.info(
-                "perception_node: injected context_hygiene skill for debugging/searching task"
-            )
+        active_skills.append("context_hygiene")
+        logger.info(
+            "perception_node: injected context_hygiene skill for debugging/searching task"
+        )
 
     # Assemble the tiered context
+    provider_capabilities = {}
+    if orchestrator and hasattr(orchestrator, "get_provider_capabilities"):
+        provider_capabilities = orchestrator.get_provider_capabilities()
+
     messages = builder.build_prompt(
-        identity=operational_role,
-        role=f"Working Directory: {state['working_dir']}",
+        role_name="operational",
         active_skills=active_skills,
         task_description=state["task"],
         tools=tools_list,
         conversation=state["history"],
         retrieved_snippets=retrieved_snippets,
         max_tokens=6000,
+        provider_capabilities=provider_capabilities,
     )
 
     # Determine model/provider
@@ -375,6 +328,7 @@ Respond with ONLY valid JSON, no markdown, no explanation. /no_think"""
                 stream=False,
                 format_json=False,
                 tools=None,
+                session_id=state.get("session_id"),
                 **llm_kwargs,
             )
         )
@@ -407,6 +361,27 @@ Respond with ONLY valid JSON, no markdown, no explanation. /no_think"""
         logger.error(f"call_model failed: {e}")
         resp = {"ok": False, "error": str(e)}
         _notify_provider_limit(str(e))
+
+    # Phase 4: Track token usage for budget management
+    if isinstance(resp, dict):
+        usage = resp.get("usage", {})
+        if usage and orchestrator:
+            try:
+                token_monitor = getattr(orchestrator, "token_monitor", None)
+                if token_monitor:
+                    prompt_tokens = usage.get("prompt_tokens", 0)
+                    completion_tokens = usage.get("completion_tokens", 0)
+                    total_tokens = usage.get(
+                        "total_tokens", prompt_tokens + completion_tokens
+                    )
+                    token_monitor.record_usage(
+                        session_id=state.get("session_id", "default"),
+                        prompt_tokens=prompt_tokens,
+                        completion_tokens=completion_tokens,
+                        total_tokens=total_tokens,
+                    )
+            except Exception as e:
+                logger.debug(f"Token tracking error: {e}")
 
     # Debug: log raw response for troubleshooting
     try:
@@ -530,21 +505,56 @@ Respond with ONLY valid JSON, no markdown, no explanation. /no_think"""
 
         # Parse if: content exists AND content doesn't contain tool_execution_result
         # We should ALWAYS try to parse, even after tool results - we need new tool calls!
+        # Phase 7: Check for native JSON tool_calls first, then fall back to YAML parsing
+        tool_call = None
+        message_obj = (
+            resp.get("choices", [{}])[0].get("message", {})
+            if isinstance(resp, dict)
+            else {}
+        )
+
+        # 1. Check for Native JSON Tool Calls (Frontier Models)
+        native_tool_calls = message_obj.get("tool_calls")
         if (
-            content
+            native_tool_calls
+            and isinstance(native_tool_calls, list)
+            and len(native_tool_calls) > 0
+        ):
+            tc = native_tool_calls[0]
+            if isinstance(tc, dict):
+                func = tc.get("function")
+                if func:
+                    name = func.get("name")
+                    args = func.get("arguments")
+                    if isinstance(args, str):
+                        try:
+                            import json
+
+                            args = json.loads(args)
+                        except Exception:
+                            args = {}
+                    if name:
+                        tool_call = {"name": name, "arguments": args or {}}
+                        logger.info(f"perception_node: native function call: {name}")
+
+        # 2. Fallback to YAML parsing (Local Models)
+        if (
+            not tool_call
+            and content
             and "tool_execution_result" not in content
             and '"tool_execution_result"' not in content
         ):
             tool_call = parse_tool_block(content)
-        else:
+        elif not tool_call:
             logger.info(
                 "perception_node: skipping parse_tool_block because content contains tool_execution_result"
             )
-            tool_call = None
 
         # F8: Prompt injection guard — reject tool calls that are verbatim copies of
         # user-role history messages. A user submitting YAML-tool-looking text could
         # trick the LLM into reflecting it back, causing unintended tool execution.
+        # HR-1 fix: require both tool name AND ≥1 argument key to match so that
+        # casual mentions of a tool name ("edit_file the config") don't false-positive.
         if tool_call is not None:
             tool_name_extracted = tool_call.get("name", "")
             user_messages = [
@@ -552,15 +562,28 @@ Respond with ONLY valid JSON, no markdown, no explanation. /no_think"""
                 for m in (state.get("history") or [])
                 if m.get("role") == "user"
             ]
-            # Build a minimal YAML fingerprint for the parsed tool call to compare
-            _inj_fingerprint = f"name: {tool_name_extracted}"
-            _inj_detected = any(
-                _inj_fingerprint in (um or "") for um in user_messages
-            )
+            _name_pattern = f"name: {tool_name_extracted}"
+            _tool_args = tool_call.get("arguments") or {}
+            _arg_keys = list(_tool_args.keys())[:3]
+            _inj_detected = False
+            for um in user_messages:
+                if not um or _name_pattern not in um:
+                    continue
+                # Name matched — require at least one argument key also present
+                # to distinguish YAML injection from a normal mention of the tool.
+                if _arg_keys:
+                    if any(f"{k}:" in um for k in _arg_keys):
+                        _inj_detected = True
+                        break
+                else:
+                    # No-argument tool — only flag if "arguments:" block is also present
+                    if "arguments:" in um:
+                        _inj_detected = True
+                        break
             if _inj_detected:
                 logger.warning(
                     f"perception_node: F8 injection guard — tool call '{tool_name_extracted}' "
-                    "matches a user-role message; rejecting to prevent prompt injection"
+                    "matches a user-role message (name + args); rejecting to prevent prompt injection"
                 )
                 tool_call = None
 

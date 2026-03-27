@@ -113,7 +113,23 @@ class SettingsPanelController:
                             raw["models"] = models
                             changed = True
                     if changed:
-                        cfg_path.write_text(json.dumps(raw, indent=2), encoding="utf-8")
+                        # P1-7: Atomic write via tmp-file + rename to prevent corruption
+                        import tempfile, os
+
+                        new_content = json.dumps(raw, indent=2)
+                        tmp_fd, tmp_path = tempfile.mkstemp(
+                            dir=cfg_path.parent, suffix=".tmp"
+                        )
+                        try:
+                            with os.fdopen(tmp_fd, "w", encoding="utf-8") as _f:
+                                _f.write(new_content)
+                            os.replace(tmp_path, cfg_path)
+                        except Exception:
+                            try:
+                                os.unlink(tmp_path)
+                            except OSError:
+                                pass
+                            raise
                 if changed:
                     guilogger.info(
                         f"SettingsPanel: updated models for provider {provider_key} in {cfg_path}"
@@ -156,10 +172,12 @@ class SettingsPanelController:
                     except Exception:
                         pass
                 try:
-                    prefs.selected_model_name = model_name
+                    if model_name is not None:
+                        prefs.selected_model_name = model_name
                 except Exception:
                     try:
-                        prefs.data["selected_model_name"] = model_name
+                        if model_name is not None:
+                            prefs.data["selected_model_name"] = model_name
                     except Exception:
                         pass
                 # attempt to save
@@ -183,6 +201,53 @@ class SettingsPanelController:
             return True
         except Exception as e:
             guilogger.error(f"SettingsPanel.select_provider_and_model failed: {e}")
+            return False
+
+    def provider_requires_api_key(self, provider_key: str) -> bool:
+        """Return True if the provider adapter declares REQUIRES_API_KEY = True."""
+        try:
+            adapter = self.pm.get_provider(provider_key)
+            return bool(getattr(adapter, "REQUIRES_API_KEY", False))
+        except Exception:
+            return False
+
+    def get_current_api_key(self, provider_key: str) -> str:
+        """Return the stored API key for provider_key, or empty string."""
+        try:
+            prefs = UserPrefs.load()
+            return prefs.get_provider_key(provider_key) or ""
+        except Exception:
+            return ""
+
+    def save_api_key(self, provider_key: str, api_key: str) -> bool:
+        """Persist api_key for provider_key to UserPrefs and reload the adapter.
+
+        Returns True on success. Returns False (without saving) if api_key is empty.
+        """
+        # UP-4: Reject empty API keys before persisting — an empty string is almost
+        # certainly a user mistake and would silently break the provider.
+        if not api_key or not api_key.strip():
+            guilogger.warning(
+                f"SettingsPanel.save_api_key: rejecting empty API key for {provider_key}"
+            )
+            return False
+        try:
+            prefs = UserPrefs.load()
+            prefs.set_provider_setting(provider_key, "api_key", api_key)
+            prefs.save()
+            # Re-inject the key into the live adapter so it takes effect immediately
+            try:
+                adapter = self.pm.get_provider(provider_key)
+                if adapter is not None:
+                    adapter.api_key = api_key
+            except Exception:
+                pass
+            guilogger.info(
+                f"SettingsPanel: saved API key for {provider_key} to UserPrefs"
+            )
+            return True
+        except Exception as exc:
+            guilogger.error(f"SettingsPanel.save_api_key failed: {exc}")
             return False
 
     def start_new_session(self) -> None:

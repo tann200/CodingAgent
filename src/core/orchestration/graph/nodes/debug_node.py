@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from typing import Dict, Any
 
@@ -5,7 +6,6 @@ from src.core.orchestration.graph.state import AgentState
 from src.core.context.context_builder import ContextBuilder
 from src.core.inference.llm_manager import call_model
 from src.core.orchestration.tool_parser import parse_tool_block
-from src.core.orchestration.agent_brain import get_agent_brain_manager
 from src.core.orchestration.graph.nodes.node_utils import _resolve_orchestrator
 
 logger = logging.getLogger(__name__)
@@ -40,12 +40,8 @@ TYPE_GUIDANCE = {
 async def debug_node(state: AgentState, config: Any) -> Dict[str, Any]:
     """
     Debug Node: Analyzes verification failures and attempts to fix issues.
-    Uses the 'debugger' role from AgentBrainManager.
+    Uses the 'debugger' role from ContextBuilder (loaded from agent-brain).
     """
-    # Get AgentBrainManager for role-specific prompts
-    brain = get_agent_brain_manager()
-    debugger_role = brain.get_role("debugger") or "You are a debugging assistant."
-
     logger.info("=== debug_node START ===")
 
     orchestrator = _resolve_orchestrator(state, config)
@@ -131,19 +127,28 @@ Generate a YAML tool call to fix the issue. Use edit_file, write_file, or bash a
 
     try:
         builder = ContextBuilder(working_dir=state.get("working_dir"))
-        tools_list = [
-            {"name": n, "description": m.get("description", "")}
-            for n, m in orchestrator.tool_registry.tools.items()
-        ]
+        # OE-5: use role-filtered tool list for the debugger so the LLM only sees
+        # tools relevant to debugging (bash, edit_file, read_file, run_tests …)
+        if hasattr(orchestrator, "get_tools_for_role"):
+            tools_list = orchestrator.get_tools_for_role("debugger")
+        else:
+            tools_list = [
+                {"name": n, "description": m.get("description", "")}
+                for n, m in orchestrator.tool_registry.tools.items()
+            ]
+
+        provider_capabilities = {}
+        if orchestrator and hasattr(orchestrator, "get_provider_capabilities"):
+            provider_capabilities = orchestrator.get_provider_capabilities()
 
         messages = builder.build_prompt(
-            identity=debugger_role,
-            role="Debugging",
+            role_name="debugger",
             active_skills=[],
             task_description=fix_prompt,
             tools=tools_list,
             conversation=state.get("history", []),
             max_tokens=4000,
+            provider_capabilities=provider_capabilities,
         )
 
         provider = "None"
@@ -156,9 +161,37 @@ Generate a YAML tool call to fix the issue. Use edit_file, write_file, or bash a
             if hasattr(orchestrator.adapter, "models") and orchestrator.adapter.models:
                 model = orchestrator.adapter.models[0]
 
-        resp = await call_model(
-            messages, provider=provider, model=model, stream=False, format_json=False
+        cancel_event = state.get("cancel_event")
+        if not cancel_event:
+            cancel_event = getattr(orchestrator, "cancel_event", None)
+        llm_task = asyncio.create_task(
+            call_model(
+                messages,
+                provider=provider,
+                model=model,
+                stream=False,
+                format_json=False,
+            )
         )
+        while not llm_task.done():
+            if (
+                cancel_event
+                and hasattr(cancel_event, "is_set")
+                and cancel_event.is_set()
+            ):
+                llm_task.cancel()
+                logger.info("debug_node: Task canceled mid-generation")
+                return {
+                    "next_action": None,
+                    "debug_attempts": next_attempt,
+                    "total_debug_attempts": next_total,
+                    "errors": ["canceled"],
+                }
+            await asyncio.sleep(0.2)
+        try:
+            resp = await llm_task
+        except asyncio.CancelledError:
+            raise  # propagate — node itself was cancelled; do not swallow
 
         content = ""
         if isinstance(resp, dict):

@@ -1,6 +1,6 @@
 import pytest
 import json
-from src.core.orchestration.graph.nodes import workflow_nodes
+from src.core.orchestration.graph.nodes.execution_node import execution_node
 
 
 class DummyOrch:
@@ -52,7 +52,7 @@ async def test_execution_appends_tool_result_as_assistant(monkeypatch, tmp_path)
 
     conf = {'configurable': {'orchestrator': orch}}
 
-    res = await workflow_nodes.execution_node(state, conf)
+    res = await execution_node(state, conf)
 
     # After execution, history must include an assistant entry with tool_execution_result
     history = res.get('history')

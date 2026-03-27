@@ -5,8 +5,11 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from src.tools._path_utils import safe_resolve as _safe_resolve
+from src.tools._tool import tool
+from src.tools.tools_config import agent_context_path
 
 
+@tool(side_effects=["write"], tags=["planning"])
 def create_state_checkpoint(
     current_task: str,
     tool_call_history: List[Dict[str, Any]],
@@ -28,7 +31,7 @@ def create_state_checkpoint(
         status, checkpoint_id, checkpoint_path
     """
     wd = Path(workdir) if workdir else Path.cwd()
-    checkpoint_dir = wd / ".agent-context" / "checkpoints"
+    checkpoint_dir = agent_context_path(wd) / "checkpoints"
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
@@ -56,10 +59,11 @@ def create_state_checkpoint(
         return {"status": "error", "error": str(e)}
 
 
+@tool(tags=["planning"])
 def list_checkpoints(workdir: str = None) -> Dict[str, Any]:
     """List all available state checkpoints."""
     wd = Path(workdir) if workdir else Path.cwd()
-    checkpoint_dir = wd / ".agent-context" / "checkpoints"
+    checkpoint_dir = agent_context_path(wd) / "checkpoints"
 
     if not checkpoint_dir.exists():
         return {"status": "ok", "checkpoints": []}
@@ -81,6 +85,7 @@ def list_checkpoints(workdir: str = None) -> Dict[str, Any]:
     return {"status": "ok", "checkpoints": checkpoints}
 
 
+@tool(tags=["planning"])
 def restore_state_checkpoint(
     checkpoint_id: str,
     workdir: str = None,
@@ -96,10 +101,14 @@ def restore_state_checkpoint(
         status, checkpoint_data or error
     """
     import re as _re
-    if not _re.match(r'^[a-zA-Z0-9_\-]+$', checkpoint_id):
-        return {"status": "error", "error": "Invalid checkpoint_id: only alphanumeric, underscore, and dash are allowed"}
+
+    if not _re.match(r"^[a-zA-Z0-9_\-]+$", checkpoint_id):
+        return {
+            "status": "error",
+            "error": "Invalid checkpoint_id: only alphanumeric, underscore, and dash are allowed",
+        }
     wd = Path(workdir) if workdir else Path.cwd()
-    checkpoint_dir = wd / ".agent-context" / "checkpoints"
+    checkpoint_dir = agent_context_path(wd) / "checkpoints"
     checkpoint_path = checkpoint_dir / f"{checkpoint_id}.json"
 
     if not checkpoint_path.exists():
@@ -119,6 +128,7 @@ def restore_state_checkpoint(
         return {"status": "error", "error": str(e)}
 
 
+@tool(tags=["review"])
 def diff_state(
     checkpoint_id1: str,
     checkpoint_id2: str,
@@ -126,9 +136,15 @@ def diff_state(
 ) -> Dict[str, Any]:
     """Compare two state checkpoints."""
     import re as _re
-    _id_pattern = r'^[a-zA-Z0-9_\-]+$'
-    if not _re.match(_id_pattern, checkpoint_id1) or not _re.match(_id_pattern, checkpoint_id2):
-        return {"status": "error", "error": "Invalid checkpoint_id: only alphanumeric, underscore, and dash are allowed"}
+
+    _id_pattern = r"^[a-zA-Z0-9_\-]+$"
+    if not _re.match(_id_pattern, checkpoint_id1) or not _re.match(
+        _id_pattern, checkpoint_id2
+    ):
+        return {
+            "status": "error",
+            "error": "Invalid checkpoint_id: only alphanumeric, underscore, and dash are allowed",
+        }
     wd = Path(workdir) if workdir else Path.cwd()
     checkpoint_dir = wd / ".agent-context" / "checkpoints"
 
@@ -158,6 +174,7 @@ def diff_state(
         return {"status": "error", "error": str(e)}
 
 
+@tool(tags=["coding"])
 def batched_file_read(
     paths: List[str],
     workdir: str = None,
@@ -200,6 +217,7 @@ def batched_file_read(
     return {"status": "ok", "files": results, "count": len(paths)}
 
 
+@tool(tags=["coding"])
 def multi_file_summary(
     paths: List[str],
     workdir: str = None,

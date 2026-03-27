@@ -168,7 +168,7 @@ class TestDebugNodeRetry:
     @pytest.mark.asyncio
     async def test_retry_increments_debug_attempts(self):
         """Test that debug_node increments debug_attempts in returned state."""
-        from unittest.mock import MagicMock, patch
+        from unittest.mock import MagicMock
         from src.core.orchestration.graph.nodes.debug_node import debug_node
         from src.core.orchestration.graph.state import AgentState
 

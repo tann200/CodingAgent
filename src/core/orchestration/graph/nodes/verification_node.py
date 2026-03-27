@@ -20,7 +20,18 @@ def _step_requests_verification(state: Dict[str, Any]) -> bool:
     current_step = state.get("current_step") or 0
     if current_plan and current_step < len(current_plan):
         desc = current_plan[current_step].get("description", "").lower()
-        return any(k in desc for k in ("run_tests", "run_linter", "verify", "test", "lint", "run_js_tests", "run_ts_check"))
+        return any(
+            k in desc
+            for k in (
+                "run_tests",
+                "run_linter",
+                "verify",
+                "test",
+                "lint",
+                "run_js_tests",
+                "run_ts_check",
+            )
+        )
     return False
 
 
@@ -33,7 +44,6 @@ async def verification_node(state: AgentState, config: Any) -> Dict[str, Any]:
     Uses the 'reviewer' role for quality assurance.
     """
     logger.info("=== verification_node START ===")
-
 
     # Decide whether verification is needed
     last_result = state.get("last_result") or {}
@@ -78,13 +88,22 @@ async def verification_node(state: AgentState, config: Any) -> Dict[str, Any]:
     # Previously only edit_file with a "path" field was caught; bash, write_file, and
     # patch tools were silently skipped.  Widen the check to cover all write tools.
     SIDE_EFFECT_TOOLS = {
-        "write_file", "edit_file", "edit_file_atomic", "edit_by_line_range", "bash",
-        "patch_apply", "apply_patch", "create_file", "delete_file",
+        "write_file",
+        "edit_file",
+        "edit_file_atomic",
+        "edit_by_line_range",
+        "bash",
+        "patch_apply",
+        "apply_patch",
+        "create_file",
+        "delete_file",
     }
     last_tool_name: str = state.get("last_tool_name") or ""
     try:
         if isinstance(last_result, dict):
-            r = last_result.get("result") or last_result  # handle both wrapped and flat results
+            r = (
+                last_result.get("result") or last_result
+            )  # handle both wrapped and flat results
             if isinstance(r, dict) and r.get("status") == "ok":
                 # Any side-effecting tool that succeeded triggers verification
                 if last_tool_name in SIDE_EFFECT_TOOLS:
@@ -101,7 +120,9 @@ async def verification_node(state: AgentState, config: Any) -> Dict[str, Any]:
     # Also trigger verification when the current plan step explicitly requests it
     if not need_verify and _step_requests_verification(state):
         need_verify = True
-        logger.info("verification_node: step explicitly requests verification — running tests")
+        logger.info(
+            "verification_node: step explicitly requests verification — running tests"
+        )
 
     # H1: Determine whether we are at the final plan step.
     # Running the full test suite after every single tool call (pytest + ruff +
@@ -135,22 +156,33 @@ async def verification_node(state: AgentState, config: Any) -> Dict[str, Any]:
     if need_verify:
         if _is_cancelled():
             logger.info("verification_node: cancelled before running tools — skipping")
-            return {"verification_result": {"cancelled": True}, "verification_passed": True}
+            return {
+                "verification_result": {"cancelled": True},
+                "verification_passed": True,
+            }
         try:
             wd = Path(state.get("working_dir") or ".")
             is_js = _has_js_project(wd)
             if is_js:
                 if run_full_suite:
                     # JS/TS project: run JS tests + TypeScript check + linter
-                    logger.info("verification_node: JS/TS project detected — running JS test suite")
+                    logger.info(
+                        "verification_node: JS/TS project detected — running JS test suite"
+                    )
                     results["js_tests"] = verification_tools.run_js_tests(str(wd))
                     if _is_cancelled():
                         logger.info("verification_node: cancelled after js_tests")
-                        return {"verification_result": {**results, "cancelled": True}, "verification_passed": True}
+                        return {
+                            "verification_result": {**results, "cancelled": True},
+                            "verification_passed": True,
+                        }
                     results["ts_check"] = verification_tools.run_ts_check(str(wd))
                     if _is_cancelled():
                         logger.info("verification_node: cancelled after ts_check")
-                        return {"verification_result": {**results, "cancelled": True}, "verification_passed": True}
+                        return {
+                            "verification_result": {**results, "cancelled": True},
+                            "verification_passed": True,
+                        }
                     results["eslint"] = verification_tools.run_eslint(str(wd))
                 else:
                     # F21/W4: Intermediate JS/TS step — run eslint on the modified file only
@@ -176,16 +208,66 @@ async def verification_node(state: AgentState, config: Any) -> Dict[str, Any]:
             else:
                 if run_full_suite:
                     # Python project full suite: pytest + ruff + syntax
-                    results["tests"] = verification_tools.run_tests(str(wd))
+                    # MC-2: Use incremental test execution with --lf (last-failed) if available
+                    last_failed_exists = (
+                        wd / ".pytest_cache" / "v" / "cache" / "lastfailed"
+                    ).exists()
+                    results["tests"] = verification_tools.run_tests(
+                        str(wd), use_last_failed=last_failed_exists
+                    )
                     if _is_cancelled():
                         logger.info("verification_node: cancelled after run_tests")
-                        return {"verification_result": {**results, "cancelled": True}, "verification_passed": True}
+                        return {
+                            "verification_result": {**results, "cancelled": True},
+                            "verification_passed": True,
+                        }
                     results["linter"] = verification_tools.run_linter(str(wd))
                     if _is_cancelled():
                         logger.info("verification_node: cancelled after run_linter")
-                        return {"verification_result": {**results, "cancelled": True}, "verification_passed": True}
-                # Always run cheap syntax check (fast, catches import errors early)
-                results["syntax"] = verification_tools.syntax_check(str(wd))
+                        return {
+                            "verification_result": {**results, "cancelled": True},
+                            "verification_passed": True,
+                        }
+                    # Full syntax walk on final step only
+                    results["syntax"] = verification_tools.syntax_check(str(wd))
+                else:
+                    # SCAN-2 fix: intermediate steps — scope syntax check to the
+                    # modified file only (avoids full os.walk on every step which
+                    # is O(n_py_files) and defeats the purpose of the fast path).
+                    _mod_path: "str | None" = None
+                    try:
+                        _lr = state.get("last_result") or {}
+                        _r = _lr.get("result") or _lr
+                        _mod_path = _r.get("path") or _r.get("file_path")
+                    except Exception:
+                        pass
+                    if _mod_path and str(_mod_path).endswith(".py"):
+                        import py_compile as _pyc
+
+                        try:
+                            _pyc.compile(str(_mod_path), doraise=True)
+                            results["syntax"] = {
+                                "status": "ok",
+                                "checked_files": 1,
+                                "syntax_errors": [],
+                            }
+                        except Exception as _se:
+                            results["syntax"] = {
+                                "status": "fail",
+                                "checked_files": 1,
+                                "syntax_errors": [
+                                    {"file": _mod_path, "error": str(_se)}
+                                ],
+                            }
+                        logger.info(
+                            f"verification_node: intermediate step syntax check on {_mod_path}"
+                        )
+                    else:
+                        # No modified .py file identifiable — skip syntax check on
+                        # intermediate step to avoid the expensive full directory walk.
+                        logger.info(
+                            "verification_node: intermediate step — no .py path in last_result; skipping syntax check"
+                        )
         except Exception as e:
             results["error"] = str(e)
 
@@ -221,6 +303,8 @@ async def verification_node(state: AgentState, config: Any) -> Dict[str, Any]:
                             f"verification_node: step rollback failed: {rb.get('error')}"
                         )
         except Exception as rb_err:
-            logger.warning(f"verification_node: step rollback error (non-fatal): {rb_err}")
+            logger.warning(
+                f"verification_node: step rollback error (non-fatal): {rb_err}"
+            )
 
     return {"verification_result": results, "verification_passed": verification_passed}

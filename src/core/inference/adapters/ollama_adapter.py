@@ -19,12 +19,12 @@ try:
     )
 except Exception:
     # Provide minimal fallbacks to keep adapter operational during tests
-    def lm_resolve_config_path(p=None):
-        return Path(p) if p else Path("config/providers.json")
+    def lm_resolve_config_path(path=None):  # type: ignore[misc]
+        return Path(path) if path else Path("config/providers.json")
 
-    def lm_load_provider(p=None):
+    def lm_load_provider(path=None):  # type: ignore[misc]
         try:
-            with open(p or "config/providers.json", "r", encoding="utf-8") as fh:
+            with open(path or "config/providers.json", "r", encoding="utf-8") as fh:
                 return json.load(fh)
         except Exception:
             return None
@@ -37,7 +37,27 @@ except Exception:
                 else Path(path or "config/providers.json")
             )
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(json.dumps(data), encoding="utf-8")
+            to_write = data
+            if isinstance(data, dict) and target.exists():
+                try:
+                    existing = json.loads(target.read_text(encoding="utf-8"))
+                    if isinstance(existing, list):
+                        name = data.get("name")
+                        updated = [
+                            p
+                            if (not isinstance(p, dict) or p.get("name") != name)
+                            else data
+                            for p in existing
+                        ]
+                        if not any(
+                            isinstance(p, dict) and p.get("name") == name
+                            for p in existing
+                        ):
+                            updated.append(data)
+                        to_write = updated
+                except Exception:
+                    pass
+            target.write_text(json.dumps(to_write), encoding="utf-8")
             return True
         except Exception:
             return False
@@ -91,7 +111,9 @@ class OllamaAdapter(LLMClient):
     # Increased timeout from 5 to 120 to allow for local model loading into VRAM
     DEFAULT_TIMEOUT = 120.0
 
-    def __init__(self, config_path=None, name=None, base_url=None, api_key=None, models=None):
+    def __init__(
+        self, config_path=None, name=None, base_url=None, api_key=None, models=None
+    ):
         # Keep initial_config_path for save semantics
         self._initial_config_path = Path(config_path) if config_path else None
         # Resolve provider from config_path only if no explicit base_url provided
@@ -111,21 +133,24 @@ class OllamaAdapter(LLMClient):
                     found = p
                     break
             self.provider = found or self.provider[0]
+        # Ensure provider is a dict (or None) for .get() calls downstream
+        if not isinstance(self.provider, dict):
+            self.provider = None
 
         # If base_url provided by caller, prefer that and consider provider present
         self.base_url = base_url or (
-            self.provider.get("base_url")
+            self.provider.get("base_url")  # type: ignore[union-attr]
             if self.provider
             else "http://localhost:11434/api"
         )
         self.api_key = api_key or (
-            self.provider.get("api_key") if self.provider else None
+            self.provider.get("api_key") if self.provider else None  # type: ignore[union-attr]
         )
         # models: prefer explicit models arg, then provider.models from config, otherwise empty list
         if models is not None:
             self.models = list(models)
-        elif self.provider and isinstance(self.provider.get("models"), list):
-            self.models = self.provider.get("models")
+        elif self.provider and isinstance(self.provider.get("models"), list):  # type: ignore[union-attr]
+            self.models = self.provider.get("models")  # type: ignore[union-attr]
         else:
             self.models = []
         # missing_provider: False if either provider config exists or a base_url was explicitly provided
@@ -170,7 +195,7 @@ class OllamaAdapter(LLMClient):
 
     def get_models_from_api(self):
         # Prefer canonical Ollama API: base may already include '/api'
-        base = self.base_url.rstrip("/")
+        base = (self.base_url or "").rstrip("/")
         candidates = []
         if base.endswith("/api"):
             candidates.append(base + "/tags")
@@ -276,9 +301,9 @@ class OllamaAdapter(LLMClient):
                 # If _call_requests returned requests.Response, handle
                 try:
                     if hasattr(resp, "status_code"):
-                        if resp.status_code >= 400:
+                        if resp.status_code >= 400:  # type: ignore[reportAttributeAccessIssue]
                             continue
-                        return resp.json()
+                        return resp.json()  # type: ignore[reportAttributeAccessIssue]
                 except Exception:
                     pass
                 if isinstance(resp, dict):
@@ -426,13 +451,17 @@ class OllamaAdapter(LLMClient):
                 )
             if isinstance(response, dict) and response.get("meta"):
                 return response
-            response.raise_for_status()
+            if hasattr(response, "raise_for_status"):
+                response.raise_for_status()  # type: ignore[union-attr]
+            elif not isinstance(response, dict):
+                return {"error": "unexpected response type"}
             if stream:
 
                 def _stream_gen(resp):
                     for line in resp.iter_lines():
                         if not line:
                             continue
+                        chunk = ""
                         try:
                             chunk = (
                                 line.decode()
@@ -448,7 +477,7 @@ class OllamaAdapter(LLMClient):
 
                 return _stream_gen(response)
             else:
-                data = response.json()
+                data = response.json()  # type: ignore[union-attr]
                 if format_json:
                     parsed = self._parse_json_response_field(data.get("response"))
                     if parsed is None or parsed == "" or parsed == data.get("response"):
@@ -531,13 +560,17 @@ class OllamaAdapter(LLMClient):
                 )
             if isinstance(response, dict) and response.get("meta"):
                 return response
-            response.raise_for_status()
+            if hasattr(response, "raise_for_status"):
+                response.raise_for_status()  # type: ignore[union-attr]
+            elif not isinstance(response, dict):
+                return {"error": "unexpected response type"}
             if stream:
 
                 def _stream_gen(resp):
                     for line in resp.iter_lines():
                         if not line:
                             continue
+                        chunk = ""
                         try:
                             chunk = (
                                 line.decode()
@@ -553,7 +586,7 @@ class OllamaAdapter(LLMClient):
 
                 return _stream_gen(response)
             else:
-                data = response.json()
+                data = response.json()  # type: ignore[union-attr]
                 message = data.get("message") or {}
                 content = message.get("content") if isinstance(message, dict) else None
                 parsed = (

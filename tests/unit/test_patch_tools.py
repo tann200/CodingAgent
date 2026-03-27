@@ -6,8 +6,6 @@ NEW-3: generate_patch previously joined user-supplied paths directly without cal
 
 NEW-23: generate_patch had zero test coverage.
 """
-import pytest
-from pathlib import Path
 
 
 class TestGeneratePatch:

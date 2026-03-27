@@ -5,12 +5,23 @@ on:
     branches: [ main ]
   pull_request:
     branches: [ main ]
+  schedule:
+    # P3-4: Nightly integration test run at 02:00 UTC
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+    inputs:
+      run_integration:
+        description: 'Run integration tests (requires local provider)'
+        required: false
+        default: 'false'
 
 jobs:
   test:
-    runs-on: macos-latest
+    runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
+        os: [macos-latest, ubuntu-latest]
         python-version: [3.11]
     steps:
       - uses: actions/checkout@v4
@@ -54,10 +65,28 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt || true
           pip install -e .[dev]
+      - name: Lint (ruff)
+        run: |
+          pip install ruff --quiet
+          python -m ruff check src/ --select=E,F,W --ignore=E501 || true
+      - name: Type check (mypy)
+        run: |
+          pip install mypy --quiet
+          python -m mypy src/ --ignore-missing-imports --no-error-summary || true
       - name: Run unit tests
         run: |
-          python -m pytest tests/unit -q
+          python -m pytest tests/unit -q -p no:logging --cov=src --cov-report=term-missing --cov-report=xml
+        env:
+          CI: "true"
+      - name: Upload coverage report
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage.xml
       - name: Run integration tests (optional)
-        if: ${{ env.RUN_INTEGRATION == '1' }}
+        if: ${{ env.RUN_INTEGRATION == '1' || github.event_name == 'schedule' || github.event.inputs.run_integration == 'true' }}
         run: |
           RUN_INTEGRATION=1 python -m pytest tests/integration -q
+        env:
+          CI: "true"

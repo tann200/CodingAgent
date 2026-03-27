@@ -8,7 +8,7 @@ NEW-4: evaluation_node was incrementing debug_attempts before routing to debug, 
        debug_node incremented again — effectively consuming 2 budget units per cycle.
 """
 import pytest
-from unittest.mock import MagicMock, AsyncMock, patch
+from unittest.mock import MagicMock
 
 
 def _make_base_state(**kwargs):
@@ -76,6 +76,14 @@ def _make_mock_orchestrator(tools=None):
         "write_file": {"description": "Write a file"},
     }
     orch.tool_registry = tool_registry
+    # Explicitly set cancel_event to None so the MagicMock auto-attr does not
+    # create a truthy fake event that causes the cancellation branch to fire.
+    orch.cancel_event = None
+    # get_tools_for_role returns a plain list (avoids MagicMock side-effects in nodes)
+    orch.get_tools_for_role.return_value = [
+        {"name": "edit_file", "description": "Edit a file"},
+        {"name": "write_file", "description": "Write a file"},
+    ]
     return orch
 
 

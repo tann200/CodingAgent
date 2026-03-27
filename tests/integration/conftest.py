@@ -62,7 +62,7 @@ def providers_config(tmp_path_factory):
 
     # Ensure the project's provider manager uses this path
     try:
-        import src.core.llm_manager as lm
+        import src.core.inference.llm_manager as lm
         lm._provider_manager.providers_config_path = str(providers_path)
         # reset initialized state so tests get a fresh load
         lm._provider_manager._initialized = False

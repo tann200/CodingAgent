@@ -16,6 +16,7 @@ import os
 from pathlib import Path
 
 from src.core.inference.llm_manager import get_provider_manager
+import src.core.orchestration.event_bus as _event_bus_module
 from src.core.orchestration.event_bus import EventBus
 from src.core.orchestration.orchestrator import Orchestrator
 from src.core.logger import logger as guilogger
@@ -45,6 +46,9 @@ class CodingAgentApp:
         install_stdlib_handler()
 
         self.event_bus = EventBus()
+        # Wire get_event_bus() singleton to this instance so TUI handlers and
+        # the orchestrator share the same bus (singleton split fix).
+        _event_bus_module._default_bus = self.event_bus
         # ensure provider manager uses our bus
         pm = get_provider_manager()
         pm.set_event_bus(self.event_bus)
@@ -57,6 +61,36 @@ class CodingAgentApp:
         self.orchestrator = Orchestrator(
             working_dir=self.config.working_dir, allow_external_working_dir=True
         )
+
+        # Start session health monitoring
+        try:
+            from src.core.orchestration.session_watcher import get_session_watcher
+            from src.core.orchestration.session_registry import get_session_registry
+
+            watcher = get_session_watcher()
+            watcher.start()
+
+            registry = get_session_registry()
+            registry.start_health_monitor()
+
+            # Wire alerts to event bus for UI notification
+            def _on_session_alert(alert):
+                self.event_bus.publish(
+                    "ui.notification",
+                    {
+                        "level": "warning"
+                        if alert.level.value in ("warning", "info")
+                        else "error",
+                        "message": alert.title,
+                        "source": "session_watcher",
+                    },
+                )
+
+            watcher.on_alert(_on_session_alert)
+            guilogger.info("Session health monitoring started")
+        except Exception as e:
+            guilogger.warning(f"Failed to start session watcher (non-fatal): {e}")
+
         # Wire telemetry consumer if requested
         try:
             if (
@@ -85,25 +119,51 @@ class CodingAgentApp:
         # W11: Run provider health check at startup — warn immediately if no provider is reachable
         try:
             from src.core.startup import run_provider_health_check_sync
+
             health = run_provider_health_check_sync(timeout=5.0)
             reachable = [k for k, v in health.items() if not v.get("error")]
             if reachable:
-                guilogger.info(f"Provider health check: {len(reachable)} provider(s) reachable: {reachable}")
+                guilogger.info(
+                    f"Provider health check: {len(reachable)} provider(s) reachable: {reachable}"
+                )
             else:
                 guilogger.warning(
                     "Provider health check: NO providers reachable. "
                     "Start LM Studio or Ollama before sending tasks. "
                     f"Results: {health}"
                 )
-                self.event_bus.publish("ui.notification", {
-                    "level": "warning",
-                    "message": "No LLM providers reachable. Start LM Studio or Ollama.",
-                    "source": "startup",
-                })
+                self.event_bus.publish(
+                    "ui.notification",
+                    {
+                        "level": "warning",
+                        "message": "No LLM providers reachable. Start LM Studio or Ollama.",
+                        "source": "startup",
+                    },
+                )
         except Exception as e:
             guilogger.warning(f"Provider health check failed (non-fatal): {e}")
 
         guilogger.info("CodingAgentApp initialized")
+
+    def shutdown(self) -> None:
+        """Clean up resources on app shutdown."""
+        try:
+            from src.core.orchestration.session_watcher import get_session_watcher
+            from src.core.orchestration.session_registry import get_session_registry
+            from src.core.orchestration.cross_session_bus import get_cross_session_bus
+
+            watcher = get_session_watcher()
+            watcher.stop()
+
+            registry = get_session_registry()
+            registry.shutdown()
+
+            bus = get_cross_session_bus()
+            bus.shutdown()
+
+            guilogger.info("Session monitoring shutdown complete")
+        except Exception as e:
+            guilogger.warning(f"Error during session monitoring shutdown: {e}")
 
     def run(self) -> None:
         """Start the TUI or headless app.
@@ -134,10 +194,15 @@ class CodingAgentApp:
 
                         app = create_app(orchestrator=self.orchestrator)
                         if hasattr(app, "run") and callable(getattr(app, "run")):
-                            app.run()
+                            try:
+                                app.run()
+                            finally:
+                                self.shutdown()
                             return
                     except Exception as e:
                         guilogger.error(f"Failed to start Textual app: {e}")
+                        self.shutdown()
+                        return
                 else:
                     guilogger.info(
                         "Textual not found in environment; falling back to headless"
@@ -151,4 +216,5 @@ class CodingAgentApp:
             print("CodingAgentApp started (headless mode)", flush=True)
         except Exception:
             pass
-        # tmp_app_started.log was leftover debug scaffolding — removed (usability fix)
+        finally:
+            self.shutdown()

@@ -6,7 +6,15 @@ from typing import Dict, Any, List
 from concurrent.futures import ThreadPoolExecutor
 
 from src.core.orchestration.graph.state import AgentState
-from src.core.memory.distiller import distill_context
+
+# Hoisted to module level so tests can patch
+# src.core.orchestration.graph.nodes.memory_update_node.distill_context
+try:
+    from src.core.memory.distiller import distill_context, compact_messages_to_prose
+except ImportError:
+    distill_context = None  # type: ignore[assignment]
+    compact_messages_to_prose = None  # type: ignore[assignment]
+
 from src.core.memory.advanced_features import (
     TrajectoryLogger,
     DreamConsolidator,
@@ -23,20 +31,8 @@ _executor = ThreadPoolExecutor(max_workers=4)
 async def memory_update_node(state: AgentState, config: Any) -> Dict[str, Any]:
     """
     Memory Update Layer: Persists distilled context and triggers advanced memory features.
-
-    Memory operations are parallelized for performance:
-    - Phase 1 (sequential): distill_context - required before delegations
-    - Phase 2 (parallel): Trajectory logging, consolidation, review, refactoring
-
+    Memory operations are parallelized for performance.
     Delegations can be spawned for LLM-heavy operations via state["delegations"].
-
-    Memory writes go to:
-    - .agent-context/TASK_STATE.md (distill_context)
-    - .agent-context/trajectories/ (TrajectoryLogger)
-    - .agent-context/consolidated/ (DreamConsolidator)
-    - .agent-context/code_smells.json (RefactoringAgent)
-    - .agent-context/last_review.json (ReviewAgent)
-    - agent-brain/skills/ (SkillLearner)
     """
     logger.info("=== memory_update_node START ===")
 
@@ -56,11 +52,78 @@ async def memory_update_node(state: AgentState, config: Any) -> Dict[str, Any]:
     session_id = state.get("session_id")
     task_success = evaluation_result == "complete" if evaluation_result else False
 
+    # HR-6: Check token budget BEFORE deciding whether to distill/compact.
+    # If the monitor reports "compact" (>85% usage), force a compaction regardless of
+    # the _should_distill flag, and record the compaction turn to honour the 5-turn cooldown.
+    _budget_forced_compact = False
     try:
-        distill_context(state["history"], working_dir=workdir_path)
-        logger.info("memory_update_node: distillation complete")
-    except Exception as e:
-        logger.error(f"memory_update_node: distillation failed: {e}")
+        from src.core.orchestration.token_budget import get_token_budget_monitor
+        _monitor = get_token_budget_monitor()
+        if _monitor.check_budget(state) == "compact":
+            _budget_forced_compact = True
+            _monitor.check_and_prepare_compaction(session_id or "default")
+            logger.info("memory_update_node: token budget threshold reached — forcing compact")
+    except Exception as _budget_err:
+        logger.debug(f"memory_update_node: token budget check skipped: {_budget_err}")
+
+    should_distill = state.get("_should_distill", True)
+    force_compact = state.get("_force_compact", False) or _budget_forced_compact
+
+    # Track whether we need to return an updated history via the return dict
+    # (LangGraph nodes must NOT mutate state in-place; mutations go in the return dict).
+    _updated_history = None
+    _distilled_summary: str = ""
+
+    if should_distill:
+        try:
+            history = state.get("history", [])
+
+            if force_compact:
+                logger.info(
+                    f"memory_update_node: FORCE COMPACT "
+                    f"(history has {len(history)} messages)"
+                )
+
+                summary = compact_messages_to_prose(history, working_dir=workdir_path)
+
+                essential = [
+                    {"role": "system", "content": "Session Summary:\n" + summary},
+                    {"role": "user", "content": state.get("task", "")},
+                ]
+
+                # CF-1 / HR-2 fix: return updated history via return dict, not in-place.
+                _updated_history = essential
+
+                logger.info(
+                    f"memory_update_node: compact complete "
+                    f"(reduced to {len(essential)} messages)"
+                )
+            else:
+                # HR-2 fix: capture distill_context return value and apply compacted
+                # history to state so the context window is actually reduced when the
+                # 50-message threshold triggers inside distill_context.
+                distilled = distill_context(state["history"], working_dir=workdir_path)
+                compacted = distilled.get("_compacted_history") if distilled else None
+                if compacted:
+                    _updated_history = compacted
+                    logger.info(
+                        f"memory_update_node: history compacted by distill_context "
+                        f"({len(compacted)} messages remain)"
+                    )
+                # ME-3 fix: feed the distilled current_state back into analysis_summary
+                # so the next perception turn sees an up-to-date context summary rather
+                # than the stale value from several turns ago.
+                if distilled and distilled.get("current_state"):
+                    _distilled_summary = distilled["current_state"]
+                    logger.info(
+                        "memory_update_node: updating analysis_summary from distilled state"
+                    )
+
+            logger.info("memory_update_node: distillation complete")
+        except Exception as e:
+            logger.error(f"memory_update_node: distillation failed: {e}")
+    else:
+        logger.info("memory_update_node: skipping distillation (continuing execution)")
 
     async def run_trajectory_logging():
         if not (task_success and task):
@@ -194,7 +257,14 @@ async def memory_update_node(state: AgentState, config: Any) -> Dict[str, Any]:
             logger.warning(f"memory_update_node: parallel task {i} failed: {res}")
 
     logger.info("=== memory_update_node END ===")
-    return {}
+    # HR-2 / ME-3 fix: return updated history and distilled summary via return dict.
+    # Also clear _force_compact flag so it does not persist to the next turn.
+    result: Dict[str, Any] = {"_force_compact": False}
+    if _distilled_summary:
+        result["analysis_summary"] = _distilled_summary
+    if _updated_history is not None:
+        result["history"] = _updated_history
+    return result
 
 
 def _extract_tool_sequence(history: List[Dict]) -> List[Dict]:

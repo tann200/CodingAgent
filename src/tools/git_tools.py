@@ -5,12 +5,15 @@ Provides read and write git operations so the agent can inspect history,
 commit work, stash changes, and restore files — the same primitives used
 by Claude Code, OpenCode, and Copilot (F19 fix).
 """
+
 from __future__ import annotations
 
 import subprocess
 import logging
 from pathlib import Path
 from typing import Dict, Any, Optional
+
+from src.tools._tool import tool
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +46,7 @@ def _run_git(args: list[str], workdir: Path, timeout: int = 30) -> Dict[str, Any
         return {"status": "error", "error": str(e)}
 
 
+@tool(tags=["coding"])
 def git_status(workdir: Path = DEFAULT_WORKDIR) -> Dict[str, Any]:
     """
     Return the working-tree status in short format.
@@ -65,6 +69,7 @@ def git_status(workdir: Path = DEFAULT_WORKDIR) -> Dict[str, Any]:
     return result
 
 
+@tool(tags=["coding"])
 def git_log(
     workdir: Path = DEFAULT_WORKDIR,
     max_count: int = 10,
@@ -84,6 +89,7 @@ def git_log(
     return result
 
 
+@tool(tags=["coding"])
 def git_diff(
     workdir: Path = DEFAULT_WORKDIR,
     staged: bool = False,
@@ -107,17 +113,20 @@ def git_diff(
     return result
 
 
+@tool(side_effects=["write"], tags=["coding"])
 def git_commit(
     message: str,
     workdir: Path = DEFAULT_WORKDIR,
-    add_all: bool = True,
+    add_all: bool = False,
 ) -> Dict[str, Any]:
     """
-    Stage all changes and create a commit with the given message.
+    Stage changes and create a commit with the given message.
 
     Args:
         message: Commit message (required, must be non-empty).
-        add_all: If True (default), run `git add -A` before committing.
+        add_all: If True, run `git add -A` before committing. Default is False
+                 to prevent accidental mass-commits; explicitly specify files
+                 to stage or use git add for specific files.
     """
     if not message or not message.strip():
         return {"status": "error", "error": "Commit message must not be empty."}
@@ -135,6 +144,7 @@ def git_commit(
     return result
 
 
+@tool(side_effects=["write"], tags=["coding"])
 def git_stash(
     workdir: Path = DEFAULT_WORKDIR,
     message: Optional[str] = None,
@@ -151,6 +161,7 @@ def git_stash(
     return _run_git(args, workdir)
 
 
+@tool(side_effects=["write"], tags=["coding"])
 def git_restore(
     path: str,
     workdir: Path = DEFAULT_WORKDIR,

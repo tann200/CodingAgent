@@ -1,14 +1,14 @@
 from pathlib import Path
 import yaml
 
-from src.tools.toolsets.loader import (
+from src.config.toolsets.loader import (
     load_toolset,
     get_tools_for_toolset,
     get_toolset_for_role,
     list_available_toolsets,
     ToolsetManager,
 )
-from src.tools.toolsets import loader
+from src.config.toolsets import loader
 
 
 def write_yaml(path: Path, data: dict):
@@ -64,16 +64,14 @@ def test_load_nonexistent_toolset():
 
 
 def test_load_toolset_and_get_tools_for_toolset(tmp_path, monkeypatch):
-    # Prepare a temporary config/toolsets directory
+    # Prepare a temporary toolsets directory
     config_dir = tmp_path / "config_toolsets"
     coding = {"name": "coding", "description": "For coding", "tools": ["read_file", "write_file"]}
     write_yaml(config_dir / "coding.yaml", coding)
 
-    # Monkeypatch loader dirs
-    monkeypatch.setattr(loader, "_NEW_DIR", config_dir)
-    monkeypatch.setattr(loader, "_LEGACY_DIR", tmp_path / "legacy_toolsets")
+    monkeypatch.setattr(loader, "_DIR", config_dir)
+    monkeypatch.setattr(loader, "_cache", {})  # clear cache so new _DIR is used
 
-    # Load and validate
     ts = loader.load_toolset("coding")
     assert isinstance(ts, dict)
     assert ts.get("name") == "coding"
@@ -84,32 +82,18 @@ def test_load_toolset_and_get_tools_for_toolset(tmp_path, monkeypatch):
 
 
 def test_load_toolset_nonexistent_returns_none(monkeypatch):
-    monkeypatch.setattr(loader, "_NEW_DIR", Path("/nonexistent/path/for/tests"))
-    monkeypatch.setattr(loader, "_LEGACY_DIR", Path("/also/nonexistent"))
+    monkeypatch.setattr(loader, "_DIR", Path("/nonexistent/path/for/tests"))
+    monkeypatch.setattr(loader, "_cache", {})
     assert loader.load_toolset("does-not-exist") is None
 
 
-def test_list_available_toolsets_prefers_new_dir(tmp_path, monkeypatch):
-    new_dir = tmp_path / "new"
-    legacy_dir = tmp_path / "legacy"
-    write_yaml(new_dir / "a.yaml", {"tools": ["t1"]})
-    write_yaml(legacy_dir / "b.yaml", {"tools": ["t2"]})
+def test_list_available_toolsets_lists_dir(tmp_path, monkeypatch):
+    toolsets_dir = tmp_path / "toolsets"
+    write_yaml(toolsets_dir / "a.yaml", {"tools": ["t1"]})
+    write_yaml(toolsets_dir / "b.yaml", {"tools": ["t2"]})
 
-    monkeypatch.setattr(loader, "_NEW_DIR", new_dir)
-    monkeypatch.setattr(loader, "_LEGACY_DIR", legacy_dir)
+    monkeypatch.setattr(loader, "_DIR", toolsets_dir)
 
     names = loader.list_available_toolsets()
     assert "a" in names
     assert "b" in names
-
-
-def test_legacy_fallback_if_new_missing(tmp_path, monkeypatch):
-    legacy_dir = tmp_path / "legacy"
-    write_yaml(legacy_dir / "legacy_tool.yaml", {"tools": ["t_legacy"]})
-
-    monkeypatch.setattr(loader, "_NEW_DIR", tmp_path / "no_new")
-    monkeypatch.setattr(loader, "_LEGACY_DIR", legacy_dir)
-
-    ts = loader.load_toolset("legacy_tool")
-    assert ts is not None
-    assert ts.get("tools") == ["t_legacy"]

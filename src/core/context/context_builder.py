@@ -2,30 +2,38 @@ from __future__ import annotations
 from typing import Callable, Dict, List, Optional
 import math
 import json
+import threading
 from collections import OrderedDict
 from pathlib import Path
+
 
 # F10: Import dynamic token budget helper (lazy — avoids circular imports at module load).
 def _default_max_tokens() -> int:
     try:
         from src.core.inference.provider_context import get_context_budget
+
         return get_context_budget()
     except Exception:
         return 6000
+
 
 # Module-level caches keyed by absolute file path (NEW-20).
 # ContextBuilder is re-instantiated on every node call, so instance-level caches
 # were always empty and provided zero benefit.  Module-level caches persist across
 # calls as long as the process is alive and the file has not changed on disk.
 # F15: Use OrderedDict with a max-size cap to prevent unbounded memory growth.
-_TEXT_CACHE: OrderedDict = OrderedDict()   # path → (mtime, content); max 256 entries
-_JSON_CACHE: OrderedDict = OrderedDict()   # path → (mtime, parsed);  max 256 entries
+# SCAN2-6: Protect all multi-step cache mutations (move_to_end / popitem / setitem)
+# with a single lock — these sequences are not atomic under the GIL.
+_TEXT_CACHE: OrderedDict = OrderedDict()  # path → (mtime, content); max 256 entries
+_JSON_CACHE: OrderedDict = OrderedDict()  # path → (mtime, parsed);  max 256 entries
 _CACHE_MAX = 256
+_CACHE_LOCK = threading.Lock()
 
 
 def _today_iso() -> str:
     """Return today's date as YYYY-MM-DD (local time)."""
     from datetime import date
+
     return date.today().isoformat()
 
 
@@ -34,6 +42,7 @@ class ContextBuilder:
         self,
         token_estimator: Optional[Callable[[str], int]] = None,
         working_dir: Optional[str] = None,
+        max_tokens: int = 6000,
     ):
         self.token_estimator: Callable[[str], int] = (
             token_estimator
@@ -46,6 +55,41 @@ class ContextBuilder:
             Path(working_dir) if working_dir else Path.cwd()
         ) / ".agent-context"
 
+        # Token usage tracking for TokenBudgetMonitor
+        self._last_token_count: int = 0
+        self._max_tokens: int = max_tokens
+
+        # Load identity and role prompts from agent-brain
+        self._load_agent_brain()
+
+    def _load_agent_brain(self) -> None:
+        """Load identity, role, and skill prompts from agent-brain configuration."""
+        config_root = Path(__file__).parent.parent.parent / "config" / "agent-brain"
+
+        # Load identity (SOUL.md)
+        soul_path = config_root / "identity" / "SOUL.md"
+        self.soul = soul_path.read_text() if soul_path.exists() else ""
+
+        # Load all roles by name
+        self.roles: Dict[str, str] = {}
+        roles_dir = config_root / "roles"
+        if roles_dir.exists():
+            for role_file in roles_dir.glob("*.md"):
+                role_name = role_file.stem  # filename without extension
+                self.roles[role_name] = role_file.read_text()
+
+        # Load all skills by name
+        self.skills: Dict[str, str] = {}
+        skills_dir = config_root / "skills"
+        if skills_dir.exists():
+            for skill_file in skills_dir.glob("*.md"):
+                skill_name = skill_file.stem
+                self.skills[skill_name] = skill_file.read_text()
+
+    def get_skill(self, skill_name: str) -> str:
+        """Get skill content by name."""
+        return self.skills.get(skill_name, "")
+
     @staticmethod
     def _read_text_cached(path: Path) -> Optional[str]:
         """Read a text file, returning cached content if mtime unchanged."""
@@ -54,14 +98,17 @@ class ContextBuilder:
         try:
             key = str(path)
             mtime = path.stat().st_mtime
-            if key in _TEXT_CACHE and _TEXT_CACHE[key][0] == mtime:
-                _TEXT_CACHE.move_to_end(key)
-                return _TEXT_CACHE[key][1]
+            with _CACHE_LOCK:
+                if key in _TEXT_CACHE and _TEXT_CACHE[key][0] == mtime:
+                    _TEXT_CACHE.move_to_end(key)
+                    return _TEXT_CACHE[key][1]
+            # Read outside the lock to avoid blocking other threads during I/O
             content = path.read_text(encoding="utf-8").strip()
-            # F15: Evict oldest entry when cache is full
-            if len(_TEXT_CACHE) >= _CACHE_MAX:
-                _TEXT_CACHE.popitem(last=False)
-            _TEXT_CACHE[key] = (mtime, content)
+            with _CACHE_LOCK:
+                # F15: Evict oldest entry when cache is full
+                if len(_TEXT_CACHE) >= _CACHE_MAX:
+                    _TEXT_CACHE.popitem(last=False)
+                _TEXT_CACHE[key] = (mtime, content)
             return content
         except Exception:
             return None
@@ -74,14 +121,17 @@ class ContextBuilder:
         try:
             key = str(path)
             mtime = path.stat().st_mtime
-            if key in _JSON_CACHE and _JSON_CACHE[key][0] == mtime:
-                _JSON_CACHE.move_to_end(key)
-                return _JSON_CACHE[key][1]
+            with _CACHE_LOCK:
+                if key in _JSON_CACHE and _JSON_CACHE[key][0] == mtime:
+                    _JSON_CACHE.move_to_end(key)
+                    return _JSON_CACHE[key][1]
+            # Read outside the lock to avoid blocking other threads during I/O
             data = json.loads(path.read_text(encoding="utf-8"))
-            # F15: Evict oldest entry when cache is full
-            if len(_JSON_CACHE) >= _CACHE_MAX:
-                _JSON_CACHE.popitem(last=False)
-            _JSON_CACHE[key] = (mtime, data)
+            with _CACHE_LOCK:
+                # F15: Evict oldest entry when cache is full
+                if len(_JSON_CACHE) >= _CACHE_MAX:
+                    _JSON_CACHE.popitem(last=False)
+                _JSON_CACHE[key] = (mtime, data)
             return data
         except Exception:
             return {}
@@ -177,14 +227,15 @@ class ContextBuilder:
 
     def build_prompt(
         self,
-        identity: str,
-        role: str,
+        role_name: str,
         active_skills: List[str],
         task_description: str,
         tools: List[Dict],
         conversation: List[Dict],
         max_tokens: Optional[int] = None,
         retrieved_snippets: Optional[List[Dict]] = None,
+        provider_capabilities: Optional[Dict] = None,
+        context_controller=None,
     ) -> List[Dict[str, str]]:
         # F10: Use dynamic token budget when max_tokens is not explicitly provided.
         if max_tokens is None:
@@ -203,9 +254,10 @@ class ContextBuilder:
         # We consolidate these into a single system message for better compatibility
         system_parts = []
 
-        # sanitize identity/role/task_description
-        safe_identity = self._sanitize_text(identity)
-        safe_role = self._sanitize_text(role)
+        # Load role content from agent-brain based on role_name
+        role_content = self.roles.get(role_name, "")
+        safe_identity = self._sanitize_text(self.soul)
+        safe_role = self._sanitize_text(role_content)
         safe_task_description = self._sanitize_text(task_description)
 
         system_parts.append(f"<identity>\n{safe_identity}\n</identity>")
@@ -214,12 +266,22 @@ class ContextBuilder:
         # 1a. Session summary — auto-injected from TASK_STATE.md so the agent
         #     always has access to prior context without needing a tool call.
         #     (Mirrors the compaction injection used by Claude Code / OpenCode.)
+        #
+        # CRITICAL FIX: Only inject session summary at the START of a task (empty conversation)
+        # or when the task is truly complete. During active execution (tool results present),
+        # injecting TASK_STATE.md causes the model to output JSON state tracker instead of
+        # continuing with YAML tool calls. This breaks multi-turn execution.
         try:
+            has_tool_results = any(
+                m.get("role") == "user"
+                and "tool_execution_result" in str(m.get("content", ""))
+                for m in conversation
+            )
             ts_content = self._get_task_state_content()
-            # Only inject when there is meaningful content beyond the empty template
             _empty = "# Current Task\n\n# Completed Steps\n\n# Next Step"
             if (
-                ts_content
+                not has_tool_results  # Only inject when NOT in active execution
+                and ts_content
                 and ts_content.strip() != _empty.strip()
                 and len(ts_content) > 60
             ):
@@ -242,6 +304,38 @@ class ContextBuilder:
             pass  # never fail prompt building due to missing TODO.md
 
         # 1b. Repository Intelligence block (if any retrieved snippets provided)
+        # Step 8: If a ContextController is available, run enforce_budget() to drop or
+        # summarize snippets that would overflow the available token budget.
+        if retrieved_snippets and context_controller is not None:
+            try:
+                # Convert snippet dicts to the file-descriptor format enforce_budget expects
+                _sys_text = "\n".join(system_parts)
+                _file_descs = [
+                    {
+                        "path": s.get("file_path", ""),
+                        "content": s.get("snippet") or s.get("content") or "",
+                        "line_count": len((s.get("snippet") or s.get("content") or "").splitlines()),
+                        "estimated_tokens": max(1, len(s.get("snippet") or s.get("content") or "") // 4),
+                    }
+                    for s in retrieved_snippets
+                ]
+                _included, _excluded = context_controller.enforce_budget(
+                    _file_descs, conversation, _sys_text
+                )
+                if _excluded:
+                    import logging as _logging
+                    _logging.getLogger(__name__).debug(
+                        f"ContextController: excluded {len(_excluded)} snippet(s) to fit budget"
+                    )
+                # Rebuild retrieved_snippets from included descriptors (preserve original keys)
+                _included_paths = {d["path"] for d in _included}
+                retrieved_snippets = [
+                    s for s in retrieved_snippets
+                    if s.get("file_path", "") in _included_paths
+                ]
+            except Exception:
+                pass  # never fail prompt build due to budget enforcement
+
         repo_block = ""
         if retrieved_snippets:
             try:
@@ -272,11 +366,16 @@ class ContextBuilder:
                 pass
 
         if active_skills:
-            # sanitize each skill string
-            safe_skills = [self._sanitize_text(s) for s in active_skills]
-            system_parts.append(
-                f"<active_skills>\n{chr(10).join(safe_skills)}\n</active_skills>"
-            )
+            # active_skills is now a list of skill names to load from files
+            skill_contents = []
+            for skill_name in active_skills:
+                skill_content = self.get_skill(skill_name)
+                if skill_content:
+                    skill_contents.append(self._sanitize_text(skill_content))
+            if skill_contents:
+                system_parts.append(
+                    f"<active_skills>\n{chr(10).join(skill_contents)}\n</active_skills>"
+                )
 
         tools_text = ""
         for tool in tools:
@@ -287,23 +386,43 @@ class ContextBuilder:
         system_parts.append(f"<available_tools>\n{tools_text}\n</available_tools>")
 
         # 1.5 Mandatory Output Format (Last part of system instructions)
-        format_instr = (
-            "<output_format>\n"
-            "You MUST think step-by-step. Write your internal reasoning inside <think> tags.\n"
-            "To execute an action, you MUST use the provided markdown YAML tool format.\n"
-            "Format your tool calls exactly like this using a fenced code block:\n"
-            "```yaml\n"
-            "name: the_tool_name\n"
-            "arguments:\n"
-            "  arg_name: arg_value\n"
-            "```\n"
-            "IMPORTANT: Use markdown YAML format (not XML). Do not use <tool> tags.\n"
-            "After executing a tool, your response will include the tool's result.\n"
-            "If the tool result completes the user's task, do NOT make more tool calls.\n"
-            "Simply summarize the result or indicate task completion.\n"
-            "Only call another tool if the result requires follow-up action.\n"
-            "</output_format>"
+        # Phase 7: Conditional format based on provider capabilities
+        use_native_tools = (
+            provider_capabilities is not None
+            and provider_capabilities.get("supports_native_tools", False)
         )
+
+        if use_native_tools:
+            format_instr = (
+                "<output_format>\n"
+                "You MUST think step-by-step. Write your internal reasoning inside <think> tags.\n"
+                "You have access to native tools. Use the native JSON function calling API.\n"
+                "Do NOT output markdown code blocks for tool calls.\n"
+                "IMPORTANT: Call tools using the native function calling format.\n"
+                "After executing a tool, your response will include the tool's result.\n"
+                "If the tool result completes the user's task, do NOT make more tool calls.\n"
+                "Simply summarize the result or indicate task completion.\n"
+                "Only call another tool if the result requires follow-up action.\n"
+                "</output_format>"
+            )
+        else:
+            format_instr = (
+                "<output_format>\n"
+                "You MUST think step-by-step. Write your internal reasoning inside <think> tags.\n"
+                "To execute an action, you MUST use the provided markdown YAML tool format.\n"
+                "Format your tool calls exactly like this using a fenced code block:\n"
+                "```yaml\n"
+                "name: the_tool_name\n"
+                "arguments:\n"
+                "  arg_name: arg_value\n"
+                "```\n"
+                "IMPORTANT: Use markdown YAML format (not XML). Do not use <tool> tags.\n"
+                "After executing a tool, your response will include the tool's result.\n"
+                "If the tool result completes the user's task, do NOT make more tool calls.\n"
+                "Simply summarize the result or indicate task completion.\n"
+                "Only call another tool if the result requires follow-up action.\n"
+                "</output_format>"
+            )
         system_parts.append(format_instr)
 
         built_messages.append({"role": "system", "content": "\n\n".join(system_parts)})
@@ -488,3 +607,11 @@ class ContextBuilder:
             "role": "system",
             "content": f"<{tag}>\n{truncated_content}\n\n[TRUNCATED]\n</{tag}>",
         }
+
+    def get_token_usage(self) -> tuple[int, int]:
+        """Return (used, max) for TokenBudgetMonitor."""
+        return self._last_token_count, self._max_tokens
+
+    def update_token_count(self, count: int):
+        """Update the last token count after building context."""
+        self._last_token_count = count

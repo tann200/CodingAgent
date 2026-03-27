@@ -10,7 +10,6 @@ import threading
 import time
 from unittest.mock import MagicMock, patch
 
-import pytest
 
 
 # ---------------------------------------------------------------------------
@@ -19,6 +18,7 @@ import pytest
 
 def _make_app():
     """Build a TextualAppBase with a mocked orchestrator (no real LLM calls)."""
+    import tempfile, pathlib
     from src.ui.textual_app_impl import TextualAppBase
 
     orch = MagicMock()
@@ -26,9 +26,17 @@ def _make_app():
     orch.start_new_task.return_value = "task-001"
     orch._clear_execution_trace = MagicMock()
 
+    # Use an isolated temp dir for history persistence so tests stay independent
+    _tmp_dir = pathlib.Path(tempfile.mkdtemp())
+    _history_path = _tmp_dir / "tui_conversation_history.json"
+
     # Disable event-bus subscription so we don't need a running bus
     with patch("src.ui.textual_app_impl.get_event_bus", return_value=None):
         app = TextualAppBase(orchestrator=orch)
+
+    # Override history path to the isolated temp file (no stale disk data)
+    app._get_history_path = lambda: _history_path
+    app.history = []  # clear any history loaded from the real path
 
     # Silence UI callback so tests don't crash on missing Textual context
     app.on_agent_result = MagicMock()

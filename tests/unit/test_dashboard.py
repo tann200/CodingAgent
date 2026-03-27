@@ -58,8 +58,16 @@ class TestMainViewController:
         bus = EventBus()
         controller = MainViewController(bus)
 
+        # GAP 2: ACP schema payload
         bus.publish(
-            "tool.execute.start", {"tool": "read_file", "args": {"path": "main.py"}}
+            "tool.execute.start",
+            {
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "call_abc123",
+                "title": "read_file",
+                "status": "in_progress",
+                "rawInput": {"path": "main.py"},
+            },
         )
 
         assert len(controller.dashboard.tool_activity) == 1
@@ -71,8 +79,28 @@ class TestMainViewController:
         bus = EventBus()
         controller = MainViewController(bus)
 
-        bus.publish("tool.execute.start", {"tool": "read_file", "args": {}})
-        bus.publish("tool.execute.finish", {"tool": "read_file", "ok": True})
+        # GAP 2: ACP schema payload
+        bus.publish(
+            "tool.execute.start",
+            {
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "call_abc123",
+                "title": "read_file",
+                "status": "in_progress",
+                "rawInput": {},
+            },
+        )
+        bus.publish(
+            "tool.execute.finish",
+            {
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "call_abc123",
+                "title": "read_file",
+                "status": "completed",
+                "content": [{"type": "text", "text": "file content"}],
+                "rawOutput": {"status": "ok"},
+            },
+        )
 
         activity = controller.dashboard.tool_activity[0]
         assert activity["status"] == "ok"
@@ -82,9 +110,27 @@ class TestMainViewController:
         bus = EventBus()
         controller = MainViewController(bus)
 
-        bus.publish("tool.execute.start", {"tool": "write_file", "args": {}})
+        # GAP 2: ACP schema payload
         bus.publish(
-            "tool.execute.error", {"tool": "write_file", "error": "Permission denied"}
+            "tool.execute.start",
+            {
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "call_abc123",
+                "title": "write_file",
+                "status": "in_progress",
+                "rawInput": {},
+            },
+        )
+        bus.publish(
+            "tool.execute.error",
+            {
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "call_abc123",
+                "title": "write_file",
+                "status": "failed",
+                "content": [{"type": "text", "text": "Permission denied"}],
+                "error": "Permission denied",
+            },
         )
 
         activity = controller.dashboard.tool_activity[0]
@@ -124,7 +170,17 @@ class TestMainViewController:
         controller = MainViewController(bus)
 
         bus.publish("file.modified", {"path": "/a.py", "tool": "edit_file"})
-        bus.publish("tool.execute.start", {"tool": "read_file", "args": {}})
+        # GAP 2: ACP schema payload
+        bus.publish(
+            "tool.execute.start",
+            {
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": "call_abc123",
+                "title": "read_file",
+                "status": "in_progress",
+                "rawInput": {},
+            },
+        )
 
         summary = controller.get_dashboard_summary()
 
@@ -137,9 +193,18 @@ class TestMainViewController:
         bus = EventBus()
         controller = MainViewController(bus)
 
-        # Publish 12 tool start events
+        # Publish 12 tool start events with GAP 2: ACP schema
         for i in range(12):
-            bus.publish("tool.execute.start", {"tool": f"tool_{i}", "args": {}})
+            bus.publish(
+                "tool.execute.start",
+                {
+                    "sessionUpdate": "tool_call_update",
+                    "toolCallId": f"call_{i}",
+                    "title": f"tool_{i}",
+                    "status": "in_progress",
+                    "rawInput": {},
+                },
+            )
 
         # Should only keep last 10
         assert len(controller.dashboard.tool_activity) == 10
@@ -149,6 +214,7 @@ class TestMainViewController:
 # H16: No recursive logging loop
 # ---------------------------------------------------------------------------
 
+
 class TestNoRecursiveLogging:
     def test_app_does_not_subscribe_log_new_to_guilogger(self):
         """H16: CodingAgentApp must NOT subscribe log.new back to guilogger
@@ -156,6 +222,7 @@ class TestNoRecursiveLogging:
         """
         import inspect
         from src.ui import app as app_mod
+
         src = inspect.getsource(app_mod.CodingAgentApp.__init__)
         # The comment in app.py explicitly notes this was removed; verify no subscribe call
         assert "subscribe" not in src or "log.new" not in src, (

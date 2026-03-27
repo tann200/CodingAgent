@@ -186,8 +186,76 @@ def find_dependency_files(workdir: str) -> List[str]:
     return deps
 
 
+def _get_config_files_mtime(workdir: str) -> Dict[str, float]:
+    """Get mtimes of config files that determine repo structure."""
+    config_patterns = [
+        "pyproject.toml",
+        "setup.py",
+        "setup.cfg",
+        "requirements*.txt",
+        "package.json",
+        "Cargo.toml",
+        "go.mod",
+        "Gemfile",
+        "pom.xml",
+        "Dockerfile",
+        "docker-compose.yml",
+        ".python-version",
+    ]
+    workdir_path = Path(workdir)
+    mtimes = {}
+    for pattern in config_patterns:
+        for p in workdir_path.glob(pattern):
+            try:
+                mtimes[str(p.relative_to(workdir_path))] = p.stat().st_mtime
+            except Exception:
+                pass
+    return mtimes
+
+
+def _get_cached_repo_summary(workdir: str) -> Optional[Dict[str, Any]]:
+    """Load cached repo summary if config files haven't changed."""
+    try:
+        cache_path = Path(workdir) / ".agent-context" / "repo_summary_cache.json"
+        if not cache_path.exists():
+            return None
+        import json
+
+        with open(cache_path, "r") as f:
+            cache = json.load(f)
+        current_mtimes = _get_config_files_mtime(workdir)
+        cached_mtimes = cache.get("config_mtimes", {})
+        if current_mtimes == cached_mtimes:
+            return cache.get("summary")
+    except Exception:
+        pass
+    return None
+
+
+def _save_repo_summary_cache(workdir: str, summary: Dict[str, Any]) -> None:
+    """Save repo summary to cache."""
+    try:
+        cache_dir = Path(workdir) / ".agent-context"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        cache_path = cache_dir / "repo_summary_cache.json"
+        import json
+
+        cache = {
+            "config_mtimes": _get_config_files_mtime(workdir),
+            "summary": summary,
+        }
+        with open(cache_path, "w") as f:
+            json.dump(cache, f)
+    except Exception:
+        pass
+
+
 def generate_repo_summary(workdir: str) -> Dict[str, Any]:
     """Generate comprehensive repository summary.
+
+    PB-6 fix: Cache summary based on config file mtimes. Only regenerates when
+    pyproject.toml, package.json, or other config files change. Skips expensive
+    filesystem walks for unchanged repos.
 
     Returns:
         Dict containing:
@@ -198,6 +266,10 @@ def generate_repo_summary(workdir: str) -> Dict[str, Any]:
         - modules: Top-level modules
         - dependency_files: Dependency configuration files
     """
+    cached = _get_cached_repo_summary(workdir)
+    if cached:
+        return cached
+
     framework = detect_framework(workdir)
     languages = detect_languages(workdir)
     test_framework = detect_test_framework(workdir)
@@ -205,7 +277,7 @@ def generate_repo_summary(workdir: str) -> Dict[str, Any]:
     modules = list_modules(workdir)
     dependency_files = find_dependency_files(workdir)
 
-    return {
+    summary = {
         "framework": framework,
         "languages": languages,
         "test_framework": test_framework,
@@ -214,6 +286,9 @@ def generate_repo_summary(workdir: str) -> Dict[str, Any]:
         "dependency_files": dependency_files,
         "summary": _format_summary(framework, languages, test_framework, modules),
     }
+
+    _save_repo_summary_cache(workdir, summary)
+    return summary
 
 
 def _format_summary(

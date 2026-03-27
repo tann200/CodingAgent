@@ -49,7 +49,7 @@ try:
                 try:
                     if Path(sys.prefix).resolve() != venv_path.resolve():
                         raise RuntimeError(f"This test run must use the project's virtualenv at {venv_path}. Activate it first: source {venv}/bin/activate")
-                except Exception as e:
+                except Exception:
                     raise
 except Exception:
     # If tomli not available or parse fails, skip enforcement to avoid blocking tests

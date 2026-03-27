@@ -10,7 +10,6 @@ Verifies:
 """
 
 import uuid
-import pytest
 
 from src.core.orchestration.event_bus import (
     EventBus,

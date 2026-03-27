@@ -3,19 +3,82 @@ Subagent tools for spawning isolated autonomous agents.
 
 These tools allow the main agent to spawn subagents for specific tasks,
 keeping the main agent's context window clean.
+
+When used as a standalone module (without src.core), the delegate_task
+function will still work but requires an externally-supplied graph and
+system prompt via the `tools_config.configure()` mechanism.
 """
 
 import asyncio
 import logging
+import os
 from typing import Dict, Any, Optional
 from pathlib import Path
 
-from src.core.orchestration.graph_factory import GraphFactory
-from src.core.orchestration.agent_brain import get_agent_brain_manager
+from src.tools._tool import tool
+
+# Lazy imports — degrade gracefully when src.core is not available
+try:
+    from src.core.orchestration.graph_factory import GraphFactory
+except ImportError:
+    GraphFactory = None
+
+try:
+    from src.core.orchestration.agent_brain import get_agent_brain_manager
+except ImportError:
+    get_agent_brain_manager = None
+
+try:
+    from src.core.orchestration.role_config import (
+        normalize_role,
+        get_role_config,
+        is_tool_allowed_for_role,
+    )
+except ImportError:
+
+    def normalize_role(role: str) -> str:
+        """Identity fallback when role_config is not available."""
+        return role
+
+    def get_role_config(role: str) -> Dict[str, Any]:
+        return {}
+
+    def is_tool_allowed_for_role(tool_name: str, role: str) -> bool:
+        return True
+
 
 logger = logging.getLogger(__name__)
 
 
+class SubagentOrchestrator:
+    """
+    Minimal orchestrator-like object for subagent role enforcement.
+
+    This provides:
+    - current_role for tool restriction
+    - Basic tool registry
+    - No execution (subagent handles its own execution)
+    """
+
+    def __init__(self, role: str, working_dir: str):
+        self.current_role = normalize_role(role)
+        self.working_dir = Path(working_dir)
+        self.tool_registry = None  # Will be set by subagent
+        self.cancel_event = None
+
+    def is_tool_allowed(self, tool_name: str) -> bool:
+        """Check if tool is allowed for this role."""
+        return is_tool_allowed_for_role(tool_name, self.current_role)
+
+    def get_denied_tools(self) -> list:
+        """Get list of denied tools for this role."""
+        config = get_role_config(self.current_role)
+        if config:
+            return config.get("denied_tools", [])
+        return []
+
+
+@tool(side_effects=["execute"], tags=["planning"])
 def delegate_task(
     role: str,
     subtask_description: str,
@@ -42,8 +105,16 @@ def delegate_task(
     Raises:
         ValueError: If an invalid role is provided
     """
-    valid_roles = {"researcher", "coder", "reviewer", "planner",
-                   "analyst", "operational", "strategic", "debugger"}
+    valid_roles = {
+        "researcher",
+        "coder",
+        "reviewer",
+        "planner",
+        "analyst",
+        "operational",
+        "strategic",
+        "debugger",
+    }
     if role not in valid_roles:
         return (
             f"Error: Invalid role '{role}'. Valid roles are: {', '.join(valid_roles)}"
@@ -51,6 +122,17 @@ def delegate_task(
 
     workdir = working_dir or "."
     workdir_path = Path(workdir).resolve()
+
+    # HR-5 fix: Check delegation depth to prevent unbounded recursive spawning
+    # Depth is passed via environment variable from the calling delegation_node
+    import os
+
+    depth = int(os.environ.get("CODINGAGENT_DELEGATION_DEPTH", "0"))
+    if depth >= 3:
+        return (
+            f"Error: Maximum delegation depth (3) exceeded. "
+            f"Refusing to spawn additional subagent to prevent infinite recursion."
+        )
 
     logger.info(
         f"delegate_task: spawning {role} subagent for: {subtask_description[:100]}..."
@@ -80,6 +162,11 @@ def delegate_task(
         brain = get_agent_brain_manager()
         system_prompt = brain.compile_system_prompt(canonical_role)
 
+        # Create role-aware orchestrator for tool restriction enforcement
+        subagent_orchestrator = SubagentOrchestrator(
+            role=role, working_dir=str(workdir_path)
+        )
+
         initial_state = {
             "task": subtask_description,
             "session_id": None,
@@ -98,6 +185,7 @@ def delegate_task(
             "evaluation_result": None,
             "delegations": [],
             "delegation_results": None,
+            "current_role": subagent_orchestrator.current_role,  # Pass role to state
         }
 
         # 3. Execute the subagent synchronously (blocking until done).
@@ -109,13 +197,29 @@ def delegate_task(
         try:
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
                 future = executor.submit(
-                    lambda: asyncio.run(graph.ainvoke(initial_state))
+                    lambda: asyncio.run(
+                        graph.ainvoke(
+                            initial_state,
+                            {
+                                "configurable": {"orchestrator": subagent_orchestrator},
+                                "recursion_limit": 50,
+                            },
+                        )
+                    )
                 )
                 final_state = future.result()
         except AttributeError:
             # Fallback to sync invoke if ainvoke not available
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(lambda: graph.invoke(initial_state))
+                future = executor.submit(
+                    lambda: graph.invoke(
+                        initial_state,
+                        {
+                            "configurable": {"orchestrator": subagent_orchestrator},
+                            "recursion_limit": 50,
+                        },
+                    )
+                )
                 final_state = future.result()
 
         # 4. Extract and summarize the result
@@ -178,6 +282,7 @@ def delegate_task(
         return f"Subagent [{role}] failed during execution: {str(e)}"
 
 
+@tool(tags=["planning"])
 def list_subagent_roles() -> Dict[str, Any]:
     """
     List available subagent roles and their purposes.
@@ -240,6 +345,9 @@ async def delegate_task_async(
     # max_workers=1: only one task is submitted per executor, no need for an unbounded pool (NEW-16).
     import concurrent.futures
 
+    # HR-12 fix: add timeout to prevent subagent from hanging forever
+    _DELEGATION_TIMEOUT_SECONDS = 300.0  # 5 minutes max per subagent
+
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
         future = executor.submit(
             delegate_task,
@@ -247,4 +355,11 @@ async def delegate_task_async(
             subtask_description,
             working_dir,
         )
-        return future.result()
+        try:
+            return future.result(timeout=_DELEGATION_TIMEOUT_SECONDS)
+        except concurrent.futures.TimeoutError:
+            return (
+                f"Error: Delegation to '{role}' subagent timed out after "
+                f"{_DELEGATION_TIMEOUT_SECONDS} seconds. The subagent may be "
+                f"hanging or the task is too complex."
+            )

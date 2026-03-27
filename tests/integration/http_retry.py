@@ -6,6 +6,7 @@ response bodies mentioning downloading/loading as transient.
 
 Set environment variable INTEGRATION_DEBUG=1 to enable verbose attempt logging.
 """
+
 import copy
 import os
 import time
@@ -39,7 +40,11 @@ def _make_payload_variants(payload: dict) -> List[dict]:
             "type": "json_schema",
             "json_schema": {
                 "name": "response",
-                "schema": {"type": "object", "properties": {}, "additionalProperties": True},
+                "schema": {
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": True,
+                },
             },
         }
         # remove any 'format' just in case
@@ -109,11 +114,12 @@ def post_with_retry(
             )
         )
 
-    last_exception = None
     # Precompute variants
     variants = _make_payload_variants(payload)
 
-    _debug(f"post_with_retry: endpoints={endpoints} variants={len(variants)} overall_timeout={overall_timeout}")
+    _debug(
+        f"post_with_retry: endpoints={endpoints} variants={len(variants)} overall_timeout={overall_timeout}"
+    )
 
     attempt = 0
     while time.time() - start < overall_timeout:
@@ -124,7 +130,6 @@ def post_with_retry(
                 try:
                     r = session.post(ep, json=pvar, timeout=per_request_timeout)
                 except requests.RequestException as e:
-                    last_exception = e
                     _debug(f"request exception for {ep} variant {idx}: {e}")
                     # connection/timeout errors -> treat as transient and try next endpoint
                     continue
@@ -138,7 +143,6 @@ def post_with_retry(
 
                 # transient HTTP statuses: retry
                 if r.status_code in TRANSIENT_STATUS:
-                    last_exception = RuntimeError(f"Transient status {r.status_code} from {ep}")
                     _debug(f"transient status {r.status_code} from {ep}")
                     continue
 
@@ -148,8 +152,9 @@ def post_with_retry(
                 except Exception:
                     body = ""
                 if looks_like_model_downloading(body):
-                    last_exception = RuntimeError(f"Model downloading/initializing detected from {ep}")
-                    _debug(f"model downloading/initializing detected from {ep}: body snippet: {body[:200]}")
+                    _debug(
+                        f"model downloading/initializing detected from {ep}: body snippet: {body[:200]}"
+                    )
                     continue
 
                 # For 401/403: propagate immediately (auth problem)
@@ -158,11 +163,15 @@ def post_with_retry(
                     r.raise_for_status()
 
                 # For other non-transient statuses, raise to surface errors
-                _debug(f"non-transient error {r.status_code} from {ep} body snippet: {body[:500]}")
+                _debug(
+                    f"non-transient error {r.status_code} from {ep} body snippet: {body[:500]}"
+                )
                 r.raise_for_status()
 
         # wait before next round of attempts
         _debug(f"sleeping {sleep_between_rounds}s before next round")
         time.sleep(sleep_between_rounds)
 
-    raise RuntimeError(f"All endpoints failed or model not ready within {overall_timeout} seconds")
+    raise RuntimeError(
+        f"All endpoints failed or model not ready within {overall_timeout} seconds"
+    )

@@ -16,7 +16,6 @@ Regression tests verify:
 3. A dict with these keys can be constructed without error
 """
 import pytest
-from typing import get_type_hints
 
 
 class TestAgentStateFieldsExist:
@@ -215,7 +214,6 @@ class TestAgentStateDictConstructible:
         validation errors. This confirms the fields were actually added to the TypedDict.
         """
         from src.core.orchestration.graph.state import AgentState
-        import operator
 
         # Construct a state dict including all NEW-5 fields
         state: AgentState = {

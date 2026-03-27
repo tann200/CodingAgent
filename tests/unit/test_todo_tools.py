@@ -1,8 +1,6 @@
 """
 Tests for todo_tools.py — manage_todo type coercion and basic operations.
 """
-import pytest
-from pathlib import Path
 
 from src.tools.todo_tools import manage_todo
 

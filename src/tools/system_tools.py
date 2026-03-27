@@ -5,6 +5,7 @@ from typing import Dict, Any
 import re
 
 from src.tools._path_utils import safe_resolve as _safe_resolve
+from src.tools._tool import tool
 
 
 def _parse_grep_output(raw: str) -> list:
@@ -18,16 +19,19 @@ def _parse_grep_output(raw: str) -> list:
         parts = line.split(":", 2)
         if len(parts) == 3:
             try:
-                results.append({
-                    "file_path": parts[0],
-                    "line_number": int(parts[1]),
-                    "content": parts[2],
-                })
+                results.append(
+                    {
+                        "file_path": parts[0],
+                        "line_number": int(parts[1]),
+                        "content": parts[2],
+                    }
+                )
             except (ValueError, IndexError):
                 pass
     return results
 
 
+@tool(tags=["coding"])
 def grep(
     pattern: str,
     path: str = ".",
@@ -110,11 +114,13 @@ def grep(
                 rel = str(p.relative_to(search_path)) if p.exists() else str(p)
                 for i, line in enumerate(file_lines):
                     if regex.search(line):
-                        matches.append({
-                            "file_path": rel,
-                            "line_number": i + 1,
-                            "content": line.rstrip(),
-                        })
+                        matches.append(
+                            {
+                                "file_path": rel,
+                                "line_number": i + 1,
+                                "content": line.rstrip(),
+                            }
+                        )
                         start = max(0, i - context)
                         end = min(len(file_lines), i + context + 1)
                         for j in range(start, end):
@@ -129,26 +135,40 @@ def grep(
         return {"status": "error", "error": str(e)}
 
 
+@tool(tags=["coding"])
 def get_git_diff() -> Dict[str, Any]:
     """
-    Gets the git diff of the current repository.
+    DEPRECATED: Use git_diff instead. Gets the git diff of the current repository.
     """
+    import warnings
+
+    warnings.warn(
+        "get_git_diff is deprecated. Use git_diff from git_tools instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    try:
+        from src.tools.git_tools import git_diff
+
+        return git_diff()
+    except ImportError:
+        pass
+    # Fallback to legacy implementation
     try:
         process = subprocess.run(
             ["git", "diff"], capture_output=True, text=True, check=False
         )
         if process.returncode == 0:
-            return {"diff": process.stdout}
+            return {"status": "ok", "diff": process.stdout}
         else:
             return {"status": "error", "error": process.stderr}
     except FileNotFoundError:
-        return {
-            "error": "git command not found. Please ensure it is installed and in your PATH."
-        }
+        return {"status": "error", "error": "git command not found."}
     except Exception as e:
         return {"status": "error", "error": str(e)}
 
 
+@tool(tags=["coding"])
 def summarize_structure(
     path: str = ".", workdir: Path = Path.cwd(), max_entries: int = 50
 ) -> Dict[str, Any]:
@@ -197,6 +217,7 @@ def summarize_structure(
         return {"status": "error", "error": str(e)}
 
 
+@tool(tags=["coding"])
 def summarize_structure_detailed(workdir: Any = None) -> Dict[str, Any]:
     """Provide a high-level summary of the workspace structure."""
     if workdir is None:

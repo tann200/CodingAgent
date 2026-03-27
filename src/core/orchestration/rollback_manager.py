@@ -32,6 +32,11 @@ class RollbackManager:
     """
     Manages automated rollback on verification failure.
 
+    Enhanced for DAG support:
+    - Tracks snapshots by step_id for wave-based rollback
+    - Supports atomic multi-file commits per step
+    - Allows rollback to specific step without affecting others
+
     Usage:
         rollback_mgr = RollbackManager(workdir)
 
@@ -49,6 +54,7 @@ class RollbackManager:
         self.snapshot_dir.mkdir(parents=True, exist_ok=True)
         self.current_snapshot: Optional[str] = None
         self.snapshots: Dict[str, List[FileSnapshot]] = {}
+        self._step_to_snapshot: Dict[str, str] = {}
 
     def _compute_checksum(self, content: str) -> str:
         """Compute a simple checksum for file content."""
@@ -78,7 +84,9 @@ class RollbackManager:
             try:
                 path = safe_resolve(file_path, self.workdir)
             except (PermissionError, ValueError):
-                logger.warning(f"snapshot_files: path '{file_path}' escapes workspace — skipping")
+                logger.warning(
+                    f"snapshot_files: path '{file_path}' escapes workspace — skipping"
+                )
                 continue
             if not path.exists():
                 continue
@@ -158,7 +166,9 @@ class RollbackManager:
             try:
                 file_path = safe_resolve(snap.path, self.workdir)
             except (PermissionError, ValueError):
-                logger.warning(f"rollback: path '{snap.path}' escapes workspace — skipping")
+                logger.warning(
+                    f"rollback: path '{snap.path}' escapes workspace — skipping"
+                )
                 continue
             try:
                 # Create backup before restoring
@@ -202,7 +212,9 @@ class RollbackManager:
         try:
             path = safe_resolve(file_path, self.workdir)
         except (PermissionError, ValueError):
-            logger.warning(f"append_to_snapshot: path '{file_path}' escapes workspace — skipping")
+            logger.warning(
+                f"append_to_snapshot: path '{file_path}' escapes workspace — skipping"
+            )
             return False
         if not path.exists():
             return False
@@ -223,7 +235,9 @@ class RollbackManager:
                         for f in data.get("files", [])
                     ]
                 except Exception as e:
-                    logger.warning(f"append_to_snapshot: failed to load {snapshot_id}: {e}")
+                    logger.warning(
+                        f"append_to_snapshot: failed to load {snapshot_id}: {e}"
+                    )
                     return False
             else:
                 # First file being added to this transaction — create empty entry
@@ -318,6 +332,66 @@ class RollbackManager:
                 pass
 
         return deleted
+
+    def snapshot_step(self, step_id: str, file_paths: List[str]) -> str:
+        """
+        Snapshot files for a specific DAG step.
+
+        Args:
+            step_id: DAG step ID (e.g., "step_0", "step_1")
+            file_paths: Files modified by this step
+
+        Returns:
+            Snapshot ID (format: "step_{id}_{timestamp}")
+        """
+        snapshot_id = f"dag_{step_id}_{datetime.now().strftime('%H%M%S_%f')}"
+
+        self._step_to_snapshot[step_id] = snapshot_id
+
+        return self.snapshot_files(file_paths, snapshot_id)
+
+    def rollback_step(self, step_id: str) -> Dict[str, Any]:
+        """
+        Rollback a specific DAG step.
+
+        This restores only files modified by the specified step,
+        leaving other steps' changes intact.
+        """
+        snapshot_id = self._step_to_snapshot.get(step_id)
+        if not snapshot_id:
+            logger.warning(f"rollback_step: no snapshot found for {step_id}")
+            return {"status": "no_snapshot", "step_id": step_id}
+
+        return self.rollback(snapshot_id)
+
+    def rollback_wave(self, wave_step_ids: List[str]) -> Dict[str, Any]:
+        """
+        Rollback all steps in a wave (for parallel read/sequential write).
+
+        If Wave N fails verification, rollback all steps in that wave.
+        """
+        results = {}
+        for step_id in wave_step_ids:
+            results[step_id] = self.rollback_step(step_id)
+
+        return {"status": "wave_rollback_complete", "rolled_back": results}
+
+    def commit_step(self, step_id: str) -> None:
+        """
+        Commit a step's changes as permanent.
+
+        Removes the snapshot since changes are now final.
+        Called after verification passes.
+        """
+        snapshot_id = self._step_to_snapshot.pop(step_id, None)
+        if snapshot_id and snapshot_id in self.snapshots:
+            del self.snapshots[snapshot_id]
+
+            snapshot_file = self.snapshot_dir / f"{snapshot_id}.json"
+            if snapshot_file.exists():
+                snapshot_file.unlink()
+
+        logger.info(f"commit_step: {step_id} committed, snapshot removed")
 
 
 def create_rollback_manager(workdir: str) -> RollbackManager:

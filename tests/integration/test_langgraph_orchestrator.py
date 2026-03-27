@@ -1,4 +1,3 @@
-import pytest
 from src.core.orchestration.orchestrator import Orchestrator
 from unittest.mock import patch
 import itertools
@@ -13,8 +12,6 @@ def test_orchestrator_instantiation(tmp_path):
 
 def test_orchestrator_graph_compiles(tmp_path):
     """Test that the LangGraph can be compiled."""
-    orch = Orchestrator(working_dir=str(tmp_path))
-
     # Just verify the graph can be compiled
     from src.core.orchestration.graph.builder import compile_agent_graph
 

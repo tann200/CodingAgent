@@ -45,13 +45,13 @@ WRITE_TOOLS_REQUIRING_READ = {
 # Using try/except to handle both environments gracefully
 try:
     from src.core.orchestration.tool_contracts import get_tool_contract
-    from src.core.orchestration.tool_contracts import ToolContract
+    from src.core.orchestration.tool_contracts import ToolContract  # type: ignore[attr-defined]
 except ImportError:
     # Fallback no-op implementations for environments without pydantic
     def get_tool_contract(name: str) -> Any:
         return None
 
-    class ToolContract:
+    class ToolContract:  # type: ignore[no-redef]
         @staticmethod
         def model_validate(obj: Any) -> Any:
             return obj
@@ -68,6 +68,44 @@ from src.tools import file_tools  # noqa: E402
 from src.tools.registry import register_tool  # noqa: E402
 
 logger = logging.getLogger(__name__)
+
+
+def _is_git_repo(path: str) -> bool:
+    """Check if path is inside a git repository."""
+    try:
+        import subprocess as _sp
+
+        result = _sp.run(
+            ["git", "rev-parse", "--is-inside-work-tree"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            cwd=path,
+        )
+        return result.returncode == 0 and result.stdout.strip() == "true"
+    except Exception:
+        return False
+
+
+def _get_git_diff_for_files(workdir: str, files: List[str]) -> str:
+    """Get git diff stat for specific files only."""
+    if not files:
+        return ""
+    try:
+        import subprocess as _sp
+
+        result = _sp.run(
+            ["git", "diff", "--stat", "HEAD", "--"] + files,
+            capture_output=True,
+            text=True,
+            timeout=5,
+            cwd=workdir,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except Exception:
+        pass
+    return ""
 
 
 def _generate_work_summary(
@@ -120,6 +158,53 @@ def _generate_work_summary(
     if pending_steps:
         lines.append(f"- Pending steps: {len(pending_steps)}")
 
+    # Only show git diff if: git is available AND files were modified during this session
+    working_dir = final_state.get("working_dir", ".")
+    if _is_git_repo(working_dir):
+        # Get files modified during this session
+        modified_files = final_state.get("_session_modified_files") or []
+        if modified_files:
+            # Filter to files within working_dir and get relative paths
+            try:
+                workdir_path = Path(working_dir).resolve()
+                relative_files = []
+                for f in modified_files:
+                    try:
+                        fpath = Path(f).resolve()
+                        if str(fpath).startswith(str(workdir_path)):
+                            relative_files.append(str(fpath.relative_to(workdir_path)))
+                    except Exception:
+                        pass
+
+                if relative_files:
+                    # Get unified diff for side-by-side formatting
+                    import subprocess as _sp
+
+                    diff_result = _sp.run(
+                        [
+                            "git",
+                            "diff",
+                            "--",
+                        ]
+                        + relative_files,
+                        capture_output=True,
+                        text=True,
+                        timeout=5,
+                        cwd=working_dir,
+                    )
+                    if diff_result.returncode == 0 and diff_result.stdout.strip():
+                        unified_diff = diff_result.stdout.strip()
+                        side_by_side = _format_side_by_side_diff(unified_diff)
+
+                        lines.append("")
+                        lines.append("**📋 Changes Made:**")
+                        lines.append("")
+                        lines.append("```diff")
+                        lines.append(side_by_side)
+                        lines.append("```")
+            except Exception:
+                pass
+
     return "\n".join(lines)
 
 
@@ -132,33 +217,43 @@ TOOL_RESULT_FORMATTERS = {
     "grep": lambda r: _format_grep_result(r),
     "search_code": lambda r: _format_search_result(r),
     "find_symbol": lambda r: _format_symbol_result(r),
-    # Future: file modification tools with diff support
-    "edit_file": lambda r: _format_edit_result(r),
-    "edit_file_atomic": lambda r: _format_edit_result(r),
-    "write_file": lambda r: _format_write_result(r),
+    # File modification tools with side-by-side diff
+    "edit_file": lambda r: _format_change_summary(
+        r, r.get("path", "unknown"), is_write=False
+    ),
+    "edit_file_atomic": lambda r: _format_change_summary(
+        r, r.get("path", "unknown"), is_write=False
+    ),
+    "write_file": lambda r: _format_change_summary(
+        r, r.get("path", "unknown"), is_write=True
+    ),
 }
 
 
 def _format_list_files_result(result: Dict[str, Any]) -> str:
-    """Format list_files/list_dir results with icons."""
+    """Format list_files/list_dir results with icons.
+
+    Results are prefixed with '📁' or '📄' to be detected as tool results
+    in the TUI (which avoids 'Assistant:' prefix for cleaner display).
+    """
     if not isinstance(result, dict):
         return str(result)
 
     if "items" in result:
         items = result["items"]
         if not items:
-            return "Empty directory"
+            return "📁 Empty directory"
 
-        output = ""
+        lines = []
         for item in items:
             if isinstance(item, dict):
                 name = item.get("name", "?")
                 is_dir = item.get("is_dir", False)
                 marker = "📁" if is_dir else "📄"
-                output += f"  {marker} {name}\n"
+                lines.append(f"{marker} {name}")
             else:
-                output += f"  {item}\n"
-        return output.strip()
+                lines.append(f"📄 {item}")
+        return "\n".join(lines)
 
     return str(result)
 
@@ -312,7 +407,142 @@ def _format_write_result(result: Dict[str, Any]) -> str:
     return str(result)
 
 
-def _format_tool_result(result: Any, tool_name: str = None) -> str:
+def _format_side_by_side_diff(unified_diff: str, max_width: int = 80) -> str:
+    """Convert unified diff to side-by-side format for better readability.
+
+    Args:
+        unified_diff: Unified diff string
+        max_width: Maximum width per side (default 80)
+
+    Returns:
+        Formatted string with side-by-side diff view
+    """
+    if not unified_diff:
+        return ""
+
+    lines = unified_diff.strip().split("\n")
+    left_lines = []
+    current_hunk = {"left": [], "right": [], "header": ""}
+
+    def format_line(line: str, is_left: bool) -> str:
+        """Format a single diff line."""
+        if line.startswith("---") or line.startswith("+++"):
+            return line
+        if line.startswith("@@"):
+            return line
+        if line.startswith("-"):
+            return f"[-] {line[1:]}"
+        if line.startswith("+"):
+            return f"[+] {line[1:]}"
+        if line.startswith(" "):
+            return f"    {line[1:]}"
+        return f"    {line}"
+
+    def render_hunk() -> List[str]:
+        """Render the current hunk in side-by-side format."""
+        if not current_hunk["left"] and not current_hunk["right"]:
+            return []
+
+        result = []
+        if current_hunk["header"]:
+            result.append("")
+            result.append(current_hunk["header"])
+            result.append("")
+
+        # Calculate max lengths
+        left_texts = [format_line(left, True) for left in current_hunk["left"]]
+        right_texts = [format_line(right, False) for right in current_hunk["right"]]
+
+        # Pad to same length
+        max_len = max(len(left_texts), len(right_texts))
+        while len(left_texts) < max_len:
+            left_texts.append("")
+        while len(right_texts) < max_len:
+            right_texts.append("")
+
+        # Render side by side
+        separator = "  │  "
+        for i in range(max_len):
+            left = left_texts[i][:max_width].ljust(max_width)
+            right = right_texts[i][:max_width].ljust(max_width)
+            result.append(f"{left}{separator}{right}")
+
+        return result
+
+    for line in lines:
+        if line.startswith("---") or line.startswith("+++"):
+            continue  # Skip file headers in side-by-side
+        elif line.startswith("@@"):
+            # New hunk - render previous
+            rendered = render_hunk()
+            left_lines.extend(rendered)
+            # Start new hunk
+            current_hunk = {"left": [], "right": [], "header": line}
+        elif line.startswith("-"):
+            current_hunk["left"].append(line)
+        elif line.startswith("+"):
+            current_hunk["right"].append(line)
+        elif line.startswith(" "):
+            current_hunk["left"].append(line)
+            current_hunk["right"].append(line)
+
+    # Render final hunk
+    rendered = render_hunk()
+    left_lines.extend(rendered)
+
+    if not left_lines:
+        return unified_diff  # Fallback to unified if parsing fails
+
+    return "\n".join(left_lines)
+
+
+def _format_change_summary(
+    tool_result: Dict[str, Any],
+    file_path: str,
+    is_write: bool = True,
+) -> str:
+    """Generate a formatted change summary with side-by-side diff.
+
+    Args:
+        tool_result: The result from write_file or edit_file
+        file_path: Path to the modified file
+        is_write: True for write_file, False for edit_file
+
+    Returns:
+        Formatted change summary string
+    """
+    if not isinstance(tool_result, dict):
+        return str(tool_result)
+
+    status = tool_result.get("status", "unknown")
+    if status != "ok":
+        return f"✗ {'Write' if is_write else 'Edit'} failed: {tool_result.get('error', 'Unknown error')}"
+
+    diff = tool_result.get("diff", "")
+    lines_added = tool_result.get("lines_added", 0)
+    lines_removed = tool_result.get("lines_removed", 0)
+    is_new_file = tool_result.get("is_new_file", False)
+
+    lines = []
+    if is_new_file:
+        lines.append(f"📄 **New file created:** `{file_path}`")
+    else:
+        prefix = "📝" if is_write else "✏️"
+        lines.append(f"{prefix} **File modified:** `{file_path}`")
+
+    if lines_added or lines_removed:
+        lines.append(f"   [+{lines_added} / -{lines_removed} lines]")
+
+    if diff:
+        lines.append("")
+        lines.append("```diff")
+        lines.append(diff)
+        lines.append("```")
+
+    return "\n".join(lines)
+
+
+def _format_tool_result(result: Any, tool_name: Optional[str] = None) -> str:
     """Format a tool result for display based on the tool type."""
     if tool_name and tool_name in TOOL_RESULT_FORMATTERS:
         return TOOL_RESULT_FORMATTERS[tool_name](result)
@@ -373,8 +603,106 @@ class ToolRegistry:
     def list(self) -> List[str]:
         return list(self.tools.keys())
 
+    def get_openai_functions(self) -> List[Dict[str, Any]]:
+        """Convert registered tools to OpenAI function-calling format.
+
+        MC-1 fix: Enable native function-calling API support. Tools are converted
+        to the OpenAI /v1/chat/completions 'tools' parameter format with name,
+        description, and inferred parameters from function signatures.
+        """
+        import inspect
+        import re
+
+        functions = []
+        for name, meta in self.tools.items():
+            desc = meta.get("description", "")
+            fn = meta.get("fn")
+            if not fn:
+                continue
+
+            # Parse parameters from docstring/signature
+            params = {"type": "object", "properties": {}}
+            required = []
+
+            # Try to get signature
+            try:
+                sig = inspect.signature(fn)
+                for pname, param in sig.parameters.items():
+                    if pname in ("kwargs", "self", "cls"):
+                        continue
+                    ptype = "string"
+                    if param.annotation != inspect.Parameter.empty:
+                        ann = str(param.annotation).lower()
+                        if "int" in ann:
+                            ptype = "integer"
+                        elif "float" in ann or "double" in ann:
+                            ptype = "number"
+                        elif "bool" in ann:
+                            ptype = "boolean"
+                        elif "list" in ann or "array" in ann:
+                            ptype = "array"
+                    params["properties"][pname] = {"type": ptype}
+                    required.append(pname)
+            except Exception:
+                pass
+
+            # Try to extract params from description
+            desc_params = re.findall(r"(\w+)\s*:\s*(\w+)", desc)
+            for pname, ptype in desc_params:
+                if pname not in params["properties"]:
+                    t = "string"
+                    if ptype.lower() in ("int", "integer"):
+                        t = "integer"
+                    elif ptype.lower() in ("float", "number"):
+                        t = "number"
+                    elif ptype.lower() in ("bool", "boolean"):
+                        t = "boolean"
+                    elif ptype.lower() in ("list", "array"):
+                        t = "array"
+                    params["properties"][pname] = {"type": t}
+                    if pname not in required:
+                        required.append(pname)
+
+            func_def = {
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "description": desc,
+                    "parameters": params,
+                },
+            }
+            if required:
+                func_def["function"]["parameters"]["required"] = required
+
+            functions.append(func_def)
+
+        return functions
+
 
 def example_registry() -> ToolRegistry:
+    """Build the default tool registry.
+
+    Delegates to ``src.tools.build_registry()`` for auto-discovery of all
+    ``@tool``-decorated functions, then wraps the results in the local
+    ``ToolRegistry`` so existing code that accesses ``.tools`` still works.
+    """
+    try:
+        from src.tools._registry import build_registry as _build
+
+        _new_reg = _build(include_echo=True)
+        reg = ToolRegistry()
+        for name in _new_reg.list():
+            entry = _new_reg.get(name)
+            if entry:
+                reg.tools[name] = {
+                    "fn": entry["fn"],
+                    "side_effects": entry.get("side_effects", []),
+                    "description": entry.get("description", ""),
+                }
+        return reg
+    except Exception:
+        pass  # Fall through to manual registration below
+
     reg = ToolRegistry()
 
     # Repo Intelligence Tools
@@ -492,6 +820,12 @@ def example_registry() -> ToolRegistry:
         side_effects=["write"],
         description="delete_file(path) -> Delete a file or directory from the workspace",
     )
+    reg.register(
+        "rename_file",
+        file_tools.rename_file,
+        side_effects=["write"],
+        description="rename_file(src_path, dst_path) -> Rename or move a file within the workspace",
+    )
     # alias: fs.list
     try:
         reg.register("fs.list", file_tools.list_dir, description="alias for list_files")
@@ -527,81 +861,6 @@ def example_registry() -> ToolRegistry:
         )
     except Exception:
         pass
-
-    def get_git_diff(workdir: Optional[str] = None, **kwargs) -> Dict[str, Any]:
-        """Get git diff of changes in the working directory."""
-        import subprocess
-
-        wd = workdir or str(Path.cwd())
-        try:
-            result = subprocess.run(
-                ["git", "diff", "--no-color"],
-                cwd=wd,
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            return {"status": "ok", "diff": result.stdout or "No changes"}
-        except FileNotFoundError:
-            return {"status": "error", "error": "git not found"}
-        except Exception as e:
-            return {"status": "error", "error": str(e)}
-
-    reg.register(
-        "get_git_diff",
-        get_git_diff,
-        description="get_git_diff(workdir) -> Get git diff of changes",
-    )
-
-    # ToolOptimization Phase 4: Surgical Editing
-    def edit_by_line_range(
-        path: str,
-        start_line: int,
-        end_line: int,
-        new_content: Optional[str] = None,
-        workdir: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        """Edit a file by replacing specific line range."""
-        from pathlib import Path
-
-        wd = Path(workdir) if workdir else file_tools.DEFAULT_WORKDIR
-        p = file_tools._safe_resolve(path, wd)
-        if not p.exists():
-            return {"status": "error", "error": "File not found"}
-
-        try:
-            original_content = p.read_text(encoding="utf-8")
-            lines = original_content.splitlines()
-            if start_line < 1 or end_line > len(lines):
-                return {
-                    "status": "error",
-                    "error": f"Line range {start_line}-{end_line} out of bounds (file has {len(lines)} lines)",
-                }
-
-            if new_content is None:
-                # Return the current content of those lines
-                return {
-                    "status": "ok",
-                    "content": "\n".join(lines[start_line - 1 : end_line]),
-                }
-            else:
-                # Replace the lines
-                new_lines = lines[: start_line - 1] + [new_content] + lines[end_line:]
-                result_text = "\n".join(new_lines)
-                # Preserve trailing newline if original had one
-                if original_content.endswith("\n") and not result_text.endswith("\n"):
-                    result_text += "\n"
-                p.write_text(result_text)
-                return {"status": "ok", "path": str(p)}
-        except Exception as e:
-            return {"status": "error", "error": str(e)}
-
-    reg.register(
-        "edit_by_line_range",
-        edit_by_line_range,
-        side_effects=["write"],
-        description="edit_by_line_range(path, start_line, end_line, new_content) -> Replace specific line range",
-    )
 
     # ToolOptimization Phase 6: State Checkpoints
     try:
@@ -800,46 +1059,6 @@ def example_registry() -> ToolRegistry:
     return reg
 
 
-class ModelRouter:
-    def __init__(self, models=None, provider_manager=None):
-        self.models = models or []
-        self.pm = provider_manager
-
-    def estimate_complexity(self, text, arg2, arg3) -> str:
-        words = len(str(text).split())
-        lower_text = str(text).lower()
-        if "refactor" in lower_text and "architecture" in lower_text:
-            return "high"
-        if words > 1000:
-            return "high"
-        if words > 200:
-            return "medium"
-        return "low"
-
-    def route(self, task: str = "") -> Any:
-        complexity = self.estimate_complexity(task, None, None)
-        if self.models:
-            if complexity == "high" and "large-70b" in self.models:
-                return "large-70b"
-            if complexity == "medium" and "med-13b" in self.models:
-                return "med-13b"
-            return self.models[0]
-
-        if self.pm:
-            providers = self.pm.list_providers()
-            if providers:
-                # Ensure get_provider gets a string name
-                provider_name = providers[0]  # Assuming providers list is of strings
-                provider_adapter = self.pm.get_provider(provider_name)
-                if (
-                    provider_adapter
-                    and hasattr(provider_adapter, "default_model")
-                    and provider_adapter.default_model
-                ):
-                    return provider_adapter.default_model
-        return None
-
-
 class Orchestrator:
     def __init__(
         self,
@@ -852,6 +1071,7 @@ class Orchestrator:
         seed: Optional[int] = None,
     ):
         self._adapter = adapter
+        self._provider_name = ""  # set during provider resolution
         self.tool_registry = tool_registry if tool_registry else example_registry()
         self.event_bus = EventBus()
         # Wire the MessageManager with compaction support so dropped messages
@@ -870,9 +1090,33 @@ class Orchestrator:
         self.deterministic = bool(deterministic)
         self.seed = seed
 
+        # HR-3 fix: create a single reusable ThreadPoolExecutor for tool timeouts.
+        # Previously a new executor was created (and torn down) inside every execute_tool
+        # call, adding ~5 ms overhead per tool invocation from thread-pool churn.
+        import concurrent.futures as _cf_init
+
+        self._tool_executor = _cf_init.ThreadPoolExecutor(
+            max_workers=2, thread_name_prefix="tool_timeout"
+        )
+
+        # Default working directory logic:
+        # - If cwd is inside the project root (CodingAgent repo), use project_root/output (for testing)
+        # - Otherwise, use the cwd where the app is started
         repo_root = Path(__file__).parents[3]
         default_out = repo_root / "output"
-        self.working_dir = Path(working_dir) if working_dir else default_out
+        try:
+            cwd = Path.cwd().resolve()
+            repo_root_resolved = repo_root.resolve()
+            # Check if cwd is inside the project repo
+            if str(cwd).startswith(str(repo_root_resolved)) or str(
+                repo_root_resolved
+            ) in str(cwd):
+                default_wd = default_out
+            else:
+                default_wd = cwd
+        except Exception:
+            default_wd = default_out
+        self.working_dir = Path(working_dir) if working_dir else default_wd
         self._allow_external = bool(allow_external_working_dir)
         self._ensure_working_dir()
 
@@ -884,10 +1128,51 @@ class Orchestrator:
         # Step-level transaction snapshot for multi-file atomicity
         self._step_snapshot_id: Optional[str] = None
 
+        # Initialize FileLockManager for PRSW (Parallel Reads, Sequential Writes)
+        from src.core.orchestration.file_lock_manager import FileLockManager
+
+        self.file_lock_manager = FileLockManager(
+            workdir=str(self.working_dir),
+            cancel_event=getattr(self, "cancel_event", None),  # type: ignore[arg-type]
+        )
+
         # Initialize SessionStore for tool call and plan persistence
         from src.core.memory.session_store import SessionStore
 
         self.session_store = SessionStore(str(self.working_dir))
+
+        # Initialize SessionLifecycleManager for graceful shutdown and snapshots
+        from src.core.orchestration.session_lifecycle import (
+            get_session_lifecycle_manager,
+        )
+
+        self.lifecycle_manager = get_session_lifecycle_manager(str(self.working_dir))
+
+        # Register lifecycle shutdown hook for cleanup
+        def _lifecycle_cleanup_hook(session_id: str) -> None:
+            try:
+                # SessionStore auto-commits, but we can log the cleanup
+                guilogger.debug(f"Lifecycle cleanup for session: {session_id}")
+            except Exception as e:
+                guilogger.warning(f"Lifecycle cleanup hook failed: {e}")
+
+        self.lifecycle_manager.on_shutdown(
+            "session_store_flush", _lifecycle_cleanup_hook
+        )
+
+        # Subscribe to task completion events for automatic snapshot
+        def _on_task_complete(payload: Any) -> None:
+            if payload.get("session_id") == self._current_task_id:
+                self._create_session_snapshot()
+
+        self.event_bus.subscribe("task.completed", _on_task_complete)
+
+        # Subscribe to task failure for snapshot before cleanup
+        def _on_task_failed(payload: Any) -> None:
+            if payload.get("session_id") == self._current_task_id:
+                self._create_session_snapshot()
+
+        self.event_bus.subscribe("task.failed", _on_task_failed)
 
         self._current_task_id: Optional[str] = None
 
@@ -1029,6 +1314,37 @@ class Orchestrator:
         except Exception:
             pass
 
+        # GAP 1: Respond to session.request_state with session.hydrated so the
+        # TUI can render restored conversation history on mount.
+        def _on_session_request_state(payload: Any) -> None:
+            try:
+                session_id = (
+                    payload.get("session_id") if isinstance(payload, dict) else None
+                )
+                history = []
+                try:
+                    if hasattr(self, "msg_mgr") and self.msg_mgr:
+                        history = list(self.msg_mgr.messages or [])
+                except Exception:
+                    pass
+                self.event_bus.publish(
+                    "session.hydrated",
+                    {
+                        "session_id": session_id
+                        or getattr(self, "_current_task_id", "default"),
+                        "messageHistory": history,
+                        "currentTask": getattr(self, "_current_task", ""),
+                        "workingDir": str(self.working_dir),
+                    },
+                )
+            except Exception:
+                pass
+
+        try:
+            self.event_bus.subscribe("session.request_state", _on_session_request_state)
+        except Exception:
+            pass
+
         # async check in background
         # Run background model check in a daemon thread to avoid blocking during init
         try:
@@ -1044,6 +1360,49 @@ class Orchestrator:
 
         # Initial publish of current config
         self._publish_active_config()
+
+        # Phase 4: Initialize Token Budget Monitor and Context Controller
+        from src.core.orchestration.token_budget import get_token_budget_monitor
+
+        self.token_monitor = get_token_budget_monitor()
+
+        from src.core.context.context_controller import get_context_controller
+
+        self.context_controller = get_context_controller(
+            max_tokens=message_max_tokens or 6000
+        )
+
+        # Phase 3: Initialize Preview Service for diff previews
+        from src.core.orchestration.preview_service import get_preview_service
+
+        self.preview_service = get_preview_service(str(self.working_dir))
+        self._pending_preview_id: Optional[str] = None
+
+        # Plan Mode: blocks write tools until user approves the plan
+        from src.core.orchestration.plan_mode import PlanMode
+
+        self.plan_mode = PlanMode(orchestrator=self)
+        self._plan_approval_event: Optional[asyncio.Event] = None
+        self._plan_approved: bool = False
+
+        # MCP STDIO server (Step 9): instantiated but not started by default.
+        # Call start_mcp_server() explicitly to enable IDE integration.
+        self._mcp_server = None
+
+    async def start_mcp_server(self) -> None:
+        """Start the MCP STDIO server for IDE integration (JSON-RPC over stdin/stdout).
+
+        Call this from the event loop when running in headless/server mode:
+            await orchestrator.start_mcp_server()
+        """
+        try:
+            from src.core.orchestration.mcp_stdio_server import MCPStdioServer
+
+            self._mcp_server = MCPStdioServer(orchestrator=self)
+            logger.info("Orchestrator: starting MCP STDIO server")
+            await self._mcp_server.run_async()
+        except Exception as e:
+            logger.error(f"Orchestrator: MCP STDIO server error: {e}")
 
     def _publish_active_config(self):
         provider = "None"
@@ -1093,6 +1452,50 @@ class Orchestrator:
         self._adapter = value
         self._publish_active_config()
 
+    # Phase 4: Budget status for TUI display
+    def get_budget_status(self, session_id: str = "default") -> Dict[str, Any]:
+        """Get current token budget status for UI display."""
+        budget = self.token_monitor.get_budget(session_id)
+        context_status = self.context_controller.get_budget_status()
+        return {
+            "token_budget": {
+                "used_tokens": budget.used_tokens,
+                "max_tokens": budget.max_tokens,
+                "usage_ratio": budget.usage_ratio,
+                "should_compact": budget.should_compact,
+                "should_warn": budget.should_warn,
+                "current_turn": budget.current_turn,
+            },
+            "context_budget": context_status,
+            "usage_ratio": budget.usage_ratio,
+            "used_tokens": budget.used_tokens,
+            "max_tokens": budget.max_tokens,
+        }
+
+    # HR-5 fix: canonical dangerous-pattern list for bash pre-validation.
+    # Mirrors file_tools.bash() — kept here so preflight_check can reject
+    # dangerous commands before execute_tool() is called (defence-in-depth).
+    _BASH_DANGEROUS_PATTERNS = [
+        "&&",
+        "||",
+        ";",
+        "|",
+        ">",
+        ">>",
+        "<",
+        "$(",
+        "`",
+        "rm -rf",
+        "rm -r",
+        "rm -f",
+        "del ",
+        "format ",
+        "shutdown",
+        "reboot",
+        "halt",
+        "poweroff",
+    ]
+
     def preflight_check(self, tool_call: Dict[str, Any]) -> Dict[str, Any]:
         name_raw = tool_call.get("name")
         if not isinstance(name_raw, str):
@@ -1104,12 +1507,31 @@ class Orchestrator:
         if not tool:
             return {"ok": False, "error": f"Tool '{name}' not found."}
 
+        # HR-5 fix: validate bash commands at preflight time (defence-in-depth).
+        # file_tools.bash() also checks these, but catching them here provides
+        # an earlier rejection path and a consistent error source.
+        if name == "bash":
+            command = args.get("command") or args.get("cmd") or ""
+            if command:
+                import re as _re
+
+                cmd_normalised = _re.sub(r"\s+", " ", str(command)).lower()
+                for pattern in self._BASH_DANGEROUS_PATTERNS:
+                    if pattern in cmd_normalised:
+                        return {
+                            "ok": False,
+                            "error": (
+                                f"Preflight: bash command contains dangerous pattern "
+                                f"'{pattern}'. No shell operators or destructive commands allowed."
+                            ),
+                        }
+
         path_arg = args.get("path") or args.get("file_path")
         if path_arg and "write" in tool.get("side_effects", []):
             try:
                 # Resolve the path and see if it's inside working_dir
-                target_path = (Path(self.working_dir) / path_arg).resolve()
-                work_dir = Path(self.working_dir).resolve()
+                target_path = (Path(self.working_dir or ".") / path_arg).resolve()
+                work_dir = Path(self.working_dir or ".").resolve()
                 if not target_path.is_relative_to(work_dir):
                     return {
                         "ok": False,
@@ -1222,11 +1644,21 @@ class Orchestrator:
         # user_approved is enforced at the orchestrator / UI level, not via LLM arguments.
         args.pop("user_approved", None)
 
-        # Publish tool.execute.start event for UI dashboard
+        # GAP 2: Generate unique tool call ID for ACP compliance
+        tool_call_id = f"call_{uuid.uuid4().hex[:8]}"
+
+        # Publish tool.execute.start event (GAP 2: ACP sessionUpdate schema)
         try:
             self.event_bus.publish(
                 "tool.execute.start",
-                {"tool": name, "args": args, "workdir": str(self.working_dir)},
+                {
+                    "sessionUpdate": "tool_call_update",
+                    "toolCallId": tool_call_id,
+                    "title": name,
+                    "status": "in_progress",
+                    "rawInput": args,
+                    "workdir": str(self.working_dir),
+                },
             )
         except Exception:
             pass
@@ -1235,17 +1667,46 @@ class Orchestrator:
         path_arg = args.get("path") or args.get("file_path")
         if path_arg and name in WRITE_TOOLS_REQUIRING_READ:
             try:
-                target = Path(self.working_dir) / path_arg
+                target = Path(self.working_dir or ".") / path_arg
                 resolved_path = str(target.resolve())
                 # Only enforce read-before-write on pre-existing files.
                 # Brand-new files have no prior content to protect.
                 if target.exists() and resolved_path not in self._session_read_files:
+                    # UP-1 fix: unified wording — execution_node uses the same
+                    # message so the LLM receives a consistent correction signal.
                     return {
                         "ok": False,
-                        "error": f"Security/Logic violation: You must read '{path_arg}' before editing it to ensure you have the latest context. Use 'read_file' first.",
+                        "error": (
+                            f"Security/Logic violation: You must read '{path_arg}' "
+                            f"before writing to it. Use read_file first to inspect "
+                            f"the current content."
+                        ),
                     }
             except Exception:
                 pass
+
+        # P4-4: Block write tools when plan mode is active (plan not yet approved).
+        # _plan_mode_approved is set by execution_node from AgentState before each call.
+        try:
+            from src.core.orchestration.plan_mode import PlanMode
+
+            _pm = getattr(self, "plan_mode", None)
+            if (
+                _pm
+                and getattr(_pm, "enabled", False)
+                and name in PlanMode.BLOCKED_TOOLS
+            ):
+                _approved = getattr(self, "_plan_mode_approved", None)
+                if _approved is not True:
+                    return {
+                        "ok": False,
+                        "error": (
+                            f"Tool '{name}' is blocked: the current plan has not been "
+                            "approved yet. Await user approval before making file changes."
+                        ),
+                    }
+        except Exception:
+            pass  # never block on import/logic errors
 
         tool = self.tool_registry.get(name)
         if not tool:
@@ -1256,40 +1717,88 @@ class Orchestrator:
 
             sig = inspect.signature(tool["fn"])
             if "workdir" in sig.parameters:
-                args["workdir"] = Path(self.working_dir)
+                args["workdir"] = Path(self.working_dir or ".")
 
             # Role enforcement: if orchestrator has current_role, restrict certain tools
             current_role = getattr(self, "current_role", None)
             if current_role:
-                # simple mapping: reviewer cannot write files
-                if current_role == "reviewer" and "write" in tool.get(
-                    "side_effects", []
-                ):
+                from src.core.orchestration.role_config import is_tool_allowed_for_role
+
+                if not is_tool_allowed_for_role(name, current_role):
                     return {
                         "ok": False,
-                        "error": "Tool not permitted for role 'reviewer'",
+                        "error": f"Tool '{name}' is not permitted for role '{current_role}'",
                     }
 
             # Sandbox validation for write operations — C2 fix: validate the NEW content
             # being written, not the pre-existing file.  The previous approach copied the
             # workspace to a temp dir and ran ast.parse on the OLD file, which always passed.
             # Now we extract the new content from the tool args and parse it directly.
+            # HR-2/MC-3 fix: extend to JS/TS using `node --check` (syntax only, no eval).
             if "write" in tool.get("side_effects", []) and path_arg:
                 try:
-                    if path_arg.endswith(".py"):
-                        import ast as _ast
+                    new_content: str | None = args.get("content")
+                    if new_content and isinstance(new_content, str):
+                        if path_arg.endswith(".py"):
+                            import ast as _ast
 
-                        # Extract the new Python content from the tool call args.
-                        # edit_file uses 'content'; write_file uses 'content'.
-                        new_py_content: str | None = args.get("content")
-                        if new_py_content and isinstance(new_py_content, str):
                             try:
-                                _ast.parse(new_py_content)
+                                _ast.parse(new_content)
                             except SyntaxError as _syn:
                                 return {
                                     "ok": False,
                                     "error": f"Sandbox validation error: new content has a syntax error at line {_syn.lineno}: {_syn.msg}",
                                 }
+                        elif path_arg.endswith(
+                            (".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx")
+                        ):
+                            # HR-2/MC-3: use Node.js --check flag for JS/TS syntax validation.
+                            # node --check parses without executing — safe and fast (~50 ms).
+                            # Falls back silently if Node is not installed.
+                            import subprocess as _sp
+                            import tempfile as _tf
+
+                            try:
+                                _node = _sp.run(
+                                    ["node", "--version"],
+                                    capture_output=True,
+                                    timeout=3,
+                                )
+                                if _node.returncode == 0:
+                                    with _tf.NamedTemporaryFile(
+                                        suffix=".js",
+                                        mode="w",
+                                        delete=False,
+                                        encoding="utf-8",
+                                    ) as _tmp:
+                                        _tmp.write(new_content)
+                                        _tmp_path = _tmp.name
+                                    try:
+                                        _check = _sp.run(
+                                            ["node", "--check", _tmp_path],
+                                            capture_output=True,
+                                            text=True,
+                                            timeout=10,
+                                        )
+                                        if _check.returncode != 0:
+                                            _err = (
+                                                _check.stderr
+                                                or _check.stdout
+                                                or "syntax error"
+                                            ).strip()
+                                            return {
+                                                "ok": False,
+                                                "error": f"Sandbox validation error: JS/TS syntax error: {_err[:300]}",
+                                            }
+                                    finally:
+                                        try:
+                                            import os as _os
+
+                                            _os.unlink(_tmp_path)
+                                        except Exception:
+                                            pass
+                            except (FileNotFoundError, _sp.TimeoutExpired):
+                                pass  # node not installed or timed out — allow write
                 except Exception as e:
                     # Fail-closed — do not allow writes if validation itself crashes.
                     guilogger.error(f"Sandbox validation failed (fail-closed): {e}")
@@ -1329,7 +1838,7 @@ class Orchestrator:
             # Track files read for read-before-edit enforcement
             if name == "read_file" and path_arg:
                 try:
-                    resolved = str((Path(self.working_dir) / path_arg).resolve())
+                    resolved = str((Path(self.working_dir or ".") / path_arg).resolve())
                     self._session_read_files.add(resolved)
                 except Exception:
                     pass
@@ -1343,15 +1852,20 @@ class Orchestrator:
                 import concurrent.futures as _cf
 
                 if timeout_seconds > 0:
-                    with _cf.ThreadPoolExecutor(max_workers=1) as _tex:
-                        _future = _tex.submit(tool["fn"], **args)
-                        try:
-                            res = _future.result(timeout=timeout_seconds)
-                        except _cf.TimeoutError:
-                            _future.cancel()
-                            raise TimeoutError(
-                                f"Tool '{name}' timed out after {timeout_seconds} seconds"
-                            )
+                    # HR-3 fix: reuse the long-lived _tool_executor instead of
+                    # creating a new ThreadPoolExecutor per call (~5 ms savings each).
+                    _tex = getattr(self, "_tool_executor", None)
+                    if _tex is None:
+                        _tex = _cf.ThreadPoolExecutor(max_workers=2)
+                        self._tool_executor = _tex
+                    _future = _tex.submit(tool["fn"], **args)
+                    try:
+                        res = _future.result(timeout=timeout_seconds)
+                    except _cf.TimeoutError:
+                        _future.cancel()
+                        raise TimeoutError(
+                            f"Tool '{name}' timed out after {timeout_seconds} seconds"
+                        )
                 else:
                     res = tool["fn"](**args)
             except TimeoutError:
@@ -1407,11 +1921,18 @@ class Orchestrator:
                     # F17: Accumulate in memory — flushed to usage.json at end of run_agent_once()
                     self._usage_buffer[name] = self._usage_buffer.get(name, 0) + 1
 
-                    # Telemetry: publish event for tool invocation
+                    # Telemetry: publish event for tool invocation (GAP 2: ACP schema)
                     try:
                         self.event_bus.publish(
                             "tool.invoked",
-                            {"tool": name, "ts": _ts, "workdir": str(self.working_dir)},
+                            {
+                                "sessionUpdate": "tool_call_update",
+                                "toolCallId": tool_call_id,
+                                "title": name,
+                                "status": "invoked",
+                                "timestamp": _ts,
+                                "workdir": str(self.working_dir),
+                            },
                         )
                     except Exception:
                         pass
@@ -1429,7 +1950,7 @@ class Orchestrator:
                 if name in ["read_file", "fs.read"]:
                     try:
                         resolved_path = str(
-                            (Path(self.working_dir) / path_arg).resolve()
+                            (Path(self.working_dir or ".") / (path_arg or "")).resolve()  # type: ignore[operator]
                         )
                         self._session_read_files.add(resolved_path)
                     except Exception:
@@ -1437,7 +1958,7 @@ class Orchestrator:
                 elif "write" in tool.get("side_effects", []):
                     try:
                         resolved_path = str(
-                            (Path(self.working_dir) / path_arg).resolve()
+                            (Path(self.working_dir or ".") / (path_arg or "")).resolve()  # type: ignore[operator]
                         )
                         self._session_modified_files.add(resolved_path)
                         # Publish file.modified event for UI dashboard
@@ -1457,7 +1978,7 @@ class Orchestrator:
                 elif name == "delete_file" and path_arg:
                     try:
                         resolved_path = str(
-                            (Path(self.working_dir) / path_arg).resolve()
+                            (Path(self.working_dir or ".") / path_arg).resolve()
                         )
                         # Publish file.deleted event for UI dashboard
                         try:
@@ -1492,19 +2013,52 @@ class Orchestrator:
             except Exception:
                 pass
 
-            # Publish tool.execute.finish event for UI dashboard — include formatted result
+            # Publish tool.execute.finish event (GAP 2: ACP sessionUpdate schema)
             try:
                 formatted = _format_tool_result(res, name)
                 self.event_bus.publish(
                     "tool.execute.finish",
                     {
-                        "tool": name,
-                        "ok": True,
+                        "sessionUpdate": "tool_call_update",
+                        "toolCallId": tool_call_id,
+                        "title": name,
+                        "status": "completed",
+                        "content": [{"type": "text", "text": formatted}],
+                        "rawOutput": res,
                         "workdir": str(self.working_dir),
-                        "result": res,
-                        "result_formatted": formatted,
                     },
                 )
+            except Exception:
+                pass
+
+            # Phase 4: Publish token budget status for UI dashboard
+            try:
+                if hasattr(self, "token_monitor"):
+                    budget = self.token_monitor.get_budget(
+                        session_id=getattr(self, "_current_task_id", "default")
+                    )
+                    self.event_bus.publish(
+                        "token.budget.update",
+                        {
+                            "used_tokens": budget.used_tokens,
+                            "max_tokens": budget.max_tokens,
+                            "usage_ratio": budget.usage_ratio,
+                            "session_id": getattr(self, "_current_task_id", "default"),
+                        },
+                    )
+            except Exception:
+                pass
+
+            # Phase 3: Publish preview mode events for UI dashboard
+            try:
+                if hasattr(self, "preview_service") and hasattr(
+                    self, "_pending_preview_id"
+                ):
+                    if self._pending_preview_id:
+                        self.event_bus.publish(
+                            "preview.pending",
+                            {"preview_id": self._pending_preview_id},
+                        )
             except Exception:
                 pass
 
@@ -1523,13 +2077,24 @@ class Orchestrator:
             except Exception:
                 pass  # non-fatal
 
+            # GAP 1: Sync session state after tool execution
+            self._sync_session_state()
+
             return {"ok": True, "result": res}
         except Exception as e:
-            # Publish tool.execute.error event for UI dashboard
+            # Publish tool.execute.error event for UI dashboard (GAP 2: ACP schema)
             try:
                 self.event_bus.publish(
                     "tool.execute.error",
-                    {"tool": name, "error": str(e), "workdir": str(self.working_dir)},
+                    {
+                        "sessionUpdate": "tool_call_update",
+                        "toolCallId": tool_call_id,
+                        "title": name,
+                        "status": "failed",
+                        "content": [{"type": "text", "text": str(e)}],
+                        "error": str(e),
+                        "workdir": str(self.working_dir),
+                    },
                 )
             except Exception:
                 pass
@@ -1548,6 +2113,9 @@ class Orchestrator:
                 )
             except Exception:
                 pass  # non-fatal
+
+            # GAP 1: Sync session state after tool error
+            self._sync_session_state()
 
             return {"ok": False, "error": str(e)}
 
@@ -1577,13 +2145,21 @@ class Orchestrator:
                 return None
 
     def _append_execution_trace(self, entry: dict):
+        """Buffer execution trace entries in memory; flush to disk via flush_execution_trace.
+
+        PB-4 fix: previously every tool call wrote the full trace JSON to disk synchronously,
+        causing O(n) disk I/O per tool where n is trace length.  Now entries are kept in
+        self._execution_trace_buffer and flushed once per task by run_agent_once().
+        """
         try:
-            trace = self._read_execution_trace()
-            # compute retry count for similar recent entries
-            recent = trace[-10:]
+            # Initialise buffer on first use (handles pickled/restored instances too)
+            if not hasattr(self, "_execution_trace_buffer"):
+                self._execution_trace_buffer: list = []
+
+            # Compute retry count from recent buffer + persisted trace
+            recent = self._execution_trace_buffer[-10:]
             count = 0
             for e in recent:
-                # Compare normalized args
                 try:
                     if e.get("tool") == entry.get("tool") and e.get(
                         "args"
@@ -1595,16 +2171,30 @@ class Orchestrator:
                     ) == entry.get("args"):
                         count += 1
             entry["retries"] = count
-            # Ensure stored args are normalized
             try:
                 entry["args"] = self._normalize_args(entry.get("args"))
             except Exception:
                 pass
-            trace.append(entry)
+            self._execution_trace_buffer.append(entry)
+        except Exception as e:
+            guilogger.error(
+                f"Orchestrator: failed to buffer execution trace entry: {e}"
+            )
+
+    def flush_execution_trace(self):
+        """Flush buffered trace entries to disk once per task (called by run_agent_once)."""
+        if (
+            not hasattr(self, "_execution_trace_buffer")
+            or not self._execution_trace_buffer
+        ):
+            return
+        try:
+            trace = self._read_execution_trace()
+            trace.extend(self._execution_trace_buffer)
+            self._execution_trace_buffer = []
             trace_path = self.working_dir / ".agent-context" / "execution_trace.json"
             import json
 
-            # Use a custom encoder or just ensure everything is serializable
             def serializer(obj):
                 if isinstance(obj, Path):
                     return str(obj)
@@ -1612,9 +2202,12 @@ class Orchestrator:
 
             trace_path.write_text(json.dumps(trace, indent=2, default=serializer))
         except Exception as e:
-            guilogger.error(f"Orchestrator: failed to append execution trace: {e}")
+            guilogger.error(f"Orchestrator: failed to flush execution trace: {e}")
 
     def _clear_execution_trace(self):
+        # Also clear the in-memory buffer so buffered entries don't reappear after clear
+        if hasattr(self, "_execution_trace_buffer"):
+            self._execution_trace_buffer = []
         try:
             trace_path = self.working_dir / ".agent-context" / "execution_trace.json"
             import json
@@ -1622,6 +2215,37 @@ class Orchestrator:
             trace_path.write_text(json.dumps([], indent=2))
         except Exception as e:
             guilogger.error(f"Orchestrator: failed to clear execution trace: {e}")
+
+    def _publish_session_changes(self):
+        """Publish session changes to event bus for sidebar display."""
+        try:
+            if not self._session_modified_files:
+                return
+
+            # Get relative paths for display
+            workdir_path = self.working_dir.resolve()
+            changes = []
+            for f in self._session_modified_files:
+                try:
+                    fpath = Path(f).resolve()
+                    if str(fpath).startswith(str(workdir_path)):
+                        rel_path = str(fpath.relative_to(workdir_path))
+                    else:
+                        rel_path = str(fpath)
+                    changes.append({"path": rel_path, "absolute": str(fpath)})
+                except Exception:
+                    changes.append({"path": str(f), "absolute": str(f)})
+
+            self.event_bus.publish(
+                "session.files_changed",
+                {
+                    "files": changes,
+                    "workdir": str(workdir_path),
+                    "is_git_repo": _is_git_repo(str(workdir_path)),
+                },
+            )
+        except Exception:
+            pass
 
     def _check_loop_prevention(self, tool_name: Optional[str], tool_args: dict) -> bool:
         if not tool_name:
@@ -1634,6 +2258,11 @@ class Orchestrator:
             trace = self._read_execution_trace() or []
         except Exception:
             trace = []
+
+        # PB-4: merge in-memory buffer so loop detection works even before flush
+        buffer = getattr(self, "_execution_trace_buffer", [])
+        if buffer:
+            trace = trace + list(buffer)
 
         if not trace:
             return False
@@ -1679,7 +2308,7 @@ class Orchestrator:
                     exact_count += 1
             except Exception:
                 continue
-        if exact_count >= 3:
+        if exact_count >= 2:
             return True
 
         # Count tool-only occurrences and require a higher threshold (e.g., 6) to block
@@ -1701,6 +2330,7 @@ class Orchestrator:
             return
         try:
             import json as _json
+
             usage_path = self.working_dir / ".agent-context" / "usage.json"
             usage: dict = {}
             if usage_path.exists():
@@ -1710,11 +2340,49 @@ class Orchestrator:
                     usage = {}
             tool_stats = usage.get("tools", {})
             for tool_name, count in self._usage_buffer.items():
-                tool_stats[tool_name] = {"calls": tool_stats.get(tool_name, {}).get("calls", 0) + count}
+                tool_stats[tool_name] = {
+                    "calls": tool_stats.get(tool_name, {}).get("calls", 0) + count
+                }
             usage["tools"] = tool_stats
             usage_path.write_text(_json.dumps(usage, indent=2))
         except Exception:
             pass
+
+    def _create_session_snapshot(self) -> None:
+        """Create a session snapshot for resume capability."""
+        if not hasattr(self, "lifecycle_manager") or not self._current_task_id:
+            return
+        try:
+            state = {
+                "task": "",
+                "history": self.msg_mgr.messages if hasattr(self, "msg_mgr") else [],
+                "current_step": 0,
+                "current_plan": None,
+                "verified_reads": list(self._session_read_files),
+                "files_read": {},
+                "tool_call_count": sum(self._usage_buffer.values())
+                if self._usage_buffer
+                else 0,
+                "rounds": 0,
+                "session_id": self._current_task_id,
+            }
+            snapshot = self.lifecycle_manager.create_snapshot(
+                session_id=self._current_task_id,
+                state=state,
+                metadata={
+                    "task_description": self.msg_mgr.messages[0].get("content", "")[
+                        :100
+                    ]
+                    if self.msg_mgr.messages
+                    else "",
+                },
+            )
+            self.lifecycle_manager.save_snapshot(snapshot)
+            guilogger.info(
+                f"Created session snapshot for task: {self._current_task_id}"
+            )
+        except Exception as e:
+            guilogger.warning(f"Failed to create session snapshot: {e}")
 
     def _ensure_working_dir(self):
         try:
@@ -1775,20 +2443,245 @@ class Orchestrator:
 
     def start_new_task(self) -> str:
         """
-        Start a new task by generating a new task ID and clearing message history.
+        Start a new task by generating a new task ID and clearing per-task state.
         Returns the new task ID.
+
+        ME-2 fix: previously only msg_mgr.messages was cleared; the session read/modified
+        file sets and rollback snapshots were left over from the prior task, which could
+        cause incorrect read-before-edit guards and stale rollback state.
+
+        GAP 1: Also updates AgentSessionManager for state hydration.
         """
         self._current_task_id = str(uuid.uuid4())[:8]
         try:
             self.msg_mgr.messages = []
         except Exception:
             pass
+        # Reset per-task session tracking
+        self._session_read_files = set()
+        self._session_modified_files = set()
+        # Reset read-before-write guardrail state for the new task
+        try:
+            from src.tools.guardrails import reset_guardrail_state
+            reset_guardrail_state()
+        except Exception:
+            pass
+        # Reset execution trace buffer for the new task
+        self._execution_trace_buffer: list = []
+        # Reset rollback manager snapshot state
+        try:
+            if hasattr(self, "rollback_manager"):
+                self.rollback_manager.current_snapshot = None
+                self._current_snapshot_id = None
+                self._step_snapshot_id = None
+        except Exception:
+            pass
+
+        # Reset plan mode state for the new task
+        if hasattr(self, "plan_mode") and self.plan_mode:
+            self.plan_mode.disable()
+        self._plan_approval_event = None
+        self._plan_approved = False
+
+        # HR-9 fix: clear stale delegations from the previous task so that
+        # memory_sync does not spuriously route to delegation_node on the next run.
+        if hasattr(self, "_pending_delegations"):
+            self._pending_delegations = []
+
+        # HR-8 fix: clear stale preview events so wait_for_user_node does not
+        # block on a preview that was never confirmed/rejected in the last task.
+        try:
+            from src.core.orchestration.preview_service import PreviewService
+
+            svc = PreviewService.get_instance()
+            svc.pending_previews.clear()
+        except Exception:
+            pass
+
+        # GAP 1: Update AgentSessionManager for state hydration
+        try:
+            from src.core.orchestration.agent_session_manager import (
+                get_agent_session_manager,
+            )
+
+            session_mgr = get_agent_session_manager()
+            session_mgr.update_session_state(
+                session_id=self._current_task_id,
+                task="",
+                message_history=[],
+                current_plan=[],
+                current_step=0,
+                provider=self._provider_name or "",
+                model=getattr(self, "_model", ""),
+                files_read=[],
+                files_modified=[],
+            )
+        except Exception as e:
+            guilogger.debug(f"Failed to update session manager: {e}")
+
         guilogger.info(f"Started new task with ID: {self._current_task_id}")
         return self._current_task_id
+
+    def restore_continue_state(self, state: dict) -> None:
+        """Restore saved conversation state for the /continue workflow.
+
+        Accepts the dict produced by the TUI's _save_state_for_continue and applies
+        it to the orchestrator without the caller needing to touch private fields.
+        """
+        try:
+            if hasattr(self, "msg_mgr") and "history" in state:
+                history = state["history"]
+                if history and hasattr(self.msg_mgr, "messages"):
+                    self.msg_mgr.messages = list(history)
+            if "session_read_files" in state:
+                self._session_read_files = set(state["session_read_files"])
+            # Restore AgentState fields used for mid-plan resume (U6)
+            last_state = getattr(self, "_last_agent_state", None) or {}
+            for key in (
+                "current_plan",
+                "current_step",
+                "working_dir",
+                "step_retry_counts",
+            ):
+                val = state.get(key)
+                if val is not None:
+                    last_state[key] = val
+            self._last_agent_state = last_state
+        except Exception as e:
+            guilogger.error(f"restore_continue_state failed: {e}")
+
+    def _sync_session_state(self) -> None:
+        """Sync current orchestrator state to AgentSessionManager for hydration."""
+        try:
+            from src.core.orchestration.agent_session_manager import (
+                get_agent_session_manager,
+            )
+
+            session_mgr = get_agent_session_manager()
+            provider_name = ""
+            model_name = ""
+            try:
+                if self._adapter:
+                    if hasattr(self._adapter, "provider") and isinstance(
+                        self._adapter.provider, dict
+                    ):
+                        provider_name = (
+                            self._adapter.provider.get("name")
+                            or self._adapter.provider.get("type")
+                            or ""
+                        )
+                    if hasattr(self._adapter, "default_model"):
+                        model_name = self._adapter.default_model or ""
+                    elif (
+                        hasattr(self._adapter, "models")
+                        and isinstance(self._adapter.models, list)
+                        and self._adapter.models
+                    ):
+                        model_name = self._adapter.models[0]
+            except Exception:
+                pass
+
+            session_mgr.update_session_state(
+                session_id=self._current_task_id or "default",
+                message_history=self.msg_mgr.messages
+                if hasattr(self, "msg_mgr")
+                else [],
+                files_read=list(self._session_read_files),
+                files_modified=list(self._session_modified_files),
+                provider=provider_name,
+                model=model_name,
+            )
+        except Exception as e:
+            guilogger.debug(f"Failed to sync session state: {e}")
 
     def get_current_task_id(self) -> Optional[str]:
         """Get the current task ID."""
         return self._current_task_id
+
+    def get_file_lock_manager(self):
+        """Get the FileLockManager for PRSW coordination."""
+        return self.file_lock_manager
+
+    def approve_plan(self) -> None:
+        """Called by TUI when user approves the pending plan."""
+        self._plan_approved = True
+        if self.plan_mode:
+            self.plan_mode.disable()
+        if self._plan_approval_event:
+            self._plan_approval_event.set()
+        guilogger.info("Orchestrator: plan approved by user")
+
+    def reject_plan(self) -> None:
+        """Called by TUI when user rejects the pending plan."""
+        self._plan_approved = False
+        if self._plan_approval_event:
+            self._plan_approval_event.set()
+        guilogger.info("Orchestrator: plan rejected by user")
+
+    async def wait_for_plan_approval(self) -> bool:
+        """Suspend until user approves or rejects the plan. Returns True if approved."""
+        self._plan_approval_event = asyncio.Event()
+        self._plan_approved = False
+        await self._plan_approval_event.wait()
+        return self._plan_approved
+
+    def get_tools_for_role(self, role: str) -> List[Dict[str, Any]]:
+        """Return the tool list filtered to the toolset appropriate for *role*.
+
+        OE-5 fix: ToolsetManager existed but was never wired; every node passed
+        the full registry (~40 tools) to the LLM regardless of what the role
+        actually needs.  This method returns only the tools in the matching
+        toolset, falling back to the full registry when the toolset is unknown or
+        its tools are not all registered (avoids silently stripping required tools).
+
+        Usage in nodes::
+
+            tools_list = orchestrator.get_tools_for_role("debugger")
+            # → filtered to debug toolset: bash, read_file, edit_file, run_tests …
+        """
+        try:
+            try:
+                from src.tools.toolsets.loader import (
+                    get_toolset_for_role,
+                    get_tools_for_toolset,
+                )
+            except ImportError:
+                from src.config.toolsets.loader import (
+                    get_toolset_for_role,
+                    get_tools_for_toolset,
+                )
+
+            toolset_name = get_toolset_for_role(role)
+            toolset_tool_names = get_tools_for_toolset(toolset_name)
+            if not toolset_tool_names:
+                # Unknown toolset — fall back to full registry
+                raise ValueError(f"empty toolset for role={role!r}")
+            all_tools = self.tool_registry.tools
+            # Include only tools that are actually registered
+            filtered = [
+                {"name": n, "description": all_tools[n].get("description", "")}
+                for n in toolset_tool_names
+                if n in all_tools
+            ]
+            # Safety: if fewer than 3 tools matched, fall back to full list
+            # (toolset YAML may be stale relative to the registry)
+            if len(filtered) < 3:
+                raise ValueError(
+                    f"toolset {toolset_name!r} matched too few registered tools"
+                )
+            return filtered
+        except Exception as _e:
+            # SCAN-4 fix: log a warning so operators can detect toolset misconfiguration.
+            # The graceful fallback to the full registry is intentional (nodes must always
+            # receive a usable tool list), but silent failures mask YAML staleness issues.
+            guilogger.warning(
+                f"get_tools_for_role({role!r}): toolset lookup failed ({_e}); "
+                "falling back to full tool registry"
+            )
+            return [
+                {"name": n, "description": m.get("description", "")}
+                for n, m in self.tool_registry.tools.items()
+            ]
 
     def run_agent_once(
         self,
@@ -1873,9 +2766,17 @@ class Orchestrator:
             "analysis_summary": None,
             "relevant_files": [],
             "key_symbols": [],
+            # VOL7-3: repo_summary_data generated by analysis_node; initialised
+            # here so downstream nodes never encounter a missing key.
+            "repo_summary_data": None,
             # debug retry tracking
             "debug_attempts": 0,
             "max_debug_attempts": 3,
+            # VOL7-1: total_debug_attempts was missing — the global cap in
+            # should_after_evaluation (MAX_TOTAL_DEBUG=9) relies on this field.
+            # Without initialisation the counter starts at None → coerces to 0
+            # on the first debug cycle but may not persist cleanly across cycles.
+            "total_debug_attempts": 0,
             # verification result
             "verification_passed": None,
             "verification_result": None,
@@ -1890,6 +2791,55 @@ class Orchestrator:
             "tool_last_used": {},
             # Fast read-before-edit lookup: resolved_path → True
             "files_read": {},
+            # ME-1 fix: analyst_findings was missing from initial_state — analyst_delegation_node
+            # writes this field and planning_node reads it; a missing initial value causes
+            # a KeyError on the first planning pass when no delegation has run yet.
+            "analyst_findings": None,
+            # plan resumption flag written by planning_node
+            "plan_resumed": False,
+            # Plan Mode fields
+            "plan_mode_enabled": getattr(
+                getattr(self, "plan_mode", None), "enabled", False
+            ),
+            "awaiting_plan_approval": False,
+            "plan_mode_approved": None,
+            "plan_mode_blocked_tool": None,
+            # PRSW: FileLockManager reference
+            "_file_lock_manager": getattr(self, "file_lock_manager", None),
+            # PRSW: Pending write operations (empty at task start)
+            "_write_queue": [],
+            # Phase B: P2P session tracking (singleton references, not serialised)
+            "_agent_session_manager": getattr(self, "agent_session_manager", None),
+            "_agent_messages": [],
+            "_context_controller": getattr(self, "context_controller", None),
+            # Phase 4: Token auto-compact tracking
+            "last_compact_at": None,
+            "last_compact_turn": 0,
+            "context_degradation_detected": False,
+            # P1-2/P1-3: Inner-loop counters
+            "plan_attempts": 0,
+            "replan_attempts": 0,
+            # P1-6: Enable plan validator warnings by default (loop is bounded by plan_attempts guard)
+            "plan_enforce_warnings": True,
+            "plan_strict_mode": False,
+            # P3-1: Structured dependency data from analysis phase
+            "call_graph": None,
+            "test_map": None,
+            # Phase A: DAG execution fields (populated by planning_node)
+            "plan_dag": None,
+            "execution_waves": None,
+            "current_wave": 0,
+            # Phase 3: Preview Mode
+            "preview_mode_enabled": False,
+            "pending_preview_id": None,
+            "awaiting_user_input": False,
+            "preview_confirmed": None,
+            # Token Auto-Compact
+            "_should_distill": None,
+            "_force_compact": None,
+            "_budget_compaction": None,
+            # P2P context buffering
+            "_p2p_context": None,
         }
 
         # 2. Compile and Run Graph — P1 fix: use module-level cached graph so compilation
@@ -1908,6 +2858,7 @@ class Orchestrator:
             # P2 fix: reuse a single ThreadPoolExecutor across all graph rounds instead of
             # creating (and destroying) a new OS thread pool per round.
             import concurrent.futures as _cf_pool
+
             _graph_executor = _cf_pool.ThreadPoolExecutor(max_workers=1)
 
             # We use the same safe asyncio execution logic
@@ -2027,16 +2978,23 @@ class Orchestrator:
                         # 3-attempt cap is not silently reset at the start of each round.
                         "debug_attempts": final_state.get("debug_attempts", 0),
                         "max_debug_attempts": final_state.get("max_debug_attempts", 3),
-                        "total_debug_attempts": final_state.get("total_debug_attempts", 0),
-                        "last_debug_error_type": final_state.get("last_debug_error_type"),
+                        "total_debug_attempts": final_state.get(
+                            "total_debug_attempts", 0
+                        ),
+                        "last_debug_error_type": final_state.get(
+                            "last_debug_error_type"
+                        ),
                         "step_retry_counts": final_state.get("step_retry_counts") or {},
                         # Propagate cooldown + read-tracking dicts across rounds
                         "tool_last_used": final_state.get("tool_last_used") or {},
                         "files_read": final_state.get("files_read") or {},
                     }
             finally:
-                # P2 fix: shut down the reused executor after all rounds complete.
-                _graph_executor.shutdown(wait=False)
+                # P2 fix: shut down the executor after all rounds complete.
+                # SCAN-10 fix: wait=True so the worker thread is cleanly joined
+                # before run_agent_once() returns; by this point future.result()
+                # has already been called so the thread is idle in normal flow.
+                _graph_executor.shutdown(wait=True)
 
             # Check if we broke out due to cancellation
             if (
@@ -2120,7 +3078,10 @@ class Orchestrator:
                             try:
                                 data = json.loads(content)
                                 # Unwrap the outer "tool_execution_result" envelope first
-                                if isinstance(data, dict) and "tool_execution_result" in data:
+                                if (
+                                    isinstance(data, dict)
+                                    and "tool_execution_result" in data
+                                ):
                                     ter = data["tool_execution_result"]
                                     if isinstance(ter, dict) and "result" in ter:
                                         result = ter["result"]
@@ -2160,7 +3121,10 @@ class Orchestrator:
             # YAML blocks may start with ```yaml or bare "name:" (no fences).
             # LM Studio/Qwen models prefix the block with <think>...</think> — strip it first.
             import re as _re
-            _last_stripped = _re.sub(r"<think>.*?</think>", "", last_assistant, flags=_re.DOTALL).strip()
+
+            _last_stripped = _re.sub(
+                r"<think>.*?</think>", "", last_assistant, flags=_re.DOTALL
+            ).strip()
             _is_tool_call_msg = (
                 not last_assistant
                 or _last_stripped.startswith("name:")
@@ -2192,11 +3156,16 @@ class Orchestrator:
             # OE4: Surface delegation_results so callers can read subagent outputs.
             # Previously the delegation_node populated this field but it was never
             # included in the return dict (fire-and-forget). Now callers can access it.
-            delegation_results = final_state.get("delegation_results") if final_state else None
+            delegation_results = (
+                final_state.get("delegation_results") if final_state else None
+            )
             if delegation_results:
-                guilogger.info(f"run_agent_once: delegation_results keys={list(delegation_results.keys())}")
+                guilogger.info(
+                    f"run_agent_once: delegation_results keys={list(delegation_results.keys())}"
+                )
 
             self._flush_usage_buffer()
+            self.flush_execution_trace()
             return {
                 "assistant_message": assistant_message.strip(),
                 "work_summary": work_summary,
@@ -2207,8 +3176,16 @@ class Orchestrator:
             history = (
                 final_state.get("history", []) if isinstance(final_state, dict) else []
             )
+            # Add session modified files to final_state for work summary
+            if isinstance(final_state, dict):
+                final_state["_session_modified_files"] = list(
+                    self._session_modified_files
+                )
+                # Publish session changes for sidebar
+                self._publish_session_changes()
             work_summary = _generate_work_summary(final_state, history)
             self._flush_usage_buffer()
+            self.flush_execution_trace()
             return {
                 "assistant_message": "Graph finished.",
                 "work_summary": work_summary,
@@ -2283,6 +3260,7 @@ class Orchestrator:
                         pass
 
                 self._flush_usage_buffer()
+                self.flush_execution_trace()
                 return {
                     "assistant_message": content if content else "",
                     "error": "graph_failed",
@@ -2290,4 +3268,19 @@ class Orchestrator:
                 }
             except Exception:
                 self._flush_usage_buffer()
+                self.flush_execution_trace()
                 return {"error": "graph_failed", "exception": str(e)}
+
+    def get_provider_capabilities(self) -> Dict[str, Any]:
+        """Get provider capabilities including supports_native_tools flag."""
+        capabilities = {"supports_native_tools": False}
+        try:
+            if self._adapter and hasattr(self._adapter, "provider"):
+                provider_config = self._adapter.provider
+                if isinstance(provider_config, dict):
+                    capabilities["supports_native_tools"] = provider_config.get(
+                        "supports_native_tools", False
+                    )
+        except Exception:
+            pass
+        return capabilities

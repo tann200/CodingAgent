@@ -20,7 +20,12 @@ def test_context_builder_uses_summary_cache(tmp_path):
     retrieved = [{"file_path": "src/main.py", "snippet": "RAW LONG FILE CONTENT"}]
 
     msgs = builder.build_prompt(
-        identity, role, skills, task, tools, [], retrieved_snippets=retrieved
+        role_name=role,
+        active_skills=skills,
+        task_description=task,
+        tools=tools,
+        conversation=[],
+        retrieved_snippets=retrieved,
     )
     system = msgs[0]["content"]
     assert "SHORT SUMMARY FROM CACHE" in system

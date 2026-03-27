@@ -37,13 +37,24 @@ def _call_llm_sync(messages: list, format_json: bool = False, **kwargs) -> str:
             asyncio.get_running_loop()
             # Running loop detected — must NOT call asyncio.run() here (C9).
             # Submit to a new thread that has no event loop so asyncio.run() is safe.
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _pool:
+            # SCAN-6 fix: cancel the future BEFORE the pool's context manager
+            # calls shutdown(wait=True).  Without this, a TimeoutError from
+            # future.result() is caught and "" is returned, but then __exit__
+            # blocks indefinitely waiting for the background asyncio.run() thread
+            # to finish its LLM call.
+            _pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+            try:
                 future = _pool.submit(asyncio.run, candidate)
                 try:
                     resp = future.result(timeout=120)
                 except Exception as thread_err:
-                    logger.error(f"_call_llm_sync: thread executor failed: {thread_err}")
+                    logger.error(
+                        f"_call_llm_sync: thread executor failed: {thread_err}"
+                    )
+                    future.cancel()
                     return ""
+            finally:
+                _pool.shutdown(wait=False)
         except RuntimeError:
             # No running loop — safe to call asyncio.run() directly.
             resp = asyncio.run(candidate)
@@ -61,6 +72,7 @@ def _call_llm_sync(messages: list, format_json: bool = False, **kwargs) -> str:
     # (Qwen3, DeepSeek-R1-Distill, QwQ).  Safe no-op for all other models.
     if content:
         from src.core.inference.thinking_utils import strip_thinking
+
         content = strip_thinking(content)
     return content
 
@@ -85,7 +97,7 @@ def compact_messages_to_prose(
     parts: List[str] = []
     for m in messages:
         role = m.get("role", "unknown").upper()
-        content = str(m.get("content", ""))[:1000]
+        content = str(m.get("content", ""))[:3000]
         parts.append(f"[{role}]: {content}")
     transcript = "\n\n".join(parts)
 
@@ -148,12 +160,60 @@ def distill_context(
     if not messages:
         return {}
 
+    # P2-3 / HR-2 fix: When conversation exceeds 50 messages, compact the history
+    # inline so the actual context window is reduced — not just written to a file.
+    # The compacted list is stored in distill_context's return value under the key
+    # "_compacted_history" so the caller (memory_update_node) can replace state["history"].
+    _compacted_history: Optional[List[Dict[str, str]]] = None
+    if len(messages) >= 50:
+        logger.info(
+            f"distill_context: {len(messages)} messages >= 50, triggering compaction"
+        )
+        try:
+            summary = compact_messages_to_prose(messages, working_dir=working_dir)
+            if summary:
+                if working_dir:
+                    cp_path = (
+                        working_dir / ".agent-context" / "compaction_checkpoint.md"
+                    )
+                    try:
+                        cp_path.parent.mkdir(parents=True, exist_ok=True)
+                        cp_path.write_text(summary, encoding="utf-8")
+                        logger.info(
+                            f"distill_context: compaction checkpoint written to {cp_path}"
+                        )
+                    except Exception as _we:
+                        logger.warning(
+                            f"distill_context: failed to write checkpoint: {_we}"
+                        )
+                # HR-2 fix: return the compacted message list so the caller can
+                # replace state["history"] and actually reduce context window size.
+                _compacted_history = [
+                    {"role": "system", "content": "Session Summary:\n" + summary},
+                ]
+                logger.info(
+                    f"distill_context: compaction reduced {len(messages)} msgs → "
+                    f"{len(_compacted_history)} msg"
+                )
+        except Exception as _ce:
+            logger.warning(f"distill_context: compaction failed: {_ce}")
+
     safe_msgs = []
-    for m in messages[-20:]:
+    # HR-14 fix: process more messages to avoid missing the original task statement.
+    # Use min(50, len(messages)) to include early messages that may contain the task.
+    msg_window = min(len(messages), 50)
+    for m in messages[-msg_window:]:
+        # Increase truncation limit for error messages that may contain critical details
+        limit = (
+            3000
+            if m.get("role") in ("tool", "user")
+            and "error" in str(m.get("content", "")).lower()
+            else 500
+        )
         safe_msgs.append(
             {
                 "role": m.get("role", "unknown"),
-                "content": str(m.get("content", ""))[:500],
+                "content": str(m.get("content", ""))[:limit],
             }
         )
     msg_str = json.dumps(safe_msgs, indent=2)
@@ -183,6 +243,7 @@ def distill_context(
     # Double the allocation for those models; base budget is sufficient for
     # Qwen3 (where /no_think works) and all non-thinking models.
     from src.core.inference.thinking_utils import budget_max_tokens, get_active_model_id
+
     _model_id = get_active_model_id()
     _max_tok = budget_max_tokens(400, _model_id)
 
@@ -198,6 +259,17 @@ def distill_context(
                 distilled_state = json.loads(match.group(0))
             else:
                 distilled_state = json.loads(content)
+
+            # P2-4: Validate required keys to detect malformed LLM output early
+            _REQUIRED_KEYS = {"current_task", "current_state", "next_step"}
+            missing = _REQUIRED_KEYS - set(distilled_state.keys())
+            if missing:
+                logger.warning(
+                    f"distill_context: output missing required keys: {missing}. "
+                    "Falling back to empty state."
+                )
+                distilled_state = {}
+
             logger.info(f"Distillation result: {distilled_state}")
     except Exception as e:
         logger.error(f"Distillation failed: {e}")
@@ -314,5 +386,28 @@ def distill_context(
                     pass
     except Exception as e:
         logger.error(f"Failed to write repo_memory.json: {e}")
+
+    # P3-7: Persist distilled summary to VectorStore for semantic recall across sessions.
+    if distilled_state:
+        try:
+            from src.core.indexing.vector_store import VectorStore
+
+            _vs = VectorStore(working_dir=working_dir)
+            _summary_text = (
+                f"Task: {distilled_state.get('current_task', '')}\n"
+                f"State: {distilled_state.get('current_state', '')}\n"
+                f"Next: {distilled_state.get('next_step', '')}"
+            )
+            _vs.add_memory(_summary_text, metadata=distilled_state)
+            logger.info("distill_context: summary persisted to VectorStore")
+        except Exception as _ve:
+            logger.warning(
+                f"distill_context: VectorStore persist failed (non-critical): {_ve}"
+            )
+
+    # HR-2 fix: include compacted history in return value so memory_update_node
+    # can replace state["history"] and actually reduce the context window.
+    if _compacted_history is not None:
+        distilled_state["_compacted_history"] = _compacted_history
 
     return distilled_state

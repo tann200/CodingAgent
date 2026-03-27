@@ -1,5 +1,6 @@
 import logging
 import os
+import threading
 from typing import Dict, Any
 
 from src.core.orchestration.graph.state import AgentState
@@ -11,15 +12,31 @@ logger = logging.getLogger(__name__)
 # F8 / F15 fix: Cache indexed directories keyed by (resolved_path, mtime) so
 # index_repository() is skipped on repeated calls to the same unchanged directory,
 # but re-runs when the working dir changes or its mtime changes (stale cache fix).
-_INDEXED_DIRS: dict = {}  # {resolved_path: mtime_ns}
+# RA-3 fix: cap at 128 entries with simple LRU eviction so a long-running process
+# working across many directories does not leak memory indefinitely.
+# VOL7-7: Lock guards _INDEXED_DIRS mutations to prevent dict-size-during-iteration
+# errors in concurrent asyncio tasks sharing the same event loop thread.
+_INDEXED_DIRS_MAX = 128
+_INDEXED_DIRS: dict = {}  # {resolved_path: mtime_ns}  (insertion-ordered via Python 3.7+)
+_INDEXED_DIRS_LOCK = threading.Lock()
+
+# PB-2: Cache generate_repo_summary() results keyed by resolved working_dir.
+# Repo summaries are expensive (file-system walk + LLM) and rarely change during
+# a session.  Keyed on the resolved path so symlinks don't cause cache misses.
+_REPO_SUMMARY_CACHE: dict = {}  # {resolved_path: summary_result}
+
+# PB-3: SymbolGraph singleton per working_dir — avoids re-parsing the same files
+# on every analysis_node invocation.
+_SYMBOL_GRAPH_CACHE: dict = {}  # {resolved_path: SymbolGraph}
 
 
 def _is_already_indexed(working_dir: str) -> bool:
     """Return True if working_dir was indexed and its mtime has not changed."""
     try:
         resolved = str(os.path.realpath(working_dir))
-        mtime = os.stat(resolved).st_mtime_ns
-        return _INDEXED_DIRS.get(resolved) == mtime
+        with _INDEXED_DIRS_LOCK:
+            mtime = os.stat(resolved).st_mtime_ns
+            return _INDEXED_DIRS.get(resolved) == mtime
     except Exception:
         return False
 
@@ -28,8 +45,14 @@ def _mark_indexed(working_dir: str) -> None:
     """Record that working_dir has been indexed at its current mtime."""
     try:
         resolved = str(os.path.realpath(working_dir))
-        mtime = os.stat(resolved).st_mtime_ns
-        _INDEXED_DIRS[resolved] = mtime
+        with _INDEXED_DIRS_LOCK:
+            mtime = os.stat(resolved).st_mtime_ns
+            # Move-to-end (LRU update) if already present, else insert at end
+            _INDEXED_DIRS.pop(resolved, None)
+            _INDEXED_DIRS[resolved] = mtime
+            # Evict oldest entry when over capacity
+            while len(_INDEXED_DIRS) > _INDEXED_DIRS_MAX:
+                _INDEXED_DIRS.pop(next(iter(_INDEXED_DIRS)))
     except Exception:
         pass
 
@@ -47,11 +70,15 @@ async def analysis_node(state: AgentState, config: Any) -> Dict[str, Any]:
     """
     logger.info("=== analysis_node START ===")
 
+    # HR-11 fix: Initialize analysis_failed flag
+    analysis_failed = False
+
     # C3 fix: only bypass for genuinely simple tasks.  Import the same complexity
     # heuristic used by the builder so the two layers stay in sync.
     if state.get("next_action"):
         try:
             from src.core.orchestration.graph.builder import _task_is_complex
+
             is_complex = _task_is_complex(state)
         except Exception:
             is_complex = False
@@ -61,18 +88,21 @@ async def analysis_node(state: AgentState, config: Any) -> Dict[str, Any]:
                 "analysis_node: Fast path active (simple task, action already determined). "
                 "Bypassing heavy analysis."
             )
+            # WR-3 fix: explicitly clear call_graph and test_map to prevent
+            # stale data from previous tasks being injected into new task's planning
             return {
                 "analysis_summary": "Skipped (Fast Path)",
                 "relevant_files": [],
                 "key_symbols": [],
                 "repo_summary_data": "Skipped for efficiency",
+                "call_graph": None,
+                "test_map": None,
             }
         else:
             logger.info(
                 "analysis_node: Complex task detected — running full analysis despite next_action "
                 "(C3: W3 fast-path bypass suppressed for complex tasks)"
             )
-
 
     orchestrator = _resolve_orchestrator(state, config)
     if orchestrator is None:
@@ -89,7 +119,15 @@ async def analysis_node(state: AgentState, config: Any) -> Dict[str, Any]:
     # Phase 1: Automatic Repo Summary - Execute at start before any LLM planning
     repo_summary_data = ""
     try:
-        summary_result = generate_repo_summary(working_dir)
+        # PB-2: Check module-level cache before calling the expensive summary generator.
+        _resolved_wd = str(os.path.realpath(working_dir))
+        if _resolved_wd in _REPO_SUMMARY_CACHE:
+            summary_result = _REPO_SUMMARY_CACHE[_resolved_wd]
+            logger.debug("analysis_node: repo summary cache hit")
+        else:
+            summary_result = generate_repo_summary(working_dir)
+            if summary_result:
+                _REPO_SUMMARY_CACHE[_resolved_wd] = summary_result
         if summary_result.get("status") == "ok" or "summary" in summary_result:
             summary_text = summary_result.get("summary", "")
             framework = summary_result.get("framework", "Unknown")
@@ -176,16 +214,40 @@ Use this repository context to plan your deep-dive searches."""
         # F11: Extract identifiers (CamelCase / snake_case) from the task description
         # instead of blindly using the first word (which is usually a verb like "implement").
         import re as _re
+
         symbol_candidates = _re.findall(
-            r'\b[A-Z][a-zA-Z0-9]{2,}\b|\b[a-z_][a-z0-9_]{2,}\b', task
+            r"\b[A-Z][a-zA-Z0-9]{2,}\b|\b[a-z_][a-z0-9_]{2,}\b", task
         )
         # Filter out common English stopwords / verbs that are not identifiers
         _SKIP_WORDS = {
-            "the", "and", "for", "with", "that", "this", "from", "into", "add",
-            "fix", "use", "run", "get", "set", "new", "old", "all", "make",
-            "update", "create", "delete", "remove", "implement", "change",
+            "the",
+            "and",
+            "for",
+            "with",
+            "that",
+            "this",
+            "from",
+            "into",
+            "add",
+            "fix",
+            "use",
+            "run",
+            "get",
+            "set",
+            "new",
+            "old",
+            "all",
+            "make",
+            "update",
+            "create",
+            "delete",
+            "remove",
+            "implement",
+            "change",
         }
-        symbol_candidates = [s for s in symbol_candidates if s.lower() not in _SKIP_WORDS]
+        symbol_candidates = [
+            s for s in symbol_candidates if s.lower() not in _SKIP_WORDS
+        ]
         for candidate in symbol_candidates[:3]:
             fs = _call_tool_if_exists(
                 "find_symbol", name=candidate, workdir=working_dir
@@ -200,6 +262,7 @@ Use this repository context to plan your deep-dive searches."""
 
         from pathlib import Path as _Path
         from src.core.indexing.symbol_graph import _SUPPORTED_SUFFIXES as _SG_SUFFIXES
+
         gl = _call_tool_if_exists("glob", pattern="**/*", workdir=working_dir)
         if gl and isinstance(gl, dict):
             items = gl.get("matches", [])
@@ -221,70 +284,73 @@ Use this repository context to plan your deep-dive searches."""
     except Exception as e:
         logger.error(f"analysis_node: analysis failed: {e}")
         analysis_summary = f"Analysis failed: {e}"
+        # HR-11 fix: set analysis_failed flag so plan_validator can warn about
+        # plans built without proper file context
+        analysis_failed = True
 
     # Phase 2.4: Symbol graph enrichment — call graph context for planning
     symbol_context = ""
+    call_graph_data: dict = {}
+    test_map_data: dict = {}
     try:
         from src.core.indexing.symbol_graph import SymbolGraph
         from pathlib import Path
 
-        sg = SymbolGraph(working_dir)
+        # PB-3: Reuse a cached SymbolGraph for the same working_dir to avoid
+        # re-parsing every file on every analysis_node call.
+        _sg_key = str(os.path.realpath(working_dir))
+        if _sg_key in _SYMBOL_GRAPH_CACHE:
+            sg = _SYMBOL_GRAPH_CACHE[_sg_key]
+        else:
+            sg = SymbolGraph(working_dir)
+            _SYMBOL_GRAPH_CACHE[_sg_key] = sg
 
         # Update index for all found relevant files (multi-lang: update_file handles suffix check)
-        for fp in relevant_files[:10]:
+        for fp in relevant_files[:25]:
             full_path = Path(working_dir) / fp
             if full_path.exists():
                 sg.update_file(str(full_path))
 
-        # Find call sites for key symbols
-        call_info = []
+        # P3-1: Collect call graph as structured JSON dict {symbol: [callers]}
+        call_graph_data: dict = {}
         for sym in key_symbols[:5]:
             callers = sg.find_calls(sym)
             if callers:
-                call_info.append(f"  '{sym}' called by: {', '.join(callers[:5])}")
+                call_graph_data[sym] = callers[:5]
 
-        # Find related tests for first relevant module
-        test_info = []
-        if relevant_files:
-            module_name = Path(relevant_files[0]).stem
+        # P3-1: Collect test map as structured JSON dict {module_stem: [test_paths]}
+        test_map_data: dict = {}
+        for fp in relevant_files[:5]:
+            module_name = Path(fp).stem
             tests = sg.find_tests_for_module(module_name)
             if tests:
-                test_info = tests[:3]
+                test_map_data[module_name] = tests[:3]
 
-        if call_info or test_info:
+        # Build prose summary for analysis_summary (backwards compat)
+        if call_graph_data or test_map_data:
             symbol_context = "Symbol graph:\n"
-            symbol_context += "\n".join(call_info)
-            if test_info:
-                symbol_context += f"\nRelated tests: {', '.join(test_info)}"
+            for sym, callers in call_graph_data.items():
+                symbol_context += f"  '{sym}' called by: {', '.join(callers)}\n"
+            for mod, tests in test_map_data.items():
+                symbol_context += f"  Tests for {mod}: {', '.join(tests)}\n"
     except Exception as e:
+        call_graph_data = {}
+        test_map_data = {}
         logger.warning(f"analysis_node: symbol graph enrichment failed: {e}")
 
-    # Phase 3: ContextController — enforce token budget on relevant_files list
-    # Prioritizes files that appear in semantic search results (higher relevance)
-    try:
-        from src.core.context.context_controller import ContextController
-
-        cc = ContextController()
-        relevance_scores = {}
-        for i, fp in enumerate(relevant_files):
-            # Files from semantic search get higher scores; others get lower
-            relevance_scores[fp] = 1.0 - (i * 0.05)
-
-        file_infos = [
-            {"path": fp, "line_count": 50, "estimated_tokens": 200}
-            for fp in relevant_files
-        ]
-        history = state.get("history", [])
-        included, excluded = cc.enforce_budget(
-            file_infos, history, system_prompt=repo_summary_data
+    # Phase 3: Cap relevant_files to a reasonable limit.
+    # HR-1 fix: The ContextController used hardcoded line_count=50 and
+    # estimated_tokens=200 for every file regardless of actual size, making its
+    # budget enforcement meaningless (and worse than a simple slice since it
+    # penalised files by insertion order, not relevance). Replace with a direct
+    # cap so the most-relevant files (from semantic search, first in list) are
+    # always kept.
+    MAX_RELEVANT_FILES = 25
+    if len(relevant_files) > MAX_RELEVANT_FILES:
+        logger.info(
+            f"analysis_node: capping relevant_files {len(relevant_files)} → {MAX_RELEVANT_FILES}"
         )
-        if excluded:
-            logger.info(
-                f"analysis_node: ContextController excluded {len(excluded)} low-priority files"
-            )
-        relevant_files = [f["path"] for f in included]
-    except Exception as e:
-        logger.debug(f"analysis_node: context controller skipped: {e}")
+        relevant_files = relevant_files[:MAX_RELEVANT_FILES]
 
     return {
         "analysis_summary": analysis_summary
@@ -292,4 +358,9 @@ Use this repository context to plan your deep-dive searches."""
         "relevant_files": relevant_files,
         "key_symbols": key_symbols,
         "repo_summary_data": repo_summary_data,
+        # P3-1: Structured JSON dependency data for planning_node
+        "call_graph": call_graph_data if call_graph_data else None,
+        "test_map": test_map_data if test_map_data else None,
+        # HR-11 fix: indicate whether analysis succeeded or failed
+        "analysis_failed": analysis_failed if "analysis_failed" in locals() else False,
     }

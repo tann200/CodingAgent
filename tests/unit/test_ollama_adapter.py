@@ -5,9 +5,9 @@ These tests mock the network layer (requests) so they run without a live Ollama
 server. They cover initialisation, model selection, get_models_from_api, and the
 generate/chat path.
 """
+
 from __future__ import annotations
 
-import json
 import warnings
 from unittest.mock import MagicMock, patch
 
@@ -19,6 +19,7 @@ from src.core.inference.adapters.ollama_adapter import OllamaAdapter
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def make_response(status_code: int = 200, json_data=None, text: str = ""):
     """Create a mock requests.Response."""
@@ -36,6 +37,7 @@ def make_response(status_code: int = 200, json_data=None, text: str = ""):
 # ---------------------------------------------------------------------------
 # Initialisation
 # ---------------------------------------------------------------------------
+
 
 class TestOllamaAdapterInit:
     def test_default_base_url_when_no_config(self, tmp_path):
@@ -68,7 +70,7 @@ class TestOllamaAdapterInit:
         """H7 fix: adapter must not crash on base_url.rstrip() when base_url is None."""
         # Passing no arguments must not raise AttributeError
         try:
-            adapter = OllamaAdapter(base_url="http://localhost:11434")
+            OllamaAdapter(base_url="http://localhost:11434")
         except AttributeError as e:
             pytest.fail(f"H7 regression: OllamaAdapter raised AttributeError: {e}")
 
@@ -76,6 +78,7 @@ class TestOllamaAdapterInit:
 # ---------------------------------------------------------------------------
 # get_models_from_api
 # ---------------------------------------------------------------------------
+
 
 class TestGetModelsFromApi:
     def test_returns_models_from_tags_endpoint(self):
@@ -97,8 +100,11 @@ class TestGetModelsFromApi:
     def test_returns_empty_models_on_connection_error(self):
         """get_models_from_api returns empty list on ConnectionError."""
         import requests as req
+
         adapter = OllamaAdapter(base_url="http://localhost:11434/api")
-        with patch("requests.get", side_effect=req.exceptions.ConnectionError("refused")):
+        with patch(
+            "requests.get", side_effect=req.exceptions.ConnectionError("refused")
+        ):
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
                 result = adapter.get_models_from_api()
@@ -124,6 +130,7 @@ class TestGetModelsFromApi:
 # ---------------------------------------------------------------------------
 # generate / chat
 # ---------------------------------------------------------------------------
+
 
 class TestOllamaAdapterGenerate:
     def _make_chat_response(self, content: str = "hello") -> dict:
@@ -166,6 +173,7 @@ class TestOllamaAdapterGenerate:
     def test_generate_handles_connection_error(self):
         """generate() catches ConnectionError and returns error dict."""
         import requests as req
+
         adapter = OllamaAdapter(
             base_url="http://localhost:11434/api",
             models=["llama3:8b"],
@@ -173,7 +181,8 @@ class TestOllamaAdapterGenerate:
         messages = [{"role": "user", "content": "hi"}]
 
         with patch.object(
-            adapter, "_call_requests",
+            adapter,
+            "_call_requests",
             side_effect=req.exceptions.ConnectionError("refused"),
         ):
             result = adapter.generate(messages, model="llama3:8b")
@@ -185,6 +194,7 @@ class TestOllamaAdapterGenerate:
 # ---------------------------------------------------------------------------
 # _base_variants
 # ---------------------------------------------------------------------------
+
 
 class TestBaseVariants:
     def test_no_duplicate_urls(self):

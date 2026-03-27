@@ -1,5 +1,4 @@
 """Tests for src.core.inference.thinking_utils."""
-import pytest
 from src.core.inference.thinking_utils import (
     is_reasoning_model,
     supports_no_think,

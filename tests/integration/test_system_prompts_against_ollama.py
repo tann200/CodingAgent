@@ -6,6 +6,8 @@ from src.core.inference.adapters.ollama_adapter import OllamaAdapter
 
 pytestmark = pytest.mark.ollama
 
+import requests as _requests
+
 RUN = os.getenv('RUN_INTEGRATION') == '1'
 if not RUN:
     try:
@@ -16,11 +18,17 @@ if not RUN:
             for p in providers:
                 t = str(p.get('type') or '').lower()
                 name = str(p.get('name') or '').lower()
+                base_url = p.get('base_url', 'http://localhost:11434')
                 if 'ollama' in t or 'ollama' in name:
-                    RUN = True
+                    # Only enable if Ollama is actually reachable
+                    try:
+                        _requests.get(f"{base_url}/api/tags", timeout=2)
+                        RUN = True
+                    except Exception:
+                        pass
                     break
     except Exception:
-        RUN = RUN
+        pass
 
 @pytest.mark.skipif(not RUN, reason='Integration tests disabled for Ollama')
 def test_system_prompts_against_ollama():

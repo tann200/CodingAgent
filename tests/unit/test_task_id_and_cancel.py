@@ -89,10 +89,12 @@ class TestExecutionTrace:
     """Tests for execution trace functionality."""
 
     def test_clear_execution_trace(self, tmp_path):
-        """Test that _clear_execution_trace clears the trace file."""
+        """Test that _clear_execution_trace clears the trace file and buffer."""
         orch = Orchestrator(working_dir=str(tmp_path))
 
         orch._append_execution_trace({"tool": "test", "args": {}})
+        # Flush buffer to disk so _read_execution_trace can see the entry
+        orch.flush_execution_trace()
 
         trace = orch._read_execution_trace()
         assert len(trace) == 1

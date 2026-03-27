@@ -1,11 +1,10 @@
 import logging
-from typing import Dict, Any
+from typing import Dict, Any, Optional, List
 
 from src.core.orchestration.graph.state import AgentState
 from src.core.context.context_builder import ContextBuilder
 from src.core.inference.llm_manager import call_model
 from src.core.orchestration.graph.nodes.node_utils import _resolve_orchestrator
-from src.core.orchestration.agent_brain import get_agent_brain_manager
 
 logger = logging.getLogger(__name__)
 
@@ -15,17 +14,15 @@ async def replan_node(state: AgentState, config: Any) -> Dict[str, Any]:
     Replan Node: Handles patch size violations by splitting oversized steps.
     When a patch exceeds 200 lines, this node prompts the LLM to rewrite
     the current step into 2-3 smaller, granular steps.
+    Uses the 'strategic' role from ContextBuilder (loaded from agent-brain).
     """
     logger.info("=== replan_node START ===")
 
     replan_reason = state.get("replan_required", "Patch exceeded size limit")
     current_plan = state.get("current_plan") or []
     current_step = state.get("current_step") or 0
-
-    brain = get_agent_brain_manager()
-    # Use "strategic" — the canonical planning role. "planner" is a legacy alias that
-    # has no corresponding .md file and returns an empty string from get_role().
-    planner_role = brain.get_role("strategic") or "You are a strategic planner."
+    # P1-3: Increment inner replan-loop counter
+    replan_attempts = int(state.get("replan_attempts") or 0) + 1
 
     orchestrator = _resolve_orchestrator(state, config)
     if orchestrator is None:
@@ -33,6 +30,7 @@ async def replan_node(state: AgentState, config: Any) -> Dict[str, Any]:
         return {
             "replan_required": None,
             "action_failed": False,
+            "replan_attempts": replan_attempts,
             "errors": ["orchestrator not found"],
         }
 
@@ -70,14 +68,18 @@ Return a JSON array of steps with this format:
 
 Respond ONLY with the JSON array, no other text."""
 
+        provider_capabilities = {}
+        if orchestrator and hasattr(orchestrator, "get_provider_capabilities"):
+            provider_capabilities = orchestrator.get_provider_capabilities()
+
         messages = builder.build_prompt(
-            identity=planner_role,
-            role="Replanning oversized step",
+            role_name="strategic",
             active_skills=[],
             task_description=replan_prompt,
             tools=tools_list,
             conversation=state.get("history", []),
             max_tokens=2000,
+            provider_capabilities=provider_capabilities,
         )
 
         resp = await call_model(messages, stream=False, format_json=False)
@@ -118,6 +120,23 @@ Respond ONLY with the JSON array, no other text."""
             else:
                 new_plan = new_steps
 
+            # WR-6 fix: recompute execution_waves since step indices changed
+            new_waves: Optional[List[List[str]]] = None
+            try:
+                from src.core.orchestration.dag_parser import _convert_flat_to_dag
+
+                dag = _convert_flat_to_dag(new_plan)
+                wave_ids = dag.topological_sort_waves()
+                if wave_ids:
+                    new_waves = wave_ids
+                    logger.info(
+                        f"replan_node: recomputed execution_waves: {len(wave_ids)} waves"
+                    )
+            except Exception as _e:
+                logger.warning(
+                    f"replan_node: failed to recompute execution_waves: {_e}"
+                )
+
             logger.info(
                 f"replan_node: replaced step {current_step + 1} with {len(new_steps)} new steps"
             )
@@ -125,12 +144,16 @@ Respond ONLY with the JSON array, no other text."""
             return {
                 "current_plan": new_plan,
                 "current_step": current_step,  # Start from first new step
+                "execution_waves": new_waves,  # WR-6 fix: include recomputed waves
                 "replan_required": None,
                 "action_failed": False,
+                "replan_attempts": replan_attempts,
+                # HR-13 fix: use system role with [internal] prefix to prevent
+                # LLM from interpreting this as a user instruction
                 "history": [
                     {
-                        "role": "user",
-                        "content": f"Replan complete: Split '{failed_step_desc}' into {len(new_steps)} smaller steps.",
+                        "role": "system",
+                        "content": f"[internal] Replan: Split '{failed_step_desc}' into {len(new_steps)} smaller steps.",
                     }
                 ],
             }
@@ -140,11 +163,13 @@ Respond ONLY with the JSON array, no other text."""
             return {
                 "replan_required": None,
                 "action_failed": False,
+                "replan_attempts": replan_attempts,
                 "errors": ["Failed to generate smaller steps"],
+                # HR-13 fix: use system role with [internal] prefix
                 "history": [
                     {
-                        "role": "user",
-                        "content": "Replan failed: Could not generate smaller steps.",
+                        "role": "system",
+                        "content": "[internal] Replan failed: Could not generate smaller steps.",
                     }
                 ],
             }
@@ -154,5 +179,6 @@ Respond ONLY with the JSON array, no other text."""
         return {
             "replan_required": None,
             "action_failed": False,
+            "replan_attempts": replan_attempts,
             "errors": [f"replan failed: {e}"],
         }

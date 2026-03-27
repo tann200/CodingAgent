@@ -5,6 +5,8 @@ This is critical for local LLM agents which have limited context windows.
 """
 
 import re
+import math
+import json
 from typing import List, Dict, Any, Tuple
 
 
@@ -12,11 +14,22 @@ class ContextController:
     """Manages context budget to prevent token overflow."""
 
     DEFAULT_MAX_TOKENS = 6000
-    LARGE_FILE_THRESHOLD = 500  # Lines
+    LARGE_FILE_THRESHOLD = 500
     SUMMARY_TARGET_LINES = 100
 
-    def __init__(self, max_context_tokens: int = DEFAULT_MAX_TOKENS):
-        self.max_context_tokens = max_context_tokens
+    def __init__(
+        self, max_tokens: int = DEFAULT_MAX_TOKENS, max_context_tokens: int = None
+    ):
+        self.max_tokens = max_tokens
+        self.max_context_tokens = max_context_tokens or max_tokens
+
+        self._context_budget = {
+            "relevant_files": math.ceil(0.08 * max_tokens),
+            "bugs_found": math.ceil(0.05 * max_tokens),
+            "research": math.ceil(0.06 * max_tokens),
+            "other": math.ceil(0.03 * max_tokens),
+        }
+        self._used_tokens = 0
 
     def estimate_tokens(self, text: str) -> int:
         """Rough token estimation (4 chars per token)."""
@@ -45,8 +58,6 @@ class ContextController:
         if len(lines) <= target_lines:
             return content
 
-        # Keep first N lines as summary
-        # Extract imports and function definitions
         important_patterns = [
             r"^import\s+",
             r"^from\s+\S+\s+import",
@@ -75,16 +86,10 @@ class ContextController:
         conversation_history: List[Dict[str, Any]],
         system_prompt: str = "",
     ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-        """
-        Enforce context budget by dropping least relevant files and summarizing large files.
-
-        Returns:
-            (included_files, excluded_files)
-        """
+        """Enforce context budget by dropping least relevant files and summarizing large files."""
         included = []
         excluded = []
 
-        # Calculate budget used by system prompt and conversation
         system_tokens = self.estimate_tokens(system_prompt)
         conversation_tokens = sum(
             self.estimate_tokens(str(msg.get("content", "")))
@@ -93,9 +98,8 @@ class ContextController:
 
         available_tokens = (
             self.max_context_tokens - system_tokens - conversation_tokens - 500
-        )  # Buffer
+        )
 
-        # Sort files by line count (smaller first) to fit more
         sorted_files = sorted(files, key=lambda f: f.get("line_count", 0))
 
         current_tokens = 0
@@ -105,9 +109,7 @@ class ContextController:
                 "estimated_tokens", file_info.get("line_count", 0) // 4
             )
 
-            # Check if adding this file would exceed budget
             if current_tokens + file_tokens > available_tokens:
-                # Try summarizing if file is large
                 if self.should_summarize(file_info):
                     summarized_tokens = self.SUMMARY_TARGET_LINES // 4
                     if current_tokens + summarized_tokens <= available_tokens:
@@ -118,47 +120,39 @@ class ContextController:
                         file_info["summarized"] = True
                         included.append(file_info)
                         current_tokens += summarized_tokens
-                        continue
-
-                # Can't fit, exclude
-                excluded.append(file_info)
-                continue
-
-            included.append(file_info)
-            current_tokens += file_tokens
+                    else:
+                        excluded.append(file_info)
+                else:
+                    excluded.append(file_info)
+            else:
+                included.append(file_info)
+                current_tokens += file_tokens
 
         return included, excluded
 
-    def get_relevant_snippets(
+    def extract_relevant_snippets(
         self, content: str, query: str, max_tokens: int = 500
     ) -> List[str]:
-        """Extract relevant code sections based on query."""
+        """Extract relevant snippets based on query keywords."""
         lines = content.split("\n")
-
-        # Simple keyword matching for relevant sections
-        query_words = set(query.lower().split())
         relevant_line_indices = []
 
-        for i, line in enumerate(lines, 1):
+        query_keywords = re.findall(r"\w+", query.lower())
+
+        for i, line in enumerate(lines):
             line_lower = line.lower()
-            if any(word in line_lower for word in query_words):
-                # Include surrounding context
-                start = max(0, i - 3)
-                end = min(len(lines), i + 3)
-                relevant_line_indices.extend(range(start, end))
+            if any(keyword in line_lower for keyword in query_keywords):
+                relevant_line_indices.append(i)
 
         if not relevant_line_indices:
-            # Return first portion if no matches
             max_lines = max_tokens // 4
             return ["\n".join(lines[:max_lines])]
 
-        # Deduplicate and sort
         relevant_lines = sorted(set(relevant_line_indices))
         snippets = []
 
-        # Group consecutive lines
         current_group = []
-        last_idx = None
+        last_idx = -1
         for idx in relevant_lines:
             if current_group and idx != last_idx + 1:
                 snippets.append("\n".join(current_group))
@@ -169,9 +163,65 @@ class ContextController:
         if current_group:
             snippets.append("\n".join(current_group))
 
-        return snippets[:5]  # Limit to 5 snippets
+        return snippets[:5]
+
+    def add_p2p_context(
+        self, source: str, payload: Dict[str, Any], priority: str = "normal"
+    ) -> bool:
+        """Add P2P broadcast payload with strict budget enforcement."""
+        payload_str = json.dumps(payload)
+        payload_tokens = math.ceil(len(payload_str) / 4)
+
+        budget = self._context_budget.get(source, math.ceil(0.03 * self.max_tokens))
+        if self._used_tokens + payload_tokens > budget:
+            if priority == "high":
+                return self._add_truncated(source, payload, budget - self._used_tokens)
+            return False
+
+        self._used_tokens += payload_tokens
+        return True
+
+    def _add_truncated(self, source: str, payload: Dict, max_tokens: int) -> bool:
+        """Truncate payload to fit remaining budget."""
+        max_chars = max_tokens * 4
+
+        if "files" in payload:
+            files = payload["files"]
+            truncated = []
+            for f in files:
+                if len(json.dumps({"files": truncated + [f]})) <= max_chars:
+                    truncated.append(f)
+                else:
+                    break
+            payload["files"] = truncated
+            payload["truncated"] = True
+            payload["files_dropped"] = len(files) - len(truncated)
+
+        return True
+
+    def get_budget_status(self) -> Dict[str, Any]:
+        """Get current budget status."""
+        return {
+            "max_tokens": self.max_tokens,
+            "used_tokens": self._used_tokens,
+            "budgets": self._context_budget,
+            "usage_ratio": self._used_tokens / self.max_tokens
+            if self.max_tokens > 0
+            else 0,
+        }
 
 
 def create_context_controller(max_tokens: int = 6000) -> ContextController:
     """Factory function to create ContextController."""
-    return ContextController(max_context_tokens=max_tokens)
+    return ContextController(max_tokens=max_tokens)
+
+
+def get_context_controller(max_tokens: int = 6000) -> ContextController:
+    """Get context controller with percentage-based budgets."""
+    return ContextController(max_tokens=max_tokens)
+
+
+ContextController.extract_relevant_snippets = (
+    ContextController.extract_relevant_snippets
+)
+ContextController.get_relevant_snippets = ContextController.extract_relevant_snippets

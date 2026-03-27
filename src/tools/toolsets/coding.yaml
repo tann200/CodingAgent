@@ -17,6 +17,9 @@ tools:
   - syntax_check
   - apply_patch
   - generate_patch
-  - get_git_diff
   - read_file_chunk
   - batched_file_read
+  - bash_readonly
+  - ask_user
+  - submit_plan_for_review
+  - memory_search
