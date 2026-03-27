@@ -135,13 +135,49 @@ class SymbolGraph:
             return ""
         return hashlib.md5(path.read_bytes()).hexdigest()
 
+    @staticmethod
+    def _strip_comments(source: str, suffix: str) -> str:
+        """Strip comments from source before regex matching to avoid false positives.
+
+        Removes single-line (``// ...``) and block (``/* ... */``) comments for
+        C-family languages.  String literals that happen to contain comment-like
+        patterns are not perfectly protected, but the vast majority of
+        false-positive symbols (e.g. commented-out function definitions) are
+        eliminated.
+        """
+        if suffix in {".js", ".ts", ".tsx", ".jsx", ".go", ".java", ".rs"}:
+            # Strip block comments /* ... */ — replace with same number of
+            # newlines so that line numbers for subsequent symbols are preserved.
+            source = re.sub(
+                r"/\*.*?\*/",
+                lambda m: "\n" * m.group(0).count("\n"),
+                source,
+                flags=re.DOTALL,
+            )
+            # Strip single-line comments // ... (replace with blank; newline kept
+            # by the pattern boundary [^\n]*)
+            source = re.sub(r"//[^\n]*", "", source)
+        elif suffix in {".py"}:
+            # Python uses AST — no stripping needed
+            pass
+        return source
+
     def _parse_file_regex(self, path: Path) -> Dict[str, Any]:
-        """Extract symbols from non-Python files using language-specific regex patterns."""
+        """Extract symbols from non-Python files using language-specific regex patterns.
+
+        Comments are stripped before matching (RA-2 fix) so that commented-out
+        function/class definitions and signatures inside doc-strings do not produce
+        false-positive symbols.
+        """
         patterns = _LANG_PATTERNS.get(path.suffix)
         if not patterns:
             return {"classes": [], "functions": [], "imports": [], "docstring": ""}
         try:
-            source = path.read_text(encoding="utf-8", errors="ignore")
+            raw_source = path.read_text(encoding="utf-8", errors="ignore")
+            # Strip comments before regex matching to avoid false positives on
+            # commented-out definitions (RA-2).  _strip_comments preserves
+            # newlines so line numbers in the stripped text match the original.
+            source = self._strip_comments(raw_source, path.suffix)
             functions = [
                 {"name": m.group(1), "line": source[: m.start()].count("\n") + 1, "args": [], "docstring": ""}
                 for m in patterns["function"].finditer(source)

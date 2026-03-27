@@ -196,3 +196,11 @@ CODE_EXEC_FLAGS: set[str] = {"-c", "-e", "-r", "--eval", "--execute"}
 TAR_EXTRACT_FLAGS: set[str] = {
     "-x", "--extract", "-xf", "-xvf", "-xzf", "-xjf", "-xJf",
 }
+
+# TS-2 fix: Archive creation flags — tar -c / tar -r create or append to archives.
+# SAFE_COMMANDS documents tar as "read-only / inspection" but these flags write.
+# Block them to align implementation with documented semantics.
+TAR_CREATE_FLAGS: set[str] = {
+    "-c", "--create", "-r", "--append", "-u", "--update",
+    "-cf", "-czf", "-cjf", "-cJf", "-cvf", "-cvzf",
+}

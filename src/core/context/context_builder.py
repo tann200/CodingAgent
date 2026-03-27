@@ -38,6 +38,20 @@ def _today_iso() -> str:
 
 
 class ContextBuilder:
+    @classmethod
+    def clear_cache(cls) -> None:
+        """PB-2 fix: Invalidate the module-level file caches.
+
+        Call this at the start of each new task so role/skill YAML files that were
+        modified on disk between tasks are re-read rather than served from a stale
+        cache entry.  The caches persist for the lifetime of the process, so without
+        explicit invalidation a change to agent-brain files would be invisible until
+        restart.
+        """
+        with _CACHE_LOCK:
+            _TEXT_CACHE.clear()
+            _JSON_CACHE.clear()
+
     def __init__(
         self,
         token_estimator: Optional[Callable[[str], int]] = None,

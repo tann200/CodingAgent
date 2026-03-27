@@ -28,6 +28,7 @@ from unittest.mock import MagicMock, patch
 # P1-2: plan_attempts counter
 # ---------------------------------------------------------------------------
 
+
 class TestPlanningNodeAttemptCounterPreventsInfiniteLoop:
     def test_should_after_plan_validator_forces_execute_on_plan_attempts_exceeded(self):
         """After plan_attempts >= 3, should force execution even with invalid plan."""
@@ -62,6 +63,7 @@ class TestPlanningNodeAttemptCounterPreventsInfiniteLoop:
     def test_planning_node_increments_plan_attempts(self, tmp_path):
         """planning_node must increment plan_attempts in its return dict."""
         import pytest
+
         pytest.importorskip("src.core.orchestration.graph.nodes.planning_node")
         from src.core.orchestration.graph.nodes.planning_node import planning_node
 
@@ -148,10 +150,13 @@ class TestPlanningNodeAttemptCounterPreventsInfiniteLoop:
 # P1-3: replan_attempts counter
 # ---------------------------------------------------------------------------
 
+
 class TestReplanNodeAttemptCounterRoutsToMemorySync:
     def test_should_after_execution_caps_replan_cycles(self):
         """After replan_attempts >= 5, route to memory_sync instead of replan."""
-        from src.core.orchestration.graph.builder import should_after_execution_with_replan
+        from src.core.orchestration.graph.builder import (
+            should_after_execution_with_replan,
+        )
 
         state = {
             "replan_required": "patch too large",
@@ -174,7 +179,9 @@ class TestReplanNodeAttemptCounterRoutsToMemorySync:
 
     def test_should_after_execution_allows_replan_below_limit(self):
         """Below replan_attempts cap, replan_required routes to replan."""
-        from src.core.orchestration.graph.builder import should_after_execution_with_replan
+        from src.core.orchestration.graph.builder import (
+            should_after_execution_with_replan,
+        )
 
         state = {
             "replan_required": "patch too large",
@@ -217,10 +224,12 @@ class TestReplanNodeAttemptCounterRoutsToMemorySync:
         config = {"configurable": {"orchestrator": mock_orch}}
 
         # Mock call_model to return a new step list
-        new_steps = json.dumps([
-            {"description": "step a", "completed": False},
-            {"description": "step b", "completed": False},
-        ])
+        new_steps = json.dumps(
+            [
+                {"description": "step a", "completed": False},
+                {"description": "step b", "completed": False},
+            ]
+        )
         with patch(
             "src.core.orchestration.graph.nodes.replan_node.call_model",
             return_value={"choices": [{"message": {"content": new_steps}}]},
@@ -252,6 +261,7 @@ class TestReplanNodeAttemptCounterRoutsToMemorySync:
 # ---------------------------------------------------------------------------
 # P1-5: todo_tools dead code removal
 # ---------------------------------------------------------------------------
+
 
 class TestTodoToolsDeadDuplicateCodeRemoved:
     def test_create_with_depends_on_preserved(self, tmp_path):
@@ -285,12 +295,16 @@ class TestTodoToolsDeadDuplicateCodeRemoved:
 # P1-6: plan_enforce_warnings in initial_state
 # ---------------------------------------------------------------------------
 
+
 class TestOrchestratorPlanEnforceWarningsInitialState:
     def test_initial_state_sets_plan_enforce_warnings_true(self):
         """Orchestrator run_agent_once initial_state must set plan_enforce_warnings=True."""
         # We inspect the source to verify the key is set to True in initial_state
         import ast
-        src_path = Path("/Users/tann200/PycharmProjects/CodingAgent/src/core/orchestration/orchestrator.py")
+
+        src_path = Path(
+            "/Users/tann200/PycharmProjects/CodingAgent/src/core/orchestration/orchestrator.py"
+        )
         source = src_path.read_text()
         assert '"plan_enforce_warnings": True' in source, (
             "plan_enforce_warnings: True must appear in orchestrator initial_state"
@@ -301,28 +315,39 @@ class TestOrchestratorPlanEnforceWarningsInitialState:
 # P1-7: atomic providers.json write
 # ---------------------------------------------------------------------------
 
+
 class TestSettingsPanelAtomicProvidersJsonWrite:
     def test_no_direct_write_text_on_cfg_path(self):
         """Verify that settings_panel uses os.replace (not cfg_path.write_text) for safety."""
         import ast
+
         src_path = Path("src/ui/views/settings_panel.py")
         if not src_path.exists():
-            src_path = Path("/Users/tann200/PycharmProjects/CodingAgent/src/ui/views/settings_panel.py")
+            src_path = Path(
+                "/Users/tann200/PycharmProjects/CodingAgent/src/ui/views/settings_panel.py"
+            )
         source = src_path.read_text()
         # The new code should use os.replace; old cfg_path.write_text should be gone from the write path
         # (it may still appear in read path or elsewhere — check it's not in the write block)
-        assert "os.replace" in source, "Atomic write via os.replace not found in settings_panel.py"
-        assert "tempfile.mkstemp" in source, "tempfile.mkstemp not found in settings_panel.py"
+        assert "os.replace" in source, (
+            "Atomic write via os.replace not found in settings_panel.py"
+        )
+        assert "tempfile.mkstemp" in source, (
+            "tempfile.mkstemp not found in settings_panel.py"
+        )
 
 
 # ---------------------------------------------------------------------------
 # P2-1: retry logic in OpenAICompatibleAdapter
 # ---------------------------------------------------------------------------
 
+
 class TestOpenAICompatAdapterRetryOnTransientErrors:
     def test_chat_retries_on_503(self, tmp_path):
         """_chat_internal should retry on 503 status and succeed on 3rd attempt."""
-        from src.core.inference.adapters.openai_compat_adapter import OpenAICompatibleAdapter
+        from src.core.inference.adapters.openai_compat_adapter import (
+            OpenAICompatibleAdapter,
+        )
 
         adapter = OpenAICompatibleAdapter(
             base_url="http://localhost:8080/v1",
@@ -351,7 +376,9 @@ class TestOpenAICompatAdapterRetryOnTransientErrors:
         with patch.object(adapter, "_safe_post", side_effect=fake_safe_post):
             with patch("time.sleep"):  # speed up test
                 result = adapter._chat_internal(
-                    [{"role": "user", "content": "hello"}], model="test-model", stream=False
+                    [{"role": "user", "content": "hello"}],
+                    model="test-model",
+                    stream=False,
                 )
 
         assert call_count[0] == 3, f"Expected 3 attempts, got {call_count[0]}"
@@ -361,7 +388,9 @@ class TestOpenAICompatAdapterRetryOnTransientErrors:
     def test_chat_retries_on_connection_error(self):
         """_chat_internal should retry on ConnectionError."""
         import requests
-        from src.core.inference.adapters.openai_compat_adapter import OpenAICompatibleAdapter
+        from src.core.inference.adapters.openai_compat_adapter import (
+            OpenAICompatibleAdapter,
+        )
 
         adapter = OpenAICompatibleAdapter(
             base_url="http://localhost:8080/v1",
@@ -384,7 +413,9 @@ class TestOpenAICompatAdapterRetryOnTransientErrors:
         with patch.object(adapter, "_safe_post", side_effect=fake_safe_post):
             with patch("time.sleep"):
                 result = adapter._chat_internal(
-                    [{"role": "user", "content": "hello"}], model="test-model", stream=False
+                    [{"role": "user", "content": "hello"}],
+                    model="test-model",
+                    stream=False,
                 )
 
         assert call_count[0] == 3
@@ -394,6 +425,7 @@ class TestOpenAICompatAdapterRetryOnTransientErrors:
 # ---------------------------------------------------------------------------
 # P2-3 & P2-4: distiller compaction checkpoint and schema validation
 # ---------------------------------------------------------------------------
+
 
 class TestDistillerCheckpointWriteAndSchemaValidation:
     def test_compaction_checkpoint_written_at_50_messages(self, tmp_path):
@@ -405,13 +437,21 @@ class TestDistillerCheckpointWriteAndSchemaValidation:
             for i in range(52)
         ]
 
-        with patch.object(distiller, "compact_messages_to_prose", return_value="summary text") as mock_cmp:
-            with patch.object(distiller, "_call_llm_sync", return_value='{"current_task":"t","current_state":"s","next_step":"n","files_modified":[],"completed_steps":[],"errors_resolved":[]}'):
+        with patch.object(
+            distiller, "compact_messages_to_prose", return_value="summary text"
+        ) as mock_cmp:
+            with patch.object(
+                distiller,
+                "_call_llm_sync",
+                return_value='{"current_task":"t","current_state":"s","next_step":"n","files_modified":[],"completed_steps":[],"errors_resolved":[]}',
+            ):
                 distiller.distill_context(messages, working_dir=tmp_path)
 
         mock_cmp.assert_called_once()
         cp_path = tmp_path / ".agent-context" / "compaction_checkpoint.md"
-        assert cp_path.exists(), "compaction_checkpoint.md should be written at 50+ messages"
+        assert cp_path.exists(), (
+            "compaction_checkpoint.md should be written at 50+ messages"
+        )
 
     def test_schema_validation_rejects_missing_keys(self, tmp_path):
         """distill_context should return {} when LLM output is missing required keys."""
@@ -431,14 +471,16 @@ class TestDistillerCheckpointWriteAndSchemaValidation:
         from src.core.memory import distiller
 
         messages = [{"role": "user", "content": "task"}]
-        complete_json = json.dumps({
-            "current_task": "do foo",
-            "current_state": "in progress",
-            "next_step": "run tests",
-            "files_modified": [],
-            "completed_steps": [],
-            "errors_resolved": [],
-        })
+        complete_json = json.dumps(
+            {
+                "current_task": "do foo",
+                "current_state": "in progress",
+                "next_step": "run tests",
+                "files_modified": [],
+                "completed_steps": [],
+                "errors_resolved": [],
+            }
+        )
 
         with patch.object(distiller, "_call_llm_sync", return_value=complete_json):
             result = distiller.distill_context(messages, working_dir=tmp_path)
@@ -450,6 +492,7 @@ class TestDistillerCheckpointWriteAndSchemaValidation:
 # P2-5: safe_resolve in run_tests
 # ---------------------------------------------------------------------------
 
+
 class TestVerificationRunTestsSafeWorkdirResolution:
     def test_run_tests_resolves_workdir(self, tmp_path):
         """run_tests should resolve workdir (no path traversal)."""
@@ -459,19 +502,51 @@ class TestVerificationRunTestsSafeWorkdirResolution:
         result = _safe_resolve_workdir(str(tmp_path))
         assert Path(result).is_absolute()
 
-    def test_run_tests_resolves_dotdot(self, tmp_path):
-        """_safe_resolve_workdir resolves ../.. without blocking (just normalizes)."""
+    def test_run_tests_rejects_etc_traversal(self):
+        """_safe_resolve_workdir must reject /etc as a blocked system directory."""
         from src.tools.verification_tools import _safe_resolve_workdir
 
-        tricky = str(tmp_path / "subdir" / ".." / "..")
-        result = _safe_resolve_workdir(tricky)
-        assert ".." not in result, "Result should not contain .."
-        assert Path(result).is_absolute()
+        try:
+            _safe_resolve_workdir("/etc/passwd")
+            assert False, "Should have raised ValueError"
+        except ValueError as e:
+            assert "blocked system directory" in str(e)
+
+    def test_run_tests_rejects_etc_direct(self):
+        """_safe_resolve_workdir must reject /etc directly."""
+        from src.tools.verification_tools import _safe_resolve_workdir
+
+        try:
+            _safe_resolve_workdir("/etc")
+            assert False, "Should have raised ValueError"
+        except ValueError as e:
+            assert "blocked system directory" in str(e)
+
+    def test_run_tests_rejects_relative_path(self):
+        """_safe_resolve_workdir must require absolute paths."""
+        from src.tools.verification_tools import _safe_resolve_workdir
+
+        try:
+            _safe_resolve_workdir("some/relative/path")
+            assert False, "Should have raised ValueError"
+        except ValueError as e:
+            assert "absolute path" in str(e)
+
+    def test_run_tests_rejects_usr_traversal(self):
+        """_safe_resolve_workdir must reject /usr as a blocked system directory."""
+        from src.tools.verification_tools import _safe_resolve_workdir
+
+        try:
+            _safe_resolve_workdir("/usr/bin")
+            assert False, "Should have raised ValueError"
+        except ValueError as e:
+            assert "blocked system directory" in str(e)
 
 
 # ---------------------------------------------------------------------------
 # P2-6: int coercion in edit_by_line_range
 # ---------------------------------------------------------------------------
+
 
 class TestEditByLineRangeStringToIntLineNumberCoercion:
     def test_string_line_numbers_accepted(self, tmp_path):
@@ -484,7 +559,7 @@ class TestEditByLineRangeStringToIntLineNumberCoercion:
 
         result = edit_by_line_range(
             path="foo.py",
-            start_line="2",   # string, not int
+            start_line="2",  # string, not int
             end_line="2",
             new_content="replaced\n",
             workdir=tmp_path,
@@ -514,6 +589,7 @@ class TestEditByLineRangeStringToIntLineNumberCoercion:
 # P2-10: syntax_check timeout
 # ---------------------------------------------------------------------------
 
+
 class TestSyntaxCheckReturnsPartialStatusOnTimeout:
     def test_syntax_check_respects_timeout(self, tmp_path):
         """syntax_check should return partial status when timeout exceeded."""
@@ -534,7 +610,9 @@ class TestSyntaxCheckReturnsPartialStatusOnTimeout:
                 return start + 1000  # way past any deadline
             return start
 
-        with patch("src.tools.verification_tools.time.monotonic", side_effect=fake_monotonic):
+        with patch(
+            "src.tools.verification_tools.time.monotonic", side_effect=fake_monotonic
+        ):
             result = verification_tools.syntax_check(str(tmp_path), timeout_secs=0.001)
 
         # Should be "partial" (timed out) or "ok"/"fail" (fast enough)
@@ -544,6 +622,7 @@ class TestSyntaxCheckReturnsPartialStatusOnTimeout:
         """syntax_check function must accept timeout_secs parameter."""
         import inspect
         from src.tools.verification_tools import syntax_check
+
         sig = inspect.signature(syntax_check)
         assert "timeout_secs" in sig.parameters
 
@@ -551,6 +630,7 @@ class TestSyntaxCheckReturnsPartialStatusOnTimeout:
 # ---------------------------------------------------------------------------
 # P2-8: wave execution partial failure recovery
 # ---------------------------------------------------------------------------
+
 
 class TestWaveCoordinatorSkipsExhaustedRetrySteps:
     def test_exhausted_retry_steps_treated_as_done_in_wave(self):
@@ -577,4 +657,6 @@ class TestWaveCoordinatorSkipsExhaustedRetrySteps:
                 all_in_wave_complete = False
                 break
 
-        assert all_in_wave_complete, "Wave should be complete when failed step exhausted retries"
+        assert all_in_wave_complete, (
+            "Wave should be complete when failed step exhausted retries"
+        )

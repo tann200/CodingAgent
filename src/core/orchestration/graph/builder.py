@@ -159,18 +159,17 @@ _COMPLEXITY_KEYWORDS_EXACT = (
 )
 
 # These short verbs are matched with word boundaries to avoid false positives.
+# HR-2 fix: Only genuinely multi-step verbs remain. Common single-file action
+# verbs (add, edit, change, update, delete, remove, insert, modify, append,
+# prepend) were removed because they fire on virtually all coding tasks,
+# making the fast-path dead code and forcing 6 extra LLM calls per simple edit.
 _COMPLEXITY_KEYWORDS_WORD = (
-    "add",
-    "edit",
-    "modify",
-    "update",
-    "append",
-    "prepend",
-    "change",
-    "replace",
-    "delete",
-    "remove",
-    "insert",
+    "refactor",
+    "rewrite",
+    "implement",
+    "migrate",
+    "migrate all",
+    "restructure",
 )
 
 _COMPLEXITY_WORD_RE = _re.compile(
@@ -432,8 +431,17 @@ def should_after_execution(
 
     # W2: fast-path failure - route to analysis for repo context
     # before retrying, rather than re-issuing the same failing tool call.
+    # HR-4: Enforce per-failure retry cap for no-plan execution path.
+    no_plan_fail_count = int(state.get("no_plan_fail_count") or 0) + 1
+    if no_plan_fail_count >= 3:
+        logger.warning(
+            f"should_after_execution: no-plan fail count {no_plan_fail_count} >= 3, "
+            "bailing to memory_sync"
+        )
+        return "memory_sync"
     logger.info(
-        "should_after_execution: no plan, execution failed — going to analysis (W2)"
+        f"should_after_execution: no plan, execution failed (attempt {no_plan_fail_count}) "
+        "— going to analysis (W2)"
     )
     return "analysis"
 
@@ -587,6 +595,31 @@ def should_after_evaluation(
         logger.info("should_after_evaluation: task complete, going to memory_sync")
         return "memory_sync"
     elif evaluation_result == "replan":
+        # WR-2 fix: Guard against infinite loop when the current step has exhausted its
+        # retry budget.  When should_after_step_controller sees retries >= MAX_STEP_RETRIES
+        # it routes to verification instead of execution.  Verification passes (no side-
+        # effect to verify), evaluation returns "replan" (plan incomplete) → step_controller
+        # → same exhausted step → verification → evaluation → ... unbounded loop.
+        # Fix: if the current step already has >= MAX_STEP_RETRIES recorded, route to debug
+        # so a targeted fix can be generated, rather than looping.
+        _MAX_STEP_RETRIES = 3
+        _current_step = int(state.get("current_step") or 0)
+        _step_retry_counts: dict = state.get("step_retry_counts") or {}
+        _step_retries = int(_step_retry_counts.get(str(_current_step), 0))
+        if _step_retries >= _MAX_STEP_RETRIES:
+            logger.warning(
+                f"should_after_evaluation: replan requested but step {_current_step} has "
+                f"exhausted retries ({_step_retries}/{_MAX_STEP_RETRIES}) — routing to debug"
+            )
+            # Use the same total_debug_attempts guard as the "debug" branch above
+            MAX_TOTAL_DEBUG = 9
+            total_debug = int(state.get("total_debug_attempts") or 0)
+            if total_debug >= MAX_TOTAL_DEBUG:
+                logger.warning(
+                    "should_after_evaluation: total_debug_attempts cap reached on replan→debug path"
+                )
+                return "memory_sync"
+            return "debug"
         logger.info(
             "should_after_evaluation: more work needed, going to step_controller"
         )
@@ -681,6 +714,12 @@ def should_after_analysis(
     Complex tasks (same heuristic as _task_is_complex) are sent through the
     analyst_delegation_node to get a deep-dive <findings> report before planning.
     Simple tasks go directly to planning to avoid the subagent overhead.
+
+    WR-5: This intentionally re-calls _task_is_complex after analysis because
+    analysis may have populated `relevant_files` (>3 entries triggers complexity)
+    or `current_plan` (≥2 steps triggers complexity), so the classification may
+    differ from the route_after_perception call that sent the task here.  The
+    duplicate call is deliberate — not dead code.
     """
     if _task_is_complex(state):
         logger.info(
@@ -952,7 +991,14 @@ def _reset_compiled_graph() -> None:
 
 def route_execution(
     state: AgentState,
-) -> Literal["wait_for_user", "step_controller", "replan", "analysis", "perception", "memory_sync"]:
+) -> Literal[
+    "wait_for_user",
+    "step_controller",
+    "replan",
+    "analysis",
+    "perception",
+    "memory_sync",
+]:
     """
     Route after execution node.
 

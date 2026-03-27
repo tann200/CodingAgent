@@ -69,6 +69,19 @@ async def debug_node(state: AgentState, config: Any) -> Dict[str, Any]:
         v = verification_result.get("linter", {})
         if v.get("status") == "fail":
             error_summary += f" Linter: {v.get('stdout', '')[:200]}"
+        # HR-3 fix: also check JS/TS verification keys
+        v = verification_result.get("js_tests", {})
+        if v.get("status") == "fail":
+            error_summary += f" JS tests: {v.get('stdout', '')[:300]}"
+        v = verification_result.get("ts_check", {})
+        if v.get("status") == "fail":
+            error_summary += f" TypeScript check: {v.get('stdout', '')[:300]}"
+        v = verification_result.get("eslint", {})
+        if v.get("status") == "fail":
+            error_summary += f" ESLint: {v.get('stdout', '')[:200]}"
+        v = verification_result.get("syntax", {})
+        if v.get("status") == "fail":
+            error_summary += f" Syntax: {v.get('stdout', '')[:200]}"
 
     if current_attempt >= max_attempts:
         logger.warning("debug_node: max attempts reached, giving up")

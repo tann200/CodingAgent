@@ -2463,6 +2463,7 @@ class Orchestrator:
         # Reset read-before-write guardrail state for the new task
         try:
             from src.tools.guardrails import reset_guardrail_state
+
             reset_guardrail_state()
         except Exception:
             pass
@@ -2487,6 +2488,24 @@ class Orchestrator:
         # memory_sync does not spuriously route to delegation_node on the next run.
         if hasattr(self, "_pending_delegations"):
             self._pending_delegations = []
+
+        # MM-1 fix: Invalidate compaction checkpoint from previous task to
+        # prevent cross-task memory contamination.
+        try:
+            _cp = Path(self.working_dir) / ".agent-context" / "compaction_checkpoint.md"
+            if _cp.exists():
+                _cp.unlink()
+        except Exception:
+            pass
+
+        # PB-2 fix: Invalidate ContextBuilder module-level file caches so that
+        # role/skill YAML files modified on disk between tasks are re-read rather
+        # than served from a process-global stale cache entry.
+        try:
+            from src.core.context.context_builder import ContextBuilder
+            ContextBuilder.clear_cache()
+        except Exception:
+            pass
 
         # HR-8 fix: clear stale preview events so wait_for_user_node does not
         # block on a preview that was never confirmed/rejected in the last task.

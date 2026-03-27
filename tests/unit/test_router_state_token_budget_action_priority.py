@@ -33,9 +33,11 @@ class TestRouterFunctionsDoNotMutateState:
         from src.core.orchestration.graph.builder import (
             should_after_execution_with_replan,
         )
+
         # Patch the budget monitor inside the token_budget module so it doesn't
         # trigger compaction (the function imports it locally inside itself).
         from src.core.orchestration import token_budget as _tb
+
         orig_instance = _tb.TokenBudgetMonitor._instance
 
         mock_monitor = MagicMock()
@@ -73,6 +75,7 @@ class TestRouterFunctionsDoNotMutateState:
             should_after_execution_with_compaction,
         )
         from src.core.orchestration import token_budget as _tb
+
         orig_instance = _tb.TokenBudgetMonitor._instance
 
         mock_monitor = MagicMock()
@@ -250,17 +253,13 @@ class TestDistillContextCompactsHistoryAtThreshold:
         )
         compacted = result["_compacted_history"]
         assert isinstance(compacted, list)
-        assert len(compacted) < 55, (
-            "Compacted history should be shorter than original"
-        )
+        assert len(compacted) < 55, "Compacted history should be shorter than original"
 
     def test_distill_context_no_compacted_history_below_50_msgs(self):
         """distill_context must NOT include '_compacted_history' for short history."""
         from src.core.memory.distiller import distill_context
 
-        messages = [
-            {"role": "user", "content": f"msg {i}"} for i in range(10)
-        ]
+        messages = [{"role": "user", "content": f"msg {i}"} for i in range(10)]
 
         with patch(
             "src.core.memory.distiller._call_llm_sync",
@@ -348,7 +347,9 @@ class TestExecutionNodePlannedActionOverridesNextAction:
 
         mock_orch = MagicMock()
         mock_orch.working_dir = str(tmp_path)
-        mock_orch.execute_tool = MagicMock(return_value={"ok": True, "output": "content"})
+        mock_orch.execute_tool = MagicMock(
+            return_value={"ok": True, "output": "content"}
+        )
         mock_orch.get_provider_capabilities = MagicMock(return_value={})
         mock_orch.cancel_event = None
         mock_orch.event_bus = None
@@ -433,8 +434,8 @@ class TestTaskComplexityKeywordWordBoundaryRegex:
             "HR-7: 'before' matched as substring of 'forebode'."
         )
 
-    def test_add_as_word_still_matches(self):
-        """'add' as a standalone word must still classify a task as complex."""
+    def test_add_as_word_no_longer_matches(self):
+        """HR-2 fix: 'add' as a standalone word must NOT classify as complex."""
         from src.core.orchestration.graph.builder import _task_is_complex
 
         state = {
@@ -443,13 +444,13 @@ class TestTaskComplexityKeywordWordBoundaryRegex:
             "current_plan": [],
         }
         result = _task_is_complex(state)
-        assert result, (
-            "Task 'Add a logging statement' should be classified as complex. "
-            "HR-7: word-boundary match should still catch 'add' as a full word."
+        assert not result, (
+            "Task 'Add a logging statement' should NOT be complex after HR-2 fix. "
+            "'add' was removed from word-boundary keywords to restore fast-path."
         )
 
-    def test_edit_as_word_still_matches(self):
-        """'edit' as a standalone word must still classify a task as complex."""
+    def test_edit_as_word_no_longer_matches(self):
+        """HR-2 fix: 'edit' as a standalone word must NOT classify as complex."""
         from src.core.orchestration.graph.builder import _task_is_complex
 
         state = {
@@ -458,7 +459,9 @@ class TestTaskComplexityKeywordWordBoundaryRegex:
             "current_plan": [],
         }
         result = _task_is_complex(state)
-        assert result
+        assert not result, (
+            "Task 'Edit the config file' should NOT be complex after HR-2 fix."
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -576,9 +579,7 @@ class TestEvaluationRouterTotalDebugAttemptsCap:
         with patch(
             "src.core.orchestration.graph.nodes.debug_node.call_model",
             return_value={
-                "choices": [
-                    {"message": {"content": "name: read_file\npath: file.py"}}
-                ]
+                "choices": [{"message": {"content": "name: read_file\npath: file.py"}}]
             },
         ):
             with patch(
@@ -619,8 +620,7 @@ class TestAnalysisNodeRelevantFilesHardCap:
         # Strip comment lines — our fix adds comments explaining the old approach
         # which mention the literal values; only check executable code.
         code = "\n".join(
-            line for line in src.splitlines()
-            if not line.lstrip().startswith("#")
+            line for line in src.splitlines() if not line.lstrip().startswith("#")
         )
         assert "line_count=50" not in code, (
             "HR-1: ContextController hardcoded line_count=50 still in executable code"
@@ -701,7 +701,7 @@ class TestRouteExecutionConditionalBranches:
             "replan_required": None,
             "awaiting_plan_approval": False,
             "awaiting_user_input": False,
-            "current_plan": [],          # no plan — fast-path mode
+            "current_plan": [],  # no plan — fast-path mode
             "current_step": 0,
             "rounds": 2,
             "last_result": {"ok": False},  # execution failed
@@ -760,8 +760,8 @@ class TestPlanValidatorRouterBypassesValidationOnResumePlan:
 
         state = {
             "plan_resumed": True,
-            "plan_validation": None,   # would normally fail validation
-            "action_failed": True,     # would normally force re-plan
+            "plan_validation": None,  # would normally fail validation
+            "action_failed": True,  # would normally force re-plan
             "rounds": 2,
             "plan_attempts": 1,
             "plan_mode_enabled": False,

@@ -10,12 +10,38 @@ from src.tools._tool import tool
 
 
 def _safe_resolve_workdir(workdir: str) -> str:
-    """Resolve workdir to a real absolute path, rejecting path-traversal attempts."""
+    """Resolve workdir to a real absolute path, rejecting path-traversal attempts.
+
+    Raises ValueError when the resolved path escapes the workspace or lands in a
+    sensitive OS directory.  Uses the same resolve-and-bound-check pattern as
+    ``_path_utils.safe_resolve``.
+    """
     try:
-        resolved = str(Path(workdir).resolve())
-        return resolved
+        p = Path(workdir)
+        if not p.is_absolute():
+            raise ValueError(f"workdir must be an absolute path, got: {workdir!r}")
+        try:
+            resolved = p.resolve(strict=True)
+        except FileNotFoundError:
+            resolved = p.resolve()
+        real_path = os.path.realpath(resolved)
+
+        # Reject root-level system directories that the agent must never
+        # execute in.  Uses os.path.realpath so /etc → /private/etc on macOS.
+        _BLOCKED_BASES = ("/etc", "/usr", "/bin", "/sbin", "/boot", "/proc", "/sys")
+        for base in _BLOCKED_BASES:
+            blocked_real = os.path.realpath(base)
+            if real_path == blocked_real or real_path.startswith(blocked_real + os.sep):
+                raise ValueError(
+                    f"workdir {workdir!r} resolves to {real_path!r} which is "
+                    f"a blocked system directory"
+                )
+
+        return str(resolved)
+    except ValueError:
+        raise
     except Exception:
-        return workdir
+        raise ValueError(f"Invalid workdir: {workdir!r}")
 
 
 @tool(side_effects=["execute"], tags=["coding"])
@@ -42,7 +68,10 @@ def run_tests(
         changed_files: If provided, run tests that are in or depend on these files
     """
     # P2-5: Reject path-traversal attempts
-    workdir = _safe_resolve_workdir(workdir)
+    try:
+        workdir = _safe_resolve_workdir(workdir)
+    except ValueError as e:
+        return {"status": "error", "error": str(e)}
     try:
         if not shutil.which("pytest"):
             return {"status": "skipped", "reason": "pytest not installed"}
@@ -255,6 +284,9 @@ def run_linter(
     - total_errors: number of errors
     - total_warnings: number of warnings
     - errors: list of {file, line, message, severity, language} dicts
+
+    Subprocess calls are dispatched to helpers that each enforce timeout=60 or
+    timeout=120 so a hung linter can never block verification_node indefinitely.
     """
     try:
         # Collect files to lint

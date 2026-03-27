@@ -84,6 +84,16 @@ jobs:
         with:
           name: coverage-report
           path: coverage.xml
+      - name: Run e2e tests
+        run: |
+          python -m pytest tests/e2e -q -p no:logging
+        env:
+          CI: "true"
+      - name: Run benchmark tests (ET-3)
+        run: |
+          python -m pytest tests/benchmarks -q -p no:logging
+        env:
+          CI: "true"
       - name: Run integration tests (optional)
         if: ${{ env.RUN_INTEGRATION == '1' || github.event_name == 'schedule' || github.event.inputs.run_integration == 'true' }}
         run: |

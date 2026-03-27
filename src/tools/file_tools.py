@@ -26,6 +26,7 @@ from src.tools._security import (
     CODE_EXEC_INTERPRETERS,
     CODE_EXEC_FLAGS,
     TAR_EXTRACT_FLAGS,
+    TAR_CREATE_FLAGS,
 )
 
 
@@ -557,6 +558,14 @@ def bash(command: str, workdir: Path = DEFAULT_WORKDIR) -> Dict[str, Any]:
                     "status": "error",
                     "error": "tar extract is not allowed. Use tar -t / --list to inspect archives.",
                 }
+            # TS-2 fix: block archive creation/append flags (-c, -r, -u, -cf, etc.)
+            if part in TAR_CREATE_FLAGS or (
+                part.startswith("-") and not part.startswith("--") and "c" in stripped
+            ):
+                return {
+                    "status": "error",
+                    "error": "tar archive creation is not allowed. SAFE_COMMANDS permits tar for inspection only.",
+                }
     elif first_cmd == "unzip":
         if "-l" not in cmd_parts[1:]:
             return {
@@ -696,6 +705,13 @@ def bash_readonly(command: str, workdir: Path = DEFAULT_WORKDIR) -> Dict[str, An
                 return {
                     "status": "error",
                     "error": "tar extract is not allowed in read-only mode.",
+                }
+            if part in TAR_CREATE_FLAGS or (
+                part.startswith("-") and not part.startswith("--") and "c" in stripped
+            ):
+                return {
+                    "status": "error",
+                    "error": "tar archive creation is not allowed in read-only mode.",
                 }
     elif first_cmd == "unzip":
         if "-l" not in cmd_parts[1:]:

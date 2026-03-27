@@ -55,7 +55,7 @@ class AgentState(TypedDict):
     delegation_depth: Optional[int]
     # Debug retry tracking
     debug_attempts: Optional[int]
-    max_debug_attempts: int
+    max_debug_attempts: Optional[int]  # defaults to 3 at runtime
     # W4: Global debug attempts cap across all error types (prevents 3×N loop on alternating errors)
     total_debug_attempts: Optional[int]
     # Tracks error type from previous debug attempt for W6 fix (reset attempts on error-type change)
@@ -64,12 +64,12 @@ class AgentState(TypedDict):
     verification_passed: Optional[bool]
     verification_result: Optional[Dict[str, Any]]
     # Step controller
-    step_controller_enabled: bool
+    step_controller_enabled: Optional[bool]  # defaults to True at runtime
     # Task decomposition
     task_decomposed: Optional[bool]
     # Tool call budget — enforced in should_after_execution (W12 fix: bails to memory_sync when count >= max)
-    tool_call_count: int
-    max_tool_calls: int
+    tool_call_count: Optional[int]  # defaults to 0 at runtime
+    max_tool_calls: Optional[int]  # defaults to 50 at runtime
     # Last tool name executed (W1: used by verification_node to detect side-effecting tools)
     last_tool_name: Optional[str]
     # Repo summary data (automatically generated in analysis phase)
@@ -84,7 +84,7 @@ class AgentState(TypedDict):
     # Cancel event for interrupting LLM generation
     cancel_event: Optional[Any]
     # Infinite loop prevention: track consecutive empty/no-tool responses
-    empty_response_count: int
+    empty_response_count: Optional[int]  # defaults to 0 at runtime
     # Original task before step-level decomposition focuses task on sub-step
     original_task: Optional[str]
     # Step controller: current step description and action hint for execution_node
@@ -99,6 +99,9 @@ class AgentState(TypedDict):
     task_history: Optional[List[Dict[str, Any]]]
     # H2: Per-step retry counter keyed by str(step_index) — prevents infinite retry on a broken step
     step_retry_counts: Optional[Dict[str, int]]
+    # HR-4: No-plan execution consecutive failure counter — prevents unbounded retry loops
+    # when executing without a plan (fast-path). Reset on success, cap at 3.
+    no_plan_fail_count: Optional[int]
     # Tool cooldown: keyed by "tool_name:path_arg", value = tool_call_count at last use.
     # Prevents repeated identical read-tool calls (spam) within COOLDOWN_GAP tool executions.
     tool_last_used: Optional[Dict[str, int]]
@@ -108,11 +111,11 @@ class AgentState(TypedDict):
     # Phase A: Dependency DAG (replaces flat current_plan)
     plan_dag: Optional[Dict[str, Any]]
     execution_waves: Optional[List[List[str]]]
-    current_wave: int
+    current_wave: Optional[int]  # defaults to 0 at runtime
     # Phase 3: Preview Mode
     pending_preview_id: Optional[str]
-    preview_mode_enabled: bool
-    awaiting_user_input: bool
+    preview_mode_enabled: Optional[bool]  # defaults to False at runtime
+    awaiting_user_input: Optional[bool]  # defaults to False at runtime
     preview_confirmed: Optional[bool]
     # Token Auto-Compact triggers
     _should_distill: Optional[bool]
@@ -121,8 +124,10 @@ class AgentState(TypedDict):
     # P2P context buffering
     _p2p_context: Optional[List[Dict[str, Any]]]
     # Plan Mode: plan-first development gate
-    plan_mode_enabled: bool  # True: write tools blocked until plan approved
-    awaiting_plan_approval: bool  # True: graph suspended pending user plan approval
+    plan_mode_enabled: Optional[bool]  # True: write tools blocked until plan approved
+    awaiting_plan_approval: Optional[
+        bool
+    ]  # True: graph suspended pending user plan approval
     plan_mode_approved: Optional[bool]  # Set by wait_for_user_node after user decision
     plan_mode_blocked_tool: Optional[str]  # Which tool triggered the plan mode gate
     # PRSW: FileLockManager reference for parallel read / sequential write coordination
@@ -137,14 +142,14 @@ class AgentState(TypedDict):
     last_compact_at: Optional[
         Any
     ]  # datetime | None — avoids importing datetime at module level
-    last_compact_turn: int  # turn counter when last compaction occurred
-    context_degradation_detected: (
-        bool  # True when model quality degradation is detected
-    )
+    last_compact_turn: Optional[int]  # turn counter when last compaction occurred
+    context_degradation_detected: Optional[
+        bool
+    ]  # True when model quality degradation is detected
     # P1-2: planning→validator→planning inner-loop counter (separate from rounds)
-    plan_attempts: int
+    plan_attempts: Optional[int]  # defaults to 0 at runtime
     # P1-3: evaluation→replan inner-loop counter
-    replan_attempts: int
+    replan_attempts: Optional[int]  # defaults to 0 at runtime
     # P3-1: Structured call graph and test map from analysis phase (JSON dicts, not prose)
     call_graph: Optional[Dict[str, Any]]
     test_map: Optional[Dict[str, Any]]

@@ -513,7 +513,8 @@ class TestSkillLearnerMemoryNodeWiring:
     async def test_skill_created_on_successful_multi_tool_task(
         self, tmp_path, mock_config, monkeypatch
     ):
-        """A new skill file is created when task succeeds with ≥2 tool calls."""
+        """MM-2 fix: skills are NOT created by default (ENABLE_ADVANCED_MEMORY=0).
+        With ENABLE_ADVANCED_MEMORY=1 skills are created for ≥2 tool calls."""
 
         def mock_distill(*args, **kwargs):
             return {}
@@ -521,6 +522,11 @@ class TestSkillLearnerMemoryNodeWiring:
         monkeypatch.setattr(
             "src.core.orchestration.graph.nodes.memory_update_node.distill_context",
             mock_distill,
+        )
+        # Enable advanced memory for this test to exercise the skill-creation path.
+        monkeypatch.setattr(
+            "src.core.orchestration.graph.nodes.memory_update_node._ADVANCED_MEMORY_ENABLED",
+            True,
         )
 
         from src.core.orchestration.graph.nodes.memory_update_node import memory_update_node
@@ -541,7 +547,7 @@ class TestSkillLearnerMemoryNodeWiring:
 
         skill_dir = tmp_path / "agent-brain" / "skills"
         skills = list(skill_dir.glob("*.md")) if skill_dir.exists() else []
-        assert len(skills) >= 1, "Expected at least one skill file to be created"
+        assert len(skills) >= 1, "Expected at least one skill file to be created with ENABLE_ADVANCED_MEMORY=1"
 
     @pytest.mark.asyncio
     async def test_skill_not_created_for_single_tool_task(
@@ -580,7 +586,8 @@ class TestSkillLearnerMemoryNodeWiring:
     async def test_duplicate_skill_not_created(
         self, tmp_path, mock_config, monkeypatch
     ):
-        """Running the same task twice does not create duplicate skill files."""
+        """MM-2 fix: with ENABLE_ADVANCED_MEMORY=1, running the same task twice
+        does not create duplicate skill files."""
 
         def mock_distill(*args, **kwargs):
             return {}
@@ -588,6 +595,10 @@ class TestSkillLearnerMemoryNodeWiring:
         monkeypatch.setattr(
             "src.core.orchestration.graph.nodes.memory_update_node.distill_context",
             mock_distill,
+        )
+        monkeypatch.setattr(
+            "src.core.orchestration.graph.nodes.memory_update_node._ADVANCED_MEMORY_ENABLED",
+            True,
         )
 
         from src.core.orchestration.graph.nodes.memory_update_node import memory_update_node

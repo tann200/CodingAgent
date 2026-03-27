@@ -23,6 +23,13 @@ from src.core.memory.advanced_features import (
     SkillLearner,
 )
 
+# MM-2 fix: Gate all advanced memory subsystems behind an env-var flag.
+# They add LLM call overhead at memory-sync time but their outputs are not yet
+# consumed by any planning or context-building pathway.  Disabled by default;
+# set ENABLE_ADVANCED_MEMORY=1 to opt in.
+import os as _os
+_ADVANCED_MEMORY_ENABLED: bool = _os.environ.get("ENABLE_ADVANCED_MEMORY", "0").strip() == "1"
+
 logger = logging.getLogger(__name__)
 
 _executor = ThreadPoolExecutor(max_workers=4)
@@ -243,13 +250,27 @@ async def memory_update_node(state: AgentState, config: Any) -> Dict[str, Any]:
         except Exception as e:
             logger.warning(f"memory_update_node: skill learning failed: {e}")
 
+    # MM-2 fix: advanced memory features are gated behind ENABLE_ADVANCED_MEMORY=1.
+    # By default they are disabled because their outputs are not yet consumed by any
+    # planning/context pathway, and they add unnecessary LLM call overhead per task.
+    if _ADVANCED_MEMORY_ENABLED:
+        advanced_tasks = [
+            run_trajectory_logging(),
+            run_dream_consolidation(),
+            run_review_agent(),
+            run_refactoring_agent(),
+            run_skill_learner(),
+        ]
+        logger.info("memory_update_node: running advanced memory features (ENABLE_ADVANCED_MEMORY=1)")
+    else:
+        # Always run trajectory logging (pure file write, no LLM cost) even when advanced
+        # features are disabled — it provides useful audit trails with zero overhead.
+        advanced_tasks = [run_trajectory_logging()]
+        logger.debug("memory_update_node: advanced memory features disabled (set ENABLE_ADVANCED_MEMORY=1 to enable)")
+
     # Use return_exceptions=True so all tasks run even if some fail (H14 fix)
     results = await asyncio.gather(
-        run_trajectory_logging(),
-        run_dream_consolidation(),
-        run_review_agent(),
-        run_refactoring_agent(),
-        run_skill_learner(),
+        *advanced_tasks,
         return_exceptions=True,
     )
     for i, res in enumerate(results):

@@ -235,7 +235,7 @@ async def delegation_node(state: AgentState, config: Any) -> Dict[str, Any]:
             write_results[key] = result
 
         results["delegation_results"] = {**read_results, **write_results}
-        state["_file_lock_manager"] = lock_manager
+        results["_file_lock_manager"] = lock_manager
     else:
         # Original execution path (no PRSW)
         logger.info("delegation_node: using standard execution")
@@ -391,11 +391,11 @@ def create_delegation(
     """
     Create a delegation payload for the delegation node.
 
-    Usage in other nodes:
-        state["delegations"] = [
+    Usage in other nodes (return from node, never mutate state directly):
+        return {"delegations": [
             create_delegation("researcher", "Analyze the codebase structure"),
             create_delegation("reviewer", "Review the recent changes"),
-        ]
+        ]}
     """
     return {
         "role": role,

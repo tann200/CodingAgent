@@ -336,3 +336,145 @@ class TestSymbolGraphMultiLanguage:
         indexer = IncrementalIndexer(workdir=str(tmp_path))
         indexer.check_and_update(str(f))
         assert "handler.ts" in indexer.symbol_graph.nodes
+
+
+# ---------------------------------------------------------------------------
+# RA-2: Comment stripping to reduce false-positive symbol extraction
+# ---------------------------------------------------------------------------
+
+
+class TestSymbolGraphCommentStripping:
+    """RA-2: _strip_comments removes commented-out definitions to reduce false positives."""
+
+    def test_strip_single_line_comments_js(self, tmp_path):
+        """Commented-out function definition is not extracted."""
+        f = tmp_path / "utils.js"
+        f.write_text(
+            "// function oldHelper(x) { return x; }\n"
+            "function currentHelper(y) { return y; }\n"
+        )
+        sg = SymbolGraph(workdir=str(tmp_path))
+        symbols = sg._parse_file_regex(f)
+        names = [fn["name"] for fn in symbols["functions"]]
+        assert "currentHelper" in names
+        assert "oldHelper" not in names, "Commented-out function should not be extracted"
+
+    def test_strip_block_comments_js(self, tmp_path):
+        """Block-commented function definition is not extracted."""
+        f = tmp_path / "module.js"
+        f.write_text(
+            "/* function deprecatedFn() {} */\n"
+            "function activeFn() {}\n"
+        )
+        sg = SymbolGraph(workdir=str(tmp_path))
+        symbols = sg._parse_file_regex(f)
+        names = [fn["name"] for fn in symbols["functions"]]
+        assert "activeFn" in names
+        assert "deprecatedFn" not in names, "Block-commented function should not be extracted"
+
+    def test_strip_multiline_block_comments_ts(self, tmp_path):
+        """Multi-line block comment spanning a class definition is not extracted."""
+        f = tmp_path / "types.ts"
+        f.write_text(
+            "/*\n"
+            " * Old API — kept for reference\n"
+            " * class LegacyClient {\n"
+            " *   connect() {}\n"
+            " * }\n"
+            " */\n"
+            "export class ModernClient {}\n"
+        )
+        sg = SymbolGraph(workdir=str(tmp_path))
+        symbols = sg._parse_file_regex(f)
+        cls_names = [c["name"] for c in symbols["classes"]]
+        assert "ModernClient" in cls_names
+        assert "LegacyClient" not in cls_names, "Class inside block comment should not be extracted"
+
+    def test_line_numbers_reasonable_after_stripping_ts(self, tmp_path):
+        """Real symbol has a positive line number after comment stripping.
+
+        Exact line numbers are not asserted here because the regex-based patterns
+        use ``(?:^|\\s)`` prefix (non-lookbehind), which may shift the reported
+        position by at most 1 line when a function appears immediately after
+        stripped content.  The important invariant is that the symbol IS found
+        and has a sensible (positive, ≤ total-line-count) line number.
+        """
+        f = tmp_path / "numbered.ts"
+        # Line 1: single-line comment → stripped to blank
+        # Line 2: blank
+        # Line 3: real function definition
+        f.write_text(
+            "// function ghost() {}\n"
+            "\n"
+            "function realFn() {}\n"
+        )
+        sg = SymbolGraph(workdir=str(tmp_path))
+        symbols = sg._parse_file_regex(f)
+        fn = next((x for x in symbols["functions"] if x["name"] == "realFn"), None)
+        assert fn is not None, "realFn should be extracted even with a commented line above it"
+        assert 1 <= fn["line"] <= 3, f"realFn line {fn['line']} is out of expected range [1, 3]"
+
+    def test_line_numbers_reasonable_after_multiline_block_comment(self, tmp_path):
+        """Symbol after a multi-line block comment has a reasonable line number.
+
+        Block comments are replaced with equal numbers of newlines (preserving
+        line counts), so the reported line should be within 1 of the true line.
+        """
+        f = tmp_path / "lined.js"
+        # Lines 1-4: block comment
+        # Line 5: blank
+        # Line 6: real function
+        f.write_text(
+            "/*\n"
+            " * comment line 2\n"
+            " * comment line 3\n"
+            " */\n"
+            "\n"
+            "function realFunc() {}\n"
+        )
+        sg = SymbolGraph(workdir=str(tmp_path))
+        symbols = sg._parse_file_regex(f)
+        fn = next((x for x in symbols["functions"] if x["name"] == "realFunc"), None)
+        assert fn is not None, "realFunc should be extracted"
+        # The true line is 6; allow ±1 for the (?:^|\s) prefix offset
+        assert 5 <= fn["line"] <= 6, f"realFunc line {fn['line']} is out of expected range [5, 6]"
+
+    def test_strip_comments_static_method_direct(self):
+        """_strip_comments static method strips correctly on direct call."""
+        source = "// function ghost() {}\nfunction real() {}\n"
+        stripped = SymbolGraph._strip_comments(source, ".js")
+        assert "ghost" not in stripped
+        assert "real" in stripped
+
+    def test_strip_comments_preserves_newlines(self):
+        """Block comment stripping keeps newlines so line counts remain accurate."""
+        source = "/*\ncomment\n*/\nfunction foo() {}\n"
+        stripped = SymbolGraph._strip_comments(source, ".ts")
+        # stripped should have same number of lines as original
+        assert stripped.count("\n") == source.count("\n")
+
+    def test_go_single_line_comments_stripped(self, tmp_path):
+        """Go // comments do not produce false-positive symbols."""
+        f = tmp_path / "server.go"
+        f.write_text(
+            "// func ghostHandler(w http.ResponseWriter) {}\n"
+            "func realHandler(w http.ResponseWriter) {}\n"
+        )
+        sg = SymbolGraph(workdir=str(tmp_path))
+        symbols = sg._parse_file_regex(f)
+        fn_names = [fn["name"] for fn in symbols["functions"]]
+        assert "realHandler" in fn_names
+        assert "ghostHandler" not in fn_names
+
+    def test_rust_block_comment_stripped(self, tmp_path):
+        """Rust /* */ comments do not produce false-positive symbols."""
+        f = tmp_path / "lib.rs"
+        f.write_text(
+            "/* pub fn old_api() {} */\n"
+            "pub fn new_api() {}\n"
+        )
+        sg = SymbolGraph(workdir=str(tmp_path))
+        symbols = sg._parse_file_regex(f)
+        fn_names = [fn["name"] for fn in symbols["functions"]]
+        assert "new_api" in fn_names
+        assert "old_api" not in fn_names

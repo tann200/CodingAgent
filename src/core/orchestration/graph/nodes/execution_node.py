@@ -175,7 +175,9 @@ async def execution_node(state: AgentState, config: Any) -> Dict[str, Any]:
         # Call LLM to generate a tool for this step
         try:
             if not orchestrator or not getattr(orchestrator, "tool_registry", None):
-                raise RuntimeError("execution_node: orchestrator or tool_registry unavailable for LLM step generation")
+                raise RuntimeError(
+                    "execution_node: orchestrator or tool_registry unavailable for LLM step generation"
+                )
             builder = ContextBuilder(working_dir=state.get("working_dir"))
             tools_list = [
                 {"name": n, "description": m.get("description", "")}
@@ -248,7 +250,9 @@ Generate the appropriate tool call to complete this step. Respond with ONLY a to
                     session_id=state.get("session_id"),
                 )
             except asyncio.CancelledError:
-                logger.info("execution_node: LLM call cancelled (asyncio.CancelledError)")
+                logger.info(
+                    "execution_node: LLM call cancelled (asyncio.CancelledError)"
+                )
                 raise
 
             # Check cancellation after the model returns — cancel_event may have
@@ -406,10 +410,10 @@ Generate the appropriate tool call to complete this step. Respond with ONLY a to
         # not generically `path`.  find_symbol uses `name`; search_code uses `query`;
         # grep uses `pattern`; file-reading tools use `path`/`file_path`.
         _primary_arg = (
-            args.get("name")          # find_symbol
-            or args.get("query")      # search_code
-            or args.get("pattern")    # grep
-            or path_arg               # read_file, glob, fs.read
+            args.get("name")  # find_symbol
+            or args.get("query")  # search_code
+            or args.get("pattern")  # grep
+            or path_arg  # read_file, glob, fs.read
             or ""
         )
         _cooldown_key = f"{tool_name}:{_primary_arg}"
@@ -516,14 +520,17 @@ Generate the appropriate tool call to complete this step. Respond with ONLY a to
             plan_mode = getattr(orchestrator, "plan_mode", None)
             if plan_mode is None:
                 from src.core.orchestration.plan_mode import PlanMode
+
                 plan_mode = PlanMode(orchestrator)
             if plan_mode.is_blocked(tool_name):
                 if not plan_mode.pending_plan:
-                    plan_mode.set_pending_plan({
-                        "plan": state.get("current_plan"),
-                        "blocked_tool": tool_name,
-                        "args": args,
-                    })
+                    plan_mode.set_pending_plan(
+                        {
+                            "plan": state.get("current_plan"),
+                            "blocked_tool": tool_name,
+                            "args": args,
+                        }
+                    )
                 blocked_msg = (
                     f"Plan Mode: tool '{tool_name}' is blocked pending plan approval. "
                     f"Review and approve the proposed plan before execution continues."
@@ -739,7 +746,6 @@ Generate the appropriate tool call to complete this step. Respond with ONLY a to
     # Check if execution was successful (handle both {"ok": True} and {"status": "ok"} formats)
     execution_ok = res.get("ok") or res.get("status") == "ok"
     if execution_ok:
-
         # Check actual tool logic success (different from tool wrapper success)
         actual_res = res.get("result", {})
 
@@ -899,6 +905,18 @@ Generate the appropriate tool call to complete this step. Respond with ONLY a to
     # W12: Increment tool call budget counter on every execution
     tool_call_count = int(state.get("tool_call_count") or 0) + 1
 
+    # HR-4: Track no-plan execution failure count
+    no_plan_fail_update = {}
+    current_plan = state.get("current_plan")
+    if not current_plan:
+        execution_ok = res.get("ok") or res.get("status") == "ok"
+        if execution_ok:
+            no_plan_fail_update = {"no_plan_fail_count": 0}
+        else:
+            no_plan_fail_update = {
+                "no_plan_fail_count": int(state.get("no_plan_fail_count") or 0) + 1
+            }
+
     # Consume plan_mode_approved after first successful write tool execution.
     # This resets the approval flag so subsequent plan cycles require fresh approval.
     plan_approval_consumed = {}
@@ -924,4 +942,5 @@ Generate the appropriate tool call to complete this step. Respond with ONLY a to
         **replan_triggered,
         **plan_progress_event,
         **plan_approval_consumed,
+        **no_plan_fail_update,
     }

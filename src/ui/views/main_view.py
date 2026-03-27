@@ -62,6 +62,9 @@ class MainViewController:
         self._subscribe("tool.execute.error", self._on_tool_error)
         # subscribe to plan events
         self._subscribe("plan.progress", self._on_plan_progress)
+        # UP-1 fix: subscribe to plan approval events so TUI shows a clear label
+        # when the graph is suspended in wait_for_user_node awaiting user approval.
+        self._subscribe("plan.requested", self._on_plan_approval_requested)
         # subscribe to verification events
         self._subscribe("verification.complete", self._on_verification)
         # Phase 4: subscribe to token budget events
@@ -182,6 +185,21 @@ class MainViewController:
     def _on_plan_progress(self, payload: Dict[str, Any]):
         if isinstance(payload, dict):
             self.dashboard.plan_progress = payload
+
+    def _on_plan_approval_requested(self, payload: Dict[str, Any]):
+        # UP-1 fix: surface a clear "Waiting for plan approval" notification so
+        # users understand why execution is paused — previously showed a silent spinner.
+        if isinstance(payload, dict):
+            plan = payload.get("plan") or []
+            blocked_tool = payload.get("blocked_tool") or "write"
+            step_count = len(plan) if isinstance(plan, list) else "?"
+            msg = (
+                f"⏸ Waiting for plan approval ({step_count} steps, "
+                f"next: '{blocked_tool}'). "
+                "Review the proposed plan and approve or reject it."
+            )
+            self.state.last_notification = msg
+            self.state.notification_level = "warning"
 
     def _on_verification(self, payload: Dict[str, Any]):
         if isinstance(payload, dict):
