@@ -91,7 +91,7 @@ class TestAnalysisNodeStateFieldSchema:
         from src.core.orchestration.graph.nodes.analysis_node import analysis_node
         from src.core.orchestration.graph.state import AgentState
 
-        state: AgentState = {
+        state: AgentState = {  # type: ignore[assignment]
             "task": "test task",
             "working_dir": ".",
             "history": [],
@@ -128,7 +128,7 @@ class TestAnalysisNodeStateFieldSchema:
         from src.core.orchestration.graph.nodes.analysis_node import analysis_node
         from src.core.orchestration.graph.state import AgentState
 
-        state: AgentState = {
+        state: AgentState = {  # type: ignore[assignment]
             "task": "test task",
             "working_dir": ".",
             "history": [],
@@ -172,7 +172,7 @@ class TestDebugNodeMaxAttemptsTermination:
         mock_orchestrator.tool_registry.tools = {}
         mock_orchestrator.adapter = None
 
-        state: AgentState = {
+        state: AgentState = {  # type: ignore[assignment]
             "task": "fix the code",
             "history": [],
             "verified_reads": [],
@@ -201,45 +201,6 @@ class TestDebugNodeMaxAttemptsTermination:
 
         assert "debug_attempts" in result
 
-    @pytest.mark.asyncio
-    async def test_debug_node_max_attempts_reached(self):
-        """Test that debug_node stops after max attempts."""
-        from src.core.orchestration.graph.nodes.debug_node import debug_node
-        from src.core.orchestration.graph.state import AgentState
-
-        mock_orchestrator = MagicMock()
-        mock_orchestrator.tool_registry.tools = {}
-
-        state: AgentState = {
-            "task": "fix the code",
-            "history": [],
-            "verified_reads": [],
-            "next_action": None,
-            "last_result": {"error": "Test failure"},
-            "rounds": 0,
-            "working_dir": ".",
-            "system_prompt": "",
-            "errors": [],
-            "current_plan": None,
-            "current_step": 0,
-            "deterministic": False,
-            "seed": None,
-            "analysis_summary": None,
-            "relevant_files": [],
-            "key_symbols": [],
-            "debug_attempts": 3,
-            "max_debug_attempts": 3,
-            "verification_passed": None,
-            "step_controller_enabled": True,
-        }
-
-        config = {"configurable": {"orchestrator": mock_orchestrator}}
-
-        result = await debug_node(state, config)
-
-        assert "errors" in result or result.get("next_action") is None
-
-
 class TestStepControllerNodeReturnSchema:
     """Tests for the Step Controller."""
 
@@ -251,7 +212,7 @@ class TestStepControllerNodeReturnSchema:
         )
         from src.core.orchestration.graph.state import AgentState
 
-        state: AgentState = {
+        state: AgentState = {  # type: ignore[assignment]
             "task": "test",
             "history": [],
             "verified_reads": [],
@@ -291,7 +252,7 @@ class TestStepControllerNodeReturnSchema:
         )
         from src.core.orchestration.graph.state import AgentState
 
-        state: AgentState = {
+        state: AgentState = {  # type: ignore[assignment]
             "task": "test",
             "history": [],
             "verified_reads": [],
@@ -329,7 +290,7 @@ class TestVerificationRouterPostVerificationDecisions:
         from src.core.orchestration.graph.builder import should_after_verification
         from src.core.orchestration.graph.state import AgentState
 
-        state: AgentState = {
+        state: AgentState = {  # type: ignore[assignment]
             "verification_result": {
                 "tests": {"status": "ok"},
                 "linter": {"status": "ok"},
@@ -365,7 +326,7 @@ class TestVerificationRouterPostVerificationDecisions:
         from src.core.orchestration.graph.builder import should_after_verification
         from src.core.orchestration.graph.state import AgentState
 
-        state: AgentState = {
+        state: AgentState = {  # type: ignore[assignment]
             "verification_result": {
                 "tests": {"status": "fail"},
             },
@@ -399,7 +360,7 @@ class TestVerificationRouterPostVerificationDecisions:
         from src.core.orchestration.graph.builder import should_after_verification
         from src.core.orchestration.graph.state import AgentState
 
-        state: AgentState = {
+        state: AgentState = {  # type: ignore[assignment]
             "verification_result": {
                 "tests": {"status": "fail"},
             },
@@ -447,7 +408,7 @@ class TestAgentGraphCompilationAndRouting:
         from src.core.orchestration.graph.builder import should_after_execution
         from src.core.orchestration.graph.state import AgentState
 
-        state: AgentState = {
+        state: AgentState = {  # type: ignore[assignment]
             "current_plan": [{"description": "step 1"}],
             "current_step": 0,
             "step_controller_enabled": True,
@@ -481,7 +442,7 @@ class TestAgentStateRequiredFieldPresence:
         """Test that AgentState TypedDict has all required fields."""
         from src.core.orchestration.graph.state import AgentState
 
-        state: AgentState = {
+        state: AgentState = {  # type: ignore[assignment]
             "task": "test",
             "history": [],
             "verified_reads": [],

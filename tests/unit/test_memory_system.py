@@ -41,7 +41,7 @@ class TestDistillerFunctions:
 
         # Patch the LLM call so the test doesn't require a real model
         with patch("src.core.memory.distiller._call_llm_sync", return_value=None):
-            summary = distill_context(messages, working_dir=str(tmp_path))
+            summary = distill_context(messages, working_dir=str(tmp_path)) # type: ignore[arg-type]
             assert summary is None or isinstance(summary, dict)
 
     def test_distill_context_handles_empty(self, tmp_path):
@@ -49,7 +49,7 @@ class TestDistillerFunctions:
         from src.core.memory.distiller import distill_context
 
         # Empty messages should return None quickly without needing LLM
-        result = distill_context([], working_dir=str(tmp_path))
+        result = distill_context([], working_dir=str(tmp_path)) # type: ignore[arg-type]
         assert result is None or isinstance(result, dict)
 
 

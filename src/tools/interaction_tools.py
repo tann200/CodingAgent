@@ -1,14 +1,16 @@
 """
 Interaction tools for the coding agent.
 
-Provides ask_user (pause and ask a question) and submit_plan_for_review
-(HITL plan approval) — two capabilities that require the agent to pause
-execution and wait for user input via the EventBus + TUI.
+Provides:
+- ``ask_user``            — pause and ask a clarifying question
+- ``submit_plan_for_review`` — HITL plan approval
+- ``send_user_message``   — CP-15: proactive mid-turn message to the user
+  (port of claw-code's ``SendUserMessage`` / ``Brief`` tool)
 """
 
 import logging
 import threading
-from typing import Any, Dict
+from typing import Any, Dict, List, Literal, Optional
 
 from src.tools._tool import tool
 
@@ -18,7 +20,7 @@ _USER_RESPONSE_TIMEOUT = 300  # 5 minutes
 
 
 @tool(tags=["coding", "planning", "debug", "review"])
-def ask_user(question: str) -> Dict[str, Any]:
+def ask_user(question: str, choices: Optional[List[str]] = None) -> Dict[str, Any]:
     """Pause and ask the user a clarifying question.
 
     Use when requirements are ambiguous, when a destructive action needs
@@ -27,12 +29,27 @@ def ask_user(question: str) -> Dict[str, Any]:
 
     Args:
         question: The question to present to the user.
+        choices: Optional list of choice strings for multiple-choice questions.
+                 When provided, the TUI displays them as options and validates
+                 the response against the list (case-insensitive).
 
     Returns:
-        status, question, answer (string from user).
+        status, question, answer (string from user), choice_index (int, if choices given).
     """
     if not question or not question.strip():
         return {"status": "error", "error": "question must be non-empty"}
+
+    if choices is not None:
+        if not isinstance(choices, list) or len(choices) < 2:
+            return {
+                "status": "error",
+                "error": "choices must be a list with at least 2 items",
+            }
+        # Append options to the displayed question so TUI/fallback shows them
+        options_str = "\n".join(f"  {i + 1}. {c}" for i, c in enumerate(choices))
+        display_question = f"{question}\n\nOptions:\n{options_str}"
+    else:
+        display_question = question
 
     reply_event = threading.Event()
     reply_container: Dict[str, str] = {}
@@ -47,7 +64,13 @@ def ask_user(question: str) -> Dict[str, Any]:
 
         bus = get_event_bus()
         bus.subscribe("user.response", _on_user_response)
-        bus.publish("agent.waiting_for_user", {"question": question})
+        bus.publish(
+            "agent.waiting_for_user",
+            {
+                "question": display_question,
+                "choices": choices or [],
+            },
+        )
 
         replied = reply_event.wait(timeout=_USER_RESPONSE_TIMEOUT)
 
@@ -58,11 +81,31 @@ def ask_user(question: str) -> Dict[str, Any]:
                 "answer": "",
                 "error": f"No user response within {_USER_RESPONSE_TIMEOUT}s",
             }
-        return {
+
+        answer = reply_container.get("answer", "")
+        result: Dict[str, Any] = {
             "status": "ok",
             "question": question,
-            "answer": reply_container.get("answer", ""),
+            "answer": answer,
         }
+
+        if choices:
+            # Try numeric index first, then case-insensitive match
+            choice_index = None
+            try:
+                idx = int(answer.strip()) - 1
+                if 0 <= idx < len(choices):
+                    choice_index = idx
+                    answer = choices[idx]
+            except (ValueError, TypeError):
+                for i, c in enumerate(choices):
+                    if c.strip().lower() == answer.strip().lower():
+                        choice_index = i
+                        break
+            result["answer"] = answer
+            result["choice_index"] = choice_index
+
+        return result
     except Exception as exc:
         return {"status": "error", "error": str(exc)}
     finally:
@@ -142,3 +185,60 @@ def submit_plan_for_review(
                 bus.unsubscribe("plan_review.response", _on_plan_response)
             except Exception:
                 pass
+
+
+# ---------------------------------------------------------------------------
+# CP-15: send_user_message — proactive mid-turn message tool
+# ---------------------------------------------------------------------------
+
+
+@tool(tags=["communication"])
+def send_user_message(
+    message: str,
+    attachments: Optional[List[str]] = None,
+    status: Literal["normal", "proactive"] = "normal",
+) -> Dict[str, Any]:
+    """Send an interim message to the user without ending the current turn.
+
+    Port of claw-code's ``SendUserMessage`` (alias ``Brief``) tool.  Use this
+    to deliver a progress update, a partial finding, or any proactive
+    notification mid-turn so the user sees it immediately.
+
+    Unlike ``ask_user``, this tool does **not** block waiting for a reply — it
+    fires-and-forgets the message and returns immediately.
+
+    Args:
+        message: The text to send to the user.
+        attachments: Optional list of file paths or short text snippets to
+            attach to the message (forwarded to the UI as-is).
+        status: ``"normal"`` for a direct response; ``"proactive"`` for an
+            unsolicited update.  Consumers (TUI, bridge) may render the two
+            styles differently.
+
+    Returns:
+        ok, delivered, message.
+    """
+    if not message or not message.strip():
+        return {"status": "error", "error": "message must be non-empty"}
+
+    payload: Dict[str, Any] = {
+        "message": message.strip(),
+        "attachments": list(attachments or []),
+        "status": status,
+    }
+
+    try:
+        from src.core.orchestration.event_bus import get_event_bus
+
+        bus = get_event_bus()
+        bus.publish("agent.message", payload)
+    except Exception as exc:
+        logger.debug("send_user_message: event bus unavailable: %s", exc)
+        # Degrade gracefully — still return success so the LLM can continue
+
+    return {
+        "status": "ok",
+        "ok": True,
+        "delivered": True,
+        "message": message.strip(),
+    }

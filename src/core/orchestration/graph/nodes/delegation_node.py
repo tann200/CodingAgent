@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from typing import Dict, Any, Optional, Tuple
+from typing import Mapping, Dict, Any, Optional, Tuple
 
 from src.core.orchestration.graph.state import AgentState
 from src.core.orchestration.graph.nodes.node_utils import _resolve_orchestrator
@@ -17,7 +17,7 @@ async def _execute_delegation_with_locks(
     delegation: Dict,
     lock_manager,
     lock_type: str,
-    state: AgentState,
+    state: Mapping[str, Any],
     p2p_session=None,
     event_bus=None,
 ) -> Dict:
@@ -48,14 +48,11 @@ async def _execute_delegation_with_locks(
                 acquired.append(f)
 
         # HR-5 fix: enforce delegation depth limit to prevent recursive DoS.
-        # CODINGAGENT_DELEGATION_DEPTH is injected into subagent env so child agents
-        # inherit the depth counter without requiring state plumbing.
-        import os
-
-        current_depth = int(
-            state.get("delegation_depth")
-            or int(os.environ.get("CODINGAGENT_DELEGATION_DEPTH", "0"))
-        )
+        # Read depth from state only — subagent_tools.py is responsible for writing
+        # os.environ["CODINGAGENT_DELEGATION_DEPTH"] just before spawning so child
+        # *subprocesses* inherit the counter.  Writing it here would permanently mutate
+        # the global process environment for all concurrent async tasks.
+        current_depth = int(state.get("delegation_depth") or 0)
         _MAX_DELEGATION_DEPTH = 3
         if current_depth >= _MAX_DELEGATION_DEPTH:
             logger.error(
@@ -66,7 +63,6 @@ async def _execute_delegation_with_locks(
                 "status": "error",
                 "error": f"delegation depth limit ({_MAX_DELEGATION_DEPTH}) reached",
             }
-        os.environ["CODINGAGENT_DELEGATION_DEPTH"] = str(current_depth + 1)
 
         # HR-12 fix: wrap with timeout so a hung subagent does not block the parent.
         _DELEGATION_TIMEOUT_SECS = 300.0
@@ -129,7 +125,7 @@ async def _execute_delegation_with_locks(
             lock_manager.reset_cancel()
 
 
-async def delegation_node(state: AgentState, config: Any) -> Dict[str, Any]:
+async def delegation_node(state: Mapping[str, Any], config: Any) -> Dict[str, Any]:
     """
     Delegation Layer: Spawns subagents for independent tasks that can run in parallel.
 
@@ -161,7 +157,7 @@ async def delegation_node(state: AgentState, config: Any) -> Dict[str, Any]:
     results: Dict[str, Any] = {"delegation_results": {}}
 
     # Phase B: Get P2P session manager for cross-agent context sharing
-    session_id = state.get("session_id", "default")
+    session_id: str = str(state.get("session_id") or "default")
     p2p_session = None
     try:
         from src.core.orchestration.agent_session_manager import (
@@ -301,8 +297,8 @@ async def delegation_node(state: AgentState, config: Any) -> Dict[str, Any]:
                         f"{role.upper()}_RESULT",
                         AgentTopics.STATUS_UPDATE,
                     )
-                    _topic_str = (
-                        _topic.value if hasattr(_topic, "value") else str(_topic)
+                    _topic_str: str = (
+                        _topic.value if hasattr(_topic, "value") else str(_topic)  # type: ignore[union-attr]
                     )
                     get_cross_session_bus().publish(
                         topic=_topic_str,
@@ -352,6 +348,9 @@ async def delegation_node(state: AgentState, config: Any) -> Dict[str, Any]:
     # C4 fix: inject completed delegation results into conversation history so the next
     # perception/planning cycle can see and use the subagent output.  Without this, results
     # were write-only — stored in state["delegation_results"] but never read by any node.
+    # Result text capped at 2000 chars (was 500) — enough for useful findings without
+    # bloating context; pairs with the 8000-char tool output truncation in orchestrator.py.
+    _DELEGATION_RESULT_MAX_CHARS = 2000
     delegation_history_msgs = []
     completed = results.get("delegation_results", {})
     if completed:
@@ -359,7 +358,12 @@ async def delegation_node(state: AgentState, config: Any) -> Dict[str, Any]:
         for key, val in completed.items():
             status = val.get("status", "unknown")
             if status == "completed":
-                result_text = str(val.get("result", ""))[:500]
+                result_text = str(val.get("result", ""))
+                if len(result_text) > _DELEGATION_RESULT_MAX_CHARS:
+                    result_text = (
+                        result_text[:_DELEGATION_RESULT_MAX_CHARS]
+                        + f"\n... [truncated: {len(result_text) - _DELEGATION_RESULT_MAX_CHARS} chars omitted]"
+                    )
                 summary_parts.append(f"**{key}**: {result_text}")
             else:
                 summary_parts.append(
@@ -378,6 +382,20 @@ async def delegation_node(state: AgentState, config: Any) -> Dict[str, Any]:
             logger.info(
                 f"delegation_node: injected {len(summary_parts)} result(s) into history"
             )
+
+            # Publish delegation.complete event so TUI can show subagent results
+            try:
+                if orchestrator and hasattr(orchestrator, "event_bus"):
+                    orchestrator.event_bus.publish(
+                        "delegation.complete",
+                        {
+                            "count": len(summary_parts),
+                            "keys": list(completed.keys()),
+                            "session_id": state.get("session_id"),
+                        },
+                    )
+            except Exception:
+                pass
 
     logger.info("=== delegation_node END ===")
     return {**results, "history": delegation_history_msgs}

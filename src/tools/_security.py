@@ -8,10 +8,11 @@ External projects can add entries to these collections before calling
 
 Example::
 
-    from src.tools._security import SAFE_COMMANDS, DANGEROUS_PATTERNS
+    from src.tools._security import SAFE_COMMANDS, add_dangerous_pattern
     SAFE_COMMANDS.add("my-read-only-cli")
-    DANGEROUS_PATTERNS.append("drop table")   # domain-specific block
+    add_dangerous_pattern("drop table")   # domain-specific block
 """
+
 from __future__ import annotations
 
 # ---------------------------------------------------------------------------
@@ -20,11 +21,12 @@ from __future__ import annotations
 # spacing tricks (e.g. "r m  -rf") cannot bypass the check.
 # ---------------------------------------------------------------------------
 
-DANGEROUS_PATTERNS: list[str] = [
+# Immutable base — never modified at runtime; extend via add_dangerous_pattern().
+_BASE_DANGEROUS_PATTERNS: tuple[str, ...] = (
     "&&",
     "||",
     ";",
-    "|",
+    " | ",  # SEC-3: space-padded to avoid false positives on | inside quoted grep patterns
     ">",
     ">>",
     "<",
@@ -33,6 +35,15 @@ DANGEROUS_PATTERNS: list[str] = [
     "rm -rf",
     "rm -r",
     "rm -f",
+    # Absolute-path rm variants (bypass the basename check)
+    "/bin/rm",
+    "/usr/bin/rm",
+    "\\rm",
+    # Flag-interleaved rm variants
+    "rm -v -r",
+    "rm -v -f",
+    "rm --recursive",
+    "rm --force",
     "del ",
     "format ",
     "shutdown",
@@ -40,7 +51,40 @@ DANGEROUS_PATTERNS: list[str] = [
     "halt",
     "poweroff",
     "git push",
-]
+)
+
+# Mutable extension list — populated by add_dangerous_pattern() at startup or
+# by external callers that need domain-specific blocking.
+_EXTRA_PATTERNS: list[str] = []
+
+
+def add_dangerous_pattern(pattern: str) -> None:
+    """Append *pattern* to the runtime extension list.
+
+    Both ``_EXTRA_PATTERNS`` and the public ``DANGEROUS_PATTERNS`` list are
+    updated so that additions are visible immediately to all callers.
+
+    Parameters
+    ----------
+    pattern:
+        A lower-case substring to block.  The check is performed on the
+        whitespace-normalised, lower-cased command string, so the pattern
+        should also be lower-case.
+    """
+    if pattern not in _EXTRA_PATTERNS:
+        _EXTRA_PATTERNS.append(pattern)
+        DANGEROUS_PATTERNS.append(pattern)
+
+
+# ---------------------------------------------------------------------------
+# Public name: DANGEROUS_PATTERNS
+# Kept as a list for backwards-compatibility with callers that iterate or
+# do ``pattern in DANGEROUS_PATTERNS`` checks.  The list is rebuilt from
+# the immutable base + mutable extensions each time this module is imported;
+# use add_dangerous_pattern() to extend it at runtime.
+# ---------------------------------------------------------------------------
+
+DANGEROUS_PATTERNS: list[str] = list(_BASE_DANGEROUS_PATTERNS) + _EXTRA_PATTERNS
 
 # ---------------------------------------------------------------------------
 # Tier 1 — Safe read-only / inspection commands (auto-allowed, no approval)
@@ -51,7 +95,8 @@ SAFE_COMMANDS: set[str] = {
     "cat",
     "grep",
     "find",
-    "git",
+    # NOTE: 'git' is intentionally NOT in SAFE_COMMANDS — use GIT_SAFE_SUBCOMMANDS
+    # allowlist instead so only read-only git operations pass automatically.
     "head",
     "tail",
     "wc",
@@ -130,30 +175,69 @@ SAFE_COMMANDS: set[str] = {
 
 TEST_COMPILE_COMMANDS: set[str] = {
     # Python
-    "python", "python3", "pytest", "py.test", "tox", "nox",
-    "ruff", "mypy", "pyright", "uv", "poetry", "pdm", "hatch",
+    "python",
+    "python3",
+    "pytest",
+    "py.test",
+    "tox",
+    "nox",
+    "ruff",
+    "mypy",
+    "pyright",
+    "uv",
+    "poetry",
+    "pdm",
+    "hatch",
     # Node / npm
-    "npm", "npx", "node", "yarn", "pnpm",
+    "npm",
+    "npx",
+    "node",
+    "yarn",
+    "pnpm",
     # TypeScript
     "tsc",
     # JS/TS test runners
-    "jest", "vitest", "mocha", "jasmine",
+    "jest",
+    "vitest",
+    "mocha",
+    "jasmine",
     # JS linters / formatters
-    "eslint", "prettier", "biome",
+    "eslint",
+    "prettier",
+    "biome",
     # Rust
-    "cargo", "rustc",
+    "cargo",
+    "rustc",
     # Java
-    "javac", "java", "jar", "mvn", "gradle",
+    "javac",
+    "java",
+    "jar",
+    "mvn",
+    "gradle",
     # Go
-    "go", "gofmt", "golint", "staticcheck",
+    "go",
+    "gofmt",
+    "golint",
+    "staticcheck",
     # C/C++
-    "gcc", "g++", "clang", "clang++", "make", "cmake", "ninja",
+    "gcc",
+    "g++",
+    "clang",
+    "clang++",
+    "make",
+    "cmake",
+    "ninja",
     # Ruby
-    "bundle", "rake", "rspec", "ruby",
+    "bundle",
+    "rake",
+    "rspec",
+    "ruby",
     # PHP
-    "composer", "php",
+    "composer",
+    "php",
     # Swift
-    "swift", "swiftc",
+    "swift",
+    "swiftc",
     # .NET
     "dotnet",
 }
@@ -163,22 +247,46 @@ TEST_COMPILE_COMMANDS: set[str] = {
 # ---------------------------------------------------------------------------
 
 RESTRICTED_COMMANDS: set[str] = {
-    "pip", "pip3", "pip install",
-    "curl", "wget",
-    "npm install", "npm i",
+    "pip",
+    "pip3",
+    "pip install",
+    "curl",
+    "wget",
+    "npm install",
+    "npm i",
     "cargo install",
-    "go install", "go get",
-    "apt", "apt-get", "yum", "dnf", "brew",
-    "sudo", "su",
-    "chmod", "chown",
-    "rm", "del",
+    "go install",
+    "go get",
+    "apt",
+    "apt-get",
+    "yum",
+    "dnf",
+    "brew",
+    "sudo",
+    "su",
+    "chmod",
+    "chown",
+    "rm",
+    "del",
+    # Network / destructive git operations
+    "git clone",
+    "git push",
+    "git fetch",
 }
 
 # Tier-3 sub-commands that are actually safe (allowlist exceptions)
 RESTRICTED_ALLOWED_SUBCOMMANDS: list[str] = [
-    "npm test", "npm run", "npm start", "npm build", "npm lint",
-    "cargo test", "cargo build", "cargo check",
-    "go test", "go build", "go vet",
+    "npm test",
+    "npm run",
+    "npm start",
+    "npm build",
+    "npm lint",
+    "cargo test",
+    "cargo build",
+    "cargo check",
+    "go test",
+    "go build",
+    "go vet",
 ]
 
 # ---------------------------------------------------------------------------
@@ -194,13 +302,67 @@ CODE_EXEC_FLAGS: set[str] = {"-c", "-e", "-r", "--eval", "--execute"}
 # ---------------------------------------------------------------------------
 
 TAR_EXTRACT_FLAGS: set[str] = {
-    "-x", "--extract", "-xf", "-xvf", "-xzf", "-xjf", "-xJf",
+    "-x",
+    "--extract",
+    "-xf",
+    "-xvf",
+    "-xzf",
+    "-xjf",
+    "-xJf",
 }
 
 # TS-2 fix: Archive creation flags — tar -c / tar -r create or append to archives.
 # SAFE_COMMANDS documents tar as "read-only / inspection" but these flags write.
 # Block them to align implementation with documented semantics.
 TAR_CREATE_FLAGS: set[str] = {
-    "-c", "--create", "-r", "--append", "-u", "--update",
-    "-cf", "-czf", "-cjf", "-cJf", "-cvf", "-cvzf",
+    "-c",
+    "--create",
+    "-r",
+    "--append",
+    "-u",
+    "--update",
+    "-cf",
+    "-czf",
+    "-cjf",
+    "-cJf",
+    "-cvf",
+    "-cvzf",
+}
+
+# ---------------------------------------------------------------------------
+# sed write flags — sed -i (in-place edit) modifies files; block in read-only
+# bash mode.
+# ---------------------------------------------------------------------------
+
+SED_WRITE_FLAGS: set[str] = {
+    "-i",
+    "--in-place",
+}
+
+# ---------------------------------------------------------------------------
+# Git subcommand allowlist — read-only operations auto-allowed without approval.
+# Any other git subcommand (e.g. commit, push, rm, reset) is NOT auto-allowed.
+# ---------------------------------------------------------------------------
+
+GIT_SAFE_SUBCOMMANDS: set[str] = {
+    "status",
+    "log",
+    "diff",
+    "show",
+    "blame",
+    "shortlog",
+    "describe",
+    "ls-files",
+    "ls-tree",
+    "rev-parse",
+    "rev-list",
+    "branch",
+    "tag",
+    "stash list",
+    "remote -v",
+    "remote",
+    "config --list",
+    "config --get",
+    "help",
+    "version",
 }

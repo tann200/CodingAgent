@@ -149,7 +149,10 @@ class TestPRSWIntegration:
         result_write1 = await lock_manager.acquire_write_async("file.py", "writer1")
         assert result_write1 is True
 
-        result_write2 = await lock_manager.acquire_write_async("file.py", "writer2")
+        # Pass a tiny timeout so the poll loop fails fast (not 30s default).
+        result_write2 = await lock_manager.acquire_write_async(
+            "file.py", "writer2", timeout=0.1
+        )
         assert result_write2 is False
 
         await lock_manager.release_write("file.py", "writer1")

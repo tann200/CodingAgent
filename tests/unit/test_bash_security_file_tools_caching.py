@@ -23,7 +23,7 @@ from src.core.orchestration.graph.builder import should_after_step_controller
 
 
 def _make_state(**kwargs: Any) -> AgentState:
-    defaults: AgentState = {
+    defaults: AgentState = {  # type: ignore[assignment]
         "task": "test task",
         "history": [],
         "verified_reads": [],
@@ -66,7 +66,7 @@ def _make_state(**kwargs: Any) -> AgentState:
         "task_history": [],
         "last_debug_error_type": None,
     }
-    defaults.update(kwargs)
+    defaults.update(kwargs)  # type: ignore[call-overload]
     return defaults
 
 
@@ -201,6 +201,86 @@ class TestBashBlocksSedInplaceTarExtractUnzip:
         if result["status"] == "error":
             assert "-l" not in result.get("error", "")
             assert "not allowed" not in result["error"].lower()
+
+
+# ---------------------------------------------------------------------------
+# GIT_SAFE_SUBCOMMANDS gate — bash() and bash_readonly()
+# ---------------------------------------------------------------------------
+
+
+class TestGitSafeSubcommandsGate:
+    """Gate 3b: only allowlisted git subcommands pass without approval."""
+
+    def _bash(self, command: str):
+        from src.tools.file_tools import bash
+        from pathlib import Path
+
+        return bash(command, workdir=Path("/tmp"))
+
+    def _bash_readonly(self, command: str):
+        from src.tools.file_tools import bash_readonly
+        from pathlib import Path
+
+        return bash_readonly(command, workdir=Path("/tmp"))
+
+    # --- bash() -----------------------------------------------------------
+
+    def test_bash_git_push_is_blocked(self):
+        result = self._bash("git push origin main")
+        assert result["status"] == "error"
+        assert (
+            "push" in result["error"].lower()
+            or "not allowed" in result["error"].lower()
+        )
+
+    def test_bash_git_reset_hard_is_blocked(self):
+        result = self._bash("git reset --hard HEAD")
+        assert result["status"] == "error"
+        assert (
+            "reset" in result["error"].lower()
+            or "not allowed" in result["error"].lower()
+        )
+
+    def test_bash_git_config_global_is_blocked(self):
+        result = self._bash("git config --global user.email x@y.com")
+        assert result["status"] == "error"
+
+    def test_bash_git_status_is_allowed(self):
+        """git status is in GIT_SAFE_SUBCOMMANDS and must not be blocked by the security gate."""
+        result = self._bash("git status")
+        # The security gate must not block it (OS-level failure is fine)
+        if result.get("status") == "error":
+            err = result.get("error", "")
+            assert "not allowed" not in err.lower(), (
+                f"Security gate blocked git status: {err}"
+            )
+
+    # --- bash_readonly() --------------------------------------------------
+
+    def test_bash_readonly_git_push_is_blocked(self):
+        result = self._bash_readonly("git push origin main")
+        assert result["status"] == "error"
+        assert (
+            "push" in result["error"].lower()
+            or "not allowed" in result["error"].lower()
+        )
+
+    def test_bash_readonly_git_reset_hard_is_blocked(self):
+        result = self._bash_readonly("git reset --hard HEAD")
+        assert result["status"] == "error"
+
+    def test_bash_readonly_git_config_global_is_blocked(self):
+        """git config --global is NOT in GIT_SAFE_SUBCOMMANDS — must be blocked."""
+        result = self._bash_readonly("git config --global user.email x@y.com")
+        assert result["status"] == "error"
+
+    def test_bash_readonly_git_status_is_allowed(self):
+        result = self._bash_readonly("git status")
+        if result.get("status") == "error":
+            err = result.get("error", "")
+            assert "not allowed" not in err.lower(), (
+                f"Security gate blocked git status: {err}"
+            )
 
 
 # ---------------------------------------------------------------------------

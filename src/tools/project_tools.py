@@ -9,7 +9,7 @@ a structured summary of detected languages, frameworks, and tools.
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from src.tools._tool import tool
 
@@ -25,7 +25,7 @@ def _safe_read(path: Path, max_chars: int = 50_000) -> str:
 
 
 @tool(tags=["planning", "coding"])
-def fingerprint_tech_stack(workdir: str = None) -> Dict[str, Any]:
+def fingerprint_tech_stack(workdir: Optional[str] = None) -> Dict[str, Any]:
     """Detect languages, frameworks, and tools present in the workspace.
 
     Scans for package.json, pyproject.toml, Cargo.toml, go.mod, pom.xml,

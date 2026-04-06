@@ -1,0 +1,7 @@
+# Plan approved — switching to build mode
+
+The plan has been approved. You are now in **build mode** with full tool access.
+
+Implement the plan exactly as approved. If you discover significant deviations are needed, pause and use ask_user before proceeding.
+
+Resume from the first incomplete step in your todo list.

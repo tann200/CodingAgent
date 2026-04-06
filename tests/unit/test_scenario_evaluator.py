@@ -169,9 +169,9 @@ class TestScenarioEvaluator:
         evaluator = ScenarioEvaluator(temp_workdir)
 
         results = [
-            ScenarioResult("test1", "pass", None, None, 1.0),
-            ScenarioResult("test2", "fail", None, None, 2.0),
-            ScenarioResult("test3", "error", None, None, 3.0),
+            ScenarioResult("test1", "pass", None, None, 1.0), # type: ignore[arg-type]
+            ScenarioResult("test2", "fail", None, None, 2.0), # type: ignore[arg-type]
+            ScenarioResult("test3", "error", None, None, 3.0), # type: ignore[arg-type]
         ]
 
         summary = evaluator.get_summary(results)

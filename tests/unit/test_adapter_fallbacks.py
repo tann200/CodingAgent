@@ -38,5 +38,5 @@ def test_ollama_adapter_fallback(tmp_path):
 
     adapter = OllamaAdapter(config_path=str(providers_path))
     # base_url may be normalized by the adapter; check startswith to be tolerant
-    assert adapter.base_url.startswith("http://mock-ollama")
+    assert adapter.base_url.startswith("http://mock-ollama") # type: ignore[union-attr]
     assert adapter.models == ["mock-ollama-model"]

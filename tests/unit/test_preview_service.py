@@ -69,7 +69,7 @@ class TestPreviewService:
         assert result is True
 
         updated = service.get_preview(preview.preview_id)
-        assert updated.status == "confirmed"
+        assert updated.status == "confirmed" # type: ignore[union-attr]
 
     def test_reject(self):
         service = PreviewService("/tmp")
@@ -81,7 +81,7 @@ class TestPreviewService:
         service.reject(preview.preview_id)
 
         updated = service.get_preview(preview.preview_id)
-        assert updated.status == "rejected"
+        assert updated.status == "rejected" # type: ignore[union-attr]
 
     def test_clear_preview(self):
         service = PreviewService("/tmp")

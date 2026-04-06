@@ -297,17 +297,22 @@ class TestTodoToolsDeadDuplicateCodeRemoved:
 
 
 class TestOrchestratorPlanEnforceWarningsInitialState:
-    def test_initial_state_sets_plan_enforce_warnings_true(self):
-        """Orchestrator run_agent_once initial_state must set plan_enforce_warnings=True."""
-        # We inspect the source to verify the key is set to True in initial_state
-        import ast
+    def test_initial_state_sets_plan_enforce_warnings_false(self):
+        """Orchestrator run_agent_once initial_state must set plan_enforce_warnings=False.
 
+        P1-6 correction: enforce_warnings=True causes infinite replanning loops because
+        any plan lacking an explicit test/verify step is rejected → planning retries until
+        plan_attempts>=3 guard fires → by then the LangGraph recursion limit (50) is hit.
+        The correct default is False: warnings are advisory only; the plan_attempts guard
+        remains as a backstop but is rarely needed.
+        """
         src_path = Path(
             "/Users/tann200/PycharmProjects/CodingAgent/src/core/orchestration/orchestrator.py"
         )
         source = src_path.read_text()
-        assert '"plan_enforce_warnings": True' in source, (
-            "plan_enforce_warnings: True must appear in orchestrator initial_state"
+        assert '"plan_enforce_warnings": False' in source, (
+            "plan_enforce_warnings must be False in orchestrator initial_state "
+            "(True causes infinite replanning loops — see P1-6 correction)"
         )
 
 
@@ -321,10 +326,12 @@ class TestSettingsPanelAtomicProvidersJsonWrite:
         """Verify that settings_panel uses os.replace (not cfg_path.write_text) for safety."""
         import ast
 
-        src_path = Path("src/ui/views/settings_panel.py")
+        # The atomic write logic lives in src/core/settings/controller.py
+        # (src/ui/ was retired; the settings controller was extracted there).
+        src_path = Path("src/core/settings/controller.py")
         if not src_path.exists():
             src_path = Path(
-                "/Users/tann200/PycharmProjects/CodingAgent/src/ui/views/settings_panel.py"
+                "/Users/tann200/PycharmProjects/CodingAgent/src/core/settings/controller.py"
             )
         source = src_path.read_text()
         # The new code should use os.replace; old cfg_path.write_text should be gone from the write path
@@ -437,15 +444,19 @@ class TestDistillerCheckpointWriteAndSchemaValidation:
             for i in range(52)
         ]
 
-        with patch.object(
-            distiller, "compact_messages_to_prose", return_value="summary text"
-        ) as mock_cmp:
+        # _estimate_tokens for 52 short messages ("msg 0" etc.) returns ~65 tokens —
+        # well below the 6000-token threshold added by TASK-07.  Force the estimate
+        # above the threshold so compaction is triggered.
+        with patch.object(distiller, "_estimate_tokens", return_value=7000):
             with patch.object(
-                distiller,
-                "_call_llm_sync",
-                return_value='{"current_task":"t","current_state":"s","next_step":"n","files_modified":[],"completed_steps":[],"errors_resolved":[]}',
-            ):
-                distiller.distill_context(messages, working_dir=tmp_path)
+                distiller, "compact_messages_to_prose", return_value="summary text"
+            ) as mock_cmp:
+                with patch.object(
+                    distiller,
+                    "_call_llm_sync",
+                    return_value='{"current_task":"t","current_state":"s","next_step":"n","files_modified":[],"completed_steps":[],"errors_resolved":[]}',
+                ):
+                    distiller.distill_context(messages, working_dir=tmp_path)
 
         mock_cmp.assert_called_once()
         cp_path = tmp_path / ".agent-context" / "compaction_checkpoint.md"

@@ -15,6 +15,7 @@ Regression tests verify:
 2. step_controller_node returns the expected keys
 3. A dict with these keys can be constructed without error
 """
+
 import pytest
 
 
@@ -24,6 +25,7 @@ class TestAgentStateFieldsExist:
     def _get_state_annotations(self):
         """Return the resolved annotations dict of AgentState."""
         from src.core.orchestration.graph.state import AgentState
+
         return AgentState.__annotations__
 
     def test_original_task_field_exists(self):
@@ -102,7 +104,9 @@ class TestStepControllerNodeReturnsCorrectKeys:
     @pytest.mark.asyncio
     async def test_step_controller_returns_step_description(self):
         """step_controller_node must return 'step_description' from the current plan step."""
-        from src.core.orchestration.graph.nodes.step_controller_node import step_controller_node
+        from src.core.orchestration.graph.nodes.step_controller_node import (
+            step_controller_node,
+        )
 
         state = {
             "current_plan": [
@@ -138,7 +142,9 @@ class TestStepControllerNodeReturnsCorrectKeys:
     @pytest.mark.asyncio
     async def test_step_controller_returns_planned_action(self):
         """step_controller_node must return 'planned_action' from the current plan step."""
-        from src.core.orchestration.graph.nodes.step_controller_node import step_controller_node
+        from src.core.orchestration.graph.nodes.step_controller_node import (
+            step_controller_node,
+        )
 
         preset_action = {"name": "read_file", "arguments": {"path": "main.py"}}
         state = {
@@ -174,11 +180,16 @@ class TestStepControllerNodeReturnsCorrectKeys:
     @pytest.mark.asyncio
     async def test_step_controller_returns_both_keys_together(self):
         """step_controller_node must return both step_description and planned_action."""
-        from src.core.orchestration.graph.nodes.step_controller_node import step_controller_node
+        from src.core.orchestration.graph.nodes.step_controller_node import (
+            step_controller_node,
+        )
 
         state = {
             "current_plan": [
-                {"description": "Write a test", "action": {"name": "write_file", "arguments": {}}},
+                {
+                    "description": "Write a test",
+                    "action": {"name": "write_file", "arguments": {}},
+                },
             ],
             "current_step": 0,
             "step_controller_enabled": True,
@@ -216,7 +227,7 @@ class TestAgentStateDictConstructible:
         from src.core.orchestration.graph.state import AgentState
 
         # Construct a state dict including all NEW-5 fields
-        state: AgentState = {
+        state: AgentState = {  # type: ignore[assignment]
             "task": "test task",
             "history": [],
             "verified_reads": [],
@@ -268,8 +279,8 @@ class TestAgentStateDictConstructible:
         # All NEW-5 fields must be accessible
         assert state["original_task"] == "original multi-step task"
         assert state["step_description"] == "Step one description"
-        assert state["planned_action"]["name"] == "read_file"
-        assert state["plan_validation"]["valid"] is True
+        assert state["planned_action"]["name"] == "read_file"  # type: ignore[index]
+        assert state["plan_validation"]["valid"] is True  # type: ignore[index]
         assert state["plan_enforce_warnings"] is False
         assert state["plan_strict_mode"] is False
         assert state["task_history"] == []

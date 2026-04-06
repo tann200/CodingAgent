@@ -6,6 +6,15 @@ import threading
 from collections import OrderedDict
 from pathlib import Path
 
+# CP-12: Sentinel string that marks the boundary between the static (cacheable)
+# and dynamic (per-turn) portions of the system prompt.
+#
+# The Anthropic adapter splits the system prompt on this sentinel and sends the
+# static portion with ``cache_control: {"type": "ephemeral"}`` so that the
+# prompt prefix is eligible for Anthropic's prompt caching.  Other providers
+# ignore the sentinel (it is stripped before the prompt reaches the model).
+SYSTEM_PROMPT_DYNAMIC_BOUNDARY = "__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__"
+
 
 # F10: Import dynamic token budget helper (lazy — avoids circular imports at module load).
 def _default_max_tokens() -> int:
@@ -52,22 +61,49 @@ class ContextBuilder:
             _TEXT_CACHE.clear()
             _JSON_CACHE.clear()
 
+    @classmethod
+    def invalidate_path(cls, path: str) -> None:
+        """MEM-1: Remove a specific path from the text and JSON caches.
+
+        Call this immediately after any file write so the next ContextBuilder
+        instantiation re-reads the file from disk rather than serving the
+        pre-write cached content.  Prevents stale file content being injected
+        into the system prompt during active editing sessions.
+        """
+        key = str(Path(path).resolve())
+        with _CACHE_LOCK:
+            _TEXT_CACHE.pop(key, None)
+            _JSON_CACHE.pop(key, None)
+
     def __init__(
         self,
         token_estimator: Optional[Callable[[str], int]] = None,
         working_dir: Optional[str] = None,
         max_tokens: int = 6000,
     ):
-        self.token_estimator: Callable[[str], int] = (
-            token_estimator
-            if token_estimator is not None
-            else (lambda s: math.ceil(len(s) / 4))
-        )  # Default to len/4 if no estimator provided
-        # Resolve working directory — use provided path, else cwd.
-        # Nodes should pass state["working_dir"] so files are found in the right location (NEW-10).
-        self._agent_context_dir: Path = (
-            Path(working_dir) if working_dir else Path.cwd()
-        ) / ".agent-context"
+        # D-06/S0-A: Use accurate tiktoken-based estimator; fall back to len/3.5
+        # if the caller supplies a custom estimator, honour it (test override path).
+        if token_estimator is not None:
+            self.token_estimator: Callable[[str], int] = token_estimator
+        else:
+            try:
+                from src.core.inference.tokenizer import count_tokens as _ct
+
+                self.token_estimator = _ct
+            except Exception:
+                self.token_estimator = lambda s: math.ceil(len(s) / 3.5)
+        # Resolve working directory — use provided path; do NOT fall back to
+        # Path.cwd() because cwd is unreliable in async/subprocess contexts and
+        # would silently look for agent-brain files in the wrong location.
+        # Callers that do not have a working_dir should pass the repo root
+        # explicitly (NEW-10 fix).
+        if working_dir:
+            self._agent_context_dir = Path(working_dir) / ".agent-context"
+        else:
+            # Derive from this file's location (src/core/context/ → repo root)
+            self._agent_context_dir = (
+                Path(__file__).resolve().parents[3] / ".agent-context"
+            )
 
         # Token usage tracking for TokenBudgetMonitor
         self._last_token_count: int = 0
@@ -77,12 +113,17 @@ class ContextBuilder:
         self._load_agent_brain()
 
     def _load_agent_brain(self) -> None:
-        """Load identity, role, and skill prompts from agent-brain configuration."""
+        """Load identity, role, and skill prompts from agent-brain configuration.
+
+        D-08: All file reads go through _read_text_cached so repeated
+        ContextBuilder instantiations (one per node call) hit the mtime-keyed
+        module-level cache rather than re-reading from disk every turn.
+        """
         config_root = Path(__file__).parent.parent.parent / "config" / "agent-brain"
 
         # Load identity (SOUL.md)
         soul_path = config_root / "identity" / "SOUL.md"
-        self.soul = soul_path.read_text() if soul_path.exists() else ""
+        self.soul = self._read_text_cached(soul_path) or ""
 
         # Load all roles by name
         self.roles: Dict[str, str] = {}
@@ -90,7 +131,7 @@ class ContextBuilder:
         if roles_dir.exists():
             for role_file in roles_dir.glob("*.md"):
                 role_name = role_file.stem  # filename without extension
-                self.roles[role_name] = role_file.read_text()
+                self.roles[role_name] = self._read_text_cached(role_file) or ""
 
         # Load all skills by name
         self.skills: Dict[str, str] = {}
@@ -98,7 +139,7 @@ class ContextBuilder:
         if skills_dir.exists():
             for skill_file in skills_dir.glob("*.md"):
                 skill_name = skill_file.stem
-                self.skills[skill_name] = skill_file.read_text()
+                self.skills[skill_name] = self._read_text_cached(skill_file) or ""
 
     def get_skill(self, skill_name: str) -> str:
         """Get skill content by name."""
@@ -239,6 +280,170 @@ class ContextBuilder:
 
         return sanitized
 
+    # ------------------------------------------------------------------
+    # S9-A: Cross-session memory injection
+    # ------------------------------------------------------------------
+
+    def inject_prior_session_memories(self, task: str, limit: int = 3) -> str:
+        """Search the VectorStore for summaries from prior sessions relevant to *task*.
+
+        Returns a formatted ``<prior_context>`` XML block (suitable for
+        inclusion in the system prompt) or an empty string when no memories
+        are available or the VectorStore is not configured.
+
+        Called by ``perception_node`` on round 0 so that long-running projects
+        can benefit from accumulated session summaries without the LLM having
+        to ask for them explicitly.
+
+        Args:
+            task:   The current task description (used as the search query).
+            limit:  Maximum number of memory results to include.
+        """
+        try:
+            from src.core.indexing.vector_store import VectorStore
+
+            _vs = VectorStore(workdir=str(self._agent_context_dir.parent))
+            results = _vs.search_memories(query=task, limit=limit)
+            if not results:
+                return ""
+            lines = [
+                "<prior_context>",
+                "Relevant context from previous sessions:",
+            ]
+            for r in results:
+                # Each result is a dict — extract the text field.
+                text = r.get("text") or r.get("content") or str(r)
+                lines.append(f"- {str(text)[:250]}")
+            lines.append("</prior_context>")
+            return "\n".join(lines)
+        except Exception:
+            return ""
+
+    # ------------------------------------------------------------------
+    # S1-B / S1-C helpers
+    # ------------------------------------------------------------------
+
+    _TEMPLATES_DIR: Path = Path(__file__).parent.parent / "prompts" / "templates"
+
+    def _load_prompt_partial(self, filename: str) -> str:
+        """Return the content of a prompt partial from the templates directory.
+
+        S1-B: Used to inject provider/tier-specific guidance into the system prompt.
+        Returns empty string when the file does not exist (silent no-op).
+        """
+        path = self._TEMPLATES_DIR / filename
+        return self._read_text_cached(path) or ""
+
+    def _select_prompt_partial(
+        self,
+        model_tier: Optional[str],
+        provider_capabilities: Optional[Dict],
+        is_reasoning: bool = False,
+    ) -> str:
+        """S1-B: Choose the right prompt partial for the active model.
+
+        Selection priority:
+        1. Reasoning model → reasoning.md
+        2. Provider family: anthropic → anthropic.txt, openai → openai.txt
+        3. Tier: NANO/SMALL → local-small.md, MEDIUM → local-medium.md
+        4. Default → default.txt
+        """
+        if is_reasoning:
+            partial = self._load_prompt_partial("reasoning.md")
+            if partial:
+                return partial
+
+        caps = provider_capabilities or {}
+        provider_family = caps.get("provider_family", "").lower()
+
+        if "anthropic" in provider_family:
+            partial = self._load_prompt_partial("anthropic.txt")
+            if partial:
+                return partial
+
+        if "openai" in provider_family or "openrouter" in provider_family:
+            partial = self._load_prompt_partial("openai.txt")
+            if partial:
+                return partial
+
+        tier = (model_tier or "").lower()
+        if tier in ("nano", "small"):
+            partial = self._load_prompt_partial("local-small.md")
+            if partial:
+                return partial
+        elif tier == "medium":
+            partial = self._load_prompt_partial("local-medium.md")
+            if partial:
+                return partial
+
+        return self._load_prompt_partial("default.txt")
+
+    @staticmethod
+    def _prune_tools(tools: List[Dict], model_tier: Optional[str]) -> List[Dict]:
+        """S1-C: Limit the tool list based on model tier.
+
+        Core tools (read/write/edit/bash/grep/glob/search) are always kept first.
+        Non-core tools are appended up to the tier limit, then dropped from the tail.
+        """
+        try:
+            from src.core.inference.model_tiers import ModelTier, get_tool_limit
+
+            tier = ModelTier(model_tier) if model_tier else ModelTier.MEDIUM
+            limit = get_tool_limit(tier)
+        except Exception:
+            return tools  # no pruning if model_tiers unavailable
+
+        if len(tools) <= limit:
+            return tools
+
+        # Separate core tools (always kept) from supplementary tools
+        _CORE_NAMES = {
+            "read_file",
+            "write_file",
+            "edit_file",
+            "edit_file_atomic",
+            "edit_by_line_range",
+            "bash",
+            "bash_readonly",
+            "grep",
+            "glob",
+            "search_code",
+            "list_directory",
+        }
+        core = [t for t in tools if t.get("name") in _CORE_NAMES]
+        supplementary = [t for t in tools if t.get("name") not in _CORE_NAMES]
+
+        # Fill up to limit: core first, then supplementary
+        selected = core + supplementary
+        return selected[:limit]
+
+    def _render_tools_for_tier(
+        self, tools: List[Dict], model_tier: Optional[str]
+    ) -> str:
+        """S8-A: Render tools list with verbosity appropriate to the model tier.
+
+        NANO/SMALL: name + first-sentence description only (minimal tokens).
+        MEDIUM+:    full description (unchanged behaviour).
+        """
+        try:
+            from src.core.inference.model_tiers import ModelTier
+
+            tier = ModelTier(model_tier) if model_tier else ModelTier.MEDIUM
+            is_minimal = tier in (ModelTier.NANO, ModelTier.SMALL)
+        except Exception:
+            is_minimal = False
+
+        lines = []
+        for tool in tools:
+            desc = self._sanitize_text(tool.get("description", ""))
+            if is_minimal:
+                # Keep only the first sentence to save tokens on tiny models.
+                first_sentence = desc.split(".")[0].strip()
+                if first_sentence:
+                    desc = first_sentence + "."
+            lines.append(f"name: {tool['name']}\ndescription: {desc}")
+        return "\n".join(lines) + "\n" if lines else ""
+
     def build_prompt(
         self,
         role_name: str,
@@ -250,6 +455,7 @@ class ContextBuilder:
         retrieved_snippets: Optional[List[Dict]] = None,
         provider_capabilities: Optional[Dict] = None,
         context_controller=None,
+        model_tier: Optional[str] = None,
     ) -> List[Dict[str, str]]:
         # F10: Use dynamic token budget when max_tokens is not explicitly provided.
         if max_tokens is None:
@@ -276,6 +482,35 @@ class ContextBuilder:
 
         system_parts.append(f"<identity>\n{safe_identity}\n</identity>")
         system_parts.append(f"<role>\n{safe_role}\n</role>")
+
+        # CP-11: Ancestor instruction file injection.
+        # Walk from the workspace root up to the filesystem root collecting
+        # AGENTS.md, AGENTS.local.md, .agent/AGENTS.md, .agent/instructions.md.
+        # Files are deduplicated by content hash and rendered with per-file (4k)
+        # and total (12k) character budgets.  Injected before the dynamic
+        # boundary so this content is part of the static cacheable block.
+        try:
+            from src.core.context.instruction_files import (
+                discover_instruction_files,
+                render_instruction_files,
+            )
+
+            _workdir = self._agent_context_dir.parent
+            _instr_files = discover_instruction_files(_workdir)
+            if _instr_files:
+                _instr_block = render_instruction_files(_instr_files)
+                if _instr_block:
+                    system_parts.append(
+                        f"<project_instructions>\n{_instr_block}\n</project_instructions>"
+                    )
+        except Exception:
+            pass  # never fail prompt build due to instruction file errors
+
+        # CP-12: Dynamic-boundary sentinel.  Everything appended after this
+        # point is session/turn-specific and should NOT be included in the
+        # static cache block.  The Anthropic adapter (and any future
+        # cache-aware adapter) splits on this constant.
+        system_parts.append(SYSTEM_PROMPT_DYNAMIC_BOUNDARY)
 
         # 1a. Session summary — auto-injected from TASK_STATE.md so the agent
         #     always has access to prior context without needing a tool call.
@@ -328,8 +563,12 @@ class ContextBuilder:
                     {
                         "path": s.get("file_path", ""),
                         "content": s.get("snippet") or s.get("content") or "",
-                        "line_count": len((s.get("snippet") or s.get("content") or "").splitlines()),
-                        "estimated_tokens": max(1, len(s.get("snippet") or s.get("content") or "") // 4),
+                        "line_count": len(
+                            (s.get("snippet") or s.get("content") or "").splitlines()
+                        ),
+                        "estimated_tokens": max(
+                            1, len(s.get("snippet") or s.get("content") or "") // 4
+                        ),
                     }
                     for s in retrieved_snippets
                 ]
@@ -338,13 +577,15 @@ class ContextBuilder:
                 )
                 if _excluded:
                     import logging as _logging
+
                     _logging.getLogger(__name__).debug(
                         f"ContextController: excluded {len(_excluded)} snippet(s) to fit budget"
                     )
                 # Rebuild retrieved_snippets from included descriptors (preserve original keys)
                 _included_paths = {d["path"] for d in _included}
                 retrieved_snippets = [
-                    s for s in retrieved_snippets
+                    s
+                    for s in retrieved_snippets
                     if s.get("file_path", "") in _included_paths
                 ]
             except Exception:
@@ -391,18 +632,69 @@ class ContextBuilder:
                     f"<active_skills>\n{chr(10).join(skill_contents)}\n</active_skills>"
                 )
 
-        tools_text = ""
-        for tool in tools:
-            # keep tool descriptions short; sanitize tool descriptions too
-            desc = tool.get("description", "")
-            desc = self._sanitize_text(desc)
-            tools_text += f"name: {tool['name']}\ndescription: {desc}\n"
+        # S1-C: Prune tool list based on model tier before rendering.
+        if model_tier:
+            tools = self._prune_tools(tools, model_tier)
+
+        # S8-A: Render tools with tier-appropriate verbosity.
+        tools_text = self._render_tools_for_tier(tools, model_tier)
         system_parts.append(f"<available_tools>\n{tools_text}\n</available_tools>")
+
+        # S1-B: Inject per-provider / per-tier prompt partial after skills and tools.
+        try:
+            _is_reasoning = False
+            try:
+                from src.core.inference.thinking_utils import is_reasoning_model
+
+                _active_model = (provider_capabilities or {}).get("model", "")
+                _is_reasoning = bool(
+                    _active_model and is_reasoning_model(_active_model)
+                )
+            except Exception:
+                pass
+            _partial = self._select_prompt_partial(
+                model_tier, provider_capabilities, _is_reasoning
+            )
+            if _partial:
+                system_parts.append(f"<model_guidance>\n{_partial}\n</model_guidance>")
+        except Exception:
+            pass  # never fail prompt build due to missing partial
+
+        # CP-10: LSP context injection — append workspace symbol context when
+        # the feature is enabled (config: lsp_context.enabled or env var
+        # CODINGAGENT_LSP_CONTEXT=1).  Returns an empty string when disabled
+        # or when the symbol index is absent, so this is always a no-op by
+        # default and never blocks prompt assembly.
+        try:
+            from src.core.indexing.lsp_context import (  # type: ignore[import]
+                get_lsp_context_block,
+            )
+
+            _lsp_block = get_lsp_context_block(workdir=self._agent_context_dir.parent)
+            if _lsp_block:
+                system_parts.append(_lsp_block)
+        except Exception:
+            pass  # never fail prompt build due to LSP errors
 
         # 1.5 Mandatory Output Format (Last part of system instructions)
         # Phase 7: Conditional format based on provider capabilities
+        # S8-B: For NANO tier (simple_mode), force native tools off and restrict to one tool.
+        _is_simple_mode = False
+        try:
+            from src.core.inference.model_tiers import (
+                ModelTier,
+                is_simple_mode as _check_simple,
+            )
+
+            _is_simple_mode = (
+                _check_simple(ModelTier(model_tier)) if model_tier else False
+            )
+        except Exception:
+            pass
+
         use_native_tools = (
-            provider_capabilities is not None
+            not _is_simple_mode  # NANO never uses native tools
+            and provider_capabilities is not None
             and provider_capabilities.get("supports_native_tools", False)
         )
 
@@ -417,6 +709,21 @@ class ContextBuilder:
                 "If the tool result completes the user's task, do NOT make more tool calls.\n"
                 "Simply summarize the result or indicate task completion.\n"
                 "Only call another tool if the result requires follow-up action.\n"
+                "</output_format>"
+            )
+        elif _is_simple_mode:
+            # S8-B: NANO simple_mode — strict single YAML tool rule in output format.
+            format_instr = (
+                "<output_format>\n"
+                "STRICT RULE: Output EXACTLY ONE tool call per response, no exceptions.\n"
+                "Use the YAML tool format in a fenced code block:\n"
+                "```yaml\n"
+                "name: the_tool_name\n"
+                "arguments:\n"
+                "  arg_name: arg_value\n"
+                "```\n"
+                "Do NOT output more than one yaml block. Do NOT chain tool calls.\n"
+                "After the tool result is returned, you may call one more tool if needed.\n"
                 "</output_format>"
             )
         else:

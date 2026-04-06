@@ -1,5 +1,5 @@
 import logging
-from typing import Dict, Any, List, Optional, Set
+from typing import Mapping, Dict, Any, List, Optional, Set
 
 from src.core.orchestration.graph.state import AgentState
 from src.core.orchestration.graph.nodes.node_utils import _resolve_orchestrator
@@ -76,7 +76,11 @@ def validate_plan(
             tool_name = action.get("name", "") or None
 
         # W1: Validate tool name exists in registry
-        if tool_name and registered_tools is not None and tool_name not in registered_tools:
+        if (
+            tool_name
+            and registered_tools is not None
+            and tool_name not in registered_tools
+        ):
             errors.append(
                 f"Step {i + 1} references unknown tool '{tool_name}'. "
                 f"Available tools: {', '.join(sorted(registered_tools)[:10])}{'…' if len(registered_tools) > 10 else ''}"
@@ -87,6 +91,7 @@ def validate_plan(
         # "Use `write_file` to …" where the LLM named a non-existent tool.
         if tool_name is None and registered_tools is not None and description:
             import re as _re
+
             for m in _re.findall(r"[`'\"]([a-z_][a-z0-9_]{2,})[`'\"]", description):
                 # Only flag tokens that look like tool names (contain underscore)
                 # and are NOT in the registry — avoids false positives on file names.
@@ -193,7 +198,7 @@ def validate_plan(
     }
 
 
-async def plan_validator_node(state: AgentState, config: Any) -> Dict[str, Any]:
+async def plan_validator_node(state: Mapping[str, Any], config: Any) -> Dict[str, Any]:
     """
     Plan Validator Node: Validates plans before execution.
 
@@ -208,11 +213,11 @@ async def plan_validator_node(state: AgentState, config: Any) -> Dict[str, Any]:
     # Previously defaulted to True, which caused an infinite loop: any plan lacking
     # an explicit "test/verify" step was rejected → routed back to perception →
     # LLM re-generated the same plan → rejected again → loop forever.
-    enforce_warnings = state.get(
-        "plan_enforce_warnings", False
+    enforce_warnings = bool(
+        state.get("plan_enforce_warnings", False)
     )  # Default False - warnings do not block execution
-    strict_mode = state.get(
-        "plan_strict_mode", False
+    strict_mode = bool(
+        state.get("plan_strict_mode", False)
     )  # Keep False - strict is aggressive
 
     current_plan = state.get("current_plan")

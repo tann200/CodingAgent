@@ -470,94 +470,66 @@ class TestOpenRouterAdapter:
 
 
 class TestSettingsPanelApiKey:
-    def test_provider_requires_api_key_true(self):
-        from src.ui.views.settings_panel import SettingsPanelController
+    """Migrated from SettingsPanelController tests (LEGACY-02).
 
-        ctrl = SettingsPanelController.__new__(SettingsPanelController)
-        mock_pm = MagicMock()
-        mock_adapter = MagicMock()
-        mock_adapter.REQUIRES_API_KEY = True
-        mock_pm.get_provider.return_value = mock_adapter
-        ctrl.pm = mock_pm
-        ctrl.event_bus = None
-        assert ctrl.provider_requires_api_key("openrouter") is True
+    Tests the new TUI's config_writer module which replaces the legacy
+    SettingsPanelController.save_api_key / get_current_api_key methods.
+    """
 
-    def test_provider_requires_api_key_false(self):
-        from src.ui.views.settings_panel import SettingsPanelController
+    def test_save_provider_credentials_persists_api_key(self, tmp_path):
+        from tui.src.ui import config_writer
 
-        ctrl = SettingsPanelController.__new__(SettingsPanelController)
-        mock_pm = MagicMock()
-        mock_adapter = MagicMock(spec=[])  # no REQUIRES_API_KEY attr
-        mock_pm.get_provider.return_value = mock_adapter
-        ctrl.pm = mock_pm
-        ctrl.event_bus = None
-        assert ctrl.provider_requires_api_key("lm_studio") is False
+        with patch.object(config_writer, "CONFIG_PATH", tmp_path / "providers.json"):
+            config_writer.save_provider_credentials("openrouter", "sk-test-key")
+            data = config_writer.load_provider_credentials("openrouter")
+        assert data.get("api_key") == "sk-test-key"
 
-    def test_save_api_key_persists_to_prefs(self, tmp_path):
-        from src.ui.views.settings_panel import SettingsPanelController
+    def test_load_provider_credentials_returns_empty_when_missing(self, tmp_path):
+        from tui.src.ui import config_writer
 
-        ctrl = SettingsPanelController.__new__(SettingsPanelController)
-        mock_pm = MagicMock()
-        mock_pm.get_provider.return_value = MagicMock()
-        ctrl.pm = mock_pm
-        ctrl.event_bus = None
-        with patch("src.ui.views.settings_panel.UserPrefs") as MockPrefs:
-            mock_prefs_instance = MagicMock()
-            MockPrefs.load.return_value = mock_prefs_instance
-            result = ctrl.save_api_key("openrouter", "sk-test-key")
-        assert result is True
-        mock_prefs_instance.set_provider_setting.assert_called_once_with(
-            "openrouter", "api_key", "sk-test-key"
-        )
-        mock_prefs_instance.save.assert_called_once()
+        with patch.object(config_writer, "CONFIG_PATH", tmp_path / "providers.json"):
+            data = config_writer.load_provider_credentials("nonexistent")
+        assert data == {}
 
-    def test_save_api_key_injects_into_adapter(self):
-        from src.ui.views.settings_panel import SettingsPanelController
+    def test_save_provider_credentials_stores_base_url(self, tmp_path):
+        from tui.src.ui import config_writer
 
-        ctrl = SettingsPanelController.__new__(SettingsPanelController)
-        mock_adapter = MagicMock()
-        mock_pm = MagicMock()
-        mock_pm.get_provider.return_value = mock_adapter
-        ctrl.pm = mock_pm
-        ctrl.event_bus = None
-        with patch("src.ui.views.settings_panel.UserPrefs") as MockPrefs:
-            MockPrefs.load.return_value = MagicMock()
-            ctrl.save_api_key("openrouter", "sk-live")
-        assert mock_adapter.api_key == "sk-live"
+        with patch.object(config_writer, "CONFIG_PATH", tmp_path / "providers.json"):
+            config_writer.save_provider_credentials(
+                "openrouter", "sk-key", base_url="https://example.com"
+            )
+            data = config_writer.load_provider_credentials("openrouter")
+        assert data.get("base_url") == "https://example.com"
 
-    def test_get_current_api_key(self):
-        from src.ui.views.settings_panel import SettingsPanelController
+    def test_empty_api_key_not_stored(self, tmp_path):
+        from tui.src.ui import config_writer
 
-        ctrl = SettingsPanelController.__new__(SettingsPanelController)
-        ctrl.pm = MagicMock()
-        ctrl.event_bus = None
-        with patch("src.ui.views.settings_panel.UserPrefs") as MockPrefs:
-            MockPrefs.load.return_value.get_provider_key.return_value = "sk-stored"
-            key = ctrl.get_current_api_key("openrouter")
-        assert key == "sk-stored"
-
-
-# ---------------------------------------------------------------------------
-# TUI: API key section presence in SettingsModal source
-# ---------------------------------------------------------------------------
+        with patch.object(config_writer, "CONFIG_PATH", tmp_path / "providers.json"):
+            config_writer.save_provider_credentials("openrouter", "")
+            data = config_writer.load_provider_credentials("openrouter")
+        assert "api_key" not in data
 
 
 class TestSettingsModalApiKeyUI:
-    def _src(self):
-        import src.ui.textual_app_impl as m
-        import inspect
+    """Migrated from TextualAppImpl source-inspection tests (LEGACY-02).
 
-        return inspect.getsource(m)
+    Tests the new TUI's ProviderConfigScreen for required UI elements.
+    """
+
+    def _src(self):
+        import inspect
+        from tui.src.ui.features.settings.screen import ProviderConfigScreen
+
+        return inspect.getsource(ProviderConfigScreen)
 
     def test_apikey_section_in_compose(self):
         src_text = self._src()
-        assert "apikey_section" in src_text, "API key section container must exist"
-        assert "key_input" in src_text, "API key Input widget must exist"
+        assert "api_key_input" in src_text, "API key input widget must exist"
 
     def test_save_and_cancel_buttons(self):
         src_text = self._src()
-        assert "btn_save_key" in src_text, "Save key button must exist"
-        assert "btn_cancel_key" in src_text, "Cancel key button must exist"
+        assert "save_btn" in src_text, "Save key button must exist"
+        assert "cancel_btn" in src_text, "Cancel key button must exist"
 
     def test_input_is_password_masked(self):
         src_text = self._src()
@@ -565,24 +537,8 @@ class TestSettingsModalApiKeyUI:
             "API key input must use password=True for masking"
         )
 
-    def test_hint_mentions_prefs_path(self):
+    def test_save_validates_empty_key(self):
         src_text = self._src()
-        assert "prefs.json" in src_text, "Modal must show where the key is stored"
-
-    def test_save_calls_controller_save_api_key(self):
-        src_text = self._src()
-        assert "save_api_key" in src_text, (
-            "_save_api_key must call controller.save_api_key()"
-        )
-
-    def test_visibility_toggled_on_provider_change(self):
-        src_text = self._src()
-        assert "_update_apikey_visibility" in src_text, (
-            "API key section visibility must update when provider changes"
-        )
-
-    def test_needs_api_key_delegates_to_controller(self):
-        src_text = self._src()
-        assert "provider_requires_api_key" in src_text, (
-            "Modal must ask controller whether provider needs a key"
+        assert "not key" in src_text or "strip()" in src_text, (
+            "ProviderConfigScreen must guard against empty API keys"
         )

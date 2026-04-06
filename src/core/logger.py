@@ -39,6 +39,7 @@ class AuditLevel(Enum):
 
 # Module-level event bus registration slot (optional)
 _event_bus = None
+_event_bus_lock = Lock()
 
 
 def set_event_bus(bus) -> None:
@@ -47,7 +48,8 @@ def set_event_bus(bus) -> None:
     The logger will publish `log.entry` events for real-time TUI consumption.
     """
     global _event_bus
-    _event_bus = bus
+    with _event_bus_lock:
+        _event_bus = bus
 
 
 class GUILogger:
@@ -151,7 +153,7 @@ class GUILogger:
         try:
             bus = get_event_bus()
             try:
-                bus.publish('log.new', entry)
+                bus.publish("log.new", entry)
             except Exception:
                 # non-fatal: don't let UI failures break logging
                 pass
@@ -277,7 +279,11 @@ def _start_audit_worker_if_needed():
     if _audit_stop is None:
         _audit_stop = Event()
     if _audit_thread is None or not _audit_thread.is_alive():
-        t = Thread(target=_audit_worker, args=(_audit_log_path, _audit_queue, _audit_stop, _audit_max_bytes), daemon=True)
+        t = Thread(
+            target=_audit_worker,
+            args=(_audit_log_path, _audit_queue, _audit_stop, _audit_max_bytes),
+            daemon=True,
+        )
         _audit_thread = t
         t.start()
 
@@ -391,7 +397,7 @@ class _GUILoggingHandler(logging.Handler):
         self.setLevel(logging.DEBUG)
 
     def emit(self, record: logging.LogRecord) -> None:
-        if getattr(self._local, 'active', False):
+        if getattr(self._local, "active", False):
             return  # Break recursion: already inside emit on this thread
         self._local.active = True
         try:
@@ -410,6 +416,7 @@ class _GUILoggingHandler(logging.Handler):
 
 
 _installed_handler = False
+_install_handler_lock = Lock()
 
 
 def install_stdlib_handler(level: int = logging.INFO) -> None:
@@ -418,17 +425,19 @@ def install_stdlib_handler(level: int = logging.INFO) -> None:
     Idempotent: calling multiple times will not add duplicate handlers.
     """
     global _installed_handler
-    root = logging.getLogger()
-    # Check if handler already installed (by attribute)
-    for h in list(root.handlers):
-        if isinstance(h, _GUILoggingHandler):
-            return
-    handler = _GUILoggingHandler()
-    handler.setLevel(level)
-    # optional formatter
-    fmt = logging.Formatter('%(asctime)s %(levelname)s %(name)s: %(message)s')
-    handler.setFormatter(fmt)
-    root.addHandler(handler)
+    with _install_handler_lock:
+        root = logging.getLogger()
+        # Check if handler already installed (by attribute)
+        for h in list(root.handlers):
+            if isinstance(h, _GUILoggingHandler):
+                return
+        handler = _GUILoggingHandler()
+        handler.setLevel(level)
+        # optional formatter
+        fmt = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+        handler.setFormatter(fmt)
+        root.addHandler(handler)
+        _installed_handler = True
 
 
 # expose install function at module level
@@ -441,4 +450,3 @@ __all__ = [
     "install_stdlib_handler",
     "set_event_bus",
 ]
-

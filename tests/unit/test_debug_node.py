@@ -176,7 +176,7 @@ class TestDebugNodeRetry:
         mock_orch.tool_registry.tools = {}
         mock_orch.adapter = None
 
-        state: AgentState = {
+        state: AgentState = {  # type: ignore[assignment]
             "task": "fix bug",
             "history": [],
             "verified_reads": [],
@@ -223,7 +223,7 @@ class TestDebugNodeRetry:
         mock_orch = MagicMock()
         mock_orch.tool_registry.tools = {}
 
-        state: AgentState = {
+        state: AgentState = {  # type: ignore[assignment]
             "task": "fix bug",
             "history": [],
             "verified_reads": [],

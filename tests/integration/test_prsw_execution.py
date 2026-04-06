@@ -26,7 +26,7 @@ from src.core.orchestration.wave_coordinator import WaveCoordinator, ExecutionWa
 
 def _make_lock_manager(cancel_event=None) -> FileLockManager:
     cancel = cancel_event or threading.Event()
-    return FileLockManager(workdir="/tmp", cancel_event=cancel)
+    return FileLockManager(workdir="/tmp", cancel_event=cancel) # type: ignore[arg-type]
 
 
 # ─────────────────────────────────────────────────────────────────────────────

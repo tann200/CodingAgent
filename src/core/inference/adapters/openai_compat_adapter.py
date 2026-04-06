@@ -16,7 +16,6 @@ from __future__ import annotations
 import logging
 import re
 import time
-import warnings
 from typing import Any, Dict, List, Optional, Union
 
 import requests
@@ -110,9 +109,7 @@ class OpenAICompatibleAdapter(LLMClient):
             )
         except TypeError:
             try:
-                return requests.post(
-                    url, headers=headers, json=payload, stream=stream
-                )
+                return requests.post(url, headers=headers, json=payload, stream=stream)
             except TypeError:
                 try:
                     return requests.post(url, payload, stream)
@@ -132,8 +129,9 @@ class OpenAICompatibleAdapter(LLMClient):
         """
         endpoints = self._models_endpoints()
         if not endpoints:
-            warnings.warn(
-                f"{self.__class__.__name__}.get_models_from_api: no base_url configured"
+            _logger.debug(
+                "%s.get_models_from_api: no base_url configured",
+                self.__class__.__name__,
             )
             return {"models": []}
 
@@ -143,24 +141,30 @@ class OpenAICompatibleAdapter(LLMClient):
                     ep, headers=self._headers(), timeout=self.DEFAULT_TIMEOUT
                 )
             except requests.exceptions.RequestException as exc:
-                warnings.warn(
-                    f"{self.__class__.__name__}.get_models_from_api request failed"
-                    f" for {ep}: {exc}"
+                _logger.warning(
+                    "%s.get_models_from_api request failed for %s: %s",
+                    self.__class__.__name__,
+                    ep,
+                    exc,
                 )
                 continue
 
             if r.status_code >= 400:
-                warnings.warn(
-                    f"{self.__class__.__name__}.get_models_from_api:"
-                    f" {ep} returned {r.status_code}"
+                _logger.debug(
+                    "%s.get_models_from_api: %s returned %s",
+                    self.__class__.__name__,
+                    ep,
+                    r.status_code,
                 )
                 continue
 
             try:
                 data = r.json()
             except Exception:
-                warnings.warn(
-                    f"{self.__class__.__name__}.get_models_from_api: non-JSON from {ep}"
+                _logger.debug(
+                    "%s.get_models_from_api: non-JSON from %s",
+                    self.__class__.__name__,
+                    ep,
                 )
                 continue
 
@@ -174,9 +178,10 @@ class OpenAICompatibleAdapter(LLMClient):
                 raw = data
 
             if not raw:
-                warnings.warn(
-                    f"{self.__class__.__name__}.get_models_from_api:"
-                    f" unexpected shape from {ep}"
+                _logger.debug(
+                    "%s.get_models_from_api: unexpected shape from %s",
+                    self.__class__.__name__,
+                    ep,
                 )
                 continue
 
@@ -229,6 +234,48 @@ class OpenAICompatibleAdapter(LLMClient):
         return model_name
 
     # ------------------------------------------------------------------
+    # CP-12: Prompt-cache boundary preprocessing
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _preprocess_messages(
+        messages: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """Strip the ``SYSTEM_PROMPT_DYNAMIC_BOUNDARY`` sentinel from messages.
+
+        OpenAI-compatible endpoints do not support the Anthropic
+        ``cache_control`` content-block format, so the sentinel is simply
+        removed.  Subclasses that wrap a native Anthropic Messages API endpoint
+        should override this method to split the system content on the sentinel
+        and set ``cache_control: {"type": "ephemeral"}`` on the static block.
+
+        The sentinel appears as a standalone paragraph in the system message
+        content.  We strip it (and any surrounding blank lines it introduces)
+        so the model never sees the raw internal marker.
+        """
+        try:
+            from src.core.context.context_builder import (  # type: ignore[import]
+                SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
+            )
+        except Exception:
+            return messages
+
+        out: List[Dict[str, Any]] = []
+        for msg in messages:
+            if msg.get("role") == "system" and isinstance(msg.get("content"), str):
+                content: str = msg["content"]
+                if SYSTEM_PROMPT_DYNAMIC_BOUNDARY in content:
+                    # Remove the sentinel and collapse the extra blank line it
+                    # introduces (the sentinel is surrounded by "\n\n" joins).
+                    cleaned = content.replace(
+                        f"\n\n{SYSTEM_PROMPT_DYNAMIC_BOUNDARY}\n\n", "\n\n"
+                    ).replace(SYSTEM_PROMPT_DYNAMIC_BOUNDARY, "")
+                    out.append({**msg, "content": cleaned})
+                    continue
+            out.append(msg)
+        return out
+
+    # ------------------------------------------------------------------
     # Inference
     # ------------------------------------------------------------------
 
@@ -255,6 +302,15 @@ class OpenAICompatibleAdapter(LLMClient):
                 }
 
         model_name = self.resolve_model_name(model_name)
+
+        # CP-12: Strip the dynamic-boundary sentinel from message content before
+        # sending.  OpenAI-compatible endpoints do not support the Anthropic
+        # cache_control content-block format; we simply remove the sentinel line
+        # so the model never sees the raw internal marker.  A future native
+        # Anthropic-Messages-API adapter should override _preprocess_messages()
+        # to split on the sentinel and set cache_control instead.
+        if isinstance(messages, (list, tuple)):
+            messages = self._preprocess_messages(list(messages))
 
         if isinstance(messages, (list, tuple)):
             payload: Dict[str, Any] = {
@@ -322,13 +378,18 @@ class OpenAICompatibleAdapter(LLMClient):
                         _MAX_RETRIES,
                     )
                 if _attempt < _MAX_RETRIES - 1:
-                    time.sleep(2 ** _attempt)  # 1s, 2s backoff
+                    time.sleep(2**_attempt)  # 1s, 2s backoff
 
             if last_exc is not None and r is None:
                 raise last_exc
 
             if stream:
                 return r
+
+            # After the retry loop, r is guaranteed non-None here:
+            # if r were still None we'd have raised last_exc above, or
+            # ConnectionError would have propagated.
+            assert r is not None  # narrow type for pyright
 
             try:
                 r.raise_for_status()
@@ -381,7 +442,9 @@ class OpenAICompatibleAdapter(LLMClient):
                 }
                 result: Dict[str, Any] = {"meta": meta}
                 if user_message:
-                    result.update({"user_message": user_message, "suggestions": suggestions})
+                    result.update(
+                        {"user_message": user_message, "suggestions": suggestions}
+                    )
                 return result
 
             try:
@@ -392,10 +455,12 @@ class OpenAICompatibleAdapter(LLMClient):
                 }
 
         except requests.exceptions.RequestException as exc:
-            warnings.warn(f"{self.__class__.__name__}.chat request failed: {exc}")
+            _logger.warning("%s.chat request failed: %s", self.__class__.__name__, exc)
             return {"error": "request_exception", "message": str(exc)}
         except Exception as exc:
-            warnings.warn(f"{self.__class__.__name__}.chat unexpected error: {exc}")
+            _logger.warning(
+                "%s.chat unexpected error: %s", self.__class__.__name__, exc
+            )
             return {"error": "unexpected", "message": str(exc)}
 
     @with_telemetry
@@ -458,10 +523,21 @@ class OpenAICompatibleAdapter(LLMClient):
             if raw_response and "choices" in raw_response and raw_response["choices"]:
                 for c in raw_response["choices"]:
                     msg = c.get("message", {})
+                    # Reasoning models (e.g. qwen3.5-9b in thinking mode) sometimes
+                    # emit the actual response in reasoning_content / thinking and
+                    # leave content as an empty string.  Fall back so the agent gets
+                    # the answer rather than an empty string.
+                    content = msg.get("content", "") or ""
+                    if not content.strip():
+                        content = (
+                            msg.get("reasoning_content")
+                            or msg.get("thinking")
+                            or content
+                        )
                     choice_obj: Dict[str, Any] = {
                         "message": {
                             "role": msg.get("role", "assistant"),
-                            "content": msg.get("content", ""),
+                            "content": content,
                         },
                         "finish_reason": c.get("finish_reason", "stop"),
                     }
@@ -473,6 +549,19 @@ class OpenAICompatibleAdapter(LLMClient):
                 prompt_tokens = raw_response["usage"].get("prompt_tokens", 0)
                 completion_tokens = raw_response["usage"].get("completion_tokens", 0)
 
+            # CP-9: Extract Anthropic prompt-cache token counts when present.
+            # Anthropic returns these in the usage block of both streaming and
+            # non-streaming responses (also present when Claude is accessed via
+            # the GitHub Copilot / OpenRouter OpenAI-compat endpoint).
+            cache_creation_input_tokens: int = 0
+            cache_read_input_tokens: int = 0
+            if raw_response and "usage" in raw_response:
+                _u = raw_response["usage"]
+                cache_creation_input_tokens = int(
+                    _u.get("cache_creation_input_tokens", 0) or 0
+                )
+                cache_read_input_tokens = int(_u.get("cache_read_input_tokens", 0) or 0)
+
             return {
                 "ok": True,
                 "provider": self.name,
@@ -483,6 +572,8 @@ class OpenAICompatibleAdapter(LLMClient):
                 "prompt_tokens": prompt_tokens,
                 "completion_tokens": completion_tokens,
                 "total_tokens": prompt_tokens + completion_tokens,
+                "cache_creation_input_tokens": cache_creation_input_tokens,
+                "cache_read_input_tokens": cache_read_input_tokens,
                 "choices": choices,
                 "raw": raw_response,
             }
@@ -496,9 +587,7 @@ class OpenAICompatibleAdapter(LLMClient):
                 "raw": {},
             }
 
-    def extract_tool_calls(
-        self, chat_response: Dict[str, Any]
-    ) -> List[Dict[str, Any]]:
+    def extract_tool_calls(self, chat_response: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Extract ``[{"name": ..., "args": ...}]`` from an OpenAI chat response."""
         if isinstance(chat_response, dict):
             if "tool_calls" in chat_response:

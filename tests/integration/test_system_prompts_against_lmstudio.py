@@ -33,9 +33,10 @@ def test_system_prompts_behaviour_lmstudio():
     base = os.getenv('LM_STUDIO_URL', 'http://localhost:1234/v1')
     adapter = LmStudioAdapter(base_url=base, models=["qwen/qwen3.5-9b"])
 
-    # read system prompts (markdown filenames)
-    coding_path = Path('agent-brain') / 'roles' / 'operational.md'
-    planner_path = Path('agent-brain') / 'roles' / 'strategic.md'
+    # read system prompts — paths anchored to repo root so they work from any cwd
+    _roles_dir = Path(__file__).parents[2] / 'src' / 'config' / 'agent-brain' / 'roles'
+    coding_path = _roles_dir / 'operational.md'
+    planner_path = _roles_dir / 'strategic.md'
     assert coding_path.exists(), f"Missing system prompt: {coding_path}"
     assert planner_path.exists(), f"Missing system prompt: {planner_path}"
 

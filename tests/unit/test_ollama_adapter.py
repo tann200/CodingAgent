@@ -56,8 +56,8 @@ class TestOllamaAdapterInit:
             base_url="http://localhost:11434/api",
             models=["llama3:8b", "mistral:7b"],
         )
-        assert "llama3:8b" in adapter.models
-        assert "mistral:7b" in adapter.models
+        assert "llama3:8b" in adapter.models # type: ignore[operator]
+        assert "mistral:7b" in adapter.models # type: ignore[operator]
 
     def test_missing_provider_flag_when_no_config_no_base(self, tmp_path):
         """missing_provider is True when neither provider config nor base_url is supplied."""

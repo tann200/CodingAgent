@@ -1,10 +1,12 @@
 from typing import Any
 from src.core.orchestration.graph.builder import (
     should_after_execution_with_replan,
+    should_after_execution,
     should_after_planning,
     should_after_replan,
     should_after_evaluation,
     route_after_perception,
+    route_execution,
     should_after_analysis,
     _task_is_complex,
     _task_has_more_steps,
@@ -14,7 +16,7 @@ from src.core.orchestration.graph.state import AgentState
 
 def _make_state(**kwargs: Any) -> AgentState:
     """Helper to create AgentState with all required fields."""
-    default: AgentState = {
+    default: AgentState = {  # type: ignore[assignment]
         "task": "",
         "history": [],
         "verified_reads": [],
@@ -578,3 +580,509 @@ def test_h1_step_requesting_verification_always_runs():
     assert run_full_suite is True, (
         "Intermediate step requesting 'run_tests' MUST run full suite"
     )
+
+
+# ---------------------------------------------------------------------------
+# Pipeline loop-termination regression tests (ET-3)
+# Covers the "respond tool not registered" completion-detection fixes:
+#   - execution_node sets _completion_detected=True in last_result
+#   - should_after_execution routes to memory_sync when _completion_detected
+#   - orchestrator round loop breaks when handled=True
+# ---------------------------------------------------------------------------
+
+
+class TestCompletionDetectionRouting:
+    """ET-3: should_after_execution routes to memory_sync on _completion_detected."""
+
+    def _make_state(self, **kwargs: Any) -> AgentState:
+        base: AgentState = {  # type: ignore[assignment]
+            "task": "list all files in the working directory",
+            "history": [],
+            "verified_reads": [],
+            "rounds": 2,
+            "working_dir": ".",
+            "system_prompt": "",
+            "next_action": None,
+            "last_result": None,
+            "errors": [],
+            "current_plan": None,
+            "current_step": 0,
+            "deterministic": False,
+            "seed": None,
+            "analysis_summary": None,
+            "relevant_files": None,
+            "key_symbols": None,
+            "debug_attempts": 0,
+            "max_debug_attempts": 3,
+            "verification_passed": None,
+            "verification_result": None,
+            "step_controller_enabled": True,
+            "task_decomposed": False,
+            "tool_call_count": 2,
+            "max_tool_calls": 50,
+            "repo_summary_data": None,
+            "replan_required": None,
+            "action_failed": False,
+            "plan_progress": None,
+            "evaluation_result": None,
+            "cancel_event": None,
+            "empty_response_count": 0,
+            "analyst_findings": None,
+            "plan_resumed": None,
+            "last_debug_error_type": None,
+            "session_id": None,
+            "delegation_results": None,
+            "delegations": None,
+            "last_tool_name": None,
+            "no_plan_fail_count": 0,
+            "step_retry_counts": {},
+            "total_debug_attempts": 0,
+        }
+        base.update(kwargs)  # type: ignore[call-overload]
+        return base
+
+    def test_completion_detected_flag_routes_to_memory_sync(self):
+        """When _completion_detected=True in last_result, route to memory_sync not perception."""
+        state = self._make_state(
+            last_result={
+                "ok": True,
+                "output": ["file.txt"],
+                "_completion_detected": True,
+            },
+            current_plan=None,
+        )
+        result = should_after_execution(state)
+        assert result == "memory_sync", (
+            f"Expected memory_sync when _completion_detected=True, got {result}"
+        )
+
+    def test_normal_ok_result_without_flag_routes_to_perception(self):
+        """Without _completion_detected, a successful no-plan execution still goes to perception."""
+        state = self._make_state(
+            last_result={"ok": True, "output": ["file.txt"]},
+            current_plan=None,
+            rounds=2,
+        )
+        result = should_after_execution(state)
+        assert result == "perception", (
+            f"Expected perception on normal success (no _completion_detected), got {result}"
+        )
+
+    def test_completion_detected_no_plan_routes_to_memory_sync(self):
+        """_completion_detected with no plan routes to memory_sync (typical fast-path case)."""
+        state = self._make_state(
+            last_result={"ok": True, "_completion_detected": True},
+            current_plan=None,
+            current_step=0,
+        )
+        result = should_after_execution(state)
+        assert result == "memory_sync", (
+            "_completion_detected with no plan must route to memory_sync"
+        )
+
+    def test_tool_budget_exhaustion_still_overrides_completion_flag(self):
+        """tool_call_count >= max_tool_calls takes priority over _completion_detected."""
+        state = self._make_state(
+            last_result={"ok": True, "_completion_detected": True},
+            tool_call_count=50,
+            max_tool_calls=50,
+        )
+        result = should_after_execution(state)
+        assert result == "memory_sync", (
+            "Budget exhaustion must also route to memory_sync (compatible outcome)"
+        )
+
+
+class TestExecutionNodeCompletionSignalHistory:
+    """ET-3: execution_node completion signal path adds synthetic tool_execution_result."""
+
+    def test_synthetic_tool_result_contains_expected_keys(self):
+        """Verify the format of the synthetic completion message matches what the
+        orchestrator round loop checks (looks for 'tool_execution_result' in content)."""
+        import json
+
+        tool_name = "respond"
+        synthetic_content = json.dumps(
+            {
+                "tool_execution_result": {
+                    "tool_name": tool_name,
+                    "output": "Task already completed. No further action needed.",
+                    "status": "ok",
+                }
+            }
+        )
+        parsed = json.loads(synthetic_content)
+        assert "tool_execution_result" in parsed
+        assert parsed["tool_execution_result"]["tool_name"] == tool_name
+        assert parsed["tool_execution_result"]["status"] == "ok"
+        # Orchestrator round loop checks string contains "tool_execution_result"
+        assert "tool_execution_result" in synthetic_content
+
+
+class TestOrchestratorBridgingUserMessage:
+    """ET-3: Orchestrator injects bridging user message when history ends with assistant."""
+
+    def test_bridging_message_added_when_history_ends_with_assistant(self):
+        """When the current_state history ends with an assistant message,
+        a user-role bridge should be appended before re-invoking the graph."""
+        history = [
+            {"role": "user", "content": "List all files"},
+            {"role": "assistant", "content": "STATUS: complete"},
+        ]
+        # Simulate the orchestrator bridging logic
+        if history and history[-1].get("role") == "assistant":
+            history = list(history) + [
+                {
+                    "role": "user",
+                    "content": (
+                        "Continue. If the task is already complete, "
+                        "output STATUS: complete with no tool call."
+                    ),
+                }
+            ]
+        assert history[-1]["role"] == "user", (
+            "History must end with 'user' role before re-invoking graph"
+        )
+        assert len(history) == 3
+
+    def test_no_bridging_when_history_ends_with_user(self):
+        """When history ends with a user message, no bridging is needed."""
+        history = [
+            {"role": "user", "content": "List all files"},
+            {"role": "assistant", "content": "```yaml\nname: list_files\n```"},
+            {"role": "user", "content": '{"tool_execution_result": {"output": []}}'},
+        ]
+        original_len = len(history)
+        if history and history[-1].get("role") == "assistant":
+            history = list(history) + [{"role": "user", "content": "Continue."}]
+        assert len(history) == original_len, "No bridging message should be added"
+        assert history[-1]["role"] == "user"
+
+
+# ---------------------------------------------------------------------------
+# route_execution: W12 tool budget enforcement (ported from dead code)
+# ---------------------------------------------------------------------------
+
+
+def test_route_execution_tool_budget_exhausted_routes_to_memory_sync():
+    """W12: route_execution must bail to memory_sync when tool_call_count >= max_tool_calls."""
+    state = _make_route_exec_state(
+        tool_call_count=30,
+        max_tool_calls=30,
+        current_plan=None,
+        last_result={"ok": True},
+    )
+    result = route_execution(state)
+    assert result == "memory_sync", (
+        f"route_execution must route to memory_sync when budget exhausted (got {result!r})"
+    )
+
+
+def test_route_execution_tool_budget_exceeded_routes_to_memory_sync():
+    """W12: route_execution must bail even when count is above the limit."""
+    state = _make_route_exec_state(
+        tool_call_count=35,
+        max_tool_calls=30,
+        current_plan=[{"description": "step 1"}],
+        last_result={"ok": True},
+    )
+    result = route_execution(state)
+    assert result == "memory_sync", (
+        f"route_execution must route to memory_sync when budget exceeded (got {result!r})"
+    )
+
+
+def test_route_execution_read_file_modify_task_routes_to_perception():
+    """
+    Regression: route_execution must route back to perception after read_file when
+    the task implies modification (e.g. 'add todays date on top of TEST.md').
+
+    Bug: route_execution sent read_file unconditionally to memory_sync, so the
+    write step was never executed.  The fix checks for modification keywords
+    and routes to perception so the write tool call can be generated.
+    """
+    state = _make_route_exec_state(
+        task="Task: add todays date on top of TEST.md\nContext: You just read the file.",
+        last_result={"ok": True, "result": {"content": "# Test\n"}},
+        last_tool_name="read_file",
+        current_plan=None,
+        rounds=1,
+    )
+    result = route_execution(state)
+    assert result == "perception", (
+        f"After read_file with a modification task, route_execution must route to "
+        f"perception so the write step executes (got {result!r})"
+    )
+
+
+def test_route_execution_read_file_query_task_routes_to_memory_sync():
+    """read_file with a pure query task (no modification keywords) must go to memory_sync."""
+    state = _make_route_exec_state(
+        task="read README.md and tell me what it says",
+        last_result={"ok": True, "result": {"content": "# README\n"}},
+        last_tool_name="read_file",
+        current_plan=None,
+        rounds=1,
+    )
+    result = route_execution(state)
+    assert result == "memory_sync", (
+        f"read_file with a query task should route to memory_sync (got {result!r})"
+    )
+
+
+def test_route_execution_list_files_modify_task_routes_to_memory_sync():
+    """list_files is always informational — route to memory_sync even with modification keywords."""
+    state = _make_route_exec_state(
+        task="add a file to the directory",
+        last_result={"ok": True, "result": {"items": []}},
+        last_tool_name="list_files",
+        current_plan=None,
+        rounds=1,
+    )
+    result = route_execution(state)
+    assert result == "memory_sync", (
+        f"list_files must always route to memory_sync (got {result!r})"
+    )
+
+
+def test_route_execution_read_file_top_of_keyword_routes_to_perception():
+    """'top of' is a modification keyword — 'add date on top of' must trigger perception."""
+    state = _make_route_exec_state(
+        task="add todays date on top of TEST.md",
+        last_result={"ok": True, "result": {"content": "# Test\n"}},
+        last_tool_name="read_file",
+        current_plan=None,
+        rounds=1,
+    )
+    result = route_execution(state)
+    assert result == "perception", (
+        f"'on top of' must be recognised as a modification keyword (got {result!r})"
+    )
+
+
+def test_route_execution_budget_not_exhausted_proceeds_normally():
+    """W12: route_execution must not bail to memory_sync when budget is not exhausted."""
+    state = _make_route_exec_state(
+        tool_call_count=5,
+        max_tool_calls=30,
+        current_plan=None,
+        last_result={"ok": True},
+        last_tool_name="list_files",
+    )
+    result = route_execution(state)
+    assert result != "memory_sync" or result == "memory_sync", (
+        True
+    )  # any valid route is fine
+    # Specifically: with list_files (read-only) it should go to memory_sync for completion,
+    # not because of budget exhaustion — both are memory_sync but for different reasons.
+    # The important assertion is that budget < limit does NOT prevent correct routing.
+    assert result == "memory_sync"  # list_files read-only fast-path
+
+
+# ---------------------------------------------------------------------------
+# route_execution: replan_attempts cap (ported from dead should_after_execution_with_replan)
+# ---------------------------------------------------------------------------
+
+
+def test_route_execution_replan_attempts_cap_routes_to_memory_sync():
+    """P1-3: when replan_attempts >= 5, route to memory_sync instead of replan."""
+    state = _make_route_exec_state(
+        replan_required="patch too large",
+        replan_attempts=5,
+        current_plan=None,
+        last_result={"ok": False},
+    )
+    result = route_execution(state)
+    assert result == "memory_sync", (
+        f"route_execution must bail to memory_sync when replan_attempts >= 5 (got {result!r})"
+    )
+
+
+def test_route_execution_replan_below_cap_routes_to_replan():
+    """P1-3: when replan_attempts < 5 and replan_required, route to replan."""
+    state = _make_route_exec_state(
+        replan_required="patch too large",
+        replan_attempts=2,
+        current_plan=None,
+        last_result={"ok": False},
+    )
+    result = route_execution(state)
+    assert result == "replan", (
+        f"route_execution must route to replan when replan_attempts < 5 (got {result!r})"
+    )
+
+
+def test_route_execution_replan_attempts_at_four_still_replans():
+    """P1-3: boundary — 4 attempts is still below cap, should still replan."""
+    state = _make_route_exec_state(
+        replan_required="needs split",
+        replan_attempts=4,
+        current_plan=None,
+        last_result={"ok": False},
+    )
+    result = route_execution(state)
+    assert result == "replan", (
+        f"4 replan attempts should still route to replan (cap is >= 5), got {result!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# route_execution: no_plan_fail_count cap (ported from dead should_after_execution)
+# ---------------------------------------------------------------------------
+
+
+def test_route_execution_no_plan_fail_count_cap_routes_to_memory_sync():
+    """HR-4: when no_plan_fail_count >= 3 on fast-path failure, bail to memory_sync."""
+    state = _make_route_exec_state(
+        last_result={"ok": False, "error": "command not found"},
+        no_plan_fail_count=3,
+        current_plan=None,
+        rounds=2,
+        last_tool_name="bash",
+    )
+    result = route_execution(state)
+    assert result == "memory_sync", (
+        f"route_execution must bail to memory_sync when no_plan_fail_count >= 3 "
+        f"(got {result!r})"
+    )
+
+
+def test_route_execution_no_plan_fail_count_below_cap_routes_to_analysis():
+    """HR-4: below cap (count=1), fast-path failures still route to analysis for context."""
+    state = _make_route_exec_state(
+        last_result={"ok": False, "error": "file not found"},
+        no_plan_fail_count=1,
+        current_plan=None,
+        rounds=2,
+        last_tool_name="bash",
+    )
+    result = route_execution(state)
+    assert result == "analysis", (
+        f"route_execution must route to analysis when fail count < 3 (got {result!r})"
+    )
+
+
+def test_route_execution_no_plan_fail_count_at_two_routes_to_analysis():
+    """HR-4: boundary — count=2 is still below cap (3), should route to analysis."""
+    state = _make_route_exec_state(
+        last_result={"ok": False, "error": "timeout"},
+        no_plan_fail_count=2,
+        current_plan=None,
+        rounds=3,
+        last_tool_name="bash",
+    )
+    result = route_execution(state)
+    assert result == "analysis", (
+        f"count=2 is below the cap of 3, should still route to analysis (got {result!r})"
+    )
+
+
+# ---------------------------------------------------------------------------
+# route_execution: _completion_detected flag must be honoured
+# Regression test for BUG-1: flag was only checked in dead should_after_execution;
+# route_execution (the live router) ignored it, causing perception loops after
+# write tools when the model hallucinates a "respond" tool.
+# ---------------------------------------------------------------------------
+
+
+def _make_route_exec_state(**kwargs: Any) -> AgentState:
+    base: AgentState = {  # type: ignore[assignment]
+        "task": "write hello to file",
+        "history": [],
+        "verified_reads": [],
+        "rounds": 2,
+        "working_dir": ".",
+        "system_prompt": "",
+        "next_action": None,
+        "last_result": None,
+        "errors": [],
+        "current_plan": None,
+        "current_step": 0,
+        "deterministic": False,
+        "seed": None,
+        "analysis_summary": None,
+        "relevant_files": None,
+        "key_symbols": None,
+        "debug_attempts": 0,
+        "max_debug_attempts": 3,
+        "verification_passed": None,
+        "verification_result": None,
+        "step_controller_enabled": True,
+        "task_decomposed": False,
+        "tool_call_count": 3,
+        "max_tool_calls": 50,
+        "repo_summary_data": None,
+        "replan_required": None,
+        "action_failed": False,
+        "plan_progress": None,
+        "evaluation_result": None,
+        "cancel_event": None,
+        "empty_response_count": 0,
+        "analyst_findings": None,
+        "plan_resumed": None,
+        "last_debug_error_type": None,
+        "session_id": None,
+        "delegation_results": None,
+        "delegations": None,
+        "last_tool_name": "write_file",  # write tool — NOT in read_only_tools
+        "no_plan_fail_count": 0,
+        "replan_attempts": 0,
+        "step_retry_counts": {},
+        "total_debug_attempts": 0,
+        "awaiting_plan_approval": False,
+        "awaiting_user_input": False,
+        "plan_mode_enabled": False,
+        "plan_mode_approved": None,
+    }
+    base.update(kwargs)  # type: ignore[call-overload]
+    return base
+
+
+class TestRouteExecutionCompletionDetected:
+    """Regression: route_execution must honour _completion_detected flag."""
+
+    def test_completion_detected_after_write_tool_routes_to_memory_sync(self):
+        """
+        When execution_node sets _completion_detected=True (hallucinated 'respond' tool)
+        after a write operation, route_execution must route to memory_sync, not perception.
+
+        Without the fix, last_tool='write_file' is not in read_only_tools, and
+        execution_failed=False, so route_execution would fall through to 'perception',
+        causing an infinite loop.
+        """
+        state = _make_route_exec_state(
+            last_result={"ok": True, "_completion_detected": True},
+            last_tool_name="write_file",  # write tool — would loop without fix
+            current_plan=None,
+        )
+        result = route_execution(state)
+        assert result == "memory_sync", (
+            f"route_execution must route to memory_sync when _completion_detected=True "
+            f"(got {result!r}). Without fix, write-tool fast-path loops to perception."
+        )
+
+    def test_completion_detected_after_edit_tool_routes_to_memory_sync(self):
+        """Same check for edit_file tool (also not in read_only_tools)."""
+        state = _make_route_exec_state(
+            last_result={"ok": True, "_completion_detected": True},
+            last_tool_name="edit_file",
+            current_plan=None,
+        )
+        result = route_execution(state)
+        assert result == "memory_sync", (
+            f"route_execution must route to memory_sync when _completion_detected=True "
+            f"after edit_file (got {result!r})"
+        )
+
+    def test_no_completion_detected_write_tool_routes_to_perception(self):
+        """Without _completion_detected, a successful write tool still goes to perception."""
+        state = _make_route_exec_state(
+            last_result={"ok": True},
+            last_tool_name="write_file",
+            current_plan=None,
+        )
+        result = route_execution(state)
+        assert result == "perception", (
+            f"Without _completion_detected, write tool success should route to perception "
+            f"(got {result!r})"
+        )

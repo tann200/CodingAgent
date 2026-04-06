@@ -11,12 +11,16 @@ Two suspension modes:
 
 import asyncio
 import logging
-from typing import Dict, Any
+from typing import Mapping, Any, Dict, Union
+
+from src.core.orchestration.graph.state import AgentState
 
 logger = logging.getLogger(__name__)
 
 
-async def wait_for_user_node(state: Dict[str, Any], config: Any) -> Dict[str, Any]:
+async def wait_for_user_node(
+    state: Union[AgentState, Dict[str, Any]], config: Any
+) -> Dict[str, Any]:
     """
     Suspend graph execution until user confirms or rejects preview / approves plan.
 
@@ -42,13 +46,18 @@ async def wait_for_user_node(state: Dict[str, Any], config: Any) -> Dict[str, An
     # ── Plan Mode ────────────────────────────────────────────────────────────
     if state.get("awaiting_plan_approval", False):
         if not orchestrator:
-            logger.warning("wait_for_user_node: plan approval requested but no orchestrator")
+            logger.warning(
+                "wait_for_user_node: plan approval requested but no orchestrator"
+            )
             return {
                 "awaiting_plan_approval": False,
                 "awaiting_user_input": False,
                 "plan_mode_approved": False,
                 "plan_mode_blocked_tool": None,
-                "last_result": {"ok": False, "error": "No orchestrator for plan approval"},
+                "last_result": {
+                    "ok": False,
+                    "error": "No orchestrator for plan approval",
+                },
             }
 
         # Publish plan.requested so TUI surfaces the approval panel

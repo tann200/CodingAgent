@@ -51,6 +51,9 @@ _BUILTIN_MODULES = [
     "src.tools.web_tools",
     "src.tools.ast_tools",
     "src.tools.project_tools",
+    "src.tools.batch_tools",
+    "src.tools.skill_tools",
+    "src.tools.plan_mode_tools",
 ]
 
 # Built-in aliases: alias_name -> canonical_name
@@ -72,6 +75,8 @@ class ToolRegistry:
     def __init__(self) -> None:
         self._tools: Dict[str, Dict[str, Any]] = {}
         self._lock = threading.Lock()
+        # TASK-03: track origin ('builtin' or 'plugin') for each registered name
+        self._origins: Dict[str, str] = {}
 
     # ------------------------------------------------------------------
     # Registration
@@ -84,6 +89,7 @@ class ToolRegistry:
         side_effects: Optional[List[str]] = None,
         description: str = "",
         tags: Optional[List[str]] = None,
+        origin: str = "builtin",
     ) -> None:
         """Manually register a callable under *name*.
 
@@ -99,7 +105,19 @@ class ToolRegistry:
             Human-readable description used in the OpenAI function schema.
         tags:
             Toolset membership hints (e.g. ``["coding", "review"]``).
+        origin:
+            ``'builtin'`` (default) or ``'plugin'``.  Plugin registrations that
+            attempt to overwrite a builtin name raise ``ValueError`` (TASK-03).
         """
+        # TASK-03: Reject plugin attempts to overwrite builtin names
+        with self._lock:
+            existing_origin = self._origins.get(name)
+        if existing_origin == "builtin" and origin == "plugin":
+            raise ValueError(
+                f"Plugin tool {name!r} conflicts with a built-in tool of the same name. "
+                "Rename the plugin tool or remove it from your config."
+            )
+
         entry: Dict[str, Any] = {
             "fn": fn,
             "side_effects": list(side_effects or []),
@@ -109,6 +127,7 @@ class ToolRegistry:
         }
         with self._lock:
             self._tools[name] = entry
+            self._origins[name] = origin
         # Mirror into the legacy module-level registry for backward compat
         try:
             from src.tools.registry import register_tool as _rt
@@ -117,7 +136,9 @@ class ToolRegistry:
         except Exception:
             pass
 
-    def register_definition(self, defn: ToolDefinition) -> None:
+    def register_definition(
+        self, defn: ToolDefinition, origin: str = "builtin"
+    ) -> None:
         """Register from a ``ToolDefinition`` (created by ``@tool``)."""
         self.register(
             name=defn.name,
@@ -125,6 +146,7 @@ class ToolRegistry:
             side_effects=defn.side_effects,
             description=defn.description,
             tags=defn.tags,
+            origin=origin,
         )
 
     def alias(self, alias_name: str, canonical_name: str) -> None:
@@ -145,13 +167,16 @@ class ToolRegistry:
     # Auto-discovery
     # ------------------------------------------------------------------
 
-    def discover(self, module: Any) -> int:
+    def discover(self, module: Any, origin: str = "builtin") -> int:
         """Find all ``@tool``-decorated callables in *module* and register them.
 
         Parameters
         ----------
         module:
             An already-imported Python module object.
+        origin:
+            ``'builtin'`` (default) or ``'plugin'``.  Plugin tools that share a
+            name with an existing builtin raise ``ValueError`` (TASK-03).
 
         Returns
         -------
@@ -166,11 +191,14 @@ class ToolRegistry:
                 continue
             if callable(obj) and hasattr(obj, TOOL_ATTR):
                 defn: ToolDefinition = getattr(obj, TOOL_ATTR)
-                self.register_definition(defn)
-                count += 1
+                try:
+                    self.register_definition(defn, origin=origin)
+                    count += 1
+                except ValueError as conflict_err:
+                    logger.warning("discover: %s", conflict_err)
         return count
 
-    def discover_module_name(self, module_name: str) -> int:
+    def discover_module_name(self, module_name: str, origin: str = "builtin") -> int:
         """Import *module_name* then call ``discover()`` on it.
 
         Failures are logged at WARNING level and do not propagate so that a
@@ -178,7 +206,7 @@ class ToolRegistry:
         """
         try:
             mod = importlib.import_module(module_name)
-            return self.discover(mod)
+            return self.discover(mod, origin=origin)
         except ImportError as exc:
             logger.warning(
                 "discover_module_name: could not import '%s': %s", module_name, exc
@@ -374,10 +402,15 @@ def build_registry(
     for alias, canonical in _BUILTIN_ALIASES.items():
         reg.alias(alias, canonical)
 
-    # 'list_files' is the public name; list_dir is the function name
-    reg.alias(
-        "list_files", "list_files"
-    )  # no-op if already registered via @tool(name=...)
+    # TASK-16: Also register all aliases from tools_config.TOOL_ALIASES so
+    # the LLM can use short forms (read, write, edit, etc.) transparently.
+    try:
+        from src.tools.tools_config import TOOL_ALIASES as _ta
+
+        for _alias, _canonical in _ta.items():
+            reg.alias(_alias, _canonical)
+    except Exception as _alias_exc:
+        logger.debug("build_registry: could not load TOOL_ALIASES: %s", _alias_exc)
 
     if include_echo:
 
@@ -391,9 +424,26 @@ def build_registry(
     # Caller-supplied extension modules
     for mod in extra_modules or []:
         try:
-            reg.discover(mod)
+            # TASK-03: caller-supplied modules are treated as plugins
+            reg.discover(mod, origin="plugin")
         except Exception as exc:
             logger.warning("build_registry: discover failed for %r: %s", mod, exc)
+
+    # Load plugin tools declared in config (plugin_tools key in providers.json /
+    # .agent/config.json).  Each entry is a dotted module path whose @tool-decorated
+    # functions are discovered at startup.
+    try:
+        from src.core.config_loader import get as _cfg_get
+
+        _plugin_paths: List[Any] = _cfg_get("plugin_tools") or []
+        for _plugin in _plugin_paths:
+            if isinstance(_plugin, str):
+                # TASK-03: mark as plugin so conflicts with builtins are rejected
+                reg.discover_module_name(_plugin, origin="plugin")
+            elif hasattr(_plugin, "__name__"):
+                reg.discover(_plugin, origin="plugin")
+    except Exception as _plugin_exc:
+        logger.debug("build_registry: plugin loading skipped: %s", _plugin_exc)
 
     logger.debug("build_registry: registered %d tools", len(reg))
     return reg

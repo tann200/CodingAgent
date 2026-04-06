@@ -1,0 +1,31 @@
+name: analysis
+description: Read-only exploration toolset for the analyst role. No write or execution tools.
+tools:
+  # Reading
+  - read_file
+  - list_files
+  - glob
+  - grep
+  - search_code
+  - find_symbol
+  - find_references
+  - batched_file_read
+  - multi_file_summary
+  # Shell (read-only commands only)
+  - bash_readonly
+  # Git (read-only)
+  - git_log
+  - git_diff
+  - git_status
+  # Parallel read execution
+  - batch
+  # Web
+  - web_search
+  - read_web_page
+  # Memory & intelligence
+  - memory_search
+  - analyze_repository
+  - initialize_repo_intelligence
+  # Skills
+  - load_skill
+  - list_skills

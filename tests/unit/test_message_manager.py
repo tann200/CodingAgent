@@ -16,7 +16,7 @@ def test_message_manager_truncation():
     msgs = mm.all()
     # Ensure total tokens under limit
     total_tokens = sum(mm._estimate_tokens(m['content']) for m in msgs)
-    assert total_tokens <= mm.max_tokens
+    assert total_tokens <= mm.max_tokens # type: ignore[operator]
     # Ensure last messages are preserved (assistant last)
     assert msgs[-1]['role'] == 'assistant'
     # System message should either be preserved or only removed if budget impossible
@@ -132,7 +132,7 @@ class TestCompaction:
 
         # Should not raise; token count should be within limit
         total = sum(mm._estimate_tokens(m["content"]) for m in mm.all())
-        assert total <= mm.max_tokens + mm._COMPACT_BUDGET
+        assert total <= mm.max_tokens + mm._COMPACT_BUDGET # type: ignore[operator]
 
 
 class TestContextBuilderSessionSummary:

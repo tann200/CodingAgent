@@ -27,11 +27,17 @@ def _search_vector_store(query: str, workdir: str) -> List[Dict[str, Any]]:
         raw = vs.search(query)
         results = []
         for item in raw[:5]:
+            # LOGIC-1: Use actual similarity score from LanceDB instead of hardcoded 0.8.
+            # LanceDB returns _distance (lower = more similar). Convert to a [0,1] score
+            # where 1.0 = identical and 0.0 = maximally distant (distance ≥ 2.0 for
+            # normalised embeddings).  Clamp to [0, 1] to guard against edge cases.
+            distance = item.get("_distance", 1.0) if isinstance(item, dict) else 1.0
+            score = max(0.0, min(1.0, 1.0 - distance / 2.0))
             results.append(
                 {
                     "source": "vector_store",
                     "excerpt": str(item)[:500],
-                    "score": 0.8,
+                    "score": round(score, 4),
                 }
             )
         return results
@@ -56,12 +62,16 @@ def _search_file(path: Path, query: str, source_name: str) -> List[Dict[str, Any
     results = []
     for line in text.splitlines():
         line_lower = line.lower()
-        if any(w in line_lower for w in words):
+        matched = [w for w in words if w in line_lower]
+        if matched:
+            # LOGIC-1: Score proportional to fraction of query words matched,
+            # capped at 0.7 (below vector-store scores) to preserve ranking order.
+            score = round(min(0.7, 0.3 + 0.4 * len(matched) / len(words)), 4)
             results.append(
                 {
                     "source": source_name,
                     "excerpt": line.strip()[:500],
-                    "score": 0.5,
+                    "score": score,
                 }
             )
     return results[:5]
@@ -70,7 +80,7 @@ def _search_file(path: Path, query: str, source_name: str) -> List[Dict[str, Any
 @tool(tags=["coding", "debug", "planning", "review"])
 def memory_search(
     query: str,
-    workdir: str = None,
+    workdir: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Search agent memory for relevant context.
 

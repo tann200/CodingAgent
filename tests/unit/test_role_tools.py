@@ -30,7 +30,7 @@ def test_role_event_published(monkeypatch):
         if isinstance(e, dict) and e.get('role') == 'auditor':
             found = True
             break
-        if isinstance(e, dict) and isinstance(e.get('payload'), dict) and e.get('payload').get('role') == 'auditor':
+        if isinstance(e, dict) and isinstance(e.get('payload'), dict) and e.get('payload').get('role') == 'auditor': # type: ignore[union-attr]
             found = True
             break
     assert found

@@ -56,7 +56,7 @@ LANGUAGE_PATTERNS = {
 }
 
 
-def get_imports(node: ast.AST) -> List[str]:
+def get_imports(node: ast.Module) -> List[str]:
     imports = []
     for item in node.body:
         if isinstance(item, ast.Import):
@@ -428,6 +428,73 @@ def get_index_stats(workdir: str) -> Dict[str, Any]:
 def force_full_reindex(workdir: str) -> Dict[str, Any]:
     """Force a full reindex ignoring incremental updates."""
     return index_repository(workdir, incremental=False)
+
+
+def get_symbols_for_task(
+    workdir: str, task: str, max_results: int = 5
+) -> List[Dict[str, Any]]:
+    """RA-1: Return symbols relevant to *task* from the repo index.
+
+    Extracts candidate identifier tokens from *task* (camelCase split, snake_case
+    split, plain words ≥ 4 chars) then matches them against indexed symbols.
+    Falls back to an empty list on any error so callers never need to handle
+    exceptions.
+
+    Parameters
+    ----------
+    workdir:
+        Repository root to load index from.
+    task:
+        Natural-language task description (e.g. "refactor authentication module").
+    max_results:
+        Maximum number of symbol hits to return.
+
+    Returns
+    -------
+    list of dicts, each with keys: ``name``, ``type``, ``file_path``,
+    and optionally ``start_line`` / ``docstring``.
+    """
+    try:
+        index_path = Path(workdir) / ".agent-context" / "repo_index.json"
+        if not index_path.exists():
+            return []
+        with open(index_path, "r", encoding="utf-8") as _f:
+            repo_index = json.load(_f)
+
+        # Extract candidate tokens from task description.
+        # Split on whitespace, underscores, camelCase boundaries, and non-word chars.
+        raw_tokens: List[str] = re.split(r"[\s_\-/\\]+", task.lower())
+        tokens: List[str] = []
+        for tok in raw_tokens:
+            # Split camelCase: "authModule" → ["auth", "module"]
+            parts = re.sub(r"([a-z])([A-Z])", r"\1 \2", tok).lower().split()
+            tokens.extend(p for p in parts if len(p) >= 4)
+        token_set = set(tokens)
+
+        if not token_set:
+            return []
+
+        hits: List[Dict[str, Any]] = []
+        for file_entry in repo_index.get("files", []):
+            file_path = file_entry.get("file_path", "")
+            for sym in file_entry.get("symbols", []):
+                sym_name = (sym.get("name") or "").lower()
+                # A symbol matches if any task token appears in the symbol name.
+                if any(t in sym_name for t in token_set):
+                    hits.append(
+                        {
+                            "name": sym.get("name"),
+                            "type": sym.get("type"),
+                            "file_path": file_path,
+                            "start_line": sym.get("start_line"),
+                            "docstring": sym.get("docstring"),
+                        }
+                    )
+                    if len(hits) >= max_results:
+                        return hits
+        return hits
+    except Exception:
+        return []
 
 
 if __name__ == "__main__":

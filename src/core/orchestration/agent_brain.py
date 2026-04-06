@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Dict, Optional
 import re
 import logging
+import threading
 
 logger = logging.getLogger(__name__)
 
@@ -57,11 +58,16 @@ class AgentBrainManager:
     """Singleton manager for agent-brain configuration with in-memory caching."""
 
     _instance: Optional["AgentBrainManager"] = None
+    # MED-14 fix: lock guards the singleton creation so concurrent threads don't
+    # each call super().__new__() and end up with multiple instances.
+    _instance_lock: threading.Lock = threading.Lock()
 
     def __new__(cls):
         if cls._instance is None:
-            cls._instance = super().__new__(cls)
-            cls._instance._initialized = False
+            with cls._instance_lock:
+                if cls._instance is None:
+                    cls._instance = super().__new__(cls)
+                    cls._instance._initialized = False
         return cls._instance
 
     def __init__(self):
@@ -146,7 +152,7 @@ class AgentBrainManager:
             "tester": "agent.tester.broadcast",
         }
 
-        return {"content": role, "p2p_topic": topics.get(role_name)}
+        return {"content": role, "p2p_topic": topics.get(role_name, "")}
 
     def compile_system_prompt(self, role_name: str = "operational") -> str:
         """Compile a full system prompt with role, SOUL, and LAWS."""

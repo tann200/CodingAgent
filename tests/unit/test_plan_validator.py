@@ -49,7 +49,7 @@ class TestValidatePlan:
 
     def test_none_plan(self):
         """Test that None plan is invalid."""
-        result = validate_plan(None)
+        result = validate_plan(None) # type: ignore[arg-type]
 
         assert result["valid"] is False
 
@@ -77,7 +77,7 @@ class TestPlanValidatorNode:
     @pytest.mark.asyncio
     async def test_valid_plan_passes(self):
         """Test that a valid plan passes validation."""
-        state: AgentState = {
+        state: AgentState = {  # type: ignore[assignment]
             "task": "test",
             "history": [],
             "verified_reads": [],
@@ -122,7 +122,7 @@ class TestPlanValidatorNode:
     @pytest.mark.asyncio
     async def test_invalid_plan_fails(self):
         """Test that an invalid plan fails validation."""
-        state: AgentState = {
+        state: AgentState = {  # type: ignore[assignment]
             "task": "test",
             "history": [],
             "verified_reads": [],
@@ -164,7 +164,7 @@ class TestPlanValidatorNode:
     @pytest.mark.asyncio
     async def test_no_plan_returns_error(self):
         """Test that missing plan returns error."""
-        state: AgentState = {
+        state: AgentState = {  # type: ignore[assignment]
             "task": "test",
             "history": [],
             "verified_reads": [],
@@ -205,7 +205,7 @@ class TestPlanValidatorNode:
 
 def _make_validator_state(plan, enforce_warnings=None):
     """Helper to build a minimal AgentState for plan_validator_node."""
-    state: AgentState = {
+    state: AgentState = {  # type: ignore[assignment]
         "task": "test",
         "history": [],
         "verified_reads": [],

@@ -79,9 +79,11 @@ class TestBashToolBlocksGitPush:
 
         # Invoke bash with git push — should be blocked
         result = bash(command="git push origin main", workdir=str(Path.cwd()))
-        assert not result.get("ok", True) or "error" in result or "danger" in str(result).lower(), (
-            "HR-6: 'git push' was not blocked by DANGEROUS_PATTERNS"
-        )
+        assert (
+            not result.get("ok", True)
+            or "error" in result
+            or "danger" in str(result).lower()
+        ), "HR-6: 'git push' was not blocked by DANGEROUS_PATTERNS"
 
     def test_git_push_force_also_blocked(self):
         """'git push --force' must also be blocked."""
@@ -112,7 +114,9 @@ class TestBashToolBlocksGitPush:
 class TestCompactionRemovedFromExecutionRouters:
     def test_should_after_execution_with_replan_no_compaction_call(self):
         """should_after_execution_with_replan must not call check_and_prepare_compaction."""
-        from src.core.orchestration.graph.builder import should_after_execution_with_replan
+        from src.core.orchestration.graph.builder import (
+            should_after_execution_with_replan,
+        )
 
         # Filter comment lines — comments may reference the old call for historical context
         src = inspect.getsource(should_after_execution_with_replan)
@@ -126,7 +130,9 @@ class TestCompactionRemovedFromExecutionRouters:
 
     def test_should_after_execution_with_compaction_no_double_compaction(self):
         """should_after_execution_with_compaction must not call check_and_prepare_compaction."""
-        from src.core.orchestration.graph.builder import should_after_execution_with_compaction
+        from src.core.orchestration.graph.builder import (
+            should_after_execution_with_compaction,
+        )
 
         # Filter comment lines — comments may reference the old call for historical context
         src = inspect.getsource(should_after_execution_with_compaction)
@@ -166,8 +172,8 @@ class TestStepControllerRouterRedundantCheckRemoved:
         plan = [{"description": "step1"}, {"description": "step2"}]
         state = {
             "current_plan": plan,
-            "current_step": 1,           # last step index (2-step plan)
-            "last_result": {"ok": True}, # previous step succeeded
+            "current_step": 1,  # last step index (2-step plan)
+            "last_result": {"ok": True},  # previous step succeeded
         }
         result = should_after_step_controller(state)
         assert result == "execution", (
@@ -182,7 +188,7 @@ class TestStepControllerRouterRedundantCheckRemoved:
         plan = [{"description": "step1"}]
         state = {
             "current_plan": plan,
-            "current_step": 1,           # past end (1-step plan, step 0 done)
+            "current_step": 1,  # past end (1-step plan, step 0 done)
             "last_result": {"ok": True},
         }
         result = should_after_step_controller(state)
@@ -289,11 +295,15 @@ class TestOrchestratorPlanModeIntegration:
         if orch.plan_mode:
             orch.plan_mode.enable()
             # write_file is a blocked tool in plan mode; execute_tool takes a single dict
-            result = orch.execute_tool({"name": "write_file", "args": {
-                "path": "test.txt", "content": "hello"
-            }})
+            result = orch.execute_tool(
+                {"name": "write_file", "args": {"path": "test.txt", "content": "hello"}}
+            )
             # Should be blocked (ok=False) or have an error about plan mode
-            blocked = not result.get("ok", True) or "plan mode" in str(result).lower() or "blocked" in str(result).lower()
+            blocked = (
+                not result.get("ok", True)
+                or "plan mode" in str(result).lower()
+                or "blocked" in str(result).lower()
+            )
             # Re-disable for cleanup
             orch.plan_mode.disable()
             assert blocked, (
@@ -311,6 +321,7 @@ class TestRenameFileToolPathSafety:
     def test_rename_file_exists(self):
         """rename_file must be registered as a tool."""
         from src.tools.file_tools import rename_file
+
         assert callable(rename_file), "MC-2: rename_file is not callable"
 
     def test_rename_file_validates_path(self, tmp_path):
@@ -438,9 +449,7 @@ class TestPlanningNodeMaxStepsTruncation:
         assert "MAX_PLAN_STEPS" in src, (
             "MC-6: MAX_PLAN_STEPS constant not found in planning_node"
         )
-        assert "MAX_PLAN_STEPS = 50" in src, (
-            "MC-6: MAX_PLAN_STEPS must be 50"
-        )
+        assert "MAX_PLAN_STEPS = 50" in src, "MC-6: MAX_PLAN_STEPS must be 50"
         assert "steps[:MAX_PLAN_STEPS]" in src, (
             "MC-6: steps not truncated to MAX_PLAN_STEPS"
         )
@@ -509,15 +518,16 @@ class TestApplyPatchSafeResolveValidation:
 
 class TestSettingsPanelControllerApiKeyValidation:
     def test_save_api_key_rejects_empty_string(self):
-        """SettingsPanelController must reject empty API keys."""
-        from src.ui.views.settings_panel import SettingsPanelController
+        """ProviderConfigScreen must reject empty API keys (LEGACY-02 migration)."""
+        from tui.src.ui.features.settings.screen import ProviderConfigScreen
 
-        src = inspect.getsource(SettingsPanelController)
-        assert "api_key.strip()" in src or "not api_key" in src, (
-            "UP-4: SettingsPanelController does not validate API key is non-empty before saving"
+        src = inspect.getsource(ProviderConfigScreen)
+        # The new TUI uses `.strip()` on the key and guards against empty strings
+        assert "strip()" in src or "not key" in src, (
+            "UP-4: ProviderConfigScreen does not validate API key is non-empty before saving"
         )
         assert "empty" in src.lower() or "reject" in src.lower() or "strip" in src, (
-            "UP-4: No empty-key guard found in SettingsPanelController save_api_key"
+            "UP-4: No empty-key guard found in ProviderConfigScreen save_config"
         )
 
 
@@ -554,9 +564,7 @@ class TestAnalysisNodeRepoSummaryCache:
         assert cache_check in src, (
             f"PB-2: '{cache_check}' not found — cache not checked before generate call"
         )
-        assert gen_call in src, (
-            f"PB-2: '{gen_call}' not found in analysis_node"
-        )
+        assert gen_call in src, f"PB-2: '{gen_call}' not found in analysis_node"
         cache_pos = src.find(cache_check)
         gen_pos = src.find(gen_call)
         assert cache_pos < gen_pos, (
@@ -719,6 +727,6 @@ class TestPlanValidatorRouterReturnType:
         # The function body must not have return "perception" or return 'perception'
         # (the annotation check above covers the signature)
         body = "\n".join(src.splitlines()[6:])
-        assert 'return "perception"' not in body and "return 'perception'" not in body, (
-            "WR-2: should_after_plan_validator has a 'return \"perception\"' statement"
-        )
+        assert (
+            'return "perception"' not in body and "return 'perception'" not in body
+        ), "WR-2: should_after_plan_validator has a 'return \"perception\"' statement"

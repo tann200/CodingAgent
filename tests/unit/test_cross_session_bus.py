@@ -368,6 +368,7 @@ async def test_send_and_wait_uses_running_loop():
     asyncio.get_running_loop() which is always correct when already in async code.
     """
     import asyncio
+
     CrossSessionBus.reset_instance()
     bus = CrossSessionBus.get_instance()
 
@@ -386,6 +387,8 @@ async def test_send_and_wait_uses_running_loop():
                         sender_role="tester",
                         payload={"ack": True},
                         correlation_id=cid,
+                        priority=MessagePriority.NORMAL,
+                        timestamp=time.time(),
                     )
                     fut.get_loop().call_soon_threadsafe(fut.set_result, reply)
 

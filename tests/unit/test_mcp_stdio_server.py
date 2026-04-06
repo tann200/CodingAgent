@@ -65,7 +65,7 @@ class TestJsonRpcResponse:
 
         result = server._build_response(request, {"status": "ok"})
 
-        parsed = json.loads(result)
+        parsed = json.loads(result)  # type: ignore[arg-type]
         assert parsed["jsonrpc"] == "2.0"
         assert parsed["id"] == 1
         assert parsed["result"]["status"] == "ok"
@@ -77,7 +77,7 @@ class TestJsonRpcResponse:
 
         result = server._build_error_response(request, -32601, "Method not found")
 
-        parsed = json.loads(result)
+        parsed = json.loads(result)  # type: ignore[arg-type]
         assert parsed["jsonrpc"] == "2.0"
         assert parsed["id"] == 1
         assert parsed["error"]["code"] == -32601
@@ -89,7 +89,7 @@ class TestJsonRpcResponse:
 
         result = server._build_notification("session.update", {"state": "updated"})
 
-        parsed = json.loads(result)
+        parsed = json.loads(result)  # type: ignore[arg-type]
         assert parsed["jsonrpc"] == "2.0"
         assert parsed["method"] == "session.update"
         assert parsed["params"]["state"] == "updated"
@@ -105,7 +105,7 @@ class TestMCPMethodHandlers:
 
         result = server._handle_request(request)
 
-        parsed = json.loads(result)
+        parsed = json.loads(result)  # type: ignore[arg-type]
         assert parsed["result"]["protocolVersion"] == "1.0"
         assert "capabilities" in parsed["result"]
         assert parsed["result"]["capabilities"]["tools"] is True
@@ -117,7 +117,7 @@ class TestMCPMethodHandlers:
 
         result = server._handle_request(request)
 
-        parsed = json.loads(result)
+        parsed = json.loads(result)  # type: ignore[arg-type]
         assert parsed["result"]["pong"] is True
 
     def test_tools_list_method(self):
@@ -127,7 +127,7 @@ class TestMCPMethodHandlers:
 
         result = server._handle_request(request)
 
-        parsed = json.loads(result)
+        parsed = json.loads(result)  # type: ignore[arg-type]
         assert "tools" in parsed["result"]
         assert isinstance(parsed["result"]["tools"], list)
 
@@ -143,7 +143,7 @@ class TestMCPMethodHandlers:
 
         result = server._handle_request(request)
 
-        parsed = json.loads(result)
+        parsed = json.loads(result)  # type: ignore[arg-type]
         assert parsed["result"]["status"] == "executing"
 
     def test_session_request_state_method(self):
@@ -155,7 +155,7 @@ class TestMCPMethodHandlers:
 
         result = server._handle_request(request)
 
-        parsed = json.loads(result)
+        parsed = json.loads(result)  # type: ignore[arg-type]
         assert parsed["result"]["status"] == "requested"
 
     def test_resources_list_method(self):
@@ -167,7 +167,7 @@ class TestMCPMethodHandlers:
 
         result = server._handle_request(request)
 
-        parsed = json.loads(result)
+        parsed = json.loads(result)  # type: ignore[arg-type]
         assert "resources" in parsed["result"]
 
     def test_prompts_list_method(self):
@@ -177,7 +177,7 @@ class TestMCPMethodHandlers:
 
         result = server._handle_request(request)
 
-        parsed = json.loads(result)
+        parsed = json.loads(result)  # type: ignore[arg-type]
         assert "prompts" in parsed["result"]
 
     def test_unknown_method(self):
@@ -189,7 +189,7 @@ class TestMCPMethodHandlers:
 
         result = server._handle_request(request)
 
-        parsed = json.loads(result)
+        parsed = json.loads(result)  # type: ignore[arg-type]
         assert parsed["error"]["code"] == -32601
         assert "Method not found" in parsed["error"]["message"]
 
@@ -202,7 +202,7 @@ class TestMCPMethodHandlers:
 
         result = server._handle_request(request)
 
-        parsed = json.loads(result)
+        parsed = json.loads(result)  # type: ignore[arg-type]
         assert parsed["result"]["status"] == "ok"
 
 

@@ -1,8 +1,8 @@
 # CodingAgent Architecture
 
-> **Implementation Status**: Fully implemented — LangGraph pipeline, multi-file atomic rollback, advanced memory, repository intelligence, PRSW (Parallel Reads, Sequential Writes), DAG-based wave execution, Native Tool Support (frontier + local models), Role-Based Prompt Injection, Hardcoded Temperature Routing, ACP/MCP Compliance (GAP 1-3), 1587 unit tests passing.
-> **Recent Updates (2026-03)**: Stage 30 Tool System Overhaul: `@tool` decorator, `build_registry()` (60 auto-discovered tools), 7 new tool modules (web, AST, interaction, guardrails, lint, memory, project). Gap analysis vs LocalCodingAgent — 17 bugs identified and fixed.
-> **Audit Fixes (2026-03)**: 10 audit cycles completed (vol1–vol10 + gap analysis). All Critical and High severity findings resolved. Last validation: 2026-03-27 — 1587 unit tests passing, 0 failed.
+> **Implementation Status**: Fully implemented — LangGraph pipeline, multi-file atomic rollback, advanced memory, repository intelligence, PRSW (Parallel Reads, Sequential Writes), DAG-based wave execution, Native Tool Support (frontier + local models), Role-Based Prompt Injection, Hardcoded Temperature Routing, ACP/MCP Compliance (GAP 1-3), Textual TUI, GitHub Copilot OAuth, approval gate, loop guards, event log, shell hooks, sandbox (bwrap), MCP client, LSP integration, session fork/revert, snapshot manager, permission policy, model tiers, tokenizer, auto-compactor, 2958+ unit tests passing.
+> **Recent Updates (2026-04)**: Stage 36 Scan-2 Audit Fixes: HIGH-3 subagent delegation depth env-race removed (`os.environ` write replaced by ContextVar propagation), MED-8 `event_log.py` `assert` → `RuntimeError` (4 methods), CP-10 LSP diagnostics injected into system prompt, CP-12 Anthropic `cache_control` sentinel, vol17/vol18 findings resolved. Stage 35 Vol15–Vol16: P4-2 LSP auto-restart, P4-3 bash security bypass closures, P4-4 budget ceiling end-to-end. Stage 34 Vol14: cost_tracker wiring, double-counting fix, idempotency reset.
+> **Audit Fixes (2026-04)**: 18 audit cycles completed (vol1–vol18 + gap analysis + scan-2). All Critical, High, and Medium severity findings resolved. Last validation: 2026-04-06 — 0 failed.
 
 ## Implementation Stages
 
@@ -38,6 +38,12 @@
 | Stage 28 - MCP STDIO Server (GAP 3) | ✅ Complete | `mcp_stdio_server.py` bridges EventBus to stdin/stdout JSON-RPC; supports IDE integration |
 | Stage 29 - Structured Planning Context | ✅ Complete | P3-1 call_graph/test_map JSON from analysis→planning; P3-2 test pre-retrieval; P3-6 few-shot DAG examples; P3-10 TUI history persistence |
 | Stage 30 - Tool System Overhaul | ✅ Complete | `@tool` decorator + `build_registry()` auto-discovery (60 tools across 16 modules); 7 new modules: web, AST, interaction, guardrails, post-write lint, memory search, tech-stack fingerprint; gap analysis vs LocalCodingAgent; 17 bugs found and fixed |
+| Stage 31 - Scope Guard & Provider Enrichment | ✅ Complete | GAP-S2 workspace scope guard: `affected_files` from planning, runtime `ask_user` expansion, `scope.violation` events; S6-B `get_provider_capabilities()` enriched with `provider_family`/`model`/`provider_name`; S5-A/B session fork/revert; S5-C slash diff-preview; IMPL-IT-2 delegation mock integration tests; vol12 infrastructure audit |
+| Stage 32 - Vol12 Audit Fixes | ✅ Complete | All 9 P1/P2 vol12 findings fixed: async permission gate, git timeout, LSP reader leak, git subcommand allowlist, atomic cost flush, credentials chmod, project_id sanitisation, restore git-clean, MCP connect cleanup; 5 pyright errors resolved; 0 pyright errors; 2607 tests passing |
+| Stage 33 - Vol13 Audit Fixes | ✅ Complete | All Vol13 P1/P2/P3 findings fixed: sed Gate 3c (`bash_readonly` blocks `sed -i`), tool call idempotency guard, immutable `_BASE_DANGEROUS_PATTERNS` + `add_dangerous_pattern()`, `asyncio.get_running_loop()` fix in LSP client, `reset()` lock coverage in SessionCostTracker, GIT_SAFE gate unit tests, `CODINGAGENT_TRUSTED` doc; 0 pyright errors; 2615 tests passing |
+| Stage 34 - Vol14 Audit Fixes | ✅ Complete | All Vol14 P1/P2/P3 findings fixed: `cost_tracker.flush()`/`reset()`/`record_tool_call()` wired in orchestrator (HIGH-1), `flush()` clears buffer inside lock after snapshot (HIGH-2), `reset_idempotency()` called at turn start (HIGH-3), `delete_file`/`rename_file`/`ast_rename` added to `WRITE_TOOLS_REQUIRING_READ` (WR-1), `add_dangerous_pattern` re-exported + docstring fixed (WR-2), dual `lstat`/`stat` world-writable symlink check (TS-1), regression tests for flush idempotency and idempotency lifecycle (ET-1/ET-2); 0 pyright errors; 2617 tests passing |
+| Stage 35 - Vol15–16 Audit Fixes | ✅ Complete | P4-2 LSP auto-restart (exponential backoff, `_shutting_down` guard, `get_client()` re-start on dead client); P4-3 bash security bypass closures (env-prefix + shell, absolute-path shell -c); P4-4 budget ceiling alert wired end-to-end (`ProjectSettings.budget_ceiling_usd` → `orchestrator.py` → `SessionCostTracker`); ROB-1 test suite (26 tests), ROB-2 test suite (23 tests), CAP-1 project settings tests (8 new); 0 pyright errors; 2908 tests passing |
+| Stage 36 - Scan-2 Audit Fixes + TUI Rewrite | ✅ Complete | HIGH-3: removed `os.environ["CODINGAGENT_DELEGATION_DEPTH"]` write (race condition across concurrent delegations; ContextVar propagation is sole mechanism); MED-8: replaced 4 `assert self._conn is not None` with `RuntimeError` in `event_log.py`; CP-10: LSP diagnostics injected into system prompt via `lsp_context.py` + `instruction_loader.py`; CP-12: `AnthropicAdapter._preprocess_messages()` inserts `cache_control: {"type": "ephemeral"}` at static/dynamic boundary; vol17–vol18 findings resolved; full Textual TUI rewrite (`tui/`); GitHub Copilot OAuth adapter; all 46 scan-2 findings resolved |
 
 ---
 
@@ -59,80 +65,115 @@
 - Supports: `initialize`, `session/request_state`, `tools/list`, `tools/call`, `resources/*`, `prompts/*`
 - Forwards all EventBus events as JSON-RPC notifications
 
+### GAP-S2: Workspace Scope Guard
+- `planning_node._extract_affected_files(steps)` extracts file paths from plan steps into `AgentState["affected_files"]`
+- `execution_node` propagates `affected_files` to `orchestrator._affected_files` before each tool call
+- `Orchestrator.execute_tool()` blocks writes to files outside the allowed set; emits `scope.violation` events
+- `ask_user` approval can expand `affected_files` at runtime by extracting paths from the answer text
+- Guard is bypassed when `affected_files` is empty/None (pre-plan fast-path)
+
 ---
 
-## Security & Stability Audit Fixes (vol1–vol9, 2026-03)
+## Security & Stability Audit Fixes (vol1–vol18 + scan-2, 2026-03/04)
 
-Nine audit cycles completed. All Critical and High severity findings are resolved. Latest report: `docs/audit/audit-report-vol9.md`.
+Eighteen audit cycles completed plus a full scan-2 pass. All Critical, High, and Medium severity findings are resolved. Latest reports: `docs/audit/audit-report-vol17.md`, `docs/audit/audit-report-vol18.md`.
 
-### Critical Fixes (selected)
+### Scan-2 Fixes (2026-04-06)
 
 | Finding | Fix | Location |
 |---------|-----|----------|
-| C1 (vol5) — Tool timeout no-op in TUI | `ThreadPoolExecutor` + `future.result(timeout=n)` replaces `signal.SIGALRM` | `orchestrator.py` |
-| C2 (vol5) — Sandbox validates old file | `ast.parse(new_content)` validates new content directly | `orchestrator.py` |
-| C3 (vol5) — analysis fast-path nullifies W3 | `_task_is_complex()` gate added; fast-path skipped for complex tasks | `analysis_node.py` |
-| C4 (vol5) — Delegation results write-only | Results injected as system messages into `history` | `delegation_node.py` |
-| C5 (vol5) — EventBus double delivery | Dedup via `called` set in `publish_to_agent` | `event_bus.py` |
-| CF-1 (vol9) — async delegation_node in sync LangGraph | LangGraph wrapper async `_delegation` calls `await delegation_node` | `graph/builder.py:724` |
-| CF-2 (vol9) — planning→validator→planning loop | `plan_attempts` counter; guard at ≥3 forces execution | `builder.py:65-79` |
-| CF-3 (vol9) — evaluation→replan bypass rounds | `replan_attempts` counter; cap at 5 routes to memory_sync | `builder.py:445-451` |
-| CF-4 (vol9) — asyncio.Event misuse in preview_service | `confirmed_event` created lazily inside coroutine, not at field default | `preview_service.py:81-83` |
-| delegation loop (vol1) | `delegation → END` direct edge; removed `memory_sync` routing | `graph/builder.py` |
-| debug_node unreachable (vol1) | `evaluation_node` returns `"debug"` on failure; edge wired | `graph/builder.py` |
-| plan_validator infinite loop (vol1) | `enforce_warnings=False` default; round≥8 cap | `plan_validator_node.py` |
-| debug_node missing await (vol2) | `resp = await call_model(...)` | `debug_node.py` |
-| debug_attempts double-increment (vol2) | Removed `+1` from `evaluation_node`; `debug_node` owns counter | `evaluation_node.py` |
-| orchestrator loop (vol13) | `handled` check now matches `"tool_execution_result"` in content | `orchestrator.py` |
+| HIGH-3 — delegation depth env-race | Removed `os.environ["CODINGAGENT_DELEGATION_DEPTH"] = str(depth + 1)`; ContextVar `_delegation_depth` via `_child_ctx` is sole propagation mechanism; comment updated | `src/tools/subagent_tools.py:29-31, 375` |
+| MED-8 — bare `assert` on DB connection (4 sites) | Replaced all 4 `assert self._conn is not None` with `if self._conn is None: raise RuntimeError("EventLog: database connection is not open")` | `src/core/orchestration/event_log.py` |
+| CP-10 — LSP diagnostics not injected | `_diagnostics_cache` in `LSPClient`; `get_lsp_diagnostics_block()` in `lsp_context.py`; wired into `instruction_loader.build_runtime_context()` | `lsp_context.py`, `instruction_loader.py` |
+| CP-12 — Anthropic cache_control missing | New `AnthropicAdapter` with `_preprocess_messages()` override; `cache_control: {"type": "ephemeral"}` on static block at `__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__` sentinel | `anthropic_adapter.py` |
 
-### High-Risk Fixes (selected)
+### Vol17–Vol18 Fixes (2026-04-06)
 
-| Finding | Fix |
-|---------|-----|
-| H1 (vol5) — sed -i position-independent detection | `startswith("-i")` + bundled-flag scan (`-ni`, `-rni`, `--in-place=`) |
-| H2 (vol5) — Prompt injection via tool result | F8: perception_node rejects tool blocks matching user-role history |
-| H3 (vol5) — Concurrent send_prompt() | `_agent_lock` mutex + `_agent_running` flag; input disabled while running |
-| H4 (vol5) — plan_validator → perception waste | F10: routes directly to `planning` on failure (saves 2 LLM calls) |
-| H6 (vol5) — Dead state fields | `tool_last_used` and `files_read` re-added with active functionality |
-| H9 (vol5) — debug_attempts reset per round | `debug_attempts`, `total_debug_attempts`, `step_retry_counts` propagated across rounds |
-| HR-5 (vol9) — manage_todo duplicate code | Removed unreachable duplicate branch (lines 123-132) | `todo_tools.py` |
-| HR-8 (vol9) — providers.json write not atomic | Write to tmp-file + `os.replace()` | `settings_panel.py:116-131` |
-| P2-1 (vol9) — No retry in LLM adapters | Exponential backoff (3 retries: 1s, 2s, 4s) | `openai_compat_adapter.py:291-325` |
-| P2-5 (vol9) — run_tests workdir not safe_resolve'd | Uses `_safe_resolve_workdir()` | `verification_tools.py:42` |
-| P2-6 (vol9) — edit_by_line_range missing int coercion | `start_line = int(start_line)` | `file_tools.py:688` |
-| P2-9 (vol9) — plan_mode_approved never reset | Reset to `None` in planning_node | `planning_node.py:62,74,83` |
-| NEW-1 (vol2) — debug_node missing await | Fixed; entire debug/fix loop was silently broken |
-| NEW-6 (vol2) — perception decomposition resets rounds | Returns `rounds + 1` instead of `0` |
-| F1 (vol3) — execution_node extra LLM call | Uses `planned_action` directly; skips LLM call when action pre-set |
-| F8 (vol3) — `_INDEXED_DIRS` stale cache | Keyed by `(resolved_path, mtime_ns)` tuple |
-| F15 (vol3) — `_TEXT_CACHE` LRU eviction | Max 256 entries; module-level static dict |
+### Vol17–Vol18 Fixes (2026-04-06)
 
-### AgentState Fields Added (vol2–vol6)
+| Finding | Fix | Location |
+|---------|-----|----------|
+| P4-2 — LSP auto-restart | Exponential backoff (1s, 2s, 4s, 8s, 16s, cap 30s); `_shutting_down` flag prevents restart loops; `get_client()` detects dead client and re-initialises | `lsp_client.py` |
+| CP-10 — LSP diagnostics injection | `_diagnostics_cache` dict in `LSPClient`; `get_lsp_diagnostics_block()` in `lsp_context.py`; called from `instruction_loader.build_runtime_context()` | `lsp_context.py`, `instruction_loader.py` |
+| CP-12 — Anthropic cache sentinel | `AnthropicAdapter` extends `OpenAICompatibleAdapter`; `_preprocess_messages()` splits messages at `__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__` and adds `cache_control: {"type": "ephemeral"}` to the last static block | `anthropic_adapter.py` |
+| ROB-1 — LSP restart regression suite | 26-test suite covering restart triggers, backoff timing, `_shutting_down` guard | `tests/unit/test_lsp_auto_restart.py` |
+| ROB-2 — ConfigWatcher regression suite | 23-test suite covering live reload, debounce, error handling | `tests/unit/test_config_watcher.py` |
 
-| Field | Type | Purpose |
-|-------|------|---------|
-| `original_task` | `Optional[str]` | Task before step-level decomposition |
-| `step_description` | `Optional[str]` | Current step hint from step_controller |
-| `planned_action` | `Optional[Dict]` | Pre-set tool action from planning |
-| `plan_validation` | `Optional[Dict]` | Result dict from plan_validator_node |
-| `plan_enforce_warnings` | `Optional[bool]` | External override for plan validator |
-| `plan_strict_mode` | `Optional[bool]` | External override for plan validator |
-| `task_history` | `Optional[List]` | State snapshot history for rollback |
-| `step_retry_counts` | `Optional[Dict[str, int]]` | Per-step retry counter |
-| `tool_last_used` | `Optional[Dict[str, int]]` | Cooldown map: `"tool:path"` → count at last call |
-| `files_read` | `Optional[Dict[str, bool]]` | O(1) read-before-edit lookup: resolved path → True |
-| `analyst_findings` | `Optional[str]` | Analyst subagent output injected into planning |
-| `plan_resumed` | `Optional[bool]` | Set when stale plan is resumed from `last_plan.json` |
-| `execution_waves` | `Optional[List[List[str]]]` | DAG-computed execution wave order |
-| `current_wave` | `int` | Current wave index (0-based) |
-| `plan_dag` | `Optional[Dict]` | DAG representation of execution plan |
-| `_file_lock_manager` | `Optional[Any]` | FileLockManager for PRSW coordination |
-| `plan_attempts` | `int` | planning→validator→planning inner-loop counter (guard: ≥3 forces execute) |
-| `replan_attempts` | `int` | execution→replan cycle counter (guard: ≥5 routes to memory_sync) |
-| `call_graph` | `Optional[Dict]` | P3-1: Symbol→callers JSON from analysis_node → injected into planning prompt |
-| `test_map` | `Optional[Dict]` | P3-1: Module→test files JSON from analysis_node → injected into planning prompt |
-| `plan_enforce_warnings` | `Optional[bool]` | External override for plan validator (default True) |
-| `plan_strict_mode` | `Optional[bool]` | External override for plan validator strict mode |
+### Vol14 Fixes (2026-04-06)
+
+| Finding | Fix | Location |
+|---------|-----|----------|
+| HIGH-1 — `cost_tracker.flush()`/`reset()` never called | All 4 `_flush_usage_buffer()` call sites replaced with `cost_tracker.flush(task_id=...)`; `cost_tracker.reset()` called at turn start; `cost_tracker.record_tool_call()` wired after tool execution; `_flush_usage_buffer()` reduced to deprecated thin wrapper | `orchestrator.py` |
+| HIGH-2 — `flush()` double-counting bug | `flush()` clears `_usage_buffer` inside lock after taking snapshot; repeated `flush()` without `reset()` no longer double-counts | `session_cost_tracker.py` |
+| HIGH-3 — `reset_idempotency()` has zero callers | `tool_execution_service.reset_idempotency()` called at turn start in `run_agent_once()` so `_seen_calls` is cleared between tasks | `orchestrator.py` |
+| WR-1 — `delete_file`/`rename_file`/`ast_rename` bypass scope guard | Added to `WRITE_TOOLS_REQUIRING_READ` set; these tools now participate in `_affected_files` enforcement | `orchestrator.py` |
+| WR-2 — `add_dangerous_pattern()` not in public API docs | `src/tools/__init__.py` docstring updated to use `add_dangerous_pattern()`; function re-exported from `__init__.py` | `src/tools/__init__.py` |
+| TS-1 — world-writable check missed symlink itself | Check now uses both `os.lstat()` (symlink entry) and `Path.stat()` (symlink target); catches world-writable symlink pointing to safe directory | `deferred_init.py` |
+| ET-1 — no regression test for flush idempotency | `test_flush_is_idempotent_without_reset` added | `tests/unit/test_d10_services.py` |
+| ET-2 — no lifecycle test for reset_idempotency | `test_reset_idempotency_clears_between_tasks` added | `tests/unit/test_d10_services.py` |
+
+### Vol13 Fixes (2026-04-06)
+
+| Finding | Fix | Location |
+|---------|-----|----------|
+| P1-1 — preview gate missing path guard | `_on_confirmed`/`_on_rejected` validate non-empty `path` before `resolve_preview_gate`; logs warning if missing | `preview_coordinator.py` |
+| P1-2 — plugin loader world-writable dir | Checks `stat().st_mode & stat.S_IWOTH`; refuses world-writable dirs, sets `plugin_dir = None`, early return | `deferred_init.py` |
+| P1-3 — rm bypass variants not blocked | Added `/bin/rm`, `/usr/bin/rm`, `\\rm`, `rm -v -r`, `rm -v -f`, `rm --recursive`, `rm --force` to base patterns | `_security.py` |
+| P2-1 — nested asyncio.wait_for in MCP | Removed outer `wait_for` wrapper from `_initialize()`; inner `_request()` already enforces timeout | `mcp_client.py` |
+| P2-2 — SessionCostTracker race conditions | `threading.Lock` guards `record_tool_call`, `flush`, `get_buffer`, `reset` | `session_cost_tracker.py` |
+| P2-3 — sed -i not blocked in bash_readonly | Added `SED_WRITE_FLAGS` import + Gate 3c after Gate 3b; blocks `-i` / `--in-place` tokens | `file_tools.py` |
+| P2-4 — session_cost_usd not persisted | `flush()` writes `session_cost_usd` to `usage.json` under lock snapshot | `session_cost_tracker.py` |
+| P2-5 — deprecated get_event_loop() | `asyncio.get_event_loop()` → `asyncio.get_running_loop()` | `lsp_client.py:390` |
+| P3-1 — no idempotency guard for tool calls | `_seen_calls` set checked as step 0 in `pre_execute`; duplicate exact calls return blocked verdict | `tool_execution_service.py` |
+| P3-2 — GIT_SAFE gate has no unit tests | Added `TestGitSafeSubcommandsGate` (8 tests) covering `bash()` + `bash_readonly()` | `test_bash_security_file_tools_caching.py` |
+| P3-4 — DANGEROUS_PATTERNS is mutable | Refactored to `_BASE_DANGEROUS_PATTERNS: tuple` + `_EXTRA_PATTERNS: list`; `add_dangerous_pattern()` API | `_security.py` |
+| P3-5 — CODINGAGENT_TRUSTED undocumented | Added one-liner to Running Tests section | `docs/DEVELOPMENT.md` |
+
+### Vol12 Fixes (2026-04-06)
+
+| Finding | Fix | Location |
+|---------|-----|----------|
+| P1-1 — Blocking permission gate | `pre_execute` + `_check_permission_gate` made `async def`; `await gate.wait_async()` | `tool_execution_service.py` |
+| P1-2 — Git subprocess timeout | `_GIT_TIMEOUT = 60.0`; `asyncio.wait_for` + kill on timeout | `snapshot_manager.py` |
+| P1-3 — LSP reader loop future leak | `_reader_loop` `finally` sets exception on all pending futures | `lsp_client.py` |
+| P1-4 — Unrestricted git in bash | Removed `"git"` from `SAFE_COMMANDS`; `GIT_SAFE_SUBCOMMANDS` allowlist; gates in `bash()` + `bash_readonly()` | `_security.py`, `file_tools.py` |
+| P2-1 — Non-atomic cost flush | `flush()` uses `mkstemp` + `os.replace`; fixed `estimate_cost_usd` arg order | `session_cost_tracker.py` |
+| P2-2 — Credentials file permissions | `os.chmod(_PREFS_PATH, 0o600)` after every write | `credentials.py` |
+| P2-3 — project_id path traversal | `_PROJECT_ID_RE` sanitises id before use in git commands | `snapshot_manager.py` |
+| P2-4 — Restore leaves untracked files | `restore()` runs `git clean -fd` after `checkout-index` | `snapshot_manager.py` |
+| P2-5 — MCP connect leak on failure | Cancels reader task + terminates process before re-raising | `mcp_client.py` |
+
+Full per-finding tables for vol1–vol11 are in `docs/archive/`. Per-finding tables for vol12–vol14 are in `docs/IMPLEMENTATION_PLAN.md` and the corresponding `docs/audit/audit-report-vol*.md` files.
+
+---
+
+## Deferred Features (Open Engineering Debt)
+
+These items have been identified across multiple audit cycles but remain unimplemented. They are tracked in `docs/IMPLEMENTATION_PLAN.md` under the P4 section.
+
+| ID | Feature | Status | Source |
+|----|---------|--------|--------|
+| P4-1 | `config_watcher.py` — live config reload without restart | ✅ CLOSED vol15 | vol12 CRIT-1 → vol13 P4-1 → vol14 P4-1 |
+| P4-2 | LSP server auto-restart on crash | ✅ CLOSED vol15 | vol12 P3-3 → vol14 P4-2 |
+| P4-3 | Token-level bash security analysis | ✅ CLOSED vol16 | vol12 P3-5 → vol14 P4-3 |
+| P4-4 | Budget ceiling alert in `SessionCostTracker` | ✅ CLOSED vol15 | vol12 P4-1 → vol14 P4-4 |
+| CP-1 | Structural recursion prevention — remove `Agent` from subagent tool sets | Low complexity; depth counter exists but structural enforcement is stronger | `deep-dive-claw-code-architecture.md` Pattern 1 |
+| CP-2 | Manifest-first subagent spawning — write manifest before spawning thread | Low complexity; enables status polling without coupling to thread lifecycle | `deep-dive-claw-code-architecture.md` Pattern 2 |
+| CP-3 | Stable content hash for instruction files — SHA-256 dedup when walking for `AGENT.md` | Low complexity; prevents duplicate instruction injection | `deep-dive-claw-code-architecture.md` Pattern 3 |
+| CP-4 | Dynamic boundary sentinel in system prompt — `__DYNAMIC_BOUNDARY__` for prompt caching | Low complexity; enables Anthropic prompt caching; splits static from volatile sections | `deep-dive-claw-code-architecture.md` Pattern 4 |
+| CP-5 | `verification_nudge_needed` in TodoWrite — remind agent to verify when all todos complete | Trivial; prevents agent from stopping without running tests | `deep-dive-claw-code-architecture.md` Pattern 5 |
+| CP-6 | Deterministic auto-compaction — token-count threshold, structured 7-section summary, no LLM call | Medium complexity; current `/compact` is LLM-based and manual | `deep-dive-claw-code-architecture.md` §3 `compact.rs` |
+| CP-7 | Shell hooks with post-tool + deny semantics — stdin-JSON payload, exit `2` = deny, settings-file-configurable | Medium complexity; current hooks are Python-only, pre-only, no deny | `deep-dive-claw-code-architecture.md` §5 `hooks.rs` |
+| CP-8 | Per-tool `PermissionMode` + `PermissionPolicy` object + config-file permission mode | Low complexity; replaces hardcoded bash allowlist with typed policy | `deep-dive-claw-code-architecture.md` §6 `permissions.rs` |
+| CP-9 | Cache token tracking — `cache_creation_input_tokens` + `cache_read_input_tokens` in `SessionCostTracker` | Low complexity; requires API adapter changes to capture cache fields | `deep-dive-claw-code-architecture.md` §7 `usage.rs` |
+| CP-10 | LSP diagnostics + go-to-definition + references injected into system prompt as named section | ✅ CLOSED vol17: `_diagnostics_cache` in `LSPClient`, `get_lsp_diagnostics_block()` in `lsp_context.py`, wired into `instruction_loader.build_runtime_context()` | `deep-dive-claw-code-architecture.md` §12 `lsp/` |
+| CP-11 | Ancestor instruction file walk — `AGENTS.md` in all ancestor dirs with dedup + 4K/12K budget caps | Low complexity; currently only workspace root is checked | `deep-dive-claw-code-architecture.md` §4 `prompt.rs` |
+| CP-12 | `__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__` sentinel wired to Anthropic `cache_control` breakpoint | ✅ CLOSED vol17: new `AnthropicAdapter` with `_preprocess_messages()` override; `cache_control: {"type": "ephemeral"}` on static block | `deep-dive-claw-code-architecture.md` §4 `prompt.rs` |
+| CP-13 | Per-project settings file — `.agent/settings.json` with model + permission-mode overrides, deep merge | Low-Medium complexity; enables per-project agent configuration | `deep-dive-claw-code-architecture.md` §9 `config.rs` |
+| CP-14 | Session `version` field in `MessageManager` persistence for future migration | Trivial; no functional change, insurance for schema evolution | `deep-dive-claw-code-architecture.md` §8 `session.rs` |
+| CP-15 | `send_user_message` tool — agent sends mid-turn message to user with `normal`/`proactive` status | Low complexity; new tool registration + EventBus publish | `deep-dive-claw-code-architecture.md` §14 `tools/src/lib.rs` |
+
+Full gap analysis: `docs/audit/parity-report-claw-code-v2.md`
 
 ---
 
@@ -995,3 +1036,305 @@ src/config/
 - **Phase 2 audit fixes (2026-03)**: P2-1 retry logic in openai_compat_adapter; P2-2 token budget wired to distiller via should_after_execution_with_replan; P2-5 run_tests uses _safe_resolve_workdir; P2-6 edit_by_line_range coerces start_line to int; P2-9 plan_mode_approved reset to None in planning_node.
 - **TokenBudgetMonitor**: Integrated into graph flow via builder.py `should_after_execution_with_replan` — checks budget and routes to memory_sync for compaction when usage exceeds threshold.
 - **Session Hydration**: TUI publishes `session.request_state` on mount; AgentSessionManager responds with `session.hydrated` containing full state; orchestrator calls `_sync_session_state()` after tool execution.
+
+---
+
+## Textual TUI (`tui/`)
+
+The TUI is a fully decoupled sub-project built with the [Textual](https://textual.textualize.io/) framework. It lives in `tui/` with its own `pyproject.toml` and communicates with `src/core` exclusively through `core_bridge.py`.
+
+### Directory Layout
+
+```
+tui/
+├── pyproject.toml
+└── src/ui/
+    ├── app.py                  # AgentApp — main Textual application (2116 lines)
+    ├── core_bridge.py          # Bridges EventBus ↔ Textual message bus
+    ├── bus.py                  # 40+ typed backend→UI message events
+    ├── events.py               # UI→backend message events
+    ├── logging.py              # InMemoryHandler ring buffer (RuntimeError guards)
+    ├── settings.py             # SettingsStore — persists to ~/.agent_tui/settings.json
+    ├── mock_engine.py          # Mock backend for development/demo
+    ├── components/
+    │   ├── stream_view.py      # Token-streaming text widget
+    │   ├── agent_artifact.py   # Rendered file diff / code artifact card
+    │   ├── thinking_process.py # Collapsible thinking-token display
+    │   ├── console_panel.py    # Log/event console overlay
+    │   ├── history_input.py    # Up/down history input widget
+    │   ├── chat_textarea.py    # Multi-line chat input area
+    │   ├── file_picker_overlay.py  # Fuzzy-search file picker
+    │   └── side_by_side_diff.py    # Unified diff renderer
+    ├── features/
+    │   ├── palette/            # ctrl+o command palette modal
+    │   └── settings/           # Settings screen + provider config screen
+    └── screens/
+        ├── session_list.py     # Session picker screen
+        ├── timeline.py         # Event timeline screen
+        └── probe_results.py    # Test/lint probe results screen
+```
+
+### Key Bindings
+
+| Key | Action |
+|-----|--------|
+| `ctrl+o` | Open command palette |
+| `ctrl+s` | Open settings |
+| `ctrl+l` | Toggle console panel |
+| `tab` | Cycle through roles (operational / analyst / reviewer) |
+| `Esc Esc` | Interrupt running agent |
+| `ctrl+q` | Quit |
+
+### Slash Commands
+
+`/help` `/clear` `/new` `/compact` `/continue` `/interrupt` `/status` `/fast` `/provider` `/model` `/settings` `/sessions` `/timeline` `/diff` `/fork` `/mcp` `/quit`
+
+### Architecture Notes
+
+- **`AgentApp`** (`app.py`): Single Textual `App` subclass. Manages session lifecycle, slash command dispatch, cost display, and reactive state. Cost rate constants: `_COST_INPUT_PER_1K = 0.001`, `_COST_OUTPUT_PER_1K = 0.003`. Token tracking uses `_session_input_tokens` / `_session_output_tokens` (LOW-12 fix: no tool token double-count).
+- **`core_bridge.py`**: Subscribes to EventBus in a background asyncio task; posts typed Textual messages to the UI thread via `app.call_from_thread()`. Fixed `os.close(fd)` leak on cancelled tasks.
+- **`bus.py`**: 40+ dataclass message types (e.g. `AgentThinking`, `ToolCallStart`, `ToolCallFinish`, `PlanUpdated`, `SessionHydrated`, `CostUpdated`, `ErrorOccurred`).
+- **`settings.py`** / **`SettingsStore`**: Atomic JSON write; provider, model, and appearance preferences.
+- **`mock_engine.py`**: Fully-functional mock backend for TUI development without a running model.
+
+---
+
+## New Inference Adapters (`src/core/inference/adapters/`)
+
+### GitHub Copilot Adapter (`github_copilot_adapter.py`)
+
+Extends `OpenAICompatibleAdapter`. Uses RFC 8628 device-flow OAuth to authenticate with GitHub and obtain a Copilot API token.
+
+| Symbol | Description |
+|--------|-------------|
+| `GithubCopilotAdapter` | Adapter class; `AUTH_FLOW = "github_device"`; `COPILOT_BASE_URL` constant |
+| `github_copilot_auth.py` | `start_device_flow()`, `poll_for_token()`, `save_token()`, `load_token()`, `is_authenticated()` |
+| Token storage | `~/.agent/copilot_token.json` via `credentials.py` (`os.chmod(0o600)` on write) |
+| Error handling | RFC 8628 error codes: `authorization_pending`, `slow_down`, `expired_token`, `access_denied` |
+
+The settings controller (`src/core/settings/controller.py`) handles `SaveProviderCredentials` messages and triggers the device-flow when the provider is `github_copilot`.
+
+### Anthropic Adapter (`anthropic_adapter.py`)
+
+Extends `OpenAICompatibleAdapter`. Overrides `_preprocess_messages()` to split the message list at the `__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__` sentinel and attach `cache_control: {"type": "ephemeral"}` to the last message of the static block. This enables Anthropic prompt caching (CP-12 fix).
+
+### Mock Adapter (`mock_adapter.py`)
+
+Deterministic mock adapter for unit/integration tests. Returns configurable response fixtures. Used by `test_mock_adapter_integration.py` and delegation mock integration tests.
+
+### Model Tiers (`model_tiers.py`)
+
+```python
+class ModelTier(Enum):
+    NANO     = "nano"      # sub-1B, fastest, cheapest
+    STANDARD = "standard"  # 7B–13B
+    LARGE    = "large"     # 30B–70B
+    FRONTIER = "frontier"  # 100B+, API-only
+```
+
+`get_model_tier(model_name: str) -> ModelTier` — heuristic mapping based on model name substrings.
+
+### Tokenizer (`tokenizer.py`)
+
+Token counting without a `tiktoken` dependency. Uses character-based estimation for non-OpenAI models and the `cl100k_base` approximation for OpenAI-compatible endpoints.
+
+---
+
+## New Orchestration Services (`src/core/orchestration/`)
+
+### ApprovalGate (`approval_gate.py`)
+
+Non-polling asyncio permission gate. Two gate instances:
+
+| Gate | Purpose |
+|------|---------|
+| `bash_gate` | Blocks bash tool execution pending user approval |
+| `tool_gate` | Blocks arbitrary tool execution pending user approval |
+
+Both gates use a shared `_gate_lock: asyncio.Lock`. `AsyncGate.wait_async()` suspends the caller until `AsyncGate.allow()` or `AsyncGate.deny()` is called from the TUI thread.
+
+### LoopGuards (`loop_guards.py`)
+
+Centralised loop-prevention checks called from `tool_execution_service.pre_execute()`:
+
+| Function | Description |
+|----------|-------------|
+| `check_read_before_write(tool_name, path, state)` | Enforces read-before-write for modifying tools |
+| `check_cooldown(tool_name, path, state)` | Enforces `COOLDOWN_GAP=3` between identical read calls |
+| `check_doom_loop(tool_name, args, state, policy)` | Queries `PermissionPolicy.check_doom_loop()`; blocks if pattern triggers PERM-02 |
+
+### EventLog (`event_log.py`)
+
+Append-only SQLite event log with WAL mode. Per-session sequence counter.
+
+| Symbol | Description |
+|--------|-------------|
+| `EventKind` | Enum: `TOOL_CALL`, `LLM_CALL`, `PLAN_STEP`, `ERROR`, `SCOPE_VIOLATION`, `BUDGET_ALERT` |
+| `EventLog.open(path)` | Opens (creates) the SQLite DB; enables WAL; creates `events` table |
+| `EventLog.append(session_id, kind, payload)` | Atomically inserts event; increments per-session seq |
+| `EventLog.get_events(session_id, after_seq)` | Returns events for a session after a given seq |
+| `EventLog.get_diff(seq_a, seq_b)` | Returns events between two sequence numbers |
+| `EventLog.count(session_id)` | Returns event count for a session |
+| Connection guard | All query methods raise `RuntimeError("EventLog: database connection is not open")` if `_conn is None` (MED-8 fix) |
+
+### ShellHooks (`shell_hooks.py`)
+
+`ShellHookRunner` implements CP-7 shell hooks. Pre- and post-tool hooks are configured in `.agent/settings.json`. Hook scripts receive a JSON payload on stdin. Exit code semantics:
+
+| Exit code | Meaning |
+|-----------|---------|
+| 0 | Allow / success |
+| 2 | **Deny** — tool execution is blocked; reason from stdout is surfaced to the user |
+| other | Warning logged; execution continues |
+
+Hook commands are parsed with `shlex.split()` (never `shell=True`).
+
+### SnapshotManager (`snapshot_manager.py`)
+
+Git-based file snapshots using `--sparse` checkout. Sanitises `project_id` via `_PROJECT_ID_RE` regex before using it in git commands (P2-3 fix). `restore()` runs `git clean -fd` after `checkout-index` to remove untracked files left by partial writes (P2-4 fix). Git subprocess timeout: `_GIT_TIMEOUT = 60.0` with `asyncio.wait_for` + kill (P1-2 fix).
+
+### ToolExecutionService (`tool_execution_service.py`)
+
+Async pre/post execution pipeline:
+
+```
+pre_execute:
+  1. reset_idempotency() called at turn start (HIGH-3 fix)
+  2. check idempotency guard (_seen_calls set)
+  3. check_read_before_write (loop_guards)
+  4. check_cooldown (loop_guards)
+  5. check_doom_loop (loop_guards + permission_policy)
+  6. await approval_gate.wait_async() (async permission gate, P1-1 fix)
+  7. run pre-tool shell hooks (shell_hooks)
+
+post_execute:
+  1. run post-tool shell hooks (shell_hooks)
+  2. record_tool_call in cost_tracker
+  3. append to event_log
+```
+
+### ToolHooks (`tool_hooks.py`)
+
+`ToolHookRunner` — Python-level pre/post hooks (as opposed to shell hooks). Hook callables are registered per tool name. Used for internal audit instrumentation.
+
+### PermissionPolicy (`permission_policy.py`)
+
+```python
+class Behavior(Enum):
+    ALLOW = "allow"
+    ASK   = "ask"
+    DENY  = "deny"
+```
+
+`PermissionPolicy` holds a mapping of `tool_name → Behavior`. `check_doom_loop(tool_name, args)` is consulted by `loop_guards.check_doom_loop()` to determine whether a repeated tool call should be blocked (PERM-02 policy).
+
+### SessionCostTracker (`session_cost_tracker.py`)
+
+Thread-safe cost tracking with atomic JSON flush.
+
+| Method | Description |
+|--------|-------------|
+| `record_tool_call(tool_name, input_tokens, output_tokens)` | Lock-guarded; appends to `_usage_buffer` |
+| `flush(task_id)` | Atomic write via `mkstemp` + `os.replace`; clears buffer inside lock after snapshot (HIGH-2 fix) |
+| `reset()` | Lock-guarded; clears buffer and resets counters |
+| `budget_ceiling_usd` | From `ProjectSettings`; triggers `BUDGET_ALERT` event when exceeded |
+
+### InstructionLoader (`instruction_loader.py`)
+
+Builds the runtime context block injected into the system prompt each turn:
+- Reads `AGENTS.md` / instruction files from workspace root and ancestor dirs
+- Injects LSP diagnostics block via `lsp_context.get_lsp_diagnostics_block()` (CP-10 fix)
+- Respects 4K/12K token budget caps
+
+### ProjectSettings (`project_settings.py`)
+
+Loads `.agent/settings.json` from the project root. Supports:
+- `model` override
+- `budget_ceiling_usd` (wired to `SessionCostTracker`)
+- Permission mode overrides (deep merge with global config)
+
+### DeferredInit (`deferred_init.py`)
+
+Runs at startup after the event loop is running:
+- World-writable directory check using both `os.lstat()` and `Path.stat()` (TS-1 fix)
+- Plugin loader — refuses world-writable plugin dirs (P1-2 fix)
+
+### PreviewCoordinator (`preview_coordinator.py`)
+
+Preview gate for file diffs. `_on_confirmed` / `_on_rejected` validate non-empty `path` before calling `resolve_preview_gate` (P1-1 fix).
+
+---
+
+## Sandbox (`src/tools/sandbox.py`)
+
+`run_sandboxed(cmd, level)` executes shell commands inside a `bwrap` (bubblewrap) sandbox.
+
+| Level | Description |
+|-------|-------------|
+| `off` | No sandboxing (default for development) |
+| `workspace` | Read-only bind for `/`, read-write bind for workspace only |
+| `full` | Minimal filesystem; `--dev-bind /dev /dev` for device access |
+
+Sandbox level is configurable via `ProjectSettings` or the `CODINGAGENT_SANDBOX` environment variable.
+
+---
+
+## Additional Tools (`src/tools/`)
+
+| Module | Description |
+|--------|-------------|
+| `bash_security.py` | Bash security utilities extracted from `_security.py`; `SAFE_COMMANDS`, `GIT_SAFE_SUBCOMMANDS`, `SED_WRITE_FLAGS` |
+| `batch_tools.py` | `batch_tool_calls(calls)` — parallel execution capped at `min(len(calls), MAX_PARALLEL)` |
+| `lsp_tools.py` | `lsp_diagnostics`, `lsp_goto_definition`, `lsp_references` — LSP tool wrappers |
+| `skill_tools.py` | `load_skill(name)`, `list_skills()` — skill management tools |
+| `plan_mode_tools.py` | Tools available only in plan-only mode |
+| `permission_context.py` | Per-call permission context dataclass |
+| `_approval.py` | Tool approval helpers; integrates with `approval_gate` |
+| `_result.py` | Structured tool result types (`ToolResult`, `ToolError`, `ToolDenied`) |
+| `_truncate.py` | Output truncation utilities; respects max-chars limits |
+
+---
+
+## LSP Integration (`src/core/indexing/`)
+
+| File | Description |
+|------|-------------|
+| `lsp_client.py` | `LSPClient` — JSON-RPC 2.0 LSP client; auto-restart on crash with exponential backoff (P4-2 fix); `_shutting_down` guard prevents restart loops; `_reader_loop` `finally` drains pending futures (P1-3 fix) |
+| `lsp_context.py` | `get_lsp_diagnostics_block()` — formats LSP diagnostics as a named section for injection into the system prompt (CP-10 fix) |
+| `lsp_manager.py` | `LSPManager` — manages per-language LSP server instances; reads `src/config/lsp_servers.yaml` |
+
+---
+
+## MCP Client (`src/core/mcp/`)
+
+```
+src/core/mcp/
+├── __init__.py
+├── mcp_client.py    # MCPClient — JSON-RPC 2.0 over stdio; connect/disconnect lifecycle
+└── mcp_manager.py   # MCPManager — multiple server connections; tool routing
+```
+
+Key fixes: nested `asyncio.wait_for` removed from `_initialize()` (P2-1 fix); reader task + process terminated on connect failure (P2-5 fix).
+
+---
+
+## Config & Credentials
+
+| File | Description |
+|------|-------------|
+| `src/core/config_loader.py` | `ConfigLoader` + `ConfigWatcher` — live config reload on file change (P4-1 fix); debounced `watchdog` observer |
+| `src/core/credentials.py` | `save_credentials()` / `load_credentials()` — `os.chmod(_PREFS_PATH, 0o600)` after every write (P2-2 fix) |
+| `src/core/errors.py` | Centralised error type hierarchy (`AgentError`, `ToolError`, `PermissionError`, `BudgetExceededError`, etc.) |
+
+---
+
+## System Prompt Builder (`src/core/prompts/`)
+
+`system_prompt_builder.py` — `SystemPromptBuilder.build(role, runtime_context)`:
+1. Loads identity files (`LAWS.md`, `SOUL.md`)
+2. Loads role file (e.g. `operational.md`)
+3. Inserts `__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__` sentinel between static and dynamic sections
+4. Appends runtime context block from `InstructionLoader`
+5. Appends LSP diagnostics block if available
+
+The `AnthropicAdapter` uses the sentinel position to attach `cache_control` (CP-12 fix).

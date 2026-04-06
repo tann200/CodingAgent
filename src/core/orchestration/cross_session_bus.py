@@ -433,44 +433,50 @@ class CrossSessionBus:
 
     def _deliver_message(self, message: CrossSessionMessage) -> None:
         """Deliver message to matching subscribers."""
+        # MED-7 fix: snapshot matching subscribers under the lock, then dispatch
+        # callbacks *outside* the lock.  Holding the lock while calling subscriber
+        # callbacks risks priority inversion (slow callbacks block all bus ops) and
+        # potential deadlock (callbacks that acquire the bus lock themselves).
+        matching_subs = []
         with self._lock:
             for topic, subs in list(self._subscriptions.items()):
                 if self._topic_matches(message.topic, topic):
                     for sub in subs:
-                        # Check session filter
                         if (
                             sub.session_id
                             and sub.session_id != message.sender_session_id
                         ):
                             continue
+                        matching_subs.append(sub)
 
-                        # Deliver message (handle async in separate task)
-                        try:
-                            if asyncio.iscoroutinefunction(sub.callback):
-                                # asyncio.create_task() requires a running event loop.
-                                # Guard against calls from non-async contexts (e.g. sync
-                                # threads) by checking for a running loop first.
-                                try:
-                                    loop = asyncio.get_running_loop()
-                                    loop.create_task(self._deliver_async(sub, message))
-                                except RuntimeError:
-                                    logger.warning(
-                                        f"CrossSessionBus: no running event loop for async "
-                                        f"delivery to {sub.subscription_id}; skipping"
-                                    )
-                            else:
-                                sub.callback(message)
-                        except Exception as e:
-                            logger.error(
-                                f"Error delivering to subscription {sub.subscription_id}: {e}"
-                            )
+        for sub in matching_subs:
+            # Deliver message (handle async in separate task)
+            try:
+                if asyncio.iscoroutinefunction(sub.callback):
+                    # asyncio.create_task() requires a running event loop.
+                    # Guard against calls from non-async contexts (e.g. sync
+                    # threads) by checking for a running loop first.
+                    try:
+                        loop = asyncio.get_running_loop()
+                        loop.create_task(self._deliver_async(sub, message))
+                    except RuntimeError:
+                        logger.warning(
+                            f"CrossSessionBus: no running event loop for async "
+                            f"delivery to {sub.subscription_id}; skipping"
+                        )
+                else:
+                    sub.callback(message)
+            except Exception as e:
+                logger.error(
+                    f"Error delivering to subscription {sub.subscription_id}: {e}"
+                )
 
     async def _deliver_async(
         self, sub: Subscription, message: CrossSessionMessage
     ) -> None:
         """Deliver message to async callback."""
         try:
-            await sub.callback(message)
+            await sub.callback(message)  # type: ignore[misc]
         except Exception as e:
             logger.error(f"Error in async delivery to {sub.subscription_id}: {e}")
 

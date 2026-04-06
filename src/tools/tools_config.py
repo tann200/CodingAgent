@@ -14,8 +14,127 @@ Example::
 from __future__ import annotations
 
 import os
+import threading
+from enum import Enum
 from pathlib import Path
-from typing import Optional
+from typing import Dict, Optional
+
+
+# ---------------------------------------------------------------------------
+# Per-tool permission levels
+# ---------------------------------------------------------------------------
+
+
+class PermissionLevel(str, Enum):
+    """Granularity of access required for a tool call.
+
+    READ_ONLY       — safe reads, no side-effects; always auto-allowed.
+    WORKSPACE_WRITE — writes to the working directory; auto-allowed by default.
+    DANGER          — destructive or exec operations; requires user approval.
+    PROMPT          — always ask the user before executing.
+    ALLOW           — unconditionally allow (explicit override).
+    """
+
+    READ_ONLY = "read_only"
+    WORKSPACE_WRITE = "workspace_write"
+    DANGER = "danger"
+    PROMPT = "prompt"
+    ALLOW = "allow"
+
+
+# Default permission level for tools not listed in TOOL_PERMISSIONS.
+DEFAULT_PERMISSION_LEVEL = PermissionLevel.WORKSPACE_WRITE
+
+# Per-tool permission table.  Override at runtime via set_tool_permission().
+TOOL_PERMISSIONS: Dict[str, PermissionLevel] = {
+    # --- read-only ---
+    "read_file": PermissionLevel.READ_ONLY,
+    "glob": PermissionLevel.READ_ONLY,
+    "grep": PermissionLevel.READ_ONLY,
+    "bash_readonly": PermissionLevel.READ_ONLY,
+    "list_files": PermissionLevel.READ_ONLY,
+    "find_symbol": PermissionLevel.READ_ONLY,
+    "find_references": PermissionLevel.READ_ONLY,
+    "search_code": PermissionLevel.READ_ONLY,
+    "git_status": PermissionLevel.READ_ONLY,
+    "git_log": PermissionLevel.READ_ONLY,
+    "git_diff": PermissionLevel.READ_ONLY,
+    "read_web_page": PermissionLevel.READ_ONLY,
+    "web_search": PermissionLevel.READ_ONLY,
+    "get_memory": PermissionLevel.READ_ONLY,
+    "load_skill": PermissionLevel.READ_ONLY,
+    "list_skills": PermissionLevel.READ_ONLY,
+    "summarize_structure": PermissionLevel.READ_ONLY,
+    # --- workspace write (default) ---
+    "write_file": PermissionLevel.WORKSPACE_WRITE,
+    "edit_file_atomic": PermissionLevel.WORKSPACE_WRITE,
+    "multiedit": PermissionLevel.WORKSPACE_WRITE,
+    "edit_by_line_range": PermissionLevel.WORKSPACE_WRITE,
+    "rename_file": PermissionLevel.WORKSPACE_WRITE,
+    "delete_file": PermissionLevel.DANGER,
+    "save_memory": PermissionLevel.WORKSPACE_WRITE,
+    "manage_todo": PermissionLevel.WORKSPACE_WRITE,
+    "git_commit": PermissionLevel.WORKSPACE_WRITE,
+    "git_stash": PermissionLevel.WORKSPACE_WRITE,
+    "git_restore": PermissionLevel.WORKSPACE_WRITE,
+    # --- dangerous ---
+    "bash": PermissionLevel.DANGER,
+    "run_tests": PermissionLevel.DANGER,
+    "format_file": PermissionLevel.WORKSPACE_WRITE,
+    # --- always prompt ---
+    "submit_plan_for_review": PermissionLevel.PROMPT,
+    "ask_user": PermissionLevel.PROMPT,
+    # CP-15: send_user_message is read_only — it never touches the filesystem
+    "send_user_message": PermissionLevel.READ_ONLY,
+    # SPAWN-W5: subagent spawning always requires user confirmation (spawn.permission_required)
+    "delegate_task": PermissionLevel.PROMPT,
+}
+
+
+def set_tool_permission(tool_name: str, level: PermissionLevel) -> None:
+    """Override the permission level for a specific tool at runtime."""
+    TOOL_PERMISSIONS[tool_name] = level
+
+
+def get_tool_permission(tool_name: str) -> PermissionLevel:
+    """Return the effective permission level for *tool_name*."""
+    return TOOL_PERMISSIONS.get(tool_name, DEFAULT_PERMISSION_LEVEL)
+
+
+# ---------------------------------------------------------------------------
+# Tool name aliases — normalised transparently in execute_tool()
+# ---------------------------------------------------------------------------
+
+TOOL_ALIASES: Dict[str, str] = {
+    # short read aliases
+    "read": "read_file",
+    "cat": "read_file",
+    "open": "read_file",
+    # short write aliases
+    "write": "write_file",
+    "save": "write_file",
+    # short edit aliases
+    "edit": "edit_file_atomic",
+    "patch": "edit_file_atomic",
+    # list / glob
+    "ls": "list_files",
+    "dir": "list_files",
+    "find": "glob",
+    # search
+    "search": "grep",
+    "rg": "grep",
+    # shell
+    "shell": "bash",
+    "run": "bash",
+    "cmd": "bash",
+    # web
+    "fetch": "read_web_page",
+    "browse": "read_web_page",
+    # fs aliases already registered in registry
+    "fs.read": "read_file",
+    "fs.write": "write_file",
+    "fs.list": "list_files",
+}
 
 # -----------------------------------------------------------------------
 # Module-level state (mutable, not user-facing)
@@ -23,6 +142,15 @@ from typing import Optional
 
 _CONTEXT_DIR: str = ".agent-context"
 _DEFAULT_WORKDIR: Optional[Path] = None
+_AUTONOMOUS_MODE: bool = False  # AUTO-01: global autonomous-mode flag
+_ACTIVE_PERMISSION_MODE: Optional[PermissionLevel] = (
+    None  # TASK-20: active mode override
+)
+
+# MED-3 fix: protect all module-global state with a single lock so that
+# concurrent tool threads and orchestrator configure() calls don't observe
+# torn values (e.g. _AUTONOMOUS_MODE written while _CONTEXT_DIR is being read).
+_config_lock: threading.Lock = threading.Lock()
 
 
 # -----------------------------------------------------------------------
@@ -33,6 +161,7 @@ _DEFAULT_WORKDIR: Optional[Path] = None
 def configure(
     context_dir: str = ".agent-context",
     default_workdir: Optional[Path] = None,
+    autonomous_mode: bool = False,
 ) -> None:
     """Override default tool configuration.
 
@@ -48,10 +177,15 @@ def configure(
         Default working directory for tool calls that do not explicitly
         pass ``workdir=``.  When *None* the default is the current working
         directory (``Path.cwd()``).
+    autonomous_mode:
+        When *True* the agent runs without interactive permission prompts.
+        Equivalent to passing ``--autonomous`` on the command line.
     """
-    global _CONTEXT_DIR, _DEFAULT_WORKDIR
-    _CONTEXT_DIR = context_dir
-    _DEFAULT_WORKDIR = default_workdir
+    global _CONTEXT_DIR, _DEFAULT_WORKDIR, _AUTONOMOUS_MODE
+    with _config_lock:
+        _CONTEXT_DIR = context_dir
+        _DEFAULT_WORKDIR = default_workdir
+        _AUTONOMOUS_MODE = autonomous_mode
 
 
 def agent_context_path(workdir: Path) -> Path:
@@ -59,18 +193,71 @@ def agent_context_path(workdir: Path) -> Path:
 
     Creates the directory if it does not exist.
     """
-    p = workdir / _CONTEXT_DIR
+    with _config_lock:
+        ctx_dir = _CONTEXT_DIR
+    p = workdir / ctx_dir
     p.mkdir(parents=True, exist_ok=True)
     return p
 
 
 def get_default_workdir() -> Path:
     """Return the default working directory."""
-    if _DEFAULT_WORKDIR is not None:
-        return _DEFAULT_WORKDIR
+    with _config_lock:
+        if _DEFAULT_WORKDIR is not None:
+            return _DEFAULT_WORKDIR
     return Path.cwd()
 
 
 def get_context_dir_name() -> str:
     """Return the configured agent-context directory name."""
-    return _CONTEXT_DIR
+    with _config_lock:
+        return _CONTEXT_DIR
+
+
+# AUTO-01: Autonomous mode helpers
+def is_autonomous() -> bool:
+    """Return *True* when the agent is running in autonomous (non-interactive) mode.
+
+    In autonomous mode, DANGER-level tools are executed without waiting for
+    user approval and PROMPT-level tools are auto-allowed.
+    """
+    # Also honour the CODINGAGENT_AUTONOMOUS env var for script-level overrides.
+    if os.getenv("CODINGAGENT_AUTONOMOUS", "").lower() in ("1", "true", "yes"):
+        return True
+    with _config_lock:
+        return _AUTONOMOUS_MODE
+
+
+def set_autonomous(enabled: bool = True) -> None:
+    """Enable or disable autonomous mode at runtime.
+
+    Prefer calling ``configure(autonomous_mode=True)`` at startup; this
+    function exists for dynamic switching (e.g. the TUI lets the user
+    toggle the mode mid-session).
+    """
+    global _AUTONOMOUS_MODE
+    with _config_lock:
+        _AUTONOMOUS_MODE = enabled
+
+
+# TASK-20: Active permission mode helpers
+def get_active_permission_mode() -> Optional[PermissionLevel]:
+    """Return the active permission mode override, or *None* if not set."""
+    with _config_lock:
+        return _ACTIVE_PERMISSION_MODE
+
+
+def set_active_permission_mode(mode: PermissionLevel) -> None:
+    """Set the active permission mode at runtime.
+
+    When set, this overrides the per-tool ``TOOL_PERMISSIONS`` table for
+    tools whose level is *less restrictive* than *mode*.  For example,
+    setting ``PermissionLevel.READ_ONLY`` blocks all write and danger tools
+    regardless of their per-tool entry.
+
+    Pass ``None`` to clear the override (not directly supported — call
+    ``configure()`` again at startup to reset).
+    """
+    global _ACTIVE_PERMISSION_MODE
+    with _config_lock:
+        _ACTIVE_PERMISSION_MODE = mode

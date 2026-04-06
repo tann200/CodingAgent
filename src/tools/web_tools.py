@@ -7,6 +7,8 @@ so the agent can look up documentation, error messages, and API docs.
 
 import logging
 import re
+import socket
+import ipaddress
 from typing import Any, Dict, List, Optional
 from pathlib import Path
 
@@ -21,11 +23,24 @@ _BLOCKED_HOSTS = re.compile(
     re.IGNORECASE,
 )
 
-_MAX_WEB_PAGE_CHARS = 10_000
+_MAX_WEB_PAGE_CHARS = 100_000
+
+
+def _strip_html(html: str) -> str:
+    """Strip HTML tags and normalise whitespace to plain text."""
+    content = re.sub(r"<script[^>]*>.*?</script>", "", html, flags=re.DOTALL)
+    content = re.sub(r"<style[^>]*>.*?</style>", "", content, flags=re.DOTALL)
+    content = re.sub(r"<[^>]+>", " ", content)
+    return re.sub(r"\s+", " ", content).strip()
 
 
 def _is_url_blocked(url: str) -> bool:
-    """Check if URL points to a blocked scheme or private/internal address."""
+    """Check if URL points to a blocked scheme or private/internal address.
+
+    Checks both the raw hostname string and all resolved IP addresses so that
+    decimal-encoded IPs (e.g. http://2130706433/), IPv6 loopback (::1), and
+    DNS rebinding attacks are all blocked.
+    """
     try:
         from urllib.parse import urlparse
 
@@ -34,9 +49,34 @@ def _is_url_blocked(url: str) -> bool:
         if parsed.scheme not in ("http", "https"):
             return True
         host = parsed.hostname or ""
-        return bool(_BLOCKED_HOSTS.match(host))
+        # Check raw hostname pattern first (fast path)
+        if _BLOCKED_HOSTS.match(host):
+            return True
+        # Resolve all IP addresses for the hostname and check each one
+        try:
+            infos = socket.getaddrinfo(host, None)
+            for info in infos:
+                addr_str = info[4][0]
+                try:
+                    addr = ipaddress.ip_address(addr_str)
+                    if (
+                        addr.is_loopback
+                        or addr.is_private
+                        or addr.is_link_local
+                        or addr.is_reserved
+                        or addr.is_unspecified
+                        or addr.is_multicast
+                    ):
+                        return True
+                except ValueError:
+                    return True  # Unparseable address — block it
+        except (socket.gaierror, OSError):
+            # DNS resolution failed — allow the request to proceed and let
+            # the HTTP client handle the connection error naturally
+            pass
+        return False
     except Exception:
-        return True  # Block on parse failure
+        return True  # Block on any parse failure
 
 
 @tool(tags=["coding", "planning", "debug"])
@@ -61,7 +101,7 @@ def web_search(query: str, max_results: int = 5) -> Dict[str, Any]:
 
     # Try duckduckgo-search package first
     try:
-        from duckduckgo_search import DDGS
+        from duckduckgo_search import DDGS  # type: ignore[import]
 
         results: List[Dict[str, str]] = []
         with DDGS() as ddgs:
@@ -118,26 +158,34 @@ def web_search(query: str, max_results: int = 5) -> Dict[str, Any]:
 
 
 @tool(tags=["coding", "planning"])
-def read_web_page(url: str) -> Dict[str, Any]:
+def read_web_page(url: str, format: str = "markdown") -> Dict[str, Any]:
     """Fetch and return the text content of a web page.
 
     Use after web_search to read full documentation or a specific page.
-    Returns first 10,000 characters of extracted text.
+    Returns up to 100,000 characters of extracted text.
 
     Args:
-        url: The URL to fetch.
+        url: The URL to fetch. HTTP URLs are upgraded to HTTPS automatically.
+        format: Output format — "markdown" (default, uses html2text) or "text" (plain text).
 
     Returns:
-        status, url, content (truncated text), truncated (bool).
+        status, url, content (extracted text), truncated (bool).
     """
     if not url or not url.strip():
         return {"status": "error", "error": "url must be non-empty"}
+
+    # Upgrade HTTP to HTTPS
+    if url.startswith("http://"):
+        url = "https://" + url[len("http://") :]
 
     if _is_url_blocked(url):
         return {
             "status": "error",
             "error": f"URL '{url}' points to a private/internal address. Blocked for security.",
         }
+
+    if format not in ("markdown", "text"):
+        return {"status": "error", "error": "format must be 'markdown' or 'text'"}
 
     try:
         import requests
@@ -149,21 +197,19 @@ def read_web_page(url: str) -> Dict[str, Any]:
         )
         resp.raise_for_status()
 
-        # Strip HTML tags for text extraction
         content = resp.text
-        try:
-            import html2text
+        if format == "markdown":
+            try:
+                import html2text  # type: ignore[import]
 
-            h = html2text.HTML2Text()
-            h.ignore_links = True
-            h.ignore_images = True
-            content = h.handle(content)
-        except ImportError:
-            # Fallback: regex tag stripping
-            content = re.sub(r"<script[^>]*>.*?</script>", "", content, flags=re.DOTALL)
-            content = re.sub(r"<style[^>]*>.*?</style>", "", content, flags=re.DOTALL)
-            content = re.sub(r"<[^>]+>", " ", content)
-            content = re.sub(r"\s+", " ", content).strip()
+                h = html2text.HTML2Text()
+                h.ignore_links = False
+                h.ignore_images = True
+                content = h.handle(content)
+            except ImportError:
+                content = _strip_html(content)
+        else:
+            content = _strip_html(content)
 
         truncated = len(content) > _MAX_WEB_PAGE_CHARS
         return {

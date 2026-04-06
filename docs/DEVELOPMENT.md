@@ -93,6 +93,8 @@ Then add the module path to `_BUILTIN_MODULES` in `src/tools/_registry.py`.
 
 ## Running Tests
 
+Set `CODINGAGENT_TRUSTED=1` to enable MCP server, hooks, and plugins in automated environments.
+
 ```bash
 # All unit tests (no live LLM required) — recommended
 .venv/bin/pytest tests/unit -q -p no:logging

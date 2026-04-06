@@ -58,8 +58,14 @@ class WorkspaceGuard:
         # Check exact matches and patterns
         for pattern in self.protected_patterns:
             if pattern.endswith("/"):
-                # Directory pattern
-                if path_str.startswith(pattern) or f"/{pattern}" in path_str:
+                # Directory pattern: match at start (relative paths) or as a
+                # path component (absolute paths).  Use separator anchoring on
+                # both sides so ".git/" never matches "notgit/foo".
+                if (
+                    path_str == pattern.rstrip("/")
+                    or path_str.startswith(pattern)  # relative: .git/config
+                    or f"/{pattern}" in path_str  # absolute: /proj/.git/config
+                ):
                     return True
             else:
                 # File pattern

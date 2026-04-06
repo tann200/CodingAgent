@@ -3,7 +3,7 @@ import hashlib
 import logging
 import sys
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 import lancedb
 import pandas as pd
@@ -15,11 +15,13 @@ logger = logging.getLogger(__name__)
 
 # Try importing SentenceTransformer, fall back to a deterministic dummy encoder for tests/environments without heavy deps
 try:
-    from sentence_transformers import SentenceTransformer
+    from sentence_transformers import SentenceTransformer  # type: ignore[import]
 
     _HAS_ST_MODEL = True
+    _SentenceTransformer = SentenceTransformer
 except Exception:
     _HAS_ST_MODEL = False
+    _SentenceTransformer = None
 
 
 class _DummyModel:
@@ -60,7 +62,7 @@ class VectorStore:
         if self._model is None:
             if _HAS_ST_MODEL:
                 try:
-                    self._model = SentenceTransformer("all-MiniLM-L6-v2")
+                    self._model = _SentenceTransformer("all-MiniLM-L6-v2")  # type: ignore[misc]
                 except Exception:
                     self._model = _DummyModel()
             else:
@@ -104,8 +106,8 @@ class VectorStore:
             raise TypeError("Could not determine sentence embedding dimension.")
 
         class CodeSymbol(LanceModel):
-            text: str = Field(default=None)
-            vector: Vector(embedding_dim)
+            text: Optional[str] = Field(default=None)
+            vector: Vector(embedding_dim)  # type: ignore[valid-type]
             file_path: str
             symbol_name: str
             symbol_type: str
@@ -122,7 +124,7 @@ class VectorStore:
         except Exception:
             existing_hashes = set()
 
-        df_new = df[~df["hash"].isin(existing_hashes)]
+        df_new = df[~df["hash"].isin(list(existing_hashes))]
 
         if df_new.empty:
             return  # Nothing to index
@@ -189,7 +191,7 @@ class VectorStore:
         from typing import List as PyList
 
         class MemoryEntry(LanceModel):
-            text: str = Field(default=None)
+            text: Optional[str] = Field(default=None)
             vector: PyList[float] = Field(default_factory=lambda: [0.0] * embedding_dim)
             type: str
             session_id: str

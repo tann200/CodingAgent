@@ -220,7 +220,7 @@ class TestDAGParserBenchmark:
             dag = _parse_dag_content(content)
         elapsed_ms = (time.perf_counter() - start) * 1000 / 100
 
-        assert dag is not None
+        assert dag is not None # type: ignore[possibly-undefined]
         assert elapsed_ms < 5, f"DAG parse too slow: {elapsed_ms:.2f} ms/call"
 
     def test_dag_topological_sort_throughput(self):
@@ -250,5 +250,5 @@ class TestDAGParserBenchmark:
             waves = dag.topological_sort_waves()
         elapsed_ms = (time.perf_counter() - start) * 1000 / 200
 
-        assert waves is not None
+        assert waves is not None # type: ignore[possibly-undefined]
         assert elapsed_ms < 10, f"topological_sort_waves too slow: {elapsed_ms:.2f} ms/call"

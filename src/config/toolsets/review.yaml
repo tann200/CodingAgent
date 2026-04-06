@@ -1,14 +1,28 @@
 name: review
 description: Toolset for code review and quality assurance
 tools:
+  # Reading
   - read_file
   - list_files
-  - run_tests
-  - run_linter
-  - syntax_check
-  - get_git_diff
+  - glob
   - grep
   - find_symbol
   - find_references
   - multi_file_summary
   - search_code
+  # Verification
+  - run_tests
+  - run_linter
+  - syntax_check
+  # Git
+  - git_status
+  - git_log
+  - git_diff
+  - get_git_diff
+  # Shell (read-only diagnostics)
+  - bash_readonly
+  # Parallel execution
+  - batch
+  # Web (for looking up docs/CVEs)
+  - web_search
+  - read_web_page

@@ -16,6 +16,61 @@ from src.tools._path_utils import safe_resolve as _safe_resolve
 from src.tools.tools_config import agent_context_path
 from src.tools._tool import tool
 
+# TASK-17: Repo-scale glob limit — higher than the file_tools.glob limit (500)
+# because repo-wide searches legitimately return tens of thousands of paths.
+MAX_GLOB_RESULTS = 10_000
+
+
+@tool(tags=["coding"])
+def find_files(pattern: str, workdir: str) -> Dict[str, Any]:
+    """Find files in the repository matching a glob pattern.
+
+    Supports ** for recursive matching.  Returns up to MAX_GLOB_RESULTS (10 000)
+    matches.  When truncated, the result includes ``truncated: True`` and
+    ``total_found`` so callers know how many results were omitted.
+
+    Returns::
+
+        {"status": "ok", "files": [...], "truncated": bool, "total_found": int}
+    """
+    try:
+        base = Path(workdir).resolve()
+        # Reject patterns that would escape the working directory
+        if ".." in pattern:
+            return {
+                "status": "error",
+                "error": (
+                    "Pattern must not contain '..'. "
+                    "Path traversal outside the working directory is not allowed."
+                ),
+            }
+        if "**" in pattern:
+            raw = base.glob(pattern)
+        else:
+            raw = base.rglob(pattern)
+
+        files: list[str] = []
+        for p in raw:
+            if not p.is_file():
+                continue
+            try:
+                rel = str(p.resolve().relative_to(base))
+                files.append(rel)
+            except ValueError:
+                continue  # resolved outside base — skip
+
+        total_found = len(files)
+        truncated = total_found > MAX_GLOB_RESULTS
+        files = sorted(files)[:MAX_GLOB_RESULTS]
+        return {
+            "status": "ok",
+            "files": files,
+            "truncated": truncated,
+            "total_found": total_found,
+        }
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
 
 @tool(side_effects=["write"], tags=["coding"])
 def initialize_repo_intelligence(workdir: str) -> Dict[str, Any]:

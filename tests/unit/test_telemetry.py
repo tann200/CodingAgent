@@ -1,9 +1,30 @@
-import pytest
-from types import SimpleNamespace
+"""tests/unit/test_telemetry.py
 
+Telemetry event bus tests.
+  - test_message_truncation_emits_event: MessageManager truncation event
+  - test_model_routing_emits_event: S10-D refactored with MockAdapter (no live LLM)
+  - test_telemetry_decorator_publishes_to_event_bus: with_telemetry decorator
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from src.core.inference.adapters.mock_adapter import MockAdapter
 from src.core.orchestration.event_bus import EventBus, get_event_bus
 from src.core.orchestration.message_manager import MessageManager
 from src.core.orchestration.orchestrator import Orchestrator
+
+# Every graph node that calls call_model at module-load time needs patching.
+_CALL_MODEL_TARGETS = [
+    "src.core.orchestration.graph.nodes.perception_node.call_model",
+    "src.core.orchestration.graph.nodes.planning_node.call_model",
+    "src.core.orchestration.graph.nodes.execution_node.call_model",
+    "src.core.orchestration.graph.nodes.debug_node.call_model",
+    "src.core.orchestration.graph.nodes.replan_node.call_model",
+    "src.core.inference.llm_manager.call_model",
+    "src.core.inference.llm_manager._call_model_internal",
+]
 
 
 def test_message_truncation_emits_event(tmp_path):
@@ -29,8 +50,8 @@ def test_message_truncation_emits_event(tmp_path):
     assert isinstance(p["dropped_count"], int)
 
 
-@pytest.mark.skip(reason="Requires live LLM backend - run individually with RUN_INTEGRATION=1")
 def test_model_routing_emits_event(monkeypatch, tmp_path):
+    """S10-D: Verify model.routing event is published — no live LLM required."""
     bus = EventBus()
     captured = {}
 
@@ -39,26 +60,39 @@ def test_model_routing_emits_event(monkeypatch, tmp_path):
 
     bus.subscribe("model.routing", on_route)
 
-    # Create a simple adapter with provider and models
-    adapter = SimpleNamespace()
-    adapter.provider = {"name": "testprov"}
-    adapter.models = ["small-7b", "med-13b", "large-70b"]
+    adapter = MockAdapter(responses=["OK"])
 
-    # Monkeypatch call_model to avoid external LLM calls
-    async def fake_call_model(
-        messages, provider=None, model=None, stream=False, format_json=False, tools=None
-    ):
-        # return a simple assistant response (no tool calls)
-        return {"choices": [{"message": "ok"}]}
+    async def mock_call_model(messages, model=None, provider=None, *args, **kwargs):
+        return {
+            "ok": True,
+            "provider": "mock",
+            "model": "mock-model",
+            "prompt_tokens": 5,
+            "completion_tokens": 5,
+            "total_tokens": 10,
+            "content": "OK",
+            "choices": [
+                {
+                    "message": {"role": "assistant", "content": "OK"},
+                    "finish_reason": "stop",
+                }
+            ],
+        }
 
-    async def fake_internal(messages, provider=None, model=None, stream=False, format_json=False, tools=None, **kw):
-        return {"choices": [{"message": "ok"}]}
+    for target in _CALL_MODEL_TARGETS:
+        try:
+            monkeypatch.setattr(target, mock_call_model)
+        except AttributeError:
+            pass
 
-    monkeypatch.setattr("src.core.inference.llm_manager._call_model_internal", fake_internal)
-    monkeypatch.setattr("src.core.inference.llm_manager.call_model", fake_call_model)
-    monkeypatch.setattr("src.core.orchestration.graph.nodes.perception_node.call_model", fake_call_model)
-    monkeypatch.setattr("src.core.orchestration.orchestrator._ensure_provider_manager_initialized_sync", lambda: None)
-    monkeypatch.setattr("src.core.orchestration.orchestrator.Orchestrator._background_model_check", lambda self: None)
+    monkeypatch.setattr(
+        "src.core.orchestration.orchestrator._ensure_provider_manager_initialized_sync",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        "src.core.orchestration.orchestrator.Orchestrator._background_model_check",
+        lambda self: None,
+    )
 
     orch = Orchestrator(
         adapter=adapter,
@@ -66,16 +100,14 @@ def test_model_routing_emits_event(monkeypatch, tmp_path):
         allow_external_working_dir=True,
         message_max_tokens=1000,
     )
-    # Ensure Orchestrator uses our bus
     orch.event_bus = bus
-    # Run a single iteration; model routing happens before call_model
     _ = orch.run_agent_once(
         None, [{"role": "user", "content": "Hello, select model"}], {}
     )
 
     assert "payload" in captured
     p = captured["payload"]
-    assert p.get("provider") in (None, "testprov")
+    assert p.get("provider") in (None, "mock")
     assert "available_models" in p and isinstance(p["available_models"], list)
     assert "selected" in p and p["selected"] in adapter.models
 

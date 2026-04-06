@@ -6,7 +6,7 @@ the planning_node can use to generate a higher-quality, better-scoped plan.
 """
 from __future__ import annotations
 import logging
-from typing import Dict, Any
+from typing import Mapping, Dict, Any
 
 from src.core.orchestration.graph.state import AgentState
 from src.tools.subagent_tools import delegate_task_async
@@ -14,7 +14,7 @@ from src.tools.subagent_tools import delegate_task_async
 logger = logging.getLogger(__name__)
 
 
-async def analyst_delegation_node(state: AgentState, config: Any) -> Dict[str, Any]:
+async def analyst_delegation_node(state: Mapping[str, Any], config: Any) -> Dict[str, Any]:
     """
     #56: Early delegation phase — spawns an analyst subagent before planning.
 

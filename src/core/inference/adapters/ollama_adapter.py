@@ -2,7 +2,6 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 from pathlib import Path
 import json
-import warnings
 import logging
 import requests
 
@@ -256,12 +255,9 @@ class OllamaAdapter(LLMClient):
             except requests.exceptions.ConnectionError:
                 continue
             except Exception as e:
-                warnings.warn(f"get_models_from_api failed for {url}: {e}")
+                _logger.debug("get_models_from_api failed for %s: %s", url, e)
                 continue
-        warnings.warn(f"get_models_from_api endpoints tried: {tried}")
-        print(
-            "Error: Ollama service not reachable or returned unexpected response for tags endpoints"
-        )
+        _logger.warning("Ollama service not reachable; tried endpoints: %s", tried)
         return {"models": []}
 
     def update_models_list(self):
@@ -310,7 +306,7 @@ class OllamaAdapter(LLMClient):
                     return resp
             except Exception:
                 continue
-        warnings.warn("get_model_info: no show endpoint succeeded")
+        _logger.debug("get_model_info: no show endpoint succeeded")
         return {}
 
     def _parse_json_response_field(self, response_text):
@@ -509,10 +505,10 @@ class OllamaAdapter(LLMClient):
                 return data
         except requests.exceptions.ConnectionError:
             msg = "Ollama service not available: connection error"
-            warnings.warn(msg)
+            _logger.warning(msg)
             return {"meta": {"error": msg}}
         except Exception as e:
-            warnings.warn(f"generate failed: {e}")
+            _logger.warning("generate failed: %s", e)
             return {"meta": {"error": "generate_failed", "exception": str(e)}}
 
     def _chat_internal(
@@ -636,10 +632,10 @@ class OllamaAdapter(LLMClient):
                 return result
         except requests.exceptions.ConnectionError:
             msg = "Ollama service not available: connection error"
-            warnings.warn(msg)
+            _logger.warning(msg)
             return {"meta": {"error": msg}}
         except Exception as e:
-            warnings.warn(f"chat failed: {e}")
+            _logger.warning("chat failed: %s", e)
             return {"meta": {"error": "chat_failed", "exception": str(e)}}
 
     def extract_tool_calls(self, chat_response):

@@ -1,10 +1,11 @@
 from __future__ import annotations
 import subprocess
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 import re
 
 from src.tools._path_utils import safe_resolve as _safe_resolve
+from src.tools._result import ToolResult, ErrorCode
 from src.tools._tool import tool
 
 
@@ -62,7 +63,7 @@ def grep(
     try:
         search_path = _safe_resolve(path, workdir)
     except PermissionError as e:
-        return {"status": "error", "error": str(e)}
+        return ToolResult.failure(str(e), ErrorCode.PERMISSION).to_dict()
 
     try:
         cmd = ["grep", "-r", "-n", pattern]
@@ -81,13 +82,19 @@ def grep(
         )
         if process.returncode == 0:
             raw = process.stdout
-            return {"status": "ok", "output": raw, "matches": _parse_grep_output(raw)}
+            return ToolResult.success(
+                {"output": raw, "matches": _parse_grep_output(raw)}
+            ).to_dict()
         elif process.returncode == 1:
-            return {"status": "ok", "output": "Pattern not found.", "matches": []}
+            return ToolResult.success(
+                {"output": "Pattern not found.", "matches": []}
+            ).to_dict()
         else:
             pass  # fall through to Python fallback
     except subprocess.TimeoutExpired:
-        return {"status": "error", "error": "grep timed out after 30 seconds."}
+        return ToolResult.failure(
+            "grep timed out after 30 seconds.", ErrorCode.TIMEOUT
+        ).to_dict()
     except FileNotFoundError:
         pass  # grep binary not available — use Python fallback
     except Exception:
@@ -129,10 +136,14 @@ def grep(
                 continue
 
         if matches:
-            return {"status": "ok", "output": "\n".join(out_lines), "matches": matches}
-        return {"status": "ok", "output": "Pattern not found.", "matches": []}
+            return ToolResult.success(
+                {"output": "\n".join(out_lines), "matches": matches}
+            ).to_dict()
+        return ToolResult.success(
+            {"output": "Pattern not found.", "matches": []}
+        ).to_dict()
     except Exception as e:
-        return {"status": "error", "error": str(e)}
+        return ToolResult.failure(str(e)).to_dict()
 
 
 @tool(tags=["coding"])
@@ -170,12 +181,17 @@ def get_git_diff() -> Dict[str, Any]:
 
 @tool(tags=["coding"])
 def summarize_structure(
-    path: str = ".", workdir: Path = Path.cwd(), max_entries: int = 50
+    path: str = ".", workdir: Optional[Path] = None, max_entries: int = 50
 ) -> Dict[str, Any]:
     """
     Summarize the workspace structure at `path` relative to `workdir`.
     Returns counts and a short listing of top entries (name, is_dir, size_bytes).
     """
+    # HIGH-12 fix: default arg was Path.cwd() which is evaluated once at import
+    # time, not at call time, giving a stale working directory for the lifetime of
+    # the process.  Defer to call time instead.
+    if workdir is None:
+        workdir = Path.cwd()
     try:
         try:
             root = _safe_resolve(path, workdir)

@@ -10,7 +10,7 @@ import contextvars
 import logging
 import threading
 from pathlib import Path
-from typing import Dict, Set
+from typing import Dict, Set, Any
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +57,7 @@ def mark_file_read(path: str) -> None:
         _global_read_files.add(p)
 
 
-def check_read_before_write(path: str) -> Dict[str, str]:
+def check_read_before_write(path: str) -> Dict[str, Any]:
     """Check that a file was read before allowing a write.
 
     Checks both the ContextVar set and the global session set so that
@@ -71,10 +71,14 @@ def check_read_before_write(path: str) -> Dict[str, str]:
     """
     p = str(Path(path).resolve())
     in_context = p in _get_ctx_read_files()
+    # LOW-1 fix: perform the existence check and global-set membership test
+    # together inside the lock so a concurrent write_file call cannot sneak
+    # through between the two reads.
     with _global_lock:
         in_global = p in _global_read_files
+        file_exists = Path(p).exists()
     # Allow new files (doesn't exist yet — no read possible)
-    if Path(p).exists() and not (in_context or in_global):
+    if file_exists and not (in_context or in_global):
         return {
             "error": (
                 f"File '{p}' has not been read in this session. "

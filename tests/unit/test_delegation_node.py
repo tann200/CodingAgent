@@ -268,7 +268,7 @@ class TestDelegationHelper:
 
     def test_create_delegation_none_values(self):
         """Test handling of None values in delegation."""
-        delegation = create_delegation(None, None, None)
+        delegation = create_delegation(None, None, None)  # type: ignore[arg-type]
 
         # Should handle None gracefully
         assert delegation.get("role") is None

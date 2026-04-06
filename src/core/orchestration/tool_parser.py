@@ -45,14 +45,18 @@ def parse_tool_block(text: str) -> Optional[Dict[str, Any]]:
     # These appear as ```yaml ... ``` AFTER the thinking block
     cleaned_text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
 
-    # Try markdown YAML/JSON code blocks (primary format)
+    # Try markdown YAML/JSON code blocks (primary format).
+    # The closing fence ``` must be on its own line — i.e. NOT followed by
+    # word characters (like ```typescript or ```json inside content).
+    # Pattern: ``` followed by optional horizontal whitespace then newline or end-of-string.
+    _CLOSE_FENCE = r"```[ \t]*(?:\n|$)"
     yaml_patterns = [
         # Pattern: ```yaml ... ``` blocks
-        r"```yaml\s*\n(.*?)\n```",
+        r"```yaml\s*\n(.*?)\n" + _CLOSE_FENCE,
         # Pattern: ```json ... ``` blocks
-        r"```json\s*\n(.*?)\n```",
+        r"```json\s*\n(.*?)\n" + _CLOSE_FENCE,
         # Pattern: ``` ... ``` blocks that might be YAML
-        r"```\s*\n(.*?)\n```",
+        r"```\s*\n(.*?)\n" + _CLOSE_FENCE,
     ]
 
     for pattern in yaml_patterns:

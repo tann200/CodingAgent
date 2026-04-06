@@ -16,7 +16,7 @@ class TestAnalysisNode:
         # Create a simple test file
         (tmp_path / "test.py").write_text("def hello(): pass")
 
-        state: AgentState = {
+        state: AgentState = {  # type: ignore[assignment]
             "task": "test task",
             "history": [],
             "verified_reads": [],
@@ -74,7 +74,7 @@ class TestExecutionNodePatchGuard:
         test_file = tmp_path / "test.py"
         test_file.write_text("def hello(): pass")
 
-        state: AgentState = {
+        state: AgentState = {  # type: ignore[assignment]
             "task": "test",
             "history": [],
             "verified_reads": [str(test_file)],
@@ -138,7 +138,7 @@ class TestEvaluationNode:
     @pytest.mark.asyncio
     async def test_evaluation_node_complete(self):
         """Test evaluation returns complete when all checks pass."""
-        state: AgentState = {
+        state: AgentState = {  # type: ignore[assignment]
             "task": "test",
             "history": [],
             "verified_reads": [],
@@ -180,7 +180,7 @@ class TestEvaluationNode:
     @pytest.mark.asyncio
     async def test_evaluation_node_replan_on_failure(self):
         """Test evaluation triggers replan when verification fails."""
-        state: AgentState = {
+        state: AgentState = {  # type: ignore[assignment]
             "task": "test",
             "history": [],
             "verified_reads": [],
@@ -229,7 +229,7 @@ class TestReplanNode:
     @pytest.mark.asyncio
     async def test_replan_node_requires_orchestrator(self):
         """Test replan_node handles missing orchestrator gracefully."""
-        state: AgentState = {
+        state: AgentState = {  # type: ignore[assignment]
             "task": "test",
             "history": [],
             "verified_reads": [],

@@ -6,6 +6,41 @@ from src.tools._path_utils import safe_resolve as _safe_resolve
 from src.tools._tool import tool
 
 
+def generate_unified_diff(
+    old_content: str,
+    new_content: str,
+    from_file: str = "a",
+    to_file: str = "b",
+) -> str:
+    """Return a unified diff string comparing old_content to new_content.
+
+    TASK-14: Standalone helper (not a registered tool) so that
+    ``edit_file_atomic`` and ``edit_by_line_range`` can include a diff payload
+    in their results without duplicating ``difflib`` boilerplate.
+
+    Args:
+        old_content: Original file content.
+        new_content: Modified file content.
+        from_file:   Label for the "a" side of the diff (typically the file path).
+        to_file:     Label for the "b" side of the diff (typically the same path).
+
+    Returns:
+        A unified diff string, or an empty string if the contents are identical.
+    """
+    old_lines = old_content.splitlines(keepends=True)
+    new_lines = new_content.splitlines(keepends=True)
+    diff_lines = list(
+        difflib.unified_diff(
+            old_lines,
+            new_lines,
+            fromfile=from_file,
+            tofile=to_file,
+            lineterm="\n",
+        )
+    )
+    return "".join(diff_lines)
+
+
 @tool(tags=["coding"])
 def generate_patch(path: str, new_content: str, workdir: Path) -> Dict[str, Any]:
     """Generate a unified diff patch between existing file content and new_content.
@@ -85,7 +120,7 @@ def edit_code_block(
             return {
                 "status": "error",
                 "error": f"block_to_find appears {count} times in {path}. "
-                         "Provide more context to make it unique.",
+                "Provide more context to make it unique.",
             }
 
         new_content = old_content.replace(block_to_find, new_block, 1)

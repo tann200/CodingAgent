@@ -22,10 +22,14 @@ import re
 # If the central logger isn't importable (tests or early import), fall back to the standard
 # library logger but use a generic project-like name so messages are grouped consistently.
 try:
-    from src.core.orchestration.event_bus import get_correlation_id as _get_correlation_id
+    from src.core.orchestration.event_bus import (
+        get_correlation_id as _get_correlation_id,  # type: ignore[assignment]
+    )
 except Exception:  # pragma: no cover — circular import guard for early tests
-    def _get_correlation_id():  # type: ignore[misc]
+
+    def _get_correlation_id() -> Optional[str]:  # type: ignore[misc]
         return None
+
 
 try:
     # Prefer the app's central logger object (recommended)
@@ -38,10 +42,15 @@ except Exception:
 
 # Simple in-memory caches (protected by RLock for thread safety - C8 fix)
 import threading as _threading
+
 _MODEL_CACHE: Dict[str, List[str]] = {}
 _MODEL_CACHE_TIME: Dict[str, float] = {}
 _MODEL_CACHE_LOCK = _threading.RLock()
 _CACHE_TTL = 300
+
+# Shared lock for all atomic providers.json read-modify-write operations.
+# Imported by settings_panel.py so both modules share the same lock object.
+_providers_json_lock = _threading.Lock()
 
 # --- Helper functions ---
 
@@ -59,7 +68,49 @@ def canonical_provider(name: Optional[str]) -> str:
     lm_variants = {"lm", "lm_studio", "lmstudio", "lm_studio"}
     if normalized in lm_variants or normalized == "lmstudio":
         return "lm_studio"
+    copilot_variants = {
+        "copilot",
+        "github_copilot",
+        "github-copilot",
+        "ghcopilot",
+        "github copilot",
+    }
+    if normalized in copilot_variants:
+        return "github_copilot"
     return normalized
+
+
+def _set_provider_active(provider_type: str, active: bool) -> None:
+    """Atomically set the active flag for a provider entry in providers.json.
+
+    Thread-safe via _providers_json_lock (shared with settings_panel).
+    Used after OAuth login/logout to enable or disable a provider without
+    requiring a full settings save cycle.
+    """
+    import tempfile as _tempfile
+    import os as _os
+
+    cfg_path = resolve_config_path(None)
+    target_key = canonical_provider(provider_type)
+    with _providers_json_lock:
+        raw = json.loads(cfg_path.read_text(encoding="utf-8"))
+        providers = raw if isinstance(raw, list) else [raw]
+        for p in providers:
+            if canonical_provider(p.get("type") or p.get("name") or "") == target_key:
+                p["active"] = active
+                break
+        new_text = json.dumps(providers, indent=2)
+        fd, tmp = _tempfile.mkstemp(dir=cfg_path.parent, suffix=".tmp")
+        try:
+            with _os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(new_text)
+            _os.replace(tmp, cfg_path)
+        except Exception:
+            try:
+                _os.unlink(tmp)
+            except OSError:
+                pass
+            raise
 
 
 def _get_models_for_provider_key(provider_key: str) -> List[str]:
@@ -335,8 +386,15 @@ def save_provider(
                 if isinstance(existing, list):
                     # Replace provider with matching name, or append if new
                     name = data.get("name")
-                    updated = [p if (not isinstance(p, dict) or p.get("name") != name) else data for p in existing]
-                    if not any(isinstance(p, dict) and p.get("name") == name for p in existing):
+                    updated = [
+                        p
+                        if (not isinstance(p, dict) or p.get("name") != name)
+                        else data
+                        for p in existing
+                    ]
+                    if not any(
+                        isinstance(p, dict) and p.get("name") == name for p in existing
+                    ):
                         updated.append(data)
                     to_write = updated
             except Exception:
@@ -555,6 +613,19 @@ class ProviderManager:
             # Probe adapters for models (adapters may be network-backed; tests can monkeypatch)
             for prov_key, adapter in list(self._providers.items()):
                 try:
+                    # Skip probe for explicitly inactive providers
+                    prov_cfg = next(
+                        (
+                            p
+                            for p in providers
+                            if canonical_provider(p.get("name") or p.get("type") or "")
+                            == prov_key
+                        ),
+                        None,
+                    )
+                    if prov_cfg and prov_cfg.get("active") is False:
+                        continue
+
                     if not adapter:
                         if not self._models_cache.get(prov_key):
                             self._models_cache[prov_key] = []
@@ -704,6 +775,7 @@ def _ensure_provider_manager_initialized_sync():
         def _log_init_exc(t: "asyncio.Task") -> None:
             if not t.cancelled() and t.exception():
                 import logging as _logging
+
                 _logging.getLogger(__name__).warning(
                     "ProviderManager async init failed: %s", t.exception()
                 )
@@ -934,7 +1006,11 @@ async def _call_model_internal(
                 # M1: If stream=True the adapter may return a raw requests.Response;
                 # consume the SSE stream and return the accumulated text as a dict.
                 if stream and hasattr(res, "iter_lines"):
-                    text = await loop.run_in_executor(None, _consume_sse_stream, res)
+                    from functools import partial as _partial
+
+                    text = await loop.run_in_executor(
+                        None, _partial(_consume_sse_stream, res, model)
+                    )
                     return {"ok": True, "text": text, "streamed": True}
                 return res
             except Exception as e:
@@ -956,7 +1032,11 @@ async def _call_model_internal(
                 res = await loop.run_in_executor(None, fn)
                 # M1: Same SSE consumption for generate path
                 if stream and hasattr(res, "iter_lines"):
-                    text = await loop.run_in_executor(None, _consume_sse_stream, res)
+                    from functools import partial as _partial
+
+                    text = await loop.run_in_executor(
+                        None, _partial(_consume_sse_stream, res, model)
+                    )
                     return {"ok": True, "text": text, "streamed": True}
                 return res
             except TypeError:
@@ -979,6 +1059,7 @@ async def _call_model_internal(
 # ---------------------------------------------------------------------------
 # #31: Circuit Breaker for LLM adapters
 # ---------------------------------------------------------------------------
+
 
 class CircuitBreaker:
     """
@@ -1063,8 +1144,17 @@ def get_circuit_breaker(provider_key: str) -> "CircuitBreaker":
         return _CIRCUIT_BREAKERS[provider_key]
 
 
-def _consume_sse_stream(raw_response: Any) -> str:
+def _consume_sse_stream(raw_response: Any, model: Optional[str] = None) -> str:
     """M1: Iterate an OpenAI-compatible SSE stream, publish model.token events per chunk.
+
+    TUI-10: Also publishes ``response.stream_chunk`` events with an
+    ``is_reasoning`` field so the TUI can route thinking tokens to the
+    collapsible ``ThinkingProcess`` widget rather than the main stream view.
+
+    Three reasoning-detection sources are tried in order:
+      1. ``delta.reasoning_content`` / ``delta.thinking`` — structured field.
+      2. ``<think>`` / ``</think>`` tag split inside ``delta.content``.
+      3. ``delta.is_reasoning`` boolean flag (some providers).
 
     Parses lines of the form:
         data: {"choices": [{"delta": {"content": "token"}, "finish_reason": null}]}
@@ -1076,16 +1166,33 @@ def _consume_sse_stream(raw_response: Any) -> str:
 
     try:
         from src.core.orchestration.event_bus import get_event_bus
+
         bus = get_event_bus()
     except Exception:
         bus = None
+
+    # TUI-10: check if model emits <think> tags so we can enable the tag-split path
+    _model_id = model or ""
+    try:
+        from src.core.inference.thinking_utils import is_reasoning_model as _is_rm
+
+        _tag_split_enabled = _is_rm(_model_id)
+    except Exception:
+        _tag_split_enabled = False
+
+    # Track whether we are currently inside a <think> block
+    _inside_think = False
 
     accumulated = []
     try:
         for raw_line in raw_response.iter_lines():
             if not raw_line:
                 continue
-            line = raw_line if isinstance(raw_line, str) else raw_line.decode("utf-8", errors="replace")
+            line = (
+                raw_line
+                if isinstance(raw_line, str)
+                else raw_line.decode("utf-8", errors="replace")
+            )
             if not line.startswith("data:"):
                 continue
             data = line[5:].strip()
@@ -1096,12 +1203,104 @@ def _consume_sse_stream(raw_response: Any) -> str:
                 choices = chunk.get("choices") or []
                 if choices:
                     delta = choices[0].get("delta") or {}
-                    token_text = delta.get("content") or ""
+
+                    # Source 1: structured reasoning field
+                    reasoning_delta = (
+                        delta.get("reasoning_content") or delta.get("thinking") or ""
+                    )
+                    # Source 3: explicit is_reasoning flag
+                    if not reasoning_delta and delta.get("is_reasoning"):
+                        reasoning_delta = delta.get("content") or ""
+                        content_delta = ""
+                    else:
+                        content_delta = (
+                            delta.get("content") or ""
+                            if not reasoning_delta
+                            else (delta.get("content") or "")
+                        )
+
+                    # Source 2: <think> tag split — only for known reasoning models
+                    if not reasoning_delta and _tag_split_enabled and content_delta:
+                        if "<think>" in content_delta and not _inside_think:
+                            before, _, rest = content_delta.partition("<think>")
+                            _inside_think = True
+                            if before and bus:
+                                try:
+                                    bus.publish(
+                                        "response.stream_chunk",
+                                        {"chunk": before, "is_reasoning": False},
+                                    )
+                                    bus.publish(
+                                        "model.token", {"text": before, "partial": True}
+                                    )
+                                except Exception:
+                                    pass
+                                accumulated.append(before)
+                            if "</think>" in rest:
+                                think_part, _, after = rest.partition("</think>")
+                                _inside_think = False
+                                if think_part and bus:
+                                    try:
+                                        bus.publish(
+                                            "response.stream_chunk",
+                                            {"chunk": think_part, "is_reasoning": True},
+                                        )
+                                    except Exception:
+                                        pass
+                                content_delta = after
+                            else:
+                                if rest and bus:
+                                    try:
+                                        bus.publish(
+                                            "response.stream_chunk",
+                                            {"chunk": rest, "is_reasoning": True},
+                                        )
+                                    except Exception:
+                                        pass
+                                content_delta = ""
+                        elif "</think>" in content_delta and _inside_think:
+                            think_part, _, after = content_delta.partition("</think>")
+                            _inside_think = False
+                            if think_part and bus:
+                                try:
+                                    bus.publish(
+                                        "response.stream_chunk",
+                                        {"chunk": think_part, "is_reasoning": True},
+                                    )
+                                except Exception:
+                                    pass
+                            content_delta = after
+                        elif _inside_think:
+                            reasoning_delta = content_delta
+                            content_delta = ""
+
+                    # Publish reasoning delta
+                    if reasoning_delta and bus:
+                        try:
+                            bus.publish(
+                                "response.stream_chunk",
+                                {"chunk": reasoning_delta, "is_reasoning": True},
+                            )
+                        except Exception:
+                            pass
+
+                    # Publish normal content delta
+                    token_text = (
+                        content_delta
+                        if content_delta
+                        else (delta.get("content") or "" if not reasoning_delta else "")
+                    )
                     if token_text:
                         accumulated.append(token_text)
                         if bus:
                             try:
-                                bus.publish("model.token", {"text": token_text, "partial": True})
+                                bus.publish(
+                                    "response.stream_chunk",
+                                    {"chunk": token_text, "is_reasoning": False},
+                                )
+                                bus.publish(
+                                    "model.token", {"text": token_text, "partial": True}
+                                )
                             except Exception:
                                 pass
             except (_json.JSONDecodeError, KeyError, IndexError):
@@ -1112,7 +1311,10 @@ def _consume_sse_stream(raw_response: Any) -> str:
     full_text = "".join(accumulated)
     if bus and full_text:
         try:
-            bus.publish("model.token", {"text": "", "partial": False, "full": full_text})
+            bus.publish(
+                "model.token", {"text": "", "partial": False, "full": full_text}
+            )
+            bus.publish("response.stream_end", {"full_text": full_text})
         except Exception:
             pass
     return full_text
@@ -1205,9 +1407,7 @@ async def call_model(
     # #31: Record success/failure in the circuit breaker
     if _cb_key:
         _cb = get_circuit_breaker(_cb_key)
-        _is_err = isinstance(res, dict) and (
-            res.get("ok") is False or res.get("error")
-        )
+        _is_err = isinstance(res, dict) and (res.get("ok") is False or res.get("error"))
         if _is_err:
             _cb.record_failure()
         else:
@@ -1226,6 +1426,7 @@ async def call_model(
         if _tt > 0:
             try:
                 from src.core.orchestration.token_budget import get_token_budget_monitor
+
                 get_token_budget_monitor().record_usage(session_id, _pt, _ct, _tt)
             except Exception:
                 pass  # never let budget tracking break LLM calls

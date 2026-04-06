@@ -5,6 +5,23 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+# TASK-07: Number of recent messages to keep after compaction so the agent
+# retains immediate context alongside the summary.
+_KEEP_RECENT = 6
+
+
+def _estimate_tokens(messages: List[Dict[str, str]]) -> int:
+    """Token estimate using tiktoken when available, else char heuristic.
+
+    D-06/S0-A: delegates to ``count_messages_tokens`` for accurate counting.
+    """
+    try:
+        from src.core.inference.tokenizer import count_messages_tokens
+        return count_messages_tokens(messages)
+    except Exception:
+        total_chars = sum(len(str(m.get("content", ""))) for m in messages)
+        return max(1, int(total_chars / 3.5))
+
 
 def _call_llm_sync(messages: list, format_json: bool = False, **kwargs) -> str:
     """Shared helper: call the LLM synchronously and return content string.
@@ -160,14 +177,27 @@ def distill_context(
     if not messages:
         return {}
 
-    # P2-3 / HR-2 fix: When conversation exceeds 50 messages, compact the history
-    # inline so the actual context window is reduced — not just written to a file.
-    # The compacted list is stored in distill_context's return value under the key
-    # "_compacted_history" so the caller (memory_update_node) can replace state["history"].
+    # TASK-07: Replace message-count trigger (≥50) with token-estimate trigger.
+    # Read threshold from config; fall back to 6000 estimated tokens.
+    _compact_token_threshold = 6000
+    try:
+        from src.core.config_loader import get as _cfg_get
+
+        _compact_token_threshold = int(
+            _cfg_get("compact_token_threshold", 6000) or 6000
+        )
+    except Exception:
+        pass
+
+    _estimated_tokens = _estimate_tokens(messages)
     _compacted_history: Optional[List[Dict[str, str]]] = None
-    if len(messages) >= 50:
+    if _estimated_tokens >= _compact_token_threshold:
         logger.info(
-            f"distill_context: {len(messages)} messages >= 50, triggering compaction"
+            "distill_context: estimated %d tokens >= threshold %d, triggering compaction "
+            "(was: %d messages)",
+            _estimated_tokens,
+            _compact_token_threshold,
+            len(messages),
         )
         try:
             summary = compact_messages_to_prose(messages, working_dir=working_dir)
@@ -186,14 +216,37 @@ def distill_context(
                         logger.warning(
                             f"distill_context: failed to write checkpoint: {_we}"
                         )
-                # HR-2 fix: return the compacted message list so the caller can
-                # replace state["history"] and actually reduce context window size.
-                _compacted_history = [
-                    {"role": "system", "content": "Session Summary:\n" + summary},
-                ]
+                # TASK-08: Compact summary as System message + keep recent msgs
+                # + append continuation signal.
+                # Pattern from claw's compact.rs: system summary first, then
+                # recent messages so the agent retains immediate context.
+                _recent = (
+                    messages[-_KEEP_RECENT:] if len(messages) > _KEEP_RECENT else []
+                )
+                _compacted_history = (
+                    [
+                        {
+                            "role": "system",
+                            "content": "<summary>\n" + summary + "\n</summary>",
+                        }
+                    ]
+                    + _recent
+                    + [
+                        {
+                            "role": "user",
+                            "content": (
+                                "Continue from the session summary above. "
+                                "What is the current task?"
+                            ),
+                        }
+                    ]
+                )
                 logger.info(
-                    f"distill_context: compaction reduced {len(messages)} msgs → "
-                    f"{len(_compacted_history)} msg"
+                    "distill_context: compaction reduced %d msgs → %d msg "
+                    "(1 system summary + %d recent + 1 continuation)",
+                    len(messages),
+                    len(_compacted_history),
+                    len(_recent),
                 )
         except Exception as _ce:
             logger.warning(f"distill_context: compaction failed: {_ce}")
@@ -388,11 +441,11 @@ def distill_context(
         logger.error(f"Failed to write repo_memory.json: {e}")
 
     # P3-7: Persist distilled summary to VectorStore for semantic recall across sessions.
-    if distilled_state:
+    if distilled_state and working_dir:
         try:
             from src.core.indexing.vector_store import VectorStore
 
-            _vs = VectorStore(working_dir=working_dir)
+            _vs = VectorStore(workdir=str(working_dir))
             _summary_text = (
                 f"Task: {distilled_state.get('current_task', '')}\n"
                 f"State: {distilled_state.get('current_state', '')}\n"
@@ -411,3 +464,76 @@ def distill_context(
         distilled_state["_compacted_history"] = _compacted_history
 
     return distilled_state
+
+
+# ---------------------------------------------------------------------------
+# ORCH-W5: Internal utility agent calls
+# ---------------------------------------------------------------------------
+
+
+def call_internal_agent(
+    agent_id: str,
+    messages: List[Dict[str, str]],
+    *,
+    max_tokens: int = 256,
+) -> str:
+    """Make a one-shot LLM call using an internal AgentDefinition.
+
+    Internal agents (mode="internal") are never shown to users and execute
+    without a tool loop.  The agent's ``prompt_override`` is prepended as a
+    system message.  Returns the model's text response, or "" on error.
+
+    Args:
+        agent_id: Registry ID of an internal AgentDefinition ("title", "compaction").
+        messages: Conversation messages to send (without system message — that
+                  comes from the agent's prompt_override).
+        max_tokens: Max response tokens.
+
+    Returns:
+        The model's response text, stripped of whitespace.
+    """
+    try:
+        from src.core.orchestration.agent_types import get_agent_registry
+        agent = get_agent_registry().get(agent_id)
+        if agent is None:
+            logger.warning("call_internal_agent: agent %r not found in registry", agent_id)
+            return ""
+        if agent.mode != "internal":
+            logger.warning(
+                "call_internal_agent: agent %r has mode=%r, expected 'internal'",
+                agent_id, agent.mode,
+            )
+            return ""
+        system_msg: str = agent.prompt_override or ""
+        full_messages: List[Dict[str, str]] = []
+        if system_msg:
+            full_messages.append({"role": "system", "content": system_msg})
+        full_messages.extend(messages)
+        return _call_llm_sync(full_messages, max_new_tokens=max_tokens)
+    except Exception as exc:
+        logger.error("call_internal_agent(%r) failed: %s", agent_id, exc)
+        return ""
+
+
+def generate_session_title(first_user_message: str) -> str:
+    """Generate a short session title from the user's first message.
+
+    Uses the "title" internal agent (ORCH-W5).  Falls back to the first
+    12 words of the message if the LLM call fails or returns empty.
+
+    Args:
+        first_user_message: The user's opening message for the session.
+
+    Returns:
+        A concise 3-7 word title string.
+    """
+    if not first_user_message or not first_user_message.strip():
+        return "New session"
+    messages = [{"role": "user", "content": first_user_message[:800]}]
+    title = call_internal_agent("title", messages, max_tokens=32)
+    if title:
+        # Trim to at most 80 chars to prevent runaway output from noisy models
+        return title[:80].strip()
+    # Fallback: first N words of the task
+    words = first_user_message.split()
+    return " ".join(words[:10]).rstrip(".,;:!?")[:80]

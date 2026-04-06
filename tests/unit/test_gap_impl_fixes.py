@@ -23,6 +23,7 @@ Covers:
 - BUG-23: rename_file enforces read-before-write guardrail
 - BUG-25: edit_code_block calls mark_file_read after reading
 """
+
 import json
 import os
 import sys
@@ -64,7 +65,9 @@ class TestInteractionToolsUnsubscribe:
         mock_bus.unsubscribe.side_effect = fake_unsubscribe
         mock_bus.publish.side_effect = fake_publish
 
-        with patch("src.core.orchestration.event_bus.get_event_bus", return_value=mock_bus):
+        with patch(
+            "src.core.orchestration.event_bus.get_event_bus", return_value=mock_bus
+        ):
             result = ask_user("What is 6x7?")
 
         assert result["status"] == "ok"
@@ -101,7 +104,9 @@ class TestInteractionToolsUnsubscribe:
         mock_bus.unsubscribe.side_effect = fake_unsubscribe
         mock_bus.publish.side_effect = fake_publish
 
-        with patch("src.core.orchestration.event_bus.get_event_bus", return_value=mock_bus):
+        with patch(
+            "src.core.orchestration.event_bus.get_event_bus", return_value=mock_bus
+        ):
             result = submit_plan_for_review("do stuff", ["step 1"])
 
         assert result["status"] == "ok"
@@ -125,6 +130,7 @@ class TestProjectToolsTsDetection:
         (tmp_path / "package.json").write_text('{"name":"test"}')
 
         from src.tools.project_tools import fingerprint_tech_stack
+
         result = fingerprint_tech_stack(workdir=str(tmp_path))
 
         assert result["status"] == "ok"
@@ -137,6 +143,7 @@ class TestProjectToolsTsDetection:
         (tmp_path / "App.tsx").write_text("export default function App() {}")
 
         from src.tools.project_tools import fingerprint_tech_stack
+
         result = fingerprint_tech_stack(workdir=str(tmp_path))
 
         assert "typescript" in result["languages"]
@@ -191,6 +198,7 @@ class TestAstRenamePreservesComments:
         )
 
         from src.tools.ast_tools import ast_rename
+
         result = ast_rename(str(src), "old_func", "new_func", workdir=str(tmp_path))
 
         assert result["status"] == "ok"
@@ -207,12 +215,13 @@ class TestAstRenamePreservesComments:
         """AST-guided rename must not rename symbols inside string literals."""
         src = tmp_path / "bar.py"
         src.write_text(
-            'def old_func(): pass\n'
-            'old_func()\n'
+            "def old_func(): pass\n"
+            "old_func()\n"
             'doc = "call old_func here"  # string — should not be renamed\n'
         )
 
         from src.tools.ast_tools import ast_rename
+
         result = ast_rename(str(src), "old_func", "new_func", workdir=str(tmp_path))
 
         assert result["status"] == "ok"
@@ -231,7 +240,11 @@ class TestAstRenamePreservesComments:
 class TestGuardrailsContextVar:
     def test_mark_and_check_same_thread(self, tmp_path):
         """Basic: mark then check in the same thread works."""
-        from src.tools.guardrails import mark_file_read, check_read_before_write, reset_guardrail_state
+        from src.tools.guardrails import (
+            mark_file_read,
+            check_read_before_write,
+            reset_guardrail_state,
+        )
 
         target = tmp_path / "x.py"
         target.write_text("x = 1")
@@ -253,7 +266,11 @@ class TestGuardrailsContextVar:
         but the global Lock-protected set is always visible across all threads.
         """
         import concurrent.futures
-        from src.tools.guardrails import mark_file_read, check_read_before_write, reset_guardrail_state
+        from src.tools.guardrails import (
+            mark_file_read,
+            check_read_before_write,
+            reset_guardrail_state,
+        )
 
         target = tmp_path / "y.py"
         target.write_text("y = 2")
@@ -278,7 +295,11 @@ class TestGuardrailsContextVar:
         )
 
     def test_reset_clears_state(self, tmp_path):
-        from src.tools.guardrails import mark_file_read, check_read_before_write, reset_guardrail_state
+        from src.tools.guardrails import (
+            mark_file_read,
+            check_read_before_write,
+            reset_guardrail_state,
+        )
 
         target = tmp_path / "z.py"
         target.write_text("z = 3")
@@ -298,34 +319,65 @@ class TestGuardrailsContextVar:
 class TestTodoStatusMarkdown:
     def _create_todo(self, tmp_path, steps):
         from src.tools.todo_tools import _save_todo
+
         _save_todo(str(tmp_path), steps)
         md = (tmp_path / ".agent-context" / "TODO.md").read_text()
         return md
 
     def test_in_progress_shows_tilde(self, tmp_path):
-        steps = [{"description": "Do work", "done": False, "status": "in_progress", "depends_on": []}]
+        steps = [
+            {
+                "description": "Do work",
+                "done": False,
+                "status": "in_progress",
+                "depends_on": [],
+            }
+        ]
         md = self._create_todo(tmp_path, steps)
         assert "[~]" in md, f"Expected [~] for in_progress, got:\n{md}"
 
     def test_blocked_shows_exclamation(self, tmp_path):
-        steps = [{"description": "Blocked step", "done": False, "status": "blocked",
-                  "blocked_reason": "waiting on API", "depends_on": []}]
+        steps = [
+            {
+                "description": "Blocked step",
+                "done": False,
+                "status": "blocked",
+                "blocked_reason": "waiting on API",
+                "depends_on": [],
+            }
+        ]
         md = self._create_todo(tmp_path, steps)
         assert "[!]" in md
         assert "waiting on API" in md
 
     def test_verified_shows_checkmark(self, tmp_path):
-        steps = [{"description": "Verified", "done": True, "status": "verified", "depends_on": []}]
+        steps = [
+            {
+                "description": "Verified",
+                "done": True,
+                "status": "verified",
+                "depends_on": [],
+            }
+        ]
         md = self._create_todo(tmp_path, steps)
         assert "[✓]" in md
 
     def test_done_shows_x(self, tmp_path):
-        steps = [{"description": "Done", "done": True, "status": "done", "depends_on": []}]
+        steps = [
+            {"description": "Done", "done": True, "status": "done", "depends_on": []}
+        ]
         md = self._create_todo(tmp_path, steps)
         assert "[x]" in md
 
     def test_pending_shows_empty(self, tmp_path):
-        steps = [{"description": "Pending", "done": False, "status": "pending", "depends_on": []}]
+        steps = [
+            {
+                "description": "Pending",
+                "done": False,
+                "status": "pending",
+                "depends_on": [],
+            }
+        ]
         md = self._create_todo(tmp_path, steps)
         assert "[ ]" in md
 
@@ -354,34 +406,43 @@ class TestTodoCheckSyncsStatus:
 class TestWebToolsUrlBlocking:
     def test_file_scheme_blocked(self):
         from src.tools.web_tools import read_web_page
+
         result = read_web_page("file:///etc/passwd")
         assert result["status"] == "error"
-        assert "private" in result["error"].lower() or "blocked" in result["error"].lower()
+        assert (
+            "private" in result["error"].lower() or "blocked" in result["error"].lower()
+        )
 
     def test_ftp_scheme_blocked(self):
         from src.tools.web_tools import read_web_page
+
         result = read_web_page("ftp://example.com/file.txt")
         assert result["status"] == "error"
 
     def test_http_not_blocked(self):
         from src.tools.web_tools import _is_url_blocked
+
         assert not _is_url_blocked("http://example.com/page")
 
     def test_https_not_blocked(self):
         from src.tools.web_tools import _is_url_blocked
+
         assert not _is_url_blocked("https://docs.python.org/3/")
 
     def test_localhost_blocked(self):
         from src.tools.web_tools import _is_url_blocked
+
         assert _is_url_blocked("http://localhost:8080/api")
 
     def test_private_ip_blocked(self):
         from src.tools.web_tools import _is_url_blocked
+
         assert _is_url_blocked("http://192.168.1.1/admin")
         assert _is_url_blocked("http://10.0.0.1/api")
 
     def test_metadata_endpoint_blocked(self):
         from src.tools.web_tools import _is_url_blocked
+
         assert _is_url_blocked("http://169.254.169.254/latest/meta-data/")
 
 
@@ -397,7 +458,9 @@ class TestLintDispatchGo:
         go_dir = tmp_path / "cmd" / "server"
         go_dir.mkdir(parents=True)
         go_file = go_dir / "main.go"
-        go_file.write_text("package main\nimport \"fmt\"\nfunc main() { fmt.Println(\"hi\") }\n")
+        go_file.write_text(
+            'package main\nimport "fmt"\nfunc main() { fmt.Println("hi") }\n'
+        )
 
         # A different workdir that doesn't contain the file
         other_dir = tmp_path / "other"
@@ -438,8 +501,12 @@ class TestLintDispatchTs:
             lint_dispatch._lint_ts(str(ts_file), timeout=10)
 
         # Check that --module and --target were included
-        assert "--module" in captured_args, f"--module missing from tsc call: {captured_args}"
-        assert "--target" in captured_args, f"--target missing from tsc call: {captured_args}"
+        assert "--module" in captured_args, (
+            f"--module missing from tsc call: {captured_args}"
+        )
+        assert "--target" in captured_args, (
+            f"--target missing from tsc call: {captured_args}"
+        )
         assert "--noEmit" in captured_args
 
 
@@ -467,7 +534,9 @@ class TestInteractionToolsUnsubscribeOnException:
         mock_bus.unsubscribe.side_effect = fake_unsubscribe
         mock_bus.publish.side_effect = fake_publish
 
-        with patch("src.core.orchestration.event_bus.get_event_bus", return_value=mock_bus):
+        with patch(
+            "src.core.orchestration.event_bus.get_event_bus", return_value=mock_bus
+        ):
             result = ask_user("What?")
 
         # publish raised → result should be error
@@ -500,7 +569,9 @@ class TestInteractionToolsUnsubscribeOnException:
         mock_bus.unsubscribe.side_effect = fake_unsubscribe
         mock_bus.publish.side_effect = fake_publish
 
-        with patch("src.core.orchestration.event_bus.get_event_bus", return_value=mock_bus):
+        with patch(
+            "src.core.orchestration.event_bus.get_event_bus", return_value=mock_bus
+        ):
             result = submit_plan_for_review("do stuff", ["step 1"])
 
         assert result["status"] == "error"
@@ -518,7 +589,10 @@ class TestInteractionToolsUnsubscribeOnException:
 class TestSessionRegistryStatusUpdate:
     def test_update_to_running_sets_status_once(self):
         """update_session_status(RUNNING) must set status correctly (no double-assign)."""
-        from src.core.orchestration.session_registry import SessionRegistry, SessionStatus
+        from src.core.orchestration.session_registry import (
+            SessionRegistry,
+            SessionStatus,
+        )
 
         reg = SessionRegistry()
         reg.register_session("s1", metadata={"task": "test"})
@@ -527,11 +601,15 @@ class TestSessionRegistryStatusUpdate:
         assert result is True
 
         info = reg.get_session("s1")
+        assert info is not None
         assert info.status == SessionStatus.RUNNING
 
     def test_update_to_failed_sets_status(self):
         """update_session_status(FAILED) must set status to FAILED."""
-        from src.core.orchestration.session_registry import SessionRegistry, SessionStatus
+        from src.core.orchestration.session_registry import (
+            SessionRegistry,
+            SessionStatus,
+        )
 
         reg = SessionRegistry()
         reg.register_session("s2")
@@ -540,6 +618,7 @@ class TestSessionRegistryStatusUpdate:
         reg.update_session_status("s2", SessionStatus.FAILED, error="boom")
 
         info = reg.get_session("s2")
+        assert info is not None
         assert info.status == SessionStatus.FAILED
         assert info.error_count == 1
 
@@ -705,6 +784,7 @@ class TestAstToolsNoDeadCode:
     def test_rename_transformer_not_defined(self):
         """_RenameTransformer should not exist — it was dead code never used by ast_rename."""
         import src.tools.ast_tools as ast_mod
+
         assert not hasattr(ast_mod, "_RenameTransformer"), (
             "_RenameTransformer was supposed to be removed (dead code)"
         )
@@ -726,7 +806,9 @@ class TestAstToolsNoDeadCode:
 
         # After rename — file should be marked as read in the global set
         post = check_read_before_write(str(src_file.resolve()))
-        assert post == {}, "ast_rename did not call mark_file_read — guardrail still fires"
+        assert post == {}, (
+            "ast_rename did not call mark_file_read — guardrail still fires"
+        )
 
     def test_ast_rename_still_works_after_cleanup(self, tmp_path):
         """Removing _RenameTransformer must not break ast_rename functionality."""
@@ -757,8 +839,13 @@ class TestDeleteFileGuardrail:
         assert result.get("status") == "error", (
             "delete_file should be blocked before reading the file"
         )
-        assert result.get("requires_read_first") is True or "read" in result.get("error", "").lower()
-        assert target.exists(), "delete_file must not delete the file when guardrail fires"
+        assert (
+            result.get("requires_read_first") is True
+            or "read" in result.get("error", "").lower()
+        )
+        assert target.exists(), (
+            "delete_file must not delete the file when guardrail fires"
+        )
 
     def test_delete_allowed_after_prior_read(self, tmp_path):
         """delete_file on a read file must succeed."""

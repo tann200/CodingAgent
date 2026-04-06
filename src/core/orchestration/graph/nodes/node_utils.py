@@ -1,12 +1,10 @@
 import logging
-from typing import Any, Dict, Optional, Union
-
-from src.core.orchestration.graph.state import AgentState
+from typing import Mapping, Any, Optional
 
 logger = logging.getLogger(__name__)
 
 
-def _resolve_orchestrator(state: Union[Dict[str, Any], AgentState], config: Any) -> Any:
+def _resolve_orchestrator(state: Mapping[str, Any], config: Any) -> Any:
     """Robustly resolve the orchestrator from config or state.
     Accept dict configs, RunnableConfig-like objects, or a direct field in state.
     Also accept a direct Orchestrator-like object passed as `config`.
@@ -60,14 +58,8 @@ def _resolve_orchestrator(state: Union[Dict[str, Any], AgentState], config: Any)
         # Fallback: check state for an orchestrator reference
         orch = None
         try:
-            # Handle both dict and AgentState (TypedDict)
-            if isinstance(state, dict):
-                orch = state.get("orchestrator") or state.get("_orchestrator")
-            elif hasattr(state, "get"):
-                # AgentState is a TypedDict which supports .get()
-                orch = state.get("orchestrator") or state.get("_orchestrator")
-            elif hasattr(state, "orchestrator"):
-                orch = state.orchestrator
+            # Mapping[str, Any] always has .get()
+            orch = state.get("orchestrator") or state.get("_orchestrator")
         except Exception:
             pass
         if orch:
@@ -77,9 +69,7 @@ def _resolve_orchestrator(state: Union[Dict[str, Any], AgentState], config: Any)
     return None
 
 
-def get_current_role(
-    state: Union[Dict[str, Any], AgentState], config: Any
-) -> Optional[str]:
+def get_current_role(state: Mapping[str, Any], config: Any) -> Optional[str]:
     """
     Get the current role from orchestrator, config, or state.
 
@@ -111,9 +101,7 @@ def get_current_role(
 
     # Check state
     try:
-        if isinstance(state, dict):
-            return state.get("current_role")
-        return getattr(state, "current_role", None)
+        return state.get("current_role")  # type: ignore[return-value]
     except Exception:
         pass
 

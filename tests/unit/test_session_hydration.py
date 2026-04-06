@@ -101,7 +101,7 @@ class TestAgentSessionManagerHydration:
         """Test that hydration handler subscribes to session.request_state."""
         bus = EventBus()
         manager = AgentSessionManager()
-        manager._event_bus = bus
+        manager._event_bus = bus # type: ignore[attr-defined]
 
         # The manager should have subscribed to session.request_state
         # We verify this by checking the handler is set up
@@ -123,7 +123,7 @@ class TestAgentSessionManagerHydration:
 
         # Create manager and manually trigger handler
         manager = AgentSessionManager()
-        manager._event_bus = bus
+        manager._event_bus = bus # type: ignore[attr-defined]
         manager.update_session_state(
             session_id="test-hydration",
             task="Hydration test task",
@@ -148,7 +148,7 @@ class TestHydrationIntegration:
 
         # Setup: create manager and update some state
         manager = AgentSessionManager()
-        manager._event_bus = bus
+        manager._event_bus = bus # type: ignore[attr-defined]
         manager.update_session_state(
             session_id="integration-test",
             task="Integration test task",

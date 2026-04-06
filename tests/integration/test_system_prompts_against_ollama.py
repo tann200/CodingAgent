@@ -38,9 +38,10 @@ def test_system_prompts_against_ollama():
 @pytest.mark.skipif(not RUN, reason='Integration tests disabled')
 def test_system_prompts_behaviour():
     adapter = OllamaAdapter()
-    # read system prompts (markdown filenames)
-    coding = (Path('agent-brain') / 'system_prompt_coding.md').read_text()
-    planner = (Path('agent-brain') / 'system_prompt_planner.md').read_text()
+    # read system prompts — paths anchored to repo root so they work from any cwd
+    _roles_dir = Path(__file__).parents[2] / 'src' / 'config' / 'agent-brain' / 'roles'
+    coding = (_roles_dir / 'operational.md').read_text(encoding='utf-8')
+    planner = (_roles_dir / 'strategic.md').read_text(encoding='utf-8')
     # send a simple prompt using coding prompt
     messages = [
         {"role": "system", "content": coding},

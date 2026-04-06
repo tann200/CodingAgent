@@ -15,7 +15,7 @@ _trajectory_lock = threading.Lock()
 class TrajectoryLogger:
     """Stores agent runs for training data generation."""
 
-    def __init__(self, workdir: str = None):
+    def __init__(self, workdir: Optional[str] = None):
         self.workdir = Path(workdir) if workdir else Path.cwd()
         self.trajectory_dir = self.workdir / ".agent-context" / "trajectories"
         self.trajectory_dir.mkdir(parents=True, exist_ok=True)
@@ -28,7 +28,7 @@ class TrajectoryLogger:
         patch: str,
         tests: str,
         success: bool,
-        session_id: str = None,
+        session_id: Optional[str] = None,
     ):
         """Log a complete agent run."""
         session_id = session_id or datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -84,7 +84,7 @@ class TrajectoryLogger:
 
         return successful[:limit]
 
-    def export_training_data(self, output_path: str = None) -> str:
+    def export_training_data(self, output_path: Optional[str] = None) -> str:
         """Export all trajectories as training data."""
         trajectories = self.get_recent_trajectories(limit=1000)
 
@@ -101,12 +101,14 @@ class TrajectoryLogger:
 class DreamConsolidator:
     """Background memory consolidation to prevent vector store growth."""
 
-    def __init__(self, workdir: str = None):
+    def __init__(self, workdir: Optional[str] = None):
         self.workdir = Path(workdir) if workdir else Path.cwd()
         self.memory_dir = self.workdir / ".agent-context" / "consolidated"
         self.memory_dir.mkdir(parents=True, exist_ok=True)
 
-    def consolidate_memories(self, vector_store_path: str = None) -> Dict[str, Any]:
+    def consolidate_memories(
+        self, vector_store_path: Optional[str] = None
+    ) -> Dict[str, Any]:
         """Consolidate memories into higher-level knowledge."""
         consolidated = {
             "timestamp": datetime.now().isoformat(),
@@ -162,7 +164,7 @@ class DreamConsolidator:
 class RefactoringAgent:
     """Autonomous refactoring for code quality improvement."""
 
-    def __init__(self, workdir: str = None):
+    def __init__(self, workdir: Optional[str] = None):
         self.workdir = Path(workdir) if workdir else Path.cwd()
 
     def detect_code_smells(self, file_path: str) -> List[Dict]:
@@ -275,10 +277,10 @@ class RefactoringAgent:
 class ReviewAgent:
     """Multi-agent code review capability."""
 
-    def __init__(self, workdir: str = None):
+    def __init__(self, workdir: Optional[str] = None):
         self.workdir = Path(workdir) if workdir else Path.cwd()
 
-    def review_patch(self, patch: str, context: str = None) -> Dict[str, Any]:
+    def review_patch(self, patch: str, context: Optional[str] = None) -> Dict[str, Any]:
         """Review a patch and provide feedback."""
         review = {
             "timestamp": datetime.now().isoformat(),
@@ -338,7 +340,7 @@ class SkillLearner:
 
     SKILL_DIR = Path("agent-brain/skills")
 
-    def __init__(self, workdir: str = None):
+    def __init__(self, workdir: Optional[str] = None):
         self.workdir = Path(workdir) if workdir else Path.cwd()
         self.skill_dir = self.workdir / self.SKILL_DIR
         self.skill_dir.mkdir(parents=True, exist_ok=True)

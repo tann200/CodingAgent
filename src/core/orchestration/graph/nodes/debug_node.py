@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from typing import Dict, Any
+from typing import Mapping, Dict, Any
 
 from src.core.orchestration.graph.state import AgentState
 from src.core.context.context_builder import ContextBuilder
@@ -37,7 +37,7 @@ TYPE_GUIDANCE = {
 }
 
 
-async def debug_node(state: AgentState, config: Any) -> Dict[str, Any]:
+async def debug_node(state: Mapping[str, Any], config: Any) -> Dict[str, Any]:
     """
     Debug Node: Analyzes verification failures and attempts to fix issues.
     Uses the 'debugger' role from ContextBuilder (loaded from agent-brain).
@@ -162,6 +162,7 @@ Generate a YAML tool call to fix the issue. Use edit_file, write_file, or bash a
             conversation=state.get("history", []),
             max_tokens=4000,
             provider_capabilities=provider_capabilities,
+            model_tier=state.get("model_tier"),  # S1-B/S1-C
         )
 
         provider = "None"

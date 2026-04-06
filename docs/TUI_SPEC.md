@@ -259,7 +259,7 @@ tool_id    = payload.get("toolCallId", "")
 
 ## 5. Tool Registry — Complete Reference
 
-There are 44 registered tools. They are divided into functional groups below.
+There are 60 registered tools. They are divided into functional groups below.
 
 ### 5.1 File operation tools
 
@@ -1606,7 +1606,7 @@ The settings surface must allow the user to:
 - Change the model for each provider (shown as a dropdown populated from `pm.get_cached_models(key)`).
 - Set the `base_url` for local providers.
 - Set the `api_key` for cloud providers (OpenRouter). Store as-is in `providers.json`; inject into the live adapter's HTTP headers on save.
-- Reload providers after save (call `await pm.initialize()` on a background thread, or display a "restart required" notice).
+- Reload providers after save (display a "restart required" notice; do **not** call `pm.initialize()` directly — per §3.2 this is reserved for `CodingAgentApp`).
 
 ---
 

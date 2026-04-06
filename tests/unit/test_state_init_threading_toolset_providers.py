@@ -301,9 +301,24 @@ class TestPreflightCheckBlocksDangerousPatterns:
 
 
 class TestReadBeforeWriteUnifiedErrorMessage:
-    """UP-1: both error sites must use the same canonical wording."""
+    """UP-1: both error sites must use the same canonical wording.
+
+    ORCH-02 moved read-before-write logic to loop_guards.py (single source of
+    truth).  We check that module for the canonical wording and verify
+    execution_node delegates to it (rather than duplicating the logic).
+    """
 
     _CANONICAL = "before writing to it"
+
+    def test_loop_guards_uses_canonical_wording(self):
+        """The canonical wording lives in loop_guards.check_read_before_write."""
+        import inspect
+        from src.core.orchestration import loop_guards
+
+        src_text = inspect.getsource(loop_guards.check_read_before_write)
+        assert self._CANONICAL in src_text, (
+            f"UP-1: loop_guards.check_read_before_write must contain '{self._CANONICAL}'"
+        )
 
     def test_orchestrator_uses_canonical_wording(self):
         import src.core.orchestration.orchestrator as orc_mod
@@ -313,23 +328,26 @@ class TestReadBeforeWriteUnifiedErrorMessage:
             f"UP-1: orchestrator.execute_tool must contain '{self._CANONICAL}'"
         )
 
-    def test_execution_node_uses_canonical_wording(self):
+    def test_execution_node_delegates_to_loop_guards(self):
+        """execution_node must import check_read_before_write from loop_guards (ORCH-02)."""
+        import inspect
         from src.core.orchestration.graph.nodes import execution_node as en_mod
 
-        src_text = inspect.getsource(en_mod.execution_node)
-        assert self._CANONICAL in src_text, (
-            f"UP-1: execution_node must contain '{self._CANONICAL}'"
+        src_text = inspect.getsource(en_mod)
+        assert "check_read_before_write" in src_text, (
+            "UP-1: execution_node must delegate read-before-write to loop_guards.check_read_before_write"
         )
 
     def test_messages_are_identical_prefix(self):
-        """Both messages must start with the same prefix."""
+        """The canonical string must appear in loop_guards (single source of truth)."""
+        import inspect
         import src.core.orchestration.orchestrator as orc_mod
-        from src.core.orchestration.graph.nodes import execution_node as en_mod
+        from src.core.orchestration import loop_guards
 
         orc_src = inspect.getsource(orc_mod.Orchestrator.execute_tool)
-        en_src = inspect.getsource(en_mod.execution_node)
+        lg_src = inspect.getsource(loop_guards.check_read_before_write)
         assert "Security/Logic violation" in orc_src
-        assert "Security/Logic violation" in en_src
+        assert "Security/Logic violation" in lg_src
 
 
 # ---------------------------------------------------------------------------

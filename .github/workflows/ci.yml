@@ -78,6 +78,34 @@ jobs:
           python -m pytest tests/unit -q -p no:logging --cov=src --cov-report=term-missing --cov-report=xml
         env:
           CI: "true"
+      - name: Check xfail count (IMPL-Q2)
+        # Fail the build if the number of xfail/xpass results exceeds the
+        # allowed threshold.  This prevents xfail from becoming a permanent
+        # workaround that masks real failures.  Current threshold: 10.
+        run: |
+          python - <<'PY'
+          import subprocess, sys, re
+          result = subprocess.run(
+              ["python", "-m", "pytest", "tests/unit", "-q", "--no-header", "-p", "no:logging"],
+              capture_output=True, text=True
+          )
+          output = result.stdout + result.stderr
+          # Match e.g. "3 xfailed" or "2 xpassed"
+          xfail_match = re.search(r"(\d+) xfailed", output)
+          xpass_match = re.search(r"(\d+) xpassed", output)
+          xfail_count = int(xfail_match.group(1)) if xfail_match else 0
+          xpass_count = int(xpass_match.group(1)) if xpass_match else 0
+          total = xfail_count + xpass_count
+          _MAX_XFAIL = 10
+          print(f"xfail: {xfail_count}, xpass: {xpass_count}, total: {total} (threshold: {_MAX_XFAIL})")
+          if total > _MAX_XFAIL:
+              print(f"ERROR: xfail+xpass count ({total}) exceeds threshold ({_MAX_XFAIL}).")
+              print("Resolve stale xfails before merging.")
+              sys.exit(1)
+          print("xfail count within threshold — OK")
+          PY
+        env:
+          CI: "true"
       - name: Upload coverage report
         if: success()
         uses: actions/upload-artifact@v4

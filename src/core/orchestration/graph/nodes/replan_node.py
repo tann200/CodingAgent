@@ -1,5 +1,6 @@
+import hashlib
 import logging
-from typing import Dict, Any, Optional, List
+from typing import Mapping, Dict, Any, Optional, List
 
 from src.core.orchestration.graph.state import AgentState
 from src.core.context.context_builder import ContextBuilder
@@ -9,7 +10,7 @@ from src.core.orchestration.graph.nodes.node_utils import _resolve_orchestrator
 logger = logging.getLogger(__name__)
 
 
-async def replan_node(state: AgentState, config: Any) -> Dict[str, Any]:
+async def replan_node(state: Mapping[str, Any], config: Any) -> Dict[str, Any]:
     """
     Replan Node: Handles patch size violations by splitting oversized steps.
     When a patch exceeds 200 lines, this node prompts the LLM to rewrite
@@ -80,6 +81,7 @@ Respond ONLY with the JSON array, no other text."""
             conversation=state.get("history", []),
             max_tokens=2000,
             provider_capabilities=provider_capabilities,
+            model_tier=state.get("model_tier"),  # S1-B
         )
 
         resp = await call_model(messages, stream=False, format_json=False)
@@ -141,6 +143,15 @@ Respond ONLY with the JSON array, no other text."""
                 f"replan_node: replaced step {current_step + 1} with {len(new_steps)} new steps"
             )
 
+            # WF-4: Hash the new plan so route_execution can detect identical replans
+            import json as _json
+
+            try:
+                _plan_str = _json.dumps(new_plan, sort_keys=True, default=str)
+                _new_hash = hashlib.sha256(_plan_str.encode()).hexdigest()
+            except Exception:
+                _new_hash = None
+
             return {
                 "current_plan": new_plan,
                 "current_step": current_step,  # Start from first new step
@@ -148,6 +159,7 @@ Respond ONLY with the JSON array, no other text."""
                 "replan_required": None,
                 "action_failed": False,
                 "replan_attempts": replan_attempts,
+                "last_plan_hash": _new_hash,
                 # HR-13 fix: use system role with [internal] prefix to prevent
                 # LLM from interpreting this as a user instruction
                 "history": [

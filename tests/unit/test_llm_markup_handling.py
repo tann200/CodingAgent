@@ -1,21 +1,33 @@
-from src.ui.textual_app_impl import TextualAppImpl
+"""Tests for markup stripping utility (migrated from src.ui — LEGACY-02).
+
+Previously tested ``TextualAppImpl._render_message_safe``; now tests the
+pure-function equivalent ``src.core.utils.strip_markup`` directly.
+"""
+
+from src.core.utils import strip_markup
 
 
-class DummyMessage:
-    def __init__(self, role, content):
-        self.role = role
-        self.content = content
+def test_strip_markup_removes_bold_and_dim():
+    result = strip_markup("[bold]Hello[/bold] [dim]there[/dim]")
+    assert "[bold]" not in result
+    assert "Hello" in result
+    assert "there" in result
 
 
-def test_textual_app_strips_markup(monkeypatch, capsys):
-    app = TextualAppImpl()
+def test_strip_markup_non_string_coerced():
+    result = strip_markup(42)  # type: ignore[arg-type]
+    assert result == "42"
 
-    # Simulate adding a message with markup
-    msg = DummyMessage('assistant', '[bold]Hello[/bold] [dim]there[/dim]')
 
-    # Call the internal writer; we expect no literal [bold] tags in output
-    text = app._render_message_safe(msg.content)
-    assert '[bold]' not in text
-    assert 'Hello' in text
-    assert 'there' in text
+def test_strip_markup_plain_text_unchanged():
+    plain = "Hello, world!"
+    assert strip_markup(plain) == plain
 
+
+def test_strip_markup_nested_tags():
+    result = strip_markup("[bold][italic]nested[/italic][/bold]")
+    assert result == "nested"
+
+
+def test_strip_markup_empty_string():
+    assert strip_markup("") == ""

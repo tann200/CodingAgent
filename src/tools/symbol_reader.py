@@ -177,10 +177,13 @@ class SymbolReader:
         self, symbol_name: str, search_paths: Optional[List[str]] = None
     ) -> Dict[str, Any]:
         """Find a symbol across multiple files."""
+        resolved_paths: List[Any]
         if search_paths is None:
-            search_paths = list(self.workdir.rglob("*.py"))
+            resolved_paths = list(self.workdir.rglob("*.py"))
+        else:
+            resolved_paths = search_paths
 
-        for file_path in search_paths:
+        for file_path in resolved_paths:
             try:
                 symbols = self.parse_symbols(str(file_path))
                 for sym in symbols:
@@ -212,7 +215,10 @@ class SymbolReader:
         resolved = p.resolve()
         workdir_resolved = self.workdir.resolve()
         # Boundary check: resolved path must be inside workdir
-        if not (resolved == workdir_resolved or str(resolved).startswith(str(workdir_resolved) + "/")):
+        if not (
+            resolved == workdir_resolved
+            or str(resolved).startswith(str(workdir_resolved) + "/")
+        ):
             raise PermissionError(
                 f"Path '{file_path}' resolves outside working directory '{workdir_resolved}'."
             )
@@ -225,7 +231,7 @@ def read_file_chunked(
     start_line: Optional[int] = None,
     end_line: Optional[int] = None,
     symbol: Optional[str] = None,
-    workdir: Path = None,
+    workdir: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """Read file with optional line range or symbol selection."""
     if workdir is None:
@@ -247,7 +253,7 @@ def read_file_chunked(
             return {"status": "error", "error": str(e)}
 
 
-def list_file_symbols(path: str, workdir: Path = None) -> Dict[str, Any]:
+def list_file_symbols(path: str, workdir: Optional[Path] = None) -> Dict[str, Any]:
     """List all symbols in a file."""
     if workdir is None:
         workdir = Path.cwd()
@@ -256,7 +262,9 @@ def list_file_symbols(path: str, workdir: Path = None) -> Dict[str, Any]:
     return reader.list_symbols(path)
 
 
-def find_symbol_global(symbol_name: str, workdir: Path = None) -> Dict[str, Any]:
+def find_symbol_global(
+    symbol_name: str, workdir: Optional[Path] = None
+) -> Dict[str, Any]:
     """Find symbol across entire repository."""
     if workdir is None:
         workdir = Path.cwd()

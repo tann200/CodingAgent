@@ -23,13 +23,12 @@ def _is_python_file(path: Path) -> bool:
     return path.suffix.lower() == ".py"
 
 
-
 @tool(side_effects=["write"], tags=["coding"])
 def ast_rename(
     path: str,
     old_name: str,
     new_name: str,
-    workdir: str = None,
+    workdir: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Rename a symbol (function, class, or variable) in a file using AST analysis.
 
@@ -66,6 +65,7 @@ def ast_rename(
     # Guardrail: mark file as read, then verify write is allowed
     try:
         from src.tools.guardrails import mark_file_read, check_read_before_write
+
         mark_file_read(str(file_path))
         err = check_read_before_write(str(file_path))
         if err:
@@ -94,7 +94,7 @@ def ast_rename(
             elif isinstance(node, ast.Attribute):
                 node_name = node.attr
             if node_name == old_name and hasattr(node, "lineno"):
-                affected_lines.add(node.lineno)
+                affected_lines.add(node.lineno)  # type: ignore[attr-defined]
 
         if not affected_lines:
             return {
@@ -151,7 +151,7 @@ def ast_rename(
 def ast_list_symbols(
     path: str,
     symbol_type: str = "any",
-    workdir: str = None,
+    workdir: Optional[str] = None,
 ) -> Dict[str, Any]:
     """List all function, class, and variable definitions in a file.
 

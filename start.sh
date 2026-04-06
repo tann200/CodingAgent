@@ -95,7 +95,7 @@ if [ -f "$REQ_FILE" ]; then
 
     # Try uv if present in venv (best-effort) otherwise pip
     echo "[start.sh] Attempting to use 'uv' if available (best-effort)"
-    if "$VENV_PYTHON" -c "import importlib,sys; sys.exit(0 if importlib.util.find_spec('uv') else 1)" 2>/dev/null; then
+    if "$VENV_PYTHON" -c "import importlib.util,sys; sys.exit(0 if importlib.util.find_spec('uv') else 1)" 2>/dev/null; then
       echo "[start.sh] 'uv' found in venv; attempting '$VENV_PYTHON -m uv install --no-input'"
       if "$VENV_PYTHON" -m uv install --no-input; then
         echo "[start.sh] 'uv install' succeeded"
@@ -118,11 +118,11 @@ else
 fi
 
 # After installing requirements (or skipping), perform a small import check for critical packages
-CRITICAL_IMPORTS=("textual" "requests" "httpx" "openai" "uv" "jsonschema")
+CRITICAL_IMPORTS=("textual" "requests" "httpx" "openai" "uv" "langgraph" "lancedb" "langchain_core")
 MISSING=()
 for mod in "${CRITICAL_IMPORTS[@]}"; do
   echo "[start.sh] Checking import for: $mod"
-  if ! "$VENV_PYTHON" -c "import importlib,sys; sys.exit(0 if importlib.util.find_spec('$mod') else 1)" 2>/dev/null; then
+  if ! "$VENV_PYTHON" -c "import importlib.util,sys; sys.exit(0 if importlib.util.find_spec('$mod') else 1)" 2>/dev/null; then
     echo "[start.sh] Module '$mod' not importable in venv"
     MISSING+=("$mod")
   else
@@ -143,7 +143,7 @@ fi
 
 # Determine entrypoint: prefer python -m src.main if available
 echo "[start.sh] Locating entrypoint..."
-if "$VENV_PYTHON" -c "import importlib,sys; sys.exit(0 if importlib.util.find_spec('src.main') else 1)" 2>/dev/null; then
+if "$VENV_PYTHON" -c "import importlib.util,sys; sys.exit(0 if importlib.util.find_spec('src.main') else 1)" 2>/dev/null; then
   echo "[start.sh] Running module entrypoint: python -m src.main"
   exec "$VENV_PYTHON" -u -m src.main "$@"
 elif [ -f "$PROJECT_ROOT/main.py" ]; then

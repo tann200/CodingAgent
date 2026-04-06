@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import json
 import os
-import warnings
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -125,8 +124,9 @@ class LmStudioAdapter(OpenAICompatibleAdapter):
                 elif isinstance(data, dict):
                     self.provider = data
             except Exception:
-                warnings.warn(
-                    f"LmStudioAdapter: failed to read provider config at {self.config_path}"
+                _logger.warning(
+                    "LmStudioAdapter: failed to read provider config at %s",
+                    self.config_path,
                 )
 
         if not self.provider:
@@ -150,7 +150,11 @@ class LmStudioAdapter(OpenAICompatibleAdapter):
                     continue
 
         self.missing_provider = self.provider is None
-        _name = name or (self.provider.get("name") if self.provider else "lm_studio")
+        _name: str = (
+            name
+            or (self.provider.get("name") if self.provider else None)
+            or "lm_studio"
+        )
 
         super().__init__(
             base_url=_base_url,
@@ -186,7 +190,11 @@ class LmStudioAdapter(OpenAICompatibleAdapter):
 
             if self.models:
                 for m in self.models:
-                    raw_key = m.get("id") or m.get("key") or m.get("name") if isinstance(m, dict) else m
+                    raw_key = (
+                        m.get("id") or m.get("key") or m.get("name")
+                        if isinstance(m, dict)
+                        else m
+                    )
                     if raw_key:
                         short = str(raw_key).split("/")[-1]
                         if (

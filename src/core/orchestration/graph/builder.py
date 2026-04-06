@@ -1,5 +1,6 @@
 import logging
-from typing import Literal
+import threading
+from typing import Any, Dict, Literal, Mapping
 
 from langgraph.graph import StateGraph, END
 from langchain_core.runnables import RunnableConfig
@@ -22,9 +23,15 @@ from src.core.orchestration.graph.nodes.analyst_delegation_node import (
 
 logger = logging.getLogger(__name__)
 
+# D-11: Named routing constants — avoids magic numbers in router functions.
+_MAX_ROUNDS_PLANNING = 15  # force-end after this many planning rounds
+_DEFAULT_MAX_TOOL_CALLS = 30  # default budget for standard agent graph
+_AUTONOMOUS_MAX_TOOL_CALLS = 100  # default budget for autonomous/full graph
+_LOOP_GUARD_ROUNDS = 10  # round threshold for stuck-loop detection
+
 
 def should_after_planning(
-    state: AgentState,
+    state: Mapping[str, Any],
 ) -> Literal["execute", "memory_sync", "end"]:
     """
     Routing after planning node.
@@ -36,7 +43,7 @@ def should_after_planning(
     logger.info(
         f"should_after_planning: rounds={state.get('rounds')}, next_action={state.get('next_action')}, current_plan={state.get('current_plan')}"
     )
-    if state.get("rounds", 0) >= 15:
+    if state.get("rounds", 0) >= _MAX_ROUNDS_PLANNING:
         return "end"
     if state.get("next_action"):
         return "execute"
@@ -49,7 +56,7 @@ def should_after_planning(
 
 
 def should_after_plan_validator(
-    state: AgentState,
+    state: Mapping[str, Any],
 ) -> Literal["execute", "planning", "wait_for_user"]:
     """
     Decide routing after plan_validator node.
@@ -62,8 +69,8 @@ def should_after_plan_validator(
     """
     plan_validation = state.get("plan_validation")
     action_failed = state.get("action_failed")
-    rounds = state.get("rounds", 0)
-    plan_attempts = state.get("plan_attempts", 0)
+    rounds = int(state.get("rounds") or 0)
+    plan_attempts = int(state.get("plan_attempts") or 0)
 
     logger.info(
         f"should_after_plan_validator: validation={plan_validation}, action_failed={action_failed}, rounds={rounds}, plan_attempts={plan_attempts}"
@@ -114,7 +121,7 @@ _READ_ONLY_ROLES = {"scout", "researcher", "reviewer"}
 _WRITE_ROLES = {"coder", "tester"}
 
 
-def should_use_prsw(state: AgentState) -> bool:
+def should_use_prsw(state: Mapping[str, Any]) -> bool:
     """
     Determine if PRSW execution should be used.
 
@@ -122,7 +129,8 @@ def should_use_prsw(state: AgentState) -> bool:
     - Multiple delegations exist with mixed read/write roles
     - Or execution_waves has multiple waves with different step types
     """
-    delegations = state.get("delegations", [])
+    _delegations_raw = state.get("delegations")
+    delegations: list = _delegations_raw if _delegations_raw is not None else []
     if len(delegations) < 2:
         return False
 
@@ -182,7 +190,7 @@ _COMPLEXITY_KEYWORDS = _COMPLEXITY_KEYWORDS_EXACT + tuple(
 )
 
 
-def _task_is_complex(state: AgentState) -> bool:
+def _task_is_complex(state: Mapping[str, Any]) -> bool:
     """
     W3: Heuristic to detect tasks that are too complex for the fast-path.
 
@@ -224,7 +232,7 @@ def _task_is_complex(state: AgentState) -> bool:
     return False
 
 
-def _task_has_more_steps(state: AgentState) -> bool:
+def _task_has_more_steps(state: Mapping[str, Any]) -> bool:
     """
     Detect if the task likely has more steps needed.
 
@@ -250,9 +258,7 @@ def _task_has_more_steps(state: AgentState) -> bool:
     ]
 
     for pattern in multi_step_patterns:
-        import re
-
-        if re.search(pattern, combined_task):
+        if _re.search(pattern, combined_task):
             tool_call_count = int(state.get("tool_call_count") or 0)
             if tool_call_count < 3:
                 logger.info(
@@ -265,7 +271,7 @@ def _task_has_more_steps(state: AgentState) -> bool:
 
 
 def route_after_perception(
-    state: AgentState,
+    state: Mapping[str, Any],
 ) -> Literal["execution", "analysis", "memory_sync"]:
     """
     Phase 2.1: Fast-Path Routing.
@@ -289,6 +295,22 @@ def route_after_perception(
     )
 
     if next_action:
+        # WF-1: Prefer the pre-computed task_complexity flag from perception_node.
+        # Falls back to _task_is_complex() for state dicts that don't carry the flag
+        # (e.g. resumed sessions, tests that don't go through perception_node).
+        _tc = state.get("task_complexity")
+        if _tc == "complex":
+            logger.info(
+                "route_after_perception: complex task (flag) - overriding fast-path, "
+                "going to analysis"
+            )
+            return "analysis"
+        if _tc == "simple":
+            logger.info(
+                "route_after_perception: simple task (flag) - going to execution"
+            )
+            return "execution"
+        # Flag absent — fall back to heuristic
         if _task_is_complex(state):
             logger.info(
                 "route_after_perception: complex task - overriding fast-path, "
@@ -300,7 +322,7 @@ def route_after_perception(
         )
         return "execution"
 
-    if last_result and rounds > 0:
+    if last_result is not None and rounds > 0:
         execution_ok = last_result.get("ok") or last_result.get("status") == "ok"
         if execution_ok:
             if _task_has_more_steps(state):
@@ -316,7 +338,7 @@ def route_after_perception(
 
 
 def should_after_execution(
-    state: AgentState,
+    state: Mapping[str, Any],
 ) -> Literal[
     "perception", "analysis", "step_controller", "verification", "memory_sync"
 ]:
@@ -328,10 +350,14 @@ def should_after_execution(
     - Fast-path failed (no plan) -> analysis (deeper context)
     - Otherwise -> verification
     W12: If tool_call_count >= max_tool_calls, bail to memory_sync.
+
+    NOT WIRED IN compile_agent_graph() — the live router is route_execution
+    (line 1042). This function is used by should_after_execution_with_replan
+    and GraphFactory subgraphs. Do not call from main graph code.
     """
     # W12: Enforce tool call budget
     tool_call_count = int(state.get("tool_call_count") or 0)
-    max_tool_calls = int(state.get("max_tool_calls") or 30)
+    max_tool_calls = int(state.get("max_tool_calls") or _DEFAULT_MAX_TOOL_CALLS)
     if tool_call_count >= max_tool_calls:
         logger.warning(
             f"should_after_execution: tool budget exhausted "
@@ -360,7 +386,7 @@ def should_after_execution(
     # Check if current step is completed
     if current_plan and current_step < len(current_plan):
         execution_ok = False
-        if last_result:
+        if last_result is not None:
             execution_ok = last_result.get("ok") or last_result.get("status") == "ok"
 
         if execution_ok:
@@ -383,12 +409,31 @@ def should_after_execution(
                 )
                 return "verification"
         else:
-            # Step failed, go back to perception to try again
+            # Step failed — check retry budget before routing to perception.
+            # If this step has already been retried too many times, bail to analysis
+            # so the agent gets fresh context instead of looping on the same history.
+            _step_retry_counts: dict = state.get("step_retry_counts") or {}
+            _step_retries = int(_step_retry_counts.get(str(current_step), 0))
+            _MAX_EXEC_STEP_RETRIES = 3
+            if _step_retries >= _MAX_EXEC_STEP_RETRIES:
+                logger.warning(
+                    f"should_after_execution: step {current_step} failed after "
+                    f"{_step_retries} retries — bailing to analysis for fresh context"
+                )
+                return "analysis"
             logger.info("should_after_execution: step failed, going to perception")
             return "perception"
 
     # No plan - check if execution succeeded
-    if last_result:
+    if last_result is not None:
+        # Completion detected via hallucinated tool (e.g. "respond") — bypass perception loop
+        if last_result.get("_completion_detected"):
+            logger.info(
+                "should_after_execution: completion signal detected via unregistered tool, "
+                "routing to memory_sync"
+            )
+            return "memory_sync"
+
         execution_ok = last_result.get("ok") or last_result.get("status") == "ok"
         if execution_ok:
             # After a read tool, check if task implies modification that needs another tool call
@@ -426,13 +471,25 @@ def should_after_execution(
 
             # After execution, go to perception to decide next action.
             # Do NOT go to memory_sync - distillation only at task completion.
+            # Loop guard: if we've been through perception → execution multiple times
+            # with successful results and no plan, the model may be generating tool
+            # calls indefinitely (common with small models). Cap at 10 rounds.
+            rounds = int(state.get("rounds") or 0)
+            if rounds >= _LOOP_GUARD_ROUNDS:
+                logger.info(
+                    f"should_after_execution: no-plan success at rounds={rounds} "
+                    "— forcing memory_sync to break perception loop"
+                )
+                return "memory_sync"
             logger.info("should_after_execution: exec succeeded, going to perception")
             return "perception"
 
     # W2: fast-path failure - route to analysis for repo context
     # before retrying, rather than re-issuing the same failing tool call.
     # HR-4: Enforce per-failure retry cap for no-plan execution path.
-    no_plan_fail_count = int(state.get("no_plan_fail_count") or 0) + 1
+    # NOTE: execution_node already increments no_plan_fail_count in state (HR-4 fix);
+    # read the already-updated value directly — do NOT add 1 here again.
+    no_plan_fail_count = int(state.get("no_plan_fail_count") or 0)
     if no_plan_fail_count >= 3:
         logger.warning(
             f"should_after_execution: no-plan fail count {no_plan_fail_count} >= 3, "
@@ -447,7 +504,7 @@ def should_after_execution(
 
 
 def should_after_execution_with_replan(
-    state: AgentState,
+    state: Mapping[str, Any],
 ) -> Literal[
     "perception", "analysis", "step_controller", "verification", "replan", "memory_sync"
 ]:
@@ -482,7 +539,7 @@ def should_after_execution_with_replan(
 
 
 def should_after_verification(
-    state: AgentState,
+    state: Mapping[str, Any],
 ) -> Literal["memory_sync", "debug", "end"]:
     """
     Decide routing after verification node.
@@ -536,7 +593,7 @@ def should_after_verification(
 
 
 def should_after_debug(
-    state: AgentState,
+    state: Mapping[str, Any],
 ) -> Literal["execution", "memory_sync", "end"]:
     """
     Decide routing after debug node.
@@ -560,7 +617,7 @@ def should_after_debug(
 
 
 def should_after_replan(
-    state: AgentState,
+    state: Mapping[str, Any],
 ) -> Literal["step_controller", "perception"]:
     """
     Decide routing after replan node.
@@ -578,7 +635,7 @@ def should_after_replan(
 
 
 def should_after_evaluation(
-    state: AgentState,
+    state: Mapping[str, Any],
 ) -> Literal["memory_sync", "step_controller", "debug", "end"]:
     """
     Decide routing after evaluation node.
@@ -642,15 +699,11 @@ def should_after_evaluation(
 
 
 def should_after_step_controller(
-    state: AgentState,
+    state: Mapping[str, Any],
 ) -> Literal["execution", "verification"]:
     """
     Step controller decides whether to proceed to execution or skip to verification.
     """
-    import logging
-
-    logger = logging.getLogger(__name__)
-
     current_plan = state.get("current_plan") or []
     current_step: int = int(state.get("current_step") or 0)
     last_result = state.get("last_result")
@@ -673,7 +726,7 @@ def should_after_step_controller(
                 # check whose `return "verification"` branch was dead code (unreachable
                 # since the outer guard is the same condition).
                 logger.info(
-                    f"should_after_step_controller: advancing to step {current_step + 1}, going to execution"
+                    f"should_after_step_controller: advancing to step {current_step + 1}/{len(current_plan)}, going to execution"
                 )
                 return "execution"
             else:
@@ -706,7 +759,7 @@ def should_after_step_controller(
 
 
 def should_after_analysis(
-    state: AgentState,
+    state: Mapping[str, Any],
 ) -> Literal["analyst_delegation", "planning"]:
     """
     #56: Route after analysis.
@@ -925,7 +978,7 @@ def compile_agent_graph():
     )
 
     def should_after_memory_sync(
-        state: AgentState,
+        state: Mapping[str, Any],
     ) -> Literal["perception", "delegation", "end"]:
         """
         Route after memory_sync (distill_context + background tasks).
@@ -943,6 +996,22 @@ def compile_agent_graph():
         evaluation_result = state.get("evaluation_result") or ""
         if evaluation_result == "complete":
             logger.info("should_after_memory_sync: task complete, routing to END")
+            return "end"
+
+        # Fast-path completion: no plan, last execution succeeded, no pending action,
+        # and at least one round completed. This covers simple read-only tasks (e.g.
+        # "list files") that never go through evaluation_node to set evaluation_result.
+        # Without this check the graph loops: memory_sync → perception → memory_sync.
+        current_plan = state.get("current_plan") or []
+        next_action = state.get("next_action")
+        last_result = state.get("last_result") or {}
+        execution_ok = last_result.get("ok") or last_result.get("status") == "ok"
+        rounds = int(state.get("rounds") or 0)
+        if not current_plan and not next_action and execution_ok and rounds > 0:
+            logger.info(
+                "should_after_memory_sync: fast-path task complete "
+                f"(rounds={rounds}, no plan, no pending action) — routing to END"
+            )
             return "end"
 
         delegations = state.get("delegations") or []
@@ -972,14 +1041,19 @@ def compile_agent_graph():
 # P1 fix: module-level singleton so the graph is compiled once per process.
 # compile_agent_graph() does non-trivial work (validates edges, builds state machine);
 # calling it on every run_agent_once() call added unnecessary startup latency.
+# MED-13 fix: guard with a lock so concurrent threads don't each compile the graph
+# and then race to store the result — only one compilation happens.
 _COMPILED_GRAPH = None
+_COMPILED_GRAPH_LOCK = threading.Lock()
 
 
 def _get_compiled_graph():
     """Return the cached compiled agent graph, compiling it on first call."""
     global _COMPILED_GRAPH
     if _COMPILED_GRAPH is None:
-        _COMPILED_GRAPH = compile_agent_graph()
+        with _COMPILED_GRAPH_LOCK:
+            if _COMPILED_GRAPH is None:
+                _COMPILED_GRAPH = compile_agent_graph()
     return _COMPILED_GRAPH
 
 
@@ -989,8 +1063,180 @@ def _reset_compiled_graph() -> None:
     _COMPILED_GRAPH = None
 
 
+def _check_tool_budget(state: Mapping[str, Any]) -> bool:
+    """ARCH-3: Return True when the tool-call budget is exhausted (W12)."""
+    tool_call_count = int(state.get("tool_call_count") or 0)
+    max_tool_calls = int(state.get("max_tool_calls") or _DEFAULT_MAX_TOOL_CALLS)
+    return tool_call_count >= max_tool_calls
+
+
+def _check_plan_approval_pending(state: Mapping[str, Any]) -> bool:
+    """ARCH-3: Return True when a Plan Mode write-gate approval is outstanding."""
+    return bool(state.get("awaiting_plan_approval", False))
+
+
+def _check_preview_pending(state: Mapping[str, Any]) -> bool:
+    """ARCH-3: Return True when a diff-preview confirmation is awaited."""
+    return bool(state.get("awaiting_user_input", False))
+
+
+def _check_replan_required(
+    state: Mapping[str, Any],
+) -> str | None:
+    """ARCH-3: Evaluate the replan branch; return destination or None to continue.
+
+    Returns:
+        ``"memory_sync"`` — attempts cap reached or plan diverged.
+        ``"replan"``      — replan is required and safe to proceed.
+        ``None``          — replan_required is falsy; caller should continue.
+    """
+    if not state.get("replan_required"):
+        return None
+    replan_attempts = int(state.get("replan_attempts") or 0)
+    if replan_attempts >= 5:
+        logger.warning(
+            f"route_execution: replan_attempts={replan_attempts} >= 5, "
+            "giving up replan and routing to memory_sync"
+        )
+        return "memory_sync"
+    # WF-4: Plan divergence detection
+    current_plan_for_hash = state.get("current_plan") or []
+    last_plan_hash = state.get("last_plan_hash")
+    if last_plan_hash and current_plan_for_hash:
+        import json as _json_wf4
+        import hashlib as _hashlib_wf4
+
+        try:
+            _cur_str = _json_wf4.dumps(
+                current_plan_for_hash, sort_keys=True, default=str
+            )
+            _cur_hash = _hashlib_wf4.sha256(_cur_str.encode()).hexdigest()
+            if _cur_hash == last_plan_hash:
+                logger.warning(
+                    "route_execution: WF-4 plan divergence detected — "
+                    "new plan identical to last replan output, routing to memory_sync"
+                )
+                return "memory_sync"
+        except Exception:
+            pass
+    logger.info(
+        f"route_execution: replan_required={state['replan_required']!r}, routing to replan"
+    )
+    return "replan"
+
+
+def _check_no_plan_fast_path(state: Mapping[str, Any]) -> str | None:
+    """ARCH-3: Evaluate the no-plan fast-path branch; return destination or None.
+
+    Returns a routing string when in fast-path mode (no current_plan), or
+    ``None`` when a plan exists (caller should fall through to ``step_controller``).
+    """
+    current_plan = state.get("current_plan") or []
+    if current_plan:
+        return None
+
+    last_tool = state.get("last_tool_name", "")
+    read_only_tools = {
+        # canonical names
+        "read_file",
+        "grep",
+        "glob",
+        "find_symbol",
+        "search_code",
+        "list_files",
+        "fs.read",
+        "fs.list",
+        # common aliases / additional read-only tools
+        "ls",
+        "cat",
+        "read",
+        "find",
+        "find_files",
+        "rg",
+        "bash_readonly",
+        "git_status",
+        "git_diff",
+        "git_log",
+        "batched_file_read",
+        "read_file_bytes",
+        "read_file_chunk",
+        "ast_list_symbols",
+        "find_references",
+        "memory_search",
+        "web_search",
+        "fetch",
+        "browse",
+    }
+    last_result = state.get("last_result") or {}
+    execution_failed = not (
+        last_result.get("ok", False) or last_result.get("status") == "ok"
+    )
+
+    if last_result.get("_completion_detected"):
+        logger.info(
+            "route_execution: _completion_detected flag set — routing to memory_sync"
+        )
+        return "memory_sync"
+
+    if last_tool in read_only_tools:
+        if last_tool in ("read_file", "fs.read"):
+            _task_lower = (state.get("task") or "").lower()
+            _mod_kws = (
+                "add ",
+                "prepend",
+                "append",
+                "edit ",
+                "modify",
+                "update ",
+                "change ",
+                "replace ",
+                "insert ",
+                "delete ",
+                "remove ",
+                "fix ",
+                "top of ",
+                "beginning of ",
+                "after ",
+                "before ",
+                "on top of ",
+                "inside ",
+                "contents of ",
+            )
+            if any(kw in _task_lower for kw in _mod_kws):
+                logger.info(
+                    "route_execution: read_file done, task implies modification "
+                    "— routing to perception for write step"
+                )
+                return "perception"
+        logger.info("route_execution: fast-path read-only tool, routing to memory_sync")
+        return "memory_sync"
+    elif execution_failed and state.get("rounds", 0) >= 1:
+        no_plan_fail_count = int(state.get("no_plan_fail_count") or 0)
+        if no_plan_fail_count >= 3:
+            logger.warning(
+                f"route_execution: no_plan_fail_count={no_plan_fail_count} >= 3, "
+                "bailing to memory_sync"
+            )
+            return "memory_sync"
+        logger.info(
+            f"route_execution: fast-path execution failed "
+            f"(attempt {no_plan_fail_count + 1}), routing to analysis (W2)"
+        )
+        return "analysis"
+    elif state.get("rounds", 0) >= _LOOP_GUARD_ROUNDS:
+        logger.info(
+            "route_execution: fast-path no-plan loop guard triggered "
+            f"(rounds={state.get('rounds', 0)}), routing to memory_sync"
+        )
+        return "memory_sync"
+    elif state.get("rounds", 0) >= 1:
+        logger.info("route_execution: fast-path with no plan, routing to perception")
+        return "perception"
+    return None
+
+
 def route_execution(
-    state: AgentState,
+    state: Mapping[str, Any],
 ) -> Literal[
     "wait_for_user",
     "step_controller",
@@ -1003,14 +1249,17 @@ def route_execution(
     Route after execution node.
 
     Priority:
-    1. Plan Mode approval pending → wait_for_user (plan gate)
-    2. Preview Mode confirmation pending → wait_for_user (diff gate)
-    3. replan_required set → replan (step was too large, needs splitting)
-    4. No plan (fast-path mode):
-       a. Read-only tool → memory_sync (task answered)
-       b. Execution failed → analysis (W2: deeper context before retry)
-       c. More rounds needed → perception
-    5. Otherwise → step_controller (normal planned flow)
+    1. W12: Tool call budget exhausted → memory_sync
+    2. Plan Mode approval pending → wait_for_user (plan gate)
+    3. Preview Mode confirmation pending → wait_for_user (diff gate)
+    4. replan_required set → replan (P1-3: capped at 5 attempts → memory_sync)
+    5. No plan (fast-path mode):
+       a. _completion_detected flag → memory_sync (hallucinated terminal tool)
+       b. Read-only tool → memory_sync (task answered)
+       c. Execution failed (HR-4: capped at 3 failures → memory_sync) → analysis
+       d. rounds >= 10 loop guard → memory_sync
+       e. More rounds needed → perception
+    6. Otherwise → step_controller (normal planned flow)
 
     WR-1 fix: When there's no current_plan, avoid going through the full
     step_controller → verification → evaluation → memory_sync → perception cycle
@@ -1018,66 +1267,42 @@ def route_execution(
     CF-2 fix: Add replan_required and W2 (fail→analysis) branches so these paths
     are live in the main graph (they existed only in the dead should_after_execution*
     routers before this fix).
+    W12 / HR-4 / P1-3: Ported from dead should_after_execution* routers.
+    ARCH-3: Delegates to helper sub-routers for each logical section.
     """
-    # Plan Mode: write tool was blocked — suspend until user approves plan
-    if state.get("awaiting_plan_approval", False):
+    # Gate 1: Tool budget
+    if _check_tool_budget(state):
+        logger.warning(
+            f"route_execution: tool budget exhausted "
+            f"({state.get('tool_call_count', 0)}/{state.get('max_tool_calls', _DEFAULT_MAX_TOOL_CALLS)}), "
+            "routing to memory_sync"
+        )
+        return "memory_sync"
+
+    # Gate 2 & 3: User-input suspension
+    if _check_plan_approval_pending(state):
         logger.info("route_execution: plan approval pending, routing to wait_for_user")
         return "wait_for_user"
 
-    # Preview Mode: diff preview generated — suspend until user confirms write
-    if state.get("awaiting_user_input", False):
+    if _check_preview_pending(state):
         logger.info("route_execution: awaiting user input, routing to wait_for_user")
         return "wait_for_user"
 
-    # CF-2 fix: check replan_required BEFORE step_controller so oversized patches
-    # are split immediately rather than hitting the full verification/evaluation loop.
-    if state.get("replan_required"):
-        logger.info(
-            f"route_execution: replan_required={state['replan_required']!r}, routing to replan"
-        )
-        return "replan"
+    # Gate 4: Replan branch
+    replan_dest = _check_replan_required(state)
+    if replan_dest is not None:
+        return replan_dest  # type: ignore[return-value]
 
-    # WR-1 fix: Check if we're in fast-path mode (no plan) and route accordingly.
-    current_plan = state.get("current_plan") or []
-    if not current_plan:
-        last_tool = state.get("last_tool_name", "")
-        read_only_tools = {
-            "read_file",
-            "grep",
-            "glob",
-            "find_symbol",
-            "search_code",
-            "list_directory",
-        }
-        last_result = state.get("last_result") or {}
-        execution_failed = not last_result.get("ok", True)
-
-        if last_tool in read_only_tools:
-            # Read-only tool succeeded — answering a question, task is complete.
-            logger.info(
-                "route_execution: fast-path read-only tool, routing to memory_sync"
-            )
-            return "memory_sync"
-        elif execution_failed and state.get("rounds", 0) >= 1:
-            # CF-2 / W2 fix: execution failed on a fast-path (no plan) task.
-            # Route to analysis for deeper context before the LLM retries, rather
-            # than back to perception which has no additional retrieval.
-            logger.info(
-                "route_execution: fast-path execution failed, routing to analysis (W2)"
-            )
-            return "analysis"
-        elif state.get("rounds", 0) >= 1:
-            # More rounds needed but no failure — go back to perception.
-            logger.info(
-                "route_execution: fast-path with no plan, routing to perception"
-            )
-            return "perception"
+    # Gate 5: No-plan fast-path
+    fast_path_dest = _check_no_plan_fast_path(state)
+    if fast_path_dest is not None:
+        return fast_path_dest  # type: ignore[return-value]
 
     return "step_controller"
 
 
 def route_after_wait_for_user(
-    state: AgentState,
+    state: Mapping[str, Any],
 ) -> Literal["execute", "perception", "planning"]:
     """
     Route after user confirms/rejects preview or approves/rejects plan.
@@ -1113,7 +1338,7 @@ def route_after_wait_for_user(
 
 
 def should_after_execution_with_compaction(
-    state: AgentState,
+    state: Mapping[str, Any],
 ) -> Literal[
     "perception",
     "analysis",
@@ -1140,7 +1365,7 @@ def should_after_execution_with_compaction(
         return "wait_for_user"
 
     tool_call_count = int(state.get("tool_call_count") or 0)
-    max_tool_calls = int(state.get("max_tool_calls") or 100)
+    max_tool_calls = int(state.get("max_tool_calls") or _AUTONOMOUS_MAX_TOOL_CALLS)
     if tool_call_count >= max_tool_calls:
         logger.warning(
             f"should_after_execution_with_compaction: tool_call_count={tool_call_count} >= {max_tool_calls}, memory_sync"

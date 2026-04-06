@@ -110,7 +110,7 @@ class TestSessionRegistry:
         result = registry.update_session_status("session-1", SessionStatus.RUNNING)
         assert result is True
         info = registry.get_session("session-1")
-        assert info.status == SessionStatus.RUNNING
+        assert info.status == SessionStatus.RUNNING # type: ignore[union-attr]
 
     def test_update_session_status_not_found(self):
         registry = SessionRegistry.get_instance()
@@ -125,8 +125,8 @@ class TestSessionRegistry:
         )
         assert result is True
         info = registry.get_session("session-1")
-        assert info.tool_call_count == 1
-        assert info.token_usage == 100
+        assert info.tool_call_count == 1 # type: ignore[union-attr]
+        assert info.token_usage == 100 # type: ignore[union-attr]
 
     def test_get_active_sessions(self):
         registry = SessionRegistry.get_instance()

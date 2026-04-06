@@ -183,13 +183,19 @@ class AgentSessionManager:
             if self._current_session_state is None:
                 self._current_session_state = SessionState()
                 self._current_session_state.session_id = "default"
-
-            # Always sync latest pending P2P and active agents
-            self._current_session_state.pending_p2p = self.flush_pending_p2p()
-            self._current_session_state.active_agents = {
+            # Snapshot active agents under the lock so the returned state is
+            # consistent, but flush P2P *outside* to avoid an AB-BA deadlock
+            # between _state_lock and _p2p_lock.
+            state = self._current_session_state
+            state.active_agents = {
                 k: v for k, v in self._sessions.items() if v.status == "running"
             }
-            return self._current_session_state
+
+        # Flush P2P messages outside _state_lock to prevent deadlock:
+        # flush_pending_p2p() acquires _p2p_lock, and any thread that holds
+        # _p2p_lock and then tries to acquire _state_lock would deadlock.
+        state.pending_p2p = self.flush_pending_p2p()
+        return state
 
     @classmethod
     def get_instance(cls) -> "AgentSessionManager":

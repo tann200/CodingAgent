@@ -43,7 +43,7 @@ def tmp_provider_file(tmp_path):
 
 def test_parse_json_response_field_with_valid_and_invalid(tmp_provider_file):
     a = OllamaAdapter(config_path=tmp_provider_file)
-    assert a._parse_json_response_field('{"a":1}')["a"] == 1
+    assert a._parse_json_response_field('{"a":1}')["a"] == 1 # type: ignore[index]
     assert a._parse_json_response_field("not json") == "not json"
     assert a._parse_json_response_field(None) is None
 
@@ -57,7 +57,7 @@ def test_get_model_info_posts_and_parses(monkeypatch, tmp_provider_file):
 
     def fake_post(url, json=None, **kwargs):
         assert url.endswith("/show")
-        assert json.get("model") == "qwen3.5:9b"
+        assert json.get("model") == "qwen3.5:9b" # type: ignore[union-attr]
         return DummyResp(json_data=payload)
 
     monkeypatch.setattr(requests, "post", fake_post)
@@ -112,7 +112,7 @@ def test_extract_tool_calls_with_native_and_json(tmp_provider_file):
     resp_native = {
         "message": {"tool_calls": [{"name": "fs.read", "args": {"path": "/tmp/x"}}]}
     }
-    assert a.extract_tool_calls(resp_native)[0]["name"] == "fs.read"
+    assert a.extract_tool_calls(resp_native)[0]["name"] == "fs.read" # type: ignore[index]
 
     # json embedded in content
     resp_json = {
@@ -122,4 +122,4 @@ def test_extract_tool_calls_with_native_and_json(tmp_provider_file):
     }
     calls = a.extract_tool_calls(resp_json)
     assert len(calls) == 1
-    assert calls[0]["tool_name"] == "fs.read"
+    assert calls[0]["tool_name"] == "fs.read" # type: ignore[index]

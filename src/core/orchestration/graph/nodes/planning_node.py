@@ -3,7 +3,7 @@ import json
 import logging
 import re
 from pathlib import Path
-from typing import Dict, Any
+from typing import Mapping, Dict, Any, Optional
 
 from src.core.orchestration.graph.state import AgentState
 from src.core.context.context_builder import ContextBuilder
@@ -51,7 +51,7 @@ def _save_last_plan(workdir: str, plan: list, task: str, step: int = 0) -> None:
         logger.warning(f"planning_node: failed to save last plan: {e}")
 
 
-async def planning_node(state: AgentState, config: Any) -> Dict[str, Any]:
+async def planning_node(state: Mapping[str, Any], config: Any) -> Dict[str, Any]:
     """
     Planning Layer: Converts perception outputs into a structured plan.
     Uses the 'strategic' role from ContextBuilder (loaded from agent-brain).
@@ -89,7 +89,7 @@ async def planning_node(state: AgentState, config: Any) -> Dict[str, Any]:
     s["plan_attempts"] = plan_attempts
 
     # 4.4: Cross-session plan persistence - Load last plan if current is empty
-    working_dir = s.get("working_dir", ".")
+    working_dir = str(s.get("working_dir") or ".")
     current_plan = s.get("current_plan")
     current_step = s.get("current_step", 0)
     task = str(s.get("task") or "")
@@ -165,7 +165,12 @@ async def planning_node(state: AgentState, config: Any) -> Dict[str, Any]:
         current_step = 0
         # 4.4: Persist simple plan for cross-session persistence
         _save_last_plan(working_dir, current_plan, task, current_step)
-        return {"current_plan": current_plan, "current_step": current_step, "plan_attempts": plan_attempts, "plan_mode_approved": None}
+        return {
+            "current_plan": current_plan,
+            "current_step": current_step,
+            "plan_attempts": plan_attempts,
+            "plan_mode_approved": None,
+        }
 
     # Fallback: ask the model for a short plan (non-blocking best effort)
     try:
@@ -176,8 +181,8 @@ async def planning_node(state: AgentState, config: Any) -> Dict[str, Any]:
 
         # Build repo-aware context from analysis output
         analysis_summary = str(s.get("analysis_summary") or "No analysis available")
-        relevant_files = s.get("relevant_files") or []
-        key_symbols = s.get("key_symbols") or []
+        relevant_files: list = list(s.get("relevant_files") or [])  # type: ignore[arg-type]
+        key_symbols: list = list(s.get("key_symbols") or [])  # type: ignore[arg-type]
 
         repo_context = ""
         if relevant_files or key_symbols:
@@ -185,9 +190,9 @@ async def planning_node(state: AgentState, config: Any) -> Dict[str, Any]:
             if relevant_files:
                 repo_context += f"- Relevant files: {', '.join(str(f) for f in relevant_files[:10])}\n"
             if key_symbols:
-                repo_context += (
-                    f"- Key symbols: {', '.join(str(s) for s in key_symbols[:10])}\n"
-                )
+                # LOW-8 fix: renamed loop variable from `s` (which shadows the
+                # outer state dict alias) to `sym`.
+                repo_context += f"- Key symbols: {', '.join(str(sym) for sym in key_symbols[:10])}\n"
             if analysis_summary and analysis_summary != "No analysis available":
                 repo_context += f"- Analysis: {analysis_summary}\n"
 
@@ -200,6 +205,7 @@ async def planning_node(state: AgentState, config: Any) -> Dict[str, Any]:
 
         # P3-1: Inject call graph and test map as structured JSON blocks
         import json as _json
+
         call_graph = s.get("call_graph")
         test_map = s.get("test_map")
         graph_context = ""
@@ -216,9 +222,28 @@ async def planning_node(state: AgentState, config: Any) -> Dict[str, Any]:
         if graph_context:
             logger.info("planning_node: injecting call_graph/test_map into prompt")
 
+        # RA-1: Fallback symbol query when call_graph absent (fast-path skipped analysis)
+        if not call_graph and s.get("working_dir"):
+            try:
+                from src.core.indexing.repo_indexer import get_symbols_for_task as _gst
+
+                _symbols = _gst(s["working_dir"], task, max_results=5)
+                if _symbols:
+                    graph_context += (
+                        f"\n\n## Relevant Symbols\n"
+                        f"```json\n{_json.dumps(_symbols, indent=2)}\n```"
+                    )
+                    logger.info(
+                        f"planning_node: RA-1 injected {len(_symbols)} symbols from index"
+                    )
+            except Exception as _ra1_err:
+                logger.debug(
+                    f"planning_node: RA-1 symbol lookup failed (non-critical): {_ra1_err}"
+                )
+
         # P4-5: Auto-suggest test steps when test_map identifies relevant test files.
         test_hint = ""
-        if test_map:
+        if test_map and isinstance(test_map, dict):
             test_files = []
             for module, tests in test_map.items():
                 if isinstance(tests, list):
@@ -231,7 +256,9 @@ async def planning_node(state: AgentState, config: Any) -> Dict[str, Any]:
                     f"to run these tests after the implementation steps: "
                     f"{', '.join(unique_tests)}"
                 )
-                logger.info(f"planning_node: injecting test hint ({len(unique_tests)} files)")
+                logger.info(
+                    f"planning_node: injecting test hint ({len(unique_tests)} files)"
+                )
 
         # MC-4 fix: Request structured JSON output with specific schema to eliminate
         # 4-strategy parsing fragility. The LLM is more likely to produce consistent
@@ -309,6 +336,7 @@ Respond ONLY with valid JSON, no additional text."""
             conversation=history,
             max_tokens=3000,  # P5 fix: 1500 truncated complex multi-step plans
             provider_capabilities=provider_capabilities,
+            model_tier=state.get("model_tier"),  # S1-B
         )
 
         cancel_event = state.get("cancel_event")
@@ -317,6 +345,14 @@ Respond ONLY with valid JSON, no additional text."""
 
         # F14: call_model is always async; use create_task directly.
         # GAP 2: Hardcode temperature for planning (0.3 for slight creativity)
+        # SES-W3: Use planning_model from providers.json if configured.
+        _planning_model_override: Optional[str] = None
+        try:
+            from src.core.config_loader import get_model_for_role as _gmfr
+
+            _planning_model_override = _gmfr("strategic")
+        except Exception:
+            pass
         llm_task = asyncio.create_task(
             call_model(
                 messages,
@@ -324,6 +360,7 @@ Respond ONLY with valid JSON, no additional text."""
                 format_json=False,
                 temperature=0.3,
                 session_id=state.get("session_id"),
+                model=_planning_model_override,
             )
         )
         while not llm_task.done():
@@ -395,6 +432,35 @@ Respond ONLY with valid JSON, no additional text."""
             steps = steps[:MAX_PLAN_STEPS]
 
         if steps:
+            # Bash restriction pre-flight: warn if any step description contains a
+            # restricted command.  This surfaces the issue at plan time rather than
+            # causing a mid-execution rejection that forces an unnecessary replan.
+            try:
+                from src.tools._security import RESTRICTED_COMMANDS
+                import re as _re_pf
+
+                _restricted_keywords = sorted(
+                    RESTRICTED_COMMANDS, key=len, reverse=True
+                )
+                for _i, _step in enumerate(steps):
+                    _desc = str(_step.get("description", "")).lower()
+                    for _kw in _restricted_keywords:
+                        if _kw in _desc:
+                            logger.warning(
+                                "planning_node: step %d description contains restricted "
+                                "bash command %r — this step will require user approval "
+                                "at execution time: %r",
+                                _i,
+                                _kw,
+                                _step.get("description", "")[:80],
+                            )
+                            _step.setdefault("warnings", []).append(
+                                f"contains restricted command '{_kw}' — requires user approval"
+                            )
+                            break
+            except Exception:
+                pass  # never block plan generation
+
             # Persist plan to session store
             try:
                 import json as _json
@@ -439,6 +505,7 @@ Respond ONLY with valid JSON, no additional text."""
                 "current_wave": 0,
                 "plan_attempts": plan_attempts,
                 "plan_mode_approved": None,
+                "affected_files": _extract_affected_files(steps),
             }
     except Exception as e:
         logger.error(f"planning_node: plan generation failed: {e}")
@@ -461,6 +528,7 @@ Respond ONLY with valid JSON, no additional text."""
             "current_wave": 0,
             "plan_attempts": plan_attempts,
             "plan_mode_approved": None,
+            "affected_files": _extract_affected_files(fallback_plan),
         }
 
     from src.core.orchestration.dag_parser import _convert_flat_to_dag
@@ -475,7 +543,46 @@ Respond ONLY with valid JSON, no additional text."""
         "plan_attempts": plan_attempts,
         "current_wave": 0,
         "plan_mode_approved": None,  # P2-9: reset approval gate for each new plan cycle
+        "affected_files": _extract_affected_files(current_plan),
     }
+
+
+def _extract_affected_files(steps: list) -> list:
+    """GAP-S2: Extract file paths from plan step descriptions.
+
+    Scans each step's ``description`` and ``files`` fields for file-path
+    patterns (anything that looks like ``path/to/file.ext``).  Returns a
+    deduplicated list of relative path strings.
+
+    The list is used by ``Orchestrator.execute_tool()`` to enforce write-scope
+    restrictions — only files in this list may be written during the current
+    task.  An empty return value means "no restriction active".
+    """
+    import re as _re
+
+    # Matches relative / absolute paths with a recognised extension.
+    _FILE_PAT = _re.compile(
+        r"\b([\w./\-]+\.(?:py|js|ts|tsx|jsx|go|rs|java|yaml|yml|json|md|txt|toml|cfg|ini|sh|bash|html|css|scss|sql))\b"
+    )
+    seen: set = set()
+    result: list = []
+    for step in steps:
+        # Explicit ``files`` list takes priority — it is already structured.
+        for f in step.get("files") or []:
+            if isinstance(f, str) and f not in seen:
+                seen.add(f)
+                result.append(f)
+        # Also scan the free-text description for path mentions.
+        desc = str(step.get("description") or "")
+        for m in _FILE_PAT.finditer(desc):
+            p = m.group(1)
+            # Skip pure-extension tokens like ".py" or paths starting with ".."
+            if p.startswith("..") or "/" not in p and "." == p[0]:
+                continue
+            if p not in seen:
+                seen.add(p)
+                result.append(p)
+    return result
 
 
 def _parse_plan_content(content: str) -> list:

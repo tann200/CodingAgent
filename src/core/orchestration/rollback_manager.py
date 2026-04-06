@@ -153,13 +153,13 @@ class RollbackManager:
                         )
                         for f in data.get("files", [])
                     ]
-                    self.snapshots[snapshot_id] = snapshots
+                    self.snapshots[snapshot_id] = snapshots  # type: ignore[index]
                 except Exception as e:
                     return {"ok": False, "error": f"Failed to load snapshot: {e}"}
             else:
                 return {"ok": False, "error": f"Snapshot {snapshot_id} not found"}
 
-        snapshots = self.snapshots.get(snapshot_id, [])
+        snapshots = self.snapshots.get(snapshot_id, [])  # type: ignore[call-overload]
 
         restored_files = []
         for snap in snapshots:

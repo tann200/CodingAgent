@@ -43,13 +43,23 @@ def test_system_prompts_json_mode():
 
 @pytest.mark.skipif(not RUN, reason="Integration tests disabled")
 def test_system_prompt_json_mode_and_tool_handover():
-    # Probe Ollama/LM Studio
+    # Probe Ollama/LM Studio — skip early if neither is reachable
+    _ollama_ok = False
+    _lmstudio_ok = False
     try:
         r = requests.get(f"{OLLAMA_URL}/tags", timeout=5)
         r.raise_for_status()
+        _ollama_ok = True
     except Exception:
-        # Not all servers implement /api/tags; continue and probe v1
         pass
+    try:
+        r = requests.get(f"{LM_STUDIO_URL}/models", timeout=5)
+        if r.status_code == 200:
+            _lmstudio_ok = True
+    except Exception:
+        pass
+    if not _ollama_ok and not _lmstudio_ok:
+        pytest.xfail("Neither Ollama nor LM Studio is reachable — skipping live test")
 
     # Determine v1 base: prefer LM_STUDIO_URL if provided, otherwise derive from OLLAMA_URL
     if LM_STUDIO_URL:
@@ -68,7 +78,7 @@ def test_system_prompt_json_mode_and_tool_handover():
                 if (
                     isinstance(m, dict)
                     and m.get("id")
-                    and m.get("id").startswith("qwen")
+                    and m.get("id").startswith("qwen")  # type: ignore[union-attr]
                 ):
                     v1_model_id = m.get("id")
                     break
@@ -186,13 +196,19 @@ def test_system_prompt_json_mode_and_tool_handover():
 
     if isinstance(data, dict) and data.get("choices"):
         # OpenAI-style
-        choice = data["choices"][0]
-        msg = choice.get("message", {})
+        choice = data["choices"][0]  # type: ignore[index]
+        msg = choice.get("message", {})  # type: ignore[union-attr]
         content = msg.get("content") if isinstance(msg, dict) else None
         if isinstance(content, (dict, list)):
             parsed = content
         else:
             parsed = try_parse_text_to_json(content)
+        # Reasoning models (e.g. qwen3.5) emit JSON in reasoning_content when
+        # thinking mode is active and content is left empty.
+        if parsed is None and isinstance(msg, dict):
+            reasoning = msg.get("reasoning_content") or msg.get("thinking")
+            if reasoning:
+                parsed = try_parse_text_to_json(reasoning)
     else:
         # Ollama native: message under 'message' with 'content'
         message = data.get("message") or {}

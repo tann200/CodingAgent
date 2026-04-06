@@ -136,6 +136,14 @@ def git_commit(
         if add_result["status"] != "ok":
             return add_result
 
+    # D-04: Idempotency guard — abort early if the tree is already clean
+    status_result = _run_git(["status", "--porcelain"], workdir)
+    if status_result["status"] == "ok" and not status_result["output"].strip():
+        return {
+            "status": "no_change",
+            "output": "Nothing to commit, working tree clean.",
+        }
+
     result = _run_git(["commit", "-m", message.strip()], workdir)
     if result["status"] == "ok":
         # Extract the commit hash from output like "[main abc1234] message"

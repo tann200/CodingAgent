@@ -39,7 +39,7 @@ class FileLockManager:
     _instance = None
     _instance_lock = threading.Lock()
 
-    def __init__(self, workdir: str, cancel_event: asyncio.Event = None):
+    def __init__(self, workdir: str, cancel_event: Optional[asyncio.Event] = None):
         self.workdir = Path(workdir)
         self._cancel_event = cancel_event or asyncio.Event()
         self._lock_timeout = 30.0
@@ -49,16 +49,26 @@ class FileLockManager:
 
     @classmethod
     def get_instance(
-        cls, workdir: str = "", cancel_event: asyncio.Event = None
+        cls, workdir: str = "", cancel_event: Optional[asyncio.Event] = None
     ) -> "FileLockManager":
         if cls._instance is None:
             with cls._instance_lock:
                 if cls._instance is None:
-                    cls._instance = cls(workdir=workdir or ".", cancel_event=cancel_event)
+                    cls._instance = cls(
+                        workdir=workdir or ".", cancel_event=cancel_event
+                    )
         return cls._instance
 
     def can_write(self, path: str) -> bool:
-        """Check if file can be written (synchronous check)."""
+        """Check if file can be written (synchronous advisory check).
+
+        .. warning::
+            This is a **non-atomic, advisory** check.  It reads shared lock state
+            without holding ``_async_lock``, so a concurrent async
+            ``acquire_write_lock()`` / ``acquire_read_lock()`` call can race against
+            this read.  Do not rely on this result for correctness-critical decisions;
+            use the async acquire methods for that.
+        """
         if self._write_lock and self._write_lock.path == path:
             return False
         if path in self._read_locks and self._read_locks[path]:
@@ -66,7 +76,11 @@ class FileLockManager:
         return True
 
     def can_read(self, path: str) -> bool:
-        """Check if file can be read (synchronous check)."""
+        """Check if file can be read (synchronous advisory check).
+
+        .. warning::
+            Same advisory / non-atomic caveat as :meth:`can_write`.
+        """
         if self._write_lock and self._write_lock.path == path:
             return False
         return True
@@ -92,7 +106,7 @@ class FileLockManager:
         CRITICAL: This is async. Use ONLY await with this method.
         NEVER call this synchronously - it will deadlock.
         """
-        timeout = timeout or self._lock_timeout
+        timeout = self._lock_timeout if timeout is None else timeout
         start = time.time()
 
         # Poll without holding _async_lock during the sleep so other lock
@@ -160,7 +174,7 @@ class FileLockManager:
 
 
 def get_file_lock_manager(
-    workdir: str = "", cancel_event: asyncio.Event = None
+    workdir: str = "", cancel_event: Optional[asyncio.Event] = None
 ) -> FileLockManager:
     """Get the global file lock manager instance."""
     return FileLockManager.get_instance(workdir=workdir, cancel_event=cancel_event)

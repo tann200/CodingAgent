@@ -59,13 +59,22 @@ _LANG_PATTERNS: Dict[str, Dict[str, re.Pattern]] = {
     },
     # Go
     ".go": {
-        "function": re.compile(r"^func\s+(?:\([^)]+\)\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*\(", re.MULTILINE),
-        "class": re.compile(r"^type\s+([A-Za-z_][A-Za-z0-9_]*)\s+struct\b", re.MULTILINE),
+        "function": re.compile(
+            r"^func\s+(?:\([^)]+\)\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*\(", re.MULTILINE
+        ),
+        "class": re.compile(
+            r"^type\s+([A-Za-z_][A-Za-z0-9_]*)\s+struct\b", re.MULTILINE
+        ),
     },
     # Rust
     ".rs": {
-        "function": re.compile(r"^(?:pub\s+)?(?:async\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*)\s*[<(]", re.MULTILINE),
-        "class": re.compile(r"^(?:pub\s+)?struct\s+([A-Za-z_][A-Za-z0-9_]*)", re.MULTILINE),
+        "function": re.compile(
+            r"^(?:pub\s+)?(?:async\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*)\s*[<(]",
+            re.MULTILINE,
+        ),
+        "class": re.compile(
+            r"^(?:pub\s+)?struct\s+([A-Za-z_][A-Za-z0-9_]*)", re.MULTILINE
+        ),
     },
     # Java
     ".java": {
@@ -83,13 +92,22 @@ _LANG_PATTERNS: Dict[str, Dict[str, re.Pattern]] = {
 # All supported suffixes (Python handled separately via AST)
 _SUPPORTED_SUFFIXES = {".py"} | set(_LANG_PATTERNS.keys())
 
-_SKIP_DIRS = {".agent-context", "__pycache__", ".git", "node_modules", ".venv", "venv", "dist", "build"}
+_SKIP_DIRS = {
+    ".agent-context",
+    "__pycache__",
+    ".git",
+    "node_modules",
+    ".venv",
+    "venv",
+    "dist",
+    "build",
+}
 
 
 class SymbolGraph:
     """Graph-based code symbol index with incremental updates."""
 
-    def __init__(self, workdir: str = None):
+    def __init__(self, workdir: Optional[str] = None):
         self.workdir = Path(workdir) if workdir else Path.cwd()
         self.graph_path = self.workdir / ".agent-context" / "symbol_graph.json"
         self._load_graph()
@@ -179,14 +197,30 @@ class SymbolGraph:
             # newlines so line numbers in the stripped text match the original.
             source = self._strip_comments(raw_source, path.suffix)
             functions = [
-                {"name": m.group(1), "line": source[: m.start()].count("\n") + 1, "args": [], "docstring": ""}
+                {
+                    "name": m.group(1),
+                    "line": source[: m.start()].count("\n") + 1,
+                    "args": [],
+                    "docstring": "",
+                }
                 for m in patterns["function"].finditer(source)
             ]
             classes = [
-                {"name": m.group(1), "line": source[: m.start()].count("\n") + 1, "bases": [], "methods": [], "docstring": ""}
+                {
+                    "name": m.group(1),
+                    "line": source[: m.start()].count("\n") + 1,
+                    "bases": [],
+                    "methods": [],
+                    "docstring": "",
+                }
                 for m in patterns["class"].finditer(source)
             ]
-            return {"classes": classes, "functions": functions, "imports": [], "docstring": ""}
+            return {
+                "classes": classes,
+                "functions": functions,
+                "imports": [],
+                "docstring": "",
+            }
         except Exception as e:
             logger.warning(f"Failed to parse {path}: {e}")
             return {"classes": [], "functions": [], "imports": [], "docstring": ""}
@@ -263,7 +297,9 @@ class SymbolGraph:
             return
 
         logger.info(f"Updating symbol graph for: {path}")
-        symbols = self._parse_file(p) if p.suffix == ".py" else self._parse_file_regex(p)
+        symbols = (
+            self._parse_file(p) if p.suffix == ".py" else self._parse_file_regex(p)
+        )
 
         rel_path = str(p.relative_to(self.workdir))
         self.nodes[rel_path] = {
@@ -374,7 +410,7 @@ class SymbolGraph:
 
         return None
 
-    def get_all_symbols(self) -> Dict[str, List[str]]:
+    def get_all_symbols(self) -> Dict[str, Any]:
         """Get all symbols in the project."""
         all_symbols = {}
 
@@ -386,7 +422,7 @@ class SymbolGraph:
 
         return all_symbols
 
-    def rebuild_index(self, root_path: str = None):
+    def rebuild_index(self, root_path: Optional[str] = None):
         """Full rebuild of the symbol index."""
         root = Path(root_path) if root_path else self.workdir
 
@@ -406,12 +442,12 @@ class SymbolGraph:
 class IncrementalIndexer:
     """Watches filesystem and incrementally updates symbol graph."""
 
-    def __init__(self, workdir: str = None):
+    def __init__(self, workdir: Optional[str] = None):
         self.workdir = Path(workdir) if workdir else Path.cwd()
         self.symbol_graph = SymbolGraph(workdir=str(self.workdir))
         self._last_modified: Dict[str, float] = {}
 
-    def check_and_update(self, file_path: str = None):
+    def check_and_update(self, file_path: Optional[str] = None):
         """Check for changes and update index."""
         if file_path:
             if Path(file_path).suffix in _SUPPORTED_SUFFIXES:

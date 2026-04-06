@@ -78,7 +78,8 @@ class MessageManager:
         if not text:
             return 0
         try:
-            import tiktoken
+            import tiktoken  # type: ignore[import]
+
             try:
                 enc = tiktoken.encoding_for_model("gpt-4")
             except Exception:
@@ -185,9 +186,7 @@ class MessageManager:
                     compact_msg = {
                         "role": "user",
                         "content": (
-                            "<compacted_context>\n"
-                            f"{summary}\n"
-                            "</compacted_context>"
+                            f"<compacted_context>\n{summary}\n</compacted_context>"
                         ),
                     }
                     # Insert directly after system message (index 0) so it is
@@ -199,7 +198,9 @@ class MessageManager:
                         f"({len(summary)} chars) replacing {len(dropped_messages)} msgs"
                     )
             except Exception as cb_err:
-                logger.warning(f"MessageManager: compact_callback failed (non-fatal): {cb_err}")
+                logger.warning(
+                    f"MessageManager: compact_callback failed (non-fatal): {cb_err}"
+                )
         # ─────────────────────────────────────────────────────────────────
 
         self.messages = kept

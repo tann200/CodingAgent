@@ -187,7 +187,12 @@ class SessionWatcher:
             )
 
             # Check each session
-            for info in registry._sessions.values():
+            # MED-19 fix: snapshot sessions under registry._lock so we don't
+            # iterate over a dict that another thread may concurrently modify
+            # (e.g. via register_session / unregister_session).
+            with registry._lock:
+                session_infos = list(registry._sessions.values())
+            for info in session_infos:
                 report = self._check_session_health(info)
 
                 if report.status != HealthStatus.HEALTHY:

@@ -2,7 +2,7 @@ from __future__ import annotations
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from src.tools._path_utils import safe_resolve as _safe_resolve
 from src.tools._tool import tool
@@ -15,7 +15,7 @@ def create_state_checkpoint(
     tool_call_history: List[Dict[str, Any]],
     modified_files: List[str],
     reasoning_summary: str,
-    workdir: str = None,
+    workdir: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Create a state checkpoint for long-running agent sessions.
@@ -60,7 +60,7 @@ def create_state_checkpoint(
 
 
 @tool(tags=["planning"])
-def list_checkpoints(workdir: str = None) -> Dict[str, Any]:
+def list_checkpoints(workdir: Optional[str] = None) -> Dict[str, Any]:
     """List all available state checkpoints."""
     wd = Path(workdir) if workdir else Path.cwd()
     checkpoint_dir = agent_context_path(wd) / "checkpoints"
@@ -88,7 +88,7 @@ def list_checkpoints(workdir: str = None) -> Dict[str, Any]:
 @tool(tags=["planning"])
 def restore_state_checkpoint(
     checkpoint_id: str,
-    workdir: str = None,
+    workdir: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Restore a previous state checkpoint.
@@ -132,7 +132,7 @@ def restore_state_checkpoint(
 def diff_state(
     checkpoint_id1: str,
     checkpoint_id2: str,
-    workdir: str = None,
+    workdir: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Compare two state checkpoints."""
     import re as _re
@@ -146,7 +146,9 @@ def diff_state(
             "error": "Invalid checkpoint_id: only alphanumeric, underscore, and dash are allowed",
         }
     wd = Path(workdir) if workdir else Path.cwd()
-    checkpoint_dir = wd / ".agent-context" / "checkpoints"
+    # LOW-2 fix: use the same agent_context_path() helper as every other call
+    # site in this file instead of a bare hardcoded ".agent-context" string.
+    checkpoint_dir = agent_context_path(wd) / "checkpoints"
 
     try:
         cp1_path = checkpoint_dir / f"{checkpoint_id1}.json"
@@ -177,7 +179,7 @@ def diff_state(
 @tool(tags=["coding"])
 def batched_file_read(
     paths: List[str],
-    workdir: str = None,
+    workdir: Optional[str] = None,
     max_file_size: int = 10000,
 ) -> Dict[str, Any]:
     """
@@ -220,7 +222,7 @@ def batched_file_read(
 @tool(tags=["coding"])
 def multi_file_summary(
     paths: List[str],
-    workdir: str = None,
+    workdir: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Get a quick summary of multiple files without reading full content.

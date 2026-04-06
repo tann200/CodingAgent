@@ -21,7 +21,7 @@ from src.core.orchestration.graph.builder import route_after_perception
 # Helper to create AgentState
 def _make_state(**kwargs: Any) -> AgentState:
     """Create AgentState with defaults."""
-    defaults: AgentState = {
+    defaults: AgentState = {  # type: ignore[assignment]
         "task": "",
         "history": [],
         "verified_reads": [],
@@ -269,7 +269,7 @@ class TestVerificationNode:
         )
 
         # Test the basic structure
-        assert state["last_result"]["result"]["deleted"] is True
+        assert state["last_result"]["result"]["deleted"] is True  # type: ignore[index]
 
 
 class TestDebugNode:
@@ -292,7 +292,6 @@ class TestEvaluationNode:
             evaluation_result="complete",
             verification_passed=True,
         )
-
 
         # Should handle the state
         assert state.get("evaluation_result") == "complete"
@@ -349,7 +348,7 @@ class TestMemoryUpdateNode:
 
         # Should not raise - even if distiller fails
         try:
-            result = await memory_update_node.memory_update_node(state, config)
+            result = await memory_update_node(state, config)
             assert isinstance(result, dict)
         except Exception:
             # May fail if distiller has issues - that's ok for this test
@@ -363,7 +362,9 @@ class TestMemoryUpdateNode:
         Now return_exceptions=True + logging ensures failures are captured.
         """
         from unittest.mock import patch
-        from src.core.orchestration.graph.nodes.memory_update_node import memory_update_node as mn
+        from src.core.orchestration.graph.nodes.memory_update_node import (
+            memory_update_node as mn,
+        )
 
         state = _make_state(
             history=[{"role": "user", "content": "do something"}],
@@ -374,8 +375,10 @@ class TestMemoryUpdateNode:
         config = {}
 
         # Force distill_context to raise an exception
-        with patch("src.core.orchestration.graph.nodes.memory_update_node.distill_context",
-                   side_effect=RuntimeError("distiller exploded")):
+        with patch(
+            "src.core.orchestration.graph.nodes.memory_update_node.distill_context",
+            side_effect=RuntimeError("distiller exploded"),
+        ):
             result = await mn(state, config)
 
         # Must still return a dict (not raise)
@@ -386,8 +389,11 @@ class TestMemoryUpdateNode:
         """H14: asyncio.gather must use return_exceptions=True so one failure doesn't abort others."""
         import inspect
         from src.core.orchestration.graph.nodes import memory_update_node as mn_module
+
         src = inspect.getsource(mn_module)
-        assert "return_exceptions=True" in src, "gather must use return_exceptions=True (H14)"
+        assert "return_exceptions=True" in src, (
+            "gather must use return_exceptions=True (H14)"
+        )
 
 
 class TestPlanValidatorNode:

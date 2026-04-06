@@ -710,7 +710,9 @@ def run_js_tests(
         preferred: Optional[str] = None
         if os.path.exists(pkg_path):
             try:
-                pkg = _json.loads(open(pkg_path).read())
+                # LOW-3 fix: use Path.read_text() so the file handle is always
+                # closed even if json.loads() raises.
+                pkg = _json.loads(Path(pkg_path).read_text(encoding="utf-8"))
                 scripts = pkg.get("scripts", {})
                 test_script = scripts.get("test", "")
                 for runner in ("vitest", "jest", "mocha", "jasmine"):
@@ -879,6 +881,91 @@ def _parse_eslint_compact(output: str) -> List[Dict[str, Any]]:
                 }
             )
     return errors
+
+
+def format_file(path: str) -> Dict[str, Any]:
+    """Auto-format a file using the appropriate formatter for its language.
+
+    Called automatically after successful write operations.  Silently skips
+    if no formatter is installed — formatting is best-effort and never blocks writes.
+
+    Supported formatters:
+      .py  — ruff format (preferred) or black
+      .js/.mjs/.cjs/.ts/.tsx/.jsx — prettier
+      .go  — gofmt
+      .rs  — rustfmt
+
+    Args:
+        path: Absolute path to the file to format.
+
+    Returns:
+        status ("ok" | "skipped" | "error"), formatter, path.
+    """
+    p = Path(path)
+    if not p.exists():
+        return {"status": "skipped", "reason": "file does not exist"}
+
+    suffix = p.suffix.lower()
+    formatter = None
+    cmd = None
+
+    if suffix == ".py":
+        if shutil.which("ruff"):
+            formatter = "ruff"
+            cmd = ["ruff", "format", "--quiet", str(p)]
+        elif shutil.which("black"):
+            formatter = "black"
+            cmd = ["black", "--quiet", str(p)]
+    elif suffix in (".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx"):
+        if shutil.which("prettier"):
+            formatter = "prettier"
+            cmd = ["prettier", "--write", "--log-level", "error", str(p)]
+    elif suffix == ".go":
+        if shutil.which("gofmt"):
+            formatter = "gofmt"
+            cmd = ["gofmt", "-w", str(p)]
+    elif suffix == ".rs":
+        if shutil.which("rustfmt"):
+            formatter = "rustfmt"
+            cmd = ["rustfmt", "--edition", "2021", str(p)]
+
+    if cmd is None:
+        return {
+            "status": "skipped",
+            "reason": f"no formatter available for {suffix or 'unknown'}",
+        }
+
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode != 0:
+            return {
+                "status": "error",
+                "formatter": formatter,
+                "path": path,
+                "error": (
+                    result.stderr or result.stdout or "formatter exited non-zero"
+                ).strip()[:500],
+            }
+        return {"status": "ok", "formatter": formatter, "path": path}
+    except subprocess.TimeoutExpired:
+        return {
+            "status": "error",
+            "formatter": formatter,
+            "path": path,
+            "error": "formatter timed out",
+        }
+    except Exception as exc:
+        return {
+            "status": "error",
+            "formatter": formatter,
+            "path": path,
+            "error": str(exc),
+        }
 
 
 # Alias for backwards compatibility

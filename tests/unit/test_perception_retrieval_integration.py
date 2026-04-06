@@ -13,7 +13,7 @@ def run_async(coro):
         loop.close()
 
 
-def test_perception_injects_retrieved_snippets(tmp_path):
+def test_perception_node_returns_history_with_mocked_search(tmp_path):
     # Setup orchestrator-like object with a tool registry that returns a fake search_code result
     reg = ToolRegistry()
 

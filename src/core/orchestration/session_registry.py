@@ -204,6 +204,12 @@ class SessionRegistry:
         Returns:
             True if session was unregistered, False if not found
         """
+        # LOW-4 fix: collect children and remove this session inside the lock,
+        # then cascade outside the lock.  The old code called unregister_session()
+        # recursively while holding the RLock; the RLock did allow re-entry from
+        # the same thread but the nested acquire/release depth grew with tree depth
+        # and made the stack frame cost O(depth).  Separating the two phases also
+        # makes the logic easier to follow.
         with self._lock:
             if session_id not in self._sessions:
                 logger.warning(f"Session {session_id} not found for unregistration")
@@ -224,24 +230,29 @@ class SessionRegistry:
                 if session_id in parent.child_session_ids:
                     parent.child_session_ids.remove(session_id)
 
-            # Cascade unregister children
-            for child_id in list(info.child_session_ids):
-                self.unregister_session(
-                    child_id, f"Parent {session_id} unregistered: {reason}"
-                )
+            # Snapshot children before removing the session entry.
+            child_ids = list(info.child_session_ids)
 
             # Remove session
             del self._sessions[session_id]
 
             logger.info(
                 f"Session unregistered: {session_id} (reason={reason}, "
-                f"children_cancelled={len(info.child_session_ids)})"
+                f"children_cancelled={len(child_ids)})"
             )
 
-            # Notify callbacks
-            self._notify_unregistered(info)
+        # Notify callbacks outside the lock (callbacks may themselves call
+        # registry methods, so holding the lock here could deadlock).
+        self._notify_unregistered(info)
 
-            return True
+        # Cascade unregister children outside the lock so each recursive call
+        # acquires its own top-level lock entry rather than re-entering.
+        for child_id in child_ids:
+            self.unregister_session(
+                child_id, f"Parent {session_id} unregistered: {reason}"
+            )
+
+        return True
 
     def update_session_status(
         self,

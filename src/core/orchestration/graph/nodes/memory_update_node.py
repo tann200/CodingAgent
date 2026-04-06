@@ -1,8 +1,9 @@
 import asyncio
+import atexit
 import logging
 import re
 from pathlib import Path
-from typing import Dict, Any, List
+from typing import Mapping, Dict, Any, List
 from concurrent.futures import ThreadPoolExecutor
 
 from src.core.orchestration.graph.state import AgentState
@@ -28,14 +29,21 @@ from src.core.memory.advanced_features import (
 # consumed by any planning or context-building pathway.  Disabled by default;
 # set ENABLE_ADVANCED_MEMORY=1 to opt in.
 import os as _os
-_ADVANCED_MEMORY_ENABLED: bool = _os.environ.get("ENABLE_ADVANCED_MEMORY", "0").strip() == "1"
+
+_ADVANCED_MEMORY_ENABLED: bool = (
+    _os.environ.get("ENABLE_ADVANCED_MEMORY", "0").strip() == "1"
+)
 
 logger = logging.getLogger(__name__)
 
 _executor = ThreadPoolExecutor(max_workers=4)
+# LOW-9 fix: register a shutdown hook so the executor's worker threads are
+# joined when the interpreter exits, preventing ResourceWarning and ensuring
+# any in-flight futures complete before the process terminates.
+atexit.register(_executor.shutdown, wait=True)
 
 
-async def memory_update_node(state: AgentState, config: Any) -> Dict[str, Any]:
+async def memory_update_node(state: Mapping[str, Any], config: Any) -> Dict[str, Any]:
     """
     Memory Update Layer: Persists distilled context and triggers advanced memory features.
     Memory operations are parallelized for performance.
@@ -65,11 +73,14 @@ async def memory_update_node(state: AgentState, config: Any) -> Dict[str, Any]:
     _budget_forced_compact = False
     try:
         from src.core.orchestration.token_budget import get_token_budget_monitor
+
         _monitor = get_token_budget_monitor()
         if _monitor.check_budget(state) == "compact":
             _budget_forced_compact = True
             _monitor.check_and_prepare_compaction(session_id or "default")
-            logger.info("memory_update_node: token budget threshold reached — forcing compact")
+            logger.info(
+                "memory_update_node: token budget threshold reached — forcing compact"
+            )
     except Exception as _budget_err:
         logger.debug(f"memory_update_node: token budget check skipped: {_budget_err}")
 
@@ -91,7 +102,12 @@ async def memory_update_node(state: AgentState, config: Any) -> Dict[str, Any]:
                     f"(history has {len(history)} messages)"
                 )
 
-                summary = compact_messages_to_prose(history, working_dir=workdir_path)
+                if compact_messages_to_prose is not None:
+                    summary = compact_messages_to_prose(
+                        history, working_dir=workdir_path
+                    )
+                else:
+                    summary = "Context compacted."
 
                 essential = [
                     {"role": "system", "content": "Session Summary:\n" + summary},
@@ -109,7 +125,12 @@ async def memory_update_node(state: AgentState, config: Any) -> Dict[str, Any]:
                 # HR-2 fix: capture distill_context return value and apply compacted
                 # history to state so the context window is actually reduced when the
                 # 50-message threshold triggers inside distill_context.
-                distilled = distill_context(state["history"], working_dir=workdir_path)
+                if distill_context is not None:
+                    distilled = distill_context(
+                        state["history"], working_dir=workdir_path
+                    )
+                else:
+                    distilled = None
                 compacted = distilled.get("_compacted_history") if distilled else None
                 if compacted:
                     _updated_history = compacted
@@ -261,12 +282,16 @@ async def memory_update_node(state: AgentState, config: Any) -> Dict[str, Any]:
             run_refactoring_agent(),
             run_skill_learner(),
         ]
-        logger.info("memory_update_node: running advanced memory features (ENABLE_ADVANCED_MEMORY=1)")
+        logger.info(
+            "memory_update_node: running advanced memory features (ENABLE_ADVANCED_MEMORY=1)"
+        )
     else:
         # Always run trajectory logging (pure file write, no LLM cost) even when advanced
         # features are disabled — it provides useful audit trails with zero overhead.
         advanced_tasks = [run_trajectory_logging()]
-        logger.debug("memory_update_node: advanced memory features disabled (set ENABLE_ADVANCED_MEMORY=1 to enable)")
+        logger.debug(
+            "memory_update_node: advanced memory features disabled (set ENABLE_ADVANCED_MEMORY=1 to enable)"
+        )
 
     # Use return_exceptions=True so all tasks run even if some fail (H14 fix)
     results = await asyncio.gather(

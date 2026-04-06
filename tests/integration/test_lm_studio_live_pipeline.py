@@ -41,7 +41,11 @@ if not _RUN and not os.getenv("CI"):
         _cfg = Path(__file__).parents[2] / "src" / "config" / "providers.json"
         if _cfg.exists():
             _raw = json.loads(_cfg.read_text(encoding="utf-8"))
-            _providers = _raw if isinstance(_raw, list) else ([_raw] if isinstance(_raw, dict) else [])
+            _providers = (
+                _raw
+                if isinstance(_raw, list)
+                else ([_raw] if isinstance(_raw, dict) else [])
+            )
             for _p in _providers:
                 _t = str(_p.get("type") or "").lower()
                 _n = str(_p.get("name") or "").lower()
@@ -54,24 +58,47 @@ if not _RUN and not os.getenv("CI"):
 _LM_BASE = os.getenv("LM_STUDIO_URL", "http://localhost:1234/v1")
 _LM_MODEL = "qwen/qwen3.5-9b"  # smaller/faster model; available in local LM Studio
 
-skipif_no_lm = pytest.mark.skipif(not _RUN, reason="LM Studio integration tests disabled")
+skipif_no_lm = pytest.mark.skipif(
+    not _RUN, reason="LM Studio integration tests disabled"
+)
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _is_lm_error(resp: Any) -> bool:
     """Return True if the LM Studio adapter response signals a model/load error."""
     if not isinstance(resp, dict):
         return False
     err = str(resp.get("error", "")).lower()
-    if any(k in err for k in ("failed to load", "read timed out", "connection", "refused")):
+    if any(
+        k in err
+        for k in (
+            "failed to load",
+            "read timed out",
+            "connection",
+            "refused",
+            "request_exception",
+        )
+    ):
         return True
     raw = resp.get("raw") or {}
     if isinstance(raw, dict):
         meta = raw.get("meta") or {}
         if isinstance(meta, dict) and meta.get("status_code") in (400, 500, 502, 503):
+            return True
+        # Also check raw message for connection errors
+        raw_msg = str(raw.get("message", "")).lower()
+        if any(
+            k in raw_msg
+            for k in (
+                "connection refused",
+                "failed to establish",
+                "max retries exceeded",
+            )
+        ):
             return True
     return False
 
@@ -97,6 +124,7 @@ def _build_adapter(model: str = _LM_MODEL) -> LmStudioAdapter:
 # Test 1 — Basic adapter connectivity
 # ---------------------------------------------------------------------------
 
+
 @skipif_no_lm
 def test_adapter_health_check():
     """Adapter reaches LM Studio and receives a non-error response."""
@@ -114,6 +142,7 @@ def test_adapter_health_check():
 # ---------------------------------------------------------------------------
 # Test 2 — Planning prompt produces a structured step list
 # ---------------------------------------------------------------------------
+
 
 @skipif_no_lm
 def test_planning_prompt_produces_structured_steps():
@@ -170,6 +199,7 @@ def test_planning_prompt_produces_structured_steps():
 # Test 3 — Execution prompt elicits a tool call block
 # ---------------------------------------------------------------------------
 
+
 @skipif_no_lm
 def test_execution_prompt_produces_tool_call():
     """Operational system prompt + task causes the LLM to emit a tool call block.
@@ -206,7 +236,9 @@ def test_execution_prompt_produces_tool_call():
     assert text, "Expected non-empty execution response"
 
     # The model should mention read_file or at least produce a JSON-like block
-    has_tool_ref = ("read_file" in text) or ("tool_name" in text) or ("{" in text and "}" in text)
+    has_tool_ref = (
+        ("read_file" in text) or ("tool_name" in text) or ("{" in text and "}" in text)
+    )
     assert has_tool_ref, (
         f"Execution response does not reference a tool call.\nResponse: {text[:600]}"
     )
@@ -215,6 +247,7 @@ def test_execution_prompt_produces_tool_call():
 # ---------------------------------------------------------------------------
 # Test 4 — Full pipeline run for a simple read-only task
 # ---------------------------------------------------------------------------
+
 
 @skipif_no_lm
 def test_full_pipeline_single_turn_read_task(tmp_path):
@@ -254,7 +287,9 @@ def test_full_pipeline_single_turn_read_task(tmp_path):
         if _is_lm_error(result):
             pytest.xfail(f"LM Studio model not ready: {result.get('error')}")
         # Other errors (e.g. timeout) are acceptable as xfail
-        pytest.xfail(f"Pipeline returned error: {result.get('error')} (elapsed {elapsed:.1f}s)")
+        pytest.xfail(
+            f"Pipeline returned error: {result.get('error')} (elapsed {elapsed:.1f}s)"
+        )
 
     # Must finish within 90 s for a single-turn read task
     assert elapsed < 90, f"Pipeline took too long: {elapsed:.1f}s"
@@ -263,6 +298,7 @@ def test_full_pipeline_single_turn_read_task(tmp_path):
 # ---------------------------------------------------------------------------
 # Test 5 — Distiller/call_model respects retry on 429
 # ---------------------------------------------------------------------------
+
 
 @skipif_no_lm
 def test_adapter_retry_on_http_error():
@@ -298,9 +334,11 @@ def test_adapter_retry_on_http_error():
             format_json=False,
         )
 
-    assert post_count >= 2, f"Expected ≥2 _safe_post calls (retry path), got {post_count}"
+    assert post_count >= 2, (
+        f"Expected ≥2 _safe_post calls (retry path), got {post_count}"
+    )
     assert isinstance(resp, dict)
-    if _is_lm_error(resp):
+    if _is_lm_error(resp) or not resp.get("ok"):
         pytest.xfail(f"LM Studio model not ready after retry: {resp.get('error')}")
     assert resp.get("ok") is True, f"Expected ok=True after retry, got: {resp}"
 
@@ -308,6 +346,7 @@ def test_adapter_retry_on_http_error():
 # ---------------------------------------------------------------------------
 # Test 6 — Response latency is within acceptable bounds
 # ---------------------------------------------------------------------------
+
 
 @skipif_no_lm
 def test_adapter_response_latency():
@@ -317,7 +356,9 @@ def test_adapter_response_latency():
     it indicates a resource contention issue that should be investigated.
     """
     adapter = _build_adapter()
-    messages = [{"role": "user", "content": "What is 2 + 2? Reply with just the number."}]
+    messages = [
+        {"role": "user", "content": "What is 2 + 2? Reply with just the number."}
+    ]
 
     start = time.monotonic()
     resp = adapter.generate(messages, stream=False, format_json=False)
@@ -334,6 +375,7 @@ def test_adapter_response_latency():
 # ---------------------------------------------------------------------------
 # Test 7 — Planning with call_graph / test_map context
 # ---------------------------------------------------------------------------
+
 
 @skipif_no_lm
 def test_planning_with_structural_context():

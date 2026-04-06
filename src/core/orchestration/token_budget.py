@@ -99,7 +99,10 @@ class TokenBudgetMonitor:
         """Update budget for a session."""
         budget = self.get_budget(session_id)
         budget.used_tokens = used_tokens
-        if max_tokens:
+        # LOW-7 fix: `if max_tokens:` evaluates to False when max_tokens=0,
+        # silently ignoring an explicit caller-supplied zero limit.  Use an
+        # explicit None check so 0 is treated as a valid (if unusual) limit.
+        if max_tokens is not None:
             budget.max_tokens = max_tokens
         if turn is not None:
             budget.current_turn = turn

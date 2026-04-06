@@ -88,7 +88,9 @@ class MCPStdioServer:
                 logger.error(f"Failed to get EventBus: {e}")
         return self._event_bus
 
-    def _parse_json_rpc(self, line: str) -> Optional[JsonRpcRequest]:
+    def _parse_json_rpc(
+        self, line: str
+    ) -> "Optional[JsonRpcRequest | JsonRpcNotification]":
         """Parse a JSON-RPC message from string."""
         try:
             data = json.loads(line.strip())
@@ -204,7 +206,9 @@ class MCPStdioServer:
                     return self._build_response(
                         request,
                         {
-                            "content": [{"type": "text", "text": json.dumps(tool_result)}],
+                            "content": [
+                                {"type": "text", "text": json.dumps(tool_result)}
+                            ],
                             "isError": not tool_result.get("ok", True),
                         },
                     )
@@ -235,16 +239,43 @@ class MCPStdioServer:
                 if self._orchestrator is not None:
                     _workdir = getattr(self._orchestrator, "working_dir", None)
                 if _workdir:
-                    _base = _Path(_workdir)
-                    _SKIP = {".git", "__pycache__", ".venv", "node_modules", ".agent-context"}
-                    for p in sorted(_base.rglob("*")):
-                        if any(part in _SKIP for part in p.parts):
-                            continue
-                        if p.is_file() and len(resources) < 200:
-                            rel = str(p.relative_to(_base))
-                            resources.append(
-                                {"uri": f"file://{rel}", "name": rel, "mimeType": "text/plain"}
-                            )
+                    _base = _Path(_workdir).resolve()
+                    # MED-10 fix: validate that _base is a non-root directory to
+                    # prevent accidentally enumerating the whole filesystem.
+                    if _base == _base.anchor or not _base.is_dir():
+                        logger.warning(
+                            "MCPStdioServer: refusing resources/list for root/invalid path %s",
+                            _base,
+                        )
+                    else:
+                        _SKIP = {
+                            ".git",
+                            "__pycache__",
+                            ".venv",
+                            "node_modules",
+                            ".agent-context",
+                        }
+                        _MAX_DEPTH = 8
+                        _MAX_RESULTS = 200
+                        for p in sorted(_base.rglob("*")):
+                            # Enforce depth limit relative to _base
+                            try:
+                                _rel_parts = p.relative_to(_base).parts
+                                if len(_rel_parts) > _MAX_DEPTH:
+                                    continue
+                            except ValueError:
+                                continue
+                            if any(part in _SKIP for part in p.parts):
+                                continue
+                            if p.is_file() and len(resources) < _MAX_RESULTS:
+                                rel = str(p.relative_to(_base))
+                                resources.append(
+                                    {
+                                        "uri": f"file://{rel}",
+                                        "name": rel,
+                                        "mimeType": "text/plain",
+                                    }
+                                )
             except Exception as _re:
                 logger.debug(f"MCPStdioServer: resources/list error: {_re}")
             result = {"resources": resources}
@@ -261,15 +292,19 @@ class MCPStdioServer:
                 if self._orchestrator is not None:
                     _workdir = getattr(self._orchestrator, "working_dir", None)
                 if _workdir and uri.startswith("file://"):
-                    rel_path = uri[len("file://"):]
+                    rel_path = uri[len("file://") :]
                     target = (_Path(_workdir) / rel_path).resolve()
                     base = _Path(_workdir).resolve()
                     # Security: reject path traversal outside working dir
                     if str(target).startswith(str(base)) and target.is_file():
                         text = target.read_text(encoding="utf-8", errors="replace")
-                        contents = [{"uri": uri, "mimeType": "text/plain", "text": text}]
+                        contents = [
+                            {"uri": uri, "mimeType": "text/plain", "text": text}
+                        ]
                     else:
-                        return self._build_error_response(request, -32602, "Resource not found")
+                        return self._build_error_response(
+                            request, -32602, "Resource not found"
+                        )
             except Exception as _re:
                 return self._build_error_response(request, -32603, str(_re))
             result = {"contents": contents}
@@ -281,10 +316,14 @@ class MCPStdioServer:
             try:
                 from pathlib import Path as _Path
 
-                _roles_dir = _Path(__file__).parents[3] / "config" / "agent-brain" / "roles"
+                _roles_dir = (
+                    _Path(__file__).parents[3] / "config" / "agent-brain" / "roles"
+                )
                 if _roles_dir.exists():
                     for f in sorted(_roles_dir.glob("*.md")):
-                        prompts.append({"name": f.stem, "description": f"Role prompt: {f.stem}"})
+                        prompts.append(
+                            {"name": f.stem, "description": f"Role prompt: {f.stem}"}
+                        )
             except Exception:
                 pass
             result = {"prompts": prompts}
@@ -297,13 +336,19 @@ class MCPStdioServer:
             try:
                 from pathlib import Path as _Path
 
-                _roles_dir = _Path(__file__).parents[3] / "config" / "agent-brain" / "roles"
+                _roles_dir = (
+                    _Path(__file__).parents[3] / "config" / "agent-brain" / "roles"
+                )
                 _prompt_file = _roles_dir / f"{name}.md"
                 if _prompt_file.exists():
                     text = _prompt_file.read_text(encoding="utf-8")
-                    messages = [{"role": "user", "content": {"type": "text", "text": text}}]
+                    messages = [
+                        {"role": "user", "content": {"type": "text", "text": text}}
+                    ]
                 else:
-                    return self._build_error_response(request, -32602, f"Prompt '{name}' not found")
+                    return self._build_error_response(
+                        request, -32602, f"Prompt '{name}' not found"
+                    )
             except Exception as _pe:
                 return self._build_error_response(request, -32603, str(_pe))
             result = {"messages": messages}
@@ -314,25 +359,62 @@ class MCPStdioServer:
             messages_in = params.get("messages", [])
             max_tokens = params.get("maxTokens", 256)
             try:
-                if self._orchestrator is not None and hasattr(self._orchestrator, "call_model"):
+                if self._orchestrator is not None and hasattr(
+                    self._orchestrator, "call_model"
+                ):
                     # Build minimal message list for call_model
-                    _msgs = [{"role": m.get("role", "user"), "content": m.get("content", {}).get("text", "")} for m in messages_in]
+                    _msgs = [
+                        {
+                            "role": m.get("role", "user"),
+                            "content": m.get("content", {}).get("text", ""),
+                        }
+                        for m in messages_in
+                    ]
                     import asyncio as _asyncio
-                    resp = _asyncio.run(
-                        self._orchestrator.call_model(_msgs, max_tokens=max_tokens)
-                    )
+                    import concurrent.futures as _cf
+
+                    # Use a dedicated thread+loop to avoid RuntimeError when
+                    # _handle_request is called from inside run_async() which
+                    # already has a running event loop.
+                    def _call_model_in_new_loop():
+                        _loop = _asyncio.new_event_loop()
+                        try:
+                            return _loop.run_until_complete(
+                                self._orchestrator.call_model(
+                                    _msgs, max_tokens=max_tokens
+                                )
+                            )
+                        finally:
+                            _loop.close()
+
+                    with _cf.ThreadPoolExecutor(max_workers=1) as _pool:
+                        resp = _pool.submit(_call_model_in_new_loop).result(timeout=60)
                     if isinstance(resp, str):
                         text = resp
                     elif isinstance(resp, dict):
                         ch = (resp.get("choices") or [{}])[0].get("message", {})
-                        text = ch.get("content", "") if isinstance(ch, dict) else str(ch)
+                        text = (
+                            ch.get("content", "") if isinstance(ch, dict) else str(ch)
+                        )
                     else:
                         text = str(resp)
-                    result = {"content": {"type": "text", "text": text}, "model": "coding-agent", "stopReason": "endTurn"}
+                    result = {
+                        "content": {"type": "text", "text": text},
+                        "model": "coding-agent",
+                        "stopReason": "endTurn",
+                    }
                 else:
-                    result = {"content": {"type": "text", "text": ""}, "model": "coding-agent", "stopReason": "endTurn"}
+                    result = {
+                        "content": {"type": "text", "text": ""},
+                        "model": "coding-agent",
+                        "stopReason": "endTurn",
+                    }
             except Exception as _se:
-                result = {"content": {"type": "text", "text": ""}, "model": "coding-agent", "stopReason": "error"}
+                result = {
+                    "content": {"type": "text", "text": ""},
+                    "model": "coding-agent",
+                    "stopReason": "error",
+                }
             return self._build_response(request, result)
 
         elif method == "completion/complete":
@@ -345,22 +427,32 @@ class MCPStdioServer:
                 if ref.get("type") == "ref/prompt":
                     # Suggest role prompt names matching the partial value
                     from pathlib import Path as _Path
-                    _roles_dir = _Path(__file__).parents[3] / "config" / "agent-brain" / "roles"
+
+                    _roles_dir = (
+                        _Path(__file__).parents[3] / "config" / "agent-brain" / "roles"
+                    )
                     if _roles_dir.exists():
                         completion_values = [
-                            f.stem for f in _roles_dir.glob("*.md")
+                            f.stem
+                            for f in _roles_dir.glob("*.md")
                             if f.stem.startswith(_arg_val)
                         ]
                 elif ref.get("type") == "ref/resource":
                     # Suggest file URIs matching the partial value
-                    _workdir = getattr(self._orchestrator, "working_dir", None) if self._orchestrator else None
+                    _workdir = (
+                        getattr(self._orchestrator, "working_dir", None)
+                        if self._orchestrator
+                        else None
+                    )
                     if _workdir:
                         from pathlib import Path as _Path
+
                         _base = _Path(_workdir)
                         completion_values = [
                             f"file://{str(p.relative_to(_base))}"
                             for p in _base.rglob("*")
-                            if p.is_file() and str(p.relative_to(_base)).startswith(_arg_val)
+                            if p.is_file()
+                            and str(p.relative_to(_base)).startswith(_arg_val)
                         ][:20]
             except Exception:
                 pass
@@ -485,10 +577,32 @@ class MCPStdioServer:
         self._subscribe_to_event_bus()
 
         logger.info("MCPStdioServer: starting (stdin/stdout mode)")
+        # TUI-08: notify TUI that MCP server is live
+        try:
+            bus = self._get_event_bus()
+            if bus:
+                bus.publish(
+                    "mcp.server.status",
+                    {"running": True, "count": 1, "server_names": ["codingagent"]},
+                )
+        except Exception:
+            pass
 
         # Run stdin reader in thread pool since it's blocking
         loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, self._read_stdin, loop)
+        try:
+            await loop.run_in_executor(None, self._read_stdin, loop)
+        finally:
+            # TUI-08: notify TUI that MCP server has stopped
+            try:
+                bus = self._get_event_bus()
+                if bus:
+                    bus.publish(
+                        "mcp.server.status",
+                        {"running": False, "count": 0, "server_names": []},
+                    )
+            except Exception:
+                pass
 
     def run(self) -> None:
         """Run the MCP STDIO server synchronously."""
@@ -496,6 +610,16 @@ class MCPStdioServer:
         self._subscribe_to_event_bus()
 
         logger.info("MCPStdioServer: starting (stdin/stdout mode)")
+        # TUI-08: notify TUI that MCP server is live
+        try:
+            bus = self._get_event_bus()
+            if bus:
+                bus.publish(
+                    "mcp.server.status",
+                    {"running": True, "count": 1, "server_names": ["codingagent"]},
+                )
+        except Exception:
+            pass
 
         try:
             while self._running:
@@ -517,6 +641,16 @@ class MCPStdioServer:
             logger.error(f"MCPStdioServer error: {e}")
         finally:
             self._running = False
+            # TUI-08: notify TUI that MCP server has stopped
+            try:
+                bus = self._get_event_bus()
+                if bus:
+                    bus.publish(
+                        "mcp.server.status",
+                        {"running": False, "count": 0, "server_names": []},
+                    )
+            except Exception:
+                pass
 
 
 def main():

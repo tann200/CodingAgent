@@ -3,6 +3,7 @@ import asyncio
 
 from src.core.inference.adapters.lm_studio_adapter import LmStudioAdapter
 from src.core.inference.llm_manager import call_model, get_provider_manager
+import src.core.inference.llm_manager as _llm_manager_mod
 
 
 def make_response(status_code=200, json_data=None, text_data=None):
@@ -93,9 +94,16 @@ def test_llm_manager_fallback(monkeypatch):
     pm = get_provider_manager()
     _orig_providers = dict(pm._providers)
     _orig_initialized = pm._initialized
+    _orig_models_cache_entry = pm._models_cache.pop("lm_studio", None)
     try:
         pm._providers["lm_studio"] = MockAdapter()
         pm._initialized = True
+        # Clear module-level model cache AFTER installing the mock so the adapter
+        # probe in _get_models_for_provider_key discovers the MockAdapter's models.
+        # This prevents cross-test contamination from a cached empty list (ET-4 fix).
+        with _llm_manager_mod._MODEL_CACHE_LOCK:
+            _llm_manager_mod._MODEL_CACHE.pop("lm_studio", None)
+            _llm_manager_mod._MODEL_CACHE_TIME.pop("lm_studio", None)
 
         # enable fallback via env
         monkeypatch.setenv("LLM_MANAGER_ENABLE_MODEL_FALLBACK", "1")
@@ -122,3 +130,11 @@ def test_llm_manager_fallback(monkeypatch):
     finally:
         pm._providers = _orig_providers
         pm._initialized = _orig_initialized
+        if _orig_models_cache_entry is not None:
+            pm._models_cache["lm_studio"] = _orig_models_cache_entry
+        else:
+            pm._models_cache.pop("lm_studio", None)
+        # Also clear module-level cache so restored state is reflected
+        with _llm_manager_mod._MODEL_CACHE_LOCK:
+            _llm_manager_mod._MODEL_CACHE.pop("lm_studio", None)
+            _llm_manager_mod._MODEL_CACHE_TIME.pop("lm_studio", None)

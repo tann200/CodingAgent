@@ -295,7 +295,7 @@ class TestMultiFileAtomicity:
         orch.execute_tool({"name": "write_file", "arguments": {"path": "file2.py", "content": "new2"}})
 
         # Both should be in the step snapshot
-        snap = orch.rollback_manager.snapshots.get(step_id, [])
+        snap = orch.rollback_manager.snapshots.get(step_id, []) # type: ignore[arg-type]
         paths = {s.path for s in snap}
         assert "file1.py" in paths
         assert "file2.py" in paths

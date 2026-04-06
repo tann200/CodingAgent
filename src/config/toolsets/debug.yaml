@@ -1,17 +1,41 @@
 name: debug
 description: Toolset for debugging and troubleshooting tasks
 tools:
+  # Reading
   - read_file
   - list_files
+  - glob
   - grep
   - search_code
   - find_symbol
   - find_references
+  - batched_file_read
+  - multi_file_summary
+  # Writing (limited — debug can edit to fix)
+  - edit_file_atomic
+  - multiedit
+  # Verification
   - run_tests
   - run_linter
   - syntax_check
+  # LSP diagnostics for debug workflow (S2-B)
+  - lsp_diagnostics
+  - lsp_symbols
+  - lsp_hover
+  - lsp_references
+  - lsp_definition
+  # Shell
   - bash
+  - bash_readonly
+  - check_background_task
+  # Git
+  - git_status
+  - git_diff
+  - git_log
   - get_git_diff
+  # Parallel execution
+  - batch
+  # Memory
   - memory_search
-  - batched_file_read
-  - multi_file_summary
+  # Interaction
+  - ask_user

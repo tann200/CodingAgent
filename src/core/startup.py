@@ -26,6 +26,10 @@ async def provider_health_check(timeout: float = 5.0) -> Dict[str, Dict[str, Any
 
     for key in pm.list_providers():
         adapter = pm.get_provider(key)
+        # Skip health check for explicitly inactive providers (config stored on adapter)
+        if adapter and isinstance(getattr(adapter, "provider", None), dict):
+            if adapter.provider.get("active") is False:
+                continue
         res: Dict[str, Any] = {
             "adapter_present": bool(adapter),
             "ok": False,

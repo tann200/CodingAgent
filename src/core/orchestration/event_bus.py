@@ -55,6 +55,25 @@ def new_correlation_id() -> str:
     return cid
 
 
+def run_with_correlation(loop, executor, fn, *args):
+    """D-07: Run *fn* in *executor* with the current correlation ID propagated.
+
+    ``loop.run_in_executor(None, fn, *args)`` does NOT propagate ContextVar
+    values (including the correlation ID) into the worker thread.  This helper
+    copies the current context and runs the callable inside it so that log
+    records and EventBus publishes inside the thread carry the same ID.
+
+    Usage::
+
+        from src.core.orchestration.event_bus import run_with_correlation
+
+        result = await run_with_correlation(loop, None, my_sync_fn, arg1, arg2)
+    """
+    import contextvars
+    ctx = contextvars.copy_context()
+    return loop.run_in_executor(executor, ctx.run, fn, *args)
+
+
 class MessagePriority(IntEnum):
     LOW = 0
     NORMAL = 1
@@ -83,6 +102,11 @@ class EventBus:
             raise TypeError("callback must be callable")
         with self._lock:
             self._subscribers.setdefault(event_name, []).append(callback)
+
+    def has_subscribers(self, event_name: str) -> bool:
+        """Return True if any subscriber is registered for event_name."""
+        with self._lock:
+            return bool(self._subscribers.get(event_name))
 
     def unsubscribe(self, event_name: str, callback: Callable[[Any], None]) -> None:
         with self._lock:
@@ -117,7 +141,7 @@ class EventBus:
             try:
                 cb(payload)
             except Exception as _exc:
-                _logger.debug(
+                _logger.warning(
                     "EventBus: subscriber %r raised on event %r: %s",
                     cb,
                     event_name,
@@ -230,10 +254,19 @@ class EventBus:
 
 
 _default_bus: EventBus | None = None
+_bus_lock = threading.Lock()
 
 
 def get_event_bus() -> EventBus:
+    """Return the process-wide default EventBus, creating it on first call.
+
+    Uses a double-checked lock so the singleton is safe under concurrent
+    initialisation from multiple threads (e.g. executor threads starting before
+    the main thread has completed setup).
+    """
     global _default_bus
     if _default_bus is None:
-        _default_bus = EventBus()
+        with _bus_lock:
+            if _default_bus is None:  # double-checked lock
+                _default_bus = EventBus()
     return _default_bus

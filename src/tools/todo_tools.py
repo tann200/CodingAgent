@@ -45,11 +45,11 @@ def _save_todo(workdir: str, steps: List[Dict[str, Any]]) -> None:
 
     # Write human-readable Markdown with status and dependency annotations
     _STATUS_ICONS = {
-        "pending":     "[ ]",
+        "pending": "[ ]",
         "in_progress": "[~]",
-        "blocked":     "[!]",
-        "done":        "[x]",
-        "verified":    "[✓]",
+        "blocked": "[!]",
+        "done": "[x]",
+        "verified": "[✓]",
     }
     lines = ["# Agent TODO\n"]
     for i, step in enumerate(steps):
@@ -181,6 +181,17 @@ def manage_todo(
                     "status": "error",
                     "error": f"step_id {step_id} out of range (0-{len(current) - 1})",
                 }
+            # D-04: Idempotency guard — no-op if step is already done
+            if current[step_id].get("status") == "done" or current[step_id].get("done"):
+                done_count = sum(1 for s in current if s.get("done"))
+                return {
+                    "status": "no_change",
+                    "action": "checked",
+                    "step_id": step_id,
+                    "done_count": done_count,
+                    "total": len(current),
+                    "steps": current,
+                }
             current[step_id]["done"] = True
             current[step_id]["status"] = "done"
             _save_todo(workdir, current)
@@ -188,7 +199,10 @@ def manage_todo(
             logger.info(
                 f"manage_todo: checked step {step_id} ({done_count}/{len(current)} done)"
             )
-            return {
+            # CP-5: when all steps are done, set verification_nudge_needed so the
+            # agent is reminded to verify its work before declaring the task complete.
+            all_done = done_count == len(current)
+            result: Dict[str, Any] = {
                 "status": "ok",
                 "action": "checked",
                 "step_id": step_id,
@@ -196,6 +210,13 @@ def manage_todo(
                 "total": len(current),
                 "steps": current,
             }
+            if all_done:
+                result["verification_nudge_needed"] = True
+                result["message"] = (
+                    "All steps completed. Please verify your work before "
+                    "declaring the task done."
+                )
+            return result
 
         elif action == "update":
             if step_id is None or description is None:
@@ -287,6 +308,14 @@ def manage_todo(
                     "status": "error",
                     "error": f"Step {active[0]} is already in_progress. Complete or block it first.",
                 }
+            # D-04: Idempotency guard — no-op if step is already in_progress
+            if current[step_id].get("status") == "in_progress":
+                return {
+                    "status": "no_change",
+                    "action": "started",
+                    "step_id": step_id,
+                    "steps": current,
+                }
             current[step_id]["status"] = "in_progress"
             current[step_id]["started_at"] = (
                 __import__("datetime").datetime.now().isoformat()
@@ -356,6 +385,19 @@ def manage_todo(
                 return {
                     "status": "error",
                     "error": f"step_id {step_id} out of range (0-{len(current) - 1})",
+                }
+            # D-04: Idempotency guard — no-op if step is already verified
+            if current[step_id].get("status") == "verified":
+                done_count = sum(
+                    1 for s in current if s.get("status") in ("done", "verified")
+                )
+                return {
+                    "status": "no_change",
+                    "action": "verified",
+                    "step_id": step_id,
+                    "done_count": done_count,
+                    "total": len(current),
+                    "steps": current,
                 }
             current[step_id]["status"] = "verified"
             current[step_id]["completed_at"] = (

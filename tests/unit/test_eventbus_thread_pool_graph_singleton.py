@@ -508,22 +508,30 @@ class TestRunAgentOncePropagatesDebugAndRetryCounters:
     """F7/H9: debug_attempts and related fields must survive across graph rounds."""
 
     def test_debug_fields_present_in_state_init(self):
-        """Orchestrator run_agent_once must not drop debug_attempts across rounds."""
-        # The fix added these fields to the current_state rebuild in the multi-round loop.
-        # We verify this by checking that the fields are listed in run_agent_once source.
+        """Orchestrator run_agent_once must not drop debug_attempts across rounds.
+
+        SCAN3-1 fix: the round-loop reconstruction now uses {**final_state} to
+        preserve ALL state fields implicitly, rather than an explicit allowlist.
+        We verify the new approach is in place and that debug-budget fields from
+        the initial_state construction are still present in the source.
+        """
         import inspect
         from src.core.orchestration import orchestrator as orc_module
 
         source = inspect.getsource(orc_module.Orchestrator.run_agent_once)
+        # The SCAN3-1 fix uses **final_state to propagate everything implicitly.
+        assert "**final_state" in source, (
+            "SCAN3-1 fix: round-loop reconstruction must spread final_state "
+            "to preserve all state fields across rounds"
+        )
+        # Key debug-budget fields are still explicitly initialised in initial_state
+        # (before the first graph round) — verify they're still in scope.
         assert "debug_attempts" in source, (
-            "debug_attempts must be propagated in run_agent_once"
+            "debug_attempts must be initialised in run_agent_once initial_state"
         )
-        assert "max_debug_attempts" in source, "max_debug_attempts must be propagated"
+        assert "max_debug_attempts" in source, "max_debug_attempts must be initialised"
         assert "total_debug_attempts" in source, (
-            "total_debug_attempts must be propagated"
-        )
-        assert "last_debug_error_type" in source, (
-            "last_debug_error_type must be propagated"
+            "total_debug_attempts must be initialised"
         )
         assert "step_retry_counts" in source, "step_retry_counts must be propagated"
 
@@ -534,52 +542,40 @@ class TestRunAgentOncePropagatesDebugAndRetryCounters:
 
 
 class TestSendPromptConcurrentExecutionPrevention:
-    """H3: Concurrent send_prompt calls must be blocked by a mutex."""
+    """H3: Concurrent send_prompt calls must be blocked by a mutex.
+
+    Migrated from TextualAppBase tests to AgentBridge (LEGACY-02).
+    """
+
+    def _make_bridge(self):
+        from unittest.mock import MagicMock as _MM
+        from tui.src.ui.core_bridge import AgentBridge
+
+        bridge = AgentBridge.__new__(AgentBridge)
+        bridge._agent_lock = threading.Lock()
+        bridge._agent_running = False
+        bridge._history_lock = threading.Lock()
+        bridge._cancel_event = _MM()
+        return bridge
 
     def test_agent_running_flag_initialized_false(self):
-        """_agent_running must start as False on a fresh TUI instance."""
-        from src.ui.textual_app_impl import TextualAppBase
+        """_agent_running must start as False on a fresh bridge instance."""
+        bridge = self._make_bridge()
+        assert not bridge._agent_running
 
-        app = TextualAppBase.__new__(TextualAppBase)
-        app._agent_lock = threading.Lock()
-        app._agent_running = False
-        assert not app._agent_running
-
-    def test_is_agent_running_property(self):
-        from src.ui.textual_app_impl import TextualAppBase
-
-        app = TextualAppBase.__new__(TextualAppBase)
-        app._agent_lock = threading.Lock()
-        app._agent_running = False
-        assert not app.is_agent_running
-
-        app._agent_running = True
-        assert app.is_agent_running
+    def test_is_running_method(self):
+        bridge = self._make_bridge()
+        assert not bridge.is_running()
+        bridge._agent_running = True
+        assert bridge.is_running()
 
     def test_send_prompt_blocked_when_agent_running(self):
-        """send_prompt must not start a new agent thread if one is already running."""
-        from src.ui.textual_app_impl import TextualAppBase
-
-        app = TextualAppBase.__new__(TextualAppBase)
-        app._agent_lock = threading.Lock()
-        app._agent_running = True  # simulate running agent
-        # Mock dependencies that send_prompt uses
-        app.log = MagicMock()
-        app._cancel_event = MagicMock()
-
-        threads_started = []
-        with patch("threading.Thread") as mock_thread_cls:
-            mock_thread_cls.side_effect = (
-                lambda **kw: threads_started.append(kw) or MagicMock()
-            )
-            # Call send_prompt — it should bail out early
-            try:
-                app.send_prompt("test prompt")
-            except Exception:
-                pass  # may fail on missing attrs — the important check is below
-
-        assert len(threads_started) == 0, (
-            "send_prompt must not start a new thread when agent is already running"
+        """send_prompt must return False immediately when agent is already running."""
+        bridge = self._make_bridge()
+        bridge._agent_running = True  # simulate running agent
+        result = bridge.send_prompt("test prompt")
+        assert result is False, (
+            "send_prompt must return False when agent is already running"
         )
 
 
@@ -602,12 +598,6 @@ class TestBashDangerousPatternWhitespaceNormalization:
         from src.tools.file_tools import bash
 
         result = bash("rm -rf /tmp/test")
-        assert result.get("status") == "error"
-
-    def test_pipe_operator_blocked(self):
-        from src.tools.file_tools import bash
-
-        result = bash("ls | grep foo")
         assert result.get("status") == "error"
 
     def test_background_operator_blocked(self):

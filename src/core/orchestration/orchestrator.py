@@ -39,6 +39,17 @@ WRITE_TOOLS_REQUIRING_READ = {
     "write_file",
     "edit_by_line_range",
     "apply_patch",
+    # Destructive tools — also subject to the _affected_files scope guard
+    "delete_file",
+    "rename_file",
+    "ast_rename",
+    "manage_todo",  # SEC-2: sync with MODIFYING_TOOLS in loop_guards
+}
+
+# Tools that always require explicit user approval before execution
+PERMISSION_REQUIRED_TOOLS = {
+    "delete_file",
+    "run_bash",
 }
 
 # Import tool_contracts defensively; many CI/test environments may omit heavy deps
@@ -68,6 +79,42 @@ from src.tools import file_tools  # noqa: E402
 from src.tools.registry import register_tool  # noqa: E402
 
 logger = logging.getLogger(__name__)
+
+
+def _write_permission_audit(
+    working_dir: "Any",
+    tool_name: str,
+    args: dict,
+    decision: str,
+    reason: str = "",
+) -> None:
+    """PERM-W5: Append a permission audit entry to .agent/permission_audit.jsonl.
+
+    Each line is a JSON object with fields: timestamp, tool, decision, reason.
+    The file uses append-only JSONL so it never grows unboundedly per-process
+    (a new process or session resets nothing — the file accumulates across runs).
+    Args are not logged to avoid leaking sensitive values.
+    """
+    import json as _json
+    import datetime as _dt
+    from pathlib import Path as _Path
+
+    try:
+        wd = _Path(str(working_dir)) if working_dir else _Path.cwd()
+        audit_path = wd / ".agent" / "permission_audit.jsonl"
+        audit_path.parent.mkdir(parents=True, exist_ok=True)
+        entry = _json.dumps(
+            {
+                "ts": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+                "tool": tool_name,
+                "decision": decision,
+                "reason": reason,
+            }
+        )
+        with audit_path.open("a", encoding="utf-8") as _f:
+            _f.write(entry + "\n")
+    except Exception:
+        pass  # audit failures must never block tool execution
 
 
 def _is_git_repo(path: str) -> bool:
@@ -122,10 +169,23 @@ def _generate_work_summary(
     verified_reads = final_state.get("verified_reads") or []
 
     tool_counts: Dict[str, int] = {}
+    tool_errors: List[str] = []
     for entry in history:
         if entry.get("role") == "tool" and entry.get("tool"):
             tool_name = entry.get("tool", "unknown")
             tool_counts[tool_name] = tool_counts.get(tool_name, 0) + 1
+            # Collect tool-level errors to surface in summary
+            result = entry.get("result") or {}
+            if isinstance(result, dict):
+                err = result.get("error") or result.get("message")
+                if err and result.get("status") == "error":
+                    tool_errors.append(f"{tool_name}: {err}")
+
+    # Determine overall outcome from last_result
+    last_result = final_state.get("last_result") or {}
+    last_ok = last_result.get("ok") or last_result.get("status") == "ok"
+    no_plan_fail = int(final_state.get("no_plan_fail_count") or 0)
+    task_failed = (not last_ok and last_result) or no_plan_fail >= 3
 
     completed_steps = []
     pending_steps = []
@@ -140,6 +200,12 @@ def _generate_work_summary(
     lines = ["", "---", "**Work Summary**", ""]
     lines.append(f"- Task: {task}")
     lines.append(f"- Rounds: {rounds}")
+
+    # Outcome indicator
+    if task_failed:
+        lines.append("- Outcome: ✗ Failed")
+    else:
+        lines.append("- Outcome: ✓ Completed")
 
     if tool_counts:
         tools_str = ", ".join(
@@ -157,6 +223,12 @@ def _generate_work_summary(
 
     if pending_steps:
         lines.append(f"- Pending steps: {len(pending_steps)}")
+
+    # Surface tool errors so the user can see what went wrong
+    if tool_errors:
+        lines.append("- Errors:")
+        for err in tool_errors[-3:]:  # cap at last 3 to keep summary readable
+            lines.append(f"  - ✗ {err}")
 
     # Only show git diff if: git is available AND files were modified during this session
     working_dir = final_state.get("working_dir", ".")
@@ -208,368 +280,34 @@ def _generate_work_summary(
     return "\n".join(lines)
 
 
-# Tool result formatting - organized by tool category
-TOOL_RESULT_FORMATTERS = {
-    # Display-only tools: format for user-friendly output
-    "list_files": lambda r: _format_list_files_result(r),
-    "list_dir": lambda r: _format_list_files_result(r),
-    "read_file": lambda r: _format_read_file_result(r),
-    "grep": lambda r: _format_grep_result(r),
-    "search_code": lambda r: _format_search_result(r),
-    "find_symbol": lambda r: _format_symbol_result(r),
-    # File modification tools with side-by-side diff
-    "edit_file": lambda r: _format_change_summary(
-        r, r.get("path", "unknown"), is_write=False
-    ),
-    "edit_file_atomic": lambda r: _format_change_summary(
-        r, r.get("path", "unknown"), is_write=False
-    ),
-    "write_file": lambda r: _format_change_summary(
-        r, r.get("path", "unknown"), is_write=True
-    ),
-}
-
-
-def _format_list_files_result(result: Dict[str, Any]) -> str:
-    """Format list_files/list_dir results with icons.
-
-    Results are prefixed with '📁' or '📄' to be detected as tool results
-    in the TUI (which avoids 'Assistant:' prefix for cleaner display).
-    """
-    if not isinstance(result, dict):
-        return str(result)
-
-    if "items" in result:
-        items = result["items"]
-        if not items:
-            return "📁 Empty directory"
-
-        lines = []
-        for item in items:
-            if isinstance(item, dict):
-                name = item.get("name", "?")
-                is_dir = item.get("is_dir", False)
-                marker = "📁" if is_dir else "📄"
-                lines.append(f"{marker} {name}")
-            else:
-                lines.append(f"📄 {item}")
-        return "\n".join(lines)
-
-    return str(result)
-
-
-def _format_read_file_result(result: Dict[str, Any]) -> str:
-    """Format read_file results."""
-    if not isinstance(result, dict):
-        return str(result)
-
-    if "content" in result:
-        content = result["content"]
-        path = result.get("path", "unknown")
-        truncated = result.get("truncated", False)
-
-        output = f"File: {path}\n"
-        if truncated:
-            output += "[Content truncated]\n"
-        output += content
-        return output
-
-    return str(result)
-
-
-def _format_grep_result(result: Dict[str, Any]) -> str:
-    """Format grep results."""
-    if not isinstance(result, dict):
-        return str(result)
-
-    if "matches" in result:
-        matches = result["matches"]
-        if not matches:
-            return "No matches found"
-
-        output = f"Found {len(matches)} match(es):\n"
-        for match in matches[:20]:  # Limit to 20 matches
-            if isinstance(match, dict):
-                file_path = match.get("file_path", "?")
-                line_num = match.get("line_number", "?")
-                content = match.get("content", "").strip()
-                output += f"  {file_path}:{line_num}: {content}\n"
-            else:
-                output += f"  {match}\n"
-
-        if len(matches) > 20:
-            output += f"  ... and {len(matches) - 20} more\n"
-        return output.strip()
-
-    return str(result)
-
-
-def _format_search_result(result: Dict[str, Any]) -> str:
-    """Format search_code results."""
-    if not isinstance(result, dict):
-        return str(result)
-
-    if "results" in result:
-        results = result["results"]
-        if not results:
-            return "No results found"
-
-        output = f"Found {len(results)} result(s):\n"
-        for r in results[:10]:  # Limit to 10
-            if isinstance(r, dict):
-                file_path = r.get("file_path", "?")
-                content = r.get("content", "").strip()
-                output += f"  📄 {file_path}\n"
-                if content:
-                    output += f"     {content[:100]}\n"
-            else:
-                output += f"  {r}\n"
-
-        return output.strip()
-
-    return str(result)
-
-
-def _format_symbol_result(result: Dict[str, Any]) -> str:
-    """Format find_symbol results."""
-    if not isinstance(result, dict):
-        return str(result)
-
-    name = result.get("symbol_name", "?")
-    file_path = result.get("file_path", "?")
-    symbol_type = result.get("symbol_type", "symbol")
-    line = result.get("start_line", "?")
-
-    return f"Found {symbol_type} `{name}` at {file_path}:{line}"
-
-
-def _format_edit_result(result: Dict[str, Any]) -> str:
-    """Format edit_file results. Shows diff if available, otherwise minimal info."""
-    if not isinstance(result, dict):
-        return str(result)
-
-    path = result.get("path", "unknown")
-    status = result.get("status", "unknown")
-
-    if status == "ok":
-        lines_added = result.get("lines_added", 0)
-        lines_removed = result.get("lines_removed", 0)
-        diff = result.get("diff", "")
-
-        stats = ""
-        if lines_added or lines_removed:
-            stats = f" [+{lines_added}/-{lines_removed}]"
-
-        if diff:
-            return f"✓ Modified {path}{stats}\n```diff\n{diff}\n```"
-        return f"✓ Modified {path}"
-
-    if status == "error":
-        error = result.get("error", "Unknown error")
-        return f"✗ Edit failed for {path}: {error}"
-
-    if status == "not_found":
-        return f"✗ File not found: {path}"
-
-    return str(result)
-
-
-def _format_write_result(result: Dict[str, Any]) -> str:
-    """Format write_file results. Shows diff if available, otherwise minimal info."""
-    if not isinstance(result, dict):
-        return str(result)
-
-    path = result.get("path", "unknown")
-    status = result.get("status", "unknown")
-
-    if status == "ok":
-        lines_added = result.get("lines_added", 0)
-        lines_removed = result.get("lines_removed", 0)
-        diff = result.get("diff", "")
-        is_new_file = result.get("is_new_file", False)
-
-        prefix = "📄 New file" if is_new_file else "📝 Updated"
-        stats = ""
-        if lines_added or lines_removed:
-            stats = f" [+{lines_added}/-{lines_removed}]"
-
-        if diff:
-            return f"✓ {prefix} {path}{stats}\n```diff\n{diff}\n```"
-        return f"✓ {prefix} {path}"
-
-    if status == "error":
-        error = result.get("error", "Unknown error")
-        return f"✗ Write failed for {path}: {error}"
-
-    if status == "not_found":
-        return f"✗ Directory not found for: {path}"
-
-    return str(result)
-
-
-def _format_side_by_side_diff(unified_diff: str, max_width: int = 80) -> str:
-    """Convert unified diff to side-by-side format for better readability.
-
-    Args:
-        unified_diff: Unified diff string
-        max_width: Maximum width per side (default 80)
-
-    Returns:
-        Formatted string with side-by-side diff view
-    """
-    if not unified_diff:
-        return ""
-
-    lines = unified_diff.strip().split("\n")
-    left_lines = []
-    current_hunk = {"left": [], "right": [], "header": ""}
-
-    def format_line(line: str, is_left: bool) -> str:
-        """Format a single diff line."""
-        if line.startswith("---") or line.startswith("+++"):
-            return line
-        if line.startswith("@@"):
-            return line
-        if line.startswith("-"):
-            return f"[-] {line[1:]}"
-        if line.startswith("+"):
-            return f"[+] {line[1:]}"
-        if line.startswith(" "):
-            return f"    {line[1:]}"
-        return f"    {line}"
-
-    def render_hunk() -> List[str]:
-        """Render the current hunk in side-by-side format."""
-        if not current_hunk["left"] and not current_hunk["right"]:
-            return []
-
-        result = []
-        if current_hunk["header"]:
-            result.append("")
-            result.append(current_hunk["header"])
-            result.append("")
-
-        # Calculate max lengths
-        left_texts = [format_line(left, True) for left in current_hunk["left"]]
-        right_texts = [format_line(right, False) for right in current_hunk["right"]]
-
-        # Pad to same length
-        max_len = max(len(left_texts), len(right_texts))
-        while len(left_texts) < max_len:
-            left_texts.append("")
-        while len(right_texts) < max_len:
-            right_texts.append("")
-
-        # Render side by side
-        separator = "  │  "
-        for i in range(max_len):
-            left = left_texts[i][:max_width].ljust(max_width)
-            right = right_texts[i][:max_width].ljust(max_width)
-            result.append(f"{left}{separator}{right}")
-
-        return result
-
-    for line in lines:
-        if line.startswith("---") or line.startswith("+++"):
-            continue  # Skip file headers in side-by-side
-        elif line.startswith("@@"):
-            # New hunk - render previous
-            rendered = render_hunk()
-            left_lines.extend(rendered)
-            # Start new hunk
-            current_hunk = {"left": [], "right": [], "header": line}
-        elif line.startswith("-"):
-            current_hunk["left"].append(line)
-        elif line.startswith("+"):
-            current_hunk["right"].append(line)
-        elif line.startswith(" "):
-            current_hunk["left"].append(line)
-            current_hunk["right"].append(line)
-
-    # Render final hunk
-    rendered = render_hunk()
-    left_lines.extend(rendered)
-
-    if not left_lines:
-        return unified_diff  # Fallback to unified if parsing fails
-
-    return "\n".join(left_lines)
-
-
-def _format_change_summary(
-    tool_result: Dict[str, Any],
-    file_path: str,
-    is_write: bool = True,
-) -> str:
-    """Generate a formatted change summary with side-by-side diff.
-
-    Args:
-        tool_result: The result from write_file or edit_file
-        file_path: Path to the modified file
-        is_write: True for write_file, False for edit_file
-
-    Returns:
-        Formatted change summary string
-    """
-    if not isinstance(tool_result, dict):
-        return str(tool_result)
-
-    status = tool_result.get("status", "unknown")
-    if status != "ok":
-        return f"✗ {'Write' if is_write else 'Edit'} failed: {tool_result.get('error', 'Unknown error')}"
-
-    diff = tool_result.get("diff", "")
-    lines_added = tool_result.get("lines_added", 0)
-    lines_removed = tool_result.get("lines_removed", 0)
-    is_new_file = tool_result.get("is_new_file", False)
-
-    lines = []
-    if is_new_file:
-        lines.append(f"📄 **New file created:** `{file_path}`")
-    else:
-        prefix = "📝" if is_write else "✏️"
-        lines.append(f"{prefix} **File modified:** `{file_path}`")
-
-    if lines_added or lines_removed:
-        lines.append(f"   [+{lines_added} / -{lines_removed} lines]")
-
-    if diff:
-        lines.append("")
-        lines.append("```diff")
-        lines.append(diff)
-        lines.append("```")
-
-    return "\n".join(lines)
-
-
-def _format_tool_result(result: Any, tool_name: Optional[str] = None) -> str:
-    """Format a tool result for display based on the tool type."""
-    if tool_name and tool_name in TOOL_RESULT_FORMATTERS:
-        return TOOL_RESULT_FORMATTERS[tool_name](result)
-
-    # Default formatting for dict results
-    if isinstance(result, dict):
-        # Check if there's a formatter for any key
-        for key in ["items", "content", "matches", "results"]:
-            if key in result and key in TOOL_RESULT_FORMATTERS:
-                return TOOL_RESULT_FORMATTERS[key](result)
-
-        # Check for diff/patch (future file modification support)
-        if "diff" in result:
-            return f"```diff\n{result['diff']}\n```"
-        if "patch" in result:
-            return f"```diff\n{result['patch']}\n```"
-
-        # Generic dict - show as formatted string
-        status = result.get("status", "ok")
-        if status == "ok":
-            path = result.get("path", "")
-            return f"✓ {path}" if path else "✓ Done"
-        else:
-            error = result.get("error", "Unknown error")
-            return f"✗ {error}"
-
-    return str(result) if result else ""
+# Tool result formatting — moved to tool_result_formatter.py (single responsibility).
+# Re-exported here for backward compatibility with existing imports.
+from src.core.orchestration.tool_result_formatter import (  # noqa: E402
+    TOOL_RESULT_FORMATTERS,
+    format_tool_result as _format_tool_result,
+    _format_side_by_side_diff,
+    _format_list_files_result,
+    _format_read_file_result,
+    _format_grep_result,
+    _format_search_result,
+    _format_symbol_result,
+    _format_change_summary,
+)
+
+# ── TUI-03/TUI-04: approval gate registries — moved to approval_gate.py ──────
+# Re-exported here for backward compatibility (file_tools.py imports
+# register_bash_gate and _bash_denied from this module).
+import threading as _threading  # noqa: E402 (used by ToolRegistry below)
+from src.core.orchestration.approval_gate import (  # noqa: E402
+    _pending_bash,
+    _bash_denied,
+    _pending_tool,
+    _tool_denied,
+    register_bash_gate,
+    resolve_bash_gate,
+    register_tool_gate,
+    resolve_tool_gate,
+)
 
 
 class ToolRegistry:
@@ -602,6 +340,15 @@ class ToolRegistry:
 
     def list(self) -> List[str]:
         return list(self.tools.keys())
+
+    def filter_by_names(self, names: List[str]) -> "ToolRegistry":
+        """Return a new ToolRegistry containing only tools whose names are in *names*."""
+        filtered = ToolRegistry()
+        for name in names:
+            meta = self.tools.get(name)
+            if meta:
+                filtered.tools[name] = meta
+        return filtered
 
     def get_openai_functions(self) -> List[Dict[str, Any]]:
         """Convert registered tools to OpenAI function-calling format.
@@ -837,12 +584,41 @@ def example_registry() -> ToolRegistry:
         "bash",
         file_tools.bash,
         side_effects=["execute"],
-        description="bash(command) -> Execute a safe, allowlisted shell command (read-only system queries, git, test runners, compilers). Shell operators (|, &&, >) and destructive commands are blocked.",
+        description=(
+            "bash(command, timeout_secs=60, run_in_background=False) -> "
+            "Execute a safe, allowlisted shell command (read-only queries, git, test runners, compilers). "
+            "Shell operators (|, &&, >) and destructive commands are blocked. "
+            "Returns stdout, stderr, returncode, interrupted, no_output_expected; "
+            "stdout_truncated/stderr_truncated when output was cut. "
+            "Prefer bash_readonly for pure read-only inspection."
+        ),
+    )
+    reg.register(
+        "bash_readonly",
+        file_tools.bash_readonly,
+        side_effects=["execute"],
+        description=(
+            "bash_readonly(command, timeout_secs=60) -> "
+            "Execute a read-only shell command (ls, cat, grep, git log, etc.). "
+            "Sandboxed with network disabled. Only tier-1 SAFE_COMMANDS allowed — "
+            "no test runners, no compilers, no package managers. "
+            "Prefer this over bash() for all inspection tasks."
+        ),
+    )
+    reg.register(
+        "check_background_task",
+        file_tools.check_background_task,
+        description=(
+            "check_background_task(task_id) -> "
+            "Poll whether a background process started with bash(run_in_background=True) is still running. "
+            "task_id is the background_task_id (PID) returned by that call. "
+            "Returns {running, pid, exit_code}."
+        ),
     )
     reg.register(
         "glob",
         file_tools.glob,
-        description="glob(pattern) -> Find files matching a glob pattern",
+        description="glob(pattern) -> Find files matching a glob pattern, sorted newest-first by modification time.",
     )
 
     # ToolOptimization Phase 1: Pattern Search & Git
@@ -852,7 +628,17 @@ def example_registry() -> ToolRegistry:
         reg.register(
             "grep",
             system_tools.grep,
-            description="grep(pattern, path) -> Search for pattern in files",
+            description=(
+                "grep(pattern, path, include='', context=0) -> "
+                "Regex search in files. "
+                "pattern: regex to match. "
+                "path: file or directory to search (default: working dir). "
+                "include: glob filter e.g. '*.py', '*.ts'. "
+                "context: lines of surrounding context to include. "
+                "Use for finding exact strings, function names, imports, TODOs, or any "
+                "pattern across files. Prefer over search_code when you know the exact "
+                "text. Returns {matches: [{file_path, line_number, content}]}."
+            ),
         )
         reg.register(
             "summarize_structure",
@@ -1056,6 +842,103 @@ def example_registry() -> ToolRegistry:
     except Exception:
         pass
 
+    # Batch tool — parallel multi-tool execution
+    try:
+        from src.tools import batch_tools
+
+        reg.register(
+            "batch",
+            batch_tools.batch,
+            description=(
+                "batch(calls) -> Execute multiple tool calls in parallel. "
+                'calls is a list of {"tool": name, "input": {...}}. '
+                "Maximum 10 calls. Returns all results in order. "
+                "Use for independent read operations that can run concurrently."
+            ),
+        )
+    except Exception:
+        pass
+
+    # Multiedit tool — atomic multi-replacement on a single file
+    try:
+        reg.register(
+            "multiedit",
+            file_tools.multiedit,
+            side_effects=["write"],
+            description=(
+                "multiedit(path, edits) -> Apply multiple old_string→new_string "
+                "replacements to a single file atomically. All edits validated "
+                "in memory before writing. Use instead of repeated edit_file_atomic calls."
+            ),
+        )
+    except Exception:
+        pass
+
+    # Skill tools — LLM-callable skill loader
+    try:
+        from src.tools import skill_tools
+
+        reg.register(
+            "load_skill",
+            skill_tools.load_skill,
+            description="load_skill(name) -> Load a named skill/prompt template from the skills directory.",
+        )
+        reg.register(
+            "list_skills",
+            skill_tools.list_skills,
+            description="list_skills() -> List available skill names in the skills directory.",
+        )
+    except Exception:
+        pass
+
+    # Web tools
+    try:
+        from src.tools import web_tools
+
+        reg.register(
+            "web_search",
+            web_tools.web_search,
+            description=(
+                "web_search(query, max_results=5) -> Search the web for documentation, "
+                "error messages, or package information. Returns titles, URLs, and snippets."
+            ),
+        )
+        reg.register(
+            "read_web_page",
+            web_tools.read_web_page,
+            description=(
+                "read_web_page(url, format='markdown') -> Fetch and return text content of a "
+                "web page (up to 100 000 chars). format='markdown' or 'text'. "
+                "HTTP URLs are upgraded to HTTPS automatically."
+            ),
+        )
+    except Exception:
+        pass
+
+    # Interaction tools
+    try:
+        from src.tools import interaction_tools
+
+        reg.register(
+            "ask_user",
+            interaction_tools.ask_user,
+            description=(
+                "ask_user(question, choices=None) -> Pause and ask the user a clarifying "
+                "question. Pass choices=[...] for a multiple-choice prompt. Blocks until "
+                "the user responds (timeout 5 min)."
+            ),
+        )
+        reg.register(
+            "submit_plan_for_review",
+            interaction_tools.submit_plan_for_review,
+            description=(
+                "submit_plan_for_review(plan_summary, plan_steps, risk_level='medium') -> "
+                "Submit the current plan for user approval before execution."
+            ),
+        )
+    except Exception:
+        pass
+
     return reg
 
 
@@ -1064,16 +947,32 @@ class Orchestrator:
         self,
         adapter: Any = None,
         tool_registry: Optional[ToolRegistry] = None,
-        working_dir: Optional[str] = None,
+        working_dir: Optional[str | Path] = None,
         allow_external_working_dir: bool = False,
         message_max_tokens: Optional[int] = 4000,
         deterministic: bool = False,
         seed: Optional[int] = None,
+        event_bus: Optional["EventBus"] = None,
+        dry_run: bool = False,
     ):
+        self._dry_run = dry_run
         self._adapter = adapter
         self._provider_name = ""  # set during provider resolution
         self.tool_registry = tool_registry if tool_registry else example_registry()
-        self.event_bus = EventBus()
+        # TASK-09: Filter tool registry using the active permission context (set by
+        # --allowed-tools / --deny-tool / --deny-prefix CLI flags in main.py).
+        try:
+            from src.tools.permission_context import _ACTIVE_CONTEXT as _pctx
+
+            if _pctx is not None and not _pctx.is_empty():
+                _filtered = _pctx.filter_registry(self.tool_registry)
+                if isinstance(_filtered, ToolRegistry):
+                    self.tool_registry = _filtered
+        except Exception:
+            pass
+        # TUI-01: accept an externally-created EventBus (e.g. from AgentBridge)
+        # so that the bridge and the orchestrator share the same bus instance.
+        self.event_bus = event_bus if event_bus is not None else EventBus()
         # Wire the MessageManager with compaction support so dropped messages
         # are summarised inline rather than silently discarded.
         self.msg_mgr = MessageManager(
@@ -1097,6 +996,12 @@ class Orchestrator:
 
         self._tool_executor = _cf_init.ThreadPoolExecutor(
             max_workers=2, thread_name_prefix="tool_timeout"
+        )
+
+        # MED-5 fix: create a single reusable ThreadPoolExecutor for graph execution
+        # instead of creating one per run_agent_once() call.  Shut down in close().
+        self._graph_executor = _cf_init.ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="graph_exec"
         )
 
         # Default working directory logic:
@@ -1136,6 +1041,18 @@ class Orchestrator:
             cancel_event=getattr(self, "cancel_event", None),  # type: ignore[arg-type]
         )
 
+        # S4-A: Initialize GitSnapshotManager for workspace snapshots.
+        # Snapshots are stored in a shadow git repo; tree hashes are appended
+        # to AgentState.snapshots once per perception pass.
+        from src.core.orchestration.snapshot_manager import GitSnapshotManager
+
+        _project_id = self.working_dir.name or "default"
+        self.snapshot_manager = GitSnapshotManager(
+            workspace=self.working_dir,
+            project_id=_project_id,
+            enabled=True,
+        )
+
         # Initialize SessionStore for tool call and plan persistence
         from src.core.memory.session_store import SessionStore
 
@@ -1160,10 +1077,14 @@ class Orchestrator:
             "session_store_flush", _lifecycle_cleanup_hook
         )
 
-        # Subscribe to task completion events for automatic snapshot
+        # Subscribe to task completion events for automatic snapshot.
+        # MED-11 fix: snapshot whenever ANY task.completed event arrives for this
+        # orchestrator — the session_id comparison against self._current_task_id was
+        # racy (start_new_task() could update _current_task_id before the handler
+        # fired, causing the snapshot to be silently skipped).  Snapshotting is
+        # idempotent and inexpensive, so we always create one on task completion.
         def _on_task_complete(payload: Any) -> None:
-            if payload.get("session_id") == self._current_task_id:
-                self._create_session_snapshot()
+            self._create_session_snapshot()
 
         self.event_bus.subscribe("task.completed", _on_task_complete)
 
@@ -1385,6 +1306,109 @@ class Orchestrator:
         self._plan_approval_event: Optional[asyncio.Event] = None
         self._plan_approved: bool = False
 
+        # Explore Mode: restricts all tool execution to the analyst read-only set.
+        # Mirrors opencode's 'explore' agent — no writes, no test execution, no delegation.
+        # Set self.explore_mode = True to activate; the execute_tool guard enforces it.
+        self.explore_mode: bool = False
+
+        # Role management: current_role restricts tool access; role_manager provides
+        # system prompts per role. Both are Optional — set by subagent/delegation code.
+        self.current_role: Optional[str] = None
+        self.role_manager: Optional[Any] = None
+
+        # Permission gate: used by execute_tool to wait for user approval
+        # of destructive tools (delete_file, run_bash, etc.)
+        # S7-B: type updated from threading.Event to AsyncGate (non-polling)
+        from src.core.orchestration.approval_gate import AsyncGate as _AsyncGate
+
+        self._permission_gate: Optional[_AsyncGate] = None
+        self._permission_granted: bool = False
+
+        def _on_tool_permission_granted(payload: Any) -> None:
+            # TUI-04: resolve the module-level gate by tool_id when provided
+            _tid = str(payload.get("tool_id", "")) if isinstance(payload, dict) else ""
+            if _tid:
+                resolve_tool_gate(_tid, approved=True)
+            # Legacy single-gate fallback
+            gate = self._permission_gate
+            if gate is not None:
+                self._permission_granted = True
+                gate.set()
+
+        def _on_tool_permission_denied(payload: Any) -> None:
+            _tid = str(payload.get("tool_id", "")) if isinstance(payload, dict) else ""
+            if _tid:
+                resolve_tool_gate(_tid, approved=False)
+            gate = self._permission_gate
+            if gate is not None:
+                self._permission_granted = False
+                gate.set()
+
+        try:
+            self.event_bus.subscribe(
+                "tool.permission_granted", _on_tool_permission_granted
+            )
+            self.event_bus.subscribe(
+                "tool.permission_denied", _on_tool_permission_denied
+            )
+        except Exception:
+            pass
+
+        # TUI-03: subscribe to bash approval responses from the TUI
+        def _on_bash_approval_granted(payload: dict) -> None:
+            resolve_bash_gate(str(payload.get("tool_id", "")), approved=True)
+
+        def _on_bash_approval_denied(payload: dict) -> None:
+            resolve_bash_gate(str(payload.get("tool_id", "")), approved=False)
+
+        try:
+            self.event_bus.subscribe("bash.approval_granted", _on_bash_approval_granted)
+            self.event_bus.subscribe("bash.approval_denied", _on_bash_approval_denied)
+        except Exception:
+            pass
+
+        # D-10: TUI-05 diff-preview subscriptions now delegated to PreviewCoordinator.
+        from src.core.orchestration.preview_coordinator import PreviewCoordinator
+
+        self.preview_coordinator = PreviewCoordinator()
+        try:
+            self.preview_coordinator.attach(self.event_bus)
+        except Exception:
+            pass
+
+        # D-10: SessionCostTracker — owns usage buffer and session cost estimation.
+        from src.core.orchestration.session_cost_tracker import SessionCostTracker
+        from src.core.orchestration.project_settings import (
+            get_active_settings as _get_ps,
+        )
+
+        _active_ps = _get_ps()
+        _budget_ceiling = (
+            _active_ps.budget_ceiling_usd if _active_ps is not None else None
+        )
+        self.cost_tracker = SessionCostTracker(
+            working_dir=self.working_dir,
+            event_bus=self.event_bus,
+            budget_ceiling_usd=_budget_ceiling,
+        )
+
+        # D-10: ToolExecutionService — owns permission checks and hook dispatch.
+        # Hook runner is wired after tool_hooks is available.
+        from src.core.orchestration.tool_execution_service import ToolExecutionService
+
+        _hook_runner = None
+        try:
+            from src.core.orchestration.tool_hooks import ToolHookRunner
+
+            _hook_runner = ToolHookRunner()
+        except Exception:
+            pass
+        self.tool_execution_service = ToolExecutionService(
+            registry=self.tool_registry,
+            event_bus=self.event_bus,
+            hook_runner=_hook_runner,
+        )
+
         # MCP STDIO server (Step 9): instantiated but not started by default.
         # Call start_mcp_server() explicitly to enable IDE integration.
         self._mcp_server = None
@@ -1400,9 +1424,23 @@ class Orchestrator:
 
             self._mcp_server = MCPStdioServer(orchestrator=self)
             logger.info("Orchestrator: starting MCP STDIO server")
+            try:
+                self.event_bus.publish(
+                    "mcp.server.status", {"running": True, "count": 1}
+                )
+            except Exception:
+                pass
             await self._mcp_server.run_async()
         except Exception as e:
             logger.error(f"Orchestrator: MCP STDIO server error: {e}")
+        finally:
+            self._mcp_server = None
+            try:
+                self.event_bus.publish(
+                    "mcp.server.status", {"running": False, "count": 0}
+                )
+            except Exception:
+                pass
 
     def _publish_active_config(self):
         provider = "None"
@@ -1472,29 +1510,34 @@ class Orchestrator:
             "max_tokens": budget.max_tokens,
         }
 
-    # HR-5 fix: canonical dangerous-pattern list for bash pre-validation.
-    # Mirrors file_tools.bash() — kept here so preflight_check can reject
-    # dangerous commands before execute_tool() is called (defence-in-depth).
-    _BASH_DANGEROUS_PATTERNS = [
-        "&&",
-        "||",
-        ";",
-        "|",
-        ">",
-        ">>",
-        "<",
-        "$(",
-        "`",
-        "rm -rf",
-        "rm -r",
-        "rm -f",
-        "del ",
-        "format ",
-        "shutdown",
-        "reboot",
-        "halt",
-        "poweroff",
-    ]
+    # HR-5 fix: import canonical dangerous-pattern list from _security.py.
+    # Single source of truth — no local copy that could fall behind.
+    try:
+        from src.tools._security import DANGEROUS_PATTERNS as _dp
+
+        _BASH_DANGEROUS_PATTERNS: list = list(_dp)
+    except Exception:  # pragma: no cover
+        _BASH_DANGEROUS_PATTERNS = [
+            "&&",
+            "||",
+            ";",
+            "|",
+            ">",
+            ">>",
+            "<",
+            "$(",
+            "`",
+            "rm -rf",
+            "rm -r",
+            "rm -f",
+            "del ",
+            "format ",
+            "shutdown",
+            "reboot",
+            "halt",
+            "poweroff",
+            "git push",
+        ]
 
     def preflight_check(self, tool_call: Dict[str, Any]) -> Dict[str, Any]:
         name_raw = tool_call.get("name")
@@ -1505,7 +1548,31 @@ class Orchestrator:
 
         tool = self.tool_registry.get(name)
         if not tool:
-            return {"ok": False, "error": f"Tool '{name}' not found."}
+            # TOOLS-03: structured tool-repair response instead of bare error string.
+            # Include a short list of the closest-sounding registered tool names so
+            # the LLM can self-correct without a full round-trip.
+            _all_tool_names = (
+                sorted(self.tool_registry.tools.keys())
+                if hasattr(self.tool_registry, "tools")
+                else []
+            )
+            import difflib as _dl
+
+            _closest = _dl.get_close_matches(name, _all_tool_names, n=5, cutoff=0.4)
+            return {
+                "ok": False,
+                "error": "tool_not_found",
+                "tool_name": name,
+                "message": (
+                    f"Tool '{name}' is not registered. "
+                    + (
+                        f"Did you mean one of: {', '.join(_closest)}?"
+                        if _closest
+                        else "Check the tool name spelling."
+                    )
+                ),
+                "suggestions": _closest,
+            }
 
         # HR-5 fix: validate bash commands at preflight time (defence-in-depth).
         # file_tools.bash() also checks these, but catching them here provides
@@ -1637,31 +1704,27 @@ class Orchestrator:
         name_raw = tool_call.get("name")
         if not isinstance(name_raw, str):
             return {"ok": False, "error": "Tool name must be a string."}
-        name = name_raw
+        # Normalise tool name aliases so the LLM can use short forms
+        try:
+            from src.tools.tools_config import TOOL_ALIASES
+
+            name = TOOL_ALIASES.get(name_raw, name_raw)
+        except Exception:
+            name = name_raw
         args = dict(tool_call.get("arguments", {}))
 
         # F4: Strip LLM-injected user_approved to prevent WorkspaceGuard bypass.
         # user_approved is enforced at the orchestrator / UI level, not via LLM arguments.
         args.pop("user_approved", None)
 
+        # UX-3: Dry-run mode — intercept write tools and return a preview dict
+        # instead of executing. Allows callers to inspect what would happen without
+        # modifying the filesystem.
+        if getattr(self, "_dry_run", False) and name in WRITE_TOOLS_REQUIRING_READ:
+            return {"status": "dry_run", "would_call": name, "args": args}
+
         # GAP 2: Generate unique tool call ID for ACP compliance
         tool_call_id = f"call_{uuid.uuid4().hex[:8]}"
-
-        # Publish tool.execute.start event (GAP 2: ACP sessionUpdate schema)
-        try:
-            self.event_bus.publish(
-                "tool.execute.start",
-                {
-                    "sessionUpdate": "tool_call_update",
-                    "toolCallId": tool_call_id,
-                    "title": name,
-                    "status": "in_progress",
-                    "rawInput": args,
-                    "workdir": str(self.working_dir),
-                },
-            )
-        except Exception:
-            pass
 
         # Hard Rule Enforcement: Read before Edit for write tools
         path_arg = args.get("path") or args.get("file_path")
@@ -1684,6 +1747,65 @@ class Orchestrator:
                     }
             except Exception:
                 pass
+
+        # GAP-S2: Workspace scope guard — block writes to files outside the plan's
+        # affected_files set.  Only active when:
+        #   (a) the tool is a write-family tool, AND
+        #   (b) _affected_files is non-empty (i.e. a plan has been produced), AND
+        #   (c) the target path is NOT in the allowed set.
+        # When _affected_files is empty/None the guard is inactive (pre-plan fast-path).
+        if path_arg and name in WRITE_TOOLS_REQUIRING_READ:
+            try:
+                _af = getattr(self, "_affected_files", None) or []
+                if _af:
+                    # Normalise a path to a workdir-relative form for comparison.
+                    # Strategy: strip the workdir prefix first (preserving the leading
+                    # slash while comparing), then strip any remaining leading slashes.
+                    _workdir = str(self.working_dir or ".").rstrip("/\\")
+
+                    def _norm(p: str) -> str:
+                        p = str(p)
+                        # Strip workdir prefix (absolute or relative match).
+                        if p.startswith(_workdir + "/") or p.startswith(
+                            _workdir + "\\"
+                        ):
+                            p = p[len(_workdir) + 1 :]
+                        elif p.lstrip("/\\").startswith(_workdir.lstrip("/\\") + "/"):
+                            # Handle mismatched leading-slash forms
+                            _stripped = p.lstrip("/\\")
+                            _wd_rel = _workdir.lstrip("/\\")
+                            p = _stripped[len(_wd_rel) + 1 :]
+                        # Strip any remaining leading separators.
+                        return p.lstrip("/\\")
+
+                    _target_norm = _norm(path_arg)
+                    # Build a set of normalised allowed paths for O(1) lookup.
+                    _af_set = {_norm(str(_f)) for _f in _af}
+                    if _target_norm not in _af_set:
+                        # Publish scope violation event for observability.
+                        try:
+                            from src.core.orchestration.event_bus import get_event_bus
+
+                            get_event_bus().publish(
+                                "scope.violation",
+                                {
+                                    "tool": name,
+                                    "path": path_arg,
+                                    "allowed": list(_af_set),
+                                },
+                            )
+                        except Exception:
+                            pass
+                        return {
+                            "ok": False,
+                            "error": (
+                                f"File '{path_arg}' is outside the task scope. "
+                                f"The current plan authorises writes to: {sorted(_af_set)}. "
+                                "Use ask_user to confirm expanding the scope."
+                            ),
+                        }
+            except Exception:
+                pass  # scope guard must never block on internal errors
 
         # P4-4: Block write tools when plan mode is active (plan not yet approved).
         # _plan_mode_approved is set by execution_node from AgentState before each call.
@@ -1708,6 +1830,197 @@ class Orchestrator:
         except Exception:
             pass  # never block on import/logic errors
 
+        # Explore Mode guard: when active, only analyst read-only tools are permitted.
+        # Rejects any write/exec/delegation tool with a clear error message.
+        if getattr(self, "explore_mode", False):
+            try:
+                from src.core.orchestration.role_config import is_tool_allowed_for_role
+
+                if not is_tool_allowed_for_role(name, "analyst"):
+                    return {
+                        "ok": False,
+                        "error": (
+                            f"Explore mode is active: tool '{name}' is not permitted. "
+                            "Only read-only exploration tools (read_file, glob, grep, "
+                            "find_symbol, bash, etc.) are allowed in explore mode."
+                        ),
+                    }
+            except Exception:
+                pass  # never block on import errors
+
+        # TASK-01: PermissionLevel-driven gate.
+        # DANGER and PROMPT tools require explicit user approval unless the agent
+        # is running in autonomous mode (--autonomous / is_autonomous()).
+        # The legacy PERMISSION_REQUIRED_TOOLS set is kept for backward compat
+        # but the gate now also fires for any tool classified as DANGER/PROMPT.
+        _needs_gate = name in PERMISSION_REQUIRED_TOOLS
+        if not _needs_gate:
+            try:
+                from src.tools.tools_config import get_tool_permission, PermissionLevel
+
+                _perm = get_tool_permission(name)
+                if _perm in (PermissionLevel.DANGER, PermissionLevel.PROMPT):
+                    _needs_gate = True
+            except Exception:
+                pass  # never block on import errors
+
+        # TASK-20: Active permission mode check.
+        # When --permission-mode is set, block any tool whose required level is
+        # more permissive than the active mode.  Ordering (least → most permissive):
+        #   READ_ONLY < WORKSPACE_WRITE < DANGER < PROMPT < ALLOW
+        _PERM_ORDER = {
+            "read_only": 0,
+            "workspace_write": 1,
+            "danger": 2,
+            "prompt": 3,
+            "allow": 4,
+        }
+        try:
+            from src.tools.tools_config import (
+                get_active_permission_mode,
+                get_tool_permission,
+                PermissionLevel,
+            )
+
+            _active_mode = get_active_permission_mode()
+            if _active_mode is not None:
+                _tool_perm = get_tool_permission(name)
+                _active_rank = _PERM_ORDER.get(_active_mode.value, 99)
+                _tool_rank = _PERM_ORDER.get(_tool_perm.value, 99)
+                # Block if the tool requires more privilege than the active mode allows.
+                # READ_ONLY mode (rank=0) only allows rank-0 (READ_ONLY) tools.
+                if _tool_rank > _active_rank:
+                    return {
+                        "ok": False,
+                        "error": (
+                            f"Tool '{name}' requires '{_tool_perm.value}' permission "
+                            f"but active permission mode is '{_active_mode.value}'."
+                        ),
+                    }
+        except Exception:
+            pass  # never block on import errors
+
+        if _needs_gate:
+            # Skip gate entirely when running autonomously
+            _autonomous = False
+            try:
+                from src.tools.tools_config import is_autonomous
+
+                _autonomous = is_autonomous()
+            except Exception:
+                pass
+
+            if not _autonomous:
+                try:
+                    # TUI-04: use module-level gate registry so each tool call gets its
+                    # own tool_id and the TUI can target the correct approval request.
+                    _t4_id = f"{uuid.uuid4().hex[:8]}"
+                    _t4_ev = register_tool_gate(_t4_id)
+                    # SPAWN-W5: For delegate_task, also fire the specialized spawn event
+                    # so the TUI can show a spawn-specific confirmation dialog.
+                    if name == "delegate_task":
+                        try:
+                            self.event_bus.publish(
+                                "spawn.permission_required",
+                                {
+                                    "tool": name,
+                                    "role": args.get("role", ""),
+                                    "task": str(args.get("subtask_description", ""))[
+                                        :200
+                                    ],
+                                    "tool_id": _t4_id,
+                                },
+                            )
+                        except Exception:
+                            pass
+                    self.event_bus.publish(
+                        "tool.permission_required",
+                        {"tool": name, "args": args, "tool_id": _t4_id},
+                    )
+                    granted = _t4_ev.wait(timeout=120.0)
+                    if not granted or _t4_id in _tool_denied:
+                        _tool_denied.discard(_t4_id)
+                        return {
+                            "ok": False,
+                            "error": f"Tool '{name}' was denied by the user.",
+                        }
+                except Exception as _perm_exc:
+                    guilogger.warning(
+                        f"Permission gate error for '{name}': {_perm_exc}"
+                    )
+
+        # SPAWN-W2: allowed_tools enforcement in delegated context.
+        # When an active_agent is set (delegated execution), reject tools that are
+        # outside the AgentDefinition.allowed_tools allowlist or inside denied_tools.
+        try:
+            _active_agent_spawn = getattr(self, "active_agent", None)
+            if (
+                _active_agent_spawn is not None
+                and not _active_agent_spawn.is_tool_permitted(name)
+            ):
+                _write_permission_audit(
+                    self.working_dir, name, args, "deny", "spawn_allowed_tools"
+                )
+                return {
+                    "ok": False,
+                    "error": (
+                        f"Tool '{name}' is not permitted for the active delegated agent "
+                        f"(allowed_tools restriction). Check the agent's allowed_tools list."
+                    ),
+                }
+        except Exception:
+            pass
+
+        # PERM-W4: Per-agent permission override.
+        # When the orchestrator has an active_agent with permission_rules, merge them
+        # with the global policy and apply the combined result.
+        try:
+            _active_agent = getattr(self, "active_agent", None)
+            if _active_agent is not None:
+                _global_policy = getattr(self, "permission_policy", None)
+                _merged_policy = _active_agent.get_merged_policy(_global_policy)
+                if _merged_policy is not None and _merged_policy.is_denied(name):
+                    _perm_w4_decision = "deny"
+                    _perm_audit_reason = "agent_permission_rules"
+                    _write_permission_audit(
+                        self.working_dir, name, args, "deny", _perm_audit_reason
+                    )
+                    return {
+                        "ok": False,
+                        "error": (
+                            f"Tool '{name}' is denied by the active agent's permission rules."
+                        ),
+                    }
+        except Exception:
+            pass  # never block on import/logic errors
+
+        # PERM-W5: Permission audit log — record allow decision for tools that
+        # passed all gates.  Deny decisions are recorded above and in the gate block.
+        try:
+            _write_permission_audit(
+                self.working_dir, name, args, "allow", "passed_all_gates"
+            )
+        except Exception:
+            pass
+
+        # Publish tool.execute.start AFTER all gate checks so the TUI is only
+        # notified about tools that have actually been approved and will run.
+        # (GAP 2: ACP sessionUpdate schema)
+        try:
+            self.event_bus.publish(
+                "tool.execute.start",
+                {
+                    "sessionUpdate": "tool_call_update",
+                    "toolCallId": tool_call_id,
+                    "title": name,
+                    "status": "in_progress",
+                    "rawInput": args,
+                    "workdir": str(self.working_dir),
+                },
+            )
+        except Exception:
+            pass
+
         tool = self.tool_registry.get(name)
         if not tool:
             return {"ok": False, "error": f"Tool '{name}' not found."}
@@ -1719,12 +2032,31 @@ class Orchestrator:
             if "workdir" in sig.parameters:
                 args["workdir"] = Path(self.working_dir or ".")
 
+            # SPAWN-W1: Expose this orchestrator as the parent context for tools that
+            # spawn subagents (delegate_task).  Uses a ContextVar so the reference is
+            # scoped to this call stack and doesn't leak across threads.
+            try:
+                from src.tools.subagent_tools import _PARENT_ORCHESTRATOR_VAR
+
+                _orch_token = _PARENT_ORCHESTRATOR_VAR.set(self)
+            except Exception:
+                _orch_token = None
+
             # Role enforcement: if orchestrator has current_role, restrict certain tools
             current_role = getattr(self, "current_role", None)
             if current_role:
                 from src.core.orchestration.role_config import is_tool_allowed_for_role
 
                 if not is_tool_allowed_for_role(name, current_role):
+                    try:
+                        if _orch_token is not None:
+                            from src.tools.subagent_tools import (
+                                _PARENT_ORCHESTRATOR_VAR,
+                            )
+
+                            _PARENT_ORCHESTRATOR_VAR.reset(_orch_token)
+                    except Exception:
+                        pass
                     return {
                         "ok": False,
                         "error": f"Tool '{name}' is not permitted for role '{current_role}'",
@@ -1765,6 +2097,9 @@ class Orchestrator:
                                     timeout=3,
                                 )
                                 if _node.returncode == 0:
+                                    # MED-4 fix: initialize _tmp_path before the try block
+                                    # so the finally cleanup never raises NameError.
+                                    _tmp_path = None
                                     with _tf.NamedTemporaryFile(
                                         suffix=".js",
                                         mode="w",
@@ -1794,7 +2129,8 @@ class Orchestrator:
                                         try:
                                             import os as _os
 
-                                            _os.unlink(_tmp_path)
+                                            if _tmp_path:
+                                                _os.unlink(_tmp_path)
                                         except Exception:
                                             pass
                             except (FileNotFoundError, _sp.TimeoutExpired):
@@ -1848,6 +2184,33 @@ class Orchestrator:
             # timeouts were silently disabled when the agent ran from the TUI daemon thread).
             timeout_seconds = self._get_tool_timeout(name)
 
+            # Expose orchestrator to batch tool via thread-local so it can dispatch
+            # sub-calls back through execute_tool. Only set when actually calling batch.
+            if name == "batch":
+                try:
+                    from src.tools.batch_tools import set_batch_orchestrator
+
+                    set_batch_orchestrator(self)
+                except Exception:
+                    pass
+
+            # Pre-tool hooks: user-configured shell scripts that can deny the call.
+            try:
+                _hook_runner = getattr(self, "_tool_hook_runner", None)
+                if _hook_runner is None:
+                    from src.core.orchestration.tool_hooks import ToolHookRunner
+
+                    _hook_runner = ToolHookRunner(working_dir=self.working_dir)
+                    self._tool_hook_runner = _hook_runner
+                _hook_result = _hook_runner.run_pre(name, args)
+                if not _hook_result.allowed:
+                    return {
+                        "ok": False,
+                        "error": f"Pre-tool hook denied '{name}': {_hook_result.reason}",
+                    }
+            except Exception:
+                pass  # never block on hook infrastructure errors
+
             try:
                 import concurrent.futures as _cf
 
@@ -1870,17 +2233,93 @@ class Orchestrator:
                     res = tool["fn"](**args)
             except TimeoutError:
                 guilogger.warning(f"Tool '{name}' timed out after {timeout_seconds}s")
+                # SPAWN-W1: Reset ContextVar on early return paths too.
+                try:
+                    if _orch_token is not None:
+                        from src.tools.subagent_tools import _PARENT_ORCHESTRATOR_VAR
+
+                        _PARENT_ORCHESTRATOR_VAR.reset(_orch_token)
+                except Exception:
+                    pass
                 return {
                     "ok": False,
                     "error": f"Tool execution timed out after {timeout_seconds} seconds. "
                     f"Consider breaking down the task into smaller steps.",
                 }
 
+            # SPAWN-W1: Reset the parent orchestrator ContextVar after the tool returns.
+            try:
+                if _orch_token is not None:
+                    from src.tools.subagent_tools import _PARENT_ORCHESTRATOR_VAR
+
+                    _PARENT_ORCHESTRATOR_VAR.reset(_orch_token)
+            except Exception:
+                pass
+
             # Normalize the result to a dict contract
             res = self._normalize_tool_result(res)
 
+            # Tool output truncation: prevent individual tool results from consuming
+            # excessive context window tokens. Cap string values at 8000 chars and
+            # inject a truncation notice so the LLM knows content was cut.
+            # Mirrors opencode's Truncate.output() strategy.
+            _TOOL_OUTPUT_MAX_CHARS = 8000
+            if isinstance(res, dict):
+                # Copy once before any mutation — avoids repeated copies inside the loop.
+                if any(
+                    isinstance(_v, str) and len(_v) > _TOOL_OUTPUT_MAX_CHARS
+                    for _v in res.values()
+                ):
+                    res = dict(res)
+                    for _k, _v in list(res.items()):
+                        if isinstance(_v, str) and len(_v) > _TOOL_OUTPUT_MAX_CHARS:
+                            res[_k] = (
+                                _v[:_TOOL_OUTPUT_MAX_CHARS]
+                                + f"\n... [truncated: {len(_v) - _TOOL_OUTPUT_MAX_CHARS} chars omitted]"
+                            )
+                # Also truncate nested result.content (common for read_file)
+                _inner = res.get("result")
+                if isinstance(_inner, dict) and any(
+                    isinstance(_v, str) and len(_v) > _TOOL_OUTPUT_MAX_CHARS
+                    for _v in _inner.values()
+                ):
+                    _inner = dict(_inner)
+                    res["result"] = _inner
+                    for _k, _v in list(_inner.items()):
+                        if isinstance(_v, str) and len(_v) > _TOOL_OUTPUT_MAX_CHARS:
+                            _inner[_k] = (
+                                _v[:_TOOL_OUTPUT_MAX_CHARS]
+                                + f"\n... [truncated: {len(_v) - _TOOL_OUTPUT_MAX_CHARS} chars omitted]"
+                            )
+
             # (O4: set_role handler removed — role_tools not registered; runtime role
             # changes via tool calls are disallowed)
+
+            # ORCH-W4: plan_enter / plan_exit mode transitions.
+            # If the tool signals an agent_mode change, update the orchestrator attribute so
+            # perception_node picks it up on the next system-prompt rebuild.
+            if (
+                name in ("plan_enter", "plan_exit")
+                and isinstance(res, dict)
+                and res.get("ok")
+            ):
+                _new_mode = res.get("agent_mode", "execution")
+                setattr(self, "_agent_mode", _new_mode)
+                try:
+                    self.event_bus.publish(
+                        "agent.mode_changed",
+                        {"mode": _new_mode, "tool": name},
+                    )
+                except Exception:
+                    pass
+
+            # Post-tool hooks: fire-and-forget, exit code ignored.
+            try:
+                _hook_runner = getattr(self, "_tool_hook_runner", None)
+                if _hook_runner is not None:
+                    _hook_runner.run_post(name, args, res)
+            except Exception:
+                pass
 
             # Validate tool contract if registered. If validation fails, return an error to the caller.
             try:
@@ -1920,6 +2359,7 @@ class Orchestrator:
 
                     # F17: Accumulate in memory — flushed to usage.json at end of run_agent_once()
                     self._usage_buffer[name] = self._usage_buffer.get(name, 0) + 1
+                    self.cost_tracker.record_tool_call(name)
 
                     # Telemetry: publish event for tool invocation (GAP 2: ACP schema)
                     try:
@@ -2046,6 +2486,19 @@ class Orchestrator:
                             "session_id": getattr(self, "_current_task_id", "default"),
                         },
                     )
+                    # TUI-09: also publish canonical token.budget event used by TUI sidebar
+                    _used = budget.used_tokens
+                    _limit = budget.max_tokens or 32_768
+                    _pct = min(100, int(_used / _limit * 100)) if _limit else 0
+                    self.event_bus.publish(
+                        "token.budget",
+                        {
+                            "used": _used,
+                            "limit": _limit,
+                            "percent": _pct,
+                            "warning": _pct >= 80,
+                        },
+                    )
             except Exception:
                 pass
 
@@ -2116,6 +2569,16 @@ class Orchestrator:
 
             # GAP 1: Sync session state after tool error
             self._sync_session_state()
+
+            # SPAWN-W1: Reset ContextVar on exception path to prevent leak.
+            try:
+                _tok = locals().get("_orch_token")
+                if _tok is not None:
+                    from src.tools.subagent_tools import _PARENT_ORCHESTRATOR_VAR
+
+                    _PARENT_ORCHESTRATOR_VAR.reset(_tok)
+            except Exception:
+                pass
 
             return {"ok": False, "error": str(e)}
 
@@ -2203,6 +2666,39 @@ class Orchestrator:
             trace_path.write_text(json.dumps(trace, indent=2, default=serializer))
         except Exception as e:
             guilogger.error(f"Orchestrator: failed to flush execution trace: {e}")
+
+    def compact_context(self) -> bool:
+        """S9-B: Immediately distill the current conversation history.
+
+        Triggers ``distill_context()`` regardless of the token threshold so
+        the user can manually free context window space at any time via the
+        ``/compact`` TUI slash command.
+
+        Returns:
+            True if distillation ran successfully; False on error or no history.
+        """
+        try:
+            from src.core.memory.distiller import distill_context
+
+            history = self.msg_mgr.messages if hasattr(self, "msg_mgr") else []
+            if not history:
+                return False
+            distill_context(
+                messages=list(history),
+                working_dir=self.working_dir if hasattr(self, "working_dir") else None,
+            )
+            guilogger.info("compact_context: distillation complete")
+            # Publish event for TUI status bar
+            try:
+                _bus = getattr(self, "event_bus", None)
+                if _bus:
+                    _bus.publish("context.compacted", {"message": "Context compacted"})
+            except Exception:
+                pass
+            return True
+        except Exception as exc:
+            guilogger.warning(f"compact_context: distillation failed: {exc}")
+            return False
 
     def _clear_execution_trace(self):
         # Also clear the in-memory buffer so buffered entries don't reappear after clear
@@ -2298,6 +2794,8 @@ class Orchestrator:
         except Exception:
             recent_entries = trace[-10:]
 
+        # MED-6 fix: the comment said "3+ matches" but the threshold was `>= 2`
+        # (triggers on the 2nd match).  Align threshold with the stated intent.
         # Now count exact matches (tool + args) conservatively: block only if 3+ matches
         exact_count = 0
         for entry in recent_entries:
@@ -2308,7 +2806,7 @@ class Orchestrator:
                     exact_count += 1
             except Exception:
                 continue
-        if exact_count >= 2:
+        if exact_count >= 3:
             return True
 
         # Count tool-only occurrences and require a higher threshold (e.g., 6) to block
@@ -2325,28 +2823,14 @@ class Orchestrator:
         return False
 
     def _flush_usage_buffer(self) -> None:
-        """F17: Flush in-memory tool call counters to .agent-context/usage.json once per task."""
-        if not self._usage_buffer:
-            return
-        try:
-            import json as _json
+        """F17: Legacy flush method — delegates to SessionCostTracker for backward compatibility.
 
-            usage_path = self.working_dir / ".agent-context" / "usage.json"
-            usage: dict = {}
-            if usage_path.exists():
-                try:
-                    usage = _json.loads(usage_path.read_text())
-                except Exception:
-                    usage = {}
-            tool_stats = usage.get("tools", {})
-            for tool_name, count in self._usage_buffer.items():
-                tool_stats[tool_name] = {
-                    "calls": tool_stats.get(tool_name, {}).get("calls", 0) + count
-                }
-            usage["tools"] = tool_stats
-            usage_path.write_text(_json.dumps(usage, indent=2))
-        except Exception:
-            pass
+        .. deprecated::
+            Call ``self.cost_tracker.flush()`` directly.  This wrapper exists only to
+            avoid breaking any external callers.  Internal call sites in
+            ``run_agent_once()`` now call ``cost_tracker.flush()`` directly.
+        """
+        self.cost_tracker.flush(task_id=getattr(self, "_current_task_id", ""))
 
     def _create_session_snapshot(self) -> None:
         """Create a session snapshot for resume capability."""
@@ -2441,6 +2925,70 @@ class Orchestrator:
         except Exception:
             pass
 
+    def _publish_git_status(self) -> None:
+        """TUI-07: Publish git.branch event so the TUI sidebar stays current.
+
+        Called from start_new_task() and after run_agent_once() completes.
+        All subprocess errors are silently swallowed — git status is informational.
+        """
+        import subprocess as _sp
+
+        try:
+            branch = _sp.check_output(
+                ["git", "branch", "--show-current"],
+                cwd=str(self.working_dir),
+                text=True,
+                timeout=3,
+                stderr=_sp.DEVNULL,
+            ).strip()
+        except Exception:
+            return  # not a git repo or git not available
+
+        try:
+            status_out = _sp.check_output(
+                ["git", "status", "--porcelain"],
+                cwd=str(self.working_dir),
+                text=True,
+                timeout=3,
+                stderr=_sp.DEVNULL,
+            )
+            dirty = bool(status_out.strip())
+        except Exception:
+            dirty = False
+
+        # Parse ahead/behind counts from `git status -sb` if possible
+        ahead = 0
+        behind = 0
+        try:
+            sb_out = _sp.check_output(
+                ["git", "status", "-sb"],
+                cwd=str(self.working_dir),
+                text=True,
+                timeout=3,
+                stderr=_sp.DEVNULL,
+            )
+            import re as _re
+
+            m = _re.search(r"\[ahead (\d+)(?:, behind (\d+))?\]", sb_out)
+            if not m:
+                m = _re.search(r"\[behind (\d+)\]", sb_out)
+                if m:
+                    behind = int(m.group(1))
+            else:
+                ahead = int(m.group(1))
+                if m.group(2):
+                    behind = int(m.group(2))
+        except Exception:
+            pass
+
+        try:
+            self.event_bus.publish(
+                "git.branch",
+                {"branch": branch, "dirty": dirty, "ahead": ahead, "behind": behind},
+            )
+        except Exception:
+            pass
+
     def start_new_task(self) -> str:
         """
         Start a new task by generating a new task ID and clearing per-task state.
@@ -2503,6 +3051,7 @@ class Orchestrator:
         # than served from a process-global stale cache entry.
         try:
             from src.core.context.context_builder import ContextBuilder
+
             ContextBuilder.clear_cache()
         except Exception:
             pass
@@ -2538,7 +3087,14 @@ class Orchestrator:
         except Exception as e:
             guilogger.debug(f"Failed to update session manager: {e}")
 
+        # ORCH-W5: Reset session title so the next task gets its own generated title.
+        self._session_title = None
+        # ORCH-W4: Reset agent mode to "execution" for the new task.
+        self._agent_mode = "execution"
+
         guilogger.info(f"Started new task with ID: {self._current_task_id}")
+        # TUI-07: publish git status so the sidebar branch chip is current
+        self._publish_git_status()
         return self._current_task_id
 
     def restore_continue_state(self, state: dict) -> None:
@@ -2720,6 +3276,9 @@ class Orchestrator:
         self._session_read_files = set()
         # F17: Reset per-task usage buffer; will be flushed to disk once at task end.
         self._usage_buffer = {}
+        # D-10: Reset the SessionCostTracker buffer and idempotency guard for this turn.
+        self.cost_tracker.reset()
+        self.tool_execution_service.reset_idempotency()
 
         # Check if canceled before starting
         if cancel_event and hasattr(cancel_event, "is_set") and cancel_event.is_set():
@@ -2737,6 +3296,40 @@ class Orchestrator:
         ):
             prompt = messages[-1].get("content", "")
 
+        # SES-W2: Persist user prompt to SessionStore transcript.
+        if prompt:
+            try:
+                self.session_store.add_message(
+                    session_id=getattr(self, "_current_task_id", "unknown"),
+                    role="user",
+                    content=prompt,
+                )
+            except Exception:
+                pass
+
+        # ORCH-W5: Generate session title via the internal "title" agent (one-shot,
+        # no tool loop).  Only on the first turn (_session_title not yet set) so we
+        # don't regenerate on every continuation call.  Fire-and-forget in a daemon
+        # thread so it never blocks the main pipeline.
+        if prompt and not getattr(self, "_session_title", None):
+            import threading as _threading
+
+            def _gen_title(p: str) -> None:
+                try:
+                    from src.core.memory.distiller import generate_session_title
+
+                    _t = generate_session_title(p)
+                    if _t:
+                        self._session_title = _t
+                        self.event_bus.publish("session.title_generated", {"title": _t})
+                except Exception:
+                    pass
+
+            _t_thread = _threading.Thread(
+                target=_gen_title, args=(prompt,), daemon=True
+            )
+            _t_thread.start()
+
         from .agent_brain import load_system_prompt
         from src.core.orchestration.graph.builder import _get_compiled_graph
 
@@ -2751,6 +3344,16 @@ class Orchestrator:
             load_system_prompt(system_prompt_name)
             or "You are a helpful coding assistant."
         )
+
+        # Append live git context + project instruction files (P1 gap fixes)
+        try:
+            from .instruction_loader import build_runtime_context
+
+            runtime_ctx = build_runtime_context(cwd=self.working_dir)
+            if runtime_ctx:
+                full_system_prompt = full_system_prompt + runtime_ctx
+        except Exception:
+            pass
 
         # Ensure the MessageManager contains the current system prompt (replace if different)
         try:
@@ -2838,12 +3441,20 @@ class Orchestrator:
             # P1-2/P1-3: Inner-loop counters
             "plan_attempts": 0,
             "replan_attempts": 0,
-            # P1-6: Enable plan validator warnings by default (loop is bounded by plan_attempts guard)
-            "plan_enforce_warnings": True,
+            # P1-6: Warnings are advisory only — enforce_warnings=True triggers infinite
+            # replanning loops because any plan without an explicit test/verify step is
+            # rejected. The plan_attempts guard (>=3 → force execution) was added as a
+            # band-aid but the recursion limit is hit before it fires. Keep False.
+            "plan_enforce_warnings": False,
+            # Turn limit: independent of tool_call_count; bounded by max_turns
+            "turn_count": 0,
+            "max_turns": 50,
             "plan_strict_mode": False,
             # P3-1: Structured dependency data from analysis phase
             "call_graph": None,
             "test_map": None,
+            # Doom loop detection: fingerprints of last N tool calls
+            "recent_tool_calls": [],
             # Phase A: DAG execution fields (populated by planning_node)
             "plan_dag": None,
             "execution_waves": None,
@@ -2859,11 +3470,59 @@ class Orchestrator:
             "_budget_compaction": None,
             # P2P context buffering
             "_p2p_context": None,
+            # Fields present in AgentState but omitted from prior initial_state versions;
+            # explicit None/0/{} prevents KeyError in nodes that assume presence.
+            "action_failed": None,
+            "delegation_depth": 0,
+            "evaluation_result": None,
+            "last_debug_error_type": None,
+            "last_tool_name": None,
+            "no_plan_fail_count": 0,
+            "original_task": None,
+            "plan_progress": None,
+            "plan_validation": None,
+            "planned_action": None,
+            "replan_required": None,
+            "step_description": None,
+            "step_retry_counts": {},
+            "task_history": None,
+            # S4-A: Snapshot tree-hash list — appended by perception_node each turn.
+            "snapshots": [],
+            # ORCH-W4: Current agent operating mode ("execution" or "planning").
+            # Changed by plan_enter / plan_exit tool calls.
+            "agent_mode": None,
+            # SPAWN-W1: Parent session ID for delegated child sessions.  None = top-level.
+            "parent_session_id": None,
         }
 
         # 2. Compile and Run Graph — P1 fix: use module-level cached graph so compilation
         # happens once per process instead of once per run_agent_once() call.
         graph = _get_compiled_graph()
+
+        # TASK-12: max_turns guard — enforce before invoking the graph so runaway
+        # tasks cannot exceed the configured turn budget regardless of graph state.
+        _max_turns = int(initial_state.get("max_turns") or 50)
+        try:
+            from src.core.config_loader import get as _cfg_get
+
+            _cfg_max = _cfg_get("max_turns")
+            if _cfg_max is not None:
+                _max_turns = int(_cfg_max)
+        except Exception:
+            pass
+        _turn_count = int(initial_state.get("turn_count") or 0)
+        if _turn_count >= _max_turns:
+            guilogger.warning(
+                f"run_agent_once: turn_count={_turn_count} >= max_turns={_max_turns} — refusing to start new turn"
+            )
+            return {
+                "ok": False,
+                "error": f"max_turns limit reached ({_turn_count}/{_max_turns}).",
+                "assistant_message": (
+                    f"Task aborted: the maximum number of turns ({_max_turns}) has been "
+                    "reached. Start a new session to continue."
+                ),
+            }
 
         # Mint a fresh correlation ID for this agent turn so all EventBus events
         # and LLM call logs share the same trace token (#26).
@@ -2874,11 +3533,12 @@ class Orchestrator:
         final_state: dict = {}
 
         try:
-            # P2 fix: reuse a single ThreadPoolExecutor across all graph rounds instead of
-            # creating (and destroying) a new OS thread pool per round.
+            # MED-5 fix: reuse the instance-level _graph_executor instead of
+            # creating (and destroying) a new OS thread pool per run_agent_once() call.
+            # The executor is created in __init__ and shut down in close().
             import concurrent.futures as _cf_pool
 
-            _graph_executor = _cf_pool.ThreadPoolExecutor(max_workers=1)
+            _graph_executor = self._graph_executor
 
             # We use the same safe asyncio execution logic
             def _run_graph(state_to_run):
@@ -2973,47 +3633,52 @@ class Orchestrator:
                         break
 
                     # Prepare next iteration: feed the graph with the new history and verified reads
+                    _next_history = final_state.get("history", [])
+                    # Guard: OpenAI-compatible APIs require the last message to be 'user'.
+                    # If history ends with an assistant message (no tool result following),
+                    # inject a bridging user message to prevent consecutive-assistant violations.
+                    if _next_history and _next_history[-1].get("role") == "assistant":
+                        _next_history = list(_next_history) + [
+                            {
+                                "role": "user",
+                                "content": (
+                                    "Continue. If the task is already complete, "
+                                    "output STATUS: complete with no tool call."
+                                ),
+                            }
+                        ]
+                    # SCAN3-1 fix: preserve ALL state from the completed round and
+                    # only override the fields that must reset for the next round.
+                    # Prior hand-rolled reconstruction silently discarded wave state,
+                    # analysis results, loop counters, delegation state, and more.
+                    _prev_working_dir = current_state.get("working_dir")
+                    _prev_system_prompt = current_state.get("system_prompt")
                     current_state = {
-                        "task": current_state.get("task"),
-                        "history": final_state.get("history", []),
-                        "verified_reads": final_state.get("verified_reads", [])
+                        **final_state,
+                        # Fields that must be explicitly reset / refreshed each round:
+                        "history": _next_history,
+                        "verified_reads": final_state.get("verified_reads")
                         or list(self._session_read_files),
                         "next_action": None,
                         "last_result": None,
-                        "rounds": final_state.get("rounds", 0),
-                        "working_dir": current_state.get("working_dir"),
-                        "system_prompt": current_state.get("system_prompt"),
                         "errors": [],
-                        "current_plan": final_state.get("current_plan", []),
-                        "current_step": final_state.get("current_step", 0),
-                        "task_decomposed": final_state.get("task_decomposed", False),
-                        "original_task": final_state.get("original_task"),
+                        # Execution context fields — keep stable from initial invocation
+                        "working_dir": _prev_working_dir
+                        or final_state.get("working_dir"),
+                        "system_prompt": _prev_system_prompt
+                        or final_state.get("system_prompt"),
                         "deterministic": getattr(self, "deterministic", False),
                         "seed": getattr(self, "seed", None),
                         "cancel_event": cancel_event,
-                        "max_tool_calls": final_state.get("max_tool_calls", 30),
-                        "tool_call_count": final_state.get("tool_call_count", 0),
-                        # F7/H9 fix: propagate debug budgets across graph rounds so the
-                        # 3-attempt cap is not silently reset at the start of each round.
-                        "debug_attempts": final_state.get("debug_attempts", 0),
-                        "max_debug_attempts": final_state.get("max_debug_attempts", 3),
-                        "total_debug_attempts": final_state.get(
-                            "total_debug_attempts", 0
-                        ),
-                        "last_debug_error_type": final_state.get(
-                            "last_debug_error_type"
-                        ),
-                        "step_retry_counts": final_state.get("step_retry_counts") or {},
-                        # Propagate cooldown + read-tracking dicts across rounds
+                        # Cooldown / read-tracking dicts must not be None
                         "tool_last_used": final_state.get("tool_last_used") or {},
                         "files_read": final_state.get("files_read") or {},
+                        "step_retry_counts": final_state.get("step_retry_counts") or {},
                     }
             finally:
-                # P2 fix: shut down the executor after all rounds complete.
-                # SCAN-10 fix: wait=True so the worker thread is cleanly joined
-                # before run_agent_once() returns; by this point future.result()
-                # has already been called so the thread is idle in normal flow.
-                _graph_executor.shutdown(wait=True)
+                # MED-5 fix: _graph_executor is now instance-level and shut down in
+                # close() — do NOT shut it down here or subsequent calls will fail.
+                pass
 
             # Check if we broke out due to cancellation
             if (
@@ -3183,8 +3848,20 @@ class Orchestrator:
                     f"run_agent_once: delegation_results keys={list(delegation_results.keys())}"
                 )
 
-            self._flush_usage_buffer()
+            self.cost_tracker.flush(task_id=getattr(self, "_current_task_id", ""))
             self.flush_execution_trace()
+
+            # SES-W2: Persist assistant response to SessionStore transcript.
+            if assistant_message:
+                try:
+                    self.session_store.add_message(
+                        session_id=getattr(self, "_current_task_id", "unknown"),
+                        role="assistant",
+                        content=assistant_message.strip(),
+                    )
+                except Exception:
+                    pass
+
             return {
                 "assistant_message": assistant_message.strip(),
                 "work_summary": work_summary,
@@ -3203,7 +3880,7 @@ class Orchestrator:
                 # Publish session changes for sidebar
                 self._publish_session_changes()
             work_summary = _generate_work_summary(final_state, history)
-            self._flush_usage_buffer()
+            self.cost_tracker.flush(task_id=getattr(self, "_current_task_id", ""))
             self.flush_execution_trace()
             return {
                 "assistant_message": "Graph finished.",
@@ -3278,7 +3955,7 @@ class Orchestrator:
                     except Exception:
                         pass
 
-                self._flush_usage_buffer()
+                self.cost_tracker.flush(task_id=getattr(self, "_current_task_id", ""))
                 self.flush_execution_trace()
                 return {
                     "assistant_message": content if content else "",
@@ -3286,20 +3963,130 @@ class Orchestrator:
                     "exception": str(e),
                 }
             except Exception:
-                self._flush_usage_buffer()
+                self.cost_tracker.flush(task_id=getattr(self, "_current_task_id", ""))
                 self.flush_execution_trace()
                 return {"error": "graph_failed", "exception": str(e)}
 
+    # ------------------------------------------------------------------
+    # S6-B: Provider family → prompt partial selection
+    # ------------------------------------------------------------------
+
+    _PROVIDER_FAMILY_MAP: Dict[str, str] = {
+        # Anthropic
+        "anthropic": "anthropic",
+        # OpenAI-compatible cloud
+        "openai": "openai",
+        "openrouter": "openai",
+        "github_copilot": "openai",
+        "copilot": "openai",
+        # Local / self-hosted
+        "ollama": "local",
+        "lm_studio": "local",
+        "lmstudio": "local",
+        "local": "local",
+        # Test mock
+        "mock": "mock",
+    }
+
+    @classmethod
+    def _map_provider_family(cls, raw_name: str) -> str:
+        """Map a provider name/type string to a canonical family string.
+
+        Matching is case-insensitive and checks for substring containment so
+        that variant spellings (e.g. "lm-studio", "LMStudio") are captured.
+        Returns ``"default"`` when no known family matches.
+        """
+        normalised = raw_name.lower().replace("-", "_").replace(" ", "_")
+        # Exact lookup first (fast path)
+        if normalised in cls._PROVIDER_FAMILY_MAP:
+            return cls._PROVIDER_FAMILY_MAP[normalised]
+        # Substring scan (handles composite names like "anthropic-vertex")
+        for key, family in cls._PROVIDER_FAMILY_MAP.items():
+            if key in normalised:
+                return family
+        return "default"
+
     def get_provider_capabilities(self) -> Dict[str, Any]:
-        """Get provider capabilities including supports_native_tools flag."""
-        capabilities = {"supports_native_tools": False}
+        """Get provider capabilities including supports_native_tools and provider_family.
+
+        S6-B: Enriched to return ``provider_family`` so that
+        ``ContextBuilder._select_prompt_partial()`` can choose the right
+        provider-specific prompt partial without any special-casing outside
+        this method.
+
+        Capability keys returned:
+          - ``supports_native_tools`` (bool)
+          - ``provider_family`` (str)  — one of "anthropic", "openai", "local",
+            "mock", "default"
+          - ``model`` (str | None)     — active model name if known
+          - ``provider_name`` (str)    — raw provider name for debugging
+        """
+        capabilities: Dict[str, Any] = {
+            "supports_native_tools": False,
+            "provider_family": "default",
+            "model": None,
+            "provider_name": "",
+        }
         try:
-            if self._adapter and hasattr(self._adapter, "provider"):
-                provider_config = self._adapter.provider
-                if isinstance(provider_config, dict):
-                    capabilities["supports_native_tools"] = provider_config.get(
-                        "supports_native_tools", False
-                    )
+            if not self._adapter:
+                return capabilities
+
+            # ── 1. Extract raw name strings ────────────────────────────────
+            raw_name: str = ""
+            raw_type: str = ""
+
+            provider_attr = getattr(self._adapter, "provider", None)
+            if isinstance(provider_attr, dict):
+                raw_name = str(provider_attr.get("name") or "")
+                raw_type = str(provider_attr.get("type") or "")
+                capabilities["supports_native_tools"] = bool(
+                    provider_attr.get("supports_native_tools", False)
+                )
+
+            # Fall back to adapter.name (present on all OpenAICompatibleAdapter
+            # subclasses and MockAdapter)
+            if not raw_name:
+                raw_name = str(getattr(self._adapter, "name", "") or "")
+
+            # ── 2. Resolve provider_family ─────────────────────────────────
+            # Prefer the explicit "type" field when non-empty; otherwise use name.
+            lookup_str = raw_type if raw_type else raw_name
+            family = self._map_provider_family(lookup_str)
+            # If type didn't resolve, try name as well
+            if family == "default" and raw_type and raw_name:
+                family = self._map_provider_family(raw_name)
+
+            capabilities["provider_family"] = family
+            capabilities["provider_name"] = raw_name or raw_type
+
+            # ── 3. Active model ────────────────────────────────────────────
+            capabilities["model"] = getattr(self._adapter, "default_model", None)
+
         except Exception:
             pass
         return capabilities
+
+    def close(self) -> None:
+        """Release long-lived resources held by this orchestrator.
+
+        Should be called when the orchestrator is no longer needed (e.g. when
+        the TUI session ends or a subagent finishes).
+        """
+        # MED-5 fix: shut down the graph executor so its background thread is
+        # cleanly joined and OS resources are released.
+        try:
+            if hasattr(self, "_graph_executor"):
+                self._graph_executor.shutdown(wait=False)
+        except Exception:
+            pass
+        try:
+            if hasattr(self, "_tool_executor"):
+                self._tool_executor.shutdown(wait=False)
+        except Exception:
+            pass
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            pass

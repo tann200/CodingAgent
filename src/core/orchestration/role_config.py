@@ -75,6 +75,74 @@ ROLE_CONFIGS: Dict[str, Dict[str, Any]] = {
         ],
         "max_rounds": 12,
     },
+    # Analyst role: read-only exploration (mirrors opencode's 'explore' agent).
+    # No file writes, no test execution, no task delegation — pure reconnaissance.
+    "analyst_role": {
+        "description": "Read-only codebase exploration for pre-planning intelligence gathering.",
+        "system_prompt_suffix": "You may only read files and search. Never write, edit, delete, or run tests.",
+        "allowed_tools": [
+            "read_file",
+            "list_files",
+            "glob",
+            "grep",
+            "search_code",
+            "find_symbol",
+            "find_references",
+            "bash",
+            "git_log",
+            "git_diff",
+            "git_status",
+            "memory_search",
+            "analyze_repository",
+            "initialize_repo_intelligence",
+            "multi_file_summary",
+            "batched_file_read",
+        ],
+        "denied_tools": [
+            "write_file",
+            "edit_file",
+            "edit_file_atomic",
+            "edit_by_line_range",
+            "delete_file",
+            "apply_patch",
+            "run_tests",
+            "run_js_tests",
+            "run_linter",
+            "run_ts_check",
+            "delegate_task",
+        ],
+        "max_rounds": 15,
+    },
+    # Debugger role: full access — reads, edits, tests, but no delegation.
+    "debugger_role": {
+        "description": "Diagnoses failures and applies minimal targeted fixes.",
+        "system_prompt_suffix": "Fix only what is broken. Read before editing. Verify with tests.",
+        "allowed_tools": [
+            "read_file",
+            "list_files",
+            "glob",
+            "grep",
+            "search_code",
+            "find_symbol",
+            "find_references",
+            "bash",
+            "edit_file",
+            "edit_file_atomic",
+            "edit_by_line_range",
+            "write_file",
+            "run_tests",
+            "run_js_tests",
+            "run_linter",
+            "run_ts_check",
+            "git_log",
+            "git_diff",
+        ],
+        "denied_tools": [
+            "delete_file",
+            "delegate_task",
+        ],
+        "max_rounds": 12,
+    },
 }
 
 
@@ -101,9 +169,10 @@ CANONICAL_ROLE_CONFIGS: Dict[str, Dict[str, Any]] = {
     "strategic": ROLE_CONFIGS.get("planner", {}),
     "operational": ROLE_CONFIGS.get("coder", {}),
     "reviewer": ROLE_CONFIGS.get("reviewer", {}),
-    "analyst": ROLE_CONFIGS.get("researcher", {}),
-    # debugger may not exist yet in ROLE_CONFIGS; provide a minimal placeholder
-    "debugger": ROLE_CONFIGS.get("researcher", {}),
+    # analyst: read-only explore mode (mirrors opencode's 'explore' agent)
+    "analyst": ROLE_CONFIGS.get("analyst_role", ROLE_CONFIGS.get("researcher", {})),
+    # debugger: full edit+test access, no deletion/delegation
+    "debugger": ROLE_CONFIGS.get("debugger_role", ROLE_CONFIGS.get("researcher", {})),
 }
 
 

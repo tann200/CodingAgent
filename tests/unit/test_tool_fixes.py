@@ -46,11 +46,14 @@ class TestGlob:
         res = glob("**/*.py", workdir=tmp_path)
         assert any("deep.py" in m for m in res["matches"])
 
-    def test_results_are_sorted(self, tmp_path):
+    def test_results_are_sorted_by_mtime_newest_first(self, tmp_path):
+        # Files created in order z → a → m; newest is m, oldest is z.
+        import time
         for name in ["z.py", "a.py", "m.py"]:
             (tmp_path / name).write_text("x")
+            time.sleep(0.01)  # ensure distinct mtimes
         res = glob("*.py", workdir=tmp_path)
-        assert res["matches"] == sorted(res["matches"])
+        assert res["matches"] == ["m.py", "a.py", "z.py"]
 
     def test_no_matches_returns_empty_list(self, tmp_path):
         res = glob("*.nonexistent", workdir=tmp_path)
@@ -80,35 +83,38 @@ class TestGrep:
         (tmp_path / "b.py").write_text("def bar():\n    foo()\n")
         (tmp_path / "notes.txt").write_text("just a note about foo\n")
 
+    # grep() returns the ToolResult envelope: {ok, output: {output, matches}, error, error_code}
+    # Matches and raw output live under res["output"].
+
     def test_basic_match(self, tmp_path):
         self.setup_files(tmp_path)
         res = grep("def foo", workdir=tmp_path)
-        assert "matches" in res
-        assert any(m["content"].strip().startswith("def foo") for m in res["matches"])
+        matches = res["output"]["matches"]
+        assert any(m["content"].strip().startswith("def foo") for m in matches)
 
     def test_no_match(self, tmp_path):
         self.setup_files(tmp_path)
         res = grep("NONEXISTENT_TOKEN_XYZ", workdir=tmp_path)
-        assert res.get("matches") == []
+        assert res["output"]["matches"] == []
 
     def test_include_filter_py_only(self, tmp_path):
         self.setup_files(tmp_path)
         res = grep("foo", workdir=tmp_path, include="*.py")
         # notes.txt contains "foo" but should be excluded
-        file_paths = [m["file_path"] for m in res["matches"]]
+        file_paths = [m["file_path"] for m in res["output"]["matches"]]
         assert all(fp.endswith(".py") for fp in file_paths), \
             f"Expected only .py files, got: {file_paths}"
 
     def test_include_filter_txt_only(self, tmp_path):
         self.setup_files(tmp_path)
         res = grep("foo", workdir=tmp_path, include="*.txt")
-        file_paths = [m["file_path"] for m in res["matches"]]
+        file_paths = [m["file_path"] for m in res["output"]["matches"]]
         assert all(fp.endswith(".txt") for fp in file_paths)
 
     def test_structured_matches_fields(self, tmp_path):
         self.setup_files(tmp_path)
         res = grep("def foo", workdir=tmp_path)
-        for m in res["matches"]:
+        for m in res["output"]["matches"]:
             assert "file_path" in m
             assert "line_number" in m
             assert "content" in m
@@ -120,17 +126,18 @@ class TestGrep:
         (tmp_path / "f.py").write_text("line1\nTARGET\nline3\n")
         res_no_ctx = grep("TARGET", workdir=tmp_path, context=0)
         res_ctx = grep("TARGET", workdir=tmp_path, context=1)
-        # With context=1, output should have surrounding lines (line1, line3)
-        assert len(res_ctx["output"]) >= len(res_no_ctx["output"])
+        # With context=1, raw output string should be longer (surrounding lines included)
+        assert len(res_ctx["output"]["output"]) >= len(res_no_ctx["output"]["output"])
 
     def test_output_field_always_present(self, tmp_path):
         self.setup_files(tmp_path)
         res = grep("def", workdir=tmp_path)
-        assert "output" in res
+        assert "output" in res           # ToolResult envelope key
+        assert "matches" in res["output"]  # payload always has matches key
 
     def test_path_outside_workdir_rejected(self, tmp_path):
         res = grep("foo", path="../outside", workdir=tmp_path)
-        assert res.get("status") == "error"
+        assert res.get("ok") is False
 
 
 # ---------------------------------------------------------------------------

@@ -89,10 +89,15 @@ def get_toolset_for_role(role: str) -> str:
         "strategic": "planning",
         "reviewer": "review",
         "debugger": "debug",
-        "analyst": "planning",
+        "analyst": "analysis",
     }
 
     return canonical_to_toolset.get(canonical, "coding")
+
+
+def clear_cache() -> None:
+    """Invalidate the in-process toolset cache (useful after YAML edits)."""
+    _cache.clear()
 
 
 def list_available_toolsets() -> List[str]:
@@ -113,7 +118,7 @@ def get_toolset_description(name: str) -> str:
 
 
 class ToolsetManager:
-    def __init__(self, base_tools: List[str] = None):
+    def __init__(self, base_tools: Optional[List[str]] = None):
         self.base_tools = base_tools or []
         self._current_toolset: Optional[str] = None
 

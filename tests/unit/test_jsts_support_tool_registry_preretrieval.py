@@ -12,6 +12,7 @@ Covers:
 - MC-5: _generate_work_summary includes git diff stat
 - PB-3: pre-retrieval uses asyncio.gather (parallel fetch)
 """
+
 import inspect
 import pytest
 
@@ -19,6 +20,7 @@ import pytest
 # ---------------------------------------------------------------------------
 # ET-1: evaluation_node routes to debug on JS/TS verification failure
 # ---------------------------------------------------------------------------
+
 
 class TestEvaluationNodeJavaScriptTypeScriptFailureRouting:
     """ET-1 regression: evaluation_node must route to debug for JS/TS failures."""
@@ -43,7 +45,9 @@ class TestEvaluationNodeJavaScriptTypeScriptFailureRouting:
         from src.core.orchestration.graph.nodes.evaluation_node import evaluation_node
 
         state = self._make_state(
-            verification_result={"js_tests": {"status": "fail", "stdout": "Jest: 3 failed"}},
+            verification_result={
+                "js_tests": {"status": "fail", "stdout": "Jest: 3 failed"}
+            },
         )
         result = await evaluation_node(state, {})
         assert result.get("evaluation_result") == "debug", (
@@ -57,7 +61,9 @@ class TestEvaluationNodeJavaScriptTypeScriptFailureRouting:
         from src.core.orchestration.graph.nodes.evaluation_node import evaluation_node
 
         state = self._make_state(
-            verification_result={"ts_check": {"status": "fail", "stdout": "TS2345 error"}},
+            verification_result={
+                "ts_check": {"status": "fail", "stdout": "TS2345 error"}
+            },
         )
         result = await evaluation_node(state, {})
         assert result.get("evaluation_result") == "debug", (
@@ -70,7 +76,9 @@ class TestEvaluationNodeJavaScriptTypeScriptFailureRouting:
         from src.core.orchestration.graph.nodes.evaluation_node import evaluation_node
 
         state = self._make_state(
-            verification_result={"eslint": {"status": "fail", "stdout": "no-unused-vars"}},
+            verification_result={
+                "eslint": {"status": "fail", "stdout": "no-unused-vars"}
+            },
         )
         result = await evaluation_node(state, {})
         assert result.get("evaluation_result") == "debug"
@@ -124,6 +132,7 @@ class TestEvaluationNodeJavaScriptTypeScriptFailureRouting:
 # ET-4: registered edit_by_line_range comes from file_tools (not inline copy)
 # ---------------------------------------------------------------------------
 
+
 class TestEditByLineRangeSingleRegistrationInRegistry:
     """ET-4 regression: the registered edit_by_line_range must be the file_tools version."""
 
@@ -150,6 +159,7 @@ class TestEditByLineRangeSingleRegistrationInRegistry:
     def test_only_one_registration(self):
         """Calling example_registry() twice should yield the same single registration."""
         from src.core.orchestration.orchestrator import example_registry
+
         reg1 = example_registry()
         reg2 = example_registry()
         assert "edit_by_line_range" in reg1.tools
@@ -157,12 +167,15 @@ class TestEditByLineRangeSingleRegistrationInRegistry:
         # Both must point to the same function (file_tools version, not inline)
         fn1 = reg1.tools["edit_by_line_range"]["fn"]
         fn2 = reg2.tools["edit_by_line_range"]["fn"]
-        assert fn1 is fn2 or getattr(fn1, "__module__", "") == getattr(fn2, "__module__", "")
+        assert fn1 is fn2 or getattr(fn1, "__module__", "") == getattr(
+            fn2, "__module__", ""
+        )
 
 
 # ---------------------------------------------------------------------------
 # CF-3: should_after_execution_with_replan return type includes "analysis"
 # ---------------------------------------------------------------------------
+
 
 class TestRouteExecutionAnnotationIncludesAnalysisBranch:
     """CF-3: return type annotation must include 'analysis' (from should_after_execution)."""
@@ -170,6 +183,7 @@ class TestRouteExecutionAnnotationIncludesAnalysisBranch:
     def test_return_type_includes_analysis(self):
         from src.core.orchestration.graph import builder
         import typing
+
         hints = typing.get_type_hints(builder.should_after_execution_with_replan)
         return_ann = str(hints.get("return", ""))
         assert "analysis" in return_ann, (
@@ -181,11 +195,13 @@ class TestRouteExecutionAnnotationIncludesAnalysisBranch:
 # WR-1/WR-2: should_after_verification checks all 6 keys + uses verification_passed
 # ---------------------------------------------------------------------------
 
+
 class TestVerificationRouterJSTSResultKeyHandling:
     """WR-1 regression: should_after_verification must handle JS/TS keys."""
 
     def test_js_tests_fail_routes_to_debug(self):
         from src.core.orchestration.graph.builder import should_after_verification
+
         state = {
             "verification_result": {"js_tests": {"status": "fail"}},
             "verification_passed": None,
@@ -196,6 +212,7 @@ class TestVerificationRouterJSTSResultKeyHandling:
 
     def test_verification_passed_true_routes_to_memory_sync(self):
         from src.core.orchestration.graph.builder import should_after_verification
+
         state = {
             "verification_result": {"js_tests": {"status": "fail"}},
             "verification_passed": True,  # authoritative flag overrides result dict
@@ -206,6 +223,7 @@ class TestVerificationRouterJSTSResultKeyHandling:
 
     def test_python_test_fail_routes_to_debug(self):
         from src.core.orchestration.graph.builder import should_after_verification
+
         state = {
             "verification_result": {"tests": {"status": "fail"}},
             "verification_passed": None,
@@ -216,6 +234,7 @@ class TestVerificationRouterJSTSResultKeyHandling:
 
     def test_all_pass_routes_to_memory_sync(self):
         from src.core.orchestration.graph.builder import should_after_verification
+
         state = {
             "verification_result": {
                 "tests": {"status": "pass"},
@@ -231,6 +250,7 @@ class TestVerificationRouterJSTSResultKeyHandling:
 # ---------------------------------------------------------------------------
 # RA-3: _INDEXED_DIRS LRU cap
 # ---------------------------------------------------------------------------
+
 
 class TestIndexedDirsLRUCapEnforcement:
     """RA-3: _INDEXED_DIRS must not grow beyond _INDEXED_DIRS_MAX entries."""
@@ -264,20 +284,36 @@ class TestIndexedDirsLRUCapEnforcement:
 # TS-5: manage_todo in MODIFYING_TOOLS
 # ---------------------------------------------------------------------------
 
+
 class TestManageTodoRegisteredAsModifyingTool:
-    """TS-5: manage_todo must appear in MODIFYING_TOOLS in execution_node."""
+    """TS-5: manage_todo must appear in MODIFYING_TOOLS (single source of truth in loop_guards).
+
+    ORCH-02 moved MODIFYING_TOOLS to loop_guards.py.  execution_node.py imports
+    it from there, so we check the runtime value rather than the literal source.
+    """
 
     def test_manage_todo_in_modifying_tools(self):
+        from src.core.orchestration.loop_guards import MODIFYING_TOOLS
+
+        assert "manage_todo" in MODIFYING_TOOLS, (
+            "TS-5: manage_todo must be in MODIFYING_TOOLS (loop_guards.py is "
+            "the single source of truth after ORCH-02)"
+        )
+
+    def test_execution_node_uses_loop_guards_modifying_tools(self):
+        """execution_node.MODIFYING_TOOLS is the same object as loop_guards.MODIFYING_TOOLS."""
         from src.core.orchestration.graph.nodes import execution_node as en_mod
-        src = inspect.getsource(en_mod)
-        assert '"manage_todo"' in src or "'manage_todo'" in src, (
-            "TS-5: manage_todo must be listed in MODIFYING_TOOLS in execution_node"
+        from src.core.orchestration.loop_guards import MODIFYING_TOOLS as lg_mt
+
+        assert en_mod.MODIFYING_TOOLS is lg_mt, (
+            "execution_node must re-export MODIFYING_TOOLS from loop_guards (no duplication)"
         )
 
 
 # ---------------------------------------------------------------------------
 # MC-5: _generate_work_summary includes git diff section
 # ---------------------------------------------------------------------------
+
 
 class TestWorkSummaryIncludesGitDiffStatSection:
     """MC-5: work summary must attempt to include git diff --stat."""
@@ -299,10 +335,16 @@ class TestWorkSummaryIncludesGitDiffStatSection:
             return m
 
         from unittest.mock import MagicMock
-        monkeypatch.setattr("src.core.orchestration.orchestrator._sp", None, raising=False)
+
+        monkeypatch.setattr(
+            "src.core.orchestration.orchestrator._sp", None, raising=False
+        )
 
         import src.core.orchestration.orchestrator as orc_mod
-        monkeypatch.setattr(orc_mod, "_sp", type("_sp", (), {"run": staticmethod(mock_run)})())
+
+        monkeypatch.setattr(
+            orc_mod, "_sp", type("_sp", (), {"run": staticmethod(mock_run)})()
+        )
 
         state = {"task": "fix bug", "rounds": 1, "working_dir": str(tmp_path)}
         summary = _generate_work_summary(state, [])
@@ -323,11 +365,13 @@ class TestWorkSummaryIncludesGitDiffStatSection:
 # PB-3: pre-retrieval is parallelised (asyncio.gather)
 # ---------------------------------------------------------------------------
 
+
 class TestPerceptionNodePreRetrievalParallelExecution:
     """PB-3: perception_node pre-retrieval must use asyncio.gather."""
 
     def test_uses_asyncio_gather(self):
         from src.core.orchestration.graph.nodes import perception_node as pn_mod
+
         src = inspect.getsource(pn_mod.perception_node)
         assert "asyncio.gather" in src, (
             "PB-3: perception_node must use asyncio.gather for parallel pre-retrieval"

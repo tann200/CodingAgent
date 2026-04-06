@@ -1,6 +1,6 @@
 import logging
 from pathlib import Path
-from typing import Dict, Any
+from typing import Any, Dict, Mapping
 
 from src.core.orchestration.graph.state import AgentState
 from src.core.orchestration.graph.nodes.node_utils import _resolve_orchestrator
@@ -14,7 +14,7 @@ def _has_js_project(workdir: Path) -> bool:
     return (workdir / "package.json").exists()
 
 
-def _step_requests_verification(state: Dict[str, Any]) -> bool:
+def _step_requests_verification(state: Mapping[str, Any]) -> bool:
     """Return True if the current plan step explicitly asks for test/verify/lint."""
     current_plan = state.get("current_plan") or []
     current_step = state.get("current_step") or 0
@@ -35,7 +35,7 @@ def _step_requests_verification(state: Dict[str, Any]) -> bool:
     return False
 
 
-async def verification_node(state: AgentState, config: Any) -> Dict[str, Any]:
+async def verification_node(state: Mapping[str, Any], config: Any) -> Dict[str, Any]:
     """
     Verification Layer: Run tests / linters / syntax checks on proposed edits.
     Also validates file deletions to ensure files are actually deleted.

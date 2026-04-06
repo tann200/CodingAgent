@@ -7,7 +7,7 @@ This is critical for local LLM agents which have limited context windows.
 import re
 import math
 import json
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Optional
 
 
 class ContextController:
@@ -18,7 +18,9 @@ class ContextController:
     SUMMARY_TARGET_LINES = 100
 
     def __init__(
-        self, max_tokens: int = DEFAULT_MAX_TOKENS, max_context_tokens: int = None
+        self,
+        max_tokens: int = DEFAULT_MAX_TOKENS,
+        max_context_tokens: Optional[int] = None,
     ):
         self.max_tokens = max_tokens
         self.max_context_tokens = max_context_tokens or max_tokens
@@ -210,6 +212,12 @@ class ContextController:
             else 0,
         }
 
+    def get_relevant_snippets(
+        self, content: str, query: str, max_tokens: int = 500
+    ) -> List[str]:
+        """Alias for extract_relevant_snippets."""
+        return self.extract_relevant_snippets(content, query, max_tokens)
+
 
 def create_context_controller(max_tokens: int = 6000) -> ContextController:
     """Factory function to create ContextController."""
@@ -224,4 +232,4 @@ def get_context_controller(max_tokens: int = 6000) -> ContextController:
 ContextController.extract_relevant_snippets = (
     ContextController.extract_relevant_snippets
 )
-ContextController.get_relevant_snippets = ContextController.extract_relevant_snippets
+ContextController.get_relevant_snippets = ContextController.extract_relevant_snippets  # type: ignore[attr-defined]

@@ -1,0 +1,162 @@
+Screen { background: #161616; padding: 0 1; }
+
+/* ── Provider banner ───────────────────────────────────────────────────── */
+#provider_banner { dock: top; height: 1; padding: 0 1; color: #fff; background: #333333; }
+#provider_banner.hidden  { display: none; }
+#provider_banner.connected { background: #166534; }
+#provider_banner.error   { background: #7f1d1d; }
+
+/* ── Header ────────────────────────────────────────────────────────────── */
+Header { background: #161616; color: #efefef; height: 1; text-style: bold; }
+
+/* ── Main layout ───────────────────────────────────────────────────────── */
+#main_workspace { layout: horizontal; height: 1fr; }
+#left_column    { width: 1fr; height: 1fr; }
+
+/* ── Chat log ──────────────────────────────────────────────────────────── */
+#chat_log { background: transparent; border: none; padding: 1 2; scrollbar-size: 1 1; height: 1fr; }
+
+/* ── Console panel (left pillar) ───────────────────────────────────────── */
+#console_panel        { dock: left; width: 30%; height: 100%; border-right: vkey $primary; background: #0d0d0d; }
+#console_panel.hidden { display: none; }
+#console_header       { height: 1; padding: 0 1; background: #1a1a1a; color: #888888; text-style: bold; }
+#console_output       { height: 1fr; padding: 0 1; scrollbar-size: 1 1; overflow-y: auto; }
+
+.console_line    { color: #888888; padding: 0 1; }
+.console_info    { color: #3b82f6; }
+.console_error   { color: #ff5555; }
+.console_warning { color: #facc15; }
+.console_debug   { color: #666666; }
+
+/* ── Chat message classes ──────────────────────────────────────────────── */
+.user_msg      { background: #262626; color: white; padding: 1 2; margin: 1 0; border-left: wide #3b82f6; }
+.error_msg     { color: #ff5555; text-style: italic; }
+.system_msg    { color: #888888; text-style: italic; padding: 0 1; margin: 0 0; }
+/* retry_msg: same layout as system_msg but no italic (markup provides its own color) */
+.retry_msg     { padding: 0 1; margin: 0 0; }
+.stream_msg    { color: #e0e0e0; padding: 0 2; margin: 0 0; }
+.help_msg      { color: #a0cfff; }
+
+/* ── Tool call messages ────────────────────────────────────────────────── */
+.tool_msg         { color: #c0c0c0; padding: 0 1; margin: 0 0; }
+.tool_inprogress  { color: #facc15; }
+
+/* ── Diff preview ──────────────────────────────────────────────────────── */
+.diff_preview_msg { background: #0e1a0e; padding: 0 1; margin: 1 0; border-left: wide #22c55e; }
+
+/* ── Plan message ──────────────────────────────────────────────────────── */
+.plan_msg { background: #1a1028; padding: 1 2; margin: 1 0; border-left: wide #a855f7; }
+
+/* ── Approval rows ─────────────────────────────────────────────────────── */
+.approval_row   { height: auto; padding: 0 1; margin: 1 0; align: left middle; }
+.approval_label { color: #e0e0e0; width: auto; content-align: left middle; }
+.approval_row Button { border: none; height: 1; padding: 0 2; margin: 0 1; min-width: 9; }
+
+/* ── Input ─────────────────────────────────────────────────────────────── */
+HistoryInput          { height: 3; margin: 0; border: solid #333333; background: #1a1a1a; dock: bottom; }
+#user_input           { height: 3; border: round #333333; }
+#user_input.input_locked { border: round #555555; background: #111111; }
+
+/* ── Footer ────────────────────────────────────────────────────────────── */
+#coding_footer { dock: bottom; height: 1; background: #161616; margin-top: 0; }
+#status_left   { width: 1fr; content-align: left middle; color: #666666; }
+#status_right  { width: auto; content-align: right middle; color: #555555; }
+
+/* ── Right sidebar ─────────────────────────────────────────────────────── */
+#right_sidebar        { width: 44; height: 1fr; dock: right; border-left: solid #333333; padding: 1; background: #111111; }
+#right_sidebar.hidden { display: none; }
+
+.sb_title { text-style: bold; color: #888888; margin-top: 1; margin-bottom: 0; }
+
+/* Task status */
+#sb_task_status { color: #e0e0e0; }
+
+/* Plan progress */
+#sb_plan_bar  { color: #a855f7; }
+#sb_plan_desc { color: #888888; text-style: italic; }
+
+/* Tool activity */
+#sb_tool_activity { color: #facc15; }
+
+/* Working dir */
+#sb_workdir { color: #3b82f6; }
+
+/* Token budget — default; colour overridden via markup from Python */
+#sb_tokens { }
+
+/* Token breakdown */
+#sb_context { color: #666666; }
+
+/* Session cost */
+#sb_cost { color: #a855f7; }
+
+/* Git branch */
+#sb_git { color: #e0e0e0; }
+
+/* Tool call count */
+#sb_tool_count { color: #facc15; }
+
+/* ── SideBySideDiff ─────────────────────────────────────────────────────── */
+SideBySideDiff { height: auto; margin: 1 0; border: solid #333333; background: #0a0a0a; }
+SideBySideDiff .sbs_header { height: 1; padding: 0 1; background: #1a1a1a; color: #888888; text-style: bold; }
+SideBySideDiff .sbs_panels { height: auto; }
+SideBySideDiff .sbs_col { width: 1fr; height: auto; padding: 0 1; overflow: hidden hidden; }
+SideBySideDiff .sbs_col_old { border-right: vkey #333333; }
+SideBySideDiff .sbs_col_label { height: 1; color: #555555; text-style: italic; }
+SideBySideDiff .sbs_content { height: auto; }
+SideBySideDiff .sbs_actions { height: auto; padding: 0 1; align: left middle; background: #111111; }
+SideBySideDiff .sbs_actions Button { border: none; height: 1; padding: 0 2; margin: 0 1; min-width: 9; }
+SideBySideDiff .sbs_prompt { color: #888888; width: auto; content-align: left middle; }
+
+/* ── API key rows in settings ───────────────────────────────────────────── */
+.apikey_row   { height: auto; margin: 0 0; padding: 0; align: left middle; }
+.apikey_dot   { width: 2; content-align: center middle; }
+.apikey_name  { width: 18; color: #888888; content-align: left middle; }
+.apikey_input { width: 1fr; }
+.apikey_test_btn { width: 8; min-width: 6; }
+
+/* ── Screens ────────────────────────────────────────────────────────────── */
+SettingsScreen      { align: center middle; }
+ProviderConfigScreen { align: center middle; }
+
+#settings_box     { width: 72; height: auto; max-height: 90%; background: #1a1a1a; border: round #555555; padding: 1 2; }
+#settings_scroll  { height: auto; max-height: 80%; scrollbar-size: 1 1; padding: 0 1; }
+.settings_title   { text-style: bold; color: #e0e0e0; margin-bottom: 1; text-align: center; }
+.section_title    { text-style: bold; color: #a855f7; margin-top: 1; margin-bottom: 0; }
+.field_label      { color: #888888; margin-top: 0; margin-bottom: 0; }
+#settings_actions { height: auto; margin-top: 0; padding: 0 1; align: center middle; }
+#settings_actions Button { margin: 0 1; min-width: 10; max-width: 14; }
+#settings_box Select { margin-bottom: 0; }
+
+#config_box     { width: 50; height: auto; background: #1a1a1a; border: round #555555; padding: 1 2; }
+#config_actions { height: auto; margin-top: 0; padding: 0 1; align: center middle; }
+#config_actions Button { margin: 0 1; min-width: 10; max-width: 14; }
+
+/* ── Command palette ────────────────────────────────────────────────────── */
+CommandPalette { align: center middle; }
+#palette_box        { width: 60; height: auto; max-height: 80%; background: #1a1a1a; border: round #555555; padding: 2; margin: 2 4; }
+#palette_header     { height: 1; margin-bottom: 1; }
+#palette_title      { text-style: bold; color: #e0e0e0; width: 1fr; }
+#palette_close_hint { color: #555555; width: auto; content-align: right middle; text-style: italic; }
+#palette_input      { height: 3; margin-bottom: 1; }
+#palette_list       { height: auto; max-height: 50; background: #1a1a1a; scrollbar-size: 1 1; }
+#palette_list > ListItem           { padding: 0; height: auto; background: #1a1a1a; }
+#palette_list > ListItem.-highlight { background: #333333; }
+#palette_footer     { height: 1; color: #555555; margin-top: 1; text-align: center; }
+
+/* ── Thinking process ───────────────────────────────────────────────────── */
+ThinkingProcess             { background: #1a1a1a; border-left: wide #00ffff; margin: 1 0; height: auto; padding: 0 1; }
+ThinkingProcess.pulse       { border-left: wide #3b82f6; }
+ThinkingProcess > .header   { color: #00ffff; text-style: italic; padding: 0 1; }
+ThinkingProcess > .time_label { color: #555555; text-style: bold; padding-left: 1; dock: right; }
+ThinkingProcess > .content  { display: none; padding-top: 1; color: #888888; }
+ThinkingProcess.expanded > .content { display: block; }
+ThinkingProcess.expanded    { border-left: wide #3b82f6; background: #202020; }
+
+/* ── Agent artifact ─────────────────────────────────────────────────────── */
+AgentArtifact { margin: 1 0; height: auto; }
+StreamView    { height: auto; }
+
+/* ── Probe results ──────────────────────────────────────────────────────── */
+ProbeResultsScreen { align: center middle; }
+#probe_box { width: 70; height: auto; max-height: 80%; background: #1a1a1a; border: round #555555; padding: 2; margin: 2 4; }

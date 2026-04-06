@@ -1,7 +1,7 @@
 import logging
 import os
 import threading
-from typing import Dict, Any
+from typing import Mapping, Dict, Any
 
 from src.core.orchestration.graph.state import AgentState
 from src.core.orchestration.graph.nodes.node_utils import _resolve_orchestrator
@@ -24,10 +24,17 @@ _INDEXED_DIRS_LOCK = threading.Lock()
 # Repo summaries are expensive (file-system walk + LLM) and rarely change during
 # a session.  Keyed on the resolved path so symlinks don't cause cache misses.
 _REPO_SUMMARY_CACHE: dict = {}  # {resolved_path: summary_result}
+# MED-16 fix: lock guards _REPO_SUMMARY_CACHE mutations (concurrent tasks share
+# the same event-loop thread but asyncio coroutines can interleave around
+# awaits; module-level dicts are also accessed from worker threads via
+# run_in_executor, so a plain threading.Lock is the right primitive).
+_REPO_SUMMARY_CACHE_LOCK = threading.Lock()
 
 # PB-3: SymbolGraph singleton per working_dir — avoids re-parsing the same files
 # on every analysis_node invocation.
 _SYMBOL_GRAPH_CACHE: dict = {}  # {resolved_path: SymbolGraph}
+# MED-16 fix: same reasoning as _REPO_SUMMARY_CACHE_LOCK above.
+_SYMBOL_GRAPH_CACHE_LOCK = threading.Lock()
 
 
 def _is_already_indexed(working_dir: str) -> bool:
@@ -57,7 +64,7 @@ def _mark_indexed(working_dir: str) -> None:
         pass
 
 
-async def analysis_node(state: AgentState, config: Any) -> Dict[str, Any]:
+async def analysis_node(state: Mapping[str, Any], config: Any) -> Dict[str, Any]:
     """
     Analysis Layer: Explores the repository to gather relevant context before planning.
     Uses repository intelligence tools to find relevant files, symbols, and dependencies.
@@ -121,13 +128,15 @@ async def analysis_node(state: AgentState, config: Any) -> Dict[str, Any]:
     try:
         # PB-2: Check module-level cache before calling the expensive summary generator.
         _resolved_wd = str(os.path.realpath(working_dir))
-        if _resolved_wd in _REPO_SUMMARY_CACHE:
-            summary_result = _REPO_SUMMARY_CACHE[_resolved_wd]
+        with _REPO_SUMMARY_CACHE_LOCK:
+            summary_result = _REPO_SUMMARY_CACHE.get(_resolved_wd)
+        if summary_result is not None:
             logger.debug("analysis_node: repo summary cache hit")
         else:
             summary_result = generate_repo_summary(working_dir)
             if summary_result:
-                _REPO_SUMMARY_CACHE[_resolved_wd] = summary_result
+                with _REPO_SUMMARY_CACHE_LOCK:
+                    _REPO_SUMMARY_CACHE[_resolved_wd] = summary_result
         if summary_result.get("status") == "ok" or "summary" in summary_result:
             summary_text = summary_result.get("summary", "")
             framework = summary_result.get("framework", "Unknown")
@@ -299,11 +308,12 @@ Use this repository context to plan your deep-dive searches."""
         # PB-3: Reuse a cached SymbolGraph for the same working_dir to avoid
         # re-parsing every file on every analysis_node call.
         _sg_key = str(os.path.realpath(working_dir))
-        if _sg_key in _SYMBOL_GRAPH_CACHE:
-            sg = _SYMBOL_GRAPH_CACHE[_sg_key]
-        else:
+        with _SYMBOL_GRAPH_CACHE_LOCK:
+            sg = _SYMBOL_GRAPH_CACHE.get(_sg_key)
+        if sg is None:
             sg = SymbolGraph(working_dir)
-            _SYMBOL_GRAPH_CACHE[_sg_key] = sg
+            with _SYMBOL_GRAPH_CACHE_LOCK:
+                _SYMBOL_GRAPH_CACHE[_sg_key] = sg
 
         # Update index for all found relevant files (multi-lang: update_file handles suffix check)
         for fp in relevant_files[:25]:

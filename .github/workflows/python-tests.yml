@@ -35,3 +35,9 @@ jobs:
         env:
           CI: true
 
+      - name: Check xfail decorator count
+        run: |
+          COUNT=$(grep -r "@pytest.mark.xfail" tests/ --include="*.py" | grep -v "^#\|#.*xfail" | wc -l | tr -d ' ')
+          echo "Decorator-style xfail markers: $COUNT"
+          [ "$COUNT" -le 2 ] || (echo "ERROR: Too many @pytest.mark.xfail decorators ($COUNT > 2). Fix failing tests instead of marking them xfail." && exit 1)
+

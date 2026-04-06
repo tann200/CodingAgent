@@ -55,11 +55,12 @@ Security customisation
 ----------------------
 ::
 
-    from src.tools._security import SAFE_COMMANDS, DANGEROUS_PATTERNS
+    from src.tools._security import SAFE_COMMANDS, add_dangerous_pattern
 
     SAFE_COMMANDS.add("my-read-only-cli")
-    DANGEROUS_PATTERNS.append("drop table")   # domain-specific block
+    add_dangerous_pattern("drop table")   # domain-specific block — use add_dangerous_pattern(), not DANGEROUS_PATTERNS.append()
 """
+
 from __future__ import annotations
 
 # --- Core decorator / definition -----------------------------------------
@@ -80,6 +81,7 @@ from src.tools._security import (  # noqa: F401
     SAFE_COMMANDS,
     TEST_COMPILE_COMMANDS,
     RESTRICTED_COMMANDS,
+    add_dangerous_pattern,
 )
 
 __all__ = [
@@ -100,4 +102,5 @@ __all__ = [
     "SAFE_COMMANDS",
     "TEST_COMPILE_COMMANDS",
     "RESTRICTED_COMMANDS",
+    "add_dangerous_pattern",
 ]

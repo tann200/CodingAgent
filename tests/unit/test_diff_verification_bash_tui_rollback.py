@@ -77,7 +77,7 @@ class TestVerificationNodeNoneWorkingDirSafety:
     def test_path_none_raises_without_guard(self):
         """Demonstrate the original crash: Path(None) raises TypeError."""
         with pytest.raises(TypeError):
-            Path(None)
+            Path(None)  # type: ignore[arg-type]
 
     def test_path_with_guard_falls_back(self):
         """With the fix, Path(None or '.') should return Path('.')."""
@@ -100,7 +100,7 @@ class TestVerificationNodeNoneWorkingDirSafety:
         }
         config = MagicMock()
         # Should not raise TypeError
-        result = asyncio.run(verification_node(state, config))
+        result = asyncio.run(verification_node(state, config))  # type: ignore[arg-type]
         assert isinstance(result, dict)
         assert "verification_result" in result
 
@@ -118,7 +118,7 @@ class TestVerificationNodeNoneWorkingDirSafety:
             "current_step": 0,
         }
         config = MagicMock()
-        result = asyncio.run(verification_node(state, config))
+        result = asyncio.run(verification_node(state, config))  # type: ignore[arg-type]
         assert isinstance(result, dict)
 
 
@@ -180,16 +180,18 @@ class TestInterruptAgentRunningGuard:
 
     def _make_app(self):
         """Create a minimal stub that exercises the interrupt logic."""
-        from src.ui.textual_app_impl import TextualAppBase
+        import types
+        import threading
 
-        app = TextualAppBase.__new__(TextualAppBase)
-        app.orchestrator = MagicMock()
-        app.history = []
-        app._history_lock = __import__("threading").Lock()
-        app.event_bus = None
-        app._cancel_event = __import__("threading").Event()
-        app._agent_running = False
-        app._agent_thread = None
+        app = types.SimpleNamespace(
+            orchestrator=MagicMock(),
+            history=[],
+            _history_lock=threading.Lock(),
+            event_bus=None,
+            _cancel_event=threading.Event(),
+            _agent_running=False,
+            _agent_thread=None,
+        )
         return app
 
     def test_interrupt_when_not_running_does_not_set_cancel(self):
@@ -406,21 +408,20 @@ class TestEvaluationNodeClearsReplanRequiredFlag:
 
 
 class TestTUIEventBusSubscriptionCleanupOnUnmount:
-    """CodingAgentTextualApp must track subscriptions so on_unmount can clean up."""
+    """AgentBridge must track subscriptions so cleanup() can unsubscribe all."""
 
     def test_eb_subscriptions_list_initialised(self):
-        """_eb_subscriptions must be an empty list on init (before on_mount)."""
-        from src.ui.textual_app_impl import TextualAppBase
+        """_subscriptions must be an empty list before setup_subscriptions() is called."""
+        from tui.src.ui.core_bridge import AgentBridge
+        import threading
 
-        app = TextualAppBase.__new__(TextualAppBase)
-        app.orchestrator = MagicMock()
-        app.history = []
-        app._history_lock = __import__("threading").Lock()
-        app.event_bus = None
-        app._cancel_event = __import__("threading").Event()
-        # CodingAgentTextualApp sets this; TextualAppBase does not — check Textual app
-        # We test the field type expectation via the class definition
-        assert True  # attribute added in __init__; just importing should not crash
+        bridge = AgentBridge.__new__(AgentBridge)
+        bridge._subscriptions = []
+        # Attribute exists and is a list before any subscriptions are added
+        assert isinstance(bridge._subscriptions, list), (
+            "_subscriptions must be a list (empty before setup)"
+        )
+        assert len(bridge._subscriptions) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -429,24 +430,30 @@ class TestTUIEventBusSubscriptionCleanupOnUnmount:
 
 
 class TestSettingsModalNoneGuardBeforeCompose:
-    """action_open_settings must not raise AttributeError when _settings_modal
+    """action_open_settings must not raise AttributeError when settings screen
     is not yet set (compose() hasn't been called)."""
 
     def test_open_settings_without_modal_returns_silently(self):
-        from src.ui.textual_app_impl import TextualAppBase
+        """Guard pattern: getattr(self, '_settings_modal', None) must return None
+        before compose() is called, causing early return without raising."""
+        import types
+        import threading
 
-        app = TextualAppBase.__new__(TextualAppBase)
-        app.orchestrator = MagicMock()
-        app.history = []
-        app._history_lock = __import__("threading").Lock()
-        app.event_bus = None
-        app._cancel_event = __import__("threading").Event()
-        app._eb_subscriptions = []
+        # Plain namespace stub — no settings modal set
+        app = types.SimpleNamespace(
+            orchestrator=MagicMock(),
+            history=[],
+            _history_lock=threading.Lock(),
+            event_bus=None,
+            _cancel_event=threading.Event(),
+            _subscriptions=[],
+        )
         # _settings_modal is deliberately absent
         # Simulate the guard: if not getattr(self, '_settings_modal', None): return
         result = getattr(app, "_settings_modal", None)
         assert result is None, "Modal must not be set before compose()"
         # The guard catches this and returns without raising
+        returned_early = False
         if not result:
             returned_early = True
         assert returned_early
@@ -458,31 +465,10 @@ class TestSettingsModalNoneGuardBeforeCompose:
 
 
 class TestTUIPlanProgressAndToolFinishUIHandlers:
-    """_on_plan_progress_ui and _on_tool_finish_ui must update sidebar labels."""
-
-    def _make_tui_base(self):
-        """Build the minimal TextualAppBase with C2 handler methods."""
-        from src.ui.textual_app_impl import TextualAppBase
-
-        class _Stub(TextualAppBase):
-            def __init__(self):
-                self.orchestrator = MagicMock()
-                self.history = []
-                self._history_lock = __import__("threading").Lock()
-                self.event_bus = None
-                self._cancel_event = __import__("threading").Event()
-                self._eb_subscriptions = []
-                self.plan_progress_label = MagicMock()
-                self.tool_activity_label = MagicMock()
-
-            def _schedule_callback(self, fn, *args, **kwargs):
-                fn(*args, **kwargs)
-
-        return _Stub()
+    """AgentBridge plan.progress and tool events must update UI labels."""
 
     def test_on_plan_progress_ui_updates_label(self):
-        # Import the handler directly from the module if accessible,
-        # or verify payload handling logic
+        # Verify payload handling logic for plan progress display
         payload = {"step": 2, "total": 5, "description": "Edit auth module"}
         step = payload.get("step", 0)
         total = payload.get("total", 0)
@@ -634,7 +620,7 @@ class TestOrchestratorContinueStateSerializationAndRestore:
 
         for mod_path in (
             "src.core.orchestration.orchestrator",
-            "src.ui.textual_app_impl",
+            "tui.src.ui.core_bridge",
         ):
             try:
                 mod = importlib.import_module(mod_path)
@@ -686,23 +672,17 @@ class TestChatInputSlashCommandTabAutocomplete:
     """ChatInput Tab key must autocomplete /cmd prefixes from SLASH_COMMANDS."""
 
     def test_slash_commands_list_exists(self):
-        """SLASH_COMMANDS must be defined in textual_app_impl."""
-        import inspect
-        import importlib
+        """SLASH_COMMANDS must be defined in the tui chat_input module."""
+        from tui.src.ui.components.chat_input import SLASH_COMMANDS
 
-        mod = importlib.import_module("src.ui.textual_app_impl")
-        src = inspect.getsource(mod)
-        assert "SLASH_COMMANDS" in src, "SLASH_COMMANDS list must be defined"
+        assert len(SLASH_COMMANDS) > 0, "SLASH_COMMANDS list must be non-empty"
 
     def test_slash_commands_has_required_entries(self):
         """The command palette must include the essential commands."""
-        import inspect
-        import importlib
+        from tui.src.ui.components.chat_input import SLASH_COMMANDS
 
-        mod = importlib.import_module("src.ui.textual_app_impl")
-        src = inspect.getsource(mod)
         for cmd in ("/help", "/clear", "/continue", "/settings"):
-            assert cmd in src, f"SLASH_COMMANDS must include {cmd}"
+            assert cmd in SLASH_COMMANDS, f"SLASH_COMMANDS must include {cmd}"
 
     def test_tab_completes_unique_prefix(self):
         """Tab on '/he' should complete to '/help' (single match)."""
@@ -750,13 +730,19 @@ class TestChatInputSlashCommandTabAutocomplete:
         assert matches == []
 
     def test_chat_input_on_key_handles_tab(self):
-        """ChatInput.on_key Tab branch must exist in source."""
-        import inspect
-        import importlib
-
-        mod = importlib.import_module("src.ui.textual_app_impl")
-        src = inspect.getsource(mod)
-        assert '"tab"' in src or "'tab'" in src, "ChatInput must handle Tab key"
+        """ChatInput.on_key Tab branch must exist in tui chat_input source."""
+        src_file = (
+            Path(__file__).parent.parent.parent
+            / "tui"
+            / "src"
+            / "ui"
+            / "components"
+            / "chat_input.py"
+        )
+        text = src_file.read_text()
+        assert '"tab"' in text or "'tab'" in text or "Tab" in text, (
+            "ChatInput must handle Tab key for autocomplete"
+        )
 
 
 # ---------------------------------------------------------------------------
