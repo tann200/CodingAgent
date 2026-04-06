@@ -31,6 +31,16 @@ from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
+# Ordering of permission levels from least to most permissive.
+# Used by _gate4_permission_mode to compare tool vs. active-mode ranks.
+_PERM_ORDER: dict[str, int] = {
+    "read_only": 0,
+    "workspace_write": 1,
+    "danger": 2,
+    "prompt": 3,
+    "allow": 4,
+}
+
 
 @dataclass
 class PermissionResult:
@@ -171,13 +181,6 @@ class PermissionGateway:
 
     def _gate4_permission_mode(self, name: str) -> PermissionResult:
         """Gate 4: Active permission-mode threshold enforcement."""
-        _PERM_ORDER = {
-            "read_only": 0,
-            "workspace_write": 1,
-            "danger": 2,
-            "prompt": 3,
-            "allow": 4,
-        }
         try:
             from src.tools.tools_config import (
                 get_active_permission_mode,

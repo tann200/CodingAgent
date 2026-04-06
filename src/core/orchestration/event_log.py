@@ -251,7 +251,8 @@ class EventLog:
         sql += " ORDER BY seq ASC"
 
         if limit is not None:
-            sql += f" LIMIT {int(limit)}"
+            sql += " LIMIT ?"
+            params.append(int(limit))
 
         rows = self._conn.execute(sql, params).fetchall()
         return [EventRecord.from_row(r) for r in rows]

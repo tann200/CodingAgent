@@ -42,6 +42,16 @@ from typing import Any, Callable, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
+# Ordering of permission levels from least to most permissive.
+# Defined at module level to avoid rebuilding on every _check_permission_mode call.
+_PERM_ORDER: dict[str, int] = {
+    "read_only": 0,
+    "workspace_write": 1,
+    "danger": 2,
+    "prompt": 3,
+    "allow": 4,
+}
+
 # TS-4: Transient error keywords that warrant an automatic retry.
 _TRANSIENT_ERROR_KEYWORDS = (
     "timeout",
@@ -169,7 +179,9 @@ class ToolExecutionService:
                 blocked=True,
                 result={"ok": False, "error": "Duplicate tool call skipped."},
             )
-        self._seen_calls.add(_call_key)
+        # NOTE: _seen_calls.add is deferred to after all checks pass so that a
+        # denied call does not permanently block retries (e.g. after the user
+        # grants approval on a second attempt).
 
         # 1. Alias normalisation
         try:
@@ -179,7 +191,9 @@ class ToolExecutionService:
         except Exception:
             pass
 
-        # 2. Strip LLM-injected user_approved (prevents WorkspaceGuard bypass)
+        # 2. Strip LLM-injected user_approved (prevents WorkspaceGuard bypass).
+        # Work on a copy so the caller's dict is not mutated.
+        args = dict(args)
         args.pop("user_approved", None)
 
         # 3. PermissionLevel gate
@@ -214,6 +228,10 @@ class ToolExecutionService:
                 blocked=True,
                 result={"ok": False, "error": deny_msg},
             )
+
+        # All checks passed — register this call as seen so true duplicates are
+        # caught on subsequent invocations within the same turn.
+        self._seen_calls.add(_call_key)
 
         return ExecutionVerdict(blocked=False)
 
@@ -313,13 +331,6 @@ class ToolExecutionService:
     @staticmethod
     def _check_permission_mode(name: str) -> ExecutionVerdict:
         """Enforce --permission-mode restriction."""
-        _PERM_ORDER = {
-            "read_only": 0,
-            "workspace_write": 1,
-            "danger": 2,
-            "prompt": 3,
-            "allow": 4,
-        }
         try:
             from src.tools.tools_config import (
                 get_active_permission_mode,

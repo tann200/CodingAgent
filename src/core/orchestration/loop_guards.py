@@ -136,7 +136,7 @@ def check_read_before_write(
             return None
 
         files_read_map: Dict[str, Any] = state.get("files_read") or {}
-        verified_reads: List[str] = state.get("verified_reads") or []
+        verified_reads: Set[str] = set(state.get("verified_reads") or [])
         _session = session_read_files or set()
 
         if (

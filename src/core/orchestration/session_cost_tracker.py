@@ -83,11 +83,13 @@ class SessionCostTracker:
 
     @property
     def session_cost_usd(self) -> float:
-        return self._session_cost_usd
+        with self._lock:
+            return self._session_cost_usd
 
     @property
     def tool_call_total(self) -> int:
-        return sum(self._usage_buffer.values())
+        with self._lock:
+            return sum(self._usage_buffer.values())
 
     def record_tool_call(self, tool_name: str, count: int = 1) -> None:
         """Increment the in-memory usage counter for *tool_name*."""
@@ -124,17 +126,22 @@ class SessionCostTracker:
             cache_creation_tokens=cache_creation_tokens,
             cache_read_tokens=cache_read_tokens,
         )
-        self._session_cost_usd = round(self._session_cost_usd + cost, 8)
-        # P4-4: Budget ceiling alert — publish once when the ceiling is first crossed.
-        if (
-            self._budget_ceiling_usd is not None
-            and self._session_cost_usd > self._budget_ceiling_usd
-            and not self._budget_exceeded_notified
-        ):
-            self._budget_exceeded_notified = True
+        budget_exceeded = False
+        with self._lock:
+            self._session_cost_usd = round(self._session_cost_usd + cost, 8)
+            current_cost = self._session_cost_usd
+            # P4-4: Budget ceiling alert — publish once when the ceiling is first crossed.
+            if (
+                self._budget_ceiling_usd is not None
+                and self._session_cost_usd > self._budget_ceiling_usd
+                and not self._budget_exceeded_notified
+            ):
+                self._budget_exceeded_notified = True
+                budget_exceeded = True
+        if budget_exceeded:
             logger.warning(
                 "SessionCostTracker: session cost $%.6f exceeded budget ceiling $%.6f",
-                self._session_cost_usd,
+                current_cost,
                 self._budget_ceiling_usd,
             )
             self._publish_budget_exceeded()
@@ -142,6 +149,7 @@ class SessionCostTracker:
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             cost_usd=cost,
+            session_cost_usd=current_cost,
             model=model,
             task_id=task_id,
             cache_creation_tokens=cache_creation_tokens,
@@ -271,6 +279,7 @@ class SessionCostTracker:
         prompt_tokens: int,
         completion_tokens: int,
         cost_usd: float,
+        session_cost_usd: float,
         model: str,
         task_id: str,
         cache_creation_tokens: int = 0,
@@ -288,7 +297,7 @@ class SessionCostTracker:
                     "cache_creation_tokens": cache_creation_tokens,
                     "cache_read_tokens": cache_read_tokens,
                     "cost_usd": cost_usd,
-                    "session_cost_usd": self._session_cost_usd,
+                    "session_cost_usd": session_cost_usd,
                     "model": model,
                     "task_id": task_id,
                 },
