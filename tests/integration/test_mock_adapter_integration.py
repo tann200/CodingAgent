@@ -19,6 +19,8 @@ import asyncio
 import json
 import pytest
 
+pytestmark = pytest.mark.integration
+
 from src.core.inference.adapters.mock_adapter import MockAdapter
 
 
@@ -49,6 +51,7 @@ def _patch_call_model(monkeypatch, adapter: MockAdapter) -> None:
 
 
 # ── MA-01: MockAdapter basic scripted responses ───────────────────────────────
+
 
 class TestMockAdapterBasic:
     """MA-01: Verify MockAdapter returns scripted responses and records call_log."""
@@ -81,7 +84,10 @@ class TestMockAdapterBasic:
     def test_call_log_records_all_messages(self):
         adapter = MockAdapter(responses=["r1", "r2"])
         msgs1 = [{"role": "user", "content": "hello"}]
-        msgs2 = [{"role": "user", "content": "world"}, {"role": "assistant", "content": "r1"}]
+        msgs2 = [
+            {"role": "user", "content": "world"},
+            {"role": "assistant", "content": "r1"},
+        ]
         adapter.generate(msgs1)
         adapter.generate(msgs2)
         assert adapter.call_count == 2
@@ -123,6 +129,7 @@ class TestMockAdapterBasic:
 
 
 # ── MA-02: Orchestrator single turn ───────────────────────────────────────────
+
 
 class TestOrchestratorWithMockAdapter:
     """MA-02: Orchestrator run_agent_once works end-to-end with MockAdapter."""
@@ -166,7 +173,12 @@ class TestOrchestratorWithMockAdapter:
                 "completion_tokens": 5,
                 "total_tokens": 15,
                 "content": "Done.",
-                "choices": [{"message": {"role": "assistant", "content": "Done."}, "finish_reason": "stop"}],
+                "choices": [
+                    {
+                        "message": {"role": "assistant", "content": "Done."},
+                        "finish_reason": "stop",
+                    }
+                ],
             }
 
         async def _async_capture(messages, model=None, provider=None, *args, **kwargs):
@@ -192,6 +204,7 @@ class TestOrchestratorWithMockAdapter:
 
 
 # ── MA-03: ContextBuilder system prompt injection ─────────────────────────────
+
 
 class TestContextBuilderWithMock:
     """MA-03: ContextBuilder injects a system prompt that the adapter receives."""
@@ -226,13 +239,13 @@ class TestContextBuilderWithMock:
         )
         # task description should appear in the system or user message
         full_text = " ".join(
-            m.get("content", "") for m in messages
-            if isinstance(m.get("content"), str)
+            m.get("content", "") for m in messages if isinstance(m.get("content"), str)
         )
         assert "hello-world" in full_text or "Python" in full_text or len(messages) >= 1
 
 
 # ── MA-04: Planning node with MockAdapter ─────────────────────────────────────
+
 
 class TestPlanningNodeWithMock:
     """MA-04: planning_node processes MockAdapter plan response into state."""
@@ -295,6 +308,7 @@ Goal: Add a hello-world function to main.py.
 
 # ── MA-05: Tool dispatch with MockAdapter ─────────────────────────────────────
 
+
 class TestToolDispatchWithMock:
     """MA-05: Tool calls in MockAdapter response are dispatched via execute_tool."""
 
@@ -306,7 +320,9 @@ class TestToolDispatchWithMock:
         target.write_text("hello world", encoding="utf-8")
 
         orch = Orchestrator(working_dir=str(tmp_path))
-        result = orch.execute_tool({"name": "read_file", "arguments": {"path": str(target)}})
+        result = orch.execute_tool(
+            {"name": "read_file", "arguments": {"path": str(target)}}
+        )
         assert isinstance(result, dict)
         ok = result.get("ok", result.get("status") == "ok")
         assert ok or "content" in result or "output" in result
@@ -319,15 +335,19 @@ class TestToolDispatchWithMock:
         (tmp_path / "b.py").write_text("pass", encoding="utf-8")
 
         orch = Orchestrator(working_dir=str(tmp_path))
-        result = orch.execute_tool({"name": "list_files", "arguments": {"path": str(tmp_path)}})
+        result = orch.execute_tool(
+            {"name": "list_files", "arguments": {"path": str(tmp_path)}}
+        )
         assert isinstance(result, dict)
 
     def test_mock_adapter_tool_call_json_parsed(self):
         """MockAdapter can return a JSON tool call; caller can parse it."""
-        tool_response = json.dumps({
-            "name": "read_file",
-            "arguments": {"path": "src/main.py"},
-        })
+        tool_response = json.dumps(
+            {
+                "name": "read_file",
+                "arguments": {"path": "src/main.py"},
+            }
+        )
         adapter = MockAdapter(responses=[tool_response])
         result = adapter.generate([{"role": "user", "content": "read main.py"}])
         payload = json.loads(result["content"])

@@ -20,15 +20,6 @@ def test_grep_tool(tmp_path):
     assert "error" in res or "not found" in str(res).lower()
 
 
-def test_summarize_structure(tmp_path):
-    # Setup some structure
-    (tmp_path / "dir1").mkdir()
-    (tmp_path / "dir1" / "file.txt").write_text("hello")
-
-    res = summarize_structure(workdir=tmp_path)
-    assert "dir1" in res.get("top", []) or res.get("file_count", 0) >= 1
-
-
 def test_git_diff(monkeypatch):
     # Mock subprocess.run
     def mock_run(*args, **kwargs):

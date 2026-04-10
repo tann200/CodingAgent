@@ -23,3 +23,4 @@ tools:
   - ask_user
   - submit_plan_for_review
   - memory_search
+  - memory_save

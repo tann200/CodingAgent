@@ -14,6 +14,7 @@ to override:
 from __future__ import annotations
 
 import logging
+import os
 import re
 import time
 from typing import Any, Dict, List, Optional, Union
@@ -327,9 +328,7 @@ class OpenAICompatibleAdapter(LLMClient):
             return {"message": {"role": "assistant", "content": "", "parsed": None}}
 
         try:
-            import os as _os
-
-            if _os.getenv("AGENT_DEBUG") in ("1", "true", "True"):
+            if os.getenv("AGENT_DEBUG") in ("1", "true", "True"):
                 _logger.debug(
                     "%s.chat POST %s payload keys: %s",
                     self.__class__.__name__,
@@ -344,7 +343,22 @@ class OpenAICompatibleAdapter(LLMClient):
             except Exception:
                 pass
 
-            # P2-1: Retry with exponential backoff on transient errors
+            # GAP-NEW-5: inject disable_thinking flag for providers that request it.
+            # Passed as extra_body so it reaches the provider without polluting the
+            # standard OpenAI schema.  Ollama and LM Studio both accept "think": false.
+            _disable_think = False
+            try:
+                _prov_cfg = getattr(self, "provider", None) or {}
+                if isinstance(_prov_cfg, dict):
+                    _disable_think = bool(_prov_cfg.get("disable_thinking", False))
+            except Exception:
+                pass
+            if _disable_think and "think" not in payload:
+                payload["think"] = False
+
+            # P2-1: Retry with exponential backoff on transient errors.
+            # GAP-NEW-1: Parse Retry-After header on 429 to avoid needless delay
+            # or re-triggering the rate limit.
             _MAX_RETRIES = 3
             _RETRYABLE_STATUS = {429, 500, 502, 503, 504}
             r = None
@@ -378,7 +392,18 @@ class OpenAICompatibleAdapter(LLMClient):
                         _MAX_RETRIES,
                     )
                 if _attempt < _MAX_RETRIES - 1:
-                    time.sleep(2**_attempt)  # 1s, 2s backoff
+                    # GAP-NEW-1: honour Retry-After header from provider (caps at 30s).
+                    _retry_wait = 2 ** _attempt  # default: 1s, 2s
+                    if r is not None and r.status_code == 429:
+                        for _hdr in ("retry-after", "x-ratelimit-reset-requests", "x-ratelimit-reset"):
+                            _hval = r.headers.get(_hdr)
+                            if _hval:
+                                try:
+                                    _retry_wait = min(float(_hval), 30.0)
+                                except ValueError:
+                                    pass
+                                break
+                    time.sleep(_retry_wait)
 
             if last_exc is not None and r is None:
                 raise last_exc
@@ -389,7 +414,8 @@ class OpenAICompatibleAdapter(LLMClient):
             # After the retry loop, r is guaranteed non-None here:
             # if r were still None we'd have raised last_exc above, or
             # ConnectionError would have propagated.
-            assert r is not None  # narrow type for pyright
+            if r is None:  # pragma: no cover — defensive; satisfies type narrowing
+                raise RuntimeError("HTTP response is None after retry loop (unexpected)")
 
             try:
                 r.raise_for_status()
@@ -406,13 +432,36 @@ class OpenAICompatibleAdapter(LLMClient):
 
                 user_message = None
                 suggestions: List[str] = []
+                # REACT-OVF: detect context-overflow error messages so the
+                # caller (perception_node) can trigger compaction instead of
+                # treating the turn as a generic failure.
+                _context_overflow = False
+                _OVERFLOW_PATTERNS = (
+                    "context_length_exceeded",
+                    "context length exceeded",
+                    "maximum context length",
+                    "context window",
+                    "prompt is too long",
+                    "tokens exceeds",
+                    "exceeds the model's maximum",
+                    "input is too long",
+                    # LM Studio: "request (101084 tokens) exceeds the available context size (4096 tokens)"
+                    "exceeds the available context",
+                    "available context size",
+                    # Ollama / llama.cpp
+                    "exceeds context length",
+                    "context length is",
+                )
                 try:
                     if isinstance(body, dict):
                         err = body.get("error") or body.get("errors")
                         if isinstance(err, dict):
                             msg = err.get("message") or ""
                             msg_lower = str(msg).lower()
-                            if (
+                            if any(p in msg_lower for p in _OVERFLOW_PATTERNS):
+                                _context_overflow = True
+                                user_message = str(msg)
+                            elif (
                                 "insufficient system resources" in msg_lower
                                 or "failed to load model" in msg_lower
                                 or "requires approximately" in msg_lower
@@ -432,6 +481,15 @@ class OpenAICompatibleAdapter(LLMClient):
                                 )
                             else:
                                 user_message = str(msg)
+                        elif isinstance(err, str):
+                            err_lower = err.lower()
+                            if any(p in err_lower for p in _OVERFLOW_PATTERNS):
+                                _context_overflow = True
+                                user_message = err
+                    elif isinstance(body, str):
+                        body_lower = body.lower()
+                        if any(p in body_lower for p in _OVERFLOW_PATTERNS):
+                            _context_overflow = True
                 except Exception:
                     pass
 
@@ -440,7 +498,11 @@ class OpenAICompatibleAdapter(LLMClient):
                     "status_code": getattr(resp, "status_code", None),
                     "body": body,
                 }
+                if _context_overflow:
+                    meta["context_overflow"] = True
                 result: Dict[str, Any] = {"meta": meta}
+                if _context_overflow:
+                    result["context_overflow"] = True
                 if user_message:
                     result.update(
                         {"user_message": user_message, "suggestions": suggestions}

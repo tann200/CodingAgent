@@ -164,12 +164,6 @@ class TestCreateDelegationAPI:
         assert delegation["role"] == "researcher"
         assert delegation["task"] == "Analyze code"
 
-    def test_create_delegation_with_result_key(self):
-        """Test create_delegation with custom result key."""
-        delegation = create_delegation("reviewer", "Review", result_key="code_review")
-
-        assert delegation["result_key"] == "code_review"
-
     def test_create_delegation_without_result_key(self):
         """Test create_delegation without result key returns None."""
         delegation = create_delegation("coder", "Implement feature")

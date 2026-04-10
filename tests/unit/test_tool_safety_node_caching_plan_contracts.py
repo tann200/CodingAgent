@@ -556,9 +556,9 @@ class TestAnalysisNodeRepoSummaryCache:
         assert "_REPO_SUMMARY_CACHE" in src, (
             "PB-2: _REPO_SUMMARY_CACHE not referenced in analysis_node source"
         )
-        # Use the cache-hit check (in-clause) as the sentinel — avoids matching
-        # module-level comments that reference generate_repo_summary()
-        cache_check = "in _REPO_SUMMARY_CACHE"
+        # Use the cache-hit check (.get() call) as the sentinel — the actual code
+        # uses _REPO_SUMMARY_CACHE.get(...) rather than an 'in' membership test.
+        cache_check = "_REPO_SUMMARY_CACHE.get"
         # The actual function call (not the import line, not comments)
         gen_call = "generate_repo_summary(working_dir)"
         assert cache_check in src, (
@@ -568,7 +568,7 @@ class TestAnalysisNodeRepoSummaryCache:
         cache_pos = src.find(cache_check)
         gen_pos = src.find(gen_call)
         assert cache_pos < gen_pos, (
-            "PB-2: cache lookup ('in _REPO_SUMMARY_CACHE') does not appear before "
+            "PB-2: cache lookup ('_REPO_SUMMARY_CACHE.get') does not appear before "
             "generate_repo_summary(working_dir) call"
         )
 

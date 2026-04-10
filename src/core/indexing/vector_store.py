@@ -188,11 +188,9 @@ class VectorStore:
             embedding_dim = 8  # Fallback for dummy model
 
         # Use a flexible vector type for compatibility
-        from typing import List as PyList
-
         class MemoryEntry(LanceModel):
             text: Optional[str] = Field(default=None)
-            vector: PyList[float] = Field(default_factory=lambda: [0.0] * embedding_dim)
+            vector: List[float] = Field(default_factory=lambda: [0.0] * embedding_dim)
             type: str
             session_id: str
 

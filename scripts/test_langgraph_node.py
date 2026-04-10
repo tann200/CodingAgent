@@ -40,7 +40,9 @@ class MockAdapter:
         ):
             calls.append(resp["response"].get("tool_call"))
         if isinstance(msg, dict) and msg.get("tool_calls"):
-            calls.extend(msg.get("tool_calls"))
+            tool_calls = msg.get("tool_calls")
+            if isinstance(tool_calls, list):
+                calls.extend(tool_calls)
         return calls
 
 

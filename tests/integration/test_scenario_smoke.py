@@ -7,6 +7,9 @@ These tests exercise setup, verification, and framework internals only.
 from __future__ import annotations
 
 import pytest
+
+pytestmark = pytest.mark.integration
+
 from src.core.evaluation.scenario_evaluator import (
     Scenario,
     ScenarioEvaluator,

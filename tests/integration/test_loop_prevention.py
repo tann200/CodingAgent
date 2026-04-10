@@ -1,6 +1,9 @@
+import pytest
 import json
 from src.core.orchestration.orchestrator import Orchestrator
 from tests.integration.mocks.deterministic_adapter import DeterministicAdapter
+
+pytestmark = pytest.mark.integration
 
 # Modules that import call_model directly at module load time — all must be patched.
 _CALL_MODEL_TARGETS = [
@@ -60,9 +63,7 @@ def test_loop_prevention(tmp_path, monkeypatch):
     max_rounds = 12
     scenario_len = len(scenarios["loop_scenario"])
     for _ in range(max_rounds):
-        orchestrator.run_agent_once(
-            None, [{"role": "user", "content": "Start"}], {}
-        )
+        orchestrator.run_agent_once(None, [{"role": "user", "content": "Start"}], {})
         time.sleep(0.05)
         if trace_path.exists():
             try:

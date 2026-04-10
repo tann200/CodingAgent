@@ -3,6 +3,11 @@ from typing import Any, Dict, Optional, Callable
 import time
 import logging
 
+try:
+    from src.core.orchestration.event_bus import get_event_bus as _get_event_bus
+except Exception:
+    _get_event_bus = None  # type: ignore[assignment]
+
 logger = logging.getLogger(__name__)
 
 
@@ -65,19 +70,18 @@ def with_telemetry(func: Callable) -> Callable:
 
                 # Attempt to publish event if provider manager is accessible
                 try:
-                    from src.core.orchestration.event_bus import get_event_bus
-
-                    bus = get_event_bus()
-                    if bus:
-                        publish_model_response(
-                            bus,
-                            provider,
-                            model,
-                            p_tokens,
-                            c_tokens,
-                            p_tokens + c_tokens,
-                            latency,
-                        )
+                    if _get_event_bus is not None:
+                        bus = _get_event_bus()
+                        if bus:
+                            publish_model_response(
+                                bus,
+                                provider,
+                                model,
+                                p_tokens,
+                                c_tokens,
+                                p_tokens + c_tokens,
+                                latency,
+                            )
                 except Exception:
                     pass
 

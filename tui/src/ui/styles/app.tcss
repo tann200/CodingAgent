@@ -41,6 +41,9 @@ Header { background: #161616; color: #efefef; height: 1; text-style: bold; }
 .tool_msg         { color: #c0c0c0; padding: 0 1; margin: 0 0; }
 .tool_inprogress  { color: #facc15; }
 
+/* ── Compaction divider (GAP-MSG-1) ─────────────────────────────────────── */
+.compaction_divider { color: #555555; text-align: center; margin: 1 0; }
+
 /* ── Diff preview ──────────────────────────────────────────────────────── */
 .diff_preview_msg { background: #0e1a0e; padding: 0 1; margin: 1 0; border-left: wide #22c55e; }
 
@@ -61,6 +64,8 @@ HistoryInput          { height: 3; margin: 0; border: solid #333333; background:
 #coding_footer { dock: bottom; height: 1; background: #161616; margin-top: 0; }
 #status_left   { width: 1fr; content-align: left middle; color: #666666; }
 #status_right  { width: auto; content-align: right middle; color: #555555; }
+/* GAP-FOOTER-1: pending permission badge */
+#perm_count_chip { width: auto; content-align: right middle; padding: 0 1; }
 
 /* ── Right sidebar ─────────────────────────────────────────────────────── */
 #right_sidebar        { width: 44; height: 1fr; dock: right; border-left: solid #333333; padding: 1; background: #111111; }
@@ -77,6 +82,10 @@ HistoryInput          { height: 3; margin: 0; border: solid #333333; background:
 
 /* Tool activity */
 #sb_tool_activity { color: #facc15; }
+
+/* Subagent activity (SUBAGENT-VIS-6) */
+#sb_subagent_status { color: #a78bfa; }
+.subagent_msg { color: #a78bfa; padding: 0 1; }
 
 /* Working dir */
 #sb_workdir { color: #3b82f6; }
@@ -119,8 +128,8 @@ SideBySideDiff .sbs_prompt { color: #888888; width: auto; content-align: left mi
 SettingsScreen      { align: center middle; }
 ProviderConfigScreen { align: center middle; }
 
-#settings_box     { width: 72; height: auto; max-height: 90%; background: #1a1a1a; border: round #555555; padding: 1 2; }
-#settings_scroll  { height: auto; max-height: 80%; scrollbar-size: 1 1; padding: 0 1; }
+#settings_box     { width: 72; height: auto; max-height: 85vh; background: #1a1a1a; border: round #555555; padding: 1 2; }
+#settings_scroll  { height: auto; max-height: 65vh; scrollbar-size: 1 1; padding: 0 1; }
 .settings_title   { text-style: bold; color: #e0e0e0; margin-bottom: 1; text-align: center; }
 .section_title    { text-style: bold; color: #a855f7; margin-top: 1; margin-bottom: 0; }
 .field_label      { color: #888888; margin-top: 0; margin-bottom: 0; }

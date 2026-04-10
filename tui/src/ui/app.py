@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     from textual.notifications import SeverityLevel
 
 from textual.app import App, ComposeResult
+from textual.widget import Widget
 from textual.widgets import Header, Static, Label, Input, Button
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual import on
@@ -28,8 +29,10 @@ from .components import (
     StreamView,
     ConsolePanel,
     SideBySideDiff,
+    InlineDiff,
     ChatTextArea,
     FilePickerOverlay,
+    SubagentProgress,
 )
 from .settings import SettingsStore
 from .logging import get_logger
@@ -74,6 +77,13 @@ from .bus import (
     ToolPermissionEvent,
     UsageTurnSummaryEvent,
     DoomLoopEvent,
+    # GitHub Copilot OAuth device flow
+    DeviceFlowStartEvent,
+    DeviceFlowCompleteEvent,
+    DeviceFlowErrorEvent,
+    # Subagent visibility (SUBAGENT-VIS-2)
+    SubagentStartEvent,
+    SubagentFinishEvent,
 )
 from .events import (
     PaletteCommand,
@@ -90,6 +100,7 @@ from .events import (
     BashDenied,
     ToolPermissionApproved,
     ToolPermissionDenied,
+    StartGithubDeviceFlow,
 )
 
 logger = get_logger("app")
@@ -120,6 +131,7 @@ Available commands:
   /clear         — clear chat output (keeps history)
   /new  /reset   — new session (clears history)
   /compact       — compact conversation context
+  /undo          — undo last user message (removes it from history)
   /continue      — restore & re-run previous task
   /interrupt     — cancel running agent
   /status        — show agent/provider/model status
@@ -131,6 +143,9 @@ Available commands:
   /timeline      — view session message timeline
   /diff          — show working-directory diff since last snapshot
   /fork          — fork current session to a new independent copy
+  /share         — export conversation to a markdown file (clipboard if pyperclip available)
+  /rename <name> — rename the current session
+  /worktree [list|create|remove <id>] — manage git worktree isolation
   /mcp [list|add <name> <cmd…>|status] — manage MCP servers
   /quit          — exit the application"""
 
@@ -140,6 +155,85 @@ SAFE_SLASH_CMDS = {"interrupt", "status", "help", "quit"}
 _AT_FILE_MAX_CHARS = 8000
 # Workspace dirs to skip when scanning files for @ picker
 _AT_SKIP_DIRS = {".git", "__pycache__", ".venv", "node_modules", ".mypy_cache"}
+
+# ── File-path loaders for real src.core modules ───────────────────────────────
+# In the TUI bootstrap, sys.modules['src'] is remapped to tui/src, so
+# ``from src.core.*`` fails.  We load these by absolute path instead, exactly
+# as core_bridge.py does for github_copilot_auth.
+# app.py lives at  tui/src/ui/app.py  →  parents[3] == project root.
+
+
+def _load_llm_manager_module():
+    """Return the real src.core.inference.llm_manager module, cached in sys.modules."""
+    import importlib.util
+    import sys as _sys
+
+    _MOD_NAME = "_llm_manager_real"
+    if _MOD_NAME in _sys.modules:
+        return _sys.modules[_MOD_NAME]
+    _path = Path(__file__).parents[3] / "src" / "core" / "inference" / "llm_manager.py"
+    spec = importlib.util.spec_from_file_location(_MOD_NAME, str(_path))
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Cannot load llm_manager from {_path}")
+    mod = importlib.util.module_from_spec(spec)
+    _sys.modules[_MOD_NAME] = mod
+    try:
+        spec.loader.exec_module(mod)  # type: ignore[attr-defined]
+    except Exception:
+        _sys.modules.pop(_MOD_NAME, None)
+        raise
+    return mod
+
+
+def _load_config_loader_module():
+    """Return the real src.core.config_loader module, cached in sys.modules."""
+    import importlib.util
+    import sys as _sys
+
+    _MOD_NAME = "_config_loader_real"
+    if _MOD_NAME in _sys.modules:
+        return _sys.modules[_MOD_NAME]
+    _path = Path(__file__).parents[3] / "src" / "core" / "config_loader.py"
+    spec = importlib.util.spec_from_file_location(_MOD_NAME, str(_path))
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Cannot load config_loader from {_path}")
+    mod = importlib.util.module_from_spec(spec)
+    _sys.modules[_MOD_NAME] = mod
+    try:
+        spec.loader.exec_module(mod)  # type: ignore[attr-defined]
+    except Exception:
+        _sys.modules.pop(_MOD_NAME, None)
+        raise
+    return mod
+
+
+def _load_copilot_auth_module():
+    """Return the real src.core.inference.adapters.github_copilot_auth module, cached."""
+    import importlib.util
+    import sys as _sys
+
+    _MOD_NAME = "_copilot_auth_real"
+    if _MOD_NAME in _sys.modules:
+        return _sys.modules[_MOD_NAME]
+    _path = (
+        Path(__file__).parents[3]
+        / "src"
+        / "core"
+        / "inference"
+        / "adapters"
+        / "github_copilot_auth.py"
+    )
+    spec = importlib.util.spec_from_file_location(_MOD_NAME, str(_path))
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Cannot load github_copilot_auth from {_path}")
+    mod = importlib.util.module_from_spec(spec)
+    _sys.modules[_MOD_NAME] = mod
+    try:
+        spec.loader.exec_module(mod)  # type: ignore[attr-defined]
+    except Exception:
+        _sys.modules.pop(_MOD_NAME, None)
+        raise
+    return mod
 
 
 def _fmt_args(tool_args: dict) -> str:
@@ -174,6 +268,149 @@ def _plan_bar(step: int, total: int) -> str:
     return bar
 
 
+# GAP-TUI-1: Per-tool icons matching OpenCode's InlineTool icons.
+_TOOL_ICONS: dict[str, str] = {
+    "read_file": "→",
+    "read": "→",
+    "write_file": "←",
+    "write": "←",
+    "edit_file": "←",
+    "edit": "←",
+    "apply_patch": "%",
+    "bash": "#",
+    "run_bash": "#",
+    "glob": "✱",
+    "grep": "✱",
+    "list_files": "→",
+    "ls": "→",
+    "list": "→",
+    "webfetch": "%",
+    "websearch": "◈",
+    "codesearch": "◇",
+    "task": "│",
+    "delegation": "│",
+    "todowrite": "⚙",
+    "question": "→",
+    "skill": "→",
+}
+
+# Status icons for TodoWrite items (OpenCode-compatible)
+_TODO_STATUS_ICONS: dict[str, str] = {
+    "pending": "○",
+    "in_progress": "●",
+    "completed": "✓",
+    "cancelled": "✗",
+    "done": "✓",
+}
+
+_TODO_STATUS_COLORS: dict[str, str] = {
+    "pending": "#888888",
+    "in_progress": "#facc15",
+    "completed": "#22c55e",
+    "cancelled": "#ff5555",
+    "done": "#22c55e",
+}
+
+
+def _render_todo_block(args: dict, result_text: str) -> str:
+    """GAP-TUI-4: Render todowrite / manage_todo call as a '# Todos' block.
+
+    Handles two arg shapes:
+      • OpenCode style: args['todos'] = [{content, status, priority}, …]
+      • Local manage_todo style: parse result_text for step lines
+    Returns Rich markup string, or '' to fall back to generic rendering.
+    """
+    # OpenCode-style todos list
+    todos = args.get("todos") or args.get("steps")
+    if todos and isinstance(todos, list):
+        lines = ["[bold]# Todos[/]"]
+        for item in todos:
+            if isinstance(item, dict):
+                status = item.get("status", "pending")
+                content = item.get("content") or item.get("description") or str(item)
+                priority = item.get("priority", "")
+                sicon = _TODO_STATUS_ICONS.get(status, "○")
+                scolor = _TODO_STATUS_COLORS.get(status, "#888888")
+                pri_str = f"  [dim]{priority}[/]" if priority else ""
+                lines.append(f"  [{scolor}]{sicon}[/] {content}{pri_str}")
+            else:
+                lines.append(f"  ○ {item}")
+        return "\n".join(lines)
+
+    # manage_todo: parse markdown result text for checkbox lines
+    md_lines = result_text.strip().splitlines()
+    todo_lines = [l for l in md_lines if l.strip().startswith("- [")]
+    if todo_lines:
+        lines = ["[bold]# Todos[/]"]
+        for l in todo_lines:
+            stripped = l.strip()
+            if stripped.startswith("- [x]") or stripped.startswith("- [X]"):
+                text = stripped[6:].strip()
+                lines.append(f"  [#22c55e]✓[/] {text}")
+            elif stripped.startswith("- [~]"):
+                text = stripped[5:].strip()
+                lines.append(f"  [#facc15]●[/] {text}")
+            else:
+                text = stripped[6:].strip()
+                lines.append(f"  [#888888]○[/] {text}")
+        return "\n".join(lines)
+
+    # Fallback: show action + brief result
+    action = args.get("action", "")
+    if action:
+        return f"[bold #22c55e]⚙ Todo {action}[/]"
+    return ""
+
+
+def _render_question_block(args: dict, result_text: str) -> str:
+    """GAP-TUI-5: Render question / ask_user call as a '# Questions' Q&A block.
+
+    Handles:
+      • OpenCode style: args['questions'] = [{question, header, options}, …]
+      • Local ask_user style: args['question'] (str), result_text has 'answer'
+    Returns Rich markup string, or '' to fall back to generic rendering.
+    """
+    import json as _json
+
+    # OpenCode-style list of questions
+    questions = args.get("questions")
+    if questions and isinstance(questions, list):
+        lines = ["[bold]# Questions[/]"]
+        try:
+            result_obj = (
+                _json.loads(result_text) if result_text.strip().startswith("{") else {}
+            )
+        except Exception:
+            result_obj = {}
+        for q in questions:
+            if isinstance(q, dict):
+                header = q.get("header", "")
+                qtext = q.get("question", "")
+                answer = result_obj.get(header, result_obj.get(qtext, ""))
+                lines.append(f"  [dim]{qtext}[/]")
+                if answer:
+                    lines.append(f"  {answer}")
+        return "\n".join(lines)
+
+    # Local ask_user style
+    question = args.get("question", "")
+    if question:
+        lines = ["[bold]# Questions[/]", f"  [dim]{question}[/]"]
+        # Parse answer from result JSON
+        try:
+            result_obj = (
+                _json.loads(result_text) if result_text.strip().startswith("{") else {}
+            )
+            answer = result_obj.get("answer", "")
+        except Exception:
+            answer = result_text.strip()
+        if answer:
+            lines.append(f"  {answer}")
+        return "\n".join(lines)
+
+    return ""
+
+
 class AgentApp(App[None]):
     COMMAND_PALETTE = False
     BINDINGS = [
@@ -182,7 +419,7 @@ class AgentApp(App[None]):
         ("ctrl+o", "show_commands", "commands"),
         ("ctrl+s", "open_settings", "settings"),
         ("ctrl+m", "open_model_picker", "model"),
-        ("ctrl+q", "action_quit_app", "quit"),
+        ("ctrl+q", "quit_app", "quit"),
     ]
     CSS_PATH = "styles/app.tcss"
 
@@ -215,10 +452,21 @@ class AgentApp(App[None]):
 
         # Per-tool in-progress widget tracking
         self._tool_widgets: dict[str, Static] = {}
+        # Per-tool args cache (tool_id → args dict) for rich rendering at finish
+        self._tool_args: dict[str, dict] = {}
+        # Per-subagent in-progress spinner tracking (SUBAGENT-VIS-4)
+        self._subagent_widgets: dict[str, "SubagentProgress"] = {}
         # Continue state for /continue command
         self._continue_state: Optional[dict] = None
         # Last task text for /continue
         self._last_task_text: str = ""
+        # GAP-FOOTER-1: pending permission request count (bash + tool)
+        self._pending_perm_count: int = 0
+        # GAP-PERM-3: tool names that have been "allow always"ed this session
+        self._allow_always_tools: set[str] = set()
+        # GAP-MSG-2: queued message (submitted while agent is running)
+        self._queued_message: Optional[str] = None
+        self._queued_widget: Optional[Static] = None
         # Sidebar counters
         self._tool_call_count: int = 0
         self._session_input_tokens: int = 0
@@ -238,13 +486,19 @@ class AgentApp(App[None]):
         self._palette_matches: list[str] = []
         self._palette_index: int = 0
 
+        # ── GitHub Copilot OAuth device-flow state ────────────────────────
+        import threading as _threading
+
+        self._oauth_screen: Optional[object] = None  # OAuthDeviceFlowScreen instance
+        self._device_flow_cancel: _threading.Event = _threading.Event()
+
         logger.info("AgentApp initialized")
 
     # ── Layout ────────────────────────────────────────────────────────────
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=False)
-        yield Static("MOCK ENGINE", id="provider_banner", classes="connected")
+        yield Static("  connecting…", id="provider_banner")
 
         with Horizontal(id="main_workspace"):
             yield ConsolePanel(id="console_panel")
@@ -257,7 +511,7 @@ class AgentApp(App[None]):
 
                 yield ChatTextArea(
                     id="user_input",
-                    placeholder="Type a message or /help … (Esc×2 to interrupt)",
+                    placeholder="Type a message or /help … (Esc to interrupt)",
                 )
 
             with VerticalScroll(id="right_sidebar"):
@@ -273,6 +527,10 @@ class AgentApp(App[None]):
                 # ── Tool activity ──────────────────────────────────────────
                 yield Label("LAST TOOL", classes="sb_title")
                 yield Static("—", id="sb_tool_activity")
+
+                # ── Active subagents ───────────────────────────────────────
+                yield Label("SUBAGENTS", classes="sb_title")
+                yield Static("none", id="sb_subagent_status")
 
                 # ── Token budget ───────────────────────────────────────────
                 yield Label("TOKEN BUDGET", classes="sb_title")
@@ -325,7 +583,10 @@ class AgentApp(App[None]):
                 id="status_right",
                 markup=True,
             )
+            yield Static("", id="perm_count_chip", markup=True)
             yield Static("", id="mcp_status_chip", markup=True)
+            # GAP-FOOTER-3: subagent navigation chip — shows active count + click-to-open
+            yield Button("", id="subagent_footer_chip", variant="default")
 
     # ── Lifecycle ─────────────────────────────────────────────────────────
 
@@ -384,6 +645,20 @@ class AgentApp(App[None]):
 
     # ── Internal helpers ──────────────────────────────────────────────────
 
+    def _update_perm_badge(self, delta: int = 0) -> None:
+        """GAP-FOOTER-1: update the pending-permission count chip in the footer."""
+        self._pending_perm_count = max(0, self._pending_perm_count + delta)
+        try:
+            chip = self.query_one("#perm_count_chip", Static)
+            if self._pending_perm_count > 0:
+                chip.update(
+                    f"[bold #facc15]△ {self._pending_perm_count} Permission(s)[/]"
+                )
+            else:
+                chip.update("")
+        except Exception:
+            pass
+
     def _update_role_display(self, role: str) -> None:
         label = ROLE_LABELS.get(role, role.upper().replace("_", " "))
         color = ROLE_COLORS.get(role, "#888888")
@@ -414,11 +689,7 @@ class AgentApp(App[None]):
             role = ROLE_LABELS.get(self.active_role, self.active_role)
             self._current_stream = StreamView(role=role, classes="stream_msg")
             chat_log = self.query_one("#chat_log", VerticalScroll)
-            self.call_later(
-                lambda w=self._current_stream, c=chat_log: asyncio.ensure_future(
-                    self._mount_and_scroll(w, c)
-                )
-            )
+            self.call_later(self._mount_and_scroll, self._current_stream, chat_log)
         return self._current_stream
 
     async def _mount_and_scroll(self, widget, container) -> None:
@@ -447,11 +718,7 @@ class AgentApp(App[None]):
     def _sched_chat_widget(self, widget) -> None:
         """Schedule a widget mount in the chat log from a sync handler."""
         chat_log = self.query_one("#chat_log", VerticalScroll)
-        self.call_later(
-            lambda w=widget, c=chat_log: asyncio.ensure_future(
-                self._mount_and_scroll(w, c)
-            )
-        )
+        self.call_later(self._mount_and_scroll, widget, chat_log)
 
     # ── Session snapshot ──────────────────────────────────────────────────
 
@@ -518,6 +785,7 @@ class AgentApp(App[None]):
     def _clear_chat_panel(self) -> None:
         self._finalize_stream()
         self._tool_widgets.clear()
+        self._tool_args.clear()
         try:
             self.query_one("#chat_log", VerticalScroll).remove_children()
         except Exception:
@@ -678,6 +946,55 @@ class AgentApp(App[None]):
 
     # ── EventBus / bus event handlers ─────────────────────────────────────
 
+    @on(RequestSystemSettings)
+    def handle_request_system_settings(self, _: RequestSystemSettings) -> None:
+        """Load providers.json and post SystemSettingsLoaded so the palette
+        and settings screen have access to the configured providers/models."""
+        import json
+        from pathlib import Path as _Path
+
+        providers: list = []
+        try:
+            # Resolve providers.json relative to this file's package root
+            # __file__ = tui/src/ui/app.py → parents[3] = project root
+            cfg = _Path(__file__).parents[3] / "src" / "config" / "providers.json"
+            if not cfg.exists():
+                cfg = _Path("src/config/providers.json")
+            if cfg.exists():
+                raw = json.loads(cfg.read_text(encoding="utf-8"))
+                # providers.json is a top-level list
+                entries = raw if isinstance(raw, list) else (raw.get("providers") or [])
+                for p in entries:
+                    if not isinstance(p, dict):
+                        continue
+                    providers.append(
+                        {
+                            "name": p.get("name") or p.get("type") or "",
+                            "type": p.get("type") or "",
+                            "models": p.get("models") or [],
+                            "active": p.get("active", False),
+                            "base_url": p.get("base_url") or "",
+                        }
+                    )
+        except Exception as exc:
+            logger.warning(
+                f"handle_request_system_settings: failed to load providers.json: {exc}"
+            )
+
+        settings_dict = {
+            "theme": self._settings.get("theme", "textual-dark"),
+            "context_window": self._settings.get("context_window", 32000),
+            "active_mode": self._settings.get("active_mode", "lead_architect"),
+            "default_provider": self._settings.get("default_provider", "none"),
+            "default_model": self._settings.get("default_model", "none"),
+        }
+        self.post_message(
+            SystemSettingsLoaded(
+                settings_dict=settings_dict,
+                available_providers=providers,
+            )
+        )
+
     @on(SystemSettingsLoaded)
     def handle_system_settings(self, event: SystemSettingsLoaded) -> None:
         logger.info(f"System settings loaded: {len(event.settings)} keys")
@@ -699,7 +1016,8 @@ class AgentApp(App[None]):
         logger.info(f"Orchestrator ready: working_dir={event.working_dir}")
         try:
             self.query_one("#sb_workdir", Static).update(event.working_dir)
-            self.query_one("#provider_banner", Static).update(f"  {event.working_dir}")
+            # Don't overwrite the provider banner here — provider status events
+            # will update it with the real provider name.
         except Exception:
             pass
 
@@ -715,6 +1033,28 @@ class AgentApp(App[None]):
                 inp.remove_class("input_locked")
         except Exception:
             pass
+
+        # GAP-MSG-2: flush queued message when agent becomes idle
+        if not event.running and self._queued_message:
+            msg = self._queued_message
+            self._queued_message = None
+            # Update QUEUED badge to normal style
+            if self._queued_widget is not None:
+                display_val = (
+                    msg if len(msg) <= 200 else msg[:200] + f"… ({len(msg)} chars)"
+                )
+                self.call_later(
+                    lambda w=self._queued_widget, d=display_val: w.update(
+                        f"[bold #3b82f6]You:[/] {d}"
+                    )
+                )
+                self._queued_widget = None
+            val = self._expand_at_tokens(msg)
+            self._bridge.update_prompt_history(msg)
+            self._last_task_text = val
+            sent = self._bridge.send_prompt(val)
+            if not sent:
+                self.notify("Could not send queued message", severity="warning")
 
     @on(ModelRoutingEvent)
     def handle_model_routing(self, event: ModelRoutingEvent) -> None:
@@ -799,14 +1139,22 @@ class AgentApp(App[None]):
 
     @on(McpServerStatusEvent)
     def handle_mcp_status(self, event: McpServerStatusEvent) -> None:
+        # GAP-FOOTER-2: show count and error state (red ⊙ when has_error)
         if event.running:
-            label = (
-                f"[green]MCP ●[/green] {event.count}"
-                if event.count
-                else "[green]MCP ●[/green]"
-            )
+            if event.has_error:
+                label = (
+                    f"[bold #ff5555]⊙ MCP {event.count}[/]"
+                    if event.count
+                    else "[bold #ff5555]⊙ MCP[/]"
+                )
+            else:
+                label = (
+                    f"[green]⊙ MCP {event.count}[/green]"
+                    if event.count
+                    else "[green]⊙ MCP[/green]"
+                )
         else:
-            label = "[dim]MCP ○[/dim]"
+            label = "[dim]⊙ MCP[/dim]"
         try:
             self.query_one("#mcp_status_chip", Static).update(label)
         except Exception:
@@ -817,6 +1165,18 @@ class AgentApp(App[None]):
     @on(ToolPermissionEvent)
     async def handle_tool_permission(self, event: ToolPermissionEvent) -> None:
         logger.warning(f"Tool permission required: {event.tool}  id={event.tool_id}")
+        # GAP-PERM-3: cache tool name by tool_id so the "Allow Always" handler can
+        # look it up without fragile regex on a rendered Static widget.
+        if not hasattr(self, "_perm_tool_names"):
+            self._perm_tool_names: dict[str, str] = {}
+        self._perm_tool_names[event.tool_id] = event.tool
+        # GAP-PERM-3: if this tool was already "allow always"ed, auto-approve
+        if event.tool in self._allow_always_tools:
+            logger.info(f"Auto-approving {event.tool} (allow-always)")
+            self._bridge.publish("tool.permission_granted", {"tool_id": event.tool_id})
+            self.post_message(ToolPermissionApproved(tool_id=event.tool_id))
+            return
+        self._update_perm_badge(+1)
         args_fmt = _fmt_args(event.args)
         chat_log = self.query_one("#chat_log", VerticalScroll)
         warn = Static(
@@ -832,6 +1192,10 @@ class AgentApp(App[None]):
             Button("Allow", id=f"btn_tool_perm_allow_{tid}", variant="success")
         )
         await row.mount(Button("Deny", id=f"btn_tool_perm_deny_{tid}", variant="error"))
+        # GAP-PERM-3: "Allow Always" remembers the tool name for this session
+        await row.mount(
+            Button("Allow Always", id=f"btn_tool_perm_always_{tid}", variant="warning")
+        )
         chat_log.scroll_end(animate=False)
 
     # ── Per-turn usage summary (TUI-T6) ──────────────────────────────────
@@ -887,16 +1251,34 @@ class AgentApp(App[None]):
     def handle_tool_start(self, event: ToolCallStartEvent) -> None:
         logger.info(f"Tool start: {event.tool_name}  id={event.tool_id}")
         self._tool_call_count += 1
-        args_fmt = _fmt_args(event.tool_args)
+        icon = _TOOL_ICONS.get(event.tool_name.lower(), "⠿")
+
+        # Cache args for rich rendering at finish time (GAP-TUI-4/5)
+        if event.tool_id:
+            self._tool_args[event.tool_id] = event.tool_args
+
+        # GAP-TUI-3: bash tool gets a fenced-block style pending label.
+        if event.tool_name.lower() in ("bash", "run_bash"):
+            cmd = event.tool_args.get("command", "")
+            desc = event.tool_args.get("description", "")
+            header = f"# {desc}" if desc else f"# {event.tool_name}"
+            cmd_line = f"$ {cmd[:120]}{'…' if len(cmd) > 120 else ''}" if cmd else ""
+            label = header + (f"\n{cmd_line}" if cmd_line else "")
+        else:
+            args_fmt = _fmt_args(event.tool_args)
+            label = f"{icon} {event.tool_name}  {args_fmt}".rstrip()
+
         widget = Static(
-            f"[bold #facc15]⠿[/] [bold]{event.tool_name}[/]  {args_fmt}",
+            f"[bold #facc15]{label}[/]",
             classes="tool_msg tool_inprogress",
             markup=True,
         )
         if event.tool_id:
             self._tool_widgets[event.tool_id] = widget
         try:
-            self.query_one("#sb_tool_activity", Static).update(f"⠿ {event.tool_name}")
+            self.query_one("#sb_tool_activity", Static).update(
+                f"{icon} {event.tool_name}"
+            )
             self.query_one("#sb_tool_count", Static).update(str(self._tool_call_count))
         except Exception:
             pass
@@ -905,28 +1287,111 @@ class AgentApp(App[None]):
     @on(ToolCallFinishEvent)
     def handle_tool_finish(self, event: ToolCallFinishEvent) -> None:
         logger.info(f"Tool finish: {event.tool_name}  ok={event.ok}")
-        icon = "✓" if event.ok else "✗"
+        icon = _TOOL_ICONS.get(event.tool_name.lower(), "✓" if event.ok else "✗")
+        ok_icon = "✓" if event.ok else "✗"
         color = "#22c55e" if event.ok else "#ff5555"
         result_lines = event.result_text.strip().splitlines()
-        if len(result_lines) > 60:
-            extra = len(result_lines) - 60
-            result_lines = result_lines[:60] + [f"… {extra} more lines"]
-        result_display = "\n".join(result_lines)
+
+        # Retrieve cached args (for rich rendering of todowrite/question).
+        cached_args = self._tool_args.pop(event.tool_id, {}) if event.tool_id else {}
+
+        # GAP-TUI-4: todowrite / manage_todo → render as # Todos block.
+        tool_lower = event.tool_name.lower()
+        if tool_lower in ("todowrite", "manage_todo") and event.ok:
+            finished_markup = _render_todo_block(cached_args, event.result_text)
+            if finished_markup:
+                if event.tool_id and event.tool_id in self._tool_widgets:
+                    w = self._tool_widgets.pop(event.tool_id)
+                    self.call_later(
+                        lambda widget=w, m=finished_markup: widget.update(m)
+                    )
+                else:
+                    self._sched_chat_widget(
+                        Static(finished_markup, classes="tool_msg", markup=True)
+                    )
+                try:
+                    self.query_one("#sb_tool_activity", Static).update(
+                        "⚙ todos updated"
+                    )
+                except Exception:
+                    pass
+                return
+
+        # GAP-TUI-5: question / ask_user → render as # Questions Q&A block.
+        if tool_lower in ("question", "ask_user") and event.ok:
+            finished_markup = _render_question_block(cached_args, event.result_text)
+            if finished_markup:
+                if event.tool_id and event.tool_id in self._tool_widgets:
+                    w = self._tool_widgets.pop(event.tool_id)
+                    self.call_later(
+                        lambda widget=w, m=finished_markup: widget.update(m)
+                    )
+                else:
+                    self._sched_chat_widget(
+                        Static(finished_markup, classes="tool_msg", markup=True)
+                    )
+                try:
+                    self.query_one("#sb_tool_activity", Static).update(
+                        "→ question answered"
+                    )
+                except Exception:
+                    pass
+                return
+
+        # GAP-TUI-6: task/delegation → render summary with toolcall count
+        if tool_lower in ("task", "delegation") and event.ok:
+            role = cached_args.get("role") or cached_args.get("agent_type") or "Agent"
+            task_desc = cached_args.get("task") or cached_args.get("description") or ""
+            task_short = task_desc[:60] + ("…" if len(task_desc) > 60 else "")
+            # Count tool calls mentioned in result
+            tc_count = event.result_text.lower().count("tool")
+            tc_str = (
+                f"└ {tc_count} toolcall{'s' if tc_count != 1 else ''}"
+                if tc_count
+                else "└ done"
+            )
+            markup = (
+                f"[bold #22c55e]│ {role} Task[/] — {task_short}\n  [dim]{tc_str}[/]"
+            )
+            if event.tool_id and event.tool_id in self._tool_widgets:
+                w = self._tool_widgets.pop(event.tool_id)
+                self.call_later(lambda widget=w, m=markup: widget.update(m))
+            else:
+                self._sched_chat_widget(Static(markup, classes="tool_msg", markup=True))
+            try:
+                self.query_one("#sb_tool_activity", Static).update(f"│ {role} done")
+            except Exception:
+                pass
+            return
+
+        # GAP-TUI-3: bash output rendered as a fenced block (truncate >40 lines).
+        if tool_lower in ("bash", "run_bash"):
+            if len(result_lines) > 40:
+                extra = len(result_lines) - 40
+                result_lines = result_lines[:40] + [f"… {extra} more lines (truncated)"]
+            result_display = "\n".join(result_lines)
+            label = f"{ok_icon} {event.tool_name}"
+        else:
+            if len(result_lines) > 60:
+                extra = len(result_lines) - 60
+                result_lines = result_lines[:60] + [f"… {extra} more lines"]
+            result_display = "\n".join(result_lines)
+            label = f"{icon} {event.tool_name}"
 
         sep = "\n" if result_display else ""
         if event.tool_id and event.tool_id in self._tool_widgets:
             w = self._tool_widgets.pop(event.tool_id)
             self.call_later(
                 lambda widget=w,
-                ic=icon,
+                ic=ok_icon,
                 col=color,
                 r=result_display,
-                n=event.tool_name,
-                s=sep: widget.update(f"[bold {col}]{ic} {n}[/]{s}{r}")
+                lbl=label,
+                s=sep: widget.update(f"[bold {col}]{lbl}[/]{s}{r}")
             )
         else:
             widget = Static(
-                f"[bold {color}]{icon} {event.tool_name}[/]{sep}{result_display}",
+                f"[bold {color}]{label}[/]{sep}{result_display}",
                 classes="tool_msg",
                 markup=True,
             )
@@ -934,7 +1399,7 @@ class AgentApp(App[None]):
 
         try:
             self.query_one("#sb_tool_activity", Static).update(
-                f"{icon} {event.tool_name}"
+                f"{ok_icon} {event.tool_name}"
             )
         except Exception:
             pass
@@ -961,6 +1426,62 @@ class AgentApp(App[None]):
         except Exception:
             pass
 
+    # ── Subagent lifecycle (SUBAGENT-VIS-4) ──────────────────────────────
+
+    def _update_subagent_footer(self) -> None:
+        """GAP-FOOTER-3: keep the footer chip in sync with active subagent count."""
+        active = len(self._subagent_widgets)
+        try:
+            chip = self.query_one("#subagent_footer_chip", Button)
+            if active:
+                chip.label = f"⇢ {active} subagent{'s' if active > 1 else ''}"
+                chip.display = True
+            else:
+                chip.display = False
+        except Exception:
+            pass
+
+    @on(SubagentProgress.Clicked)
+    async def handle_subagent_clicked(self, event: SubagentProgress.Clicked) -> None:
+        """Open the child session detail screen when user clicks a finished subagent."""
+        from .screens.subagent_detail import SubagentDetailScreen
+        self.push_screen(
+            SubagentDetailScreen(
+                child_session_id=event.child_session_id,
+                role=event.role,
+                task=event.task,
+                sessions_dir=self._get_sessions_dir(),
+            )
+        )
+
+    @on(SubagentStartEvent)
+    def handle_subagent_start(self, event: SubagentStartEvent) -> None:
+        logger.info(f"Subagent start: {event.role}  id={event.child_session_id}")
+        widget = SubagentProgress(event.role, event.task, event.child_session_id)
+        try:
+            active = len(self._subagent_widgets)
+            self.query_one("#sb_subagent_status", Static).update(f"{active} running")
+        except Exception:
+            pass
+        self._update_subagent_footer()
+        self._sched_chat_widget(widget)
+
+    @on(SubagentFinishEvent)
+    def handle_subagent_finish(self, event: SubagentFinishEvent) -> None:
+        logger.info(
+            f"Subagent finish: {event.role}  ok={event.ok}  id={event.child_session_id}"
+        )
+        widget = self._subagent_widgets.pop(event.child_session_id, None)
+        if widget is not None:
+            self.call_later(lambda w=widget, ok=event.ok: w.finish(ok))
+        try:
+            active = len(self._subagent_widgets)
+            label = f"{active} running" if active else "none"
+            self.query_one("#sb_subagent_status", Static).update(label)
+        except Exception:
+            pass
+        self._update_subagent_footer()
+
     # ── Old-style tool notice (backwards compat) ──────────────────────────
 
     @on(ToolExecutionNotice)
@@ -979,11 +1500,20 @@ class AgentApp(App[None]):
     @on(DiffPreviewEvent)
     async def handle_diff_preview(self, event: DiffPreviewEvent) -> None:
         logger.info(f"Diff preview: {event.path}")
-        widget = SideBySideDiff(
-            path=event.path,
-            diff=event.diff,
-            is_new_file=event.is_new_file,
-        )
+        # GAP-TUI-2 / GAP-CONFIG-1: choose renderer based on diff_style setting
+        use_inline = self._settings.get("diff_style", "side-by-side") == "inline"
+        if use_inline:
+            widget: Widget = InlineDiff(
+                path=event.path,
+                diff=event.diff,
+                is_new_file=event.is_new_file,
+            )
+        else:
+            widget = SideBySideDiff(
+                path=event.path,
+                diff=event.diff,
+                is_new_file=event.is_new_file,
+            )
         await self._mount_chat_widget(widget)
 
     @on(SideBySideDiff.Accepted)
@@ -995,6 +1525,11 @@ class AgentApp(App[None]):
             markup=True,
         )
         await self._mount_chat_widget(w)
+        # PREV-1: Resolve the preview gate so file_tools can proceed with the write.
+        try:
+            self._bridge.confirm_file_preview(event.path)
+        except Exception:
+            pass
 
     @on(SideBySideDiff.Rejected)
     async def handle_diff_rejected(self, event: SideBySideDiff.Rejected) -> None:
@@ -1005,6 +1540,11 @@ class AgentApp(App[None]):
             markup=True,
         )
         await self._mount_chat_widget(w)
+        # PREV-1: Resolve the preview gate so file_tools can abort the write.
+        try:
+            self._bridge.reject_file_preview(event.path)
+        except Exception:
+            pass
 
     # ── Plan progress (§12.3) ─────────────────────────────────────────────
 
@@ -1051,6 +1591,7 @@ class AgentApp(App[None]):
     @on(BashApprovalEvent)
     async def handle_bash_approval(self, event: BashApprovalEvent) -> None:
         logger.warning(f"Bash tier-3 approval required: {event.command}")
+        self._update_perm_badge(+1)
         chat_log = self.query_one("#chat_log", VerticalScroll)
         warn = Static(
             f"[bold #facc15]⚠ This command requires approval:[/]  {event.command}",
@@ -1069,7 +1610,27 @@ class AgentApp(App[None]):
     async def on_any_button(self, event: Button.Pressed) -> None:
         """Single handler for all buttons — avoids double-dispatch."""
         btn_id = event.button.id or ""
-        event.stop()
+
+        # Determine whether this handler owns the button.  Only stop propagation
+        # when we actually handle it; otherwise child-widget button handlers
+        # (settings panel, modal screens) would never fire. (TUI-M1)
+        _handled = (
+            btn_id in ("btn_approve_plan", "btn_reject_plan", "subagent_footer_chip")
+            or btn_id.startswith("btn_bash_allow_")
+            or btn_id.startswith("btn_bash_deny_")
+            or btn_id.startswith("btn_tool_perm_allow_")
+            or btn_id.startswith("btn_tool_perm_deny_")
+            or btn_id.startswith("btn_doom_allow_")
+            or btn_id.startswith("btn_doom_deny_")
+        )
+        if _handled:
+            event.stop()
+
+        # GAP-FOOTER-3: subagent footer chip — open SessionListScreen filtered to subagents
+        if btn_id == "subagent_footer_chip":
+            from .screens.session_list import SessionListScreen
+            self.push_screen(SessionListScreen(filter_subagents=True))
+            return
 
         # ── Plan approval ───────────────────────────────────────────────
         if btn_id == "btn_approve_plan":
@@ -1099,6 +1660,7 @@ class AgentApp(App[None]):
         # ── Bash approval ───────────────────────────────────────────────
         elif btn_id.startswith("btn_bash_allow_"):
             tool_id = btn_id[len("btn_bash_allow_") :]
+            self._update_perm_badge(-1)
             self._bridge.bash_approved(tool_id)
             try:
                 self.query_one(f"#bash_approval_{tool_id}").remove()
@@ -1112,11 +1674,20 @@ class AgentApp(App[None]):
 
         elif btn_id.startswith("btn_bash_deny_"):
             tool_id = btn_id[len("btn_bash_deny_") :]
+            self._update_perm_badge(-1)
             self._bridge.bash_denied(tool_id)
             try:
                 self.query_one(f"#bash_approval_{tool_id}").remove()
             except Exception:
                 pass
+            # GAP-MSG-3: mark in-progress tool widget as denied (warning color)
+            if tool_id in self._tool_widgets:
+                w_pending = self._tool_widgets.pop(tool_id)
+                self.call_later(
+                    lambda wp=w_pending: wp.update(
+                        "[bold #ff5555 strike]✗ bash — denied[/]"
+                    )
+                )
             w = Static(
                 "[bold #ff5555]✗ Command denied[/]", classes="retry_msg", markup=True
             )
@@ -1126,6 +1697,7 @@ class AgentApp(App[None]):
         # ── Tool permission approval ────────────────────────────────────
         elif btn_id.startswith("btn_tool_perm_allow_"):
             tool_id = btn_id[len("btn_tool_perm_allow_") :]
+            self._update_perm_badge(-1)
             self._bridge.publish("tool.permission_granted", {"tool_id": tool_id})
             try:
                 self.query_one(f"#tool_perm_{tool_id}").remove()
@@ -1139,16 +1711,88 @@ class AgentApp(App[None]):
 
         elif btn_id.startswith("btn_tool_perm_deny_"):
             tool_id = btn_id[len("btn_tool_perm_deny_") :]
-            self._bridge.publish("tool.permission_denied", {"tool_id": tool_id})
+            self._update_perm_badge(-1)
             try:
                 self.query_one(f"#tool_perm_{tool_id}").remove()
             except Exception:
                 pass
+            # GAP-MSG-3: mark in-progress tool widget as denied (warning color)
+            if tool_id in self._tool_widgets:
+                w_pending = self._tool_widgets.pop(tool_id)
+                self.call_later(
+                    lambda wp=w_pending: wp.update(
+                        "[bold #ff5555 strike]✗ tool — denied[/]"
+                    )
+                )
+            # GAP-PERM-2: offer a feedback input so the agent knows why it was denied
+            fb_row = Horizontal(id=f"tool_deny_fb_{tool_id}", classes="approval_row")
+            await self._mount_chat_widget(
+                Static("[bold #ff5555]✗ Tool denied[/]  [dim]Reason (optional):[/]",
+                       classes="retry_msg", markup=True)
+            )
+            await self._mount_chat_widget(fb_row)
+            fb_input = Input(
+                placeholder="Why was this denied? (press Enter to send)",
+                id=f"inp_deny_fb_{tool_id}",
+            )
+            await fb_row.mount(fb_input)
+            await fb_row.mount(
+                Button("Send", id=f"btn_deny_fb_send_{tool_id}", variant="primary")
+            )
+            await fb_row.mount(
+                Button("Skip", id=f"btn_deny_fb_skip_{tool_id}", variant="default")
+            )
+            self._bridge.publish("tool.permission_denied", {"tool_id": tool_id})
+            self.post_message(ToolPermissionDenied(tool_id=tool_id))
+
+        elif btn_id.startswith("btn_deny_fb_send_"):
+            tool_id = btn_id[len("btn_deny_fb_send_") :]
+            feedback = ""
+            try:
+                feedback = self.query_one(f"#inp_deny_fb_{tool_id}", Input).value.strip()
+                self.query_one(f"#tool_deny_fb_{tool_id}").remove()
+            except Exception:
+                pass
+            if feedback:
+                self._bridge.publish(
+                    "tool.denial_feedback",
+                    {"tool_id": tool_id, "feedback": feedback},
+                )
+                w = Static(
+                    f"[dim]Feedback sent: {feedback}[/]",
+                    classes="retry_msg",
+                    markup=True,
+                )
+                await self._mount_chat_widget(w)
+
+        elif btn_id.startswith("btn_deny_fb_skip_"):
+            tool_id = btn_id[len("btn_deny_fb_skip_") :]
+            try:
+                self.query_one(f"#tool_deny_fb_{tool_id}").remove()
+            except Exception:
+                pass
+
+        # GAP-PERM-3: Allow Always — approve now + register tool for auto-approval
+        elif btn_id.startswith("btn_tool_perm_always_"):
+            tool_id = btn_id[len("btn_tool_perm_always_") :]
+            self._update_perm_badge(-1)
+            self._bridge.publish("tool.permission_granted", {"tool_id": tool_id})
+            try:
+                perm_row = self.query_one(f"#tool_perm_{tool_id}")
+                # Look up the tool name from the cache populated at permission-request time.
+                _perm_names = getattr(self, "_perm_tool_names", {})
+                tool_name = _perm_names.get(tool_id, tool_id)
+                self._allow_always_tools.add(tool_name)
+                perm_row.remove()
+            except Exception:
+                pass
             w = Static(
-                "[bold #ff5555]✗ Tool denied[/]", classes="retry_msg", markup=True
+                "[bold #f59e0b]✓ Tool allowed (always)[/]",
+                classes="retry_msg",
+                markup=True,
             )
             await self._mount_chat_widget(w)
-            self.post_message(ToolPermissionDenied(tool_id=tool_id))
+            self.post_message(ToolPermissionApproved(tool_id=tool_id))
 
         # Doom-loop buttons (PERM-W3)
         elif btn_id.startswith("btn_doom_allow_"):
@@ -1240,7 +1884,7 @@ class AgentApp(App[None]):
                 f"[bold {color}]{self.total_tokens:,} / {self.context_window:,}  ({used_pct:.1f}%)[/]"
             )
             self.query_one("#sb_context", Static).update(
-                f"In: {event.system + event.task:,} | Out: {event.tools:,}"
+                f"In: {event.system + event.task + event.tools:,} | Out: {self._session_output_tokens:,}"
             )
             self.query_one("#sb_cost", Static).update(f"${cost:.4f}")
             self._update_status_bar()
@@ -1311,11 +1955,21 @@ class AgentApp(App[None]):
             f"Provider {event.provider}: {event.old_status} → {event.new_status}"
         )
         try:
+            # Human-readable status labels
+            _status_labels = {
+                "connected": "connected",
+                "disconnected": "not connected",
+                "initializing": "initializing…",
+                "unknown": "unknown",
+                "error": "error",
+                "failed": "error",
+            }
+            status_label = _status_labels.get(event.new_status, event.new_status)
             self.query_one("#sb_provider", Static).update(
-                f"{event.provider}: {event.new_status}"
+                f"{event.provider}: {status_label}"
             )
             banner = self.query_one("#provider_banner", Static)
-            banner.update(f"  {event.provider.upper()}  —  {event.new_status}")
+            banner.update(f"  {event.provider.upper()}  —  {status_label}")
             banner.remove_class("connected", "error")
             if event.new_status == "connected":
                 banner.add_class("connected")
@@ -1451,9 +2105,21 @@ class AgentApp(App[None]):
             self.post_message(SlashCommand(command=cmd, args=args))
             return
 
-        # Block user messages while agent is running (§12.5)
+        # GAP-MSG-2: queue message if agent is currently running
         if self.agent_running:
-            self.notify("Agent is running — use /interrupt to stop", severity="warning")
+            self._queued_message = raw_val
+            display_val_q = (
+                raw_val
+                if len(raw_val) <= 200
+                else raw_val[:200] + f"… ({len(raw_val)} chars)"
+            )
+            q_widget = Static(
+                f"[bold #3b82f6]You:[/] {display_val_q}  [bold #facc15 reverse] QUEUED [/]",
+                classes="user_msg",
+                markup=True,
+            )
+            self._queued_widget = q_widget
+            self.call_later(self._mount_chat_widget, q_widget)
             return
 
         # Expand @path tokens to inline file content
@@ -1566,12 +2232,21 @@ class AgentApp(App[None]):
         elif cmd == "compact":
             self.notify("Compacting context…", severity="information")
             compacted = self._bridge.compact_context()
-            msg = (
-                "Context compacted — context window freed."
-                if compacted
-                else "Context compacted (mock)."
-            )
-            w = Static(f"[dim]{msg}[/]", classes="system_msg", markup=True)
+            if compacted:
+                msg = "Context compacted — context window freed."
+                # GAP-MSG-1: visual compaction divider in the message stream.
+                divider = Static(
+                    "[dim]══════════════ Compaction ══════════════[/]",
+                    classes="system_msg compaction_divider",
+                    markup=True,
+                )
+                await self._mount_chat_widget(divider)
+                w = Static(f"[dim]{msg}[/]", classes="system_msg", markup=True)
+            else:
+                # BUG-VOL22-1: Show a warning when compaction fails or has nothing to do.
+                msg = "Context compaction failed or nothing to compact — see logs for details."
+                self.notify(msg, severity="warning")
+                w = Static(f"[bold yellow]{msg}[/]", classes="system_msg", markup=True)
             await self._mount_chat_widget(w)
 
         elif cmd == "continue":
@@ -1581,8 +2256,33 @@ class AgentApp(App[None]):
                 self._bridge.restore_and_continue(
                     self._last_task_text, self._continue_state
                 )
-                if not self._bridge.is_running():
-                    self.notify("No previous task to continue", severity="warning")
+
+        elif cmd == "undo":
+            # GAP-CMD-1: Remove the last user message from conversation history.
+            if self.agent_running:
+                self.notify(
+                    "Cannot undo while agent is running — use /interrupt first",
+                    severity="warning",
+                )
+            else:
+                with self._bridge._history_lock:
+                    hist = self._bridge.history
+                    # Remove trailing assistant entry (if any) then the user entry.
+                    while hist and hist[-1][0] != "user":
+                        hist.pop()
+                    removed = hist.pop() if hist and hist[-1][0] == "user" else None
+                if removed:
+                    self._bridge._save_history()
+                    preview = str(removed[1])[:60].replace("\n", " ")
+                    w = Static(
+                        f'[dim]↩ Undone: "{preview}{"…" if len(str(removed[1])) > 60 else ""}"[/]',
+                        classes="system_msg",
+                        markup=True,
+                    )
+                    await self._mount_chat_widget(w)
+                    self.notify("Last message undone")
+                else:
+                    self.notify("Nothing to undo", severity="warning")
 
         elif cmd == "interrupt":
             self._bridge.interrupt()
@@ -1630,6 +2330,15 @@ class AgentApp(App[None]):
 
         elif cmd == "fork":
             await self._slash_fork()
+
+        elif cmd == "share":
+            await self._slash_share()
+
+        elif cmd == "rename":
+            await self._slash_rename(args)
+
+        elif cmd == "worktree":
+            await self._slash_worktree(args)
 
         elif cmd == "mcp":
             await self._slash_mcp(args)
@@ -1808,11 +2517,10 @@ class AgentApp(App[None]):
     async def _slash_mcp(self, args: str) -> None:
         """S3-C: /mcp [list|add <name> <cmd…>|status] — manage MCP servers."""
         try:
-            from src.core.config_loader import (
-                get_mcp_config,
-                get_mcp_servers,
-                load_merged_config,
-            )
+            _cl = _load_config_loader_module()
+            get_mcp_config = _cl.get_mcp_config
+            get_mcp_servers = _cl.get_mcp_servers
+            load_merged_config = _cl.load_merged_config
             from pathlib import Path as _Path
             import json as _json
 
@@ -1889,7 +2597,7 @@ class AgentApp(App[None]):
             elif subcmd == "status":
                 # Show live connection status via the MCP chip label
                 chip = self.query_one("#mcp_status_chip", Static)
-                chip_text = str(chip.renderable) if chip else "(none)"
+                chip_text = str(chip.render()) if chip else "(none)"
                 orch = getattr(self._bridge, "_orchestrator", None)
                 clients = getattr(orch, "_mcp_clients", {}) if orch else {}
                 if clients:
@@ -1993,6 +2701,192 @@ class AgentApp(App[None]):
         except Exception as exc:
             self.notify(f"fork failed: {exc}", severity="error")
 
+    async def _slash_share(self) -> None:
+        """GAP-CMD-2: export conversation to markdown; copy to clipboard if pyperclip available."""
+        import datetime as _dt
+
+        history = list(self._bridge.history)
+        lines: list[str] = [
+            f"# Conversation Export",
+            f"_Exported: {_dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}_",
+            "",
+        ]
+        for msg in history:
+            # bridge.history is list[tuple[str, str]] — (role, text)
+            if isinstance(msg, (list, tuple)) and len(msg) == 2:
+                role, content = str(msg[0]), str(msg[1])
+            elif isinstance(msg, dict):
+                role = msg.get("role", "unknown")
+                content = msg.get("content", "")
+                if isinstance(content, list):
+                    content = " ".join(
+                        (p.get("text") or p.get("content") or "") if isinstance(p, dict) else str(p)
+                        for p in content
+                    )
+            else:
+                role, content = "unknown", str(msg)
+            lines.append(f"**{role.upper()}**\n\n{content}\n\n---\n")
+
+        md_text = "\n".join(lines)
+
+        # Try clipboard first, then file fallback
+        copied = False
+        try:
+            import pyperclip  # type: ignore[import]
+            pyperclip.copy(md_text)
+            copied = True
+        except Exception:
+            pass
+
+        if copied:
+            w = Static(
+                "[bold #22c55e]✓ Conversation copied to clipboard[/]"
+                f"  ({len(history)} messages)",
+                classes="system_msg",
+                markup=True,
+            )
+        else:
+            export_path = Path.home() / ".coding_agent" / f"export_{_dt.datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
+            try:
+                export_path.parent.mkdir(parents=True, exist_ok=True)
+                export_path.write_text(md_text, encoding="utf-8")
+                w = Static(
+                    f"[bold]✓ Exported[/] {len(history)} messages\n  → {export_path}",
+                    classes="system_msg",
+                    markup=True,
+                )
+            except Exception as exc:
+                w = Static(
+                    f"[bold #ff5555]✗ Export failed:[/] {exc}",
+                    classes="system_msg",
+                    markup=True,
+                )
+        await self._mount_chat_widget(w)
+
+    async def _slash_rename(self, args: str) -> None:
+        """GAP-CMD-3: rename the current session."""
+        new_name = args.strip()
+        if not new_name:
+            w = Static(
+                "Usage: [bold]/rename <new-name>[/]",
+                classes="system_msg",
+                markup=True,
+            )
+            await self._mount_chat_widget(w)
+            return
+
+        renamed = False
+        try:
+            orch = self._bridge._orchestrator  # type: ignore[attr-defined]
+            store = getattr(orch, "session_store", None) if orch else None
+            current_id: str = getattr(orch, "_current_task_id", "") or ""
+            if store is not None and current_id:
+                # SessionStore.rename_session if available; otherwise patch metadata
+                if hasattr(store, "rename_session"):
+                    store.rename_session(current_id, new_name)
+                    renamed = True
+                elif hasattr(store, "_sessions") and current_id in store._sessions:
+                    store._sessions[current_id]["title"] = new_name
+                    renamed = True
+        except Exception as exc:
+            logger.warning(f"/rename: session rename failed: {exc}")
+
+        # Update app sub_title reactive (same as line 667 for role transitions)
+        try:
+            self.sub_title = new_name
+        except Exception:
+            pass
+        self._bridge.publish("session.renamed", {"name": new_name})
+
+        msg = (
+            f"[bold]Session renamed:[/] {new_name}"
+            if renamed
+            else f"[bold]Display name set:[/] {new_name} [dim](session store not updated)[/]"
+        )
+        w = Static(msg, classes="system_msg", markup=True)
+        await self._mount_chat_widget(w)
+
+    async def _slash_worktree(self, args: str) -> None:
+        """GAP-WORKTREE-1: manage git worktree isolation for tasks."""
+        from pathlib import Path as _Path
+        try:
+            from src.core.orchestration.git_worktree_manager import GitWorktreeManager  # type: ignore[import]
+        except ImportError:
+            self.notify("GitWorktreeManager not available", severity="error")
+            return
+
+        orch = self._bridge._orchestrator  # type: ignore[attr-defined]
+        workspace = _Path(getattr(orch, "working_dir", ".") if orch else ".")
+        if not hasattr(self, "_worktree_mgr"):
+            self._worktree_mgr = GitWorktreeManager(workspace)  # type: ignore[attr-defined]
+
+        parts = args.strip().split(None, 1)
+        sub = parts[0].lower() if parts else "list"
+        sub_args = parts[1] if len(parts) > 1 else ""
+
+        if sub == "list":
+            registered = await self._worktree_mgr.list_registered()
+            active = self._worktree_mgr.active
+            if not registered:
+                w = Static("No worktrees registered", classes="system_msg")
+            else:
+                lines = []
+                for entry in registered:
+                    path = entry.get("worktree", "?")
+                    head = entry.get("HEAD", "?")[:8]
+                    branch = entry.get("branch") or ("detached" if entry.get("detached") else "?")
+                    marker = " [agent]" if path in (str(v) for v in active.values()) else ""
+                    lines.append(f"  {path}  {head}  [{branch}]{marker}")
+                w = Static(
+                    "[bold]Worktrees:[/]\n" + "\n".join(lines),
+                    classes="system_msg",
+                    markup=True,
+                )
+            await self._mount_chat_widget(w)
+
+        elif sub == "create":
+            task_id = sub_args.strip() or (
+                getattr(orch, "_current_task_id", None) or "manual"
+                if orch else "manual"
+            )
+            try:
+                wt_path = await self._worktree_mgr.create(task_id)
+                w = Static(
+                    f"[bold #22c55e]✓ Worktree created[/]\n"
+                    f"  task_id: {task_id}\n"
+                    f"  path:    {wt_path}",
+                    classes="system_msg",
+                    markup=True,
+                )
+            except Exception as exc:
+                w = Static(
+                    f"[bold #ff5555]✗ Worktree create failed:[/] {exc}",
+                    classes="system_msg",
+                    markup=True,
+                )
+            await self._mount_chat_widget(w)
+
+        elif sub == "remove":
+            task_id = sub_args.strip()
+            if not task_id:
+                self.notify("Usage: /worktree remove <task_id>", severity="warning")
+                return
+            removed = await self._worktree_mgr.remove(task_id)
+            msg = (
+                f"[bold #22c55e]✓ Worktree removed:[/] {task_id}"
+                if removed
+                else f"[dim]No worktree found for task_id: {task_id}[/]"
+            )
+            await self._mount_chat_widget(Static(msg, classes="system_msg", markup=True))
+
+        else:
+            w = Static(
+                "Usage: [bold]/worktree[/] [list | create [<task_id>] | remove <task_id>]",
+                classes="system_msg",
+                markup=True,
+            )
+            await self._mount_chat_widget(w)
+
     # ── Palette / settings / connect ──────────────────────────────────────
 
     @on(PaletteCommand)
@@ -2016,13 +2910,140 @@ class AgentApp(App[None]):
         else:
             logger.debug(f"Unhandled palette command: {cmd}")
 
+    def _activate_provider(self, provider_id: str) -> bool:
+        """Switch the active provider at runtime and persist the choice.
+
+        1. Writes providers.json atomically — sets the named provider
+           active:true and all others active:false in a single write so the
+           selection survives a restart.
+        2. Fetches the adapter from ProviderManager and assigns it to the
+           Orchestrator (``orchestrator.adapter = …``), which also fires
+           ``_publish_active_config`` so the banner and sidebar update.
+        3. Re-publishes provider status via the bridge so the TUI reflects the
+           change immediately even if no bus event arrives.
+
+        Returns True if the adapter was successfully swapped, False otherwise.
+        """
+        try:
+            _lm = _load_llm_manager_module()
+            get_provider_manager = _lm.get_provider_manager
+            canonical_provider = _lm.canonical_provider
+            resolve_config_path = _lm.resolve_config_path
+            _providers_json_lock = _lm._providers_json_lock
+
+            norm_id = canonical_provider(provider_id)
+            pm = get_provider_manager()
+
+            # Step 1: single atomic write — flip exactly one entry to active:true.
+            import json as _json, os as _os, tempfile as _tf
+
+            cfg_path = resolve_config_path(None)
+            with _providers_json_lock:
+                raw = _json.loads(cfg_path.read_text(encoding="utf-8"))
+                entries = raw if isinstance(raw, list) else [raw]
+                matched = False
+                for p in entries:
+                    key = canonical_provider(p.get("type") or p.get("name") or "")
+                    p["active"] = key == norm_id
+                    if key == norm_id:
+                        matched = True
+                new_text = _json.dumps(entries, indent=2)
+                fd, tmp = _tf.mkstemp(dir=cfg_path.parent, suffix=".tmp")
+                try:
+                    with _os.fdopen(fd, "w", encoding="utf-8") as f:
+                        f.write(new_text)
+                    _os.replace(tmp, cfg_path)
+                except Exception:
+                    try:
+                        _os.unlink(tmp)
+                    except OSError:
+                        pass
+                    raise
+
+            if not matched:
+                logger.warning(
+                    f"_activate_provider: no providers.json entry matched '{norm_id}'"
+                )
+
+            logger.info(
+                f"_activate_provider: persisted active={norm_id} to providers.json"
+            )
+
+            # Step 2: get adapter and assign to orchestrator
+            adapter = pm.get_provider(norm_id)
+            orch = getattr(self._bridge, "_orchestrator", None)
+            if orch is not None:
+                orch.adapter = adapter  # setter also calls _publish_active_config
+                logger.info(
+                    f"_activate_provider: swapped orchestrator adapter to {norm_id} ({adapter})"
+                )
+            else:
+                logger.warning("_activate_provider: no orchestrator found on bridge")
+
+            # Step 3: re-publish status to update TUI banner/sidebar
+            try:
+                self._bridge._publish_active_provider_status()
+            except Exception as _pub_exc:
+                logger.debug(f"_activate_provider re-publish: {_pub_exc}")
+
+            return True
+        except Exception as exc:
+            logger.error(f"_activate_provider({provider_id}): {exc}")
+            return False
+
     @on(ConnectProvider)
     def handle_connect_provider(self, event: ConnectProvider) -> None:
+        """Route to the appropriate connection screen for the provider.
+
+        GitHub Copilot uses the OAuth device flow (DeploymentSelectScreen →
+        OAuthDeviceFlowScreen), matching OpenCode's dialog-connect-provider flow.
+
+        For other providers:
+        - If the provider already has an adapter registered in ProviderManager
+          (i.e. it was configured previously), activate it immediately so the
+          Orchestrator starts using it right away, then open the config screen
+          only to allow updating credentials.
+        - If there is no adapter yet, open the config screen so the user can
+          supply the API key; activation happens in handle_save_credentials.
+        """
+        _COPILOT_IDS = {"github_copilot", "githubcopilot", "github-copilot"}
+        if event.provider_id.lower().replace("-", "_") in _COPILOT_IDS:
+            from .features.oauth.screen import DeploymentSelectScreen
+
+            self.push_screen(DeploymentSelectScreen())
+            return
+
+        # Try to activate immediately if the provider is already configured.
+        try:
+            _lm = _load_llm_manager_module()
+            get_provider_manager = _lm.get_provider_manager
+            canonical_provider = _lm.canonical_provider
+
+            pm = get_provider_manager()
+            adapter = pm.get_provider(canonical_provider(event.provider_id))
+            if adapter is not None:
+                logger.info(
+                    f"handle_connect_provider: activating already-configured provider {event.provider_id}"
+                )
+                self._activate_provider(event.provider_id)
+                self.notify(
+                    f"Switched to {event.provider_id.replace('_', ' ').title()}",
+                    severity="information",
+                )
+                return
+        except Exception as _chk_exc:
+            logger.debug(f"handle_connect_provider provider check: {_chk_exc}")
+
         from .features.settings.screen import ProviderConfigScreen
 
         prov = self._settings.get_provider_by_id(event.provider_id)
         name = prov["name"] if prov else event.provider_id.replace("_", " ").title()
-        self.push_screen(ProviderConfigScreen(event.provider_id, name))
+        existing_base_url = prov.get("base_url", "") if prov else ""
+        self.push_screen(
+            ProviderConfigScreen(
+                event.provider_id, name, existing_base_url=existing_base_url
+            )
+        )
 
     @on(SaveProviderCredentials)
     def handle_save_credentials(self, event: SaveProviderCredentials) -> None:
@@ -2041,10 +3062,83 @@ class AgentApp(App[None]):
         except Exception as exc:
             logger.error(f"Failed to persist credentials: {exc}")
             self.notify(f"Error saving credentials: {exc}", severity="error")
+            return
+
+        # After saving credentials, activate the provider so the Orchestrator
+        # immediately switches to it (covers the "first time setup" path where
+        # handle_connect_provider found no existing adapter).
+        self._activate_provider(event.provider_id)
 
     @on(UpdateRoleModel)
     def handle_update_role_model(self, event: UpdateRoleModel) -> None:
-        logger.info(f"Role model update: {event.role} → {event.model_id}")
+        logger.info(
+            f"Role model update: {event.role} → {event.model_id} (provider={event.provider_id})"
+        )
+
+        # If the model belongs to a different provider than the one currently
+        # active, switch provider first.  This ensures the orchestrator adapter
+        # and the TUI banner both reflect the correct provider name.
+        if event.provider_id:
+            try:
+                _lm = _load_llm_manager_module()
+                canonical_provider = _lm.canonical_provider
+                get_provider_manager = _lm.get_provider_manager
+
+                norm_req = canonical_provider(event.provider_id)
+                orch = getattr(self._bridge, "_orchestrator", None)
+                current_adapter = getattr(orch, "_adapter", None) if orch else None
+
+                # Determine the canonical key of the currently active adapter.
+                current_provider_key = None
+                if current_adapter is not None:
+                    prov_dict = getattr(current_adapter, "provider", None)
+                    if isinstance(prov_dict, dict):
+                        raw = prov_dict.get("name") or prov_dict.get("type") or ""
+                        current_provider_key = canonical_provider(raw)
+                    if not current_provider_key:
+                        current_provider_key = canonical_provider(
+                            getattr(current_adapter, "name", "") or ""
+                        )
+
+                if current_provider_key != norm_req:
+                    logger.info(
+                        f"handle_update_role_model: provider mismatch "
+                        f"({current_provider_key} → {norm_req}), switching provider"
+                    )
+                    self._activate_provider(event.provider_id)
+                    # Re-fetch adapter after switch
+                    orch = getattr(self._bridge, "_orchestrator", None)
+                    current_adapter = getattr(orch, "_adapter", None) if orch else None
+            except Exception as _exc:
+                logger.debug(f"handle_update_role_model provider switch: {_exc}")
+
+        # Apply the model selection to the (now-correct) active adapter.
+        try:
+            orch = getattr(self._bridge, "_orchestrator", None)
+            if orch is not None:
+                adapter = getattr(orch, "_adapter", None)
+                if adapter is not None:
+                    # Try common attribute names for the model setting.
+                    for _attr in ("default_model", "model", "_model"):
+                        if hasattr(adapter, _attr):
+                            setattr(adapter, _attr, event.model_id)
+                            logger.info(
+                                f"handle_update_role_model: set adapter.{_attr} = {event.model_id}"
+                            )
+                            break
+                    # Keep models list consistent so _publish_active_config picks
+                    # the right model as models[0].
+                    if hasattr(adapter, "models") and isinstance(adapter.models, list):
+                        if event.model_id not in adapter.models:
+                            adapter.models.insert(0, event.model_id)
+                        else:
+                            adapter.models.remove(event.model_id)
+                            adapter.models.insert(0, event.model_id)
+                    # Re-publish so banner/sidebar refresh immediately.
+                    if hasattr(orch, "_publish_active_config"):
+                        orch._publish_active_config()
+        except Exception as _exc:
+            logger.debug(f"handle_update_role_model adapter update: {_exc}")
 
     @on(UpdateSettings)
     def handle_update_settings(self, event: UpdateSettings) -> None:
@@ -2060,6 +3154,172 @@ class AgentApp(App[None]):
             except Exception:
                 pass
         self._update_status_bar()
+
+    # ── GitHub Copilot OAuth device flow ──────────────────────────────────────
+
+    @on(StartGithubDeviceFlow)
+    async def handle_start_github_device_flow(
+        self, event: StartGithubDeviceFlow
+    ) -> None:
+        """User confirmed deployment type in DeploymentSelectScreen.
+
+        Calls start_device_flow() (a fast POST to GitHub or GHE), then opens
+        the OAuthDeviceFlowScreen modal and launches a background thread that
+        runs poll_for_token().  The thread posts DeviceFlowCompleteEvent or
+        DeviceFlowErrorEvent when finished; those events close the modal and
+        notify the user.
+        """
+        import threading as _threading
+
+        try:
+            _auth = _load_copilot_auth_module()
+            start_device_flow = _auth.start_device_flow
+            poll_for_token = _auth.poll_for_token
+            save_token = _auth.save_token
+            DeviceCodeExpired = _auth.DeviceCodeExpired
+            AuthCancelled = _auth.AuthCancelled
+        except ImportError as exc:
+            logger.error(f"Cannot import github_copilot_auth: {exc}")
+            self.notify("GitHub Copilot auth module not available.", severity="error")
+            return
+
+        enterprise_url = getattr(event, "enterprise_url", None)
+
+        # Kick off the device code request (fast — one HTTP POST)
+        try:
+            flow = start_device_flow(enterprise_url=enterprise_url)
+        except Exception as exc:
+            logger.error(f"start_device_flow failed: {exc}")
+            self.notify(f"Failed to start GitHub login: {exc}", severity="error")
+            return
+
+        # Reset any previous cancellation signal
+        self._device_flow_cancel.clear()
+
+        # Open the modal — user sees the code and link immediately
+        from .features.oauth.screen import OAuthDeviceFlowScreen
+
+        oauth_screen = OAuthDeviceFlowScreen(
+            user_code=flow.user_code,
+            verification_uri=flow.verification_uri,
+            expires_in=flow.expires_in,
+        )
+        self._oauth_screen = oauth_screen
+        await self.push_screen(oauth_screen)
+
+        # Launch background polling thread — does NOT block the TUI event loop
+        cancel_evt = self._device_flow_cancel
+        domain = flow.domain
+
+        def _poll_thread() -> None:
+            try:
+                token = poll_for_token(
+                    flow.device_code,
+                    flow.interval,
+                    domain=domain,
+                    timeout=flow.expires_in,
+                    cancel_event=cancel_evt,
+                )
+                save_token(token, enterprise_url=enterprise_url)
+                # Post success back to the Textual event loop
+                self.call_from_thread(
+                    self.post_message,
+                    DeviceFlowCompleteEvent(provider_id="github_copilot"),
+                )
+            except DeviceCodeExpired:
+                self.call_from_thread(
+                    self.post_message,
+                    DeviceFlowErrorEvent(
+                        reason="Device code expired — please try again."
+                    ),
+                )
+            except AuthCancelled:
+                self.call_from_thread(
+                    self.post_message,
+                    DeviceFlowErrorEvent(reason="Authorization was denied on GitHub."),
+                )
+            except Exception as exc:
+                if cancel_evt.is_set():
+                    return  # user cancelled — no error toast
+                self.call_from_thread(
+                    self.post_message,
+                    DeviceFlowErrorEvent(reason=str(exc)),
+                )
+
+        _threading.Thread(target=_poll_thread, daemon=True, name="copilot-poll").start()
+
+    @on(DeviceFlowCompleteEvent)
+    def handle_device_flow_complete(self, event: DeviceFlowCompleteEvent) -> None:
+        """Token received and saved — close the modal, update the banner, and notify."""
+        # Dismiss the OAuthDeviceFlowScreen modal if it is still open
+        if self._oauth_screen is not None:
+            try:
+                screen = self._oauth_screen
+                self._oauth_screen = None
+                screen.complete()  # type: ignore[attr-defined]
+            except Exception:
+                pass
+
+        # Also dismiss any open SettingsScreen — it was constructed before the
+        # token existed so it still shows the "Login" button.  Dismissing it
+        # causes the user to reopen settings fresh and see "Connected" instead.
+        try:
+            from .features.settings.screen import SettingsScreen
+
+            for screen in list(self.screen_stack):
+                if isinstance(screen, SettingsScreen):
+                    screen.dismiss()
+                    break
+        except Exception:
+            pass
+
+        # Immediately update the provider banner / sidebar — no restart needed.
+        provider_id = (
+            getattr(event, "provider_id", "github_copilot") or "github_copilot"
+        )
+        # Look up the display name from settings (falls back to a title-cased id)
+        prov = self._settings.get_provider_by_id(provider_id)
+        provider_name = prov["name"] if prov else provider_id.replace("_", " ").title()
+        try:
+            from .bus import ProviderStatusChangeEvent as _PSCE
+
+            self.post_message(
+                _PSCE(
+                    provider=provider_name,
+                    new_status="connected",
+                    old_status="disconnected",
+                )
+            )
+        except Exception:
+            pass
+
+        self.notify(
+            f"{provider_name} connected! Reopen Settings to see updated status.",
+            severity="information",
+            timeout=6,
+        )
+        logger.info("GitHub Copilot OAuth: token saved successfully")
+
+    @on(DeviceFlowErrorEvent)
+    def handle_device_flow_error(self, event: DeviceFlowErrorEvent) -> None:
+        """Flow failed or was cancelled — close the modal and report."""
+        # Signal the polling thread to stop (if reason == "cancelled")
+        self._device_flow_cancel.set()
+
+        if self._oauth_screen is not None:
+            try:
+                screen = self._oauth_screen
+                self._oauth_screen = None
+                screen.fail(event.reason)  # type: ignore[attr-defined]
+            except Exception:
+                pass
+
+        if event.reason and event.reason != "cancelled":
+            self.notify(
+                f"GitHub Copilot login failed: {event.reason}",
+                severity="error",
+                timeout=8,
+            )
 
     # ── Actions ───────────────────────────────────────────────────────────
 
@@ -2105,9 +3365,13 @@ class AgentApp(App[None]):
         )
 
     def action_open_settings(self) -> None:
-        from .features.settings.screen import SettingsScreen
+        try:
+            from .features.settings.screen import SettingsScreen
 
-        self.push_screen(SettingsScreen(self._settings))
+            self.push_screen(SettingsScreen(self._settings))
+        except Exception as exc:
+            logger.error(f"action_open_settings failed: {exc}", exc_info=True)
+            self.notify(f"Could not open settings: {exc}", severity="error")
 
     # Legacy /clear helper alias
     def _clear_session(self) -> None:

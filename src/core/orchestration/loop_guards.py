@@ -94,6 +94,12 @@ DOOM_LOOP_THRESHOLD: int = 3
 #: Maximum length of the recent_tool_calls ring buffer.
 RECENT_CALLS_WINDOW: int = 10
 
+#: Window size for alternating-loop detection.  If the last N tool calls
+#: involve ≤ ALTERNATING_TOOL_DIVERSITY distinct tools, an alternating loop
+#: is suspected (e.g. read_file ↔ edit_file with the same target forever).
+ALTERNATING_LOOP_WINDOW: int = 10
+ALTERNATING_TOOL_DIVERSITY: int = 2
+
 
 # ---------------------------------------------------------------------------
 # Guard 1 — Read-before-write
@@ -235,6 +241,46 @@ def check_cooldown(
 # ---------------------------------------------------------------------------
 
 
+def _canonical_fingerprint(tool_name: str, args: Dict[str, Any]) -> str:
+    """Return a pagination-agnostic fingerprint for *tool_name* + *args*.
+
+    P2-D: Strips ephemeral pagination arguments (``offset``, ``start_line``,
+    ``end_line``, ``page``) before serialising so that a read-then-paginate
+    sequence is recognised as the same repeated action rather than escaping
+    doom-loop detection because the offset counter increments each turn.
+
+    All other arguments are sorted and serialised identically to the original
+    fingerprint, so callers that don't paginate are unaffected.
+    """
+    _PAGINATION_KEYS = frozenset({"offset", "start_line", "end_line", "page", "limit"})
+    canonical_args = {k: v for k, v in args.items() if k not in _PAGINATION_KEYS}
+    return f"{tool_name}:{json.dumps(canonical_args, sort_keys=True, default=str)}"
+
+
+def _detect_alternating_loop(
+    recent: List[str],
+    new_fingerprint: str,
+) -> bool:
+    """Return True when the last ALTERNATING_LOOP_WINDOW calls use ≤ ALTERNATING_TOOL_DIVERSITY distinct tool names.
+
+    P2-D: Catches alternating-tool loops (e.g. read_file → edit_file →
+    read_file → edit_file …) that escape the identical-fingerprint doom-loop
+    check because the args differ slightly each turn.
+    """
+    window = (recent + [new_fingerprint])[-ALTERNATING_LOOP_WINDOW:]
+    if len(window) < ALTERNATING_LOOP_WINDOW:
+        # Not enough history yet.
+        return False
+    distinct_tools: set = set()
+    for fp in window:
+        # Tool name is the prefix before the first colon.
+        tool = fp.split(":", 1)[0]
+        distinct_tools.add(tool)
+        if len(distinct_tools) > ALTERNATING_TOOL_DIVERSITY:
+            return False
+    return True
+
+
 def check_doom_loop(
     tool_name: str,
     args: Dict[str, Any],
@@ -246,6 +292,13 @@ def check_doom_loop(
     The second element of the tuple is the updated ``recent_tool_calls`` list
     with the current fingerprint appended (always returned so the caller can
     persist it regardless of whether a loop was detected).
+
+    Two loop patterns are detected:
+
+    1. **Identical-call doom loop**: the last DOOM_LOOP_THRESHOLD canonical
+       fingerprints are identical (pagination offsets stripped — P2-D).
+    2. **Alternating-tool loop**: the last ALTERNATING_LOOP_WINDOW calls use
+       ≤ ALTERNATING_TOOL_DIVERSITY distinct tool names (P2-D).
 
     When a doom loop IS detected:
     - Consults ``PermissionPolicy.check_doom_loop()`` (PERM-02).
@@ -267,15 +320,25 @@ def check_doom_loop(
         Optional EventBus instance.  When provided and doom-loop behavior is
         ASK, a ``tool.doom_loop_detected`` event is published.
     """
-    fingerprint = f"{tool_name}:{json.dumps(args, sort_keys=True, default=str)}"
+    # P2-D: use pagination-agnostic canonical fingerprint for the ring buffer.
+    fingerprint = _canonical_fingerprint(tool_name, args)
     recent: List[str] = list(state.get("recent_tool_calls") or [])
     tail = recent[-(DOOM_LOOP_THRESHOLD - 1) :]
 
     # Append BEFORE returning so the ring buffer stays accurate in all paths.
     updated_recent = (recent + [fingerprint])[-RECENT_CALLS_WINDOW:]
 
-    doom_detected = len(tail) >= DOOM_LOOP_THRESHOLD - 1 and all(
+    # Pattern 1: consecutive identical fingerprints.
+    identical_doom = len(tail) >= DOOM_LOOP_THRESHOLD - 1 and all(
         fp == fingerprint for fp in tail
+    )
+
+    # Pattern 2: alternating-tool loop (P2-D).
+    alternating_doom = _detect_alternating_loop(recent, fingerprint)
+
+    doom_detected = identical_doom or alternating_doom
+    doom_kind = (
+        "alternating" if (alternating_doom and not identical_doom) else "identical"
     )
 
     if not doom_detected:
@@ -283,7 +346,9 @@ def check_doom_loop(
 
     # --- Doom loop confirmed ---
     logger.warning(
-        "loop_guards.check_doom_loop: doom loop detected for '%s'", tool_name
+        "loop_guards.check_doom_loop: doom loop detected for '%s' (kind=%s)",
+        tool_name,
+        doom_kind,
     )
 
     # PERM-02: consult PermissionPolicy
@@ -326,12 +391,23 @@ def check_doom_loop(
             policy_exc,
         )
 
-    loop_msg = (
-        f"[DOOM LOOP] Tool '{tool_name}' called {DOOM_LOOP_THRESHOLD} times "
-        "consecutively with identical arguments. This indicates a stuck loop. "
-        "Try a different approach — read the current state, use a different tool, "
-        "or report that the task cannot be completed as specified."
-    )
+    loop_msg: str
+    if doom_kind == "alternating":
+        distinct_in_window = len({fp.split(":", 1)[0] for fp in updated_recent})
+        loop_msg = (
+            f"[ALTERNATING LOOP] The last {ALTERNATING_LOOP_WINDOW} tool calls "
+            f"used only {distinct_in_window} distinct tool(s). This indicates a "
+            "stuck alternating loop (e.g. read → edit → read → edit …). "
+            "Try a completely different approach, inspect the current state "
+            "holistically, or report that the task cannot be completed as specified."
+        )
+    else:
+        loop_msg = (
+            f"[DOOM LOOP] Tool '{tool_name}' called {DOOM_LOOP_THRESHOLD} times "
+            "consecutively with identical arguments. This indicates a stuck loop. "
+            "Try a different approach — read the current state, use a different tool, "
+            "or report that the task cannot be completed as specified."
+        )
 
     error_result: Dict[str, Any] = {
         "last_result": {"ok": False, "error": loop_msg},

@@ -141,6 +141,8 @@ class AgentState(TypedDict):
     )  # True: graph suspended pending user plan approval
     plan_mode_approved: bool | None  # Set by wait_for_user_node after user decision
     plan_mode_blocked_tool: str | None  # Which tool triggered the plan mode gate
+    # GAP-SMALL-4: True when the task is too ambiguous for small models to proceed
+    needs_clarification: bool | None
     # PRSW: FileLockManager reference for parallel read / sequential write coordination
     _file_lock_manager: Any | None
     # PRSW: Pending write operations queued for sequential execution
@@ -204,6 +206,11 @@ class AgentState(TypedDict):
     evaluation_llm_verdict: str | None
     # WF-2: Human-readable reason from the LLM verdict (first 200 chars of response).
     evaluation_llm_reason: str | None
+    # CP6-PERSIST: Compacted history snapshot written by perception_node when
+    # CP-6 auto-compaction fires.  Subsequent turns use this as the base for
+    # _history_for_prompt instead of the ever-growing raw `history` list.
+    # This field is a plain replace (last-write-wins) rather than operator.add.
+    _compacted_history: List[Dict[str, Any]] | None
     # WF-4: SHA-256 of the last plan seen by replan_node; used to detect plan divergence.
     last_plan_hash: str | None
 

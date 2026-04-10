@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import shutil
+import threading
 from pathlib import Path
 from typing import Dict, Optional
 
@@ -169,6 +170,10 @@ class LSPManager:
 
 _MANAGERS: Dict[str, LSPManager] = {}
 _MANAGER_LOCK: asyncio.Lock | None = None
+# ARCH-audit fix: a threading.Lock guards _MANAGERS for the synchronous
+# get_lsp_manager() path, which may be called from non-async contexts or
+# from multiple threads concurrently.
+_MANAGERS_THREAD_LOCK: threading.Lock = threading.Lock()
 
 
 def _get_manager_lock() -> asyncio.Lock:
@@ -183,15 +188,18 @@ def get_lsp_manager(workspace: Optional[Path] = None) -> LSPManager:
 
     Uses ``Path.cwd()`` when *workspace* is None.
 
-    SEC-1: This synchronous helper is intentionally kept for callers that cannot
-    use ``await``.  It is safe for **single-threaded** or **startup** use only.
-    For concurrent async callers use ``get_lsp_manager_async`` instead.
+    This helper is safe for both single-threaded and multi-threaded use.
+    For concurrent async callers prefer ``get_lsp_manager_async`` to avoid
+    holding the threading lock across await points.
     """
     root = (workspace or Path.cwd()).resolve()
     key = str(root)
-    if key not in _MANAGERS:
-        _MANAGERS[key] = LSPManager(workspace=root)
-    return _MANAGERS[key]
+    # Fast path: read under the lock to avoid TOCTOU race between
+    # the "key not in _MANAGERS" check and the insert.
+    with _MANAGERS_THREAD_LOCK:
+        if key not in _MANAGERS:
+            _MANAGERS[key] = LSPManager(workspace=root)
+        return _MANAGERS[key]
 
 
 async def get_lsp_manager_async(workspace: Optional[Path] = None) -> LSPManager:

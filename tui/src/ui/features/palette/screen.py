@@ -180,10 +180,24 @@ class CommandPalette(ModalScreen):
             return
 
         if action.startswith("select_model:"):
-            model_id = action.split(":", 1)[1]
+            parts = action.split(":", 2)
+            # New format: select_model:<provider_id>:<model_id>
+            # Legacy fallback: select_model:<model_id>
+            if len(parts) == 3:
+                prov_id = parts[1]
+                model_id = parts[2]
+            else:
+                prov_id = ""
+                model_id = parts[1]
             active_role = getattr(self.app, "active_role", "lead_architect")
-            logger.info(f"Model selected: {model_id} for role {active_role}")
-            self.app.post_message(UpdateRoleModel(role=active_role, model_id=model_id))
+            logger.info(
+                f"Model selected: {model_id} (provider={prov_id}) for role {active_role}"
+            )
+            self.app.post_message(
+                UpdateRoleModel(
+                    role=active_role, model_id=model_id, provider_id=prov_id
+                )
+            )
             self.app.notify(f"Model switched to {model_id} for {active_role}")
             self.dismiss()
             return

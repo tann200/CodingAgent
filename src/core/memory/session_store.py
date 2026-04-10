@@ -1,8 +1,11 @@
 from __future__ import annotations
+import os
 import sqlite3
 import json
 import logging
+import tempfile
 import threading
+import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -106,6 +109,14 @@ class SessionStore:
                 CREATE INDEX IF NOT EXISTS idx_tool_calls_session ON tool_calls(session_id);
                 CREATE INDEX IF NOT EXISTS idx_errors_session ON errors(session_id);
                 CREATE INDEX IF NOT EXISTS idx_children_parent ON session_children(parent_session_id);
+
+                CREATE TABLE IF NOT EXISTS session_snapshots (
+                    session_id TEXT PRIMARY KEY,
+                    state_json TEXT NOT NULL,
+                    role TEXT,
+                    task TEXT,
+                    saved_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
             """)
             # Write schema version once; ignore if already set.
             conn.execute(
@@ -354,10 +365,6 @@ class SessionStore:
         Called after every ``add_decision()`` so the file stays current.
         Failures are logged but never propagated — this is a best-effort export.
         """
-        import json as _json
-        import os as _os
-        import tempfile as _tempfile
-
         try:
             # Acquire lock only for the SQLite read; release before filesystem I/O
             # to avoid blocking other threads (e.g. add_message, add_plan) during
@@ -381,22 +388,22 @@ class SessionStore:
             # Lock released — now do filesystem I/O outside the lock
             out_path = self.workdir / ".agent-context" / "decisions.json"
             out_path.parent.mkdir(parents=True, exist_ok=True)
-            fd, tmp = _tempfile.mkstemp(dir=str(out_path.parent), suffix=".tmp")
+            fd, tmp = tempfile.mkstemp(dir=str(out_path.parent), suffix=".tmp")
             _fd_open = False
             try:
-                with _os.fdopen(fd, "w", encoding="utf-8") as f:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
                     _fd_open = True  # fdopen took ownership; fd is now managed by f
-                    _json.dump(rows, f, ensure_ascii=False, indent=2)
-                _os.replace(tmp, str(out_path))
+                    json.dump(rows, f, ensure_ascii=False, indent=2)
+                os.replace(tmp, str(out_path))
             except Exception:
                 if not _fd_open:
                     # fdopen itself failed — fd was never wrapped, close it manually
                     try:
-                        _os.close(fd)
+                        os.close(fd)
                     except OSError:
                         pass
                 try:
-                    _os.unlink(tmp)
+                    os.unlink(tmp)
                 except OSError:
                     pass
                 raise
@@ -412,13 +419,11 @@ class SessionStore:
         Designed to be called by ``perception_node`` before building the system
         prompt so the LLM is aware of historical task outcomes.
         """
-        import json as _json
-
         try:
             decisions_path = self.workdir / ".agent-context" / "decisions.json"
             if not decisions_path.exists():
                 return []
-            data = _json.loads(decisions_path.read_text(encoding="utf-8"))
+            data = json.loads(decisions_path.read_text(encoding="utf-8"))
             if not isinstance(data, list):
                 return []
             # Filter to only valid dict entries to avoid AttributeError on .get()
@@ -570,10 +575,8 @@ class SessionStore:
         with the full history of the source at the moment of forking — future
         writes to either session are independent.
         """
-        import uuid as _uuid
-
         if fork_id is None:
-            fork_id = str(_uuid.uuid4())
+            fork_id = str(uuid.uuid4())
 
         _TABLES = [
             # (table, columns_without_id_or_session)
@@ -683,3 +686,99 @@ class SessionStore:
                 return {"ok": False, "error": str(e), "deleted": deleted}
 
         return {"ok": True, "deleted": deleted}
+
+    # TASK-ID-1: Subagent session resumption
+    # -----------------------------------------------------------------------
+
+    def save_session_state(
+        self,
+        session_id: str,
+        state: Dict[str, Any],
+        role: str = "",
+        task: str = "",
+    ) -> None:
+        """Persist a serialisable snapshot of *state* keyed by *session_id*.
+
+        Non-serialisable values (e.g. cancel_event, lock objects) are silently
+        dropped so the JSON roundtrip never raises.
+
+        Parameters
+        ----------
+        session_id: Unique ID for the subagent session.
+        state: The AgentState dict to snapshot.
+        role: Optional role label (for human-readable queries).
+        task: Optional task description (first 500 chars stored).
+        """
+
+        def _safe_serialise(obj: Any) -> Any:
+            if isinstance(obj, dict):
+                return {
+                    k: _safe_serialise(v)
+                    for k, v in obj.items()
+                    if _is_json_serialisable(v)
+                }
+            if isinstance(obj, list):
+                return [_safe_serialise(i) for i in obj if _is_json_serialisable(i)]
+            return obj
+
+        def _is_json_serialisable(v: Any) -> bool:
+            try:
+                json.dumps(v)
+                return True
+            except (TypeError, ValueError):
+                return False
+
+        try:
+            safe_state = _safe_serialise(state)
+            state_json = json.dumps(safe_state)
+        except Exception as exc:
+            logger.warning("save_session_state: serialisation failed: %s", exc)
+            return
+
+        with self._lock:
+            try:
+                conn = self._get_connection()
+                conn.execute(
+                    "INSERT OR REPLACE INTO session_snapshots "
+                    "(session_id, state_json, role, task, saved_at) "
+                    "VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)",
+                    (session_id, state_json, role, task[:500] if task else ""),
+                )
+                conn.commit()
+                logger.debug(
+                    "save_session_state: saved session %s (%d bytes)",
+                    session_id,
+                    len(state_json),
+                )
+            except Exception as exc:
+                logger.error("save_session_state: DB write failed: %s", exc)
+
+    def load_session_state(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """Load and return the previously saved state for *session_id*.
+
+        Returns ``None`` if no snapshot exists or deserialisation fails.
+
+        Parameters
+        ----------
+        session_id: The ID passed to ``save_session_state``.
+
+        Returns
+        -------
+        dict or None
+            The reconstructed state dict, or ``None`` if not found.
+        """
+        with self._lock:
+            try:
+                conn = self._get_connection()
+                row = conn.execute(
+                    "SELECT state_json FROM session_snapshots WHERE session_id = ?",
+                    (session_id,),
+                ).fetchone()
+                if row is None:
+                    return None
+                state: Dict[str, Any] = json.loads(row[0])
+                logger.debug("load_session_state: loaded session %s", session_id)
+                return state
+            except Exception as exc:
+                logger.error("load_session_state: failed: %s", exc)
+                return None

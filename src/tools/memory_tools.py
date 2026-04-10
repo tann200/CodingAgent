@@ -1,14 +1,19 @@
 """
-Memory search tool for the coding agent.
+Memory tools for the coding agent.
 
-Searches agent memory (VectorStore, TASK_STATE.md, compaction checkpoints,
-and execution traces) for relevant context. Useful before starting a task
-to check whether a similar problem has been solved before.
+Provides:
+  - memory_search: searches VectorStore, TASK_STATE.md, compaction checkpoints,
+    and execution traces for relevant context.
+  - memory_save: persists a note to ~/.coding_agent/memory.md so it is available
+    in future sessions (GAP-NEW-4 / GAP-FRONTIER-4).
 """
 
 import json
 import logging
+import os
 import re
+import tempfile
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -146,3 +151,82 @@ def memory_search(
         "query": query,
         "results": unique[:10],
     }
+
+
+# ---------------------------------------------------------------------------
+# memory_save — GAP-NEW-4 / GAP-FRONTIER-4
+# ---------------------------------------------------------------------------
+
+_MEMORY_FILE = Path.home() / ".coding_agent" / "memory.md"
+_MEMORY_MAX_BYTES = 50_000  # ~50 KB; trim oldest entries when exceeded
+
+
+@tool(tags=["coding", "planning", "review"])
+def memory_save(
+    content: str,
+    category: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Persist a note to long-term memory so it is available in future sessions.
+
+    Use this to record learned preferences, project conventions, recurring
+    patterns, or any insight that should survive beyond the current session.
+    Notes are stored in ~/.coding_agent/memory.md and injected into future
+    sessions automatically.
+
+    Args:
+        content: The note to save (1–3 sentences, specific and actionable).
+        category: Optional category label (e.g. "convention", "preference",
+                  "pattern", "warning"). Defaults to "note".
+
+    Returns:
+        status, saved entry.
+    """
+    if not content or not content.strip():
+        return {"status": "error", "error": "content must be non-empty"}
+
+    content = content.strip()
+    if len(content) > 1000:
+        return {
+            "status": "error",
+            "error": f"content too long ({len(content)} chars, max 1000). Be concise.",
+        }
+
+    cat = (category or "note").strip().lower()
+    ts = time.strftime("%Y-%m-%d %H:%M")
+    entry = f"- [{cat}] {ts}: {content}\n"
+
+    try:
+        _MEMORY_FILE.parent.mkdir(parents=True, exist_ok=True)
+
+        # Read existing content
+        existing = ""
+        if _MEMORY_FILE.exists():
+            try:
+                existing = _MEMORY_FILE.read_text(encoding="utf-8")
+            except Exception:
+                existing = ""
+
+        # Trim oldest entries if file would exceed size limit
+        new_content = existing + entry
+        if len(new_content.encode("utf-8")) > _MEMORY_MAX_BYTES:
+            lines = new_content.splitlines(keepends=True)
+            while lines and len("".join(lines).encode("utf-8")) > _MEMORY_MAX_BYTES:
+                lines.pop(0)
+            new_content = "".join(lines)
+
+        # Atomic write
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(_MEMORY_FILE.parent), suffix=".tmp"
+        )
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(new_content)
+        os.replace(tmp_path, str(_MEMORY_FILE))
+
+        return {
+            "status": "ok",
+            "saved": entry.strip(),
+            "memory_file": str(_MEMORY_FILE),
+            "total_entries": new_content.count("\n- ["),
+        }
+    except Exception as exc:
+        return {"status": "error", "error": str(exc)}

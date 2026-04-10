@@ -43,6 +43,7 @@ def _save_last_plan(workdir: str, plan: list, task: str, step: int = 0) -> None:
             "plan": plan,
             "task": task,
             "current_step": step,
+            "working_dir": str(workdir),  # P2-B: stored for TTL resume check
             "saved_at": datetime.now().isoformat(),
         }
         plan_path.write_text(json.dumps(data, indent=2))
@@ -93,6 +94,12 @@ async def planning_node(state: Mapping[str, Any], config: Any) -> Dict[str, Any]
     current_plan = s.get("current_plan")
     current_step = s.get("current_step", 0)
     task = str(s.get("task") or "")
+    # Defensive strip: prevent "Task: Task: Task:..." cascading accumulation.
+    # planning_node prefixes task with "Task: " in full_task; if state["task"] already
+    # starts with that prefix (e.g. from a prior fallback plan or loop), the prompt
+    # becomes "Task: Task: ..." which confuses the LLM.
+    while task.startswith("Task: ") or task.startswith("Task:\t"):
+        task = task[6:]
 
     if not isinstance(current_plan, list) or len(current_plan) == 0:
         # Try to load from last_plan.json
@@ -102,20 +109,47 @@ async def planning_node(state: Mapping[str, Any], config: Any) -> Dict[str, Any]
             loaded_task = last_plan_data.get("task", "")
             loaded_step = last_plan_data.get("current_step", 0)
 
-            # Only resume if the task is similar enough — exact match or high word overlap.
-            # Exact match handles identical re-submissions; fuzzy match handles minor
-            # rephrasing of the same task (e.g. trimmed whitespace, punctuation).
-            def _task_similar(a: str, b: str) -> bool:
-                if a == b:
-                    return True
-                a_words = set(re.sub(r"[^a-z0-9]", " ", a.lower()).split())
-                b_words = set(re.sub(r"[^a-z0-9]", " ", b.lower()).split())
-                if not a_words or not b_words:
-                    return False
-                overlap = len(a_words & b_words) / max(len(a_words), len(b_words))
-                return overlap >= 0.8
+            # P2-B fix: Replace 80% Jaccard word-overlap with TTL + exact match.
+            # Jaccard was unreliable — "fix the login bug" and "test the login bug"
+            # share >80% word overlap but need completely different plans.
+            # New rules:
+            #   1. Exact task string match always resumes (covers minor whitespace diffs).
+            #   2. Saved plan must be < 30 minutes old (same session / short pause).
+            #   3. Working directory must match (no cross-project resume).
+            # Users who want to explicitly resume an older plan should use --resume.
+            _PLAN_RESUME_TTL_SECONDS = 1800  # 30 minutes
 
-            if loaded_plan and task and _task_similar(loaded_task, task):
+            def _plan_is_resumable(
+                data: Dict[str, Any], current_task: str, wd: str
+            ) -> bool:
+                # Explicit user opt-in overrides all TTL/similarity checks
+                if state.get("resume_session"):
+                    return bool(data.get("plan"))
+                # Exact task match
+                if data.get("task", "") != current_task:
+                    return False
+                # TTL check
+                saved_at_str = data.get("saved_at", "")
+                try:
+                    from datetime import datetime as _dt
+
+                    saved_dt = _dt.fromisoformat(saved_at_str)
+                    age_seconds = (_dt.now() - saved_dt).total_seconds()
+                    if age_seconds > _PLAN_RESUME_TTL_SECONDS:
+                        logger.info(
+                            f"planning_node: saved plan is {age_seconds:.0f}s old "
+                            f"(> {_PLAN_RESUME_TTL_SECONDS}s TTL) — not resuming"
+                        )
+                        return False
+                except Exception:
+                    return False  # unparseable timestamp → do not resume
+                return True
+
+            if (
+                loaded_plan
+                and task
+                and _plan_is_resumable(last_plan_data, task, working_dir)
+            ):
                 logger.info(
                     f"planning_node: resuming from saved plan with {len(loaded_plan)} steps"
                 )
@@ -150,6 +184,7 @@ async def planning_node(state: Mapping[str, Any], config: Any) -> Dict[str, Any]
             "current_plan": current_plan,
             "current_step": current_step,
             "task": step_desc,
+            "task_decomposed": True,
             "plan_attempts": plan_attempts,
             "plan_mode_approved": None,
         }
@@ -260,6 +295,16 @@ async def planning_node(state: Mapping[str, Any], config: Any) -> Dict[str, Any]
                     f"planning_node: injecting test hint ({len(unique_tests)} files)"
                 )
 
+        # GAP-FRONTIER-6: Tier-dependent step limit — frontier models can plan more steps.
+        _plan_step_limit = 8  # default (MEDIUM / unknown)
+        try:
+            from src.core.inference.model_tiers import ModelTier, get_plan_step_limit as _gsl
+
+            _mt = state.get("model_tier")
+            _plan_step_limit = _gsl(ModelTier(_mt)) if _mt else 8
+        except Exception:
+            pass
+
         # MC-4 fix: Request structured JSON output with specific schema to eliminate
         # 4-strategy parsing fragility. The LLM is more likely to produce consistent
         # JSON when explicitly instructed with the expected format.
@@ -294,6 +339,7 @@ Rules:
 - A task can start when ALL tasks in its `depends_on` list are complete
 - Identify the MAXIMUM parallelism possible
 - List all files affected by each step
+- Maximum {_plan_step_limit} steps total. If the task needs more, split it and delegate parts.
 
 --- EXAMPLES ---
 
@@ -343,16 +389,34 @@ Respond ONLY with valid JSON, no additional text."""
         if not cancel_event:
             cancel_event = getattr(orchestrator, "cancel_event", None)
 
-        # F14: call_model is always async; use create_task directly.
-        # GAP 2: Hardcode temperature for planning (0.3 for slight creativity)
-        # SES-W3: Use planning_model from providers.json if configured.
-        _planning_model_override: Optional[str] = None
+        # WF-5: Resolve per-LLM-call hard timeout from project settings.
+        # Default: 120 s.  0 = disabled.
+        _llm_timeout: int | None = 120
         try:
-            from src.core.config_loader import get_model_for_role as _gmfr
+            from src.core.orchestration.project_settings import (
+                get_active_settings as _gas_wf5,
+            )
 
-            _planning_model_override = _gmfr("strategic")
+            _ps_wf5 = _gas_wf5()
+            if _ps_wf5 is not None:
+                _llm_timeout = _ps_wf5.max_llm_wait_seconds or None
         except Exception:
             pass
+
+        # F14: call_model is always async; use create_task directly.
+        # GAP 2: Hardcode temperature for planning (0.3 for slight creativity)
+        # SES-W3 / SM-1: Model override priority:
+        # 1. state["override_model"] — set by delegate_task for per-subagent binding
+        # 2. planning_model from providers.json (get_model_for_role("strategic"))
+        # 3. None — use active provider default
+        _planning_model_override: Optional[str] = state.get("override_model") or None
+        if not _planning_model_override:
+            try:
+                from src.core.config_loader import get_model_for_role as _gmfr
+
+                _planning_model_override = _gmfr("strategic")
+            except Exception:
+                pass
         llm_task = asyncio.create_task(
             call_model(
                 messages,
@@ -362,6 +426,9 @@ Respond ONLY with valid JSON, no additional text."""
                 session_id=state.get("session_id"),
                 model=_planning_model_override,
             )
+        )
+        _deadline = (
+            asyncio.get_running_loop().time() + _llm_timeout if _llm_timeout else None
         )
         while not llm_task.done():
             if (
@@ -377,6 +444,21 @@ Respond ONLY with valid JSON, no additional text."""
                     "plan_attempts": plan_attempts,
                     "plan_mode_approved": None,
                     "errors": ["canceled"],
+                }
+            # WF-5: hard timeout check
+            if _deadline is not None and asyncio.get_running_loop().time() >= _deadline:
+                llm_task.cancel()
+                logger.warning(
+                    f"planning_node: LLM call timed out after {_llm_timeout}s — "
+                    "routing to wait_for_user"
+                )
+                return {
+                    "current_plan": current_plan,
+                    "current_step": current_step,
+                    "plan_attempts": plan_attempts,
+                    "plan_mode_approved": None,
+                    "errors": [f"llm_timeout:{_llm_timeout}s"],
+                    "next_action": "wait_for_user",
                 }
             await asyncio.sleep(0.2)
         try:
@@ -500,6 +582,7 @@ Respond ONLY with valid JSON, no additional text."""
             return {
                 "current_plan": steps,
                 "current_step": 0,
+                "task_decomposed": True,
                 "plan_dag": {"steps": steps},
                 "execution_waves": waves,
                 "current_wave": 0,
@@ -523,6 +606,7 @@ Respond ONLY with valid JSON, no additional text."""
         return {
             "current_plan": fallback_plan,
             "current_step": 0,
+            "task_decomposed": True,
             "plan_dag": {"steps": fallback_plan},
             "execution_waves": waves,
             "current_wave": 0,
@@ -538,6 +622,7 @@ Respond ONLY with valid JSON, no additional text."""
     return {
         "current_plan": current_plan,
         "current_step": current_step,
+        "task_decomposed": True,
         "plan_dag": {"steps": current_plan},
         "execution_waves": waves,
         "plan_attempts": plan_attempts,

@@ -109,12 +109,11 @@ async def debug_node(state: Mapping[str, Any], config: Any) -> Dict[str, Any]:
     # Classify the error for more targeted fixes
     error_type = _classify_error(error_summary)
 
-    # W6 fix: reset attempt counter when error type changes between debug cycles
-    if last_error_type and error_type != last_error_type:
-        logger.info(
-            f"debug_node: error type changed {last_error_type!r} → {error_type!r}, resetting attempt counter"
-        )
-        current_attempt = 0
+    # P1-B fix: removed the per-error-type attempt counter reset that previously
+    # fired when error_type changed between debug cycles.  That reset allowed the
+    # debug loop to cycle through up to 6 error types × 3 attempts = 18 LLM calls
+    # before the MAX_TOTAL_DEBUG hard cap (9) stopped it.  The error type is now
+    # used only for routing (TYPE_GUIDANCE), not for resetting retry budgets.
 
     # Persist error to session store
     try:
@@ -165,8 +164,8 @@ Generate a YAML tool call to fix the issue. Use edit_file, write_file, or bash a
             model_tier=state.get("model_tier"),  # S1-B/S1-C
         )
 
-        provider = "None"
-        model = "None"
+        provider = None
+        model = None
         if orchestrator.adapter:
             if hasattr(orchestrator.adapter, "provider") and isinstance(
                 orchestrator.adapter.provider, dict
@@ -178,6 +177,21 @@ Generate a YAML tool call to fix the issue. Use edit_file, write_file, or bash a
         cancel_event = state.get("cancel_event")
         if not cancel_event:
             cancel_event = getattr(orchestrator, "cancel_event", None)
+
+        # WF-VOL21-2: Add elapsed-time deadline so the poll loop terminates even
+        # when cancel_event is never set (headless / background execution).
+        _debug_llm_timeout: int | None = 120
+        try:
+            from src.core.orchestration.project_settings import (
+                get_active_settings as _gas_db,
+            )
+
+            _ps_db = _gas_db()
+            if _ps_db is not None:
+                _debug_llm_timeout = _ps_db.max_llm_wait_seconds or None
+        except Exception:
+            pass
+
         llm_task = asyncio.create_task(
             call_model(
                 messages,
@@ -186,6 +200,11 @@ Generate a YAML tool call to fix the issue. Use edit_file, write_file, or bash a
                 stream=False,
                 format_json=False,
             )
+        )
+        _debug_deadline = (
+            asyncio.get_running_loop().time() + _debug_llm_timeout
+            if _debug_llm_timeout
+            else None
         )
         while not llm_task.done():
             if (
@@ -200,6 +219,20 @@ Generate a YAML tool call to fix the issue. Use edit_file, write_file, or bash a
                     "debug_attempts": next_attempt,
                     "total_debug_attempts": next_total,
                     "errors": ["canceled"],
+                }
+            if (
+                _debug_deadline is not None
+                and asyncio.get_running_loop().time() >= _debug_deadline
+            ):
+                llm_task.cancel()
+                logger.warning(
+                    f"debug_node: LLM call timed out after {_debug_llm_timeout}s"
+                )
+                return {
+                    "next_action": None,
+                    "debug_attempts": next_attempt,
+                    "total_debug_attempts": next_total,
+                    "errors": [f"llm_timeout:{_debug_llm_timeout}s"],
                 }
             await asyncio.sleep(0.2)
         try:

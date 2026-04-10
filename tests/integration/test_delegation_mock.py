@@ -30,6 +30,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+pytestmark = pytest.mark.integration
+
 
 # ---------------------------------------------------------------------------
 # Helpers

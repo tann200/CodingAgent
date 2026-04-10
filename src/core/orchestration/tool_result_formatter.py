@@ -96,7 +96,7 @@ def _format_side_by_side_diff(unified_diff: str, max_width: int = 80) -> str:
 
 
 def _format_list_files_result(result: Dict[str, Any]) -> str:
-    """Format list_files / list_dir results with icons."""
+    """Format list_files / list_dir results as a markdown bullet list."""
     if not isinstance(result, dict):
         return str(result)
     if "items" in result:
@@ -108,9 +108,9 @@ def _format_list_files_result(result: Dict[str, Any]) -> str:
             if isinstance(item, dict):
                 name = item.get("name", "?")
                 marker = "📁" if item.get("is_dir", False) else "📄"
-                lines.append(f"{marker} {name}")
+                lines.append(f"- {marker} {name}")
             else:
-                lines.append(f"📄 {item}")
+                lines.append(f"- 📄 {item}")
         return "\n".join(lines)
     return str(result)
 
@@ -128,6 +128,32 @@ def _format_read_file_result(result: Dict[str, Any]) -> str:
         out += result["content"]
         return out
     return str(result)
+
+
+def _format_glob_result(result: Dict[str, Any]) -> str:
+    """Format glob results as a list of matched file paths."""
+    if not isinstance(result, dict):
+        return str(result)
+    matches = result.get("matches")
+    if matches is None:
+        return str(result)
+    if not matches:
+        pattern = result.get("pattern", "")
+        return f"No files found matching `{pattern}`" if pattern else "No files found"
+    pattern = result.get("pattern", "")
+    header = (
+        f"Found {len(matches)} file(s) matching `{pattern}`:"
+        if pattern
+        else f"Found {len(matches)} file(s):"
+    )
+    lines = [header]
+    for m in matches:
+        lines.append(f"  {m}")
+    truncated = result.get("truncated")
+    if truncated:
+        total = result.get("total_found", "?")
+        lines.append(f"  ... (showing {len(matches)} of {total} total)")
+    return "\n".join(lines)
 
 
 def _format_grep_result(result: Dict[str, Any]) -> str:
@@ -225,6 +251,9 @@ def _format_change_summary(
 TOOL_RESULT_FORMATTERS: Dict[str, Any] = {
     "list_files": _format_list_files_result,
     "list_dir": _format_list_files_result,
+    "glob": _format_glob_result,
+    "find": _format_glob_result,
+    "find_files": _format_glob_result,
     "read_file": _format_read_file_result,
     "grep": _format_grep_result,
     "search_code": _format_search_result,

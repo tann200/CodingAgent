@@ -1,4 +1,5 @@
 from __future__ import annotations
+import ast
 import json
 import logging
 import threading
@@ -169,8 +170,6 @@ class RefactoringAgent:
 
     def detect_code_smells(self, file_path: str) -> List[Dict]:
         """Detect common code smells in a file."""
-        import ast
-
         p = self.workdir / file_path
         if not p.exists():
             return []

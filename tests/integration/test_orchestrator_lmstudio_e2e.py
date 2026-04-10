@@ -9,23 +9,36 @@ from src.core.orchestration import agent_brain
 
 pytestmark = pytest.mark.lmstudio
 
-RUN = os.getenv('RUN_INTEGRATION') == '1'
-if not RUN:
+RUN = os.getenv("RUN_INTEGRATION") == "1"
+if not RUN and not os.getenv("CI"):
     try:
-        cfg_path = Path(__file__).parents[2] / 'src' / 'config' / 'providers.json'
+        import requests as _requests_probe
+
+        cfg_path = Path(__file__).parents[2] / "src" / "config" / "providers.json"
         if cfg_path.exists():
-            raw = json.loads(cfg_path.read_text(encoding='utf-8'))
-            providers = raw if isinstance(raw, list) else ([raw] if isinstance(raw, dict) else [])
+            raw = json.loads(cfg_path.read_text(encoding="utf-8"))
+            providers = (
+                raw
+                if isinstance(raw, list)
+                else ([raw] if isinstance(raw, dict) else [])
+            )
             for p in providers:
-                t = str(p.get('type') or '').lower()
-                name = str(p.get('name') or '').lower()
-                if 'lm' in t or 'lm' in name or 'lm_studio' in t or 'lmstudio' in name:
-                    RUN = True
+                t = str(p.get("type") or "").lower()
+                name = str(p.get("name") or "").lower()
+                if "lm" in t or "lm" in name or "lm_studio" in t or "lmstudio" in name:
+                    # Only enable if LM Studio is actually reachable
+                    _base = p.get("base_url", "http://localhost:1234/v1").rstrip("/")
+                    try:
+                        _requests_probe.get(f"{_base}/models", timeout=2)
+                        RUN = True
+                    except Exception:
+                        pass
                     break
     except Exception:
-        RUN = RUN
+        pass
 
-@pytest.mark.skipif(not RUN, reason='Integration tests disabled for LM Studio')
+
+@pytest.mark.skipif(not RUN, reason="Integration tests disabled for LM Studio")
 def test_orchestrator_lmstudio_e2e():
     """End-to-end smoke test for LM Studio adapter + Orchestrator wiring.
 
@@ -39,20 +52,23 @@ def test_orchestrator_lmstudio_e2e():
 
     # ensure system prompts available via loader
     coding = agent_brain.load_system_prompt(None)
-    assert coding is not None, 'Missing system prompts in agent-brain'
+    assert coding is not None, "Missing system prompts in agent-brain"
 
     # Create orchestrator with the adapter
     orch = Orchestrator(adapter=adapter)
 
     # Use a generic, repository-focused prompt (avoid hard reference to 'orchestrator')
     messages = [
-        {"role": "user", "content": "Produce concrete steps to add a new tool to the codebase's orchestration component. Be specific about files to edit and tests to add."}
+        {
+            "role": "user",
+            "content": "Produce concrete steps to add a new tool to the codebase's orchestration component. Be specific about files to edit and tests to add.",
+        }
     ]
 
     out = orch.run_agent_once(system_prompt_name=None, messages=messages, tools={})
     # out should be a dict; accept any non-fatal response. If the adapter returns an error-like dict, mark xfail.
     assert isinstance(out, dict)
-    if out.get('error'):
+    if out.get("error"):
         pytest.xfail(f"Provider/adapter reported error during run: {out.get('error')}")
     # At minimum, ensure we received something from the model or orchestrator
-    assert ('assistant_message' in out) or ('raw' in out) or ('parsed' in out) or True
+    assert ("assistant_message" in out) or ("raw" in out) or ("parsed" in out) or True

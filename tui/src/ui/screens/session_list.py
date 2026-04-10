@@ -58,8 +58,10 @@ class SessionListScreen(ModalScreen[None]):
     }
     """
 
-    def __init__(self, **kwargs: Any) -> None:
+    def __init__(self, filter_subagents: bool = False, **kwargs: Any) -> None:
         super().__init__(**kwargs)
+        # GAP-FOOTER-3: if True, only show child/subagent sessions in the list
+        self._filter_subagents = filter_subagents
         # list of (path, payload) sorted newest-first
         self._all_sessions: List[Tuple[Path, Dict[str, Any]]] = []
         self._filtered: List[Tuple[Path, Dict[str, Any]]] = []
@@ -71,13 +73,18 @@ class SessionListScreen(ModalScreen[None]):
             yield Input(placeholder="Search sessions...", id="sessions_search")
             yield Static("", id="sessions_list")
             yield Static(
-                "Up/Down navigate  Enter resume  d delete  Esc close",
+                "↑/↓ navigate  Enter resume/view  d delete  Esc close",
                 id="sessions_hint",
             )
 
     def on_mount(self) -> None:
         self._load_sessions()
         self._render_list()
+        try:
+            title = self.query_one("#sessions_title", Label)
+            title.update("Subagent Sessions" if self._filter_subagents else "Sessions")
+        except Exception:
+            pass
         try:
             self.query_one("#sessions_search", Input).focus()
         except Exception:
@@ -96,6 +103,12 @@ class SessionListScreen(ModalScreen[None]):
                     self._all_sessions.append((f, payload))
                 except Exception:
                     pass
+            # GAP-FOOTER-3: pre-filter to subagent sessions only when requested
+            if self._filter_subagents:
+                self._all_sessions = [
+                    (p, d) for p, d in self._all_sessions
+                    if d.get("parent_session_id")
+                ]
             self._filtered = list(self._all_sessions)
         except Exception:
             pass
@@ -105,7 +118,10 @@ class SessionListScreen(ModalScreen[None]):
         self._filtered = [
             (p, data)
             for p, data in self._all_sessions
-            if not q or q in data.get("task_name", "").lower() or q in str(p).lower()
+            if not q
+            or q in data.get("task_name", "").lower()
+            or q in str(p).lower()
+            or q in data.get("role", "").lower()
         ]
         self._selected = 0
         self._render_list()
@@ -119,15 +135,25 @@ class SessionListScreen(ModalScreen[None]):
             date_str = (
                 time.strftime("%Y-%m-%d %H:%M", time.localtime(ts)) if ts else "?"
             )
-            task = str(data.get("task_name", "?"))[:40]
+            task = str(data.get("task_name", "?"))[:36]
             msgs = data.get("message_count", 0)
+            # GAP-FOOTER-3: annotate child (subagent) sessions with role + status
+            is_child = bool(data.get("parent_session_id"))
+            role_tag = ""
+            ok_tag = ""
+            if is_child:
+                role = data.get("role", "subagent")
+                ok = data.get("ok", True)
+                ok_tag = " [bold #22c55e]✓[/]" if ok else " [bold #ff5555]✗[/]"
+                role_tag = f"[dim #a78bfa] ↳ {role}[/] "
+            indent = "  " if is_child else ""
             if i == self._selected:
                 lines.append(
-                    f"[bold white on #005f87] {date_str}  {task:<40} {msgs} msgs [/bold white on #005f87]"
+                    f"[bold white on #005f87]{indent}{role_tag}{date_str}  {task:<36} {msgs}m{ok_tag}[/bold white on #005f87]"
                 )
             else:
                 lines.append(
-                    f"  [dim]{date_str}[/dim]  [cyan]{task:<40}[/cyan] [dim]{msgs} msgs[/dim]"
+                    f"{indent}{role_tag}[dim]{date_str}[/dim]  [cyan]{task:<36}[/cyan] [dim]{msgs}m[/dim]{ok_tag}"
                 )
         try:
             self.query_one("#sessions_list", Static).update("\n".join(lines))
@@ -149,10 +175,30 @@ class SessionListScreen(ModalScreen[None]):
             self._render_list()
             event.prevent_default()
         elif event.key == "enter":
-            self._resume_selected()
+            self._open_selected()
             event.prevent_default()
         elif event.key == "d":
             self._delete_selected()
+
+    def _open_selected(self) -> None:
+        """Route to detail screen for subagent sessions; resume for parent sessions."""
+        if not self._filtered or self._selected >= len(self._filtered):
+            return
+        _, data = self._filtered[self._selected]
+        if data.get("parent_session_id"):
+            # Child session — open detail view
+            from .subagent_detail import SubagentDetailScreen
+            sessions_dir = getattr(self.app, "_get_sessions_dir", lambda: None)()
+            self.app.push_screen(
+                SubagentDetailScreen(
+                    child_session_id=data.get("session_id", ""),
+                    role=data.get("role", "subagent"),
+                    task=data.get("task_name", ""),
+                    sessions_dir=sessions_dir,
+                )
+            )
+            return
+        self._resume_selected()
 
     def _resume_selected(self) -> None:
         if not self._filtered or self._selected >= len(self._filtered):
@@ -178,7 +224,7 @@ class SessionListScreen(ModalScreen[None]):
             self.app.notify(f"Session resumed: {task}")
         except Exception as exc:
             self.app.notify(f"Failed to resume: {exc}", severity="error")
-        self.app.pop_screen()
+        self.dismiss()
 
     def _delete_selected(self) -> None:
         if not self._filtered or self._selected >= len(self._filtered):
@@ -197,4 +243,4 @@ class SessionListScreen(ModalScreen[None]):
             self.app.notify(f"Delete failed: {exc}", severity="error")
 
     def action_close_sessions(self) -> None:
-        self.app.pop_screen()
+        self.dismiss()

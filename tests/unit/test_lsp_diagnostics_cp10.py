@@ -436,3 +436,114 @@ class TestInstructionLoaderDiagnosticsInjection:
 
         # Should still return the git context even when diagnostics fails
         assert "some git context" in result
+
+
+# ---------------------------------------------------------------------------
+# UX-1: get_lsp_status_notice — graceful degradation notice
+# ---------------------------------------------------------------------------
+
+
+class TestUX1LspStatusNotice:
+    """UX-1: get_lsp_status_notice returns a user-facing message when LSP is
+    enabled but no language-server clients are active."""
+
+    def test_returns_empty_when_feature_disabled(self, tmp_path):
+        """No notice when LSP feature gate is off."""
+        from src.core.indexing.lsp_context import get_lsp_status_notice
+
+        with patch("src.core.indexing.lsp_context._is_enabled", return_value=False):
+            assert get_lsp_status_notice(workdir=tmp_path) == ""
+
+    def test_returns_notice_when_no_clients(self, tmp_path):
+        """When enabled but no clients are running, returns a non-empty notice."""
+        from src.core.indexing.lsp_context import get_lsp_status_notice
+
+        mock_mgr = MagicMock()
+        mock_mgr._clients = {}
+
+        with patch("src.core.indexing.lsp_context._is_enabled", return_value=True):
+            with patch(
+                "src.core.indexing.lsp_manager.get_lsp_manager",
+                return_value=mock_mgr,
+            ):
+                notice = get_lsp_status_notice(workdir=tmp_path)
+
+        assert notice != ""
+        assert "[LSP]" in notice
+
+    def test_returns_empty_when_client_active(self, tmp_path):
+        """No notice when at least one client is running (LSP is functional)."""
+        from src.core.indexing.lsp_context import get_lsp_status_notice
+
+        mock_client = MagicMock()
+        mock_mgr = MagicMock()
+        mock_mgr._clients = {"python": mock_client}
+
+        with patch("src.core.indexing.lsp_context._is_enabled", return_value=True):
+            with patch(
+                "src.core.indexing.lsp_manager.get_lsp_manager",
+                return_value=mock_mgr,
+            ):
+                notice = get_lsp_status_notice(workdir=tmp_path)
+
+        assert notice == ""
+
+    def test_returns_notice_on_import_error(self, tmp_path):
+        """When lsp_manager cannot be imported, returns a degradation notice."""
+        from src.core.indexing.lsp_context import get_lsp_status_notice
+
+        with patch("src.core.indexing.lsp_context._is_enabled", return_value=True):
+            with patch(
+                "src.core.indexing.lsp_context.get_lsp_status_notice",
+                wraps=get_lsp_status_notice,
+            ):
+                # Simulate ImportError by making the import fail
+                import builtins
+
+                real_import = builtins.__import__
+
+                def _mock_import(name, *args, **kwargs):
+                    if "lsp_manager" in name:
+                        raise ImportError("lsp_manager not available")
+                    return real_import(name, *args, **kwargs)
+
+                import builtins
+
+                with patch("builtins.__import__", side_effect=_mock_import):
+                    notice = get_lsp_status_notice(workdir=tmp_path)
+
+        # Should return a graceful notice (not raise)
+        assert isinstance(notice, str)
+
+    def test_no_clients_warning_emitted(self, tmp_path):
+        """get_lsp_diagnostics_block logs WARNING when enabled but no clients active."""
+        # Note: cannot use pytest's caplog fixture because tests are run with
+        # -p no:logging (which disables the logging plugin).  Use a manual
+        # logging.Handler instead.
+        import logging
+        from src.core.indexing.lsp_context import get_lsp_diagnostics_block
+
+        mock_mgr = MagicMock()
+        mock_mgr._clients = {}
+
+        captured: list = []
+
+        class _Capture(logging.Handler):
+            def emit(self, record: logging.LogRecord) -> None:
+                captured.append(record)
+
+        handler = _Capture(level=logging.WARNING)
+        target_logger = logging.getLogger("src.core.indexing.lsp_context")
+        target_logger.addHandler(handler)
+        try:
+            with patch("src.core.indexing.lsp_context._is_enabled", return_value=True):
+                with patch(
+                    "src.core.indexing.lsp_manager.get_lsp_manager",
+                    return_value=mock_mgr,
+                ):
+                    result = get_lsp_diagnostics_block(workdir=tmp_path)
+        finally:
+            target_logger.removeHandler(handler)
+
+        assert result == ""
+        assert any("no language-server clients" in r.getMessage() for r in captured)

@@ -76,6 +76,20 @@ class SessionCostTracker:
         )
         # True once the ceiling has been crossed — prevents repeated alerts
         self._budget_exceeded_notified: bool = False
+        # CF-2: Subscribe to child delegation cost events so parent session_cost_usd
+        # includes delegation spend.  Subscription is best-effort — if the bus is
+        # None or the subscribe call fails, we silently skip.
+        if event_bus is not None:
+            try:
+                event_bus.subscribe(
+                    "usage.subagent_cost",
+                    lambda payload: self.record_subagent_cost(
+                        float(payload.get("cost_usd", 0.0)),
+                        str(payload.get("role", "subagent")),
+                    ),
+                )
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------
     # Public API
@@ -204,6 +218,26 @@ class SessionCostTracker:
                 raise
         except Exception as exc:
             logger.debug("SessionCostTracker.flush: error: %s", exc)
+
+    def record_subagent_cost(self, cost_usd: float, role: str = "subagent") -> None:
+        """CF-2: Accumulate child delegation cost into the parent session total.
+
+        Called when a ``usage.subagent_cost`` event arrives from subagent_tools.
+        The child cost is added to ``_session_cost_usd`` so the parent's final
+        cost report includes delegation spend.  No ``usage.turn_summary`` is
+        published; the TUI bridge already publishes a visual summary.
+        """
+        if cost_usd <= 0:
+            return
+        with self._lock:
+            self._session_cost_usd = round(self._session_cost_usd + cost_usd, 8)
+        logger.debug(
+            "SessionCostTracker: accumulated subagent cost $%.6f (role=%s), "
+            "session_total=$%.6f",
+            cost_usd,
+            role,
+            self._session_cost_usd,
+        )
 
     def reset(self) -> None:
         """Reset buffer and cumulative cost for a new task."""

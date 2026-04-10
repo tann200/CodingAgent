@@ -25,6 +25,7 @@ import pytest
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_state(**kwargs) -> Dict[str, Any]:
     defaults = {
         "task": "test task",
@@ -74,7 +75,9 @@ def _make_orchestrator(tool_result: Dict[str, Any] | None = None) -> MagicMock:
     orc.tool_registry.tools = {}
     orc.tool_registry.get_openai_functions = MagicMock(return_value=[])
     orc.preflight_check = MagicMock(return_value={"ok": True})
-    orc.execute_tool = MagicMock(return_value=tool_result or {"ok": True, "status": "ok", "result": {}})
+    orc.execute_tool = MagicMock(
+        return_value=tool_result or {"ok": True, "status": "ok", "result": {}}
+    )
     orc._session_read_files = set()
     orc._check_loop_prevention = MagicMock(return_value=False)
     orc._read_execution_trace = MagicMock(return_value=[])
@@ -97,6 +100,7 @@ def _make_orchestrator(tool_result: Dict[str, Any] | None = None) -> MagicMock:
 # ---------------------------------------------------------------------------
 # DOOM-1 — Doom loop: THRESHOLD consecutive identical calls are blocked
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_doom_loop_blocks_after_threshold():
@@ -128,6 +132,7 @@ async def test_doom_loop_blocks_after_threshold():
 # DOOM-2 — Doom loop resets when tool name differs
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 async def test_doom_loop_does_not_trigger_for_different_tool():
     """Doom loop only fires for consecutive identical fingerprints; different tool is fine."""
@@ -139,7 +144,9 @@ async def test_doom_loop_does_not_trigger_for_different_tool():
         next_action={"name": "read_file", "arguments": {"path": "bar.py"}},
         recent_tool_calls=[grep_fp, grep_fp],
     )
-    orc = _make_orchestrator({"ok": True, "status": "ok", "result": {"content": "hello"}})
+    orc = _make_orchestrator(
+        {"ok": True, "status": "ok", "result": {"content": "hello"}}
+    )
 
     config = {"configurable": {"orchestrator": orc}}
 
@@ -153,6 +160,7 @@ async def test_doom_loop_does_not_trigger_for_different_tool():
 # ---------------------------------------------------------------------------
 # DOOM-3 — recent_tool_calls is updated after each execution
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_recent_tool_calls_updated_after_execution():
@@ -180,35 +188,46 @@ async def test_recent_tool_calls_updated_after_execution():
 # TRUNC-1 — Tool output truncation at 8000 chars
 # ---------------------------------------------------------------------------
 
+
 def test_tool_output_truncation_top_level():
     """Large string values in execute_tool result are capped at 8000 chars."""
     from src.core.orchestration.orchestrator import Orchestrator
 
     orc = Orchestrator.__new__(Orchestrator)
     # Minimal setup so _normalize_tool_result works
-    orc.working_dir = None # type: ignore[attr-defined]
+    orc.working_dir = None  # type: ignore[attr-defined]
     orc._session_read_files = set()
     orc._usage_buffer = {}
     orc._step_snapshot_id = None
     orc.rollback_manager = MagicMock()
     orc.event_bus = MagicMock()
-    orc.plan_mode = None # type: ignore[attr-defined]
-    orc._plan_mode_approved = None # type: ignore[attr-defined]
+    orc.plan_mode = None  # type: ignore[attr-defined]
+    orc._plan_mode_approved = None  # type: ignore[attr-defined]
     orc.current_role = None
-    orc._tool_executor = None # type: ignore[attr-defined]
+    orc._tool_executor = None  # type: ignore[attr-defined]
 
     large_content = "x" * 20_000
     tool_fn = MagicMock(return_value={"ok": True, "output": large_content})
     orc.tool_registry = MagicMock()
-    orc.tool_registry.get = MagicMock(return_value={
-        "fn": tool_fn,
-        "side_effects": [],
-        "description": "test tool",
-    })
+    orc.tool_registry.get = MagicMock(
+        return_value={
+            "fn": tool_fn,
+            "side_effects": [],
+            "description": "test tool",
+        }
+    )
 
-    with patch("src.core.orchestration.orchestrator.get_tool_contract", return_value=None), \
-         patch("src.core.orchestration.orchestrator.PERMISSION_REQUIRED_TOOLS", set()), \
-         patch("src.core.orchestration.orchestrator.WRITE_TOOLS_REQUIRING_READ", set()):
+    with (
+        patch(
+            "src.core.orchestration.orchestrator.get_tool_contract", return_value=None
+        ),
+        patch(
+            "src.core.orchestration.tool_execution_pipeline.get_tool_contract",
+            return_value=None,
+        ),
+        patch("src.core.orchestration.orchestrator.PERMISSION_REQUIRED_TOOLS", set()),
+        patch("src.core.orchestration.orchestrator.WRITE_TOOLS_REQUIRING_READ", set()),
+    ):
         result = orc.execute_tool({"name": "test_tool", "arguments": {}})
 
     # execute_tool always wraps: {"ok": True, "result": raw_res}
@@ -222,36 +241,51 @@ def test_tool_output_truncation_top_level():
 # TRUNC-2 — Nested result.content is also truncated
 # ---------------------------------------------------------------------------
 
+
 def test_tool_output_truncation_nested_result_content():
     """result.content inside the raw tool dict is also truncated."""
     from src.core.orchestration.orchestrator import Orchestrator
 
     orc = Orchestrator.__new__(Orchestrator)
-    orc.working_dir = None # type: ignore[attr-defined]
+    orc.working_dir = None  # type: ignore[attr-defined]
     orc._session_read_files = set()
     orc._usage_buffer = {}
     orc._step_snapshot_id = None
     orc.rollback_manager = MagicMock()
     orc.event_bus = MagicMock()
-    orc.plan_mode = None # type: ignore[attr-defined]
-    orc._plan_mode_approved = None # type: ignore[attr-defined]
+    orc.plan_mode = None  # type: ignore[attr-defined]
+    orc._plan_mode_approved = None  # type: ignore[attr-defined]
     orc.current_role = None
-    orc._tool_executor = None # type: ignore[attr-defined]
+    orc._tool_executor = None  # type: ignore[attr-defined]
 
     large_content = "y" * 15_000
     # Tool returns {"ok": True, "result": {"content": large, "lines": 500}}
-    tool_fn = MagicMock(return_value={"ok": True, "result": {"content": large_content, "lines": 500}})
+    tool_fn = MagicMock(
+        return_value={"ok": True, "result": {"content": large_content, "lines": 500}}
+    )
     orc.tool_registry = MagicMock()
-    orc.tool_registry.get = MagicMock(return_value={
-        "fn": tool_fn,
-        "side_effects": [],
-        "description": "read tool",
-    })
+    orc.tool_registry.get = MagicMock(
+        return_value={
+            "fn": tool_fn,
+            "side_effects": [],
+            "description": "read tool",
+        }
+    )
 
-    with patch("src.core.orchestration.orchestrator.get_tool_contract", return_value=None), \
-         patch("src.core.orchestration.orchestrator.PERMISSION_REQUIRED_TOOLS", set()), \
-         patch("src.core.orchestration.orchestrator.WRITE_TOOLS_REQUIRING_READ", set()):
-        result = orc.execute_tool({"name": "read_file", "arguments": {"path": "big.txt"}})
+    with (
+        patch(
+            "src.core.orchestration.orchestrator.get_tool_contract", return_value=None
+        ),
+        patch(
+            "src.core.orchestration.tool_execution_pipeline.get_tool_contract",
+            return_value=None,
+        ),
+        patch("src.core.orchestration.orchestrator.PERMISSION_REQUIRED_TOOLS", set()),
+        patch("src.core.orchestration.orchestrator.WRITE_TOOLS_REQUIRING_READ", set()),
+    ):
+        result = orc.execute_tool(
+            {"name": "read_file", "arguments": {"path": "big.txt"}}
+        )
 
     # execute_tool wraps: {"ok": True, "result": raw_res}
     # raw_res["result"] = {"content": truncated, "lines": 500}
@@ -268,35 +302,50 @@ def test_tool_output_truncation_nested_result_content():
 # TRUNC-3 — Short results are not truncated
 # ---------------------------------------------------------------------------
 
+
 def test_tool_output_not_truncated_when_short():
     """Results under 8000 chars are returned unchanged."""
     from src.core.orchestration.orchestrator import Orchestrator
 
     orc = Orchestrator.__new__(Orchestrator)
-    orc.working_dir = None # type: ignore[attr-defined]
+    orc.working_dir = None  # type: ignore[attr-defined]
     orc._session_read_files = set()
     orc._usage_buffer = {}
     orc._step_snapshot_id = None
     orc.rollback_manager = MagicMock()
     orc.event_bus = MagicMock()
-    orc.plan_mode = None # type: ignore[attr-defined]
-    orc._plan_mode_approved = None # type: ignore[attr-defined]
+    orc.plan_mode = None  # type: ignore[attr-defined]
+    orc._plan_mode_approved = None  # type: ignore[attr-defined]
     orc.current_role = None
-    orc._tool_executor = None # type: ignore[attr-defined]
+    orc._tool_executor = None  # type: ignore[attr-defined]
 
     short_content = "hello world"
     tool_fn = MagicMock(return_value={"ok": True, "output": short_content})
     orc.tool_registry = MagicMock()
-    orc.tool_registry.get = MagicMock(return_value={
-        "fn": tool_fn,
-        "side_effects": [],
-        "description": "test tool",
-    })
+    orc.tool_registry.get = MagicMock(
+        return_value={
+            "fn": tool_fn,
+            "side_effects": [],
+            "description": "test tool",
+        }
+    )
 
-    with patch("src.core.orchestration.orchestrator.get_tool_contract", return_value=None), \
-         patch("src.core.orchestration.orchestrator.PERMISSION_REQUIRED_TOOLS", set()), \
-         patch("src.core.orchestration.orchestrator.WRITE_TOOLS_REQUIRING_ERROR", set(), create=True), \
-         patch("src.core.orchestration.orchestrator.WRITE_TOOLS_REQUIRING_READ", set()):
+    with (
+        patch(
+            "src.core.orchestration.orchestrator.get_tool_contract", return_value=None
+        ),
+        patch(
+            "src.core.orchestration.tool_execution_pipeline.get_tool_contract",
+            return_value=None,
+        ),
+        patch("src.core.orchestration.orchestrator.PERMISSION_REQUIRED_TOOLS", set()),
+        patch(
+            "src.core.orchestration.orchestrator.WRITE_TOOLS_REQUIRING_ERROR",
+            set(),
+            create=True,
+        ),
+        patch("src.core.orchestration.orchestrator.WRITE_TOOLS_REQUIRING_READ", set()),
+    ):
         result = orc.execute_tool({"name": "test_tool", "arguments": {}})
 
     # No truncation — raw result is unchanged
@@ -307,6 +356,7 @@ def test_tool_output_not_truncated_when_short():
 # ---------------------------------------------------------------------------
 # STATE-1 — recent_tool_calls in AgentState TypedDict
 # ---------------------------------------------------------------------------
+
 
 def test_recent_tool_calls_in_agent_state():
     """AgentState TypedDict includes recent_tool_calls field."""
@@ -321,12 +371,14 @@ def test_recent_tool_calls_in_agent_state():
 # STATE-2 — recent_tool_calls initialised to [] in initial_state source
 # ---------------------------------------------------------------------------
 
+
 def test_recent_tool_calls_in_initial_state_source():
     """The orchestrator source sets recent_tool_calls to [] in the initial_state dict."""
     import ast
     import inspect
+    import src.core.orchestration.inference_loop as _il_mod
     import src.core.orchestration.orchestrator as _orc_mod
 
-    source = inspect.getsource(_orc_mod)
+    source = inspect.getsource(_orc_mod) + inspect.getsource(_il_mod)
     # Verify the key is set to an empty list in the initial_state assignment block
     assert '"recent_tool_calls": []' in source

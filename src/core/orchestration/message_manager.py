@@ -26,6 +26,10 @@ class MessageManager:
     # after insertion without immediately triggering another truncation round.
     _COMPACT_BUDGET = 600
 
+    # CP-14: schema version — increment when the persisted format changes so
+    # from_dict() can apply migration logic for older sessions.
+    SCHEMA_VERSION: int = 1
+
     def __init__(
         self,
         max_tokens: Optional[int] = None,
@@ -37,6 +41,9 @@ class MessageManager:
         self.event_bus = event_bus
         # compact_callback(messages) -> prose summary string
         self.compact_callback = compact_callback
+        # CP-14: track schema version on each instance so serialised snapshots
+        # carry it and from_dict() can migrate older formats.
+        self.version: int = self.SCHEMA_VERSION
 
     def append(self, role: str, content: Any):
         # Normalize content to string for token estimation
@@ -225,3 +232,52 @@ class MessageManager:
                 self.event_bus.publish("message.truncation", payload)
         except Exception:
             pass
+
+    # ------------------------------------------------------------------
+    # CP-14: Serialisation helpers for session persistence + migration
+    # ------------------------------------------------------------------
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialise to a JSON-safe dict that includes the schema version."""
+        return {
+            "version": self.version,
+            "messages": list(self.messages),
+            "max_tokens": self.max_tokens,
+        }
+
+    @classmethod
+    def from_dict(
+        cls,
+        data: Dict[str, Any],
+        event_bus: Optional[Any] = None,
+        compact_callback: Optional[Callable[[List[Dict]], str]] = None,
+    ) -> "MessageManager":
+        """Reconstruct a MessageManager from a serialised dict.
+
+        Applies migration logic when *data["version"]* is older than
+        ``SCHEMA_VERSION`` — currently a no-op (v1 → v1), but the hook is
+        in place for future format changes.
+        """
+        saved_version = int(data.get("version", 1))
+        messages: List[Dict[str, Any]] = list(data.get("messages", []))
+        max_tokens: Optional[int] = data.get("max_tokens")
+
+        # Future migrations go here:
+        # if saved_version < 2:
+        #     messages = _migrate_v1_to_v2(messages)
+
+        if saved_version > cls.SCHEMA_VERSION:
+            logger.warning(
+                "MessageManager.from_dict: saved version %d > current %d — "
+                "loading anyway; some fields may be ignored.",
+                saved_version,
+                cls.SCHEMA_VERSION,
+            )
+
+        mgr = cls(
+            max_tokens=max_tokens,
+            event_bus=event_bus,
+            compact_callback=compact_callback,
+        )
+        mgr.messages = messages
+        return mgr

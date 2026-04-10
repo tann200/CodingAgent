@@ -256,16 +256,34 @@ Generate the appropriate tool call to complete this step. Respond with ONLY a to
             ):
                 functions = orchestrator.tool_registry.get_openai_functions()
 
-            # SES-W3: Use execution_model from providers.json if configured.
-            _exec_model_override = None
-            try:
-                from src.core.config_loader import get_model_for_role as _gmfr
+            # SES-W3 / SM-1: Model override priority:
+            # 1. state["override_model"] — set by delegate_task for per-subagent binding
+            # 2. execution_model from providers.json (get_model_for_role("operational"))
+            # 3. None — use active provider default
+            _exec_model_override = state.get("override_model") or None
+            if not _exec_model_override:
+                try:
+                    from src.core.config_loader import get_model_for_role as _gmfr
 
-                _exec_model_override = _gmfr("operational")
+                    _exec_model_override = _gmfr("operational")
+                except Exception:
+                    pass
+
+            # WF-5: resolve hard timeout for this LLM call.
+            _exec_llm_timeout: int | None = 120
+            try:
+                from src.core.orchestration.project_settings import (
+                    get_active_settings as _gas_exec,
+                )
+
+                _ps_exec = _gas_exec()
+                if _ps_exec is not None:
+                    _exec_llm_timeout = _ps_exec.max_llm_wait_seconds or None
             except Exception:
                 pass
+
             try:
-                resp = await call_model(
+                _call_coro = call_model(
                     messages,
                     stream=False,
                     format_json=False,
@@ -274,6 +292,22 @@ Generate the appropriate tool call to complete this step. Respond with ONLY a to
                     session_id=state.get("session_id"),
                     **({"model": _exec_model_override} if _exec_model_override else {}),
                 )
+                if _exec_llm_timeout:
+                    resp = await asyncio.wait_for(_call_coro, timeout=_exec_llm_timeout)
+                else:
+                    resp = await _call_coro
+            except asyncio.TimeoutError:
+                logger.warning(
+                    f"execution_node: LLM call timed out after {_exec_llm_timeout}s"
+                )
+                return {
+                    "last_result": {
+                        "ok": False,
+                        "error": f"LLM call timed out after {_exec_llm_timeout}s",
+                    },
+                    "next_action": "wait_for_user",
+                    "errors": [f"llm_timeout:{_exec_llm_timeout}s"],
+                }
             except asyncio.CancelledError:
                 logger.info(
                     "execution_node: LLM call cancelled (asyncio.CancelledError)"
@@ -292,6 +326,30 @@ Generate the appropriate tool call to complete this step. Respond with ONLY a to
                     "last_result": {"ok": False, "error": "Task canceled by user"},
                     "next_action": None,
                     "errors": ["canceled"],
+                }
+
+            # REACT-OVF-EARLY-EXIT: context overflow detected — stop immediately so
+            # route_execution can route to memory_sync instead of cycling back to
+            # perception with the same oversized history.
+            if isinstance(resp, dict) and resp.get("context_overflow"):
+                _raw_hist = list(state.get("history") or [])
+                _trunc_hist = _raw_hist[-6:] if len(_raw_hist) > 6 else _raw_hist
+                logger.warning(
+                    "execution_node: context overflow detected — "
+                    f"truncating history {len(_raw_hist)} → {len(_trunc_hist)} messages; "
+                    "errors=['context_overflow'] will route to memory_sync"
+                )
+                return {
+                    "history": [],
+                    "_compacted_history": _trunc_hist,
+                    "next_action": None,
+                    "_budget_compaction": True,
+                    "_should_distill": True,
+                    "errors": ["context_overflow"],
+                    "last_result": {
+                        "ok": False,
+                        "error": "Context window overflow in execution — history truncated, compaction triggered",
+                    },
                 }
 
             content = ""
@@ -418,8 +476,10 @@ Generate the appropriate tool call to complete this step. Respond with ONLY a to
                 "history": _history_entry,
                 **_plan_advance,
             }
+        # GAP-SMALL-5: tag this as a format error, not a task failure.
+        # The no_plan_fail_count guard should not fire on format errors alone.
         return {
-            "last_result": None,
+            "last_result": {"ok": False, "error": "format_error: no tool call emitted"},
             "step_retry_counts": _inc_step_retry(state, current_step),
         }
 
@@ -685,15 +745,24 @@ Generate the appropriate tool call to complete this step. Respond with ONLY a to
     # The synchronous run_post() inside execute_tool() may block the thread
     # pool for up to _POST_HOOK_TIMEOUT seconds.  Here we additionally fire
     # the asyncio-native variant from the event loop so callers in async
-    # context pay no blocking cost.  Errors are silently swallowed.
+    # context pay no blocking cost.
+    # BUG-VOL23-1: Store the Task reference so the GC cannot collect it before
+    # completion; attach a done-callback to log any exceptions instead of
+    # swallowing them silently.
     try:
         _async_hook_runner = getattr(orchestrator, "_tool_hook_runner", None)
         if _async_hook_runner is not None and hasattr(
             _async_hook_runner, "async_run_post"
         ):
-            asyncio.ensure_future(
+            _hook_task = asyncio.ensure_future(
                 _async_hook_runner.async_run_post(tool_name, args, res)
             )
+
+            def _log_hook_exc(t: "asyncio.Task[None]") -> None:  # type: ignore[type-arg]
+                if not t.cancelled() and t.exception() is not None:
+                    logger.warning("async_run_post failed: %s", t.exception())
+
+            _hook_task.add_done_callback(_log_hook_exc)
     except Exception:
         pass
 
@@ -879,13 +948,15 @@ Generate the appropriate tool call to complete this step. Respond with ONLY a to
                     # HIGH-10 fix: pass enhanced context exclusively via new_messages
                     # instead of overwriting state["task"], which would permanently
                     # replace the original task description across all graph turns.
+                    # BUG-VOL23-2: removed hardcoded "add today's date on top" directive
+                    # that was injected for every file-read on modification-keyword tasks,
+                    # causing the agent to corrupt files regardless of the actual task.
                     enhanced_context = (
                         f"Task: {state.get('task')}\n"
                         f"Context: You just read the file '{path_arg}'.\n"
                         f"File contents:\n{file_content}\n"
                         f"Today's date: {today}\n"
-                        f"Action required: Modify the file by adding today's date on top.\n"
-                        f"Use write_file tool to write the updated content."
+                        f"Use write_file tool to write the updated content based on the task above."
                     )
                     logger.info(
                         f"execution_node: read succeeded, task implies modification. "
@@ -982,13 +1053,17 @@ Generate the appropriate tool call to complete this step. Respond with ONLY a to
     tool_call_count = int(state.get("tool_call_count") or 0) + 1
 
     # HR-4: Track no-plan execution failure count
+    # GAP-SMALL-5: only increment on genuine task failures, not format errors.
+    # Format errors (model didn't emit a tool call) are retried without counting
+    # against the doom-loop guard — small models need a few extra retries for this.
     no_plan_fail_update = {}
     current_plan = state.get("current_plan")
     if not current_plan:
         execution_ok = res.get("ok") or res.get("status") == "ok"
+        _is_format_error = "format_error" in str(res.get("error", ""))
         if execution_ok:
             no_plan_fail_update = {"no_plan_fail_count": 0}
-        else:
+        elif not _is_format_error:
             no_plan_fail_update = {
                 "no_plan_fail_count": int(state.get("no_plan_fail_count") or 0) + 1
             }
@@ -1046,6 +1121,19 @@ Generate the appropriate tool call to complete this step. Respond with ONLY a to
                 if orchestrator:
                     orchestrator._affected_files = expanded
 
+    # ORCH-W4 plan_exit handoff: pick up steps committed via plan_exit(steps=[...]).
+    # If the orchestrator has _committed_plan_steps, move them into state["current_plan"]
+    # and set plan_mode_approved so the write gate is unblocked.
+    plan_exit_update: dict = {}
+    if orchestrator:
+        _committed = getattr(orchestrator, "_committed_plan_steps", None)
+        if _committed:
+            plan_exit_update["current_plan"] = _committed
+            plan_exit_update["plan_mode_approved"] = True
+            # Clear after consuming so it doesn't re-apply on the next turn.
+            setattr(orchestrator, "_committed_plan_steps", None)
+            setattr(orchestrator, "_plan_mode_approved", True)
+
     return {
         "last_result": res,
         "last_tool_name": tool_name,  # W1: enables verification_node to detect side-effecting tools
@@ -1065,4 +1153,5 @@ Generate the appropriate tool call to complete this step. Respond with ONLY a to
         **plan_approval_consumed,
         **no_plan_fail_update,
         **affected_files_update,
+        **plan_exit_update,
     }

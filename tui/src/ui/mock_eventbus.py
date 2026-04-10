@@ -3,11 +3,15 @@ Simple string-event EventBus for mock/dev mode.
 API surface matches src.core.orchestration.event_bus.EventBus so the
 bridge works identically against real and mock backends.
 """
+
 from __future__ import annotations
 
+import logging
 import threading
 from collections import defaultdict
 from typing import Callable
+
+logger = logging.getLogger(__name__)
 
 
 class MockEventBus:
@@ -35,8 +39,13 @@ class MockEventBus:
         for cb in callbacks:
             try:
                 cb(payload)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning(
+                    "MockEventBus subscriber raised on event %r: %s",
+                    event,
+                    exc,
+                    exc_info=True,
+                )
 
 
 _mock_bus: MockEventBus | None = None

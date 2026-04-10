@@ -146,6 +146,11 @@ _AUTONOMOUS_MODE: bool = False  # AUTO-01: global autonomous-mode flag
 _ACTIVE_PERMISSION_MODE: Optional[PermissionLevel] = (
     None  # TASK-20: active mode override
 )
+# PREV-1: When True, file-write operations (write_file, edit_file_atomic) block
+# until the user accepts or rejects the diff preview in the TUI.
+# When False (default), writes proceed immediately and the diff is shown as
+# informational output only — no Accept/Reject gate.
+_REQUIRE_PREVIEW_CONFIRMATION: bool = False
 
 # MED-3 fix: protect all module-global state with a single lock so that
 # concurrent tool threads and orchestrator configure() calls don't observe
@@ -162,6 +167,7 @@ def configure(
     context_dir: str = ".agent-context",
     default_workdir: Optional[Path] = None,
     autonomous_mode: bool = False,
+    require_preview_confirmation: bool = False,
 ) -> None:
     """Override default tool configuration.
 
@@ -180,12 +186,22 @@ def configure(
     autonomous_mode:
         When *True* the agent runs without interactive permission prompts.
         Equivalent to passing ``--autonomous`` on the command line.
+    require_preview_confirmation:
+        When *True*, file-write operations (write_file, edit_file_atomic)
+        block and display a diff with Accept / Reject buttons before
+        committing the change.  When *False* (default), writes proceed
+        immediately and the diff is shown as informational output only.
     """
-    global _CONTEXT_DIR, _DEFAULT_WORKDIR, _AUTONOMOUS_MODE
+    global \
+        _CONTEXT_DIR, \
+        _DEFAULT_WORKDIR, \
+        _AUTONOMOUS_MODE, \
+        _REQUIRE_PREVIEW_CONFIRMATION
     with _config_lock:
         _CONTEXT_DIR = context_dir
         _DEFAULT_WORKDIR = default_workdir
         _AUTONOMOUS_MODE = autonomous_mode
+        _REQUIRE_PREVIEW_CONFIRMATION = require_preview_confirmation
 
 
 def agent_context_path(workdir: Path) -> Path:
@@ -238,6 +254,29 @@ def set_autonomous(enabled: bool = True) -> None:
     global _AUTONOMOUS_MODE
     with _config_lock:
         _AUTONOMOUS_MODE = enabled
+
+
+# PREV-1: Preview confirmation helpers
+def requires_preview_confirmation() -> bool:
+    """Return *True* when file writes must be confirmed by the user before
+    being applied.
+
+    When *True*, write_file and edit_file_atomic block on a diff preview gate
+    until the TUI user clicks Accept or Reject.  When *False* (default), writes
+    proceed immediately and the diff is displayed as informational output only.
+
+    Controlled by the ``preview_confirmation`` key in ``.agent/config.json``.
+    Can also be toggled at runtime via ``set_require_preview_confirmation()``.
+    """
+    with _config_lock:
+        return _REQUIRE_PREVIEW_CONFIRMATION
+
+
+def set_require_preview_confirmation(enabled: bool) -> None:
+    """Enable or disable the diff-preview confirmation gate at runtime."""
+    global _REQUIRE_PREVIEW_CONFIRMATION
+    with _config_lock:
+        _REQUIRE_PREVIEW_CONFIRMATION = enabled
 
 
 # TASK-20: Active permission mode helpers

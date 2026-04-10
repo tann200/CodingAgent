@@ -21,10 +21,10 @@ class TestPRSWTopics:
 
     def test_agent_topics_exist(self):
         """Test that all agent topics are defined."""
-        assert AgentTopics.FILES_DISCOVERED == "agent.scout.broadcast"
-        assert AgentTopics.DOC_SUMMARY == "agent.researcher.broadcast"
-        assert AgentTopics.BUG_FOUND == "agent.reviewer.broadcast"
-        assert AgentTopics.TEST_RESULT == "agent.tester.broadcast"
+        assert AgentTopics.FILES_DISCOVERED == "agent.scout.files_discovered"
+        assert AgentTopics.DOC_SUMMARY == "agent.researcher.doc_summary"
+        assert AgentTopics.BUG_FOUND == "agent.reviewer.bug_found"
+        assert AgentTopics.TEST_RESULT == "agent.tester.test_result"
 
 
 class TestPRSWEvents:

@@ -1,6 +1,8 @@
 import asyncio
+import json
 import logging
 import re
+from pathlib import Path
 from typing import Mapping, Dict, Any
 
 from src.core.orchestration.graph.state import AgentState, validate_state
@@ -13,7 +15,119 @@ from src.core.orchestration.graph.nodes.node_utils import (
 )
 from src.core.orchestration.event_bus import run_with_correlation
 
+# CODE_QUALITY_AUDIT #7 fix: promote deferred intra-function imports to module
+# level.  perception_node() is called on every agent round; re-importing 11
+# symbols on each invocation was unnecessary overhead.
+# Each block is wrapped in try/except so the node degrades gracefully when an
+# optional dependency is absent (e.g. in minimal test environments).
+try:
+    from src.core.orchestration.project_settings import get_active_settings as _gas
+except Exception:
+    _gas = None  # type: ignore[assignment]
+
+try:
+    from src.core.indexing.symbol_graph import SymbolGraph as _SymbolGraph
+except Exception:
+    _SymbolGraph = None  # type: ignore[assignment]
+
+try:
+    from src.core.orchestration.loop_guards import MODIFYING_TOOLS as _MODIFYING_TOOLS
+except Exception:
+    _MODIFYING_TOOLS = set()  # type: ignore[assignment]
+
+try:
+    from src.core.memory.auto_compactor import (
+        AutoCompactConfig as _AutoCompactConfig,
+        should_compact as _should_compact,
+        compact_messages as _compact_messages,
+    )
+except Exception:
+    _AutoCompactConfig = None  # type: ignore[assignment]
+    _should_compact = None  # type: ignore[assignment]
+    _compact_messages = None  # type: ignore[assignment]
+
+try:
+    from src.core.config_loader import get as _cfg_get
+except Exception:
+    _cfg_get = None  # type: ignore[assignment]
+
+try:
+    from src.core.inference.model_tiers import classify_model as _classify_model
+except Exception:
+    _classify_model = None  # type: ignore[assignment]
+
+try:
+    from src.core.inference.provider_context import (
+        get_context_budget as _get_context_budget,
+        estimate_cost_usd as _estimate_cost_usd,
+    )
+except Exception:
+    _get_context_budget = None  # type: ignore[assignment]
+    _estimate_cost_usd = None  # type: ignore[assignment]
+
+try:
+    from src.core.orchestration.graph.builder import _task_is_complex as _tic
+except Exception:
+    _tic = None  # type: ignore[assignment]
+
 logger = logging.getLogger(__name__)
+
+# PRUNE: Placeholder inserted in place of old tool result content.
+_PRUNED_TOOL_PLACEHOLDER = "[Old tool result content cleared to save context]"
+# PRUNE: Token threshold (from the end of history) beyond which tool outputs
+# are zeroed.  Mirrors OpenCode's PRUNE_PROTECT = 40_000, but set smaller
+# here to suit the 7 600-token default context of LM Studio.
+_PRUNE_PROTECT_TOKENS = 15_000
+# PRUNE: Always keep this many recent messages intact regardless of size.
+_PRUNE_PROTECT_RECENT = 6
+
+
+def _prune_tool_outputs(history: list) -> tuple:
+    """Zero out old tool-result content beyond the _PRUNE_PROTECT_TOKENS boundary.
+
+    Walks the history from newest to oldest, accumulating a rough token count.
+    Once the running total exceeds _PRUNE_PROTECT_TOKENS, any subsequent
+    messages whose content looks like a tool_execution_result are replaced with
+    the _PRUNED_TOOL_PLACEHOLDER.  The last _PRUNE_PROTECT_RECENT messages are
+    always preserved verbatim.
+
+    Returns (pruned_history, pruned_count) — pruned_history is a new list
+    (input is not mutated), pruned_count is the number of messages zeroed.
+    """
+    if not history:
+        return history, 0
+
+    def _est(msg: dict) -> int:
+        c = msg.get("content") or ""
+        s = c if isinstance(c, str) else str(c)
+        return max(1, len(s) // 4)
+
+    def _is_tool_result(msg: dict) -> bool:
+        if msg.get("role") == "tool":
+            return True
+        if msg.get("role") == "user":
+            c = msg.get("content") or ""
+            return "tool_execution_result" in (c if isinstance(c, str) else str(c))
+        return False
+
+    result = list(history)
+    total = len(result)
+    running_tokens = 0
+    pruned_count = 0
+
+    for i in range(total - 1, -1, -1):
+        msg = result[i]
+        # Always protect the most recent N messages
+        if (total - 1 - i) < _PRUNE_PROTECT_RECENT:
+            running_tokens += _est(msg)
+            continue
+        running_tokens += _est(msg)
+        if running_tokens > _PRUNE_PROTECT_TOKENS and _is_tool_result(msg):
+            if msg.get("content") != _PRUNED_TOOL_PLACEHOLDER:
+                result[i] = {**msg, "content": _PRUNED_TOOL_PLACEHOLDER}
+                pruned_count += 1
+
+    return result, pruned_count
 
 
 async def perception_node(state: Mapping[str, Any], config: Any) -> Dict[str, Any]:
@@ -58,11 +172,10 @@ async def perception_node(state: Mapping[str, Any], config: Any) -> Dict[str, An
     # CP-13: fall back to project-level maxTurns before the hard default of 50
     _project_max_turns: int | None = None
     try:
-        from src.core.orchestration.project_settings import get_active_settings as _gas
-
-        _ps = _gas()
-        if _ps is not None and _ps.max_turns is not None:
-            _project_max_turns = _ps.max_turns
+        if _gas is not None:
+            _ps = _gas()
+            if _ps is not None and _ps.max_turns is not None:
+                _project_max_turns = _ps.max_turns
     except Exception:
         pass
     max_turns = state.get("max_turns") or _project_max_turns or 50
@@ -211,9 +324,9 @@ async def perception_node(state: Mapping[str, Any], config: Any) -> Dict[str, An
             async def _fetch_test_files():
                 results = []
                 try:
-                    from src.core.indexing.symbol_graph import SymbolGraph
-
-                    sg = SymbolGraph(_workdir)
+                    if _SymbolGraph is None:
+                        return results
+                    sg = _SymbolGraph(_workdir)
                     for _sq in symbol_queries[:2]:
                         tests = await run_with_correlation(  # D-07
                             loop, None, lambda sq=_sq: sg.find_tests_for_module(sq)
@@ -319,9 +432,10 @@ async def perception_node(state: Mapping[str, Any], config: Any) -> Dict[str, An
     _near_limit = _turn_count_now >= _max_turns_now - 2
     if _near_limit:
         try:
-            from src.core.orchestration.loop_guards import MODIFYING_TOOLS
-
-            tools_list = [t for t in tools_list if t["name"] not in MODIFYING_TOOLS]
+            if _MODIFYING_TOOLS:
+                tools_list = [
+                    t for t in tools_list if t["name"] not in _MODIFYING_TOOLS
+                ]
             logger.info(
                 "perception_node: near turn limit (%d/%d) — write tools removed from prompt",
                 _turn_count_now,
@@ -346,25 +460,67 @@ async def perception_node(state: Mapping[str, Any], config: Any) -> Dict[str, An
     # Run before the prompt is built so the compacted history feeds into
     # build_prompt() and the LLM never sees the over-full context.
     # This is separate from the post-turn overflow-based _should_distill path.
-    _history_for_prompt = list(state.get("history") or [])
-    try:
-        from src.core.memory.auto_compactor import (
-            AutoCompactConfig,
-            should_compact,
-            compact_messages,
-        )
-        from src.core.config_loader import get as _cfg_get
+    #
+    # CP6-PERSIST: If a prior turn already produced a compacted snapshot,
+    # start from that instead of the ever-growing raw history.  This prevents
+    # the compactor from re-firing on every turn once the threshold is crossed.
+    _prior_compacted = state.get("_compacted_history")
+    if _prior_compacted and isinstance(_prior_compacted, list):
+        _history_for_prompt = list(_prior_compacted)
+        # Append any raw turns that arrived after the compaction snapshot by
+        # counting how many messages the compacted base already covers.  The
+        # raw history still grows via operator.add; new turns are anything
+        # beyond what the compacted snapshot represents.  We approximate by
+        # appending raw turns whose content is NOT already in the compacted set.
+        _compacted_contents = {
+            m.get("content", "") for m in _prior_compacted if isinstance(m, dict)
+        }
+        _raw_history = list(state.get("history") or [])
+        for _m in _raw_history:
+            if (
+                isinstance(_m, dict)
+                and _m.get("content", "") not in _compacted_contents
+            ):
+                _history_for_prompt.append(_m)
+    else:
+        _history_for_prompt = list(state.get("history") or [])
 
-        _ac_max_tokens: int = int(_cfg_get("auto_compact_max_tokens", 10_000) or 10_000)
+    _new_compacted_history = None  # written back to AgentState if CP-6 fires
+    try:
+        if (
+            _AutoCompactConfig is None
+            or _should_compact is None
+            or _compact_messages is None
+            or _cfg_get is None
+        ):
+            raise RuntimeError("auto_compactor unavailable")
+        # GAP-NEW-3: Use 85% of the actual context window as the compaction
+        # threshold rather than a fixed 10k-token default.  A single large file
+        # read can push context over the limit in just 3 messages; conversely,
+        # 50 short messages may still be well under budget.  The percentage-based
+        # threshold fires at the right time regardless of provider context size.
+        _ctx_window: int = 0
+        try:
+            if adapter and hasattr(adapter, "context_window"):
+                _ctx_window = int(adapter.context_window or 0)
+            if not _ctx_window and _get_context_budget is not None:
+                _ctx_window = _get_context_budget()
+        except Exception:
+            pass
+        _config_default_max = int(_cfg_get("auto_compact_max_tokens", 10_000) or 10_000)
+        _ac_max_tokens: int = (
+            int(_ctx_window * 0.85) if _ctx_window > 0 else _config_default_max
+        )
         _ac_preserve: int = int(_cfg_get("auto_compact_preserve_recent", 4) or 4)
-        _ac_config = AutoCompactConfig(
+        _ac_config = _AutoCompactConfig(
             preserve_recent=_ac_preserve,
             max_tokens=_ac_max_tokens,
         )
-        if should_compact(_history_for_prompt, _ac_config):
-            _compact_result = compact_messages(_history_for_prompt, _ac_config)
+        if _should_compact(_history_for_prompt, _ac_config):
+            _compact_result = _compact_messages(_history_for_prompt, _ac_config)
             if _compact_result.removed_message_count > 0:
                 _history_for_prompt = _compact_result.compacted_messages
+                _new_compacted_history = _compact_result.compacted_messages
                 logger.info(
                     "perception_node CP-6: auto-compacted history — "
                     "removed=%d, new_len=%d",
@@ -387,6 +543,22 @@ async def perception_node(state: Mapping[str, Any], config: Any) -> Dict[str, An
         logger.debug(
             "perception_node CP-6: auto-compaction skipped (non-fatal): %s", _ac_err
         )
+
+    # PRUNE: Zero out old tool-result content beyond the token boundary so
+    # that large file-read outputs from earlier turns don't crowd out recent
+    # context.  Runs after CP-6 so the compacted history is pruned, not the
+    # raw one.  Does not mutate AgentState — local to this prompt build.
+    try:
+        _history_for_prompt, _pruned = _prune_tool_outputs(_history_for_prompt)
+        if _pruned:
+            logger.info(
+                "perception_node PRUNE: zeroed %d old tool result(s) beyond "
+                "%d-token boundary",
+                _pruned,
+                _PRUNE_PROTECT_TOKENS,
+            )
+    except Exception as _prune_err:
+        logger.debug("perception_node PRUNE: skipped (non-fatal): %s", _prune_err)
 
     # S9-A: On the first round of a new task, inject relevant memories from prior sessions.
     _prior_context_block = ""
@@ -420,7 +592,10 @@ async def perception_node(state: Mapping[str, Any], config: Any) -> Dict[str, An
         tools=tools_list,
         conversation=_history_for_prompt,
         retrieved_snippets=retrieved_snippets,
-        max_tokens=6000,
+        # PERC-01: Use dynamic context budget so prompt fitting adapts to the
+        # active provider's actual context window instead of a hard-coded 6 000.
+        # Falls back to 6 000 when _get_context_budget is unavailable.
+        max_tokens=(_get_context_budget() if _get_context_budget is not None else 6000),
         provider_capabilities=provider_capabilities,
         model_tier=state.get(
             "model_tier"
@@ -465,11 +640,9 @@ async def perception_node(state: Mapping[str, Any], config: Any) -> Dict[str, An
     # ORCH-W1: Inject max_steps.txt warning into the system message when near the turn limit.
     if _near_limit and messages and messages[0].get("role") == "system":
         try:
-            from pathlib import Path as _Path
-
             # Template lives at src/core/prompts/templates/max_steps.txt
             _tpl_path = (
-                _Path(__file__).parent.parent.parent.parent
+                Path(__file__).parent.parent.parent.parent
                 / "prompts"
                 / "templates"
                 / "max_steps.txt"
@@ -477,7 +650,11 @@ async def perception_node(state: Mapping[str, Any], config: Any) -> Dict[str, An
             if _tpl_path.exists():
                 _max_steps_text = _tpl_path.read_text(encoding="utf-8").strip()
                 if _max_steps_text:
-                    messages[0]["content"] += f"\n\n{_max_steps_text}"
+                    # MED-18 fix: copy instead of in-place mutation (ORCH-W1 path)
+                    messages[0] = {
+                        **messages[0],
+                        "content": messages[0]["content"] + f"\n\n{_max_steps_text}",
+                    }
         except Exception:
             pass
 
@@ -503,14 +680,55 @@ async def perception_node(state: Mapping[str, Any], config: Any) -> Dict[str, An
     _model_tier_str: str | None = None
     if model:
         try:
-            from src.core.inference.model_tiers import classify_model
-
+            if _classify_model is None:
+                raise RuntimeError("model_tiers unavailable")
             ctx_window = 0
             if adapter and hasattr(adapter, "context_window"):
                 ctx_window = int(adapter.context_window or 0)
-            _model_tier_str = classify_model(model, ctx_window).value
+            _model_tier_str = _classify_model(model, ctx_window).value
         except Exception:
             pass
+
+    # GAP-SMALL-4: Clarification guard for NANO/SMALL models on round 0.
+    # When the task string is very short (< 8 words) and contains no file
+    # references, code identifiers, or clear action verbs, small models are
+    # likely to hallucinate a plan.  Return a clarifying question instead of
+    # entering the pipeline on a bad premise.
+    _rounds_now = state.get("rounds") or 0
+    if _rounds_now == 0 and _model_tier_str in ("nano", "small"):
+        _raw_task = (state.get("task") or "").strip()
+        _task_words = _raw_task.split()
+        _ACTION_VERBS = {
+            "add", "fix", "update", "change", "create", "delete", "remove",
+            "refactor", "write", "read", "run", "test", "debug", "find",
+            "search", "show", "list", "explain", "implement", "build",
+            "install", "deploy", "check", "verify", "move", "rename",
+        }
+        _has_action = any(w.lower() in _ACTION_VERBS for w in _task_words)
+        _has_file_ref = bool(re.search(r"\w+\.\w+|/\w+|\w+\.py\b", _raw_task))
+        _has_code_id = bool(re.search(r"`[^`]+`|\"[A-Za-z_]\w+\"", _raw_task))
+        if len(_task_words) < 8 and not _has_action and not _has_file_ref and not _has_code_id:
+            logger.info(
+                "perception_node: GAP-SMALL-4 ambiguous task detected for small model, "
+                "returning clarification prompt (task=%r, words=%d)",
+                _raw_task[:80],
+                len(_task_words),
+            )
+            _clarify_msg = (
+                "I need a bit more detail to help you effectively. Could you tell me:\n"
+                "- What file or component should I work on?\n"
+                "- What should change or be created?\n"
+                "- What is the expected outcome?"
+            )
+            return {
+                "history": [{"role": "assistant", "content": _clarify_msg}],
+                "next_action": None,
+                "needs_clarification": True,
+                "rounds": _rounds_now + 1,
+                "turn_count": turn_count,
+                "empty_response_count": 0,
+                **({"model_tier": _model_tier_str} if _model_tier_str else {}),
+            }
 
     # Determine deterministic overrides if orchestrator requests them
     llm_kwargs = {}
@@ -549,6 +767,23 @@ async def perception_node(state: Mapping[str, Any], config: Any) -> Dict[str, An
                 **llm_kwargs,
             )
         )
+        # WF-5: read configurable LLM timeout from project settings.
+        _perc_llm_timeout: int | None = 120
+        try:
+            from src.core.orchestration.project_settings import (
+                get_active_settings as _gas_perc,
+            )
+
+            _ps_perc = _gas_perc()
+            if _ps_perc is not None:
+                _perc_llm_timeout = _ps_perc.max_llm_wait_seconds or None
+        except Exception:
+            pass
+        _perc_deadline = (
+            asyncio.get_running_loop().time() + _perc_llm_timeout
+            if _perc_llm_timeout
+            else None
+        )
         # Interrupt Polling: Check cancel_event every 0.2s during LLM generation
         while not llm_task.done():
             if (
@@ -563,6 +798,22 @@ async def perception_node(state: Mapping[str, Any], config: Any) -> Dict[str, An
                     "next_action": None,
                     "rounds": state.get("rounds", 0) + 1,
                     "errors": ["canceled"],
+                }
+            # WF-5: hard deadline guard
+            if (
+                _perc_deadline is not None
+                and asyncio.get_running_loop().time() >= _perc_deadline
+            ):
+                llm_task.cancel()
+                logger.warning(
+                    f"perception_node: LLM call timed out after {_perc_llm_timeout}s — "
+                    "routing to wait_for_user"
+                )
+                return {
+                    "history": state.get("history", []),
+                    "next_action": "wait_for_user",
+                    "rounds": state.get("rounds", 0) + 1,
+                    "errors": [f"llm_timeout:{_perc_llm_timeout}s"],
                 }
             await asyncio.sleep(0.2)
         resp = await llm_task
@@ -582,6 +833,67 @@ async def perception_node(state: Mapping[str, Any], config: Any) -> Dict[str, An
     # Phase 4: Track token usage for budget management
     _overflow_compaction = {}
     _session_cost_delta: float = 0.0
+
+    # REACT-OVF: If the adapter detected a context-overflow error in the HTTP
+    # response body, trigger compaction immediately without waiting for the
+    # post-call token-count check.  This covers the case where the prompt was
+    # already too large before we could measure it (e.g. first turn after a
+    # very long tool result inflated the history).
+    if isinstance(resp, dict) and resp.get("context_overflow"):
+        logger.warning(
+            "perception_node: context overflow error from provider — "
+            "triggering reactive compaction"
+        )
+        _overflow_compaction = {
+            "_budget_compaction": True,
+            "_should_distill": True,
+        }
+        try:
+            if orchestrator and hasattr(orchestrator, "event_bus"):
+                orchestrator.event_bus.publish(
+                    "context.overflow",
+                    {
+                        "prompt_tokens": 0,
+                        "budget": 0,
+                        "reserved": 0,
+                        "session_id": state.get("session_id"),
+                        "source": "api_error",
+                    },
+                )
+        except Exception:
+            pass
+
+        # REACT-OVF-EARLY-EXIT: Skip the corrective-prompt retry loop entirely.
+        # Sending more requests with an oversized context only spams the provider.
+        # Hard-truncate to the last few messages via _compacted_history so the
+        # NEXT turn starts with a manageable context, then route to memory_sync.
+        _OVERFLOW_HISTORY_KEEP = 6
+        _raw_history = list(state.get("history") or [])
+        _truncated = (
+            _raw_history[-_OVERFLOW_HISTORY_KEEP:]
+            if len(_raw_history) > _OVERFLOW_HISTORY_KEEP
+            else _raw_history
+        )
+        logger.warning(
+            "perception_node: context overflow early-exit — "
+            f"truncating history {len(_raw_history)} → {len(_truncated)} messages; "
+            "errors=['context_overflow'] will route to memory_sync"
+        )
+        return {
+            "history": [],          # nothing new to append (operator.add)
+            "_compacted_history": _truncated,  # replace-semantics: sets compacted base
+            "next_action": None,
+            "rounds": state.get("rounds", 0) + 1,
+            "errors": ["context_overflow"],
+            "_budget_compaction": True,
+            "_should_distill": True,
+            "empty_response_count": 0,
+            "last_result": {
+                "ok": False,
+                "error": "Context window overflow — history truncated, compaction triggered",
+            },
+        }
+
     if isinstance(resp, dict):
         # CP-9: token counts are at the top-level of the normalized response
         # dict produced by generate() in the adapter, NOT nested under "usage".
@@ -610,20 +922,17 @@ async def perception_node(state: Mapping[str, Any], config: Any) -> Dict[str, An
                     )
                     # S6-A: Accumulate session cost using pricing table.
                     try:
-                        from src.core.inference.provider_context import (
-                            estimate_cost_usd,
-                        )
-
-                        _active_model = resp.get("model") or (
-                            adapter.default_model
-                            if adapter and hasattr(adapter, "default_model")
-                            else ""
-                        )
-                        _session_cost_delta = estimate_cost_usd(
-                            _resp_prompt_tokens,
-                            _resp_completion_tokens,
-                            _active_model or "",
-                        )
+                        if _estimate_cost_usd is not None:
+                            _active_model = resp.get("model") or (
+                                adapter.default_model
+                                if adapter and hasattr(adapter, "default_model")
+                                else ""
+                            )
+                            _session_cost_delta = _estimate_cost_usd(
+                                _resp_prompt_tokens,
+                                _resp_completion_tokens,
+                                _active_model or "",
+                            )
                     except Exception:
                         pass
             except Exception as e:
@@ -814,8 +1123,6 @@ async def perception_node(state: Mapping[str, Any], config: Any) -> Dict[str, An
                     args = func.get("arguments")
                     if isinstance(args, str):
                         try:
-                            import json
-
                             args = json.loads(args)
                         except Exception:
                             args = {}
@@ -1064,12 +1371,18 @@ async def perception_node(state: Mapping[str, Any], config: Any) -> Dict[str, An
     # perception_node has richer context here: relevant_files count, tool_call_count,
     # plus the same keyword check used by builder._task_is_complex().
     try:
-        from src.core.orchestration.graph.builder import _task_is_complex as _tic
-
+        if _tic is None:
+            raise RuntimeError("builder unavailable")
         _tc_flag = "complex" if _tic(state) else "simple"
         result["task_complexity"] = _tc_flag
         logger.info("perception_node WF-1: task_complexity=%s", _tc_flag)
     except Exception:
         pass  # Never block on routing helper failure; builder falls back to heuristic
+
+    # CP6-PERSIST: Write the new compacted snapshot back to AgentState so the
+    # next turn starts from the compacted base rather than re-compacting the
+    # ever-growing raw history.
+    if _new_compacted_history is not None:
+        result["_compacted_history"] = _new_compacted_history
 
     return result

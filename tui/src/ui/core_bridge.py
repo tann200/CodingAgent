@@ -64,9 +64,10 @@ _EVENT_MAP: dict[str, str] = {
     "tool.execute.finish": "tool.call.finish",
     "tool.execute.error": "tool.call.error",
     "plan.requested": "plan.mode",
-    "model.routing": "provider.active",
     "log.new": "log.line",
     "task.file_modified": "file.modified",
+    "delegation.start": "delegation.start",
+    "delegation.finish": "delegation.finish",
 }
 
 # AUTO-03: Map TUI role names to CodingAgent system prompt names.
@@ -75,6 +76,48 @@ TUI_ROLE_TO_PROMPT: dict[str, str] = {
     "full_stack_engineer": "operational",  # execution, coding
     "qa_lead": "reviewer",  # review, testing
 }
+
+
+def _load_copilot_auth_module():
+    """Load github_copilot_auth by absolute file path.
+
+    In the TUI context ``src`` in sys.modules is remapped to ``tui/src``,
+    so ``from src.core.inference...`` would fail.  Loading by file path
+    bypasses the shadow entirely.
+
+    The module is registered in sys.modules under the fake name so that
+    Python's @dataclass decorator (which looks up cls.__module__ in
+    sys.modules) works correctly.  Subsequent calls return the cached module.
+    """
+    import importlib.util
+    import sys
+    from pathlib import Path
+
+    _MOD_NAME = "_copilot_auth_real"
+    if _MOD_NAME in sys.modules:
+        return sys.modules[_MOD_NAME]
+
+    # core_bridge.py is at tui/src/ui/core_bridge.py → parents[3] = project root
+    auth_path = (
+        Path(__file__).parents[3]
+        / "src"
+        / "core"
+        / "inference"
+        / "adapters"
+        / "github_copilot_auth.py"
+    )
+    spec = importlib.util.spec_from_file_location(_MOD_NAME, str(auth_path))
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Cannot load spec from {auth_path}")
+    mod = importlib.util.module_from_spec(spec)
+    # Register BEFORE exec_module so @dataclass can resolve cls.__module__
+    sys.modules[_MOD_NAME] = mod
+    try:
+        spec.loader.exec_module(mod)  # type: ignore[attr-defined]
+    except Exception:
+        sys.modules.pop(_MOD_NAME, None)
+        raise
+    return mod
 
 
 def _get_event_bus():
@@ -105,7 +148,17 @@ def _make_orchestrator(working_dir: Optional[Path], event_bus) -> "Optional[Any]
     try:
         from src.core.orchestration.orchestrator import Orchestrator  # type: ignore[import]
 
-        return Orchestrator(working_dir=working_dir, event_bus=event_bus)
+        # HIST-01: Pass message_max_tokens=None so MessageManager acts as a
+        # pure accumulator and never silently drops conversation turns.  The
+        # default of 4 000 tokens is less than the system prompt alone (~4 500),
+        # which caused _truncate_to_window to fire on every append and wipe
+        # history on every follow-up message.  The context_builder already
+        # handles fitting messages into the LLM's actual context window.
+        return Orchestrator(
+            working_dir=working_dir,
+            event_bus=event_bus,
+            message_max_tokens=None,
+        )
     except Exception as exc:
         logger.debug(f"_make_orchestrator: could not create Orchestrator: {exc}")
         return None
@@ -205,6 +258,10 @@ class AgentBridge:
         # token budget
         self._subscribe("token.budget.update", self._on_token_budget)
         self._subscribe("token.budget.warning", self._on_token_budget_warning)
+        # canonical token.budget event published by orchestrator TUI-09
+        self._subscribe("token.budget", self._on_token_budget)
+        # context window from provider (e.g. LM Studio loaded_context_length)
+        self._subscribe("provider.context_window", self._on_provider_context_window)
         # role transition — real backend and mock both publish via bus
         self._subscribe("role.transition", self._on_role_transition)
         # preview mode
@@ -231,10 +288,68 @@ class AgentBridge:
         self._subscribe("tool.permission_required", self._on_tool_permission_required)
         # per-turn token/cost summary (TUI-T6)
         self._subscribe("usage.turn_summary", self._on_usage_turn_summary)
+        # GAP-NEW-7: subagent cost rollup — accumulate child cost into session total
+        self._subscribe("usage.subagent_cost", self._on_subagent_cost)
         # doom-loop detection (PERM-W3)
         self._subscribe("tool.doom_loop_detected", self._on_doom_loop_detected)
+        # CP-15: proactive mid-turn messages from send_user_message tool
+        self._subscribe("agent.message", self._on_agent_message)
+        # SUBAGENT-VIS-3: subagent lifecycle visibility
+        self._subscribe("delegation.start", self._on_delegation_start)
+        self._subscribe("delegation.finish", self._on_delegation_finish)
 
         logger.info(f"EventBus: subscribed to {len(self._subscriptions)} events")
+
+        # RACE-FIX: Immediately seed the token monitor and sidebar with the
+        # context length from providers.json so the TOKEN BUDGET max is correct
+        # on first display, without waiting for the async provider.context_window
+        # event that may fire before subscriptions are registered.
+        self._seed_context_window_from_config()
+
+    def _seed_context_window_from_config(self) -> None:
+        """Seed the token budget monitor and sidebar with the providers.json
+        context_length immediately after setup_subscriptions() completes.
+
+        This avoids the race condition where ProviderManager.initialize() fires
+        ``provider.context_window`` before setup_subscriptions() has registered
+        the ``_on_provider_context_window`` handler, causing the event to be lost
+        and the sidebar to fall back to the 32,768 default.
+        """
+        try:
+            from src.core.inference.provider_context import (  # type: ignore[import]
+                _load_active_context_length,
+                set_active_context_length,
+            )
+
+            ctx = _load_active_context_length()
+            if ctx and ctx > 0:
+                # Persist to the provider_context module so all consumers see it
+                set_active_context_length(ctx)
+
+                # Seed the token monitor under the "default" session (used before
+                # the first task starts) so get_budget("default").max_tokens is
+                # correct when the first token.budget event arrives.
+                try:
+                    from src.core.orchestration.token_budget import (  # type: ignore[import]
+                        get_token_budget_monitor,
+                    )
+
+                    get_token_budget_monitor().update(
+                        session_id="default", used_tokens=0, max_tokens=ctx
+                    )
+                except Exception:
+                    pass
+
+                # Fire a synthetic UpdateSettings so the sidebar label updates
+                # immediately without waiting for a token.budget event.
+                try:
+                    from src.ui.events import UpdateSettings
+
+                    self._post(UpdateSettings(updates={"context_window": ctx}))
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
     def cleanup(self) -> None:
         """Unsubscribe all handlers (§10.2 step 5)."""
@@ -264,16 +379,48 @@ class AgentBridge:
         except Exception:
             cfg = {}
 
-        # Gather available providers from config (best-effort)
+        # Gather available providers from providers.json (top-level list)
         providers: list[dict] = []
         try:
-            providers = [
-                {"name": p.get("name", ""), "type": p.get("type", "")}
-                for p in cfg.get("providers", [])
-                if isinstance(p, dict)
-            ]
+            import json
+
+            # __file__ = tui/src/ui/core_bridge.py → parents[3] = project root
+            _cfg_path = Path(__file__).parents[3] / "src" / "config" / "providers.json"
+            if not _cfg_path.exists():
+                _cfg_path = Path("src/config/providers.json")
+            if _cfg_path.exists():
+                raw = json.loads(_cfg_path.read_text(encoding="utf-8"))
+                entries = raw if isinstance(raw, list) else (raw.get("providers") or [])
+                providers = [
+                    {
+                        "name": p.get("name") or p.get("type") or "",
+                        "type": p.get("type") or "",
+                        "models": p.get("models") or [],
+                        "active": p.get("active", False),
+                        "base_url": p.get("base_url") or "",
+                    }
+                    for p in entries
+                    if isinstance(p, dict)
+                ]
         except Exception:
             pass
+
+        # Derive context_window from the active provider's context_length field
+        # (providers.json), falling back to cfg.get("max_tokens") or 32_768.
+        # This ensures the sidebar TOKEN BUDGET max reflects the real config value
+        # rather than a hardcoded default.
+        _context_window: int = cfg.get("max_tokens", 0) or 0
+        if not _context_window:
+            try:
+                from src.core.inference.provider_context import (  # type: ignore[import]
+                    _load_active_context_length,
+                )
+
+                _context_window = _load_active_context_length()
+            except Exception:
+                _context_window = 32_768
+        if not _context_window:
+            _context_window = 32_768
 
         try:
             self._bus.publish(
@@ -281,7 +428,7 @@ class AgentBridge:
                 {
                     "active_mode": cfg.get("active_mode", "lead_architect"),
                     "theme": cfg.get("theme", "textual-dark"),
-                    "context_window": cfg.get("max_tokens", 32_768),
+                    "context_window": _context_window,
                     "default_provider": cfg.get("default_provider", "none"),
                     "default_model": cfg.get("default_model", "none"),
                     "providers": providers,
@@ -300,6 +447,12 @@ class AgentBridge:
             )
         except Exception:
             pass
+        # Call directly (don't rely on the bus event being received — the
+        # _EVENT_MAP remaps "orchestrator.startup" → "system.startup" for
+        # inbound subscriptions, but the above publish uses the TUI name which
+        # has no subscriber after setup_subscriptions() maps it.)
+        self._publish_active_provider_status()
+        self._check_provider_auth_on_startup()
         try:
             from src.ui.bus import AgentRunningEvent
 
@@ -311,11 +464,161 @@ class AgentBridge:
         self._schedule_callback(self.app.post_message, msg)
 
     def _on_orchestrator_startup(self, payload: dict) -> None:
-        from src.ui.bus import OrchestratorReadyEvent
+        from src.ui.bus import OrchestratorReadyEvent, SessionHealthEvent
 
         wd = payload.get("working_dir", "")
         self._working_dir = wd
         self._post(OrchestratorReadyEvent(working_dir=wd))
+
+        # Immediately publish the active provider so the banner shows the real name
+        # before the slow async ProviderManager.initialize() completes.
+        self._publish_active_provider_status()
+
+        # Warn the user if the active provider is GitHub Copilot but has no token.
+        self._check_provider_auth_on_startup()
+
+    def _publish_active_provider_status(self) -> None:
+        """Read providers.json and immediately fire a provider status event for
+        the active provider so the banner shows the real name on startup.
+
+        For GitHub Copilot (which uses OAuth device flow, not a network probe),
+        we call validate_connection() / is_authenticated() synchronously so the
+        banner immediately reflects real auth state instead of staying at
+        "initializing…" until ProviderManager.initialize() completes.
+        """
+        try:
+            from src.ui.bus import ProviderStatusChangeEvent
+            import json, pathlib
+
+            providers_path = (
+                pathlib.Path(__file__).parents[3] / "src" / "config" / "providers.json"
+            )
+            if not providers_path.exists():
+                # Try relative fallback
+                providers_path = pathlib.Path("src/config/providers.json")
+            if not providers_path.exists():
+                return
+            raw = json.loads(providers_path.read_text(encoding="utf-8"))
+            providers = raw if isinstance(raw, list) else (raw.get("providers") or [])
+            active = next(
+                (p for p in providers if isinstance(p, dict) and p.get("active")),
+                None,
+            )
+            if active is None:
+                return
+            provider_name = active.get("name") or active.get("type") or "unknown"
+            provider_type = (active.get("type") or "").lower().strip().replace("-", "_")
+
+            # Providers that authenticate via stored token (OAuth / API key):
+            # check offline and report immediately.
+            # Local providers (lm_studio, ollama, openai_compat) don't require
+            # auth credentials — treat them as "connected" on startup so the
+            # banner doesn't stay at "connecting…" indefinitely.
+            _LOCAL_PROVIDER_TYPES = {"lm_studio", "ollama", "openai_compat", "local"}
+
+            if provider_type == "github_copilot":
+                # Determine status from stored OAuth token (no network call).
+                # Mirrors OpenCode's copilot.ts loader() which returns {} when no token.
+                try:
+                    mod = _load_copilot_auth_module()
+                    initial_status = (
+                        "connected" if mod.is_authenticated() else "disconnected"
+                    )
+                except Exception:
+                    initial_status = "initializing"
+            elif provider_type in _LOCAL_PROVIDER_TYPES or active.get("base_url"):
+                # Local / self-hosted providers don't need an API key.
+                # Report "connected" immediately; ProviderManager will overwrite
+                # with "disconnected" if the endpoint is actually unreachable.
+                initial_status = "connected"
+            else:
+                # Cloud providers with API keys: start at "initializing" and wait
+                # for ProviderManager to probe the adapter.
+                api_key = active.get("api_key") or ""
+                initial_status = "connected" if api_key else "initializing"
+
+            self._post(
+                ProviderStatusChangeEvent(
+                    provider=provider_name,
+                    new_status=initial_status,
+                    old_status="",
+                )
+            )
+
+            # Also fire a ModelRoutingEvent with the first configured model so
+            # the sidebar shows the model name on startup without waiting for an
+            # agent run.  The real orchestrator will overwrite this with the
+            # live-selected model once it initialises.
+            if initial_status == "connected":
+                try:
+                    from src.ui.bus import ModelRoutingEvent
+
+                    models = active.get("models") or []
+                    startup_model = models[0] if models else ""
+                    if startup_model:
+                        self._post(
+                            ModelRoutingEvent(
+                                provider=provider_name,
+                                model=startup_model,
+                            )
+                        )
+                except Exception:
+                    pass
+        except Exception as exc:
+            logger.debug(f"_publish_active_provider_status: {exc}")
+
+    def _check_provider_auth_on_startup(self) -> None:
+        """Post a warning if the active provider requires auth but has no token.
+
+        Posts two messages:
+          1. SessionHealthEvent — persistent inline banner in the chat panel
+          2. NotificationEvent  — dismissible toast with actionable hint
+        """
+        try:
+            from src.ui.bus import SessionHealthEvent, NotificationEvent
+            import json, pathlib
+
+            # Determine the active provider from providers.json
+            providers_path = (
+                pathlib.Path(__file__).parents[3] / "src" / "config" / "providers.json"
+            )
+            if not providers_path.exists():
+                providers_path = pathlib.Path("src/config/providers.json")
+            if not providers_path.exists():
+                return
+            raw = json.loads(providers_path.read_text(encoding="utf-8"))
+            providers = raw if isinstance(raw, list) else raw.get("providers", [])
+            active = next(
+                (p for p in providers if isinstance(p, dict) and p.get("active")),
+                None,
+            )
+            if active is None:
+                return
+            provider_type = active.get("type", "").lower()
+            if provider_type != "github_copilot":
+                return
+            _copilot_mod = _load_copilot_auth_module()
+            if not _copilot_mod.is_authenticated():
+                # Persistent inline banner
+                self._post(
+                    SessionHealthEvent(
+                        level="warning",
+                        title="GitHub Copilot not connected",
+                        message=(
+                            "Open Settings (ctrl+s) → API Keys → "
+                            "Login with GitHub Copilot to authenticate."
+                        ),
+                    )
+                )
+                # Also fire a dismissible toast
+                self._post(
+                    NotificationEvent(
+                        level="warning",
+                        message="GitHub Copilot: not connected — open Settings (ctrl+s) to log in.",
+                    )
+                )
+        except Exception as exc:
+            logger.debug(f"_check_provider_auth_on_startup: {exc}")
 
     def _on_provider_status(self, payload: dict) -> None:
         from src.ui.bus import ProviderStatusChangeEvent
@@ -432,6 +735,31 @@ class AgentBridge:
             )
         )
 
+    # SUBAGENT-VIS-3: subagent lifecycle handlers
+
+    def _on_delegation_start(self, payload: dict) -> None:
+        from src.ui.bus import SubagentStartEvent
+
+        self._post(
+            SubagentStartEvent(
+                child_session_id=payload.get("child_session_id", ""),
+                role=payload.get("role", "unknown"),
+                task=payload.get("task", ""),
+                parent_session_id=payload.get("parent_session_id"),
+            )
+        )
+
+    def _on_delegation_finish(self, payload: dict) -> None:
+        from src.ui.bus import SubagentFinishEvent
+
+        self._post(
+            SubagentFinishEvent(
+                child_session_id=payload.get("child_session_id", ""),
+                role=payload.get("role", "unknown"),
+                ok=payload.get("ok", True),
+            )
+        )
+
     def _on_diff_preview(self, payload: dict) -> None:
         from src.ui.bus import DiffPreviewEvent
 
@@ -517,14 +845,43 @@ class AgentBridge:
         line = f"[{level}] {logger_name}: {msg}" if logger_name else f"[{level}] {msg}"
         self._schedule_callback(self.app._append_log_line, line, level)
 
+    def _get_active_context_length(self) -> int:
+        """Return the active provider's context length for use as a token-budget
+        fallback when the event payload does not include a limit field.
+
+        Reads provider_context._load_active_context_length() which prefers the
+        live value set by set_active_context_length() over the static providers.json
+        entry.  Falls back to 32_768 if the import fails.
+        """
+        try:
+            from src.core.inference.provider_context import (  # type: ignore[import]
+                _load_active_context_length,
+            )
+
+            return _load_active_context_length()
+        except Exception:
+            return 32_768
+
     def _on_token_budget(self, payload: dict) -> None:
         from src.ui.bus import TokenBudgetEvent
 
+        # Orchestrator publishes used_tokens/max_tokens; mock uses used/limit.
+        used = payload.get("used") or payload.get("used_tokens", 0)
+        _default_limit = self._get_active_context_length()
+        limit = (
+            payload.get("limit")
+            or payload.get("max_tokens", _default_limit)
+            or _default_limit
+        )
+        pct = payload.get("percent") or payload.get("usage_ratio", 0.0)
+        # usage_ratio is 0..1, percent is 0..100 — normalise to 0..100
+        if pct and pct <= 1.0:
+            pct = pct * 100
         self._post(
             TokenBudgetEvent(
-                used=payload.get("used", 0),
-                limit=payload.get("limit", 32000),
-                percent=payload.get("percent", 0.0),
+                used=int(used),
+                limit=int(limit),
+                percent=float(pct),
                 warning=False,
             )
         )
@@ -532,14 +889,66 @@ class AgentBridge:
     def _on_token_budget_warning(self, payload: dict) -> None:
         from src.ui.bus import TokenBudgetEvent
 
+        used = payload.get("used") or payload.get("used_tokens", 0)
+        _default_limit = self._get_active_context_length()
+        limit = (
+            payload.get("limit")
+            or payload.get("max_tokens", _default_limit)
+            or _default_limit
+        )
+        pct = payload.get("percent") or payload.get("usage_ratio", 0.0)
+        if pct and pct <= 1.0:
+            pct = pct * 100
         self._post(
             TokenBudgetEvent(
-                used=payload.get("used", 0),
-                limit=payload.get("limit", 32000),
-                percent=payload.get("percent", 0.0),
+                used=int(used),
+                limit=int(limit),
+                percent=float(pct),
                 warning=True,
             )
         )
+
+    def _on_provider_context_window(self, payload: dict) -> None:
+        """Update the TUI's context_window reactive when the provider reports
+        the actual loaded context length (e.g. LM Studio /api/v0/models)."""
+        ctx = payload.get("context_window", 0)
+        if ctx and ctx > 0:
+            # LIVE-CTX: Propagate the live context length to provider_context so
+            # get_context_budget() (and perception_node) use the real value
+            # fetched from the models endpoint rather than the static file value.
+            try:
+                from src.core.inference.provider_context import (
+                    set_active_context_length,
+                )  # type: ignore[import]
+
+                set_active_context_length(int(ctx))
+            except Exception:
+                pass
+            try:
+                from src.ui.events import UpdateSettings
+
+                self._post(UpdateSettings(updates={"context_window": int(ctx)}))
+            except Exception:
+                pass
+            # Also propagate to the token_monitor so the budget limit reflects
+            # the real model context window in subsequent token.budget events.
+            # Update BOTH the "default" session (used before any task starts) AND
+            # the live task session_id so whichever key the orchestrator queries,
+            # get_budget(...).max_tokens returns the correct value.
+            try:
+                from src.core.orchestration.token_budget import get_token_budget_monitor  # type: ignore[import]
+
+                monitor = get_token_budget_monitor()
+                # Always seed the default session
+                monitor.update(session_id="default", used_tokens=0, max_tokens=int(ctx))
+                # Also update the current task session if one is active
+                live_session_id = getattr(self._orchestrator, "_current_task_id", None)
+                if live_session_id and live_session_id != "default":
+                    monitor.update(
+                        session_id=live_session_id, used_tokens=0, max_tokens=int(ctx)
+                    )
+            except Exception:
+                pass
 
     def _on_role_transition(self, payload: dict) -> None:
         """Real backend fires role.transition via EventBus (mock uses direct post_message)."""
@@ -681,6 +1090,7 @@ class AgentBridge:
                 running=payload.get("running", False),
                 count=payload.get("count", 0),
                 server_names=payload.get("server_names", []),
+                has_error=payload.get("has_error", False),
             )
         )
 
@@ -707,6 +1117,40 @@ class AgentBridge:
                 cost_usd=float(payload.get("cost_usd", 0.0)),
             )
         )
+
+    def _on_subagent_cost(self, payload: dict) -> None:
+        """GAP-NEW-7: accumulate child session cost into the parent session total.
+
+        Publishes a UsageTurnSummaryEvent with 0 tokens so the cost panel
+        reflects subagent spend without creating a phantom model turn.
+        """
+        from src.ui.bus import UsageTurnSummaryEvent
+
+        child_cost = float(payload.get("cost_usd", 0.0))
+        if child_cost <= 0:
+            return
+        role = str(payload.get("role", "subagent"))
+        self._post(
+            UsageTurnSummaryEvent(
+                input_tokens=0,
+                output_tokens=0,
+                model=f"[{role}]",
+                cost_usd=child_cost,
+            )
+        )
+
+    def _on_agent_message(self, payload: dict) -> None:
+        """CP-15: route send_user_message bus events to the chat panel.
+
+        ``send_user_message`` publishes ``agent.message`` with keys:
+          message, attachments, status ("normal" | "proactive").
+        Route as AgentFinalResponse so the chat panel renders it immediately.
+        """
+        from src.ui.bus import AgentFinalResponse
+
+        text = payload.get("message", "")
+        if text:
+            self._post(AgentFinalResponse(content=text))
 
     def _on_doom_loop_detected(self, payload: dict) -> None:
         """PERM-W3: forward doom-loop detection to TUI for user confirmation."""
@@ -825,15 +1269,29 @@ class AgentBridge:
         try:
             self._post(AgentRunningEvent(running=True))
             if self._orchestrator:
-                self._orchestrator.start_new_task()
+                # NOTE: start_new_task() is intentionally NOT called here — it
+                # clears msg_mgr.messages, which would wipe conversation history
+                # on every follow-up message.  start_new_task() is called only
+                # from start_new_session() (triggered by /new).
                 # AUTO-02: apply per-role autonomy settings before each run
                 try:
-                    from src.core.config_loader import get_role_config
-                    from src.tools.tools_config import set_autonomous
+                    from src.core.config_loader import (
+                        get_role_config,
+                        load_merged_config,
+                    )
+                    from src.tools.tools_config import (
+                        set_autonomous,
+                        set_require_preview_confirmation,
+                    )  # type: ignore[import]
 
                     _wdir = Path(self._working_dir) if self._working_dir else None
                     role_cfg = get_role_config(self._active_role, working_dir=_wdir)
                     set_autonomous(bool(role_cfg.get("autonomous", False)))
+                    # PREV-1: Apply preview_confirmation flag from workspace config
+                    _merged_cfg = load_merged_config(_wdir)
+                    set_require_preview_confirmation(
+                        bool(_merged_cfg.get("preview_confirmation", False))
+                    )
                     # Apply max_turns to the graph state (best-effort)
                     _max_turns = role_cfg.get("max_turns", 50)
                 except Exception as _rc_err:
@@ -847,42 +1305,43 @@ class AgentBridge:
                 msg_mgr = getattr(self._orchestrator, "msg_mgr", None) or getattr(
                     self._orchestrator, "message_manager", None
                 )
+                # Append the user message BEFORE reading the list so that
+                # run_agent_once sees it as messages[-1] and sets task=text.
                 if msg_mgr is not None:
+                    msg_mgr.append("user", text)
                     messages = list(getattr(msg_mgr, "messages", []))
                 elif callable(getattr(self._orchestrator, "get_messages", None)):
                     messages = list(self._orchestrator.get_messages())
+                    messages.append({"role": "user", "content": text})
                 else:
-                    messages = []
+                    messages = [{"role": "user", "content": text}]
                 tools = self._orchestrator.get_tools_for_role("operational")
-                # HIGH-11 fix: use a dedicated event loop instead of asyncio.run().
-                # asyncio.run() creates a new loop but also installs it as the
-                # running loop for the current thread for its duration, which can
-                # conflict if this thread already has a loop set (e.g. from a prior
-                # call that was not fully torn down).  Creating an explicit loop and
-                # running it to completion is safe on any background thread.
-                _loop = asyncio.new_event_loop()
-                try:
-                    result = _loop.run_until_complete(
-                        self._orchestrator.run_agent_once(
-                            system_prompt_name=prompt_name,
-                            messages=messages,
-                            tools=tools,
-                            cancel_event=self._cancel_event,
-                        )
-                    )
-                finally:
-                    _loop.close()
+                result = self._orchestrator.run_agent_once(
+                    system_prompt_name=prompt_name,
+                    messages=messages,
+                    tools=tools,
+                    cancel_event=self._cancel_event,
+                )
                 self._orchestrator.flush_execution_trace()
-                content = result.get("response") or result.get("last_result", {}).get(
-                    "output", ""
+                # run_agent_once() returns {"assistant_message": ..., "work_summary": ...}
+                # Keep fallbacks for "response" and "last_result" for backwards compat.
+                content = (
+                    result.get("assistant_message")
+                    or result.get("response")
+                    or (result.get("last_result") or {}).get("output", "")
                 )
                 if content:
                     with self._history_lock:
                         self.history.append(("assistant", content))
                     self._save_history()
                     self._post(AgentFinalResponse(content=content))
-                # §10.4 — capture state for /continue
-                self.app._continue_state = result
+                # §10.4 — capture state for /continue.  Write via
+                # call_from_thread so the Textual event-loop thread owns the
+                # assignment and there is no data race.
+                _r = result
+                self.app.call_from_thread(
+                    lambda r=_r: setattr(self.app, "_continue_state", r)
+                )
             # else: mock mode — events come through EventBus from mock_engine
         except Exception as exc:
             logger.error(f"Agent error: {exc}", exc_info=True)
@@ -921,6 +1380,24 @@ class AgentBridge:
         self._bus.publish("bash.approval_denied", {"tool_id": tool_id})
         # Legacy preview event for backwards-compat
         self._bus.publish("preview.rejected", {"preview_id": tool_id})
+
+    def confirm_file_preview(self, path: str) -> None:
+        """User accepted the diff preview for a file write — resolve the gate.
+
+        Publishes ``preview.confirmed`` with a ``path`` key so that
+        ``PreviewCoordinator._on_confirmed`` can resolve the threading.Event
+        gate registered in ``file_tools.register_preview_gate()``.
+        """
+        self._bus.publish("preview.confirmed", {"path": path})
+
+    def reject_file_preview(self, path: str) -> None:
+        """User rejected the diff preview for a file write — resolve the gate.
+
+        Publishes ``preview.rejected`` with a ``path`` key so that
+        ``PreviewCoordinator._on_rejected`` can set the rejected flag in
+        ``file_tools._preview_rejected`` and unblock the gate.
+        """
+        self._bus.publish("preview.rejected", {"path": path})
 
     # ── TASK-05: orchestrator accessors for session persistence ──────────
 
@@ -971,8 +1448,17 @@ class AgentBridge:
     # ── Session events ────────────────────────────────────────────────────
 
     def publish_session_request(self) -> None:
-        """Publish session.request_state on startup (§10.1 step 6)."""
+        """Publish session.request_state on startup (§10.1 step 6).
+
+        Also triggers the full startup chain via ``_publish_system_settings()``:
+        loads config, fires ``orchestrator.startup`` → ``_on_orchestrator_startup``
+        → ``_publish_active_provider_status()`` so the banner and sidebar reflect
+        the real provider state immediately instead of staying at
+        "connecting…" / "disconnected".
+        """
         self._bus.publish("session.request_state", {"session_id": "default"})
+        # Kick off the startup chain so the UI status indicators are updated.
+        self._publish_system_settings()
 
     def publish_session_new(self) -> None:
         """Publish session.new on /new command (§10.3)."""

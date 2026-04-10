@@ -297,3 +297,89 @@ class TestBudgetCeiling:
             )
             s = load_project_settings(tmp)
             assert s.budget_ceiling_usd == pytest.approx(5.0)
+
+
+# ---------------------------------------------------------------------------
+# enableSemanticEvaluation (PERF-2)
+# ---------------------------------------------------------------------------
+
+
+class TestEnableSemanticEvaluation:
+    def test_default_is_true(self) -> None:
+        s = _parse({})
+        assert s.enable_semantic_evaluation is True
+
+    def test_explicit_true_bool(self) -> None:
+        s = _parse({"enableSemanticEvaluation": True})
+        assert s.enable_semantic_evaluation is True
+
+    def test_explicit_false_bool(self) -> None:
+        s = _parse({"enableSemanticEvaluation": False})
+        assert s.enable_semantic_evaluation is False
+
+    def test_false_string(self) -> None:
+        s = _parse({"enableSemanticEvaluation": "false"})
+        assert s.enable_semantic_evaluation is False
+
+    def test_zero_string(self) -> None:
+        s = _parse({"enableSemanticEvaluation": "0"})
+        assert s.enable_semantic_evaluation is False
+
+    def test_true_string(self) -> None:
+        s = _parse({"enableSemanticEvaluation": "true"})
+        assert s.enable_semantic_evaluation is True
+
+    def test_snake_case_key(self) -> None:
+        s = _parse({"enable_semantic_evaluation": False})
+        assert s.enable_semantic_evaluation is False
+
+    def test_from_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            agent_dir = Path(tmp) / ".agent"
+            agent_dir.mkdir()
+            (agent_dir / "settings.json").write_text(
+                json.dumps({"enableSemanticEvaluation": False}), encoding="utf-8"
+            )
+            s = load_project_settings(tmp)
+            assert s.enable_semantic_evaluation is False
+
+
+# ---------------------------------------------------------------------------
+# maxLlmWaitSeconds (WF-5)
+# ---------------------------------------------------------------------------
+
+
+class TestMaxLlmWaitSeconds:
+    def test_default_is_120(self) -> None:
+        s = _parse({})
+        assert s.max_llm_wait_seconds == 120
+
+    def test_explicit_int(self) -> None:
+        s = _parse({"maxLlmWaitSeconds": 60})
+        assert s.max_llm_wait_seconds == 60
+
+    def test_zero_disables(self) -> None:
+        s = _parse({"maxLlmWaitSeconds": 0})
+        assert s.max_llm_wait_seconds == 0
+
+    def test_string_coerced(self) -> None:
+        s = _parse({"maxLlmWaitSeconds": "30"})
+        assert s.max_llm_wait_seconds == 30
+
+    def test_invalid_ignored_keeps_default(self) -> None:
+        s = _parse({"maxLlmWaitSeconds": "not-a-number"})
+        assert s.max_llm_wait_seconds == 120
+
+    def test_snake_case_key(self) -> None:
+        s = _parse({"max_llm_wait_seconds": 45})
+        assert s.max_llm_wait_seconds == 45
+
+    def test_from_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            agent_dir = Path(tmp) / ".agent"
+            agent_dir.mkdir()
+            (agent_dir / "settings.json").write_text(
+                json.dumps({"maxLlmWaitSeconds": 300}), encoding="utf-8"
+            )
+            s = load_project_settings(tmp)
+            assert s.max_llm_wait_seconds == 300

@@ -22,11 +22,11 @@ from typing import Optional
 class ModelTier(str, Enum):
     """Model capability tier — drives tool list size and prompt format."""
 
-    NANO = "nano"         # ≤7B params / ≤4K context
-    SMALL = "small"       # 7–14B / 4–16K context
-    MEDIUM = "medium"     # 14–70B / 16–128K context
-    LARGE = "large"       # >70B / >128K context
-    FRONTIER = "frontier" # Cloud frontier (GPT-4o, Claude Opus, Gemini Ultra)
+    NANO = "nano"  # ≤7B params / ≤4K context
+    SMALL = "small"  # 7–14B / 4–16K context
+    MEDIUM = "medium"  # 14–70B / 16–128K context
+    LARGE = "large"  # >70B / >128K context
+    FRONTIER = "frontier"  # Cloud frontier (GPT-4o, Claude Opus, Gemini Ultra)
 
 
 # Maximum number of tools to include in context for each tier.
@@ -39,9 +39,14 @@ _TOOL_LIMITS: dict[ModelTier, int] = {
 }
 
 # Patterns that indicate a FRONTIER cloud model.
+# These are matched before the NANO/SMALL keyword heuristics so that e.g.
+# "gpt-4o-mini" (cloud, "mini" substring) correctly resolves to FRONTIER
+# instead of being demoted to NANO by the keyword fallback.
 _FRONTIER_PATTERNS = re.compile(
-    r"gpt-4o|o1|o3|o4|claude-opus|claude-3-opus|claude-sonnet|gemini-ultra"
-    r"|gemini-2\.0-pro|gemini-exp|deepseek-r2",
+    r"gpt-4o|gpt-4\.5|gpt-3\.5-turbo|o1|o3|o4"
+    r"|claude-opus|claude-3-opus|claude-sonnet|claude-haiku|claude-3"
+    r"|gemini-ultra|gemini-2\.[0-9]|gemini-flash|gemini-pro|gemini-exp"
+    r"|deepseek-r2",
     re.IGNORECASE,
 )
 
@@ -121,3 +126,23 @@ def supports_native_tools(tier: ModelTier) -> bool:
 def is_simple_mode(tier: ModelTier) -> bool:
     """Return True if the tier should use simple_mode (YAML, single tool/message)."""
     return tier == ModelTier.NANO
+
+
+# GAP-FRONTIER-6: Tier-dependent planning step limit.
+# Frontier models should not be capped at 8 steps — complex tasks require more.
+_STEP_LIMITS: dict[ModelTier, int] = {
+    ModelTier.NANO: 4,
+    ModelTier.SMALL: 6,
+    ModelTier.MEDIUM: 10,
+    ModelTier.LARGE: 16,
+    ModelTier.FRONTIER: 20,
+}
+
+
+def get_plan_step_limit(tier: ModelTier) -> int:
+    """Return the maximum number of plan steps allowed for *tier*.
+
+    GAP-FRONTIER-6: Frontier models (20 steps) vs small models (4–6 steps).
+    Used by planning_node to inject the correct limit into the strategic prompt.
+    """
+    return _STEP_LIMITS.get(tier, 10)

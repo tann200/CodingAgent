@@ -1,8 +1,8 @@
 # CodingAgent Architecture
 
-> **Implementation Status**: Fully implemented — LangGraph pipeline, multi-file atomic rollback, advanced memory, repository intelligence, PRSW (Parallel Reads, Sequential Writes), DAG-based wave execution, Native Tool Support (frontier + local models), Role-Based Prompt Injection, Hardcoded Temperature Routing, ACP/MCP Compliance (GAP 1-3), Textual TUI, GitHub Copilot OAuth, approval gate, loop guards, event log, shell hooks, sandbox (bwrap), MCP client, LSP integration, session fork/revert, snapshot manager, permission policy, model tiers, tokenizer, auto-compactor, 2958+ unit tests passing.
-> **Recent Updates (2026-04)**: Stage 36 Scan-2 Audit Fixes: HIGH-3 subagent delegation depth env-race removed (`os.environ` write replaced by ContextVar propagation), MED-8 `event_log.py` `assert` → `RuntimeError` (4 methods), CP-10 LSP diagnostics injected into system prompt, CP-12 Anthropic `cache_control` sentinel, vol17/vol18 findings resolved. Stage 35 Vol15–Vol16: P4-2 LSP auto-restart, P4-3 bash security bypass closures, P4-4 budget ceiling end-to-end. Stage 34 Vol14: cost_tracker wiring, double-counting fix, idempotency reset.
-> **Audit Fixes (2026-04)**: 18 audit cycles completed (vol1–vol18 + gap analysis + scan-2). All Critical, High, and Medium severity findings resolved. Last validation: 2026-04-06 — 0 failed.
+> **Implementation Status**: Fully implemented — LangGraph pipeline, multi-file atomic rollback, advanced memory, repository intelligence, PRSW (Parallel Reads, Sequential Writes), DAG-based wave execution, Native Tool Support (frontier + local models), Role-Based Prompt Injection, Hardcoded Temperature Routing, ACP/MCP Compliance (GAP 1-3), Textual TUI, GitHub Copilot OAuth, approval gate, loop guards, event log, shell hooks, sandbox (bwrap), MCP client, LSP integration, session fork/revert, snapshot manager, permission policy, model tiers, tokenizer, auto-compactor, subagent TUI visibility, orchestrator decomposition, file_tools decomposition, Groq/LiteLLM adapters, 3229+ unit tests passing.
+> **Recent Updates (2026-04)**: Vol19–Vol27 + CODEBASE_FINDINGS audit pass: orchestrator decomposed into `inference_loop.py`, `task_lifecycle.py`, `tool_execution_pipeline.py`, `tool_registry.py`, `orchestrator_bootstrap.py`; `file_tools.py` decomposed into `_bash_exec.py`, `_file_io.py`, `_edit_tools.py`, `_diff_gate.py`; Groq and LiteLLM adapters added; subagent TUI visibility (SUBAGENT-VIS) fully implemented; per-tool icons and diff rendering in TUI; queued-message indicator; `/undo` command; `x-initiator` dynamic header for GitHub Copilot; all TUI/Copilot bugs from `BUGS.md` resolved.
+> **Audit Fixes (2026-04)**: 27+ audit cycles completed (vol1–vol27 + scan-2 + CODEBASE_FINDINGS). All Critical, High, and Medium severity findings resolved. Last validation: 2026-04-11. Open low-priority items tracked in `docs/CODEBASE_FINDINGS.md` §8.
 
 ## Implementation Stages
 
@@ -149,7 +149,7 @@ Full per-finding tables for vol1–vol11 are in `docs/archive/`. Per-finding tab
 
 ## Deferred Features (Open Engineering Debt)
 
-These items have been identified across multiple audit cycles but remain unimplemented. They are tracked in `docs/IMPLEMENTATION_PLAN.md` under the P4 section.
+These items have been identified across multiple audit cycles but remain unimplemented. Open low-priority code quality items are tracked in `docs/CODEBASE_FINDINGS.md` §8.
 
 | ID | Feature | Status | Source |
 |----|---------|--------|--------|
@@ -158,9 +158,9 @@ These items have been identified across multiple audit cycles but remain unimple
 | P4-3 | Token-level bash security analysis | ✅ CLOSED vol16 | vol12 P3-5 → vol14 P4-3 |
 | P4-4 | Budget ceiling alert in `SessionCostTracker` | ✅ CLOSED vol15 | vol12 P4-1 → vol14 P4-4 |
 | CP-1 | Structural recursion prevention — remove `Agent` from subagent tool sets | Low complexity; depth counter exists but structural enforcement is stronger | `deep-dive-claw-code-architecture.md` Pattern 1 |
-| CP-2 | Manifest-first subagent spawning — write manifest before spawning thread | Low complexity; enables status polling without coupling to thread lifecycle | `deep-dive-claw-code-architecture.md` Pattern 2 |
+| CP-2 | Manifest-first subagent spawning — write manifest before spawning thread | ✅ CLOSED: manifest written before thread spawn | `deep-dive-claw-code-architecture.md` Pattern 2 |
 | CP-3 | Stable content hash for instruction files — SHA-256 dedup when walking for `AGENT.md` | Low complexity; prevents duplicate instruction injection | `deep-dive-claw-code-architecture.md` Pattern 3 |
-| CP-4 | Dynamic boundary sentinel in system prompt — `__DYNAMIC_BOUNDARY__` for prompt caching | Low complexity; enables Anthropic prompt caching; splits static from volatile sections | `deep-dive-claw-code-architecture.md` Pattern 4 |
+| CP-4 | Dynamic boundary sentinel in system prompt — `__DYNAMIC_BOUNDARY__` for prompt caching | ✅ CLOSED CP-12: `__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__` + Anthropic `cache_control` | `deep-dive-claw-code-architecture.md` Pattern 4 |
 | CP-5 | `verification_nudge_needed` in TodoWrite — remind agent to verify when all todos complete | Trivial; prevents agent from stopping without running tests | `deep-dive-claw-code-architecture.md` Pattern 5 |
 | CP-6 | Deterministic auto-compaction — token-count threshold, structured 7-section summary, no LLM call | Medium complexity; current `/compact` is LLM-based and manual | `deep-dive-claw-code-architecture.md` §3 `compact.rs` |
 | CP-7 | Shell hooks with post-tool + deny semantics — stdin-JSON payload, exit `2` = deny, settings-file-configurable | Medium complexity; current hooks are Python-only, pre-only, no deny | `deep-dive-claw-code-architecture.md` §5 `hooks.rs` |
@@ -172,8 +172,13 @@ These items have been identified across multiple audit cycles but remain unimple
 | CP-13 | Per-project settings file — `.agent/settings.json` with model + permission-mode overrides, deep merge | Low-Medium complexity; enables per-project agent configuration | `deep-dive-claw-code-architecture.md` §9 `config.rs` |
 | CP-14 | Session `version` field in `MessageManager` persistence for future migration | Trivial; no functional change, insurance for schema evolution | `deep-dive-claw-code-architecture.md` §8 `session.rs` |
 | CP-15 | `send_user_message` tool — agent sends mid-turn message to user with `normal`/`proactive` status | Low complexity; new tool registration + EventBus publish | `deep-dive-claw-code-architecture.md` §14 `tools/src/lib.rs` |
+| GAP-TUI-2 | Per-tool permission `allow/deny/ask` policy with glob patterns persisted per project | Open — CodingAgent gates only `bash`; OpenCode gates all tools | `docs/gap-analysis-opencode-vs-codingagent-v2.md` Part 2 |
+| GAP-TUI-7 | `/share` session export (gist / clipboard) | Open | `docs/gap-analysis-opencode-vs-codingagent-v2.md` Part 3 |
+| LOOP-1 | Hard non-bypassable global token budget + step ceiling | Open | `docs/agent-loop-improvement-analysis.md` §1.1 |
+| LOOP-2 | Broad doom-loop detection across full session (semantic fingerprint) | Open | `docs/agent-loop-improvement-analysis.md` §1.2 |
 
-Full gap analysis: `docs/audit/parity-report-claw-code-v2.md`
+Full TUI/permission/UX gap analysis: `docs/gap-analysis-opencode-vs-codingagent-v2.md`
+Agent loop analysis: `docs/agent-loop-improvement-analysis.md`
 
 ---
 

@@ -141,6 +141,40 @@ if [ ${#MISSING[@]} -ne 0 ]; then
   fi
 fi
 
+# Check provider authentication state (best-effort — never blocks startup).
+# The TUI will always start regardless of this check; the warning is advisory.
+echo "[start.sh] Checking provider auth state..."
+_COPILOT_AUTH_OK=0
+if "$VENV_PYTHON" -c "
+import sys, pathlib, json
+prefs = pathlib.Path('~/.config/codingagent/prefs.json').expanduser()
+if prefs.exists():
+    d = json.loads(prefs.read_text())
+    token = d.get('providers', {}).get('github_copilot', {}).get('github_token', '')
+    if token:
+        sys.exit(0)
+sys.exit(1)
+" 2>/dev/null; then
+  _COPILOT_AUTH_OK=1
+fi
+
+if [ "$_COPILOT_AUTH_OK" = "0" ]; then
+  echo ""
+  echo "  ┌─────────────────────────────────────────────────────────────────────┐"
+  echo "  │  GitHub Copilot: not yet authenticated                              │"
+  echo "  │                                                                     │"
+  echo "  │  No OAuth token found.  The TUI will start normally — you can       │"
+  echo "  │  connect GitHub Copilot from inside the TUI:                        │"
+  echo "  │    Settings (ctrl+s)  →  API Keys  →  Login with GitHub Copilot    │"
+  echo "  │                                                                     │"
+  echo "  │  Or run the CLI login in another terminal and restart:              │"
+  echo "  │    python scripts/github_copilot_login.py                          │"
+  echo "  └─────────────────────────────────────────────────────────────────────┘"
+  echo ""
+else
+  echo "[start.sh] GitHub Copilot: authenticated OK"
+fi
+
 # Determine entrypoint: prefer python -m src.main if available
 echo "[start.sh] Locating entrypoint..."
 if "$VENV_PYTHON" -c "import importlib.util,sys; sys.exit(0 if importlib.util.find_spec('src.main') else 1)" 2>/dev/null; then

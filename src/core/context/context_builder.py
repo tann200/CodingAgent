@@ -1,5 +1,6 @@
 from __future__ import annotations
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Tuple
+import logging
 import math
 import json
 import threading
@@ -38,6 +39,23 @@ _JSON_CACHE: OrderedDict = OrderedDict()  # path → (mtime, parsed);  max 256 e
 _CACHE_MAX = 256
 _CACHE_LOCK = threading.Lock()
 
+# P3-A: Two-tier system prompt cache.
+#
+# Tier 1 — STATIC: SOUL.md + role + skills + tools + prompt partial.
+#   Key:   (role_name, active_skills_tuple, tools_hash, model_tier, provider_family,
+#            use_native_tools, is_simple_mode)
+#   Value: str — the joined static prefix (everything before DYNAMIC_BOUNDARY).
+#   Lifetime: process-lifetime, cleared by ContextBuilder.clear_cache().
+#
+# Tier 2 — DYNAMIC: env block (date + git HEAD).
+#   Key:   (working_dir_str, date_iso, git_head)
+#   Value: str — the dynamic env fragment.
+#   Lifetime: process-lifetime (tiny; at most one entry per working-dir per day).
+#
+# Both caches use the same _CACHE_LOCK for safety.
+_STATIC_PROMPT_CACHE: Dict[Tuple, str] = {}
+_DYNAMIC_ENV_CACHE: Dict[Tuple, str] = {}
+
 
 def _today_iso() -> str:
     """Return today's date as YYYY-MM-DD (local time)."""
@@ -56,10 +74,15 @@ class ContextBuilder:
         cache entry.  The caches persist for the lifetime of the process, so without
         explicit invalidation a change to agent-brain files would be invisible until
         restart.
+
+        P3-A: Also clears the static and dynamic prompt caches so that prompt partial
+        changes and tool-list changes are picked up immediately at task boundaries.
         """
         with _CACHE_LOCK:
             _TEXT_CACHE.clear()
             _JSON_CACHE.clear()
+            _STATIC_PROMPT_CACHE.clear()
+            _DYNAMIC_ENV_CACHE.clear()
 
     @classmethod
     def invalidate_path(cls, path: str) -> None:
@@ -100,10 +123,10 @@ class ContextBuilder:
         if working_dir:
             self._agent_context_dir = Path(working_dir) / ".agent-context"
         else:
-            # Derive from this file's location (src/core/context/ → repo root)
-            self._agent_context_dir = (
-                Path(__file__).resolve().parents[3] / ".agent-context"
-            )
+            # Fall back to the current working directory so that tests using
+            # monkeypatch.chdir() and callers without an explicit working_dir
+            # both resolve agent-context files relative to the active cwd.
+            self._agent_context_dir = Path.cwd() / ".agent-context"
 
         # Token usage tracking for TokenBudgetMonitor
         self._last_token_count: int = 0
@@ -133,7 +156,7 @@ class ContextBuilder:
                 role_name = role_file.stem  # filename without extension
                 self.roles[role_name] = self._read_text_cached(role_file) or ""
 
-        # Load all skills by name
+        # Load all skills by name — built-in first, then workspace overrides.
         self.skills: Dict[str, str] = {}
         skills_dir = config_root / "skills"
         if skills_dir.exists():
@@ -141,9 +164,44 @@ class ContextBuilder:
                 skill_name = skill_file.stem
                 self.skills[skill_name] = self._read_text_cached(skill_file) or ""
 
+        # GAP-NEW-2: workspace skill discovery.
+        # Load user-supplied skills from the working directory so users can add
+        # custom skills without modifying the repo.  Workspace skills override
+        # built-in skills of the same name, enabling per-project customisation.
+        _workspace_skill_dirs = [
+            self._agent_context_dir.parent / ".agent" / "skills",
+            self._agent_context_dir.parent / ".claude" / "skills",
+        ]
+        for _wsd in _workspace_skill_dirs:
+            if _wsd.exists():
+                for _wsf in _wsd.glob("*.md"):
+                    _wsn = _wsf.stem
+                    _content = self._read_text_cached(_wsf)
+                    if _content:
+                        self.skills[_wsn] = _content
+
     def get_skill(self, skill_name: str) -> str:
         """Get skill content by name."""
         return self.skills.get(skill_name, "")
+
+    def _select_role_for_tier(self, role_name: str, tier: str) -> str:
+        """GAP-SMALL-2 / GAP-FRONTIER-2: Return the best role prompt for the tier.
+
+        For the `operational` role only, we have tier-specific variants:
+          - NANO / SMALL → operational-small  (stripped, ≤60 lines)
+          - LARGE / FRONTIER → operational-frontier  (exhaustive, reflection gate)
+          - MEDIUM and all other roles → base role unchanged
+        """
+        if role_name == "operational":
+            if tier in ("nano", "small"):
+                content = self.roles.get("operational-small", "")
+                if content:
+                    return content
+            elif tier in ("large", "frontier"):
+                content = self.roles.get("operational-frontier", "")
+                if content:
+                    return content
+        return self.roles.get(role_name, "")
 
     @staticmethod
     def _read_text_cached(path: Path) -> Optional[str]:
@@ -299,25 +357,38 @@ class ContextBuilder:
             task:   The current task description (used as the search query).
             limit:  Maximum number of memory results to include.
         """
+        lines: List[str] = []
+
+        # 1. VectorStore — episodic memories from prior sessions
         try:
             from src.core.indexing.vector_store import VectorStore
 
             _vs = VectorStore(workdir=str(self._agent_context_dir.parent))
             results = _vs.search_memories(query=task, limit=limit)
-            if not results:
-                return ""
-            lines = [
-                "<prior_context>",
-                "Relevant context from previous sessions:",
-            ]
             for r in results:
-                # Each result is a dict — extract the text field.
                 text = r.get("text") or r.get("content") or str(r)
                 lines.append(f"- {str(text)[:250]}")
-            lines.append("</prior_context>")
-            return "\n".join(lines)
         except Exception:
+            pass
+
+        # 2. GAP-NEW-4: memory.md — notes the model saved with memory_save()
+        try:
+            _mem_file = Path.home() / ".coding_agent" / "memory.md"
+            if _mem_file.exists():
+                _mem_text = _mem_file.read_text(encoding="utf-8", errors="replace")
+                if _mem_text.strip():
+                    # Include at most the last 20 entries to avoid flooding the prompt
+                    _entries = [
+                        ln for ln in _mem_text.splitlines() if ln.strip().startswith("- [")
+                    ]
+                    for entry in _entries[-20:]:
+                        lines.append(entry[:250])
+        except Exception:
+            pass
+
+        if not lines:
             return ""
+        return "\n".join(["<prior_context>", "Relevant context from previous sessions:"] + lines + ["</prior_context>"])
 
     # ------------------------------------------------------------------
     # S1-B / S1-C helpers
@@ -334,30 +405,64 @@ class ContextBuilder:
         path = self._TEMPLATES_DIR / filename
         return self._read_text_cached(path) or ""
 
+    # GAP-FRONTIER-1: model-ID → partial file mapping (checked before provider family).
+    # Keys are regex patterns matched against the active model ID string.
+    _MODEL_ID_PARTIAL_MAP: List[Tuple[str, str]] = [
+        # Reasoning / frontier openai
+        (r"o1|o3|o4", "openai-reasoning.md"),
+        (r"gpt-4o|gpt-4\.5|gpt-4-turbo", "openai-frontier.md"),
+        # Anthropic — separate frontier vs small
+        (r"claude-opus|claude-3-7|claude-sonnet-4-[5-9]|claude-3-5-sonnet", "anthropic-frontier.md"),
+        (r"claude-haiku|claude-3-5-haiku|claude-3-haiku", "anthropic-small.md"),
+        # Gemini — frontier vs flash/nano
+        (r"gemini-2\.5-pro|gemini-pro|gemini-ultra", "gemini-frontier.md"),
+        (r"gemini-flash|gemini-nano|gemini-2\.0-flash", "gemini-small.md"),
+    ]
+
     def _select_prompt_partial(
         self,
         model_tier: Optional[str],
         provider_capabilities: Optional[Dict],
         is_reasoning: bool = False,
     ) -> str:
-        """S1-B: Choose the right prompt partial for the active model.
+        """S1-B + GAP-FRONTIER-1: Choose the right prompt partial for the active model.
 
         Selection priority:
-        1. Reasoning model → reasoning.md
-        2. Provider family: anthropic → anthropic.txt, openai → openai.txt
-        3. Tier: NANO/SMALL → local-small.md, MEDIUM → local-medium.md
-        4. Default → default.txt
+        1. Reasoning model (o1/o3/o4/qwen3/deepseek-r1) → beast.txt (unchanged)
+        2. Model ID match → model-specific partial (GAP-FRONTIER-1)
+        3. Provider family: anthropic → anthropic.txt
+        4. Provider family: gemini   → gemini.txt
+        5. Provider family: openai / openrouter → openai.txt
+        6. Tier: NANO/SMALL → local-small.md, MEDIUM → local-medium.md
+        7. Default → default.txt
         """
+        import re
+
         if is_reasoning:
-            partial = self._load_prompt_partial("reasoning.md")
+            partial = self._load_prompt_partial("beast.txt")
             if partial:
                 return partial
 
         caps = provider_capabilities or {}
+        # GAP-FRONTIER-1: try model-ID-specific partial first
+        active_model = caps.get("model", "").lower()
+        if active_model:
+            for pattern, filename in self._MODEL_ID_PARTIAL_MAP:
+                if re.search(pattern, active_model):
+                    partial = self._load_prompt_partial(filename)
+                    if partial:
+                        return partial
+                    break  # pattern matched but file absent — fall through
+
         provider_family = caps.get("provider_family", "").lower()
 
         if "anthropic" in provider_family:
             partial = self._load_prompt_partial("anthropic.txt")
+            if partial:
+                return partial
+
+        if "gemini" in provider_family:
+            partial = self._load_prompt_partial("gemini.txt")
             if partial:
                 return partial
 
@@ -444,6 +549,230 @@ class ContextBuilder:
             lines.append(f"name: {tool['name']}\ndescription: {desc}")
         return "\n".join(lines) + "\n" if lines else ""
 
+    # ------------------------------------------------------------------
+    # P3-A: Two-tier system prompt cache helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _get_git_head(working_dir: str) -> str:
+        """Return the current git HEAD SHA (short) for *working_dir*, or '' on error.
+
+        P3-A: Used as part of the dynamic-tier cache key so the env block is
+        regenerated whenever HEAD changes (e.g. after a commit or checkout) but
+        stays cached within the same HEAD across multiple turns.
+        """
+        try:
+            import subprocess
+
+            result = subprocess.run(
+                ["git", "rev-parse", "--short", "HEAD"],
+                cwd=working_dir,
+                capture_output=True,
+                text=True,
+                timeout=2,
+            )
+            if result.returncode == 0:
+                return result.stdout.strip()
+        except Exception:
+            pass
+        return ""
+
+    def _build_static_system_prefix(
+        self,
+        role_name: str,
+        active_skills: List[str],
+        tools: List[Dict],
+        model_tier: Optional[str],
+        provider_capabilities: Optional[Dict],
+        use_native_tools: bool,
+        is_simple_mode: bool,
+    ) -> str:
+        """Return the static portion of the system prompt (before DYNAMIC_BOUNDARY).
+
+        P3-A: This method is the expensive part of build_prompt (SOUL.md + role +
+        skills + tools rendering + prompt partial).  Its output is memoised in
+        _STATIC_PROMPT_CACHE keyed by a tuple of all inputs that affect it.
+        The cache is cleared at each task boundary by clear_cache().
+        """
+        # Derive a compact key for the tools list (hash of names+first-50-chars each).
+        try:
+            tools_key = hash(
+                tuple(
+                    (t.get("name", ""), (t.get("description") or "")[:50])
+                    for t in tools
+                )
+            )
+        except Exception:
+            tools_key = 0
+
+        caps = provider_capabilities or {}
+        provider_family = caps.get("provider_family", "")
+        cache_key: Tuple = (
+            role_name,
+            tuple(active_skills),
+            tools_key,
+            model_tier or "",
+            provider_family,
+            use_native_tools,
+            is_simple_mode,
+            # Include working_dir so that different projects (or test tmp_paths)
+            # with different AGENTS.md / instruction files get separate cache entries.
+            str(self._agent_context_dir.parent),
+        )
+
+        with _CACHE_LOCK:
+            cached = _STATIC_PROMPT_CACHE.get(cache_key)
+        if cached is not None:
+            return cached
+
+        # --- Build the static prefix (expensive path) ---
+        parts: List[str] = []
+
+        # GAP-SMALL-2 / GAP-FRONTIER-2: select tier-appropriate role prompt for
+        # the operational role so that small models get a stripped-down prompt
+        # and frontier models get exhaustive instructions.
+        tier_str = (model_tier or "").lower()
+        role_content = self._select_role_for_tier(role_name, tier_str)
+        parts.append(f"<identity>\n{self._sanitize_text(self.soul)}\n</identity>")
+        parts.append(f"<role>\n{self._sanitize_text(role_content)}\n</role>")
+
+        # CP-11: Ancestor instruction file injection.
+        try:
+            from src.core.context.instruction_files import (
+                discover_instruction_files,
+                render_instruction_files,
+            )
+
+            _workdir = self._agent_context_dir.parent
+            _instr_files = discover_instruction_files(_workdir)
+            if _instr_files:
+                _instr_block = render_instruction_files(_instr_files)
+                if _instr_block:
+                    parts.append(
+                        f"<project_instructions>\n{_instr_block}\n</project_instructions>"
+                    )
+        except Exception:
+            pass
+
+        # Dynamic boundary sentinel — Anthropic adapter splits here.
+        parts.append(SYSTEM_PROMPT_DYNAMIC_BOUNDARY)
+
+        if active_skills:
+            skill_contents = [
+                self._sanitize_text(sc)
+                for sn in active_skills
+                if (sc := self.get_skill(sn))
+            ]
+            if skill_contents:
+                parts.append(
+                    f"<active_skills>\n{chr(10).join(skill_contents)}\n</active_skills>"
+                )
+
+        tools_text = self._render_tools_for_tier(tools, model_tier)
+        parts.append(f"<available_tools>\n{tools_text}\n</available_tools>")
+
+        # S1-B: prompt partial.
+        _is_reasoning_model = False
+        try:
+            _is_reasoning_model = False
+            try:
+                from src.core.inference.thinking_utils import is_reasoning_model
+
+                _active_model = caps.get("model", "")
+                _is_reasoning_model = bool(
+                    _active_model and is_reasoning_model(_active_model)
+                )
+            except Exception:
+                pass
+            _partial = self._select_prompt_partial(
+                model_tier, provider_capabilities, _is_reasoning_model
+            )
+            if _partial:
+                parts.append(f"<model_guidance>\n{_partial}\n</model_guidance>")
+        except Exception:
+            pass
+
+        # GAP-FRONTIER-7: inject structured thinking gate for reasoning models and
+        # frontier models that support extended thinking (FRONTIER + LARGE tiers).
+        # This adds ~50 tokens but significantly improves tool-call accuracy on
+        # complex tasks by forcing the model to plan before acting.
+        if tier_str in ("frontier", "large") or _is_reasoning_model:
+            parts.append(
+                "<thinking_mode>\n"
+                "Before every tool call, briefly state:\n"
+                "1. What you expect this call to return.\n"
+                "2. What you will do if it fails or returns unexpected output.\n"
+                "This reflection is mandatory — do not skip it.\n"
+                "</thinking_mode>"
+            )
+
+        # Output format instruction.
+        if use_native_tools:
+            format_instr = (
+                "<output_format>\n"
+                "You MUST think step-by-step. Write your internal reasoning inside <think> tags.\n"
+                "You have access to native tools. Use the native JSON function calling API.\n"
+                "Do NOT output markdown code blocks for tool calls.\n"
+                "IMPORTANT: Call tools using the native function calling format.\n"
+                "After executing a tool, your response will include the tool's result.\n"
+                "If the tool result completes the user's task, do NOT make more tool calls.\n"
+                "Simply summarize the result or indicate task completion.\n"
+                "Only call another tool if the result requires follow-up action.\n"
+                "</output_format>"
+            )
+        elif is_simple_mode:
+            format_instr = (
+                "<output_format>\n"
+                "STRICT RULE: Output EXACTLY ONE tool call per response, no exceptions.\n"
+                "Use the YAML tool format in a fenced code block:\n"
+                "```yaml\n"
+                "name: the_tool_name\n"
+                "arguments:\n"
+                "  arg_name: arg_value\n"
+                "```\n"
+                "Do NOT output more than one yaml block. Do NOT chain tool calls.\n"
+                "After the tool result is returned, you may call one more tool if needed.\n"
+                "</output_format>"
+            )
+        elif tier_str in ("nano", "small"):
+            # GAP-SMALL-1: simplified output format for small models — only STATUS: line required.
+            format_instr = (
+                "<output_format>\n"
+                "Use the YAML tool format in a fenced code block:\n"
+                "```yaml\n"
+                "name: the_tool_name\n"
+                "arguments:\n"
+                "  arg_name: arg_value\n"
+                "```\n"
+                "Make ONE tool call per response. After the tool result, write:\n"
+                "STATUS: complete | partial | failed\n"
+                "</output_format>"
+            )
+        else:
+            format_instr = (
+                "<output_format>\n"
+                "You MUST think step-by-step. Write your internal reasoning inside <think> tags.\n"
+                "To execute an action, you MUST use the provided markdown YAML tool format.\n"
+                "Format your tool calls exactly like this using a fenced code block:\n"
+                "```yaml\n"
+                "name: the_tool_name\n"
+                "arguments:\n"
+                "  arg_name: arg_value\n"
+                "```\n"
+                "IMPORTANT: Use markdown YAML format (not XML). Do not use <tool> tags.\n"
+                "After executing a tool, your response will include the tool's result.\n"
+                "If the tool result completes the user's task, do NOT make more tool calls.\n"
+                "Simply summarize the result or indicate task completion.\n"
+                "Only call another tool if the result requires follow-up action.\n"
+                "</output_format>"
+            )
+        parts.append(format_instr)
+
+        result = "\n\n".join(parts)
+        with _CACHE_LOCK:
+            _STATIC_PROMPT_CACHE[cache_key] = result
+        return result
+
     def build_prompt(
         self,
         role_name: str,
@@ -460,57 +789,63 @@ class ContextBuilder:
         # F10: Use dynamic token budget when max_tokens is not explicitly provided.
         if max_tokens is None:
             max_tokens = _default_max_tokens()
-        # Token budgeting rules
-        identity_quota = min(math.ceil(0.12 * max_tokens), 800)
-        role_quota = min(math.ceil(0.12 * max_tokens), 800)
-        tools_quota = min(math.ceil(0.06 * max_tokens), 400)
+        # Token budgeting: reserve space for static system + tags overhead,
+        # give remaining budget to conversation history.
         conversation_quota = max(
-            0, max_tokens - (identity_quota + role_quota + tools_quota + 500)
-        )  # buffer for tags
+            0, max_tokens - 2100
+        )  # ~2100 tokens for system overhead
 
         built_messages: List[Dict[str, str]] = []
 
         # 1. System Block (Identity + Role + Skills + Tools)
         # We consolidate these into a single system message for better compatibility
-        system_parts = []
 
-        # Load role content from agent-brain based on role_name
-        role_content = self.roles.get(role_name, "")
-        safe_identity = self._sanitize_text(self.soul)
-        safe_role = self._sanitize_text(role_content)
-        safe_task_description = self._sanitize_text(task_description)
-
-        system_parts.append(f"<identity>\n{safe_identity}\n</identity>")
-        system_parts.append(f"<role>\n{safe_role}\n</role>")
-
-        # CP-11: Ancestor instruction file injection.
-        # Walk from the workspace root up to the filesystem root collecting
-        # AGENTS.md, AGENTS.local.md, .agent/AGENTS.md, .agent/instructions.md.
-        # Files are deduplicated by content hash and rendered with per-file (4k)
-        # and total (12k) character budgets.  Injected before the dynamic
-        # boundary so this content is part of the static cacheable block.
+        # P3-A: Determine use_native_tools / is_simple_mode once, early, so we can
+        # pass them to _build_static_system_prefix for correct cache-key derivation.
+        _is_simple_mode = False
         try:
-            from src.core.context.instruction_files import (
-                discover_instruction_files,
-                render_instruction_files,
+            from src.core.inference.model_tiers import (
+                ModelTier,
+                is_simple_mode as _check_simple,
             )
 
-            _workdir = self._agent_context_dir.parent
-            _instr_files = discover_instruction_files(_workdir)
-            if _instr_files:
-                _instr_block = render_instruction_files(_instr_files)
-                if _instr_block:
-                    system_parts.append(
-                        f"<project_instructions>\n{_instr_block}\n</project_instructions>"
-                    )
-        except Exception:
-            pass  # never fail prompt build due to instruction file errors
+            _tier_val = ModelTier(model_tier) if model_tier else None
+            _is_simple_mode = _check_simple(_tier_val) if _tier_val else False
 
-        # CP-12: Dynamic-boundary sentinel.  Everything appended after this
-        # point is session/turn-specific and should NOT be included in the
-        # static cache block.  The Anthropic adapter (and any future
-        # cache-aware adapter) splits on this constant.
-        system_parts.append(SYSTEM_PROMPT_DYNAMIC_BOUNDARY)
+            # GAP-SMALL-3: SMALL models on providers without proven parallel tool
+            # support also use simple_mode (one tool per response).
+            if not _is_simple_mode and _tier_val == ModelTier.SMALL:
+                _caps_local = provider_capabilities or {}
+                if not _caps_local.get("provider_supports_parallel_tools", True):
+                    _is_simple_mode = True
+
+        except Exception:
+            pass
+
+        use_native_tools = (
+            not _is_simple_mode  # NANO never uses native tools
+            and provider_capabilities is not None
+            and provider_capabilities.get("supports_native_tools", False)
+        )
+
+        # S1-C: Prune tool list based on model tier before rendering.
+        if model_tier:
+            tools = self._prune_tools(tools, model_tier)
+
+        # P3-A: Fetch (or build + cache) the static system prefix.
+        static_prefix = self._build_static_system_prefix(
+            role_name=role_name,
+            active_skills=active_skills,
+            tools=tools,
+            model_tier=model_tier,
+            provider_capabilities=provider_capabilities,
+            use_native_tools=use_native_tools,
+            is_simple_mode=_is_simple_mode,
+        )
+
+        # Dynamic parts (appended after the static prefix).
+        safe_task_description = self._sanitize_text(task_description)
+        dynamic_parts: List[str] = []
 
         # 1a. Session summary — auto-injected from TASK_STATE.md so the agent
         #     always has access to prior context without needing a tool call.
@@ -534,7 +869,7 @@ class ContextBuilder:
                 and ts_content.strip() != _empty.strip()
                 and len(ts_content) > 60
             ):
-                system_parts.append(
+                dynamic_parts.append(
                     f"<session_summary>\n{ts_content}\n</session_summary>"
                 )
         except Exception:
@@ -546,7 +881,7 @@ class ContextBuilder:
         try:
             todo_content = self._get_todo_content()
             if todo_content and len(todo_content) > 20:
-                system_parts.append(
+                dynamic_parts.append(
                     f"<task_progress>\n{todo_content}\n</task_progress>"
                 )
         except Exception:
@@ -558,7 +893,7 @@ class ContextBuilder:
         if retrieved_snippets and context_controller is not None:
             try:
                 # Convert snippet dicts to the file-descriptor format enforce_budget expects
-                _sys_text = "\n".join(system_parts)
+                _sys_text = static_prefix + "\n\n".join(dynamic_parts)
                 _file_descs = [
                     {
                         "path": s.get("file_path", ""),
@@ -576,9 +911,7 @@ class ContextBuilder:
                     _file_descs, conversation, _sys_text
                 )
                 if _excluded:
-                    import logging as _logging
-
-                    _logging.getLogger(__name__).debug(
+                    logging.getLogger(__name__).debug(
                         f"ContextController: excluded {len(_excluded)} snippet(s) to fit budget"
                     )
                 # Rebuild retrieved_snippets from included descriptors (preserve original keys)
@@ -615,50 +948,10 @@ class ContextBuilder:
                         + "\n".join(repo_entries)
                         + "\n</repository_intelligence>"
                     )
-                    system_parts.append(repo_block)
+                    dynamic_parts.append(repo_block)
             except Exception:
                 # best-effort: do not fail prompt build
                 pass
-
-        if active_skills:
-            # active_skills is now a list of skill names to load from files
-            skill_contents = []
-            for skill_name in active_skills:
-                skill_content = self.get_skill(skill_name)
-                if skill_content:
-                    skill_contents.append(self._sanitize_text(skill_content))
-            if skill_contents:
-                system_parts.append(
-                    f"<active_skills>\n{chr(10).join(skill_contents)}\n</active_skills>"
-                )
-
-        # S1-C: Prune tool list based on model tier before rendering.
-        if model_tier:
-            tools = self._prune_tools(tools, model_tier)
-
-        # S8-A: Render tools with tier-appropriate verbosity.
-        tools_text = self._render_tools_for_tier(tools, model_tier)
-        system_parts.append(f"<available_tools>\n{tools_text}\n</available_tools>")
-
-        # S1-B: Inject per-provider / per-tier prompt partial after skills and tools.
-        try:
-            _is_reasoning = False
-            try:
-                from src.core.inference.thinking_utils import is_reasoning_model
-
-                _active_model = (provider_capabilities or {}).get("model", "")
-                _is_reasoning = bool(
-                    _active_model and is_reasoning_model(_active_model)
-                )
-            except Exception:
-                pass
-            _partial = self._select_prompt_partial(
-                model_tier, provider_capabilities, _is_reasoning
-            )
-            if _partial:
-                system_parts.append(f"<model_guidance>\n{_partial}\n</model_guidance>")
-        except Exception:
-            pass  # never fail prompt build due to missing partial
 
         # CP-10: LSP context injection — append workspace symbol context when
         # the feature is enabled (config: lsp_context.enabled or env var
@@ -672,90 +965,32 @@ class ContextBuilder:
 
             _lsp_block = get_lsp_context_block(workdir=self._agent_context_dir.parent)
             if _lsp_block:
-                system_parts.append(_lsp_block)
+                dynamic_parts.append(_lsp_block)
         except Exception:
             pass  # never fail prompt build due to LSP errors
 
-        # 1.5 Mandatory Output Format (Last part of system instructions)
-        # Phase 7: Conditional format based on provider capabilities
-        # S8-B: For NANO tier (simple_mode), force native tools off and restrict to one tool.
-        _is_simple_mode = False
-        try:
-            from src.core.inference.model_tiers import (
-                ModelTier,
-                is_simple_mode as _check_simple,
-            )
-
-            _is_simple_mode = (
-                _check_simple(ModelTier(model_tier)) if model_tier else False
-            )
-        except Exception:
-            pass
-
-        use_native_tools = (
-            not _is_simple_mode  # NANO never uses native tools
-            and provider_capabilities is not None
-            and provider_capabilities.get("supports_native_tools", False)
-        )
-
-        if use_native_tools:
-            format_instr = (
-                "<output_format>\n"
-                "You MUST think step-by-step. Write your internal reasoning inside <think> tags.\n"
-                "You have access to native tools. Use the native JSON function calling API.\n"
-                "Do NOT output markdown code blocks for tool calls.\n"
-                "IMPORTANT: Call tools using the native function calling format.\n"
-                "After executing a tool, your response will include the tool's result.\n"
-                "If the tool result completes the user's task, do NOT make more tool calls.\n"
-                "Simply summarize the result or indicate task completion.\n"
-                "Only call another tool if the result requires follow-up action.\n"
-                "</output_format>"
-            )
-        elif _is_simple_mode:
-            # S8-B: NANO simple_mode — strict single YAML tool rule in output format.
-            format_instr = (
-                "<output_format>\n"
-                "STRICT RULE: Output EXACTLY ONE tool call per response, no exceptions.\n"
-                "Use the YAML tool format in a fenced code block:\n"
-                "```yaml\n"
-                "name: the_tool_name\n"
-                "arguments:\n"
-                "  arg_name: arg_value\n"
-                "```\n"
-                "Do NOT output more than one yaml block. Do NOT chain tool calls.\n"
-                "After the tool result is returned, you may call one more tool if needed.\n"
-                "</output_format>"
-            )
+        # Assemble final system message: static prefix + dynamic parts joined.
+        if dynamic_parts:
+            full_system = static_prefix + "\n\n" + "\n\n".join(dynamic_parts)
         else:
-            format_instr = (
-                "<output_format>\n"
-                "You MUST think step-by-step. Write your internal reasoning inside <think> tags.\n"
-                "To execute an action, you MUST use the provided markdown YAML tool format.\n"
-                "Format your tool calls exactly like this using a fenced code block:\n"
-                "```yaml\n"
-                "name: the_tool_name\n"
-                "arguments:\n"
-                "  arg_name: arg_value\n"
-                "```\n"
-                "IMPORTANT: Use markdown YAML format (not XML). Do not use <tool> tags.\n"
-                "After executing a tool, your response will include the tool's result.\n"
-                "If the tool result completes the user's task, do NOT make more tool calls.\n"
-                "Simply summarize the result or indicate task completion.\n"
-                "Only call another tool if the result requires follow-up action.\n"
-                "</output_format>"
-            )
-        system_parts.append(format_instr)
+            full_system = static_prefix
 
-        built_messages.append({"role": "system", "content": "\n\n".join(system_parts)})
+        built_messages.append({"role": "system", "content": full_system})
 
         # 2. Conversation Logic
+        # P3-B: Prune stale tool outputs before filtering to save context tokens.
+        pruned_conversation = self._prune_stale_tool_outputs(
+            list(conversation),
+            current_step_hint=task_description[:120] if task_description else None,
+        )
+
         # Filter msg_mgr to only include User and Assistant messages (strip system prompts)
         filtered_conv = [
             {
                 "role": m.get("role"),
                 "content": self._sanitize_text(m.get("content", "")),
             }
-            for m in conversation
+            for m in pruned_conversation
             if m.get("role") in ["user", "assistant"]
         ]
 
@@ -805,6 +1040,106 @@ class ContextBuilder:
 
         return built_messages
 
+    # ------------------------------------------------------------------
+    # P3-B: Proactive tool output pruning
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _prune_stale_tool_outputs(
+        messages: List[Dict],
+        current_step_hint: Optional[str] = None,
+        stale_after_turns: int = 3,
+    ) -> List[Dict]:
+        """Replace oversized tool results that are >stale_after_turns old with stubs.
+
+        P3-B: Keeps recent tool results verbatim (the last *stale_after_turns*
+        user messages that contain tool_execution_result are considered "recent").
+        Older tool result messages are replaced with a compact stub that preserves
+        the tool name + ok/error status but discards the full output.
+
+        The optional *current_step_hint* string is matched against the tool
+        result content: if the current plan step description appears in the
+        result, the message is kept verbatim regardless of age.
+
+        Non-tool-result user messages and all assistant messages are left
+        unchanged.
+        """
+        if not messages:
+            return messages
+
+        # Locate indices of all "tool result" user messages (newest-first).
+        tool_result_indices: List[int] = []
+        for i, msg in enumerate(messages):
+            if msg.get("role") == "user":
+                content = msg.get("content", "")
+                if "tool_execution_result" in str(content):
+                    tool_result_indices.append(i)
+
+        # The most recent stale_after_turns results are "recent" — keep them.
+        recent_indices: set = set(tool_result_indices[-stale_after_turns:])
+
+        pruned: List[Dict] = []
+        for i, msg in enumerate(messages):
+            if (
+                msg.get("role") == "user"
+                and i not in recent_indices
+                and "tool_execution_result" in str(msg.get("content", ""))
+            ):
+                # Old tool result: extract minimal info and replace with stub.
+                try:
+                    content_str = msg.get("content", "")
+                    data = (
+                        json.loads(content_str) if isinstance(content_str, str) else {}
+                    )
+                    res = data.get("tool_execution_result", {})
+                    tool_name = res.get("tool_name") or res.get("name") or "tool"
+                    is_ok = bool(res.get("ok") or res.get("status") == "ok")
+                    status = "ok" if is_ok else "error"
+
+                    # Keep if current step hint appears in the full content.
+                    if (
+                        current_step_hint
+                        and current_step_hint.lower() in str(content_str).lower()
+                    ):
+                        pruned.append(msg)
+                        continue
+
+                    stub = json.dumps(
+                        {
+                            "tool_execution_result": {
+                                "tool_name": tool_name,
+                                "status": status,
+                                "_pruned": True,
+                                "_note": "Full output pruned (stale — >3 turns ago). Use read_file to re-fetch if needed.",
+                            }
+                        }
+                    )
+                    pruned.append({"role": "user", "content": stub})
+                except Exception:
+                    # Never fail pruning: keep original on any error.
+                    pruned.append(msg)
+            else:
+                pruned.append(msg)
+
+        return pruned
+
+    def _truncate_to_token_budget(self, text: str, budget: int) -> str:
+        """Binary-search truncation: O(log N) tokeniser calls instead of O(N).
+
+        Finds the longest prefix of *text* whose token count is <= *budget*.
+        Falls back to empty string if even a single character exceeds the budget.
+        """
+        if self.token_estimator(text) <= budget:
+            return text
+        lo, hi = 0, len(text)
+        while lo < hi - 1:
+            mid = (lo + hi) // 2
+            if self.token_estimator(text[:mid]) <= budget:
+                lo = mid
+            else:
+                hi = mid
+        return text[:lo]
+
     def _truncate_text(self, text: str, max_tokens: int) -> str:
         # First, handle the base case: if text already fits, no truncation needed.
         if self.token_estimator(text) <= max_tokens:
@@ -813,17 +1148,10 @@ class ContextBuilder:
         marker = "\n\n[TRUNCATED]"
         marker_tokens = self.token_estimator(marker)
 
-        # If max_tokens is too small to even fit the marker, return empty or what minimal fits.
-        # This ensures we don't try to add a marker that itself exceeds the budget.
+        # If max_tokens is too small to even fit the marker, return whatever fits.
         if max_tokens < marker_tokens:
-            # Try to fit as much of the original text as possible within max_tokens
-            truncated_text = ""
-            for i in range(len(text)):
-                if self.token_estimator(text[: i + 1]) <= max_tokens:
-                    truncated_text = text[: i + 1]
-                else:
-                    break
-            return truncated_text  # No marker in this case
+            # P1-D fix: use binary search instead of char-by-char O(N) loop.
+            return self._truncate_to_token_budget(text, max_tokens)
 
         # Now, we know there's enough space for at least the marker.
         # Calculate budget for the actual content before the marker.
@@ -834,7 +1162,8 @@ class ContextBuilder:
 
         # Truncate content to fit content_budget_for_truncation
         if original_text_tokens > content_budget_for_truncation:
-            # Heuristic for character limit based on average chars/token for efficiency
+            # Heuristic starting point: slice to approximate char count, then
+            # P1-D fix: binary-search fine-tune instead of char-by-char O(N) loop.
             approx_chars_per_token = (
                 len(text) / original_text_tokens if original_text_tokens > 0 else 4
             )
@@ -845,12 +1174,10 @@ class ContextBuilder:
             if len(truncated_text) > target_char_limit:
                 truncated_text = truncated_text[:target_char_limit]
 
-            # Fine-tune by removing characters one by one until within budget
-            while (
-                self.token_estimator(truncated_text) > content_budget_for_truncation
-                and len(truncated_text) > 0
-            ):
-                truncated_text = truncated_text[:-1]
+            # P1-D fix: binary-search fine-tune instead of O(N) char-by-char loop.
+            truncated_text = self._truncate_to_token_budget(
+                truncated_text, content_budget_for_truncation
+            )
 
             # If truncation actually occurred (original text was longer than what fits in content_budget_for_truncation)
             # and we have space for the marker, add it.
@@ -889,13 +1216,8 @@ class ContextBuilder:
 
         if total_quota <= wrapper_tokens:
             # We don't even have enough budget for the tags and the marker.
-            # Just return whatever we can fit of the ideal full message, no marker guarantees.
-            truncated_msg = ""
-            for i in range(len(ideal_full_msg)):
-                if self.token_estimator(ideal_full_msg[: i + 1]) <= total_quota:
-                    truncated_msg = ideal_full_msg[: i + 1]
-                else:
-                    break
+            # P1-D fix: binary-search instead of O(N) char-by-char loop.
+            truncated_msg = self._truncate_to_token_budget(ideal_full_msg, total_quota)
             return {"role": "system", "content": truncated_msg}
 
         # 3. We have budget for the wrapper + marker + some content.
@@ -911,18 +1233,11 @@ class ContextBuilder:
 
         truncated_content = raw_content[:target_char_limit]
 
-        # Function to test a specific truncated content length
-        def test_fit(content_candidate):
-            return (
-                self.token_estimator(
-                    f"<{tag}>\n{content_candidate}\n\n[TRUNCATED]\n</{tag}>"
-                )
-                <= total_quota
-            )
-
-        # If it's too big, shrink it
-        while not test_fit(truncated_content) and len(truncated_content) > 0:
-            truncated_content = truncated_content[:-1]
+        # P1-D fix: binary-search fine-tune instead of O(N) char-by-char loop.
+        # We search on raw_content directly, using content_budget as the constraint.
+        truncated_content = self._truncate_to_token_budget(
+            truncated_content, content_budget
+        )
 
         return {
             "role": "system",

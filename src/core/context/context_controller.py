@@ -229,7 +229,4 @@ def get_context_controller(max_tokens: int = 6000) -> ContextController:
     return ContextController(max_tokens=max_tokens)
 
 
-ContextController.extract_relevant_snippets = (
-    ContextController.extract_relevant_snippets
-)
 ContextController.get_relevant_snippets = ContextController.extract_relevant_snippets  # type: ignore[attr-defined]

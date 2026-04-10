@@ -286,3 +286,48 @@ class RoleManager:
         if not self._current_role:
             return True
         return is_tool_allowed_for_role(tool_name, self._current_role)
+
+
+# ---------------------------------------------------------------------------
+# SM-1: Role-to-model default binding
+# ---------------------------------------------------------------------------
+# Read-heavy roles (analyst, reviewer, strategic) default to the configured
+# small_model so they don't consume frontier-model tokens for lightweight tasks.
+# None means "use the active provider's default model" (no override injected).
+#
+# Users / callers can always override this by passing model= to delegate_task.
+_ROLE_PREFERS_SMALL_MODEL: Dict[str, bool] = {
+    "analyst": True,  # read-only exploration — small model sufficient
+    "strategic": True,  # planning / decomposition — reasoning, not code gen
+    "reviewer": True,  # code review — read-heavy, no complex generation
+    "operational": False,  # code implementation — needs full model capability
+    "debugger": False,  # root-cause + editing — needs full model capability
+}
+
+
+def get_default_model_for_role(role: str) -> Optional[str]:
+    """SM-1: Return the default model name for *role*.
+
+    Returns the configured ``small_model`` for read-heavy roles and ``None``
+    (use the active provider's default) for implementation/debug roles.
+
+    Parameters
+    ----------
+    role:
+        Canonical or legacy role name.
+
+    Returns
+    -------
+    str or None
+        Model name string, or ``None`` to use the provider default.
+    """
+    canonical = normalize_role(role)
+    prefers_small = _ROLE_PREFERS_SMALL_MODEL.get(canonical, False)
+    if not prefers_small:
+        return None
+    try:
+        from src.core.config_loader import get_small_model as _gsm
+
+        return _gsm()
+    except Exception:
+        return None

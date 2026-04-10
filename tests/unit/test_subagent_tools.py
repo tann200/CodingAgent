@@ -2,6 +2,7 @@
 Tests for subagent tools.
 """
 
+from unittest.mock import AsyncMock, MagicMock, patch
 
 
 class TestDelegateTask:
@@ -19,40 +20,95 @@ class TestDelegateTask:
         assert "Error: Invalid role" in result
         assert "invalid_role" in result
 
-    def test_delegate_task_valid_roles(self):
-        """Test delegate_task accepts valid roles."""
+    def test_delegate_task_valid_roles(self, tmp_path):
+        """Test delegate_task accepts valid roles (graph execution is mocked)."""
         from src.tools.subagent_tools import delegate_task
 
-        for role in ["researcher", "coder", "reviewer", "planner"]:
-            result = delegate_task(
-                role=role,
-                subtask_description="Test task",
-                working_dir="/tmp",
-            )
-            # Should either work or fail gracefully (not invalid role error)
-            assert "Invalid role" not in result
+        # Build a minimal fake final state that _generate_work_summary can handle.
+        _fake_state = {
+            "task": "Test task",
+            "evaluation_result": "pass",
+            "history": [],
+            "errors": [],
+            "current_plan": [],
+            "current_step": 0,
+            "last_result": {"ok": True, "output": "done"},
+        }
 
-    def test_delegate_task_default_working_dir(self):
+        # Patch ainvoke on whatever graph GraphFactory returns so no thread actually
+        # runs the LangGraph pipeline.  This prevents ordering-dependent hangs when
+        # the global ThreadPoolExecutor is in a bad state after the full test suite.
+        _mock_graph = MagicMock()
+        _mock_graph.ainvoke = AsyncMock(return_value=_fake_state)
+
+        with patch("src.tools.subagent_tools.GraphFactory") as mock_gf:
+            mock_gf.get_graph.return_value = _mock_graph
+
+            for role in ["researcher", "coder", "reviewer", "planner"]:
+                result = delegate_task(
+                    role=role,
+                    subtask_description="Test task",
+                    working_dir=str(tmp_path),
+                )
+                # Should either work or fail gracefully (not invalid role error)
+                assert "Invalid role" not in result, (
+                    f"Role '{role}' unexpectedly rejected: {result}"
+                )
+
+    def test_delegate_task_default_working_dir(self, tmp_path):
         """Test delegate_task uses default working directory."""
+        # ARCH-VOL21-1: get_graph() now returns the full 14-node compiled graph,
+        # which makes real LLM calls and hangs in tests.  Mock GraphFactory so
+        # the graph is replaced with a fast AsyncMock (same pattern as
+        # test_delegate_task_valid_roles).
         from src.tools.subagent_tools import delegate_task
+        from unittest.mock import AsyncMock, MagicMock, patch
 
-        # This should not raise an error even with None working_dir
-        result = delegate_task(
-            role="researcher",
-            subtask_description="Test",
-            working_dir=None,
-        )
-        # Just verify it doesn't crash
+        _fake_state = {
+            "task": "Test",
+            "evaluation_result": "pass",
+            "history": [],
+            "errors": [],
+            "current_plan": [],
+            "current_step": 0,
+            "last_result": {"ok": True, "output": "done"},
+        }
+        _mock_graph = MagicMock()
+        _mock_graph.ainvoke = AsyncMock(return_value=_fake_state)
+
+        with patch("src.tools.subagent_tools.GraphFactory") as mock_gf:
+            mock_gf.get_graph.return_value = _mock_graph
+            # working_dir=None should not raise an error
+            result = delegate_task(
+                role="researcher",
+                subtask_description="Test",
+                working_dir=None,
+            )
         assert result is not None
 
-    def test_delegate_task_with_empty_subtask(self):
+    def test_delegate_task_with_empty_subtask(self, tmp_path):
         """Test delegate_task with empty subtask description."""
         from src.tools.subagent_tools import delegate_task
+        from unittest.mock import AsyncMock, MagicMock, patch
 
-        result = delegate_task(
-            role="coder",
-            subtask_description="",
-        )
+        _fake_state = {
+            "task": "",
+            "evaluation_result": "pass",
+            "history": [],
+            "errors": [],
+            "current_plan": [],
+            "current_step": 0,
+            "last_result": {"ok": True, "output": "done"},
+        }
+        _mock_graph = MagicMock()
+        _mock_graph.ainvoke = AsyncMock(return_value=_fake_state)
+
+        with patch("src.tools.subagent_tools.GraphFactory") as mock_gf:
+            mock_gf.get_graph.return_value = _mock_graph
+            result = delegate_task(
+                role="coder",
+                subtask_description="",
+            )
         # Should handle empty string gracefully
         assert result is not None
 
@@ -105,10 +161,19 @@ class TestListSubagentRoles:
         roles = result["available_roles"]
 
         # Check that descriptions contain relevant keywords
-        assert "research" in roles["analyst"]["description"].lower() or "analysis" in roles["analyst"]["description"].lower()
-        assert "code" in roles["operational"]["description"].lower() or "implement" in roles["operational"]["description"].lower()
+        assert (
+            "research" in roles["analyst"]["description"].lower()
+            or "analysis" in roles["analyst"]["description"].lower()
+        )
+        assert (
+            "code" in roles["operational"]["description"].lower()
+            or "implement" in roles["operational"]["description"].lower()
+        )
         assert "review" in roles["reviewer"]["description"].lower()
-        assert "plan" in roles["strategic"]["description"].lower() or "decompos" in roles["strategic"]["description"].lower()
+        assert (
+            "plan" in roles["strategic"]["description"].lower()
+            or "decompos" in roles["strategic"]["description"].lower()
+        )
 
 
 class TestGraphFactoryIntegration:

@@ -18,6 +18,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+pytestmark = pytest.mark.integration
+
 # ---------------------------------------------------------------------------
 # CAP-5 helpers (mirrors test_e2e_pipeline_smoke.py approach)
 # ---------------------------------------------------------------------------
@@ -152,13 +154,15 @@ class TestPermissionGateway:
         class _FakePerm:
             value = "danger"
 
+        # Patch the module-level references used inside permission_gateway, not the
+        # tools_config attributes (the gateway imports them once at module load time).
         with (
             patch(
-                "src.tools.tools_config.get_active_permission_mode",
+                "src.core.orchestration.permission_gateway._get_active_permission_mode",
                 return_value=_FakeMode(),
             ),
             patch(
-                "src.tools.tools_config.get_tool_permission",
+                "src.core.orchestration.permission_gateway._get_tool_permission",
                 return_value=_FakePerm(),
             ),
         ):
@@ -267,9 +271,13 @@ class TestRouteExecutionSubRouters:
     def test_check_no_plan_fast_path_read_only_routes_memory_sync(self) -> None:
         from src.core.orchestration.graph.builder import _check_no_plan_fast_path
 
+        # NOTE: `grep` is in _query_tools (routes to perception so the model can
+        # synthesise a natural language answer). Use `list_files` instead — it is
+        # read-only, not a query tool, and not a read_file type, so it routes
+        # directly to memory_sync (task answered).
         state = {
             "current_plan": [],
-            "last_tool_name": "grep",
+            "last_tool_name": "list_files",
             "last_result": {"ok": True},
         }
         assert _check_no_plan_fast_path(state) == "memory_sync"

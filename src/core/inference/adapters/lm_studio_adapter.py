@@ -166,6 +166,64 @@ class LmStudioAdapter(OpenAICompatibleAdapter):
         )
 
     # ------------------------------------------------------------------
+    # LM Studio-specific context-window query (/api/v0/models)
+    # ------------------------------------------------------------------
+
+    def get_loaded_context_length(self, model_name: str = "") -> int:
+        """Return the loaded context length for *model_name* from LM Studio's
+        native ``/api/v0/models`` endpoint.
+
+        LM Studio exposes ``loaded_context_length`` (the context size the model
+        was actually loaded with) and ``max_context_length`` on each model entry.
+        We prefer ``loaded_context_length`` for the active model because it
+        reflects the real token budget available in the current session.
+
+        Returns 0 when the endpoint is unreachable or the model is not found.
+        """
+        import requests as _requests
+
+        if not self.base_url:
+            return 0
+        base = str(self.base_url).rstrip("/")
+        # Derive the v0 API root from the base_url (strip /v1 suffix if present)
+        if base.endswith("/v1"):
+            api_root = base[:-3]
+        else:
+            api_root = base
+        url = f"{api_root}/api/v0/models"
+        try:
+            r = _requests.get(
+                url, headers=self._headers(), timeout=self.DEFAULT_TIMEOUT
+            )
+            if r.status_code != 200:
+                return 0
+            data = r.json()
+        except Exception:
+            return 0
+
+        items = []
+        if isinstance(data, dict):
+            items = data.get("data") or data.get("models") or []
+        elif isinstance(data, list):
+            items = data
+
+        target = str(model_name or self.default_model or "").lower()
+        best_ctx = 0
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            item_id = str(item.get("id") or item.get("name") or "").lower()
+            # Match if the target is a substring or equals the id
+            if target and target not in item_id and item_id not in target:
+                continue
+            loaded = item.get("loaded_context_length") or 0
+            max_ctx = item.get("max_context_length") or 0
+            ctx = loaded or max_ctx
+            if ctx > best_ctx:
+                best_ctx = ctx
+        return best_ctx
+
+    # ------------------------------------------------------------------
     # LM Studio-specific short-name → full-id resolution
     # ------------------------------------------------------------------
 

@@ -1,10 +1,13 @@
 import ast
 import hashlib
 import json
+import logging
 import re
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 from datetime import datetime
+
+logger = logging.getLogger(__name__)
 
 # Multi-language support
 INDEX_VERSION = "3.0"  # Multi-language indexing version
@@ -164,7 +167,11 @@ def parse_python_file(path: Path) -> Dict[str, Any]:
         with open(path, "r", encoding="utf-8") as f:
             content = f.read()
             tree = ast.parse(content)
-    except Exception:
+    except Exception as exc:
+        # RA-VOL23-1: log the exception type and path so index gaps are diagnosable
+        logger.debug(
+            "parse_python_file: skipping %s (%s: %s)", path, type(exc).__name__, exc
+        )
         return {}
 
     classes = []
@@ -457,6 +464,13 @@ def get_symbols_for_task(
     try:
         index_path = Path(workdir) / ".agent-context" / "repo_index.json"
         if not index_path.exists():
+            # RA-VOL22-1: Log explicitly so developers can distinguish "no matches"
+            # from "index not yet built" when fast-path tasks return empty symbols.
+            logger.debug(
+                "get_symbols_for_task: repo_index.json not found at %s — "
+                "run analysis_node or index_repository() to build it",
+                index_path,
+            )
             return []
         with open(index_path, "r", encoding="utf-8") as _f:
             repo_index = json.load(_f)
@@ -475,23 +489,27 @@ def get_symbols_for_task(
             return []
 
         hits: List[Dict[str, Any]] = []
-        for file_entry in repo_index.get("files", []):
-            file_path = file_entry.get("file_path", "")
-            for sym in file_entry.get("symbols", []):
-                sym_name = (sym.get("name") or "").lower()
-                # A symbol matches if any task token appears in the symbol name.
-                if any(t in sym_name for t in token_set):
-                    hits.append(
-                        {
-                            "name": sym.get("name"),
-                            "type": sym.get("type"),
-                            "file_path": file_path,
-                            "start_line": sym.get("start_line"),
-                            "docstring": sym.get("docstring"),
-                        }
-                    )
-                    if len(hits) >= max_results:
-                        return hits
+        # BUG FIX (CODE_QUALITY_AUDIT #8): symbols are stored in the top-level
+        # repo_index["symbols"] flat list (keys: symbol_name, symbol_type,
+        # file_path), NOT nested under individual file entries.  The previous
+        # code iterated repo_index["files"] and called file_entry.get("symbols")
+        # which always returned [] — effectively making this function a no-op.
+        for sym in repo_index.get("symbols", []):
+            sym_name = (sym.get("symbol_name") or sym.get("name") or "").lower()
+            file_path = sym.get("file_path", "")
+            # A symbol matches if any task token appears in the symbol name.
+            if any(t in sym_name for t in token_set):
+                hits.append(
+                    {
+                        "name": sym.get("symbol_name") or sym.get("name"),
+                        "type": sym.get("symbol_type") or sym.get("type"),
+                        "file_path": file_path,
+                        "start_line": sym.get("start_line"),
+                        "docstring": sym.get("docstring"),
+                    }
+                )
+                if len(hits) >= max_results:
+                    return hits
         return hits
     except Exception:
         return []

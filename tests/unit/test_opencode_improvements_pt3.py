@@ -359,6 +359,10 @@ def test_explore_mode_off_does_not_block():
         patch(
             "src.core.orchestration.orchestrator.get_tool_contract", return_value=None
         ),
+        patch(
+            "src.core.orchestration.tool_execution_pipeline.get_tool_contract",
+            return_value=None,
+        ),
         patch("src.core.orchestration.orchestrator.PERMISSION_REQUIRED_TOOLS", set()),
         patch("src.core.orchestration.orchestrator.WRITE_TOOLS_REQUIRING_READ", set()),
     ):
@@ -385,6 +389,10 @@ def test_explore_mode_allows_read_tool():
     with (
         patch(
             "src.core.orchestration.orchestrator.get_tool_contract", return_value=None
+        ),
+        patch(
+            "src.core.orchestration.tool_execution_pipeline.get_tool_contract",
+            return_value=None,
         ),
         patch("src.core.orchestration.orchestrator.PERMISSION_REQUIRED_TOOLS", set()),
         patch("src.core.orchestration.orchestrator.WRITE_TOOLS_REQUIRING_READ", set()),

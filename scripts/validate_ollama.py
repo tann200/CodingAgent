@@ -18,7 +18,9 @@ def main():
     prompt = "You are a strict JSON-only assistant. Respond ONLY with valid JSON. Return keys: summary, explanation. Question: Why is the sky blue?"
     print("Calling generate...")
     try:
-        res = adapter.generate(prompt, stream=False, format_json=True)
+        res = adapter.generate(
+            [{"role": "user", "content": prompt}], stream=False, format_json=True
+        )
         print("generate result:")
         print(json.dumps(res, indent=2, ensure_ascii=False))
     except Exception as e:
@@ -34,13 +36,13 @@ def main():
             "content": "Why is the sky blue? Respond in JSON with summary and explanation.",
         },
     ]
-    print("Calling chat...")
+    print("Calling generate with messages...")
     try:
-        cresp = adapter.chat(messages, stream=False, format_json=True)
-        print("chat result:")
+        cresp = adapter.generate(messages, stream=False, format_json=True)
+        print("generate (messages) result:")
         print(json.dumps(cresp, indent=2, ensure_ascii=False))
     except Exception as e:
-        print("chat error:", e)
+        print("generate (messages) error:", e)
 
 
 if __name__ == "__main__":

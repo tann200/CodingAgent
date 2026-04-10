@@ -15,6 +15,7 @@ import pytest
 
 from src.core.inference.adapters.github_copilot_auth import (
     DeviceCodeResponse,
+    TokenResult,
     start_device_flow,
     poll_for_token,
     save_token,
@@ -24,6 +25,8 @@ from src.core.inference.adapters.github_copilot_auth import (
     DeviceCodeExpired,
     AuthCancelled,
     GITHUB_CLIENT_ID,
+    refresh_access_token,
+    TOKEN_REFRESH_MARGIN,
 )
 from src.core.inference.adapters.github_copilot_adapter import (
     GithubCopilotAdapter,
@@ -85,8 +88,30 @@ class TestPollForToken:
             self._make_response({"access_token": "ghu_tok123"}),
         ]
         with patch("requests.post", side_effect=responses), patch("time.sleep"):
-            token = poll_for_token("dev_code", interval=1, timeout=60)
-        assert token == "ghu_tok123"
+            result = poll_for_token("dev_code", interval=1, timeout=60)
+        assert isinstance(result, TokenResult)
+        assert result.access_token == "ghu_tok123"
+        assert result.refresh_token is None
+        assert result.expires_in == 0
+
+    def test_returns_token_with_refresh_fields(self):
+        responses = [
+            self._make_response(
+                {
+                    "access_token": "ghu_abc",
+                    "refresh_token": "ghr_xyz",
+                    "expires_in": 28800,
+                    "refresh_token_expires_in": 15897600,
+                }
+            ),
+        ]
+        with patch("requests.post", side_effect=responses), patch("time.sleep"):
+            result = poll_for_token("dev_code", interval=1, timeout=60)
+        assert isinstance(result, TokenResult)
+        assert result.access_token == "ghu_abc"
+        assert result.refresh_token == "ghr_xyz"
+        assert result.expires_in == 28800
+        assert result.refresh_token_expires_in == 15897600
 
     def test_slow_down_returns_token_eventually(self):
         """After slow_down the loop continues and eventually returns the token."""
@@ -95,8 +120,9 @@ class TestPollForToken:
             self._make_response({"access_token": "ghu_slow_tok"}),
         ]
         with patch("requests.post", side_effect=responses), patch("time.sleep"):
-            token = poll_for_token("dev_code", interval=5, timeout=60)
-        assert token == "ghu_slow_tok"
+            result = poll_for_token("dev_code", interval=5, timeout=60)
+        assert isinstance(result, TokenResult)
+        assert result.access_token == "ghu_slow_tok"
 
     def test_cancel_event_stops_poll(self):
         """Setting cancel_event raises AuthCancelled within the next sleep chunk."""
@@ -151,6 +177,19 @@ class TestTokenPersistence:
         save_token("ghu_test_token")
         assert load_token() == "ghu_test_token"
 
+    def test_save_token_result_roundtrip(self, tmp_path, monkeypatch):
+        prefs_file = tmp_path / "prefs.json"
+        monkeypatch.setenv("CODINGAGENT_PREFS", str(prefs_file))
+        result = TokenResult(
+            access_token="ghu_access",
+            refresh_token="ghr_refresh",
+            expires_in=28800,
+            refresh_token_expires_in=15897600,
+        )
+        save_token(result)
+        # access token should be loadable immediately (not yet expired)
+        assert load_token() == "ghu_access"
+
     def test_clear_token(self, tmp_path, monkeypatch):
         prefs_file = tmp_path / "prefs.json"
         monkeypatch.setenv("CODINGAGENT_PREFS", str(prefs_file))
@@ -170,8 +209,176 @@ class TestTokenPersistence:
         save_token("ghu_abc")
         assert is_authenticated()
 
+    def test_expired_token_triggers_refresh(self, tmp_path, monkeypatch):
+        """load_token() should call refresh when access token is past expiry."""
+        import time as _time
+
+        prefs_file = tmp_path / "prefs.json"
+        monkeypatch.setenv("CODINGAGENT_PREFS", str(prefs_file))
+
+        # Save a token that expired 60 seconds ago with a separate refresh token
+        expired_result = TokenResult(
+            access_token="ghu_expired",
+            refresh_token="ghr_valid_refresh",
+            expires_in=0,  # will be overridden manually below
+            refresh_token_expires_in=15897600,
+        )
+        save_token(expired_result)
+
+        # Manually set expires to the past so load_token sees it as expired
+        from src.core.inference.adapters.github_copilot_auth import (
+            _read_auth_json,
+            _write_auth_json,
+            _PROVIDER_KEY,
+        )
+
+        data = _read_auth_json()
+        data[_PROVIDER_KEY]["expires"] = int(_time.time()) - 60  # expired 60s ago
+        _write_auth_json(data)
+
+        # Mock refresh_access_token to return a new token
+        new_result = TokenResult(
+            access_token="ghu_refreshed",
+            refresh_token="ghr_new_refresh",
+            expires_in=28800,
+            refresh_token_expires_in=15897600,
+        )
+        with patch(
+            "src.core.inference.adapters.github_copilot_auth.refresh_access_token",
+            return_value=new_result,
+        ) as mock_refresh:
+            token = load_token()
+
+        mock_refresh.assert_called_once_with("ghr_valid_refresh", domain="github.com")
+        assert token == "ghu_refreshed"
+        # New token should also be persisted
+        assert load_token() == "ghu_refreshed"
+
+    def test_fresh_token_skips_refresh(self, tmp_path, monkeypatch):
+        """load_token() should NOT refresh when token is still fresh."""
+        import time as _time
+
+        prefs_file = tmp_path / "prefs.json"
+        monkeypatch.setenv("CODINGAGENT_PREFS", str(prefs_file))
+
+        fresh_result = TokenResult(
+            access_token="ghu_fresh",
+            refresh_token="ghr_refresh",
+            expires_in=28800,  # expires 8 hours from now
+            refresh_token_expires_in=15897600,
+        )
+        save_token(fresh_result)
+
+        with patch(
+            "src.core.inference.adapters.github_copilot_auth.refresh_access_token"
+        ) as mock_refresh:
+            token = load_token()
+
+        mock_refresh.assert_not_called()
+        assert token == "ghu_fresh"
+
+    def test_classic_oauth_token_never_refreshed(self, tmp_path, monkeypatch):
+        """gho_ tokens stored as plain string (expires=0) are never refreshed."""
+        prefs_file = tmp_path / "prefs.json"
+        monkeypatch.setenv("CODINGAGENT_PREFS", str(prefs_file))
+        save_token("gho_classic_token")
+
+        with patch(
+            "src.core.inference.adapters.github_copilot_auth.refresh_access_token"
+        ) as mock_refresh:
+            token = load_token()
+
+        mock_refresh.assert_not_called()
+        assert token == "gho_classic_token"
+
+    def test_refresh_failure_falls_back_to_existing_token(self, tmp_path, monkeypatch):
+        """When refresh fails, load_token returns the old token rather than None."""
+        import time as _time
+
+        prefs_file = tmp_path / "prefs.json"
+        monkeypatch.setenv("CODINGAGENT_PREFS", str(prefs_file))
+
+        result = TokenResult(
+            access_token="ghu_old",
+            refresh_token="ghr_refresh",
+            expires_in=0,
+            refresh_token_expires_in=15897600,
+        )
+        save_token(result)
+
+        from src.core.inference.adapters.github_copilot_auth import (
+            _read_auth_json,
+            _write_auth_json,
+            _PROVIDER_KEY,
+        )
+
+        data = _read_auth_json()
+        data[_PROVIDER_KEY]["expires"] = int(_time.time()) - 60
+        _write_auth_json(data)
+
+        with patch(
+            "src.core.inference.adapters.github_copilot_auth.refresh_access_token",
+            side_effect=Exception("network error"),
+        ):
+            token = load_token()
+
+        # Should fall back gracefully rather than returning None
+        assert token == "ghu_old"
+
 
 # ── Adapter tests ─────────────────────────────────────────────────────────────
+
+
+class TestRefreshAccessToken:
+    def _make_response(self, body: dict) -> MagicMock:
+        r = MagicMock()
+        r.json.return_value = body
+        r.raise_for_status = MagicMock()
+        return r
+
+    def test_returns_token_result_on_success(self):
+        mock_resp = self._make_response(
+            {
+                "access_token": "ghu_new",
+                "refresh_token": "ghr_new",
+                "expires_in": 28800,
+                "refresh_token_expires_in": 15897600,
+            }
+        )
+        with patch("requests.post", return_value=mock_resp):
+            result = refresh_access_token("ghr_old_refresh")
+        assert isinstance(result, TokenResult)
+        assert result.access_token == "ghu_new"
+        assert result.refresh_token == "ghr_new"
+        assert result.expires_in == 28800
+
+    def test_raises_on_missing_access_token(self):
+        mock_resp = self._make_response({"error": "bad_refresh_token"})
+        with patch("requests.post", return_value=mock_resp):
+            with pytest.raises(ValueError, match="access_token"):
+                refresh_access_token("ghr_bad")
+
+    def test_raises_on_http_error(self):
+        import requests as _req
+
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status.side_effect = _req.HTTPError("401")
+        with patch("requests.post", return_value=mock_resp):
+            with pytest.raises(_req.HTTPError):
+                refresh_access_token("ghr_bad")
+
+    def test_uses_correct_grant_type(self):
+        mock_resp = self._make_response(
+            {
+                "access_token": "ghu_ok",
+                "expires_in": 28800,
+            }
+        )
+        with patch("requests.post", return_value=mock_resp) as mock_post:
+            refresh_access_token("ghr_tok")
+        body = mock_post.call_args[1]["json"]
+        assert body["grant_type"] == "refresh_token"
+        assert body["refresh_token"] == "ghr_tok"
 
 
 class TestGithubCopilotAdapterInit:
@@ -206,11 +413,11 @@ class TestGithubCopilotAdapterHeaders:
         adapter = GithubCopilotAdapter()
         headers = adapter._headers()
         assert headers["Authorization"] == "Bearer ghu_header_test"
-        assert "Editor-Version" in headers
-        assert "Editor-Plugin-Version" in headers
-        assert "Copilot-Integration-Id" in headers
         assert headers["Openai-Intent"] == "conversation-edits"
-        assert "User-Agent" in headers
+        assert headers["x-initiator"] == "user"
+        assert headers["User-Agent"] == "CodingAgent/1.0"
+        # x-api-key must NOT be present (Copilot rejects it — matches OpenCode)
+        assert "x-api-key" not in headers
 
     def test_headers_raise_when_not_authenticated(self, tmp_path, monkeypatch):
         prefs_file = tmp_path / "prefs.json"

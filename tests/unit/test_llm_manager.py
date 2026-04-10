@@ -1,6 +1,7 @@
 import asyncio
 import json
 import time
+import pytest
 from src.core.inference.llm_manager import (
     ProviderManager,
     _provider_manager,
@@ -80,7 +81,9 @@ def test_get_structured_llm_missing_model_emits_event(monkeypatch, tmp_path):
     def _load(path=None):
         return UserPrefs(data=prefs_data, path=prefs_path)
 
-    monkeypatch.setattr("src.core.inference.llm_manager.UserPrefs.load", staticmethod(_load))
+    monkeypatch.setattr(
+        "src.core.inference.llm_manager.UserPrefs.load", staticmethod(_load)
+    )
 
     # call get_structured_llm
     client, resolved = asyncio.run(get_structured_llm())
@@ -93,6 +96,7 @@ def test_get_structured_llm_missing_model_emits_event(monkeypatch, tmp_path):
 # ---------------------------------------------------------------------------
 # #31: CircuitBreaker tests
 # ---------------------------------------------------------------------------
+
 
 class TestCircuitBreaker:
     def setup_method(self):
@@ -144,6 +148,7 @@ class TestCircuitBreaker:
         cb_lm = get_circuit_breaker("lm_studio")
         assert cb_ollama is not cb_lm
 
+    @pytest.mark.real_llm
     def test_call_model_fast_fails_when_open(self):
         """call_model must return an error dict immediately when CB is open."""
         import asyncio

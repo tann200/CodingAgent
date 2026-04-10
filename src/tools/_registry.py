@@ -54,6 +54,7 @@ _BUILTIN_MODULES = [
     "src.tools.batch_tools",
     "src.tools.skill_tools",
     "src.tools.plan_mode_tools",
+    "src.tools.rollback_tools",
 ]
 
 # Built-in aliases: alias_name -> canonical_name

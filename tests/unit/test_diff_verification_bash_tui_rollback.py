@@ -384,6 +384,7 @@ class TestEvaluationNodeClearsReplanRequiredFlag:
 
     def test_evaluation_complete_does_not_set_replan_required(self):
         import asyncio
+        from unittest.mock import AsyncMock, patch
         from src.core.orchestration.graph.nodes.evaluation_node import evaluation_node
 
         plan = [{"description": "step 0", "completed": True}]
@@ -397,7 +398,13 @@ class TestEvaluationNodeClearsReplanRequiredFlag:
             "max_debug_attempts": 3,
             "verification_passed": True,
         }
-        result = asyncio.run(evaluation_node(state, None))
+        # Mock _call_model to avoid real network call in WF-2 LLM verdict path
+        _mock_resp = {"choices": [{"message": {"content": "PASS all good"}}]}
+        with patch(
+            "src.core.inference.llm_manager.call_model",
+            new=AsyncMock(return_value=_mock_resp),
+        ):
+            result = asyncio.run(evaluation_node(state, None))
         assert result.get("evaluation_result") == "complete"
         assert result.get("replan_required") is None
 
@@ -1057,8 +1064,12 @@ class TestRunAgentOnceDelegationResultsReturnKey:
         """run_agent_once must declare delegation_results in its return dict."""
         import inspect
         from src.core.orchestration.orchestrator import Orchestrator
+        import src.core.orchestration.inference_loop as inference_loop_mod
 
-        src = inspect.getsource(Orchestrator.run_agent_once)
+        # Phase E: body moved to inference_loop; check either module
+        src = inspect.getsource(Orchestrator.run_agent_once) + inspect.getsource(
+            inference_loop_mod
+        )
         assert "delegation_results" in src, (
             "run_agent_once must surface delegation_results"
         )
@@ -1067,8 +1078,12 @@ class TestRunAgentOnceDelegationResultsReturnKey:
         """The return dict from run_agent_once must have a 'delegation_results' key."""
         import inspect
         from src.core.orchestration.orchestrator import Orchestrator
+        import src.core.orchestration.inference_loop as inference_loop_mod
 
-        src = inspect.getsource(Orchestrator.run_agent_once)
+        # Phase E: body moved to inference_loop; check either module
+        src = inspect.getsource(Orchestrator.run_agent_once) + inspect.getsource(
+            inference_loop_mod
+        )
         # Check both the extraction and the return dict
         assert '"delegation_results"' in src or "'delegation_results'" in src, (
             "run_agent_once must include delegation_results in return dict"
@@ -1078,8 +1093,12 @@ class TestRunAgentOnceDelegationResultsReturnKey:
         """When final_state has no delegation_results, return dict must be empty dict not None."""
         import inspect
         from src.core.orchestration.orchestrator import Orchestrator
+        import src.core.orchestration.inference_loop as inference_loop_mod
 
-        src = inspect.getsource(Orchestrator.run_agent_once)
+        # Phase E: body moved to inference_loop; check either module
+        src = inspect.getsource(Orchestrator.run_agent_once) + inspect.getsource(
+            inference_loop_mod
+        )
         # The fix uses `delegation_results or {}` as the fallback
         assert "or {}" in src, (
             "run_agent_once must default delegation_results to {} when not set"

@@ -23,6 +23,8 @@ from typing import Any, Dict
 
 import pytest
 
+pytestmark = pytest.mark.integration
+
 from src.core.inference.adapters.mock_adapter import MockAdapter
 from src.core.orchestration.orchestrator import Orchestrator
 

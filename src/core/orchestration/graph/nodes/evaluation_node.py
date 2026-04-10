@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 from typing import Mapping, Dict, Any
@@ -132,51 +133,87 @@ async def evaluation_node(state: Mapping[str, Any], config: Any) -> Dict[str, An
             logger.debug(f"evaluation_node: add_decision failed (non-critical): {_de}")
 
         # WF-2: Semantic LLM verdict — only when rule-based check says "complete".
+        # PERF-2: Skipped when enable_semantic_evaluation=False in project settings.
+        # P1-A fix: default is now False — must be explicitly enabled.  Previously
+        # the default was True, so any settings import failure left this permanently
+        # enabled, firing an extra LLM call on every task completion.
         # Never blocks completion; wrapped in try/except so any failure is silently ignored.
         llm_verdict: str | None = None
         llm_reason: str | None = None
+        _semantic_enabled = False
         try:
-            from src.core.inference.llm_manager import call_model as _call_model
+            from src.core.orchestration.project_settings import (
+                get_active_settings as _gas,
+            )
 
-            _verdict_prompt = [
-                {
-                    "role": "system",
-                    "content": (
-                        "You are a code review judge. Answer ONLY with PASS or FAIL "
-                        "followed by one concise sentence explaining why."
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": (
-                        f"Task: {state.get('task', '')}\n\n"
-                        f"Plan executed:\n{json.dumps(current_plan, indent=2)}\n\n"
-                        f"Verification result: {json.dumps(verification_result)}\n\n"
-                        "Did the agent accomplish the task? Reply PASS or FAIL."
-                    ),
-                },
-            ]
-            _resp = await _call_model(_verdict_prompt, model=None)
-            _content = (
-                (_resp.get("choices") or [{}])[0].get("message", {}).get("content", "")
-            )
-            _llm_passed = "FAIL" not in (_content or "").upper()
-            llm_verdict = "pass" if _llm_passed else "fail"
-            llm_reason = (_content or "")[:200]
-            logger.info(
-                f"evaluation_node: WF-2 LLM verdict={llm_verdict!r} reason={llm_reason!r}"
-            )
-            if not _llm_passed:
-                # Downgrade: route to debug instead of complete
-                return {
-                    "evaluation_result": "debug",
-                    "evaluation_llm_verdict": llm_verdict,
-                    "evaluation_llm_reason": llm_reason,
-                }
-        except Exception as _wf2_err:
-            logger.debug(
-                f"evaluation_node: WF-2 LLM verdict failed (non-critical): {_wf2_err}"
-            )
+            _ps = _gas()
+            if _ps is not None:
+                _semantic_enabled = bool(_ps.enable_semantic_evaluation)
+        except Exception:
+            pass  # stays False on any failure
+
+        if _semantic_enabled:
+            try:
+                from src.core.inference.llm_manager import call_model as _call_model
+
+                _verdict_prompt = [
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are a code review judge. Answer ONLY with PASS or FAIL "
+                            "followed by one concise sentence explaining why."
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": (
+                            f"Task: {state.get('task', '')}\n\n"
+                            f"Plan executed:\n{json.dumps(current_plan, indent=2)}\n\n"
+                            f"Verification result: {json.dumps(verification_result)}\n\n"
+                            "Did the agent accomplish the task? Reply PASS or FAIL."
+                        ),
+                    },
+                ]
+                # WF-VOL21-3: Wrap bare await with asyncio.wait_for to bound the
+                # semantic evaluation call; default 120 s, respects project settings.
+                _eval_timeout: int | None = 120
+                try:
+                    from src.core.orchestration.project_settings import (
+                        get_active_settings as _gas_ev,
+                    )
+
+                    _ps_ev = _gas_ev()
+                    if _ps_ev is not None:
+                        _eval_timeout = _ps_ev.max_llm_wait_seconds or None
+                except Exception:
+                    pass
+
+                _resp = await asyncio.wait_for(
+                    _call_model(_verdict_prompt, model=None),
+                    timeout=_eval_timeout,
+                )
+                _content = (
+                    (_resp.get("choices") or [{}])[0]
+                    .get("message", {})
+                    .get("content", "")
+                )
+                _llm_passed = "FAIL" not in (_content or "").upper()
+                llm_verdict = "pass" if _llm_passed else "fail"
+                llm_reason = (_content or "")[:200]
+                logger.info(
+                    f"evaluation_node: WF-2 LLM verdict={llm_verdict!r} reason={llm_reason!r}"
+                )
+                if not _llm_passed:
+                    # Downgrade: route to debug instead of complete
+                    return {
+                        "evaluation_result": "debug",
+                        "evaluation_llm_verdict": llm_verdict,
+                        "evaluation_llm_reason": llm_reason,
+                    }
+            except Exception as _wf2_err:
+                logger.debug(
+                    f"evaluation_node: WF-2 LLM verdict failed (non-critical): {_wf2_err}"
+                )
 
         return {
             "evaluation_result": "complete",

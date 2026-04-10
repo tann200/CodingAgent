@@ -61,9 +61,10 @@ class SaveProviderCredentials(Message):
 class UpdateRoleModel(Message):
     """UI tells the backend that the user changed the model for a specific role."""
 
-    def __init__(self, role: str, model_id: str) -> None:
+    def __init__(self, role: str, model_id: str, provider_id: str = "") -> None:
         self.role = role
         self.model_id = model_id
+        self.provider_id = provider_id  # canonical provider key, e.g. "lm_studio"
         super().__init__()
 
 
@@ -115,4 +116,22 @@ class ToolPermissionDenied(Message):
     def __init__(self, tool: str = "", tool_id: str = "") -> None:
         self.tool = tool
         self.tool_id = tool_id
+        super().__init__()
+
+
+class StartGithubDeviceFlow(Message):
+    """User pressed 'Login with GitHub Copilot' in Settings.
+
+    The app responds by calling start_device_flow(), showing the
+    OAuthDeviceFlowScreen modal, and launching background polling.
+
+    Parameters
+    ----------
+    enterprise_url:
+        Optional GitHub Enterprise URL or bare domain (e.g. ``company.ghe.com``).
+        When None (default) the public github.com endpoints are used.
+    """
+
+    def __init__(self, enterprise_url: Optional[str] = None) -> None:
+        self.enterprise_url = enterprise_url
         super().__init__()

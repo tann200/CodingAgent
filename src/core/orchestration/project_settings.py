@@ -10,13 +10,17 @@ Supported settings file locations (loaded in order, later wins):
 
 Recognised keys (all optional):
 
-    model          (str)   — LLM model identifier to use for this project
-    permissionMode (str)   — "read_only" | "workspace_write" | "danger_full_access"
-                             | "prompt" | "allow"
-    maxTurns       (int)   — per-session turn limit override
-    budgetCeiling  (float) — maximum session spend in USD; triggers usage.budget_exceeded
-    hooks          (dict)  — pre/post-tool-use hook commands (consumed by shell_hooks.py)
-    mcpServers     (dict)  — MCP server definitions (future use)
+    model                    (str)   — LLM model identifier to use for this project
+    permissionMode           (str)   — "read_only" | "workspace_write" | "danger_full_access"
+                                       | "prompt" | "allow"
+    maxTurns                 (int)   — per-session turn limit override
+    budgetCeiling            (float) — maximum session spend in USD; triggers usage.budget_exceeded
+    hooks                    (dict)  — pre/post-tool-use hook commands (consumed by shell_hooks.py)
+    mcpServers               (dict)  — MCP server definitions (future use)
+    enableSemanticEvaluation (bool)  — enable WF-2 LLM semantic judge on task completion
+                                       (default: True; set false to reduce cost/latency)
+    maxLlmWaitSeconds        (int)   — hard timeout in seconds for a single LLM call in
+                                       planning_node (default: 120; 0 = disabled)
 
 Usage::
 
@@ -105,6 +109,16 @@ class ProjectSettings:
     """Maximum session spend in USD.  When set, the ``SessionCostTracker`` will
     publish a ``usage.budget_exceeded`` event (and log a warning) the first time
     the cumulative session cost exceeds this value."""
+
+    enable_semantic_evaluation: bool = True
+    """PERF-2: Whether to fire the WF-2 LLM semantic judge on task completion.
+    Defaults to ``True``.  Set to ``False`` (``enableSemanticEvaluation: false``
+    in settings.json) to skip the extra LLM call on cost-sensitive deployments."""
+
+    max_llm_wait_seconds: int = 120
+    """WF-5: Hard timeout (seconds) for a single LLM call in planning_node.
+    When the call exceeds this duration it is cancelled and the node routes to
+    ``wait_for_user`` with an error message.  Set to ``0`` to disable the timeout."""
 
     raw: dict[str, Any] = field(default_factory=dict)
     """The final deep-merged raw settings dict (for forward compatibility)."""
@@ -222,6 +236,32 @@ def _parse(raw: dict[str, Any]) -> ProjectSettings:
         except (TypeError, ValueError):
             logger.debug("project_settings: invalid budgetCeiling %r, ignoring", raw_bc)
 
+    # enableSemanticEvaluation (PERF-2)
+    enable_semantic_evaluation: bool = True
+    raw_ese = raw.get("enableSemanticEvaluation")
+    if raw_ese is None:
+        raw_ese = raw.get("enable_semantic_evaluation")
+    if raw_ese is not None:
+        if isinstance(raw_ese, bool):
+            enable_semantic_evaluation = raw_ese
+        elif isinstance(raw_ese, str):
+            enable_semantic_evaluation = raw_ese.lower() not in ("false", "0", "no")
+        else:
+            enable_semantic_evaluation = bool(raw_ese)
+
+    # maxLlmWaitSeconds (WF-5)
+    max_llm_wait_seconds: int = 120
+    raw_mlw = raw.get("maxLlmWaitSeconds")
+    if raw_mlw is None:
+        raw_mlw = raw.get("max_llm_wait_seconds")
+    if raw_mlw is not None:
+        try:
+            max_llm_wait_seconds = int(raw_mlw)
+        except (TypeError, ValueError):
+            logger.debug(
+                "project_settings: invalid maxLlmWaitSeconds %r, ignoring", raw_mlw
+            )
+
     return ProjectSettings(
         model=model,
         permission_mode=permission_mode,
@@ -229,5 +269,7 @@ def _parse(raw: dict[str, Any]) -> ProjectSettings:
         hooks=hooks,
         mcp_servers=mcp_servers,
         budget_ceiling_usd=budget_ceiling_usd,
+        enable_semantic_evaluation=enable_semantic_evaluation,
+        max_llm_wait_seconds=max_llm_wait_seconds,
         raw=raw,
     )

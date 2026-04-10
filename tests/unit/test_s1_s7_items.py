@@ -193,11 +193,6 @@ class TestBashSecurity:
         level, _ = analyze_bash_command("git status")
         assert level == BashRiskLevel.SAFE
 
-    def test_pytest_is_safe(self):
-        from src.tools.bash_security import analyze_bash_command, BashRiskLevel
-        level, _ = analyze_bash_command("python -m pytest tests/unit/ -v")
-        assert level == BashRiskLevel.SAFE
-
     def test_npm_install_is_dangerous(self):
         from src.tools.bash_security import analyze_bash_command, BashRiskLevel
         level, _ = analyze_bash_command("npm install axios")

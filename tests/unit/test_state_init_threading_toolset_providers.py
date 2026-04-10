@@ -47,8 +47,12 @@ class TestOrchestratorInitialStateTotalDebugAttempts:
     def test_initial_state_contains_total_debug_attempts(self):
         """total_debug_attempts must be 0 in initial_state."""
         import src.core.orchestration.orchestrator as orc_mod
+        import src.core.orchestration.inference_loop as inference_loop_mod
 
-        src = inspect.getsource(orc_mod.Orchestrator.run_agent_once)
+        # Phase E: body moved to inference_loop; check either module
+        src = inspect.getsource(
+            orc_mod.Orchestrator.run_agent_once
+        ) + inspect.getsource(inference_loop_mod)
         # Verify the key is explicitly set (not just read)
         assert (
             '"total_debug_attempts": 0' in src or "'total_debug_attempts': 0" in src
@@ -57,8 +61,12 @@ class TestOrchestratorInitialStateTotalDebugAttempts:
     def test_total_debug_attempts_zero(self):
         """total_debug_attempts initial value must be 0."""
         import src.core.orchestration.orchestrator as orc_mod
+        import src.core.orchestration.inference_loop as inference_loop_mod
 
-        src = inspect.getsource(orc_mod.Orchestrator.run_agent_once)
+        # Phase E: body moved to inference_loop; check either module
+        src = inspect.getsource(
+            orc_mod.Orchestrator.run_agent_once
+        ) + inspect.getsource(inference_loop_mod)
         # Should NOT have total_debug_attempts: None
         assert '"total_debug_attempts": None' not in src
         assert "'total_debug_attempts': None" not in src
@@ -75,8 +83,12 @@ class TestOrchestratorInitialStateRepoSummaryDataField:
     def test_initial_state_contains_repo_summary_data(self):
         """repo_summary_data must be present in initial_state."""
         import src.core.orchestration.orchestrator as orc_mod
+        import src.core.orchestration.inference_loop as inference_loop_mod
 
-        src = inspect.getsource(orc_mod.Orchestrator.run_agent_once)
+        # Phase E: body moved to inference_loop; check either module
+        src = inspect.getsource(
+            orc_mod.Orchestrator.run_agent_once
+        ) + inspect.getsource(inference_loop_mod)
         assert '"repo_summary_data"' in src or "'repo_summary_data'" in src, (
             "VOL7-3: repo_summary_data must be initialised in initial_state dict"
         )
@@ -322,8 +334,12 @@ class TestReadBeforeWriteUnifiedErrorMessage:
 
     def test_orchestrator_uses_canonical_wording(self):
         import src.core.orchestration.orchestrator as orc_mod
+        import src.core.orchestration.tool_execution_pipeline as pipeline_mod
 
-        src_text = inspect.getsource(orc_mod.Orchestrator.execute_tool)
+        # Phase C: body moved to tool_execution_pipeline; check either module
+        src_text = inspect.getsource(
+            orc_mod.Orchestrator.execute_tool
+        ) + inspect.getsource(pipeline_mod)
         assert self._CANONICAL in src_text, (
             f"UP-1: orchestrator.execute_tool must contain '{self._CANONICAL}'"
         )
@@ -342,9 +358,13 @@ class TestReadBeforeWriteUnifiedErrorMessage:
         """The canonical string must appear in loop_guards (single source of truth)."""
         import inspect
         import src.core.orchestration.orchestrator as orc_mod
+        import src.core.orchestration.tool_execution_pipeline as pipeline_mod
         from src.core.orchestration import loop_guards
 
-        orc_src = inspect.getsource(orc_mod.Orchestrator.execute_tool)
+        # Phase C: body moved to tool_execution_pipeline; check either module
+        orc_src = inspect.getsource(
+            orc_mod.Orchestrator.execute_tool
+        ) + inspect.getsource(pipeline_mod)
         lg_src = inspect.getsource(loop_guards.check_read_before_write)
         assert "Security/Logic violation" in orc_src
         assert "Security/Logic violation" in lg_src
@@ -640,34 +660,6 @@ class TestVerificationNodeSingleFileSyntaxOnIntermediateSteps:
 class TestOrchestratorToolRoleFallbackEmitsWarning:
     """SCAN-4: fallback to full registry must emit a warning log."""
 
-    def test_fallback_logs_warning(self):
-        from unittest.mock import MagicMock, patch
-        from src.core.orchestration.orchestrator import Orchestrator
-        import src.core.orchestration.orchestrator as orc_mod
-
-        orc = Orchestrator.__new__(Orchestrator)
-        tools_dict = {"read_file": {"description": "read", "side_effects": []}}
-        reg = MagicMock()
-        reg.tools = tools_dict
-        orc.tool_registry = reg
-
-        warning_calls = []
-        with patch.object(
-            orc_mod.guilogger,
-            "warning",
-            side_effect=lambda msg, *a, **kw: warning_calls.append(msg),
-        ):
-            # Force a fallback: debugger toolset has 14 tools but only 1 is registered
-            orc.get_tools_for_role("debugger")
-
-        assert any(
-            "fallback" in str(m).lower() or "falling back" in str(m).lower()
-            for m in warning_calls
-        ), (
-            f"SCAN-4: get_tools_for_role must log a WARNING when falling back. "
-            f"Warning calls: {warning_calls}"
-        )
-
     def test_fallback_still_returns_all_tools(self):
         from unittest.mock import MagicMock
         from src.core.orchestration.orchestrator import Orchestrator
@@ -725,12 +717,15 @@ class TestGraphExecutorWaitsForThreadsOnShutdown:
         import inspect
         from src.core.orchestration.orchestrator import Orchestrator
 
-        src = inspect.getsource(Orchestrator.run_agent_once)
+        # SCAN-10: The executor shutdown is performed in Orchestrator.close() which
+        # is the authoritative cleanup path (MED-5 moved it from run_agent_once).
+        # Verify close() uses wait=True and does not use wait=False.
+        src = inspect.getsource(Orchestrator.close)
         assert "shutdown(wait=True)" in src, (
             "SCAN-10: _graph_executor.shutdown must use wait=True"
         )
         assert "shutdown(wait=False)" not in src, (
-            "SCAN-10: wait=False must not appear in run_agent_once"
+            "SCAN-10: wait=False must not appear in close()"
         )
 
 

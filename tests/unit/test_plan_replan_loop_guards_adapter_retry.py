@@ -309,7 +309,10 @@ class TestOrchestratorPlanEnforceWarningsInitialState:
         src_path = Path(
             "/Users/tann200/PycharmProjects/CodingAgent/src/core/orchestration/orchestrator.py"
         )
-        source = src_path.read_text()
+        il_path = Path(
+            "/Users/tann200/PycharmProjects/CodingAgent/src/core/orchestration/inference_loop.py"
+        )
+        source = src_path.read_text() + il_path.read_text()
         assert '"plan_enforce_warnings": False' in source, (
             "plan_enforce_warnings must be False in orchestrator initial_state "
             "(True causes infinite replanning loops — see P1-6 correction)"

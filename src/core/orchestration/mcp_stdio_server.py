@@ -76,6 +76,10 @@ class MCPStdioServer:
         self._lock = threading.Lock()
         # Optional orchestrator reference for tools/list and resources/read
         self._orchestrator = orchestrator
+        # PERF-VOL24-1: Reuse a single thread executor across sampling/create
+        # calls instead of creating a new ThreadPoolExecutor per request.
+        import concurrent.futures as _cf
+        self._sampling_executor = _cf.ThreadPoolExecutor(max_workers=1, thread_name_prefix="mcp-sampling")
 
     def _get_event_bus(self):
         """Lazy-load EventBus to avoid circular imports."""
@@ -295,8 +299,11 @@ class MCPStdioServer:
                     rel_path = uri[len("file://") :]
                     target = (_Path(_workdir) / rel_path).resolve()
                     base = _Path(_workdir).resolve()
-                    # Security: reject path traversal outside working dir
-                    if str(target).startswith(str(base)) and target.is_file():
+                    # Security: reject path traversal outside working dir.
+                    # Use os.sep suffix to prevent /workdir-evil from matching /workdir.
+                    import os as _os
+                    _base_prefix = str(base) + _os.sep
+                    if (str(target) == str(base) or str(target).startswith(_base_prefix)) and target.is_file():
                         text = target.read_text(encoding="utf-8", errors="replace")
                         contents = [
                             {"uri": uri, "mimeType": "text/plain", "text": text}
@@ -371,24 +378,24 @@ class MCPStdioServer:
                         for m in messages_in
                     ]
                     import asyncio as _asyncio
-                    import concurrent.futures as _cf
 
                     # Use a dedicated thread+loop to avoid RuntimeError when
                     # _handle_request is called from inside run_async() which
                     # already has a running event loop.
+                    _orch = self._orchestrator
+                    if _orch is None:
+                        raise RuntimeError("Orchestrator not available for sampling")
+
                     def _call_model_in_new_loop():
                         _loop = _asyncio.new_event_loop()
                         try:
                             return _loop.run_until_complete(
-                                self._orchestrator.call_model(
-                                    _msgs, max_tokens=max_tokens
-                                )
+                                _orch.call_model(_msgs, max_tokens=max_tokens)  # type: ignore[attr-defined]
                             )
                         finally:
                             _loop.close()
 
-                    with _cf.ThreadPoolExecutor(max_workers=1) as _pool:
-                        resp = _pool.submit(_call_model_in_new_loop).result(timeout=60)
+                    resp = self._sampling_executor.submit(_call_model_in_new_loop).result(timeout=60)
                     if isinstance(resp, str):
                         text = resp
                     elif isinstance(resp, dict):

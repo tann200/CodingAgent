@@ -1,4 +1,4 @@
-from typing import Dict, Any, Optional
+from typing import Any, Optional
 from langgraph.graph import StateGraph, END
 from langchain_core.runnables import RunnableConfig
 from src.core.orchestration.graph.state import AgentState
@@ -15,7 +15,8 @@ from src.core.orchestration.role_config import (
 
 
 def should_after_planning(state: AgentState) -> str:
-    if state["rounds"] >= 15:
+    # BUG-VOL23-3: use .get() to avoid KeyError when state is a partial dict
+    if state.get("rounds", 0) >= 15:
         return "end"
     if state.get("next_action"):
         return "execute"
@@ -102,122 +103,45 @@ class GraphFactory:
 
     @staticmethod
     def get_graph(role: str) -> Optional[Any]:
-        graph_creators = {
-            "planner": GraphFactory.create_planner_graph,
-            "coder": GraphFactory.create_coder_graph,
-            "reviewer": GraphFactory.create_reviewer_graph,
-            "researcher": GraphFactory.create_researcher_graph,
-        }
-        # Accept legacy names or canonical role names
-        if role in graph_creators:
-            creator = graph_creators.get(role)
-            if creator:
-                return creator()
-
-        # Only normalize if role is a known alias or canonical name
+        # ARCH-VOL21-1: delegate to the full 14-node compiled graph instead of
+        # building a minimal 3–4 node subgraph.  Subgraphs silently skipped
+        # plan-validation, debug loops, evaluation, step-retry, and
+        # wait-for-user gates.  The compiled graph is a singleton (thread-safe
+        # double-check lock in builder.py) so this has no extra compilation cost.
         r = role.strip().lower() if role else ""
-        if r not in CANONICAL_ROLES and r not in ROLE_ALIASES:
+        # Validate the role is known before returning the full graph so callers
+        # that pass an invalid role still get None (same behaviour as before).
+        legacy_roles = {"planner", "coder", "reviewer", "researcher"}
+        is_legacy = r in legacy_roles
+        is_known = r in CANONICAL_ROLES or r in ROLE_ALIASES
+        if not is_legacy and not is_known:
             return None
-
-        # Normalize role to canonical, then map canonical -> legacy key
-        canonical = normalize_role(role)
-        canonical_to_legacy = {
-            "strategic": "planner",
-            "operational": "coder",
-            "reviewer": "reviewer",
-            "analyst": "researcher",
-            "debugger": "coder",
-        }
-        legacy_key = canonical_to_legacy.get(canonical)
-        creator = graph_creators.get(legacy_key) if legacy_key else None
-        if creator:
-            return creator()
-        return None
+        try:
+            from src.core.orchestration.graph.builder import _get_compiled_graph
+            return _get_compiled_graph()
+        except Exception:
+            # Fallback to the role-specific subgraph so subagents can still
+            # function if the full graph cannot be compiled.
+            graph_creators = {
+                "planner": GraphFactory.create_planner_graph,
+                "coder": GraphFactory.create_coder_graph,
+                "reviewer": GraphFactory.create_reviewer_graph,
+                "researcher": GraphFactory.create_researcher_graph,
+            }
+            if r in graph_creators:
+                return graph_creators[r]()
+            canonical = normalize_role(role)
+            canonical_to_legacy = {
+                "strategic": "planner",
+                "operational": "coder",
+                "reviewer": "reviewer",
+                "analyst": "researcher",
+                "debugger": "coder",
+            }
+            legacy_key = canonical_to_legacy.get(canonical)
+            creator = graph_creators.get(legacy_key) if legacy_key else None
+            return creator() if creator else None
 
     @staticmethod
     def get_default_graph() -> Any:
         return GraphFactory.create_coder_graph()
-
-
-class HubAndSpokeCoordinator:
-    def __init__(self, event_bus: Any = None):
-        self.event_bus = event_bus
-        self.agents: Dict[str, Any] = {}
-        self.task_queue: list = []
-        self.results: Dict[str, Any] = {}
-
-    def register_agent(
-        self, agent_id: str, role: str, config: Optional[Dict[str, Any]] = None
-    ) -> bool:
-        graph = GraphFactory.get_graph(role)
-        if not graph:
-            return False
-        self.agents[agent_id] = {
-            "role": role,
-            "graph": graph,
-            "config": config or {},
-            "status": "idle",
-        }
-        if self.event_bus and hasattr(self.event_bus, "_agent_ids"):
-            self.event_bus._agent_ids.add(agent_id)
-        return True
-
-    def dispatch_task(
-        self, task: str, agent_id: str, context: Optional[Dict[str, Any]] = None
-    ) -> None:
-        if agent_id not in self.agents:
-            return
-        self.task_queue.append(
-            {
-                "task": task,
-                "agent_id": agent_id,
-                "context": context or {},
-            }
-        )
-
-    def run_next(self, orchestrator: Any) -> Optional[Dict[str, Any]]:
-        if not self.task_queue:
-            return None
-        item = self.task_queue.pop(0)
-        agent_id = item["agent_id"]
-        agent = self.agents.get(agent_id)
-        if not agent:
-            return None
-        agent["status"] = "running"
-        try:
-            import concurrent.futures
-
-            with concurrent.futures.ThreadPoolExecutor() as executor:
-                future = executor.submit(
-                    agent["graph"].ainvoke,
-                    {
-                        "task": item["task"],
-                        "history": [],
-                        "verified_reads": [],
-                        "rounds": 0,
-                        "working_dir": orchestrator.working_dir,
-                        "system_prompt": orchestrator.msg_mgr.get_system_prompt(),
-                    },
-                    {"configurable": {"orchestrator": orchestrator}},
-                )
-                result = future.result()
-            agent["status"] = "completed"
-            self.results[agent_id] = result
-            return result
-        except Exception as e:
-            agent["status"] = "failed"
-            return {"error": str(e)}
-
-    def get_agent_status(self, agent_id: str) -> Optional[str]:
-        agent = self.agents.get(agent_id)
-        return agent.get("status") if agent else None
-
-    def list_agents(self) -> Dict[str, Dict[str, str]]:
-        return {
-            aid: {"role": a["role"], "status": a["status"]}
-            for aid, a in self.agents.items()
-        }
-
-    def broadcast_message(self, message: Any, priority: int = 1) -> None:
-        if self.event_bus:
-            self.event_bus.broadcast_to_agents(message, priority)

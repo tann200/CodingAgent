@@ -334,8 +334,6 @@ class SymbolGraph:
         Searches file contents (text scan) for occurrences of `function_name(` to
         locate actual call sites, excluding function definitions.
         """
-        import re
-
         results = []
         call_pattern = re.compile(r"\b" + re.escape(function_name) + r"\s*\(")
         # Pattern to match function definitions (def function_name(...)

@@ -1,5 +1,6 @@
 """
 SideBySideDiff — two-column diff viewer with Accept / Reject buttons.
+InlineDiff     — single-column unified diff viewer with +/- markers.
 
 Parses a unified diff string and renders it in a Horizontal layout:
   left panel  = old content  (removed lines highlighted red)
@@ -9,6 +10,7 @@ Context lines appear on both sides.  Removed/added blocks are paired so rows
 stay aligned within each hunk.  Emits SideBySideDiff.Accepted or .Rejected
 then removes itself.
 """
+
 from __future__ import annotations
 
 from textual.widget import Widget
@@ -56,13 +58,15 @@ def _parse_sidebyside(diff: str) -> tuple[list[str], list[str]]:
                 else:
                     added.append(lines[i][1:])
                 i += 1
-            # Pad to equal length so panels stay aligned
+            # Pad to equal length so panels stay aligned.
+            # Use None as a sentinel for padding rows (vs. a genuinely empty
+            # added/removed line which is an empty string "").
             pad = max(len(removed), len(added))
-            removed += [""] * (pad - len(removed))
-            added += [""] * (pad - len(added))
-            for r, a in zip(removed, added):
-                left.append(f"[on #3d0000]{r} [/]" if r else "[dim]  [/]")
-                right.append(f"[on #003d00]{a} [/]" if a else "[dim]  [/]")
+            removed_padded: list = removed + [None] * (pad - len(removed))
+            added_padded: list = added + [None] * (pad - len(added))
+            for r, a in zip(removed_padded, added_padded):
+                left.append(f"[on #3d0000]{r} [/]" if r is not None else "[dim]  [/]")
+                right.append(f"[on #003d00]{a} [/]" if a is not None else "[dim]  [/]")
             continue
 
         # Context line
@@ -84,12 +88,14 @@ class SideBySideDiff(Widget):
 
     class Accepted(Message):
         """User accepted the diff — write should proceed."""
+
         def __init__(self, path: str) -> None:
             self.path = path
             super().__init__()
 
     class Rejected(Message):
         """User rejected the diff — write should be skipped."""
+
         def __init__(self, path: str) -> None:
             self.path = path
             super().__init__()
@@ -113,7 +119,9 @@ class SideBySideDiff(Widget):
         # Cap at 50 lines per panel to avoid huge widgets
         cap = 50
         if len(left_lines) > cap:
-            left_lines = left_lines[:cap] + [f"[dim]… {len(left_lines) - cap} more lines[/]"]
+            left_lines = left_lines[:cap] + [
+                f"[dim]… {len(left_lines) - cap} more lines[/]"
+            ]
             right_lines = right_lines[:cap] + [""]
 
         with Horizontal(classes="sbs_panels"):
@@ -135,7 +143,7 @@ class SideBySideDiff(Widget):
         with Horizontal(classes="sbs_actions"):
             yield Static("Apply changes?  ", classes="sbs_prompt")
             yield Button("Accept", variant="success", id="btn_sbs_accept")
-            yield Button("Reject", variant="error",   id="btn_sbs_reject")
+            yield Button("Reject", variant="error", id="btn_sbs_reject")
 
     @on(Button.Pressed, "#btn_sbs_accept")
     def _on_accept(self, event: Button.Pressed) -> None:
@@ -144,6 +152,80 @@ class SideBySideDiff(Widget):
         self.remove()
 
     @on(Button.Pressed, "#btn_sbs_reject")
+    def _on_reject(self, event: Button.Pressed) -> None:
+        event.stop()
+        self.post_message(self.Rejected(self._path))
+        self.remove()
+
+
+def _render_inline(diff: str) -> list[str]:
+    """Convert a unified diff into a single-column list of markup lines."""
+    lines: list[str] = []
+    for ln in diff.splitlines():
+        if ln.startswith("---") or ln.startswith("+++"):
+            continue
+        if ln.startswith("@@"):
+            lines.append(f"[bold #00b4d8]{ln}[/]")
+        elif ln.startswith("-"):
+            lines.append(f"[on #3d0000]- {ln[1:]}[/]")
+        elif ln.startswith("+"):
+            lines.append(f"[on #003d00]+ {ln[1:]}[/]")
+        else:
+            lines.append(ln[1:] if ln.startswith(" ") else ln)
+    return lines
+
+
+class InlineDiff(Widget):
+    """
+    Single-column inline diff viewer with Accept / Reject buttons.
+
+    Posts the same SideBySideDiff.Accepted / .Rejected messages so the
+    handler in app.py works for both styles without change.
+    """
+
+    # Re-use SideBySideDiff message types so handlers are shared.
+    Accepted = SideBySideDiff.Accepted
+    Rejected = SideBySideDiff.Rejected
+
+    def __init__(self, path: str, diff: str, is_new_file: bool = False) -> None:
+        super().__init__()
+        self._path = path
+        self._diff = diff
+        self._is_new_file = is_new_file
+
+    def compose(self):
+        action = "NEW FILE" if self._is_new_file else "DIFF"
+        yield Static(
+            f"[bold]┌─ {action}:[/] {self._path}",
+            classes="sbs_header",
+            markup=True,
+        )
+
+        inline_lines = _render_inline(self._diff)
+        cap = 100
+        if len(inline_lines) > cap:
+            inline_lines = inline_lines[:cap] + [
+                f"[dim]… {len(inline_lines) - cap} more lines[/]"
+            ]
+
+        yield Static(
+            "\n".join(inline_lines) if inline_lines else "[dim](empty)[/]",
+            classes="sbs_content",
+            markup=True,
+        )
+
+        with Horizontal(classes="sbs_actions"):
+            yield Static("Apply changes?  ", classes="sbs_prompt")
+            yield Button("Accept", variant="success", id="btn_inline_accept")
+            yield Button("Reject", variant="error", id="btn_inline_reject")
+
+    @on(Button.Pressed, "#btn_inline_accept")
+    def _on_accept(self, event: Button.Pressed) -> None:
+        event.stop()
+        self.post_message(self.Accepted(self._path))
+        self.remove()
+
+    @on(Button.Pressed, "#btn_inline_reject")
     def _on_reject(self, event: Button.Pressed) -> None:
         event.stop()
         self.post_message(self.Rejected(self._path))

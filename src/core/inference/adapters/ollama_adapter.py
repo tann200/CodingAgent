@@ -280,11 +280,13 @@ class OllamaAdapter(LLMClient):
 
     def get_model_info(self, model_name=None):
         if not self.models and model_name is None:
-            print("Error: No models to load.")
+            # CODE_QUALITY_AUDIT #8 fix: use logger instead of print() so errors
+            # go to the structured log stream, not stdout.
+            _logger.error("get_model_info: no models loaded")
             return {}
         model_name = self._select_model_name(model_name)
         if model_name is None:
-            print("Error: Unable to find a model.")
+            _logger.error("get_model_info: unable to find a model")
             return {}
         # Try show endpoint variants
         endpoints = self._make_endpoints("/api/show") + self._make_endpoints("/show")
@@ -537,6 +539,17 @@ class OllamaAdapter(LLMClient):
         }
         if options:
             payload["options"] = options
+
+        # GAP-SMALL-6: disable thinking tokens for local models when configured.
+        # Ollama ≥0.6.5 accepts "think": false at the top-level payload.
+        _disable_think = False
+        try:
+            if self.provider and isinstance(self.provider, dict):
+                _disable_think = bool(self.provider.get("disable_thinking", False))
+        except Exception:
+            pass
+        if _disable_think and "think" not in payload:
+            payload["think"] = False
 
         if format_json and "format" not in payload:
             payload["format"] = "json"

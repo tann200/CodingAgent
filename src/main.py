@@ -154,6 +154,26 @@ def _parse_args(argv: list) -> argparse.Namespace:
         default=None,
         help="Block any tool whose name starts with PREFIX (case-insensitive).",
     )
+    # UX-2: --validate-config — validate .agent/settings.json without running the agent
+    parser.add_argument(
+        "--validate-config",
+        action="store_true",
+        default=False,
+        help=(
+            "Validate .agent/settings.json (and settings.local.json) for the "
+            "working directory and print a summary.  Exits 0 on success, 1 on error."
+        ),
+    )
+    # UX-3: --dry-run — show plan + affected files without executing writes or bash
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        default=False,
+        help=(
+            "Preview the plan and affected files without executing any write or "
+            "destructive tools.  Read-only tools still run normally."
+        ),
+    )
     # Allow unknown flags so future args don't break older wrappers
     known, _ = parser.parse_known_args(argv)
     return known
@@ -270,6 +290,93 @@ __pycache__/
         return 1
 
 
+def _run_validate_config(workdir: Optional[str]) -> int:
+    """UX-2: Validate .agent/settings.json for the working directory.
+
+    Loads and parses both settings files, reports recognised keys and their
+    resolved values, flags unknown keys, and exits 0 on success or 1 if the
+    file cannot be parsed at all.
+    """
+    import json as _json
+    from pathlib import Path as _Path
+
+    base = _Path(workdir).resolve() if workdir else _Path.cwd()
+    settings_files = [
+        base / ".agent" / "settings.json",
+        base / ".agent" / "settings.local.json",
+    ]
+
+    any_found = False
+    any_error = False
+
+    for sf in settings_files:
+        if not sf.exists():
+            continue
+        any_found = True
+        rel = sf.relative_to(base)
+        print(f"\n{rel}")
+        print("-" * len(str(rel)))
+        try:
+            raw = sf.read_text(encoding="utf-8")
+            data = _json.loads(raw)
+        except Exception as exc:
+            print(f"  ERROR: could not parse JSON — {exc}", file=sys.stderr)
+            any_error = True
+            continue
+
+        if not isinstance(data, dict):
+            print(
+                f"  ERROR: expected a JSON object, got {type(data).__name__}",
+                file=sys.stderr,
+            )
+            any_error = True
+            continue
+
+        _KNOWN_KEYS = {
+            "model",
+            "permissionMode",
+            "permission_mode",
+            "maxTurns",
+            "max_turns",
+            "budgetCeiling",
+            "budget_ceiling_usd",
+            "hooks",
+            "mcpServers",
+            "enableSemanticEvaluation",
+            "enable_semantic_evaluation",
+            "maxLlmWaitSeconds",
+            "max_llm_wait_seconds",
+        }
+        for k, v in data.items():
+            tag = "" if k in _KNOWN_KEYS else "  [unknown key]"
+            print(f"  {k}: {_json.dumps(v)}{tag}")
+
+    if not any_found:
+        print(f"No settings files found under {base / '.agent'}")
+        print("Run 'codingagent init' to create a workspace.")
+        return 0
+
+    print()
+    try:
+        from src.core.orchestration.project_settings import load_project_settings
+
+        ps = load_project_settings(workdir)
+        print("Resolved settings:")
+        print(f"  model                    = {ps.model!r}")
+        print(f"  permission_mode          = {ps.permission_mode!r}")
+        print(f"  max_turns                = {ps.max_turns!r}")
+        print(f"  budget_ceiling_usd       = {ps.budget_ceiling_usd!r}")
+        print(f"  enable_semantic_eval     = {ps.enable_semantic_evaluation!r}")
+        print(f"  max_llm_wait_seconds     = {ps.max_llm_wait_seconds!r}")
+        print(f"  hooks                    = {ps.hooks!r}")
+        print(f"  mcp_servers              = {list(ps.mcp_servers.keys())!r}")
+    except Exception as exc:
+        print(f"ERROR resolving settings: {exc}", file=sys.stderr)
+        any_error = True
+
+    return 1 if any_error else 0
+
+
 def _run_system_prompt(workdir: Optional[str], role: str) -> int:
     """TASK-22: Print the resolved system prompt for a given working dir and exit."""
     try:
@@ -294,19 +401,50 @@ def _run_system_prompt(workdir: Optional[str], role: str) -> int:
         return 1
 
 
-def _run_headless(task: str, output_format: str, workdir: Optional[str]) -> int:
-    """Run a single task without the TUI and print the result."""
+def _run_headless(
+    task: str,
+    output_format: str,
+    workdir: Optional[str],
+    dry_run: bool = False,
+) -> int:
+    """Run a single task without the TUI and print the result.
+
+    Parameters
+    ----------
+    task:
+        The user task string to pass to the agent.
+    output_format:
+        One of ``pretty``, ``json``, or ``raw``.
+    workdir:
+        Optional working directory override.
+    dry_run:
+        When ``True`` the orchestrator is started in dry-run mode: write and
+        destructive tool calls are intercepted and logged as previews instead
+        of being executed.
+    """
     import json as _json
 
     try:
         from src.core.orchestration.orchestrator import Orchestrator
 
-        orch = Orchestrator(working_dir=workdir)
+        orch = Orchestrator(working_dir=workdir, dry_run=dry_run)
         result = orch.run_agent_once(
             system_prompt_name="operational",
             messages=[{"role": "user", "content": task}],
             tools={},
         )
+
+        if dry_run and output_format not in ("json",):
+            dry_calls = result.get("dry_run_intercepted", [])
+            if dry_calls:
+                print("[DRY RUN] The following write/destructive tool calls were")
+                print("[DRY RUN] intercepted and NOT executed:\n")
+                for entry in dry_calls:
+                    print(
+                        f"  {entry.get('would_call', entry.get('tool', '?'))}"
+                        f"({_json.dumps(entry.get('args', {}), ensure_ascii=False)})"
+                    )
+                print()
 
         if output_format == "json":
             print(_json.dumps(result, ensure_ascii=False, default=str))
@@ -351,6 +489,10 @@ def main(argv: Optional[list] = None) -> int:
             workdir=getattr(args, "dir", None),
             role=getattr(args, "role", "operational"),
         )
+
+    # UX-2: Dispatch --validate-config flag
+    if getattr(args, "validate_config", False):
+        return _run_validate_config(getattr(args, "workdir", None))
 
     # Apply sandbox level override from CLI flag
     if args.sandbox_level:
@@ -447,7 +589,12 @@ def main(argv: Optional[list] = None) -> int:
         task = args.task or ""
         if not task:
             task = sys.stdin.read().strip()
-        return _run_headless(task, args.output_format, args.workdir)
+        return _run_headless(
+            task,
+            args.output_format,
+            args.workdir,
+            dry_run=getattr(args, "dry_run", False),
+        )
 
     try:
         import sys as _sys
@@ -459,14 +606,52 @@ def main(argv: Optional[list] = None) -> int:
         # src/ui/ has been retired (LEGACY-03); only the new TUI is supported.
         #
         # The tui/ package's internal imports use bare `from src.ui.xxx` paths,
-        # which require tui/ to be on sys.path so they resolve to tui/src/ui/.
-        # We append (not insert at 0) to avoid shadowing the project-root src/ package.
-        _tui_root = str(_Path(__file__).parent.parent / "tui")
-        if _tui_root not in _sys.path:
-            _sys.path.append(_tui_root)
+        # which require tui/ to be on sys.path AND for `src` in sys.modules to
+        # resolve to tui/src/ rather than the project-root src/ package.
+        # We temporarily redirect sys.modules['src'] to tui/src/ for the import,
+        # then restore it so the rest of the project keeps working.
+        import importlib.util as _ilu
+        import types as _types
 
-        from tui.src.ui.app import AgentApp
-        from tui.src.ui.core_bridge import AgentBridge  # noqa: F401 — ensure importable
+        _tui_root = str(_Path(__file__).parent.parent / "tui")
+        _proj_root = str(_Path(__file__).parent.parent)
+        if _tui_root not in _sys.path:
+            _sys.path.insert(0, _tui_root)
+
+        # Load tui/src as a temporary module to shadow the project-root src package
+        _tui_src_init = _Path(_tui_root) / "src" / "__init__.py"
+        _tui_src_spec = _ilu.spec_from_file_location(
+            "src",
+            str(_tui_src_init),
+            submodule_search_locations=[str(_Path(_tui_root) / "src")],
+        )
+        if _tui_src_spec is None or _tui_src_spec.loader is None:
+            raise ImportError(f"Cannot load TUI src spec from {_tui_src_init}")
+        _tui_src_mod = _ilu.module_from_spec(_tui_src_spec)
+        _tui_src_spec.loader.exec_module(_tui_src_mod)  # type: ignore[union-attr]
+
+        _saved_src = _sys.modules.get("src")
+        _sys.modules["src"] = _tui_src_mod
+        try:
+            from src.ui.app import AgentApp  # type: ignore[import]
+            from src.ui.core_bridge import AgentBridge  # type: ignore[import]  # noqa: F401
+        finally:
+            # Restore the project-root src package.
+            # IMPORTANT: also remove _tui_root from sys.path so that runtime
+            # imports inside the TUI (e.g. `from src.core.inference...`) resolve
+            # to the project-root src/ package, not tui/src/.  The TUI's own
+            # src.ui.* modules are already in sys.modules at this point.
+            if _saved_src is not None:
+                _sys.modules["src"] = _saved_src
+            elif "src" in _sys.modules:
+                del _sys.modules["src"]
+            try:
+                _sys.path.remove(_tui_root)
+            except ValueError:
+                pass
+            # Ensure project root is on sys.path for src.core.* imports
+            if _proj_root not in _sys.path:
+                _sys.path.insert(0, _proj_root)
 
         app = AgentApp()
         # Inject working_dir into the bridge after the app creates it,

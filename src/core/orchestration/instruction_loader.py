@@ -213,6 +213,17 @@ def build_runtime_context(cwd: Optional[Path] = None) -> str:
     except Exception:
         pass
 
+    # UX-1: When LSP is enabled but no server is active, inject a notice so
+    # the model (and indirectly the user) knows type-checking is inactive.
+    try:
+        from src.core.indexing.lsp_context import get_lsp_status_notice
+
+        lsp_notice = get_lsp_status_notice(workdir=cwd)
+        if lsp_notice:
+            sections.append(lsp_notice)
+    except Exception:
+        pass
+
     if not sections:
         return ""
 

@@ -38,6 +38,8 @@ pytestmark = pytest.mark.lmstudio
 _RUN = os.getenv("RUN_INTEGRATION") == "1"
 if not _RUN and not os.getenv("CI"):
     try:
+        import requests as _requests_probe
+
         _cfg = Path(__file__).parents[2] / "src" / "config" / "providers.json"
         if _cfg.exists():
             _raw = json.loads(_cfg.read_text(encoding="utf-8"))
@@ -50,7 +52,13 @@ if not _RUN and not os.getenv("CI"):
                 _t = str(_p.get("type") or "").lower()
                 _n = str(_p.get("name") or "").lower()
                 if "lm" in _t or "lm" in _n or "lm_studio" in _t or "lmstudio" in _n:
-                    _RUN = True
+                    # Only enable if LM Studio is actually reachable
+                    _base = _p.get("base_url", "http://localhost:1234/v1").rstrip("/")
+                    try:
+                        _requests_probe.get(f"{_base}/models", timeout=2)
+                        _RUN = True
+                    except Exception:
+                        pass
                     break
     except Exception:
         pass

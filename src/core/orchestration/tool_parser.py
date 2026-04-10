@@ -1,6 +1,12 @@
 from typing import Dict, Any, Optional
+import datetime
 import json
 import re
+
+try:
+    import yaml as _yaml
+except ImportError:
+    _yaml = None  # type: ignore[assignment]
 
 
 def parse_tool_block(text: str) -> Optional[Dict[str, Any]]:
@@ -84,8 +90,8 @@ def _parse_yaml_block(yaml_content: str) -> Optional[Dict[str, Any]]:
     """
     # --- Primary path: yaml.safe_load ----------------------------------
     try:
-        import yaml
-        import datetime
+        if _yaml is None:
+            raise ImportError("yaml not available")
 
         def _normalize(v: Any) -> Any:
             """Convert YAML-native types (date, datetime) to strings so
@@ -98,7 +104,7 @@ def _parse_yaml_block(yaml_content: str) -> Optional[Dict[str, Any]]:
                 return [_normalize(i) for i in v]
             return v
 
-        parsed = yaml.safe_load(yaml_content)
+        parsed = _yaml.safe_load(yaml_content)
         if isinstance(parsed, dict):
             # Standard format: {name: "tool", arguments: {...}}
             if "name" in parsed:
@@ -108,7 +114,8 @@ def _parse_yaml_block(yaml_content: str) -> Optional[Dict[str, Any]]:
                     return {"name": name, "arguments": _normalize(raw_args)}
                 # arguments key absent — collect remaining keys as args
                 remaining = {
-                    k: _normalize(v) for k, v in parsed.items()
+                    k: _normalize(v)
+                    for k, v in parsed.items()
                     if k not in ("name", "arguments", "args")
                 }
                 return {"name": name, "arguments": remaining}
@@ -174,7 +181,6 @@ def _parse_yaml_block(yaml_content: str) -> Optional[Dict[str, Any]]:
             current_key = stripped.rstrip(":").strip()
             current_value_lines = []
             continue
-
 
         if ":" in stripped:
             # Save previous key-value if any

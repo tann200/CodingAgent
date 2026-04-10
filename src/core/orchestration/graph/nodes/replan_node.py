@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import logging
 from typing import Mapping, Dict, Any, Optional, List
@@ -84,7 +85,64 @@ Respond ONLY with the JSON array, no other text."""
             model_tier=state.get("model_tier"),  # S1-B
         )
 
-        resp = await call_model(messages, stream=False, format_json=False)
+        # WF-VOL21-1: Wrap LLM call with deadline guard (same pattern as planning_node).
+        _replan_llm_timeout: int | None = 120
+        try:
+            from src.core.orchestration.project_settings import (
+                get_active_settings as _gas_rp,
+            )
+
+            _ps_rp = _gas_rp()
+            if _ps_rp is not None:
+                _replan_llm_timeout = _ps_rp.max_llm_wait_seconds or None
+        except Exception:
+            pass
+
+        cancel_event = state.get("cancel_event")
+        if not cancel_event:
+            cancel_event = getattr(orchestrator, "cancel_event", None)
+
+        _rp_task = asyncio.create_task(
+            call_model(messages, stream=False, format_json=False)
+        )
+        _rp_deadline = (
+            asyncio.get_running_loop().time() + _replan_llm_timeout
+            if _replan_llm_timeout
+            else None
+        )
+        while not _rp_task.done():
+            if (
+                cancel_event
+                and hasattr(cancel_event, "is_set")
+                and cancel_event.is_set()
+            ):
+                _rp_task.cancel()
+                logger.info("replan_node: Task canceled mid-generation")
+                return {
+                    "replan_required": None,
+                    "action_failed": False,
+                    "replan_attempts": replan_attempts,
+                    "errors": ["canceled"],
+                }
+            if (
+                _rp_deadline is not None
+                and asyncio.get_running_loop().time() >= _rp_deadline
+            ):
+                _rp_task.cancel()
+                logger.warning(
+                    f"replan_node: LLM call timed out after {_replan_llm_timeout}s"
+                )
+                return {
+                    "replan_required": None,
+                    "action_failed": False,
+                    "replan_attempts": replan_attempts,
+                    "errors": [f"llm_timeout:{_replan_llm_timeout}s"],
+                }
+            await asyncio.sleep(0.2)
+        try:
+            resp = await _rp_task
+        except asyncio.CancelledError:
+            raise
 
         content = ""
         if isinstance(resp, dict):

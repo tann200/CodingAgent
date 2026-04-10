@@ -10,7 +10,9 @@ Design goals for tests:
 """
 
 import asyncio
+import functools
 import os
+import tempfile
 import time
 from typing import Any, Dict, List, Optional, Tuple
 from pathlib import Path
@@ -39,6 +41,16 @@ except Exception:
 
     # Fallback: use a sensible logger name that maps to the project (so logs remain centralized)
     guilogger = logging.getLogger("coding_agent")
+
+# CODE_QUALITY_AUDIT #7 fix: promote deferred get_token_budget_monitor import to
+# module level so it isn't re-imported on every call_model() invocation.
+# Still guarded in a try/except to handle environments where token_budget is absent.
+try:
+    from src.core.orchestration.token_budget import (
+        get_token_budget_monitor as _get_token_budget_monitor,
+    )
+except Exception:
+    _get_token_budget_monitor = None  # type: ignore[assignment]
 
 # Simple in-memory caches (protected by RLock for thread safety - C8 fix)
 import threading as _threading
@@ -87,9 +99,6 @@ def _set_provider_active(provider_type: str, active: bool) -> None:
     Used after OAuth login/logout to enable or disable a provider without
     requiring a full settings save cycle.
     """
-    import tempfile as _tempfile
-    import os as _os
-
     cfg_path = resolve_config_path(None)
     target_key = canonical_provider(provider_type)
     with _providers_json_lock:
@@ -100,14 +109,14 @@ def _set_provider_active(provider_type: str, active: bool) -> None:
                 p["active"] = active
                 break
         new_text = json.dumps(providers, indent=2)
-        fd, tmp = _tempfile.mkstemp(dir=cfg_path.parent, suffix=".tmp")
+        fd, tmp = tempfile.mkstemp(dir=cfg_path.parent, suffix=".tmp")
         try:
-            with _os.fdopen(fd, "w", encoding="utf-8") as f:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
                 f.write(new_text)
-            _os.replace(tmp, cfg_path)
+            os.replace(tmp, cfg_path)
         except Exception:
             try:
-                _os.unlink(tmp)
+                os.unlink(tmp)
             except OSError:
                 pass
             raise
@@ -467,6 +476,32 @@ class ProviderManager:
             return []
         return list(self._models_cache.get(key.lower().replace(" ", "_")) or [])
 
+    def get_active_provider_name(self) -> Optional[str]:
+        """Return the canonical key of the first provider marked active:true in providers.json.
+
+        Returns None if no provider is explicitly active (so callers can fall back).
+        Thread-safe: reads providers.json under _providers_json_lock.
+        """
+        try:
+            cfg_path = resolve_config_path(self.providers_config_path)
+            with _providers_json_lock:
+                raw = json.loads(cfg_path.read_text(encoding="utf-8"))
+            providers = (
+                raw
+                if isinstance(raw, list)
+                else ([raw] if isinstance(raw, dict) else [])
+            )
+            for p in providers:
+                if not isinstance(p, dict):
+                    continue
+                if p.get("active") is True:
+                    key = canonical_provider(p.get("name") or p.get("type") or "")
+                    if key:
+                        return key
+        except Exception:
+            pass
+        return None
+
     async def initialize(self):
         if self._initialized:
             return
@@ -623,7 +658,22 @@ class ProviderManager:
                         ),
                         None,
                     )
-                    if prov_cfg and prov_cfg.get("active") is False:
+                    # Skip probe for explicitly inactive providers, unless they are
+                    # local/self-hosted (base_url present) — those should always be
+                    # probed so the TUI can show whether LM Studio / Ollama is running.
+                    _is_local_prov = bool(
+                        prov_cfg
+                        and (
+                            prov_cfg.get("base_url")
+                            or canonical_provider(prov_cfg.get("type") or "")
+                            in {"lm_studio", "ollama", "openai_compat", "local"}
+                        )
+                    )
+                    if (
+                        prov_cfg
+                        and prov_cfg.get("active") is False
+                        and not _is_local_prov
+                    ):
                         continue
 
                     if not adapter:
@@ -638,6 +688,24 @@ class ProviderManager:
                             except Exception:
                                 pass
                         continue
+
+                    # --- Determine connection status ---
+                    # Priority: validate_connection() > get_models_from_api() result.
+                    # validate_connection() is preferred for providers like GitHub Copilot
+                    # that use OAuth tokens (no network call needed to check auth state).
+                    explicit_status: Optional[str] = None
+                    if hasattr(adapter, "validate_connection"):
+                        try:
+                            valid = adapter.validate_connection()
+                            if inspect.isawaitable(valid):
+                                # Sync context — skip awaitable; fall through to probe
+                                pass
+                            else:
+                                explicit_status = (
+                                    "connected" if valid else "disconnected"
+                                )
+                        except Exception:
+                            pass
 
                     if hasattr(adapter, "get_models_from_api"):
                         try:
@@ -682,10 +750,34 @@ class ProviderManager:
                                         "provider.models.cached",
                                         {"provider": prov_key, "models": models_list},
                                     )
+                                    # validate_connection() overrides model-probe status
+                                    final_status = explicit_status or "connected"
                                     self._event_bus.publish(
                                         "provider.status.changed",
-                                        {"provider": prov_key, "status": "connected"},
+                                        {"provider": prov_key, "status": final_status},
                                     )
+                                    # Query context window for providers that support it
+                                    # (e.g. LM Studio exposes /api/v0/models with
+                                    # loaded_context_length per model).
+                                    if hasattr(adapter, "get_loaded_context_length"):
+                                        try:
+                                            active_model = (
+                                                models_list[0] if models_list else ""
+                                            )
+                                            ctx_len = adapter.get_loaded_context_length(
+                                                active_model
+                                            )
+                                            if ctx_len and ctx_len > 0:
+                                                self._event_bus.publish(
+                                                    "provider.context_window",
+                                                    {
+                                                        "provider": prov_key,
+                                                        "model": active_model,
+                                                        "context_window": ctx_len,
+                                                    },
+                                                )
+                                        except Exception:
+                                            pass
                                 except Exception:
                                     pass
                         else:
@@ -697,11 +789,16 @@ class ProviderManager:
                                     self._event_bus.publish(
                                         "provider.models.empty", {"provider": prov_key}
                                     )
+                                    # validate_connection() overrides empty-models status.
+                                    # This is the key fix for GitHub Copilot: when a token
+                                    # is stored, status is "connected" even though the
+                                    # static fallback models were returned.
+                                    final_status = explicit_status or "disconnected"
                                     self._event_bus.publish(
                                         "provider.status.changed",
                                         {
                                             "provider": prov_key,
-                                            "status": "disconnected",
+                                            "status": final_status,
                                         },
                                     )
                                 except Exception:
@@ -712,9 +809,10 @@ class ProviderManager:
                             self._models_cache[prov_key] = []
                         if self._event_bus:
                             try:
+                                final_status = explicit_status or "unknown"
                                 self._event_bus.publish(
                                     "provider.status.changed",
-                                    {"provider": prov_key, "status": "unknown"},
+                                    {"provider": prov_key, "status": final_status},
                                 )
                             except Exception:
                                 pass
@@ -990,11 +1088,10 @@ async def _call_model_internal(
         last_err = None
         if hasattr(adapter, "chat"):
             loop = asyncio.get_running_loop()
-            from functools import partial
-
+            # CODE_QUALITY_AUDIT #7 fix: functools.partial is now a top-level import.
             try:
                 # call synchronously in executor
-                fn = partial(
+                fn = functools.partial(
                     adapter.chat,
                     messages,
                     model=model,
@@ -1006,10 +1103,8 @@ async def _call_model_internal(
                 # M1: If stream=True the adapter may return a raw requests.Response;
                 # consume the SSE stream and return the accumulated text as a dict.
                 if stream and hasattr(res, "iter_lines"):
-                    from functools import partial as _partial
-
                     text = await loop.run_in_executor(
-                        None, _partial(_consume_sse_stream, res, model)
+                        None, functools.partial(_consume_sse_stream, res, model)
                     )
                     return {"ok": True, "text": text, "streamed": True}
                 return res
@@ -1017,11 +1112,9 @@ async def _call_model_internal(
                 last_err = e
         if hasattr(adapter, "generate"):
             loop = asyncio.get_running_loop()
-            from functools import partial
-
             try:
                 # Some adapters expect (prompt, model, stream, format_json) while some expect prompt-only.
-                fn = partial(
+                fn = functools.partial(
                     adapter.generate,
                     messages,
                     model=model,
@@ -1032,17 +1125,15 @@ async def _call_model_internal(
                 res = await loop.run_in_executor(None, fn)
                 # M1: Same SSE consumption for generate path
                 if stream and hasattr(res, "iter_lines"):
-                    from functools import partial as _partial
-
                     text = await loop.run_in_executor(
-                        None, _partial(_consume_sse_stream, res, model)
+                        None, functools.partial(_consume_sse_stream, res, model)
                     )
                     return {"ok": True, "text": text, "streamed": True}
                 return res
             except TypeError:
                 try:
                     # fallback: positional
-                    fn = partial(adapter.generate, messages)
+                    fn = functools.partial(adapter.generate, messages)
                     res = await loop.run_in_executor(None, fn)
                     return res
                 except Exception as e:
@@ -1162,8 +1253,7 @@ def _consume_sse_stream(raw_response: Any, model: Optional[str] = None) -> str:
 
     Returns the fully accumulated response text.
     """
-    import json as _json
-
+    # CODE_QUALITY_AUDIT #7 fix: json is already imported at module level.
     try:
         from src.core.orchestration.event_bus import get_event_bus
 
@@ -1199,7 +1289,7 @@ def _consume_sse_stream(raw_response: Any, model: Optional[str] = None) -> str:
             if data == "[DONE]":
                 break
             try:
-                chunk = _json.loads(data)
+                chunk = json.loads(data)
                 choices = chunk.get("choices") or []
                 if choices:
                     delta = choices[0].get("delta") or {}
@@ -1303,7 +1393,7 @@ def _consume_sse_stream(raw_response: Any, model: Optional[str] = None) -> str:
                                 )
                             except Exception:
                                 pass
-            except (_json.JSONDecodeError, KeyError, IndexError):
+            except (json.JSONDecodeError, KeyError, IndexError):
                 continue
     except Exception as e:
         guilogger.warning(f"_consume_sse_stream: stream iteration error: {e}")
@@ -1415,19 +1505,17 @@ async def call_model(
 
     # HR-6: Record actual token usage in the budget monitor so check_budget() has
     # real counts rather than rough character-length estimates.
+    # FIX: generate() normalises usage to top-level keys (prompt_tokens,
+    # completion_tokens, total_tokens) — NOT nested under "usage".  The old
+    # res.get("usage") path always returned {} and this block never fired.
     if session_id and isinstance(res, dict):
-        _usage = res.get("usage") or {}
-        if not _usage:
-            # Some adapters nest usage under meta
-            _usage = (res.get("meta") or {}).get("usage") or {}
-        _pt = _usage.get("prompt_tokens", 0) or _usage.get("input_tokens", 0)
-        _ct = _usage.get("completion_tokens", 0) or _usage.get("output_tokens", 0)
-        _tt = _usage.get("total_tokens", 0) or (_pt + _ct)
+        _pt = int(res.get("prompt_tokens") or 0)
+        _ct = int(res.get("completion_tokens") or 0)
+        _tt = int(res.get("total_tokens") or (_pt + _ct))
         if _tt > 0:
             try:
-                from src.core.orchestration.token_budget import get_token_budget_monitor
-
-                get_token_budget_monitor().record_usage(session_id, _pt, _ct, _tt)
+                if _get_token_budget_monitor is not None:
+                    _get_token_budget_monitor().record_usage(session_id, _pt, _ct, _tt)
             except Exception:
                 pass  # never let budget tracking break LLM calls
 

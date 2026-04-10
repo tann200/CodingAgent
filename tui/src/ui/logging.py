@@ -21,7 +21,7 @@ class InMemoryHandler(logging.Handler):
         try:
             msg = self.format(record)
             self.buffer.append(msg)
-            for cb in self._callbacks:
+            for cb in list(self._callbacks):
                 try:
                     cb(msg)
                 except Exception:

@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 from typing import Any, Dict, List, Optional
 from pathlib import Path
 
@@ -17,6 +18,7 @@ def _estimate_tokens(messages: List[Dict[str, str]]) -> int:
     """
     try:
         from src.core.inference.tokenizer import count_messages_tokens
+
         return count_messages_tokens(messages)
     except Exception:
         total_chars = sum(len(str(m.get("content", ""))) for m in messages)
@@ -31,11 +33,27 @@ def _call_llm_sync(messages: list, format_json: bool = False, **kwargs) -> str:
     asyncio.gather).  When a running loop is detected we spin up a fresh
     ThreadPoolExecutor thread — that thread has no event loop, so asyncio.run()
     works correctly and the coroutine gets its own isolated loop.
+
+    SM-1: If ``model`` is not already in *kwargs*, attempt to inject the
+    configured ``small_model`` from config so background tasks (compaction,
+    distillation, title generation) use a lightweight model rather than
+    burning the main frontier model's token budget.
     """
     import asyncio
     import inspect
     import concurrent.futures
     from src.core.inference.llm_manager import call_model
+
+    # SM-1: inject small_model when not explicitly overridden by caller
+    if "model" not in kwargs:
+        try:
+            from src.core.config_loader import get_small_model as _gsm
+
+            _sm = _gsm()
+            if _sm:
+                kwargs["model"] = _sm
+        except Exception:
+            pass
 
     try:
         candidate = call_model(
@@ -305,8 +323,6 @@ def distill_context(
             [{"role": "user", "content": prompt}], format_json=True, max_tokens=_max_tok
         )
         if content:
-            import re
-
             match = re.search(r"\{.*\}", content, re.DOTALL)
             if match:
                 distilled_state = json.loads(match.group(0))
@@ -350,9 +366,7 @@ def distill_context(
             todo_json_path = agent_context / "todo.json"
             if todo_json_path.exists():
                 try:
-                    import json as _json
-
-                    todo_steps = _json.loads(todo_json_path.read_text())
+                    todo_steps = json.loads(todo_json_path.read_text())
                     done_steps = [s["description"] for s in todo_steps if s.get("done")]
                     pending_steps = [
                         s["description"] for s in todo_steps if not s.get("done")
@@ -494,14 +508,18 @@ def call_internal_agent(
     """
     try:
         from src.core.orchestration.agent_types import get_agent_registry
+
         agent = get_agent_registry().get(agent_id)
         if agent is None:
-            logger.warning("call_internal_agent: agent %r not found in registry", agent_id)
+            logger.warning(
+                "call_internal_agent: agent %r not found in registry", agent_id
+            )
             return ""
         if agent.mode != "internal":
             logger.warning(
                 "call_internal_agent: agent %r has mode=%r, expected 'internal'",
-                agent_id, agent.mode,
+                agent_id,
+                agent.mode,
             )
             return ""
         system_msg: str = agent.prompt_override or ""

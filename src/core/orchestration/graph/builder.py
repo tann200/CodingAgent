@@ -1,3 +1,5 @@
+import hashlib
+import json
 import logging
 import threading
 from typing import Any, Dict, Literal, Mapping
@@ -22,6 +24,13 @@ from src.core.orchestration.graph.nodes.analyst_delegation_node import (
 )
 
 logger = logging.getLogger(__name__)
+
+try:
+    from src.core.orchestration.token_budget import (
+        get_token_budget_monitor as _get_token_budget_monitor,
+    )
+except Exception:
+    _get_token_budget_monitor = None  # type: ignore[assignment]
 
 # D-11: Named routing constants — avoids magic numbers in router functions.
 _MAX_ROUNDS_PLANNING = 15  # force-end after this many planning rounds
@@ -248,7 +257,9 @@ def _task_has_more_steps(state: Mapping[str, Any]) -> bool:
     combined_task = f"{original_task} {task}".lower()
 
     multi_step_patterns = [
-        r"\band\b",  # "create folder and file"
+        # WF-VOL23-2: removed r"\band\b" — matches virtually every English sentence,
+        # causing spurious re-analysis on all compound-sentence tasks (e.g. "read and
+        # summarize", "find and fix").  The remaining patterns are more discriminating.
         r"\bthen\b",  # "do this then do that"
         r"\bafter that\b",
         r"\bnext\b",
@@ -272,11 +283,18 @@ def _task_has_more_steps(state: Mapping[str, Any]) -> bool:
 
 def route_after_perception(
     state: Mapping[str, Any],
-) -> Literal["execution", "analysis", "memory_sync"]:
+) -> Literal["execution", "analysis", "memory_sync", "planning"]:
     """
     Phase 2.1: Fast-Path Routing.
     If perception generated a valid tool call and task is simple, go to execution.
     Complex tasks are forced through analysis.
+
+    P2-A fix: simple tasks on their first round (no prior action, no prior
+    rounds) now bypass the analysis node entirely and go directly to planning.
+    This saves one analysis LLM call (~2k-5k tokens) for tasks that are
+    clearly single-action (explanation, single-file read, single annotation,
+    etc.).  The classification uses the `task_complexity` flag already set by
+    perception_node, falling back to `_task_is_complex()`.
 
     CRITICAL FIX: When next_action=None after successful execution:
     - If task appears to have more steps (multi-step detected), continue to analysis
@@ -285,6 +303,22 @@ def route_after_perception(
     This ensures multi-step tasks like "create folder and file" continue executing
     instead of prematurely ending after the first tool call.
     """
+    # CF-1: needs_clarification — perception_node asked the user a question.
+    # Route to memory_sync to end the current turn; the TUI will display the
+    # assistant question and wait for the user's next message.
+    if state.get("needs_clarification"):
+        logger.info("route_after_perception: needs_clarification=True — ending turn")
+        return "memory_sync"
+
+    # REACT-OVF: context overflow detected — history already truncated by perception_node.
+    # Route to memory_sync to persist what we have and let the next user turn start fresh.
+    if "context_overflow" in (state.get("errors") or []):
+        logger.warning(
+            "route_after_perception: context overflow in errors — routing to memory_sync "
+            "to end the pipeline cleanly (history has been truncated)"
+        )
+        return "memory_sync"
+
     next_action = state.get("next_action")
     last_result = state.get("last_result")
     rounds = state.get("rounds", 0)
@@ -332,6 +366,26 @@ def route_after_perception(
                 return "analysis"
             logger.info("route_after_perception: task complete, going to memory_sync")
             return "memory_sync"
+
+    # P2-A: On a fresh task (no prior rounds, no prior action) with an explicit
+    # "simple" classification, bypass the analysis node entirely and go directly
+    # to planning.  Analysis is an extra LLM call that adds nothing for tasks like
+    # "what does this function do?" or "add a docstring to function X".
+    # Only fire when rounds == 0 to avoid bypassing analysis on resumed tasks.
+    if rounds == 0:
+        _tc = state.get("task_complexity")
+        if _tc == "simple":
+            logger.info(
+                "route_after_perception: simple task on first round — bypassing "
+                "analysis, going directly to planning"
+            )
+            return "planning"
+        if _tc != "complex" and not _task_is_complex(state):
+            logger.info(
+                "route_after_perception: heuristic-simple task on first round — "
+                "bypassing analysis, going directly to planning"
+            )
+            return "planning"
 
     logger.info("route_after_perception: no action yet, going to analysis")
     return "analysis"
@@ -860,6 +914,7 @@ def compile_agent_graph():
     # Phase 2.1: Fast-Path Routing
     # - Tool call + simple -> execution
     # - No next action + last result OK -> memory_sync (task complete)
+    # - Simple task (first round, no action) -> planning (bypass analysis)
     # - Otherwise -> analysis for context
     workflow.add_conditional_edges(
         "perception",
@@ -868,6 +923,7 @@ def compile_agent_graph():
             "execution": "execution",
             "analysis": "analysis",
             "memory_sync": "memory_sync",
+            "planning": "planning",  # P2-A: simple tasks bypass analysis
         },
     )
 
@@ -998,6 +1054,15 @@ def compile_agent_graph():
             logger.info("should_after_memory_sync: task complete, routing to END")
             return "end"
 
+        # CF-1: Exit when perception asked a clarifying question — the user has
+        # not yet responded, so we must stop the current graph invocation here.
+        if state.get("needs_clarification"):
+            logger.info(
+                "should_after_memory_sync: needs_clarification=True, routing to END "
+                "to wait for user response"
+            )
+            return "end"
+
         # Fast-path completion: no plan, last execution succeeded, no pending action,
         # and at least one round completed. This covers simple read-only tasks (e.g.
         # "list files") that never go through evaluation_node to set evaluation_result.
@@ -1103,14 +1168,9 @@ def _check_replan_required(
     current_plan_for_hash = state.get("current_plan") or []
     last_plan_hash = state.get("last_plan_hash")
     if last_plan_hash and current_plan_for_hash:
-        import json as _json_wf4
-        import hashlib as _hashlib_wf4
-
         try:
-            _cur_str = _json_wf4.dumps(
-                current_plan_for_hash, sort_keys=True, default=str
-            )
-            _cur_hash = _hashlib_wf4.sha256(_cur_str.encode()).hexdigest()
+            _cur_str = json.dumps(current_plan_for_hash, sort_keys=True, default=str)
+            _cur_hash = hashlib.sha256(_cur_str.encode()).hexdigest()
             if _cur_hash == last_plan_hash:
                 logger.warning(
                     "route_execution: WF-4 plan divergence detected — "
@@ -1178,6 +1238,24 @@ def _check_no_plan_fast_path(state: Mapping[str, Any]) -> str | None:
         )
         return "memory_sync"
 
+    # Query tools: the model fetched data in order to answer the user's question.
+    # Give the model one more perception turn so it can interpret results and
+    # respond in natural language rather than silently ending with "✓ Done".
+    _query_tools = {
+        "glob",
+        "find",
+        "find_files",
+        "grep",
+        "rg",
+        "search_code",
+        "find_symbol",
+        "find_references",
+        "memory_search",
+        "web_search",
+        "fetch",
+        "browse",
+    }
+
     if last_tool in read_only_tools:
         if last_tool in ("read_file", "fs.read"):
             _task_lower = (state.get("task") or "").lower()
@@ -1208,6 +1286,24 @@ def _check_no_plan_fast_path(state: Mapping[str, Any]) -> str | None:
                     "— routing to perception for write step"
                 )
                 return "perception"
+
+        if last_tool in _query_tools:
+            # Query tool returned results — route to perception so the model can
+            # synthesise a natural language answer instead of silently ending.
+            # Guard against perception loops: only allow one extra interpretation turn.
+            rounds = int(state.get("rounds") or 0)
+            if rounds < _LOOP_GUARD_ROUNDS:
+                logger.info(
+                    f"route_execution: query tool '{last_tool}' returned results "
+                    "— routing to perception for interpretation turn"
+                )
+                return "perception"
+            logger.info(
+                f"route_execution: query tool '{last_tool}', loop guard "
+                f"(rounds={rounds}) — routing to memory_sync"
+            )
+            return "memory_sync"
+
         logger.info("route_execution: fast-path read-only tool, routing to memory_sync")
         return "memory_sync"
     elif execution_failed and state.get("rounds", 0) >= 1:
@@ -1255,10 +1351,11 @@ def route_execution(
     4. replan_required set → replan (P1-3: capped at 5 attempts → memory_sync)
     5. No plan (fast-path mode):
        a. _completion_detected flag → memory_sync (hallucinated terminal tool)
-       b. Read-only tool → memory_sync (task answered)
-       c. Execution failed (HR-4: capped at 3 failures → memory_sync) → analysis
-       d. rounds >= 10 loop guard → memory_sync
-       e. More rounds needed → perception
+       b. Query tool (glob, grep, search_code, etc.) → perception (interpretation turn)
+       c. Other read-only tool → memory_sync (task answered)
+       d. Execution failed (HR-4: capped at 3 failures → memory_sync) → analysis
+       e. rounds >= 10 loop guard → memory_sync
+       f. More rounds needed → perception
     6. Otherwise → step_controller (normal planned flow)
 
     WR-1 fix: When there's no current_plan, avoid going through the full
@@ -1270,6 +1367,16 @@ def route_execution(
     W12 / HR-4 / P1-3: Ported from dead should_after_execution* routers.
     ARCH-3: Delegates to helper sub-routers for each logical section.
     """
+    # Gate 0: REACT-OVF — context overflow detected by execution_node (or perception_node
+    # on a prior turn that was not yet flushed).  Route directly to memory_sync to end
+    # the pipeline cleanly; history has already been truncated by the emitting node.
+    if "context_overflow" in (state.get("errors") or []):
+        logger.warning(
+            "route_execution: context overflow in errors — routing to memory_sync "
+            "to end pipeline cleanly (history has been truncated)"
+        )
+        return "memory_sync"
+
     # Gate 1: Tool budget
     if _check_tool_budget(state):
         logger.warning(
@@ -1358,8 +1465,6 @@ def should_after_execution_with_compaction(
     3. Token budget at threshold → memory_sync (compact via distillation)
     4. Otherwise → normal routing
     """
-    from src.core.orchestration.token_budget import get_token_budget_monitor
-
     awaiting = state.get("awaiting_user_input", False)
     if awaiting:
         return "wait_for_user"

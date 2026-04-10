@@ -28,7 +28,7 @@ def _populate(store: SessionStore, session_id: str) -> None:
     store.add_tool_call(
         session_id, "read_file", {"path": "foo.py"}, '{"ok": true}', True
     )
-    store.add_error(session_id, "ValueError", "oops", '{"k": 1}')
+    store.add_error(session_id, "ValueError", "oops", {"k": 1})
     store.add_plan(session_id, '["step1", "step2"]', "active")
     store.add_decision(session_id, "use write_file", "fastest path")
 

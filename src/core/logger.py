@@ -3,6 +3,7 @@ Thread-safe logging for the Textual TUI with audit logging support.
 """
 
 import json
+import sys
 import traceback
 from datetime import datetime
 from enum import Enum
@@ -105,8 +106,6 @@ class GUILogger:
         except OSError:
             # Some test runners (Textual headless on Windows) replace stdout with invalid handles.  # noqa: E501
             # Fall back to sys.stderr.write which is more stable.
-            import sys
-
             try:
                 sys.stderr.write(f"[{timestamp}] [{level.upper()}] {safe_msg}\n")
             except Exception:
@@ -115,8 +114,6 @@ class GUILogger:
 
         # Route through standard logging system for TUI ConsolePanel
         try:
-            import logging
-
             standard_logger = logging.getLogger("agent_tui")
             standard_level = {
                 "DEBUG": logging.DEBUG,

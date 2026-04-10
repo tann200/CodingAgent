@@ -16,6 +16,8 @@ import threading
 import time
 import pytest
 
+pytestmark = pytest.mark.integration
+
 from src.core.orchestration.file_lock_manager import FileLockManager
 from src.core.orchestration.wave_coordinator import WaveCoordinator, ExecutionWave
 
@@ -24,17 +26,18 @@ from src.core.orchestration.wave_coordinator import WaveCoordinator, ExecutionWa
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def _make_lock_manager(cancel_event=None) -> FileLockManager:
     cancel = cancel_event or threading.Event()
-    return FileLockManager(workdir="/tmp", cancel_event=cancel) # type: ignore[arg-type]
+    return FileLockManager(workdir="/tmp", cancel_event=cancel)  # type: ignore[arg-type]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # FileLockManager: parallel reads
 # ─────────────────────────────────────────────────────────────────────────────
 
-class TestFileLockManagerReads:
 
+class TestFileLockManagerReads:
     @pytest.mark.asyncio
     async def test_multiple_readers_acquire_simultaneously(self):
         """Multiple agents can hold read locks on the same file at the same time."""
@@ -88,8 +91,8 @@ class TestFileLockManagerReads:
 # FileLockManager: sequential writes
 # ─────────────────────────────────────────────────────────────────────────────
 
-class TestFileLockManagerWrites:
 
+class TestFileLockManagerWrites:
     @pytest.mark.asyncio
     async def test_write_lock_exclusive(self):
         """Second writer waits until first writer releases."""
@@ -146,7 +149,9 @@ class TestFileLockManagerWrites:
     async def test_lock_released_even_on_exception(self):
         """Locks acquired in _execute_tool_with_locks are released in the finally block."""
         from unittest.mock import AsyncMock, MagicMock
-        from src.core.orchestration.graph.nodes.execution_node import _execute_tool_with_locks
+        from src.core.orchestration.graph.nodes.execution_node import (
+            _execute_tool_with_locks,
+        )
 
         lm = _make_lock_manager()
         path = "src/explode.py"
@@ -168,8 +173,8 @@ class TestFileLockManagerWrites:
 # WaveCoordinator: parallel reads + sequential writes
 # ─────────────────────────────────────────────────────────────────────────────
 
-class TestWaveCoordinator:
 
+class TestWaveCoordinator:
     @pytest.mark.asyncio
     async def test_reads_execute_and_return_results(self):
         """execute_wave returns read_results keyed by result_key."""
@@ -179,8 +184,16 @@ class TestWaveCoordinator:
         wave = ExecutionWave(
             wave_id=0,
             read_agents=[
-                {"agent_id": "scout", "files": ["src/a.py"], "result_key": "scout_result"},
-                {"agent_id": "researcher", "files": ["src/b.py"], "result_key": "research_result"},
+                {
+                    "agent_id": "scout",
+                    "files": ["src/a.py"],
+                    "result_key": "scout_result",
+                },
+                {
+                    "agent_id": "researcher",
+                    "files": ["src/b.py"],
+                    "result_key": "research_result",
+                },
             ],
             write_agents=[],
         )
@@ -349,21 +362,24 @@ class TestWaveCoordinator:
 # AgentState _file_lock_manager field
 # ─────────────────────────────────────────────────────────────────────────────
 
-class TestAgentStatePRSWFields:
 
+class TestAgentStatePRSWFields:
     def test_agentstate_has_file_lock_manager_field(self):
         """AgentState TypedDict declares _file_lock_manager."""
         from src.core.orchestration.graph.state import AgentState
+
         assert "_file_lock_manager" in AgentState.__annotations__
 
     def test_agentstate_has_write_queue_field(self):
         """AgentState TypedDict declares _write_queue."""
         from src.core.orchestration.graph.state import AgentState
+
         assert "_write_queue" in AgentState.__annotations__
 
     def test_agentstate_has_compact_tracking_fields(self):
         """AgentState TypedDict declares Phase-4 token auto-compact fields."""
         from src.core.orchestration.graph.state import AgentState
+
         annotations = AgentState.__annotations__
         assert "last_compact_at" in annotations
         assert "last_compact_turn" in annotations
@@ -372,6 +388,7 @@ class TestAgentStatePRSWFields:
     def test_agentstate_has_p2p_fields(self):
         """AgentState TypedDict declares Phase-B P2P fields."""
         from src.core.orchestration.graph.state import AgentState
+
         annotations = AgentState.__annotations__
         assert "_agent_session_manager" in annotations
         assert "_agent_messages" in annotations
@@ -382,8 +399,8 @@ class TestAgentStatePRSWFields:
 # delegation_node PRSW path
 # ─────────────────────────────────────────────────────────────────────────────
 
-class TestDelegationNodePRSW:
 
+class TestDelegationNodePRSW:
     @pytest.mark.asyncio
     async def test_delegation_node_resolves_lock_manager_from_state(self, tmp_path):
         """delegation_node picks up _file_lock_manager from state when present."""
@@ -407,7 +424,9 @@ class TestDelegationNodePRSW:
         assert isinstance(result, dict)
 
     @pytest.mark.asyncio
-    async def test_delegation_node_resolves_lock_manager_from_orchestrator(self, tmp_path):
+    async def test_delegation_node_resolves_lock_manager_from_orchestrator(
+        self, tmp_path
+    ):
         """delegation_node falls back to orchestrator.file_lock_manager when not in state."""
         from unittest.mock import MagicMock
         from src.core.orchestration.graph.nodes.delegation_node import delegation_node

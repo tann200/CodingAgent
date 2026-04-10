@@ -99,9 +99,36 @@ _PROVIDERS_SEARCH_PATHS = [
     Path(__file__).parent.parent.parent.parent / "config" / "providers.json",
 ]
 
+# LIVE-CTX: Runtime override set by the provider.context_window event handler
+# when the models endpoint returns the actual loaded context length.  Takes
+# precedence over providers.json so that get_context_budget() reflects reality
+# rather than a static config value.
+_live_context_length: int = 0
+
+
+def set_active_context_length(length: int) -> None:
+    """Override the active context length with a live value from the models endpoint.
+
+    Called by the TUI bridge (and any other subscriber of the
+    ``provider.context_window`` event) as soon as the real loaded context length
+    is known.  A value of 0 or negative clears the override so the file-based
+    fallback is used again.
+    """
+    global _live_context_length
+    _live_context_length = max(0, int(length))
+    logger.debug(f"provider_context: live context length set to {_live_context_length}")
+
 
 def _load_active_context_length() -> int:
-    """Return the context_length of the active provider, or a sensible default."""
+    """Return the context_length of the active provider, or a sensible default.
+
+    Prefers the live value set by ``set_active_context_length()`` (populated
+    from the models endpoint at runtime) over the static providers.json entry.
+    """
+    # LIVE-CTX: prefer runtime value from models endpoint
+    if _live_context_length > 0:
+        return _live_context_length
+
     for path in _PROVIDERS_SEARCH_PATHS:
         if path.exists():
             try:
@@ -135,6 +162,9 @@ def get_context_budget(
     """
     Return a token budget for context-building based on the active provider's
     context window.
+
+    Prefers the live context length reported by the models endpoint (set via
+    ``set_active_context_length()``) over the static providers.json value.
 
     fraction  — portion of the context window to allocate (default 0.65)
     min_tokens — lower clamp (guarantees a usable minimum even for tiny models)

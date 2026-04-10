@@ -1,8 +1,9 @@
 """
 Utilities for handling LLM thinking/reasoning tokens.
 
-Some models (Qwen3, DeepSeek-R1-Distill) emit <think>...</think> blocks
-before their actual response.  These utilities let the codebase:
+Some models (Qwen3, DeepSeek-R1-Distill, OpenAI o-series) use a
+"reasoning-first" pattern before their actual response.  These utilities let
+the codebase:
 
   1. Detect whether the active model is a reasoning model.
   2. Strip <think> blocks from any response string.
@@ -17,14 +18,25 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# Substrings that identify models with automatic thinking-token generation.
-# Qwen3 supports /no_think; DeepSeek-R1-Distill does not — both need a larger
-# token budget when thinking cannot be disabled.
+# Substrings that identify models with automatic thinking-token generation or
+# "reasoning-first" behaviour that requires the beast/reasoning prompt variant.
+#
+# Local reasoning models (Qwen3, DeepSeek-R1) emit <think> blocks.
+# OpenAI o-series (o1, o3, o4) use server-side chain-of-thought; they do NOT
+# emit <think> blocks but still need a different prompting style (no CoT
+# instructions, direct output, no streaming tool-call format).
 _REASONING_MODEL_PATTERNS = (
     "qwen3",
     "deepseek-r1",
     "deepseek_r1",
     "qwq",
+    # OpenAI o-series reasoning models
+    "o1-",
+    "o1-mini",
+    "o1-preview",
+    "o3-mini",
+    "o3-",
+    "o4-",
 )
 
 # Qwen3 specifically supports /no_think to suppress the think block entirely.
@@ -87,7 +99,9 @@ def get_active_model_id() -> str:
         from src.core.inference.llm_manager import load_provider
 
         raw = load_provider(None)
-        providers = raw if isinstance(raw, list) else ([raw] if isinstance(raw, dict) else [])
+        providers = (
+            raw if isinstance(raw, list) else ([raw] if isinstance(raw, dict) else [])
+        )
         if providers:
             p = providers[0]
             # providers.json entries may carry a 'model' or 'default_model' key

@@ -264,7 +264,7 @@ class TestWatchLoop:
         def _watch(*paths, stop_event=None):
             yield from changes_sequence
 
-        fake_mod.watch = _watch
+        fake_mod.watch = _watch  # type: ignore[assignment]
         return fake_mod
 
     def test_watch_loop_respects_stop_flag(self, tmp_path: Path) -> None:

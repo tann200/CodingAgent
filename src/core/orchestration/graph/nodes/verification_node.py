@@ -71,7 +71,8 @@ async def verification_node(state: Mapping[str, Any], config: Any) -> Dict[str, 
                             "deletion_verification": "FAILED",
                             "error": f"File still exists: {deleted_path}",
                             "path": deleted_path,
-                        }
+                        },
+                        "verification_passed": False,
                     }
                 else:
                     logger.info(
@@ -131,7 +132,18 @@ async def verification_node(state: Mapping[str, Any], config: Any) -> Dict[str, 
     # full suite for the final step or when the step explicitly requests it.
     current_plan = state.get("current_plan") or []
     current_step = int(state.get("current_step") or 0)
-    at_final_step = (not current_plan) or (current_step >= len(current_plan) - 1)
+    # P0-A fix: no-plan (fast-path) tasks must NOT treat every tool call as the
+    # final step.  Previously `at_final_step = (not current_plan) or ...` caused
+    # pytest to run after every single tool call on no-plan tasks.
+    # We only consider no-plan tasks "at final step" when execution has genuinely
+    # concluded: either evaluation already returned "complete"/"pass", or there
+    # are no further actions pending.
+    if current_plan:
+        at_final_step = current_step >= len(current_plan) - 1
+    else:
+        evaluation_done = state.get("evaluation_result") in ("complete", "pass")
+        next_action = state.get("next_action")
+        at_final_step = evaluation_done or (next_action is None)
     step_requests_verification = _step_requests_verification(state)
     run_full_suite = at_final_step or step_requests_verification
 

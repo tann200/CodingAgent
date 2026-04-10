@@ -1,5 +1,10 @@
 # Development Guide
 
+> **Current model:** `gemma-4-e4b-it` via LM Studio (`http://localhost:1234/v1`)
+> **Test baseline:** 3229+ unit tests passing. All prior audit cycles (vol1–vol27 + scan-2 + CODEBASE_FINDINGS pass) closed.
+> **Open bugs:** See `docs/CODEBASE_FINDINGS.md` §8 (CONC-1, LOGIC-4, LOGIC-6, QUAL-3, QUAL-4, TEST-1 NEW-7/8/9/10/12/16).
+> **Gap analysis:** See `docs/gap-analysis-opencode-vs-codingagent-v2.md` for open TUI/permission/UX items.
+
 ## Read-Before-Write Enforcement
 
 All write tools enforce that any existing file must have been read in the current session before it can be modified. New files (not yet on disk) are always allowed.
@@ -58,7 +63,7 @@ When quitting or starting a new session:
 ]
 ```
 
-Provider types: `lm_studio`, `ollama`, `openrouter`. API keys for OpenRouter are stored in `~/.config/codingagent/prefs.json` via the TUI settings panel.
+Provider types: `lm_studio`, `ollama`, `openrouter`, `openai`, `anthropic`, `github_copilot`, `groq`, `litellm`. API keys for cloud providers are stored in `~/.config/codingagent/prefs.json` via the TUI settings panel. GitHub Copilot uses OAuth device flow — click **Login with GitHub** in the TUI settings screen.
 
 ## Tool Registry and Auto-Discovery
 

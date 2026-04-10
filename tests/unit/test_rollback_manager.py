@@ -149,10 +149,12 @@ class TestRollbackManagerOrchestratorWiring:
 
         # Read first so write-guard passes
         orch.execute_tool({"name": "read_file", "arguments": {"path": "snap_test.txt"}})
-        orch.execute_tool({
-            "name": "write_file",
-            "arguments": {"path": "snap_test.txt", "content": "modified\n"},
-        })
+        orch.execute_tool(
+            {
+                "name": "write_file",
+                "arguments": {"path": "snap_test.txt", "content": "modified\n"},
+            }
+        )
 
         # At least one snapshot should have been recorded
         assert len(orch.rollback_manager.snapshots) >= 1
@@ -164,11 +166,15 @@ class TestRollbackManagerOrchestratorWiring:
         target.write_text("original\n")
 
         # Read then write (snapshot created internally)
-        orch.execute_tool({"name": "read_file", "arguments": {"path": "restore_test.txt"}})
-        orch.execute_tool({
-            "name": "write_file",
-            "arguments": {"path": "restore_test.txt", "content": "modified\n"},
-        })
+        orch.execute_tool(
+            {"name": "read_file", "arguments": {"path": "restore_test.txt"}}
+        )
+        orch.execute_tool(
+            {
+                "name": "write_file",
+                "arguments": {"path": "restore_test.txt", "content": "modified\n"},
+            }
+        )
 
         snapshot_id = orch._current_snapshot_id
         assert snapshot_id is not None
@@ -291,11 +297,15 @@ class TestMultiFileAtomicity:
         step_id = orch._step_snapshot_id
 
         # Write both files
-        orch.execute_tool({"name": "write_file", "arguments": {"path": "file1.py", "content": "new1"}})
-        orch.execute_tool({"name": "write_file", "arguments": {"path": "file2.py", "content": "new2"}})
+        orch.execute_tool(
+            {"name": "write_file", "arguments": {"path": "file1.py", "content": "new1"}}
+        )
+        orch.execute_tool(
+            {"name": "write_file", "arguments": {"path": "file2.py", "content": "new2"}}
+        )
 
         # Both should be in the step snapshot
-        snap = orch.rollback_manager.snapshots.get(step_id, []) # type: ignore[arg-type]
+        snap = orch.rollback_manager.snapshots.get(step_id, [])  # type: ignore[arg-type]
         paths = {s.path for s in snap}
         assert "file1.py" in paths
         assert "file2.py" in paths
@@ -321,3 +331,103 @@ class TestFileSnapshot:
 
         assert snap.path == "test.py"
         assert snap.content == "print('hello')"
+
+
+# ---------------------------------------------------------------------------
+# FS-1 / FS-2: rollback_tools tests
+# ---------------------------------------------------------------------------
+
+
+class TestRollbackTools:
+    """Tests for revert_last_tool and list_snapshots tools."""
+
+    def test_revert_last_tool_no_orchestrator(self):
+        """revert_last_tool returns error when no orchestrator is in context."""
+        from src.tools.rollback_tools import revert_last_tool
+
+        result = revert_last_tool()
+        assert result["ok"] is False
+        assert "orchestrator" in result["error"].lower()
+
+    def test_list_snapshots_no_orchestrator(self):
+        """list_snapshots returns error when no orchestrator is in context."""
+        from src.tools.rollback_tools import list_snapshots
+
+        result = list_snapshots()
+        assert result["ok"] is False
+        assert "orchestrator" in result["error"].lower()
+
+    def test_revert_last_tool_no_snapshot(self, tmp_path):
+        """revert_last_tool returns error when no snapshot is set on orchestrator."""
+        from unittest.mock import MagicMock
+        from src.tools.rollback_tools import revert_last_tool
+        from src.tools.subagent_tools import _PARENT_ORCHESTRATOR_VAR
+
+        mock_orch = MagicMock()
+        mock_orch._current_snapshot_id = None
+        token = _PARENT_ORCHESTRATOR_VAR.set(mock_orch)
+        try:
+            result = revert_last_tool()
+            assert result["ok"] is False
+            assert "snapshot" in result["error"].lower()
+        finally:
+            _PARENT_ORCHESTRATOR_VAR.reset(token)
+
+    def test_revert_last_tool_restores_file(self, tmp_path):
+        """revert_last_tool actually restores a file via RollbackManager."""
+        from src.tools.rollback_tools import revert_last_tool
+        from src.tools.subagent_tools import _PARENT_ORCHESTRATOR_VAR
+        from src.core.orchestration.rollback_manager import RollbackManager
+
+        # Create a file and take a snapshot of its original content
+        test_file = tmp_path / "target.py"
+        test_file.write_text("original content")
+        mgr = RollbackManager(str(tmp_path))
+        snap_id = mgr.snapshot_files(["target.py"])
+
+        # Modify the file (simulating a write tool call)
+        test_file.write_text("modified content")
+
+        # Wire mock orchestrator with rollback_manager and _current_snapshot_id
+        from unittest.mock import MagicMock
+
+        mock_orch = MagicMock()
+        mock_orch.rollback_manager = mgr
+        mock_orch._current_snapshot_id = snap_id
+        token = _PARENT_ORCHESTRATOR_VAR.set(mock_orch)
+        try:
+            result = revert_last_tool()
+            assert result["ok"] is True
+            assert "target.py" in result.get("restored_files", [])
+            assert test_file.read_text() == "original content"
+            # Snapshot ID cleared after successful revert
+            assert mock_orch._current_snapshot_id is None
+        finally:
+            _PARENT_ORCHESTRATOR_VAR.reset(token)
+
+    def test_list_snapshots_with_orchestrator(self, tmp_path):
+        """list_snapshots returns snapshot list from RollbackManager."""
+        from src.tools.rollback_tools import list_snapshots
+        from src.tools.subagent_tools import _PARENT_ORCHESTRATOR_VAR
+        from src.core.orchestration.rollback_manager import RollbackManager
+
+        test_file = tmp_path / "file.py"
+        test_file.write_text("content")
+        mgr = RollbackManager(str(tmp_path))
+        snap_id = mgr.snapshot_files(["file.py"])
+
+        from unittest.mock import MagicMock
+
+        mock_orch = MagicMock()
+        mock_orch.rollback_manager = mgr
+        mock_orch._current_snapshot_id = snap_id
+        token = _PARENT_ORCHESTRATOR_VAR.set(mock_orch)
+        try:
+            result = list_snapshots()
+            assert result["ok"] is True
+            assert isinstance(result["snapshots"], list)
+            assert len(result["snapshots"]) >= 1
+            assert result["current_snapshot_id"] == snap_id
+            assert result["revertable"] is True
+        finally:
+            _PARENT_ORCHESTRATOR_VAR.reset(token)

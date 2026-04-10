@@ -1,6 +1,9 @@
+import pytest
 from src.core.orchestration.orchestrator import Orchestrator
 from unittest.mock import patch
 import itertools
+
+pytestmark = pytest.mark.integration
 
 
 def test_orchestrator_instantiation(tmp_path):

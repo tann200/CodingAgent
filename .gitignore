@@ -5,6 +5,7 @@ venv/
 
 # Agent working state
 .agent-context/
+.agent/permission_audit.jsonl
 
 # System files
 .DS_Store

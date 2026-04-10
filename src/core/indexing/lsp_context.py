@@ -3,6 +3,7 @@
 Provides:
 - ``get_lsp_context_block(workdir, budget_chars)`` — static symbol index block
 - ``get_lsp_diagnostics_block(workdir, files, budget_chars)`` — live diagnostics
+- ``get_lsp_status_notice()`` — UX-1: degradation notice when LSP is enabled but unavailable
 
 The symbol index queries the ``SymbolGraph``; the diagnostics block reads the
 synchronous cache populated by ``LSPClient`` from pull/push results.
@@ -186,6 +187,12 @@ def get_lsp_diagnostics_block(
         # Collect all cached clients (synchronous attribute access — no await)
         all_clients = list(getattr(mgr, "_clients", {}).values())
         if not all_clients:
+            # UX-1: warn (not just debug) so operators know type-checking is inactive
+            logger.warning(
+                "lsp_context: LSP is enabled but no language-server clients are active "
+                "— live diagnostics unavailable.  Start a language server to enable "
+                "type-checking hints."
+            )
             return ""
 
         # Build URI → diagnostics mapping from all clients
@@ -260,3 +267,59 @@ def get_lsp_diagnostics_block(
     except Exception as exc:
         logger.debug("lsp_context: get_lsp_diagnostics_block failed: %s", exc)
         return ""
+
+
+# ---------------------------------------------------------------------------
+# UX-1: Graceful degradation notice
+# ---------------------------------------------------------------------------
+
+
+def get_lsp_status_notice(workdir: Optional[Path] = None) -> str:
+    """Return a human-readable notice when LSP is enabled but no server is active.
+
+    This function is designed to be called by the UI / system-prompt builder so
+    the user can see a clear message instead of silently missing type-checking.
+
+    Returns
+    -------
+    str
+        A short notice string such as::
+
+            "[LSP] Type-checking inactive — no language server running. "
+            "Start a compatible LSP server to enable live diagnostics."
+
+        or an empty string when:
+        - LSP is disabled (feature gate is off).
+        - LSP is enabled **and** at least one client is connected (working fine).
+        - Any unexpected error occurs.
+
+    Parameters
+    ----------
+    workdir:
+        Workspace root.  Defaults to ``Path.cwd()``.
+    """
+    if not _is_enabled():
+        return ""
+
+    if workdir is None:
+        workdir = Path.cwd()
+
+    try:
+        from src.core.indexing.lsp_manager import get_lsp_manager  # type: ignore[import]
+
+        mgr = get_lsp_manager(workspace=workdir)
+        all_clients = list(getattr(mgr, "_clients", {}).values())
+        if all_clients:
+            # At least one client is running — no degradation notice needed
+            return ""
+        return (
+            "[LSP] Type-checking inactive — no language server is running. "
+            "Start a compatible LSP server (e.g. pylsp, pyright) to enable "
+            "live diagnostics and type-checking hints."
+        )
+    except Exception as exc:
+        logger.debug("lsp_context: get_lsp_status_notice failed: %s", exc)
+        return (
+            "[LSP] Type-checking inactive — could not connect to language server "
+            f"({exc})."
+        )

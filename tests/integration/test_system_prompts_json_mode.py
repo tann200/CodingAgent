@@ -29,10 +29,16 @@ if not RUN and not os.getenv("CI"):
                 t = str(p.get("type") or "").lower()
                 name = str(p.get("name") or "").lower()
                 if "lm" in t or "lm" in name or "lm_studio" in t or "lmstudio" in name:
-                    RUN = True
+                    # Only enable if LM Studio is actually reachable
+                    _base = p.get("base_url", "http://localhost:1234/v1").rstrip("/")
+                    try:
+                        requests.get(f"{_base}/models", timeout=2)
+                        RUN = True
+                    except Exception:
+                        pass
                     break
     except Exception:
-        RUN = RUN
+        pass
 
 
 @pytest.mark.skipif(not RUN, reason="Integration tests disabled for LM Studio")

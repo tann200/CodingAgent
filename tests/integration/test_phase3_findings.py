@@ -19,6 +19,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+pytestmark = pytest.mark.integration
+
 # ---------------------------------------------------------------------------
 # RA-1: get_symbols_for_task
 # ---------------------------------------------------------------------------
@@ -28,10 +30,31 @@ class TestGetSymbolsForTask:
     """RA-1: Fallback symbol lookup injected into planning context."""
 
     def _write_index(self, workdir: Path, files: list) -> None:
+        """Write a repo_index.json using the flat-symbols format expected by
+        get_symbols_for_task (which reads ``repo_index["symbols"]`` as a top-level
+        flat list with keys ``symbol_name``, ``symbol_type``, and ``file_path``).
+
+        The *files* argument uses the old nested format
+        ``[{"file_path": ..., "symbols": [{"name": ..., "type": ..., ...}]}]``
+        for convenience; this helper converts it to the flat format on write.
+        """
+        flat_symbols = []
+        for file_entry in files:
+            file_path = file_entry.get("file_path", "")
+            for sym in file_entry.get("symbols", []):
+                flat_symbols.append(
+                    {
+                        "symbol_name": sym.get("name") or sym.get("symbol_name", ""),
+                        "symbol_type": sym.get("type") or sym.get("symbol_type", ""),
+                        "file_path": file_path,
+                        "start_line": sym.get("start_line"),
+                        "docstring": sym.get("docstring"),
+                    }
+                )
         ctx = workdir / ".agent-context"
         ctx.mkdir(parents=True, exist_ok=True)
         (ctx / "repo_index.json").write_text(
-            json.dumps({"files": files}), encoding="utf-8"
+            json.dumps({"files": files, "symbols": flat_symbols}), encoding="utf-8"
         )
 
     def test_returns_empty_when_no_index(self, tmp_path: Path) -> None:

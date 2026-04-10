@@ -95,8 +95,17 @@ def load_merged_config(working_dir: Optional[Path] = None) -> Dict[str, Any]:
     merged: Dict[str, Any] = {
         "autonomous_mode": False,
         "max_turns": 50,
+        # PREV-1: When True, file-write tools show a diff and wait for
+        # Accept/Reject before applying the change.  Default False (auto-accept).
+        "preview_confirmation": False,
         # TASK-07: token-based compaction threshold (estimated tokens)
         "compact_token_threshold": 6000,
+        # SM-1: Optional lightweight model used for background tasks
+        # (session title generation, context compaction/distillation, subagent
+        # routing).  When None, background tasks use the same model as the
+        # active provider default.  May be overridden per-provider via
+        # providers.json ``small_model`` field.
+        "small_model": None,
         # S3-B: MCP server configuration section.
         # Each entry in ``mcp.servers`` describes an outbound MCP server the
         # agent will connect to on startup.
@@ -118,6 +127,23 @@ def load_merged_config(working_dir: Optional[Path] = None) -> Dict[str, Any]:
             "servers": [],  # list of McpServerConfig dicts (see below)
             "timeout_seconds": 30,  # per-call timeout for MCP RPC calls
             "auto_register_tools": True,  # register tools from MCP into ToolRegistry
+        },
+        # RS-1: Remote skill discovery.
+        # List of base URLs that expose a skill index at <url>/index.json.
+        # Each URL's index.json should be a list of objects with at minimum:
+        #   {"name": "skill_name", "file": "skill_name.md"}
+        # Individual skill files are fetched from <url>/<file> and cached in
+        # ~/.cache/codingagent/skills/.
+        #
+        # Example .agent/config.json:
+        #   {
+        #     "skills": {
+        #       "urls": ["https://raw.githubusercontent.com/myorg/skills/main/"]
+        #     }
+        #   }
+        "skills": {
+            "urls": [],  # list of remote skill index base URLs
+            "cache_ttl_seconds": 3600,  # how long to keep cached remote skills
         },
     }
 
@@ -208,7 +234,7 @@ class ConfigWatcher:
     @staticmethod
     def _check_watchfiles() -> bool:
         try:
-            import watchfiles  # type: ignore[import]  # noqa: F401  # type: ignore[import]
+            import watchfiles  # type: ignore[import]  # noqa: F401
 
             return True
         except ImportError:
@@ -414,4 +440,47 @@ def get_model_for_role(
                 return val
     except Exception as exc:
         logger.debug("get_model_for_role(%r): %s", role, exc)
+    return None
+
+
+def get_small_model(working_dir: Optional[Path] = None) -> Optional[str]:
+    """SM-1: Return the configured small/background model name.
+
+    Resolution order (first non-None wins):
+    1. ``small_model`` key from the active provider entry in ``providers.json``
+    2. ``small_model`` key from the merged config layers (user/workspace overrides)
+    3. ``None`` — callers should fall back to the provider's active model
+
+    Parameters
+    ----------
+    working_dir:
+        Forwarded to ``load_merged_config()``.
+
+    Returns
+    -------
+    str or None
+        Model name to use for background LLM calls, or ``None`` to use the
+        default active model.
+    """
+    # 1. Check the active provider entry in providers.json
+    try:
+        bundled = _BUNDLED_DEFAULTS
+        if bundled.is_file():
+            raw = bundled.read_text(encoding="utf-8")
+            parsed = json.loads(raw)
+            providers_list = parsed if isinstance(parsed, list) else []
+            active = next((p for p in providers_list if p.get("active")), None)
+            if active:
+                val = active.get("small_model")
+                if val and isinstance(val, str):
+                    return val
+    except Exception as exc:
+        logger.debug("get_small_model: provider lookup failed: %s", exc)
+
+    # 2. Merged config layers (user / workspace overrides)
+    cfg = load_merged_config(working_dir)
+    val = cfg.get("small_model")
+    if val and isinstance(val, str):
+        return val
+
     return None

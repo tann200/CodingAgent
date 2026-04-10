@@ -133,3 +133,56 @@ class TestAgentBrainManager:
         manager.reload()
         roles_after = manager.get_all_roles()
         assert isinstance(roles_after, dict)
+
+
+class TestSkillsAutoListing:
+    """SK-1 tests: skills are auto-listed in the system prompt."""
+
+    def test_list_skills_summary_returns_string(self):
+        """list_skills_summary() returns a non-empty string when skills exist."""
+        manager = AgentBrainManager()
+        summary = manager.list_skills_summary()
+        assert isinstance(summary, str)
+        assert len(summary) > 0
+
+    def test_list_skills_summary_contains_bullet_entries(self):
+        """Each skill appears as a bullet line in the summary."""
+        manager = AgentBrainManager()
+        summary = manager.list_skills_summary()
+        # Should have at least one bullet entry
+        assert "•" in summary
+
+    def test_list_skills_summary_includes_known_skill(self):
+        """Skills with frontmatter appear by their name field."""
+        manager = AgentBrainManager()
+        summary = manager.list_skills_summary()
+        # code_review has frontmatter name: code_review
+        assert "code_review" in summary
+
+    def test_compile_system_prompt_includes_available_skills_section(self):
+        """compile_system_prompt() injects an <available_skills> block."""
+        manager = AgentBrainManager()
+        prompt = manager.compile_system_prompt("operational")
+        assert "<available_skills>" in prompt
+        assert "</available_skills>" in prompt
+
+    def test_compile_system_prompt_skills_section_has_load_skill_hint(self):
+        """The injected skills block mentions how to use a skill."""
+        manager = AgentBrainManager()
+        prompt = manager.compile_system_prompt()
+        assert "load_skill" in prompt
+
+    def test_legacy_compile_system_prompt_also_injects_skills(self):
+        """_compile_system_prompt (legacy path) also injects the skills block."""
+        from src.core.orchestration.agent_brain import _compile_system_prompt
+
+        result = _compile_system_prompt("You are a test assistant.")
+        assert "<available_skills>" in result
+
+    def test_reload_preserves_skill_meta_cache(self):
+        """After reload, list_skills_summary() still works."""
+        manager = AgentBrainManager()
+        manager.reload()
+        summary = manager.list_skills_summary()
+        assert isinstance(summary, str)
+        assert len(summary) > 0

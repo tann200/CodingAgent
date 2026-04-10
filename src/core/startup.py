@@ -55,10 +55,18 @@ async def provider_health_check(timeout: float = 5.0) -> Dict[str, Dict[str, Any
                         models_resp = _raw
                 except asyncio.TimeoutError:
                     res["error"] = f"timeout after {timeout}s"
-                    guilogger.warning(f"Startup: provider '{key}' timed out after {timeout}s")
+                    guilogger.warning(
+                        f"Startup: provider '{key}' timed out after {timeout}s"
+                    )
                     results[key] = res
                     continue
-                except Exception:
+                except Exception as exc:
+                    # CODE_QUALITY_AUDIT #8 fix: log context before re-raising so the
+                    # caller's traceback includes the provider name and exception message.
+                    # A bare `raise` here swallowed all diagnostic context.
+                    guilogger.error(
+                        f"Startup: provider '{key}' raised unexpected error during model fetch: {exc}"
+                    )
                     raise
 
                 if isinstance(models_resp, dict):

@@ -34,6 +34,12 @@ DEFAULTS: Dict[str, Any] = {
     "sidebar_visible": True,
     "context_window": 32000,
     "active_mode": "lead_architect",
+    # GAP-CONFIG-1: diff render style — "side-by-side" or "inline"
+    "diff_style": "side-by-side",
+    # GAP-CONFIG-2: mouse/keyboard scroll speed (lines per tick, 1–10)
+    "scroll_speed": 3,
+    # GAP-CONFIG-3: conceal sensitive values (API keys, tokens) in TUI output
+    "conceal_sensitive": False,
 }
 
 

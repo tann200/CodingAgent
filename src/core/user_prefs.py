@@ -14,10 +14,15 @@ class UserPrefs:
     ):
         self.path = Path(path) if path else Path(DEFAULT_FILENAME)
         self.data = data or {}
-        # convenience defaults (do not assume a provider)
-        self.selected_model_provider = self.data.get("selected_model_provider")
-        self.selected_model_name = self.data.get("selected_model_name")
-        self.active_mode = self.data.get("active_mode", "default")
+        # CODE_QUALITY_AUDIT #8 fix: the three lines below previously assigned
+        # instance attributes that shadow the @property descriptors defined later
+        # in this class.  Since the properties already read from self.data, the
+        # assignments caused a double-write on every construction (setter invoked
+        # from __init__, then the property re-reads the same value from self.data).
+        # Removing the redundant assignments lets the @property descriptors handle
+        # all reads/writes cleanly; self.data is the single source of truth.
+        # Defaults that were previously set here are now handled by the property
+        # getters (which return self.data.get(..., default)).
 
     @classmethod
     def load(cls, path: Optional[str] = None) -> "UserPrefs":

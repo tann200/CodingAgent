@@ -16,14 +16,36 @@ class TestClassifyModel:
     def test_frontier_gpt4o(self):
         assert classify_model("gpt-4o") == ModelTier.FRONTIER
 
+    def test_frontier_gpt4o_mini(self):
+        # gpt-4o-mini is a cloud model — must be FRONTIER not NANO
+        assert classify_model("gpt-4o-mini") == ModelTier.FRONTIER
+
     def test_frontier_o1(self):
         assert classify_model("o1-preview") == ModelTier.FRONTIER
+
+    def test_frontier_o1_mini(self):
+        assert classify_model("o1-mini") == ModelTier.FRONTIER
+
+    def test_frontier_o3_mini(self):
+        assert classify_model("o3-mini") == ModelTier.FRONTIER
 
     def test_frontier_claude_opus(self):
         assert classify_model("claude-opus-4-6") == ModelTier.FRONTIER
 
     def test_frontier_claude_sonnet(self):
         assert classify_model("claude-sonnet-4-6") == ModelTier.FRONTIER
+
+    def test_frontier_claude_haiku(self):
+        assert classify_model("claude-haiku-3-5") == ModelTier.FRONTIER
+
+    def test_frontier_gemini_2_flash(self):
+        assert classify_model("gemini-2.0-flash-001") == ModelTier.FRONTIER
+
+    def test_frontier_gemini_2_pro(self):
+        assert classify_model("gemini-2.0-pro") == ModelTier.FRONTIER
+
+    def test_frontier_gemini_flash(self):
+        assert classify_model("gemini-flash") == ModelTier.FRONTIER
 
     def test_nano_7b(self):
         assert classify_model("qwen3:7b") == ModelTier.NANO
@@ -38,7 +60,9 @@ class TestClassifyModel:
         assert classify_model("qwen3:32b") == ModelTier.MEDIUM
 
     def test_large_70b(self):
-        assert classify_model("llama-3.1-70b") == ModelTier.MEDIUM  # exactly 70 → MEDIUM
+        assert (
+            classify_model("llama-3.1-70b") == ModelTier.MEDIUM
+        )  # exactly 70 → MEDIUM
 
     def test_large_above_70b(self):
         assert classify_model("llama-3.1-405b") == ModelTier.LARGE
@@ -65,13 +89,16 @@ class TestClassifyModel:
 
 
 class TestToolLimits:
-    @pytest.mark.parametrize("tier,expected", [
-        (ModelTier.NANO, 8),
-        (ModelTier.SMALL, 20),
-        (ModelTier.MEDIUM, 35),
-        (ModelTier.LARGE, 50),
-        (ModelTier.FRONTIER, 60),
-    ])
+    @pytest.mark.parametrize(
+        "tier,expected",
+        [
+            (ModelTier.NANO, 8),
+            (ModelTier.SMALL, 20),
+            (ModelTier.MEDIUM, 35),
+            (ModelTier.LARGE, 50),
+            (ModelTier.FRONTIER, 60),
+        ],
+    )
     def test_tool_limit(self, tier, expected):
         assert get_tool_limit(tier) == expected
 
@@ -79,7 +106,12 @@ class TestToolLimits:
 class TestModeFlags:
     def test_simple_mode_only_nano(self):
         assert is_simple_mode(ModelTier.NANO) is True
-        for tier in (ModelTier.SMALL, ModelTier.MEDIUM, ModelTier.LARGE, ModelTier.FRONTIER):
+        for tier in (
+            ModelTier.SMALL,
+            ModelTier.MEDIUM,
+            ModelTier.LARGE,
+            ModelTier.FRONTIER,
+        ):
             assert is_simple_mode(tier) is False
 
     def test_native_tools_medium_and_above(self):

@@ -37,6 +37,108 @@ _SYMBOL_GRAPH_CACHE: dict = {}  # {resolved_path: SymbolGraph}
 _SYMBOL_GRAPH_CACHE_LOCK = threading.Lock()
 
 
+def _extract_module_candidates(task: str) -> list:
+    """RA-3: Extract likely module/file stems from a task description.
+
+    Returns a short list of lowercase identifiers (snake_case or CamelCase stems)
+    that are plausible module names.  Used by the lightweight test-map builder so
+    that even fast-path (simple-task) runs can surface relevant test files.
+    """
+    import re as _re
+
+    _SKIP = {
+        "the",
+        "and",
+        "for",
+        "with",
+        "that",
+        "this",
+        "from",
+        "into",
+        "add",
+        "fix",
+        "use",
+        "run",
+        "get",
+        "set",
+        "new",
+        "old",
+        "all",
+        "make",
+        "update",
+        "create",
+        "delete",
+        "remove",
+        "implement",
+        "change",
+        "file",
+        "function",
+        "method",
+        "class",
+        "module",
+        "code",
+        "test",
+        "please",
+        "should",
+        "must",
+        "will",
+        "when",
+        "where",
+        "how",
+    }
+    candidates = _re.findall(r"\b[A-Z][a-zA-Z0-9]{2,}\b|\b[a-z_][a-z0-9_]{2,}\b", task)
+    # Convert CamelCase to snake_case stem for broader matching
+    result = []
+    for c in candidates:
+        stem = c.lower()
+        if stem not in _SKIP and len(stem) >= 3:
+            result.append(stem)
+    return result[:5]
+
+
+def _build_lightweight_test_map(task: str, working_dir: str) -> dict:
+    """RA-3: Build a test_map for simple/fast-path tasks using the cached SymbolGraph.
+
+    Unlike the full Phase 2.4 enrichment, this function:
+    - Does NOT index new files or start the heavy analysis pipeline
+    - Queries only the module-level ``_SYMBOL_GRAPH_CACHE`` (already populated from a
+      prior complex-task run, or returns an empty dict if the cache is cold)
+    - Extracts module stems from the task description and looks up matching test files
+
+    Returns a ``{module_stem: [test_path, ...]}`` dict (values are plain strings),
+    or an empty dict when no cached graph is available or no tests are found.
+    """
+    try:
+        _sg_key = str(os.path.realpath(working_dir))
+        with _SYMBOL_GRAPH_CACHE_LOCK:
+            sg = _SYMBOL_GRAPH_CACHE.get(_sg_key)
+        if sg is None:
+            return {}
+
+        candidates = _extract_module_candidates(task)
+        test_map: dict = {}
+        for stem in candidates:
+            raw = sg.find_tests_for_module(stem)
+            if raw:
+                # Normalise: find_tests_for_module returns List[Dict] with "file" key
+                paths = []
+                for item in raw[:3]:
+                    if isinstance(item, dict):
+                        p = item.get("file") or item.get("file_path")
+                        if p:
+                            paths.append(p)
+                    elif isinstance(item, str):
+                        paths.append(item)
+                if paths:
+                    test_map[stem] = paths
+        return test_map
+    except Exception as _e:
+        logger.debug(
+            "analysis_node: lightweight test_map build failed (non-critical): %s", _e
+        )
+        return {}
+
+
 def _is_already_indexed(working_dir: str) -> bool:
     """Return True if working_dir was indexed and its mtime has not changed."""
     try:
@@ -62,6 +164,31 @@ def _mark_indexed(working_dir: str) -> None:
                 _INDEXED_DIRS.pop(next(iter(_INDEXED_DIRS)))
     except Exception:
         pass
+
+
+def clear_repo_summary_cache(working_dir: str | None = None) -> None:
+    """PERF-1: Evict stale repo summary cache entries.
+
+    Called at session start (and optionally on large file writes) to prevent
+    the agent from planning with an outdated repository summary.
+
+    Parameters
+    ----------
+    working_dir:
+        If provided, evict only the entry for this directory.
+        If ``None``, evict all cached entries (full reset).
+    """
+    with _REPO_SUMMARY_CACHE_LOCK:
+        if working_dir is None:
+            _REPO_SUMMARY_CACHE.clear()
+            logger.debug("analysis_node: repo summary cache cleared (all entries)")
+        else:
+            resolved = str(os.path.realpath(working_dir))
+            removed = _REPO_SUMMARY_CACHE.pop(resolved, None)
+            if removed is not None:
+                logger.debug(
+                    "analysis_node: repo summary cache evicted for %s", resolved
+                )
 
 
 async def analysis_node(state: Mapping[str, Any], config: Any) -> Dict[str, Any]:
@@ -95,15 +222,25 @@ async def analysis_node(state: Mapping[str, Any], config: Any) -> Dict[str, Any]
                 "analysis_node: Fast path active (simple task, action already determined). "
                 "Bypassing heavy analysis."
             )
-            # WR-3 fix: explicitly clear call_graph and test_map to prevent
-            # stale data from previous tasks being injected into new task's planning
+            # WR-3 fix: explicitly clear call_graph to prevent stale data from
+            # previous tasks being injected into new task's planning.
+            # RA-3 fix: still build a lightweight test_map from the cached SymbolGraph
+            # so planning_node can inject test-coverage hints even for simple tasks.
+            _fp_task = state.get("task") or ""
+            _fp_wd = state.get("working_dir", ".")
+            _fp_test_map = _build_lightweight_test_map(_fp_task, _fp_wd)
+            if _fp_test_map:
+                logger.info(
+                    "analysis_node: RA-3 lightweight test_map produced %d entries for fast-path task",
+                    len(_fp_test_map),
+                )
             return {
                 "analysis_summary": "Skipped (Fast Path)",
                 "relevant_files": [],
                 "key_symbols": [],
                 "repo_summary_data": "Skipped for efficiency",
                 "call_graph": None,
-                "test_map": None,
+                "test_map": _fp_test_map if _fp_test_map else None,
             }
         else:
             logger.info(
@@ -329,12 +466,23 @@ Use this repository context to plan your deep-dive searches."""
                 call_graph_data[sym] = callers[:5]
 
         # P3-1: Collect test map as structured JSON dict {module_stem: [test_paths]}
+        # RA-3 fix: normalise find_tests_for_module output to plain string paths so
+        # planning_node's ', '.join(unique_tests) doesn't fail on dict items.
         test_map_data: dict = {}
         for fp in relevant_files[:5]:
             module_name = Path(fp).stem
             tests = sg.find_tests_for_module(module_name)
             if tests:
-                test_map_data[module_name] = tests[:3]
+                paths = []
+                for item in tests[:3]:
+                    if isinstance(item, dict):
+                        p = item.get("file") or item.get("file_path")
+                        if p:
+                            paths.append(p)
+                    elif isinstance(item, str):
+                        paths.append(item)
+                if paths:
+                    test_map_data[module_name] = paths
 
         # Build prose summary for analysis_summary (backwards compat)
         if call_graph_data or test_map_data:

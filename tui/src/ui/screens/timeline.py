@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Tuple
 
+from rich.markup import escape as markup_escape
 from textual.app import ComposeResult
 from textual.containers import Container
 from textual.screen import ModalScreen
@@ -110,6 +111,7 @@ class TimelineScreen(ModalScreen[None]):
             preview = content[:120].replace("\n", " ")
             if len(content) > 120:
                 preview += "…"
+            preview = markup_escape(preview)
             role_markup = (
                 "[blue]User[/blue]" if role == "user" else "[green]Asst[/green]"
             )
@@ -141,14 +143,14 @@ class TimelineScreen(ModalScreen[None]):
     def _jump_to_selected(self) -> None:
         """Write a brief marker to the main chat output and close."""
         if not self._filtered or self._selected >= len(self._filtered):
-            self.app.pop_screen()
+            self.dismiss()
             return
         m = self._filtered[self._selected]
         role = m["role"]
         content = str(m["content"])
         try:
             # Best-effort: post a status message into the chat log via app
-            snippet = content[:200].replace("\n", " ")
+            snippet = markup_escape(content[:200].replace("\n", " "))
             prefix = "[blue]User:[/blue]" if role == "user" else "[green]Asst:[/green]"
             from textual.widgets import Static as _Static
 
@@ -163,10 +165,10 @@ class TimelineScreen(ModalScreen[None]):
             )
         except Exception:
             pass
-        self.app.pop_screen()
+        self.dismiss()
 
     def action_close_timeline(self) -> None:
-        self.app.pop_screen()
+        self.dismiss()
 
     def action_prev_turn(self) -> None:
         self._selected = max(0, self._selected - 1)

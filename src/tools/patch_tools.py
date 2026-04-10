@@ -1,4 +1,4 @@
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from pathlib import Path
 import difflib
 
@@ -42,10 +42,15 @@ def generate_unified_diff(
 
 
 @tool(tags=["coding"])
-def generate_patch(path: str, new_content: str, workdir: Path) -> Dict[str, Any]:
+def generate_patch(
+    path: str, new_content: str, workdir: Optional[Path] = None
+) -> Dict[str, Any]:
     """Generate a unified diff patch between existing file content and new_content.
     Returns {'status':'ok','patch': '...'} or error.
     """
+    # BUG-VOL22-2: Guard missing workdir — fall back to cwd, matching _edit_tools.py pattern.
+    if workdir is None:
+        workdir = Path.cwd()
     try:
         try:
             p = _safe_resolve(path, workdir)
@@ -65,10 +70,15 @@ def generate_patch(path: str, new_content: str, workdir: Path) -> Dict[str, Any]
 
 
 @tool(side_effects=["write"], tags=["coding"])
-def apply_patch(path: str, patch: str, workdir: Path) -> Dict[str, Any]:
+def apply_patch(
+    path: str, patch: str, workdir: Optional[Path] = None
+) -> Dict[str, Any]:
     """Apply a unified diff patch to a file by delegating to file_tools.edit_file logic.
     This function is a thin wrapper meant to be registered as a tool.
     """
+    # BUG-VOL22-2: Guard missing workdir — fall back to cwd, matching _edit_tools.py pattern.
+    if workdir is None:
+        workdir = Path.cwd()
     try:
         from src.tools import file_tools
 

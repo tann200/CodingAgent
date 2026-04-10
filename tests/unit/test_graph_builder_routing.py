@@ -203,8 +203,12 @@ def test_route_after_perception_fast_path():
 
 
 def test_route_after_perception_standard_path():
-    """Test standard routing when no next_action."""
+    """Test standard routing when no next_action and task is complex (goes to analysis)."""
+    # P2-A: simple tasks on rounds==0 now bypass analysis → planning.
+    # To exercise the analysis path we must use a complex task so that
+    # _task_is_complex() returns True and the P2-A shortcut is skipped.
     state = _make_state(
+        task="refactor the authentication module",
         next_action=None,
     )
     result = route_after_perception(state)
@@ -358,7 +362,7 @@ def test_route_after_perception_continues_with_next_action():
 
 
 def test_route_after_perception_first_round_continues():
-    """On first round (rounds=0), continue even without next_action."""
+    """On first round (rounds=0), simple task bypasses analysis and goes to planning (P2-A)."""
     state = _make_state(
         task="read main.py",
         next_action=None,
@@ -366,14 +370,17 @@ def test_route_after_perception_first_round_continues():
         last_result=None,  # No previous result
     )
     result = route_after_perception(state)
-    # Should go to analysis, not memory_sync
-    assert result == "analysis"
+    # P2-A: simple tasks on first round skip analysis and go directly to planning,
+    # not memory_sync (which would prematurely end the task).
+    assert result == "planning"
 
 
 def test_route_after_perception_multistep_continues():
-    """Multi-step tasks continue execution after first tool succeeds."""
+    """Multi-step tasks using 'then' keyword continue execution after first tool succeeds."""
+    # WF-VOL23-2: r"\band\b" removed from multi_step_patterns; use 'then' which is
+    # a genuine multi-step signal, unlike 'and' which appears in almost all sentences.
     state = _make_state(
-        task="create docs folder and create ARCHITECTURE.md inside it",
+        task="create docs folder then create ARCHITECTURE.md inside it",
         next_action=None,
         last_result={"ok": True, "status": "ok"},
         rounds=1,
@@ -397,12 +404,21 @@ def test_route_after_perception_multistep_then_keyword():
 
 
 def test_task_has_more_steps_with_and():
-    """'and' keyword indicates multi-step task."""
+    """'and' alone no longer indicates multi-step — too broad; 'then' does."""
+    # WF-VOL23-2: r"\band\b" removed because it matches virtually every English
+    # sentence.  "create folder and file" is now treated as a single step.
     state = _make_state(
         task="create folder and file",
         tool_call_count=1,
     )
-    assert _task_has_more_steps(state) is True
+    assert _task_has_more_steps(state) is False
+
+    # Verify that 'then' still triggers multi-step detection.
+    state_then = _make_state(
+        task="create folder then create file",
+        tool_call_count=1,
+    )
+    assert _task_has_more_steps(state_then) is True
 
 
 def test_task_has_more_steps_single_step():

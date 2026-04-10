@@ -20,6 +20,8 @@ from pathlib import Path
 
 import pytest
 
+pytestmark = pytest.mark.integration
+
 from src.core.inference.adapters.mock_adapter import MockAdapter
 from src.core.orchestration.orchestrator import Orchestrator
 from tests.integration.mocks.deterministic_adapter import DeterministicAdapter
@@ -78,6 +80,7 @@ def _patch_infra(monkeypatch) -> None:
     # _mod_kws) take effect in this test session rather than being shadowed by a cached graph.
     try:
         import src.core.orchestration.graph.builder as _builder
+
         monkeypatch.setattr(_builder, "_COMPILED_GRAPH", None)
     except AttributeError:
         pass
@@ -94,7 +97,9 @@ def _build_orch(tmp_path: Path, adapter, monkeypatch) -> Orchestrator:
     )
 
 
-def _build_orch_mock(tmp_path: Path, responses: list, monkeypatch) -> tuple[Orchestrator, MockAdapter]:
+def _build_orch_mock(
+    tmp_path: Path, responses: list, monkeypatch
+) -> tuple[Orchestrator, MockAdapter]:
     """Build an Orchestrator wired with a MockAdapter.
 
     Returns (orchestrator, adapter) so the caller can inspect adapter.call_count.
@@ -205,7 +210,7 @@ def test_pm3_overwrite_file_changes_land(tmp_path, monkeypatch):
             "```yaml\nname: read_file\narguments:\n  path: config.py\n```",
             # Round 1: write new content.  'replace ' in task triggers read_then_modify
             # routing after round 0, bringing us back to perception for round 1.
-            "```yaml\nname: write_file\narguments:\n  path: config.py\n  content: \"NAME = new_name\"\n```",
+            '```yaml\nname: write_file\narguments:\n  path: config.py\n  content: "NAME = new_name"\n```',
             # Round 2: completion acknowledgement → no YAML → memory_sync.
             "config.py has been updated.",
         ],
@@ -214,7 +219,12 @@ def test_pm3_overwrite_file_changes_land(tmp_path, monkeypatch):
 
     result = orch.run_agent_once(
         None,
-        [{"role": "user", "content": "In config.py replace 'old_name' with 'new_name'."}],
+        [
+            {
+                "role": "user",
+                "content": "In config.py replace 'old_name' with 'new_name'.",
+            }
+        ],
         {},
     )
 
@@ -359,10 +369,18 @@ def test_pm6_fix_syntax_pipeline(tmp_path, monkeypatch):
         return {"status": "ok", "output": "Tests passed", "returncode": 0}
 
     def bash_mock(**kwargs):
-        return {"status": "ok", "stdout": "Command executed", "stderr": "", "exit_code": 0}
+        return {
+            "status": "ok",
+            "stdout": "Command executed",
+            "stderr": "",
+            "exit_code": 0,
+        }
 
     def search_code_mock(**kwargs):
-        return {"status": "ok", "results": [{"file": "test.py", "line": 1, "content": "found"}]}
+        return {
+            "status": "ok",
+            "results": [{"file": "test.py", "line": 1, "content": "found"}],
+        }
 
     def edit_file_mock(**kwargs):
         return {"status": "ok", "path": kwargs.get("path"), "edited": True}
@@ -374,7 +392,12 @@ def test_pm6_fix_syntax_pipeline(tmp_path, monkeypatch):
 
     result = orch.run_agent_once(
         None,
-        [{"role": "user", "content": "Fix the syntax in src/dummy.py and run the tests."}],
+        [
+            {
+                "role": "user",
+                "content": "Fix the syntax in src/dummy.py and run the tests.",
+            }
+        ],
         {},
     )
 

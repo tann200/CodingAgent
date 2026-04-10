@@ -112,7 +112,8 @@ class AsyncGate:
             import concurrent.futures as _cf
 
             ev = self._sync_event
-            assert ev is not None
+            if ev is None:
+                raise RuntimeError("ApprovalGate._sync_event is None in fallback path")
             try:
                 await _asyncio.wait_for(
                     loop.run_in_executor(None, lambda: ev.wait(timeout)),

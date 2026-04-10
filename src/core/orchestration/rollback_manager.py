@@ -5,6 +5,7 @@ This module provides automated rollback functionality when verification fails,
 allowing the agent to recover to a previous state.
 """
 
+import hashlib
 import json
 import logging
 import shutil
@@ -58,8 +59,6 @@ class RollbackManager:
 
     def _compute_checksum(self, content: str) -> str:
         """Compute a simple checksum for file content."""
-        import hashlib
-
         return hashlib.md5(content.encode()).hexdigest()
 
     def snapshot_files(

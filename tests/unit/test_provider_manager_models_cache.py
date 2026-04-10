@@ -1,8 +1,10 @@
 import importlib
 import asyncio
+import pytest
 import src.core.inference.llm_manager as lm
 
 
+@pytest.mark.real_llm
 def test_provider_manager_probes_models_once(monkeypatch, tmp_path):
     """Ensure ProviderManager.initialize calls adapter.get_models_from_api once and caches models."""
     # Prepare a fake providers.json in tmp_path

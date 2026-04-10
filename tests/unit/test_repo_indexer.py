@@ -9,6 +9,7 @@ from src.core.indexing.repo_indexer import (
     get_index_stats,
     force_full_reindex,
     compute_file_hash,
+    get_symbols_for_task,
 )
 
 
@@ -312,3 +313,132 @@ class MyClass {
         assert len(class_symbols) > 0, (
             "JavaScript class should be classified as 'class'"
         )
+
+
+class TestGetSymbolsForTask:
+    """CODE_QUALITY_AUDIT #8 fix: get_symbols_for_task() was always returning []
+    because it iterated repo_index['files'] and looked for a per-file 'symbols'
+    key that does not exist.  Symbols are stored at the top-level 'symbols' list.
+    """
+
+    def test_returns_matching_symbols(self, tmp_path):
+        """get_symbols_for_task returns symbols whose name matches task tokens."""
+        index_repository(str(tmp_path))  # ensure .agent-context dir exists
+
+        import json
+        from pathlib import Path as _Path
+
+        # Write a synthetic index with the correct structure
+        agent_ctx = _Path(tmp_path) / ".agent-context"
+        agent_ctx.mkdir(exist_ok=True)
+        fake_index = {
+            "files": [{"path": "auth.py", "language": "python"}],
+            "symbols": [
+                {
+                    "symbol_name": "authenticate_user",
+                    "symbol_type": "function",
+                    "file_path": "auth.py",
+                },
+                {
+                    "symbol_name": "LoginForm",
+                    "symbol_type": "class",
+                    "file_path": "auth.py",
+                },
+                {
+                    "symbol_name": "unrelated_helper",
+                    "symbol_type": "function",
+                    "file_path": "utils.py",
+                },
+            ],
+        }
+        (agent_ctx / "repo_index.json").write_text(json.dumps(fake_index))
+
+        results = get_symbols_for_task(
+            str(tmp_path), "authenticate user login", max_results=10
+        )
+
+        names = [r["name"] for r in results]
+        assert "authenticate_user" in names, (
+            "get_symbols_for_task should find 'authenticate_user' for task containing 'authenticate'"
+        )
+        assert "LoginForm" in names, (
+            "get_symbols_for_task should find 'LoginForm' for task containing 'login'"
+        )
+        assert "unrelated_helper" not in names
+
+    def test_returns_empty_when_no_index(self, tmp_path):
+        """Returns [] gracefully when no index file exists."""
+        result = get_symbols_for_task(str(tmp_path), "fix auth module")
+        assert result == []
+
+    def test_returns_empty_on_blank_task(self, tmp_path):
+        """Returns [] when task has no usable tokens (all too short)."""
+        import json
+        from pathlib import Path as _Path
+
+        agent_ctx = _Path(tmp_path) / ".agent-context"
+        agent_ctx.mkdir(exist_ok=True)
+        fake_index = {
+            "files": [],
+            "symbols": [
+                {"symbol_name": "foo", "symbol_type": "function", "file_path": "x.py"}
+            ],
+        }
+        (agent_ctx / "repo_index.json").write_text(json.dumps(fake_index))
+
+        result = get_symbols_for_task(str(tmp_path), "do it")
+        assert result == []
+
+    def test_result_keys_include_name_type_file_path(self, tmp_path):
+        """Each returned dict has 'name', 'type', and 'file_path' keys."""
+        import json
+        from pathlib import Path as _Path
+
+        agent_ctx = _Path(tmp_path) / ".agent-context"
+        agent_ctx.mkdir(exist_ok=True)
+        fake_index = {
+            "files": [],
+            "symbols": [
+                {
+                    "symbol_name": "validate_token",
+                    "symbol_type": "function",
+                    "file_path": "security.py",
+                },
+            ],
+        }
+        (agent_ctx / "repo_index.json").write_text(json.dumps(fake_index))
+
+        results = get_symbols_for_task(
+            str(tmp_path), "validate token security", max_results=5
+        )
+        assert results
+        r = results[0]
+        assert "name" in r
+        assert "type" in r
+        assert "file_path" in r
+        assert r["name"] == "validate_token"
+        assert r["type"] == "function"
+        assert r["file_path"] == "security.py"
+
+    def test_respects_max_results(self, tmp_path):
+        """max_results cap is enforced."""
+        import json
+        from pathlib import Path as _Path
+
+        agent_ctx = _Path(tmp_path) / ".agent-context"
+        agent_ctx.mkdir(exist_ok=True)
+        fake_index = {
+            "files": [],
+            "symbols": [
+                {
+                    "symbol_name": f"process_item_{i}",
+                    "symbol_type": "function",
+                    "file_path": "proc.py",
+                }
+                for i in range(20)
+            ],
+        }
+        (agent_ctx / "repo_index.json").write_text(json.dumps(fake_index))
+
+        results = get_symbols_for_task(str(tmp_path), "process item", max_results=3)
+        assert len(results) <= 3

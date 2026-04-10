@@ -3,6 +3,8 @@ import json
 from src.core.orchestration.orchestrator import Orchestrator
 from tests.integration.mocks.deterministic_adapter import DeterministicAdapter
 
+pytestmark = pytest.mark.integration
+
 # Modules that import call_model directly at module load time — all must be patched.
 _CALL_MODEL_TARGETS = [
     "src.core.orchestration.graph.nodes.execution_node.call_model",

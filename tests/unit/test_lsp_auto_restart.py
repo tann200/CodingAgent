@@ -34,7 +34,7 @@ def _make_client(tmp_path: Path, cmd: list | None = None) -> LSPClient:
     )
 
 
-def _crashed_proc(returncode: int = 1) -> MagicMock:
+def _crashed_proc(returncode: int | None = 1) -> MagicMock:
     """Return a mock process that has already exited with the given returncode."""
     proc = MagicMock()
     proc.returncode = returncode
@@ -82,7 +82,13 @@ class TestShutdown:
         client = _make_client(tmp_path)
         client._started = True  # pretend it was started
         client._proc = _crashed_proc(returncode=None)  # simulate live proc
-        await client.shutdown()
+        # Patch _request and _notify so shutdown() doesn't attempt real JSON-RPC
+        # (which would wait 15 s for a response from the MagicMock proc).
+        with (
+            patch.object(client, "_request", new=AsyncMock(return_value=None)),
+            patch.object(client, "_notify", new=AsyncMock(return_value=None)),
+        ):
+            await client.shutdown()
         assert client._started is False
 
 

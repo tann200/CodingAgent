@@ -18,6 +18,7 @@ from textual.message import Message
 from textual.widgets import TextArea
 from textual import events
 
+from .history_input import HistoryInput
 from ..logging import get_logger
 
 logger = get_logger("chat_input")
@@ -28,6 +29,7 @@ SLASH_COMMANDS: list[str] = [
     "/new",
     "/reset",
     "/compact",
+    "/undo",
     "/continue",
     "/interrupt",
     "/status",
@@ -49,6 +51,7 @@ SLASH_COMMAND_DESCRIPTIONS: dict[str, str] = {
     "/new": "start a new session",
     "/reset": "reset session (alias for /new)",
     "/compact": "compact conversation context",
+    "/undo": "undo last user message (removes from history)",
     "/continue": "restore & re-run previous task",
     "/interrupt": "cancel running agent",
     "/status": "show agent/provider/model status",
@@ -142,6 +145,12 @@ class ChatTextArea(TextArea):
         # ── Escape: dismiss palette if active ─────────────────────────────
         if key == "escape" and palette_active:
             self.post_message(self.TextChanged(text=""))  # signal hide
+            event.prevent_default()
+            return
+
+        # ── Escape: interrupt agent (single ESC when no overlay active) ───
+        if key == "escape":
+            self.post_message(HistoryInput.InterruptSignal())
             event.prevent_default()
             return
 

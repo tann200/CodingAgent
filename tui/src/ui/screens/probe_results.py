@@ -6,6 +6,8 @@ from textual.containers import VerticalScroll
 class ProbeResultsScreen(ModalScreen):
     """Modal screen that displays probe results in a scrollable view."""
 
+    BINDINGS = [("escape", "dismiss", "Close")]
+
     def __init__(self, data: dict):
         super().__init__()
         self.data = data

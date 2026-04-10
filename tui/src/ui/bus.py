@@ -256,10 +256,17 @@ class ToolCallErrorEvent(Message):
 class DiffPreviewEvent(Message):
     """§4.5 file.diff.preview — show diff BEFORE write completes."""
 
-    def __init__(self, path: str, diff: str, is_new_file: bool = False) -> None:
+    def __init__(
+        self,
+        path: str,
+        diff: str,
+        is_new_file: bool = False,
+        requires_confirmation: bool = False,
+    ) -> None:
         self.path = path
         self.diff = diff
         self.is_new_file = is_new_file
+        self.requires_confirmation = requires_confirmation
         super().__init__()
 
 
@@ -348,6 +355,33 @@ class AgentRunningEvent(Message):
         super().__init__()
 
 
+class SubagentStartEvent(Message):
+    """delegation.start — a subagent was spawned."""
+
+    def __init__(
+        self,
+        child_session_id: str,
+        role: str,
+        task: str,
+        parent_session_id: str | None = None,
+    ) -> None:
+        self.child_session_id = child_session_id
+        self.role = role
+        self.task = task
+        self.parent_session_id = parent_session_id
+        super().__init__()
+
+
+class SubagentFinishEvent(Message):
+    """delegation.finish — a subagent completed or failed."""
+
+    def __init__(self, child_session_id: str, role: str, ok: bool) -> None:
+        self.child_session_id = child_session_id
+        self.role = role
+        self.ok = ok
+        super().__init__()
+
+
 class GitBranchEvent(Message):
     """git.branch — current branch name and working-tree state."""
 
@@ -399,11 +433,16 @@ class McpServerStatusEvent(Message):
     """mcp.server.status — MCP server started/stopped."""
 
     def __init__(
-        self, running: bool = False, count: int = 0, server_names: Optional[list] = None
+        self,
+        running: bool = False,
+        count: int = 0,
+        server_names: Optional[list] = None,
+        has_error: bool = False,
     ) -> None:
         self.running = running
         self.count = count
         self.server_names = server_names or []
+        self.has_error = has_error  # GAP-FOOTER-2: True when any server has an error
         super().__init__()
 
 
@@ -450,4 +489,42 @@ class DoomLoopEvent(Message):
         self.fingerprint = fingerprint
         self.count = count
         self.tool_id = tool_id
+        super().__init__()
+
+
+# ── GitHub Copilot OAuth device flow events ───────────────────────────────────
+
+
+class DeviceFlowStartEvent(Message):
+    """Fired when the GitHub device flow has been initiated.
+
+    The UI should show the user_code and open (or display) the verification_uri
+    while polling for the token in the background.
+    """
+
+    def __init__(
+        self,
+        user_code: str,
+        verification_uri: str,
+        expires_in: int = 900,
+    ) -> None:
+        self.user_code = user_code
+        self.verification_uri = verification_uri
+        self.expires_in = expires_in
+        super().__init__()
+
+
+class DeviceFlowCompleteEvent(Message):
+    """Fired when the OAuth token has been received and saved successfully."""
+
+    def __init__(self, provider_id: str = "github_copilot") -> None:
+        self.provider_id = provider_id
+        super().__init__()
+
+
+class DeviceFlowErrorEvent(Message):
+    """Fired when the device flow fails (expired, cancelled, network error, etc.)."""
+
+    def __init__(self, reason: str = "") -> None:
+        self.reason = reason
         super().__init__()

@@ -12,6 +12,7 @@ Covers:
   ORCH-W1 — near-limit write tool pruning + max_steps.txt injection
   ORCH-W4 — plan_enter / plan_exit tool calls
 """
+
 from __future__ import annotations
 
 import json
@@ -25,9 +26,11 @@ import pytest
 
 # ── TUI-T6 / PERM-W3 — bus events exist and have correct fields ──────────────
 
+
 class TestNewBusEvents:
     def test_usage_turn_summary_event_exists(self):
         from tui.src.ui.bus import UsageTurnSummaryEvent
+
         ev = UsageTurnSummaryEvent(
             input_tokens=100, output_tokens=50, model="llama3", cost_usd=0.0025
         )
@@ -38,6 +41,7 @@ class TestNewBusEvents:
 
     def test_usage_turn_summary_event_defaults(self):
         from tui.src.ui.bus import UsageTurnSummaryEvent
+
         ev = UsageTurnSummaryEvent()
         assert ev.input_tokens == 0
         assert ev.output_tokens == 0
@@ -46,6 +50,7 @@ class TestNewBusEvents:
 
     def test_doom_loop_event_exists(self):
         from tui.src.ui.bus import DoomLoopEvent
+
         ev = DoomLoopEvent(
             tool_name="read_file", fingerprint="abc123", count=3, tool_id="t1"
         )
@@ -56,6 +61,7 @@ class TestNewBusEvents:
 
     def test_doom_loop_event_defaults(self):
         from tui.src.ui.bus import DoomLoopEvent
+
         ev = DoomLoopEvent()
         assert ev.tool_name == ""
         assert ev.count == 3
@@ -64,10 +70,12 @@ class TestNewBusEvents:
 
 # ── TUI-T12 — CommandPalette accepts initial_action ──────────────────────────
 
+
 class TestCommandPaletteInitialAction:
     def test_palette_accepts_initial_action_param(self):
         """CommandPalette.__init__ should accept initial_action without raising."""
         from tui.src.ui.features.palette.screen import CommandPalette
+
         settings = MagicMock()
         settings.available_providers = []
         # Should not raise
@@ -76,6 +84,7 @@ class TestCommandPaletteInitialAction:
 
     def test_palette_default_initial_action_is_empty(self):
         from tui.src.ui.features.palette.screen import CommandPalette
+
         settings = MagicMock()
         palette = CommandPalette(settings)
         assert palette._initial_action == ""
@@ -83,9 +92,11 @@ class TestCommandPaletteInitialAction:
 
 # ── SES-W1 — SessionStore schema_version ─────────────────────────────────────
 
+
 class TestSessionStoreSchemaVersion:
     def test_schema_version_created_on_init(self, tmp_path):
         from src.core.memory.session_store import SessionStore
+
         store = SessionStore(workdir=str(tmp_path))
         ver = store.get_schema_version()
         assert ver == SessionStore._SCHEMA_VERSION
@@ -93,6 +104,7 @@ class TestSessionStoreSchemaVersion:
 
     def test_get_schema_version_returns_int(self, tmp_path):
         from src.core.memory.session_store import SessionStore
+
         store = SessionStore(workdir=str(tmp_path))
         ver = store.get_schema_version()
         assert isinstance(ver, int)
@@ -101,6 +113,7 @@ class TestSessionStoreSchemaVersion:
         """schema_meta table must be queryable after init."""
         from src.core.memory.session_store import SessionStore
         import sqlite3
+
         store = SessionStore(workdir=str(tmp_path))
         conn = sqlite3.connect(str(store.db_path))
         row = conn.execute(
@@ -113,6 +126,7 @@ class TestSessionStoreSchemaVersion:
     def test_schema_version_stable_on_reinit(self, tmp_path):
         """Re-creating SessionStore on same dir must not overwrite existing version."""
         from src.core.memory.session_store import SessionStore
+
         store1 = SessionStore(workdir=str(tmp_path))
         v1 = store1.get_schema_version()
         store2 = SessionStore(workdir=str(tmp_path))
@@ -122,14 +136,17 @@ class TestSessionStoreSchemaVersion:
 
 # ── SES-W1 — TUI history version envelope ────────────────────────────────────
 
+
 class TestTuiHistoryVersionEnvelope:
     """_save_history writes {"version": 1, "history": [...]} and load_history reads both."""
 
     def _make_bridge(self, tmp_path, history_path):
         """Create a minimal AgentBridge mock that tests history I/O only."""
         import sys
+
         # Patch HISTORY_PATH at module level
         import tui.src.ui.core_bridge as cb_mod
+
         original = cb_mod.HISTORY_PATH
         cb_mod.HISTORY_PATH = history_path
         try:
@@ -139,6 +156,7 @@ class TestTuiHistoryVersionEnvelope:
 
     def test_save_produces_version_envelope(self, tmp_path):
         import tui.src.ui.core_bridge as cb_mod
+
         orig = cb_mod.HISTORY_PATH
         hp = tmp_path / "history.json"
         cb_mod.HISTORY_PATH = hp
@@ -162,6 +180,7 @@ class TestTuiHistoryVersionEnvelope:
     def test_load_reads_versioned_envelope(self, tmp_path):
         """load_history should parse the versioned envelope format."""
         import tui.src.ui.core_bridge as cb_mod
+
         orig = cb_mod.HISTORY_PATH
         hp = tmp_path / "history.json"
         hp.write_text(
@@ -174,7 +193,11 @@ class TestTuiHistoryVersionEnvelope:
             raw = json.loads(hp.read_text(encoding="utf-8"))
             assert isinstance(raw, dict) and "history" in raw
             entries = raw["history"]
-            history = [tuple(item) for item in entries if isinstance(item, (list, tuple)) and len(item) == 2]
+            history = [
+                tuple(item)
+                for item in entries
+                if isinstance(item, (list, tuple)) and len(item) == 2
+            ]
             assert len(history) == 2
             assert history[0] == ("user", "q")
         finally:
@@ -183,6 +206,7 @@ class TestTuiHistoryVersionEnvelope:
     def test_load_handles_legacy_bare_list(self, tmp_path):
         """load_history must still parse the old bare-list format (migration)."""
         import tui.src.ui.core_bridge as cb_mod
+
         orig = cb_mod.HISTORY_PATH
         hp = tmp_path / "history.json"
         hp.write_text(
@@ -198,7 +222,11 @@ class TestTuiHistoryVersionEnvelope:
                 entries = raw
             else:
                 entries = []
-            history = [tuple(item) for item in entries if isinstance(item, (list, tuple)) and len(item) == 2]
+            history = [
+                tuple(item)
+                for item in entries
+                if isinstance(item, (list, tuple)) and len(item) == 2
+            ]
             assert len(history) == 2
         finally:
             cb_mod.HISTORY_PATH = orig
@@ -206,9 +234,11 @@ class TestTuiHistoryVersionEnvelope:
 
 # ── ORCH-W1 — near-limit write tool pruning ──────────────────────────────────
 
+
 class TestNearLimitToolPruning:
     def test_modifying_tools_importable(self):
         from src.core.orchestration.loop_guards import MODIFYING_TOOLS
+
         assert isinstance(MODIFYING_TOOLS, set)
         assert "write_file" in MODIFYING_TOOLS
         assert "edit_file" in MODIFYING_TOOLS
@@ -216,6 +246,7 @@ class TestNearLimitToolPruning:
     def test_tools_pruned_when_near_limit(self):
         """Simulate the pruning logic from perception_node."""
         from src.core.orchestration.loop_guards import MODIFYING_TOOLS
+
         tools_list = [
             {"name": "read_file", "description": "read"},
             {"name": "write_file", "description": "write"},
@@ -235,6 +266,7 @@ class TestNearLimitToolPruning:
 
     def test_tools_not_pruned_when_not_near_limit(self):
         from src.core.orchestration.loop_guards import MODIFYING_TOOLS
+
         tools_list = [
             {"name": "read_file", "description": "read"},
             {"name": "write_file", "description": "write"},
@@ -244,7 +276,11 @@ class TestNearLimitToolPruning:
         near_limit = turn_count >= max_turns - 2
         assert near_limit is False
         # No pruning should happen
-        pruned = tools_list if not near_limit else [t for t in tools_list if t["name"] not in MODIFYING_TOOLS]
+        pruned = (
+            tools_list
+            if not near_limit
+            else [t for t in tools_list if t["name"] not in MODIFYING_TOOLS]
+        )
         assert len(pruned) == 2
 
     def test_max_steps_template_exists(self):
@@ -252,7 +288,13 @@ class TestNearLimitToolPruning:
         root = Path(__file__).parent.parent.parent
         # Search both known locations
         candidates = [
-            root / "src" / "config" / "agent-brain" / "prompts" / "templates" / "max_steps.txt",
+            root
+            / "src"
+            / "config"
+            / "agent-brain"
+            / "prompts"
+            / "templates"
+            / "max_steps.txt",
             root / "src" / "core" / "prompts" / "templates" / "max_steps.txt",
         ]
         found = next((p for p in candidates if p.exists()), None)
@@ -262,11 +304,13 @@ class TestNearLimitToolPruning:
 
 # ── core_bridge subscriptions exist (PERM-W3, TUI-T6) ───────────────────────
 
+
 class TestCoreBridgeSubscriptions:
     def test_usage_turn_summary_subscription_exists(self):
         """core_bridge must subscribe to usage.turn_summary."""
         import inspect
         import tui.src.ui.core_bridge as cb_mod
+
         src = inspect.getsource(cb_mod)
         assert "usage.turn_summary" in src
         assert "_on_usage_turn_summary" in src
@@ -275,6 +319,7 @@ class TestCoreBridgeSubscriptions:
         """core_bridge must subscribe to tool.doom_loop_detected."""
         import inspect
         import tui.src.ui.core_bridge as cb_mod
+
         src = inspect.getsource(cb_mod)
         assert "tool.doom_loop_detected" in src
         assert "_on_doom_loop_detected" in src
@@ -283,6 +328,7 @@ class TestCoreBridgeSubscriptions:
         """App BINDINGS must include ctrl+m → open_model_picker."""
         import inspect
         import tui.src.ui.app as app_mod
+
         src = inspect.getsource(app_mod)
         assert "ctrl+m" in src
         assert "action_open_model_picker" in src
@@ -291,16 +337,19 @@ class TestCoreBridgeSubscriptions:
 
 # ── PERM-W4 — per-agent permission override ──────────────────────────────────
 
+
 class TestPerAgentPermissionOverride:
     def test_permission_rules_field_exists(self):
         """AgentDefinition must have permission_rules field."""
         from src.core.orchestration.agent_types import AgentDefinition
+
         agent = AgentDefinition(id="test", name="Test", description="Test agent")
         assert hasattr(agent, "permission_rules")
         assert isinstance(agent.permission_rules, list)
 
     def test_permission_rules_default_empty(self):
         from src.core.orchestration.agent_types import AgentDefinition
+
         agent = AgentDefinition(id="test", name="Test", description="Test agent")
         assert agent.permission_rules == []
 
@@ -308,6 +357,7 @@ class TestPerAgentPermissionOverride:
         """get_merged_policy with no agent rules returns base_policy unchanged."""
         from src.core.orchestration.agent_types import AgentDefinition
         from unittest.mock import MagicMock
+
         agent = AgentDefinition(id="test", name="Test", description="Test agent")
         base = MagicMock()
         result = agent.get_merged_policy(base)
@@ -315,6 +365,7 @@ class TestPerAgentPermissionOverride:
 
     def test_get_merged_policy_returns_none_when_no_rules_and_no_base(self):
         from src.core.orchestration.agent_types import AgentDefinition
+
         agent = AgentDefinition(id="test", name="Test", description="Test agent")
         result = agent.get_merged_policy(None)
         assert result is None
@@ -323,6 +374,7 @@ class TestPerAgentPermissionOverride:
         """When permission_rules is non-empty, get_merged_policy returns a PermissionPolicy."""
         from src.core.orchestration.agent_types import AgentDefinition
         from src.core.orchestration.permission_policy import PermissionPolicy
+
         agent = AgentDefinition(
             id="restricted",
             name="Restricted",
@@ -335,6 +387,7 @@ class TestPerAgentPermissionOverride:
     def test_agent_specific_deny_rule_is_enforced(self):
         """Deny rule in permission_rules must make is_denied() return True."""
         from src.core.orchestration.agent_types import AgentDefinition
+
         agent = AgentDefinition(
             id="ro",
             name="Read-Only",
@@ -348,9 +401,15 @@ class TestPerAgentPermissionOverride:
     def test_agent_allow_rule_overrides_base_deny(self):
         """Agent allow rule appended after base deny should override (last-matching-wins)."""
         from src.core.orchestration.agent_types import AgentDefinition
-        from src.core.orchestration.permission_policy import PermissionPolicy, PermissionRule
+        from src.core.orchestration.permission_policy import (
+            PermissionPolicy,
+            PermissionRule,
+        )
+
         base_policy = PermissionPolicy(
-            rules=[PermissionRule.from_dict({"pattern": "read_file", "behavior": "deny"})]
+            rules=[
+                PermissionRule.from_dict({"pattern": "read_file", "behavior": "deny"})
+            ]
         )
         agent = AgentDefinition(
             id="special",
@@ -360,24 +419,35 @@ class TestPerAgentPermissionOverride:
         )
         merged = agent.get_merged_policy(base_policy)
         # Agent rule is last → should override the base deny
+        assert merged is not None
         assert not merged.is_denied("read_file")
 
 
 # ── PERM-W5 — permission audit log ───────────────────────────────────────────
+
 
 class TestPermissionAuditLog:
     def test_write_permission_audit_importable(self):
         """_write_permission_audit must be importable from orchestrator module."""
         import inspect
         import src.core.orchestration.orchestrator as orch_mod
-        src = inspect.getsource(orch_mod)
-        assert "_write_permission_audit" in src
-        assert "permission_audit.jsonl" in src
+        import src.core.orchestration.tool_constants as constants_mod
+
+        # The function is re-exported from orchestrator for backward compatibility.
+        assert hasattr(orch_mod, "_write_permission_audit")
+        assert callable(orch_mod._write_permission_audit)
+        # The implementation (including audit file path) lives in tool_constants.
+        constants_src = inspect.getsource(constants_mod)
+        assert "_write_permission_audit" in constants_src
+        assert "permission_audit.jsonl" in constants_src
 
     def test_audit_file_created_on_allow(self, tmp_path):
         """_write_permission_audit should create .agent/permission_audit.jsonl."""
         from src.core.orchestration.orchestrator import _write_permission_audit
-        _write_permission_audit(str(tmp_path), "read_file", {}, "allow", "passed_all_gates")
+
+        _write_permission_audit(
+            str(tmp_path), "read_file", {}, "allow", "passed_all_gates"
+        )
         audit_path = tmp_path / ".agent" / "permission_audit.jsonl"
         assert audit_path.exists()
 
@@ -385,7 +455,14 @@ class TestPermissionAuditLog:
         """Each entry in permission_audit.jsonl must be valid JSON."""
         import json
         from src.core.orchestration.orchestrator import _write_permission_audit
-        _write_permission_audit(str(tmp_path), "write_file", {"path": "/tmp/x"}, "deny", "agent_permission_rules")
+
+        _write_permission_audit(
+            str(tmp_path),
+            "write_file",
+            {"path": "/tmp/x"},
+            "deny",
+            "agent_permission_rules",
+        )
         audit_path = tmp_path / ".agent" / "permission_audit.jsonl"
         lines = [l.strip() for l in audit_path.read_text().splitlines() if l.strip()]
         assert len(lines) == 1
@@ -399,8 +476,13 @@ class TestPermissionAuditLog:
         """Multiple calls should append, not overwrite."""
         import json
         from src.core.orchestration.orchestrator import _write_permission_audit
-        _write_permission_audit(str(tmp_path), "read_file", {}, "allow", "passed_all_gates")
-        _write_permission_audit(str(tmp_path), "write_file", {}, "deny", "agent_permission_rules")
+
+        _write_permission_audit(
+            str(tmp_path), "read_file", {}, "allow", "passed_all_gates"
+        )
+        _write_permission_audit(
+            str(tmp_path), "write_file", {}, "deny", "agent_permission_rules"
+        )
         audit_path = tmp_path / ".agent" / "permission_audit.jsonl"
         lines = [l.strip() for l in audit_path.read_text().splitlines() if l.strip()]
         assert len(lines) == 2
@@ -412,58 +494,74 @@ class TestPermissionAuditLog:
         """execute_tool must call _write_permission_audit for allow decisions."""
         import inspect
         import src.core.orchestration.orchestrator as orch_mod
-        src = inspect.getsource(orch_mod)
+        import src.core.orchestration.tool_execution_pipeline as pipeline_mod
+
+        # Phase C: body moved to tool_execution_pipeline; check either module
+        src = inspect.getsource(orch_mod) + inspect.getsource(pipeline_mod)
         assert "passed_all_gates" in src
         assert "agent_permission_rules" in src
 
 
 # ── ORCH-W4 — plan_enter / plan_exit tool calls ──────────────────────────────
 
+
 class TestPlanModeTools:
     def test_plan_enter_tool_importable(self):
         """plan_enter must be importable from plan_mode_tools."""
         from src.tools.plan_mode_tools import plan_enter
+
         assert callable(plan_enter)
 
     def test_plan_exit_tool_importable(self):
         from src.tools.plan_mode_tools import plan_exit
+
         assert callable(plan_exit)
 
     def test_plan_enter_returns_ok(self):
         from src.tools.plan_mode_tools import plan_enter
+
         result = plan_enter()
         assert result["ok"] is True
         assert result["agent_mode"] == "planning"
 
     def test_plan_exit_returns_ok(self):
         from src.tools.plan_mode_tools import plan_exit
+
         result = plan_exit()
         assert result["ok"] is True
         assert result["agent_mode"] == "execution"
 
     def test_plan_enter_with_reason(self):
         from src.tools.plan_mode_tools import plan_enter
+
         result = plan_enter(reason="about to design the API")
         assert result["ok"] is True
         assert "about to design the API" in result["message"]
 
     def test_plan_exit_with_reason(self):
         from src.tools.plan_mode_tools import plan_exit
+
         result = plan_exit(reason="plan finalized")
         assert "plan finalized" in result["message"]
 
     def test_plan_mode_tools_in_registry(self):
         """plan_enter and plan_exit must appear in the built-in tool registry."""
         from src.tools._registry import build_registry
+
         reg = build_registry()
         names = set(reg.list())
-        assert "plan_enter" in names, f"plan_enter missing from registry; found: {sorted(names)}"
-        assert "plan_exit" in names, f"plan_exit missing from registry; found: {sorted(names)}"
+        assert "plan_enter" in names, (
+            f"plan_enter missing from registry; found: {sorted(names)}"
+        )
+        assert "plan_exit" in names, (
+            f"plan_exit missing from registry; found: {sorted(names)}"
+        )
 
     def test_agent_mode_field_in_state(self):
         """AgentState TypedDict must include agent_mode field."""
         import inspect
         from src.core.orchestration.graph.state import AgentState
+
         hints = AgentState.__annotations__
         assert "agent_mode" in hints, "agent_mode missing from AgentState"
 
@@ -471,14 +569,20 @@ class TestPlanModeTools:
         """initial_state must include agent_mode key."""
         import inspect
         import src.core.orchestration.orchestrator as orch_mod
-        src = inspect.getsource(orch_mod)
+        import src.core.orchestration.inference_loop as inference_loop_mod
+
+        # Phase E: body moved to inference_loop; check either module
+        src = inspect.getsource(orch_mod) + inspect.getsource(inference_loop_mod)
         assert '"agent_mode"' in src or "'agent_mode'" in src
 
     def test_orchestrator_intercepts_plan_enter(self):
         """execute_tool source must handle plan_enter / plan_exit transitions."""
         import inspect
         import src.core.orchestration.orchestrator as orch_mod
-        src = inspect.getsource(orch_mod)
+        import src.core.orchestration.tool_execution_pipeline as pipeline_mod
+
+        # Phase C: body moved to tool_execution_pipeline; check either module
+        src = inspect.getsource(orch_mod) + inspect.getsource(pipeline_mod)
         assert "plan_enter" in src
         assert "plan_exit" in src
         assert "_agent_mode" in src
@@ -487,18 +591,22 @@ class TestPlanModeTools:
 
 # ── ORCH-W5 — internal utility agent calls ───────────────────────────────────
 
+
 class TestInternalUtilityAgents:
     def test_call_internal_agent_importable(self):
         from src.core.memory.distiller import call_internal_agent
+
         assert callable(call_internal_agent)
 
     def test_generate_session_title_importable(self):
         from src.core.memory.distiller import generate_session_title
+
         assert callable(generate_session_title)
 
     def test_title_agent_in_registry(self):
         """'title' internal agent must be registered in AgentRegistry."""
         from src.core.orchestration.agent_types import get_agent_registry
+
         agent = get_agent_registry().get("title")
         assert agent is not None
         assert agent.mode == "internal"
@@ -507,6 +615,7 @@ class TestInternalUtilityAgents:
     def test_compaction_agent_in_registry(self):
         """'compaction' internal agent must be registered in AgentRegistry."""
         from src.core.orchestration.agent_types import get_agent_registry
+
         agent = get_agent_registry().get("compaction")
         assert agent is not None
         assert agent.mode == "internal"
@@ -515,13 +624,16 @@ class TestInternalUtilityAgents:
     def test_title_agent_has_no_tools(self):
         """Internal title agent must have empty allowed_tools (no tool loop)."""
         from src.core.orchestration.agent_types import get_agent_registry
+
         agent = get_agent_registry().get("title")
+        assert agent is not None
         assert agent.allowed_tools is not None
         assert len(agent.allowed_tools) == 0
 
     def test_generate_session_title_fallback_on_empty_input(self):
         """generate_session_title falls back gracefully when input is empty."""
         from src.core.memory.distiller import generate_session_title
+
         result = generate_session_title("")
         assert isinstance(result, str)
         assert len(result) > 0
@@ -530,6 +642,7 @@ class TestInternalUtilityAgents:
         """Without LLM, generate_session_title uses first N words as fallback."""
         from unittest.mock import patch
         from src.core.memory.distiller import generate_session_title
+
         # Patch call_internal_agent to return empty (simulates LLM unavailable)
         with patch("src.core.memory.distiller.call_internal_agent", return_value=""):
             result = generate_session_title("Add a login form to the homepage")
@@ -538,24 +651,36 @@ class TestInternalUtilityAgents:
     def test_call_internal_agent_unknown_id_returns_empty(self):
         """call_internal_agent with an unknown agent_id must return '' without raising."""
         from src.core.memory.distiller import call_internal_agent
-        result = call_internal_agent("__nonexistent_agent__", [{"role": "user", "content": "hi"}])
+
+        result = call_internal_agent(
+            "__nonexistent_agent__", [{"role": "user", "content": "hi"}]
+        )
         assert result == ""
 
     def test_session_title_reset_on_start_new_task(self):
         """start_new_task() must reset _session_title to None."""
         import inspect
+        import src.core.orchestration.inference_loop as inference_loop_mod
         import src.core.orchestration.orchestrator as orch_mod
-        src = inspect.getsource(orch_mod)
+        import src.core.orchestration.task_lifecycle as task_lifecycle_mod
+
+        src = (
+            inspect.getsource(orch_mod)
+            + inspect.getsource(inference_loop_mod)
+            + inspect.getsource(task_lifecycle_mod)
+        )
         assert "_session_title" in src
         assert "session.title_generated" in src
 
 
 # ── SPAWN-W2 — allowed_tools enforcement in delegated context ────────────────
 
+
 class TestSpawnAllowedToolsEnforcement:
     def test_subagent_orchestrator_allowlist(self):
         """SubagentOrchestrator.is_tool_allowed must respect explicit allowed_tools."""
         from src.tools.subagent_tools import SubagentOrchestrator
+
         orch = SubagentOrchestrator(
             role="analyst",
             working_dir=".",
@@ -568,6 +693,7 @@ class TestSpawnAllowedToolsEnforcement:
     def test_subagent_orchestrator_denylist(self):
         """SubagentOrchestrator.is_tool_allowed must respect denied_tools."""
         from src.tools.subagent_tools import SubagentOrchestrator
+
         orch = SubagentOrchestrator(
             role="analyst",
             working_dir=".",
@@ -579,6 +705,7 @@ class TestSpawnAllowedToolsEnforcement:
     def test_subagent_orchestrator_no_restriction(self):
         """With no allowlist or denylist, SubagentOrchestrator defers to role config."""
         from src.tools.subagent_tools import SubagentOrchestrator
+
         orch = SubagentOrchestrator(role="analyst", working_dir=".")
         # No explicit allowlist — should not blanket-deny tools
         assert orch._allowed_tools is None
@@ -587,6 +714,7 @@ class TestSpawnAllowedToolsEnforcement:
         """delegate_task function signature must include allowed_tools parameter."""
         import inspect
         from src.tools.subagent_tools import delegate_task
+
         sig = inspect.signature(delegate_task)
         assert "allowed_tools" in sig.parameters
 
@@ -594,7 +722,10 @@ class TestSpawnAllowedToolsEnforcement:
         """execute_tool must have SPAWN-W2 allowlist enforcement."""
         import inspect
         import src.core.orchestration.orchestrator as orch_mod
-        src = inspect.getsource(orch_mod)
+        import src.core.orchestration.tool_execution_pipeline as pipeline_mod
+
+        # Phase C: body moved to tool_execution_pipeline; check either module
+        src = inspect.getsource(orch_mod) + inspect.getsource(pipeline_mod)
         assert "SPAWN-W2" in src
         assert "is_tool_permitted" in src
         assert "spawn_allowed_tools" in src
@@ -602,6 +733,7 @@ class TestSpawnAllowedToolsEnforcement:
     def test_is_tool_permitted_on_agent_definition(self):
         """AgentDefinition.is_tool_permitted() must enforce allowed/denied."""
         from src.core.orchestration.agent_types import AgentDefinition
+
         agent = AgentDefinition(
             id="test",
             name="Test",
@@ -614,6 +746,7 @@ class TestSpawnAllowedToolsEnforcement:
     def test_is_tool_permitted_denied_overrides_allowlist(self):
         """denied_tools must block even when tool is in allowed_tools."""
         from src.core.orchestration.agent_types import AgentDefinition
+
         agent = AgentDefinition(
             id="test",
             name="Test",
@@ -627,10 +760,12 @@ class TestSpawnAllowedToolsEnforcement:
 
 # ── SPAWN-W1 — recursive loop re-entry ───────────────────────────────────────
 
+
 class TestSpawnRecursiveReentry:
     def test_parent_session_id_in_agent_state(self):
         """AgentState TypedDict must include parent_session_id field."""
         from src.core.orchestration.graph.state import AgentState
+
         hints = AgentState.__annotations__
         assert "parent_session_id" in hints
 
@@ -638,22 +773,28 @@ class TestSpawnRecursiveReentry:
         """initial_state dict must include parent_session_id key."""
         import inspect
         import src.core.orchestration.orchestrator as orch_mod
-        src = inspect.getsource(orch_mod)
+        import src.core.orchestration.inference_loop as inference_loop_mod
+
+        # Phase E: body moved to inference_loop; check either module
+        src = inspect.getsource(orch_mod) + inspect.getsource(inference_loop_mod)
         assert '"parent_session_id"' in src
 
     def test_context_var_exists_in_subagent_tools(self):
         """_PARENT_ORCHESTRATOR_VAR must be importable from subagent_tools."""
         from src.tools.subagent_tools import _PARENT_ORCHESTRATOR_VAR
+
         assert _PARENT_ORCHESTRATOR_VAR is not None
 
     def test_context_var_default_is_none(self):
         """_PARENT_ORCHESTRATOR_VAR default must be None (no parent)."""
         from src.tools.subagent_tools import _PARENT_ORCHESTRATOR_VAR
+
         assert _PARENT_ORCHESTRATOR_VAR.get(None) is None
 
     def test_context_var_set_and_reset(self):
         """ContextVar token mechanism must work (set → get → reset)."""
         from src.tools.subagent_tools import _PARENT_ORCHESTRATOR_VAR
+
         sentinel = object()
         token = _PARENT_ORCHESTRATOR_VAR.set(sentinel)
         assert _PARENT_ORCHESTRATOR_VAR.get(None) is sentinel
@@ -664,7 +805,10 @@ class TestSpawnRecursiveReentry:
         """execute_tool() source must set _PARENT_ORCHESTRATOR_VAR."""
         import inspect
         import src.core.orchestration.orchestrator as orch_mod
-        src = inspect.getsource(orch_mod)
+        import src.core.orchestration.tool_execution_pipeline as pipeline_mod
+
+        # Phase C: body moved to tool_execution_pipeline; check either module
+        src = inspect.getsource(orch_mod) + inspect.getsource(pipeline_mod)
         assert "_PARENT_ORCHESTRATOR_VAR" in src
         assert "_orch_token" in src
 
@@ -672,6 +816,7 @@ class TestSpawnRecursiveReentry:
         """delegate_task source must read _PARENT_ORCHESTRATOR_VAR.get()."""
         import inspect
         from src.tools import subagent_tools
+
         src = inspect.getsource(subagent_tools)
         assert "_PARENT_ORCHESTRATOR_VAR.get" in src
         assert "parent_session_id" in src
@@ -681,6 +826,7 @@ class TestSpawnRecursiveReentry:
         """delegate_task must track delegation_depth in the child initial_state."""
         import inspect
         from src.tools import subagent_tools
+
         src = inspect.getsource(subagent_tools)
         assert "delegation_depth" in src
         assert "depth + 1" in src
@@ -688,34 +834,43 @@ class TestSpawnRecursiveReentry:
 
 # ── SPAWN-W3 / SPAWN-W4 — child session persistence + hierarchy ──────────────
 
+
 class TestChildSessionPersistence:
     def test_register_child_session_importable(self):
         from src.core.memory.session_store import SessionStore
+
         assert hasattr(SessionStore, "register_child_session")
 
     def test_get_child_sessions_importable(self):
         from src.core.memory.session_store import SessionStore
+
         assert hasattr(SessionStore, "get_child_sessions")
 
     def test_get_session_tree_importable(self):
         from src.core.memory.session_store import SessionStore
+
         assert hasattr(SessionStore, "get_session_tree")
 
     def test_session_children_table_created(self, tmp_path):
         """session_children table must exist after SessionStore init."""
         import sqlite3
         from src.core.memory.session_store import SessionStore
+
         store = SessionStore(workdir=str(tmp_path))
         conn = sqlite3.connect(str(store.db_path))
-        tables = [r[0] for r in conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'"
-        ).fetchall()]
+        tables = [
+            r[0]
+            for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        ]
         conn.close()
         assert "session_children" in tables
 
     def test_register_and_retrieve_child_session(self, tmp_path):
         """register_child_session then get_child_sessions must return the child."""
         from src.core.memory.session_store import SessionStore
+
         store = SessionStore(workdir=str(tmp_path))
         store.register_child_session(
             parent_session_id="parent-1",
@@ -730,6 +885,7 @@ class TestChildSessionPersistence:
 
     def test_get_child_sessions_returns_empty_for_unknown_parent(self, tmp_path):
         from src.core.memory.session_store import SessionStore
+
         store = SessionStore(workdir=str(tmp_path))
         children = store.get_child_sessions("nonexistent-parent")
         assert children == []
@@ -737,6 +893,7 @@ class TestChildSessionPersistence:
     def test_get_session_tree_empty(self, tmp_path):
         """get_session_tree for a root with no children must return a tree with empty list."""
         from src.core.memory.session_store import SessionStore
+
         store = SessionStore(workdir=str(tmp_path))
         tree = store.get_session_tree("root-1")
         assert tree["session_id"] == "root-1"
@@ -745,6 +902,7 @@ class TestChildSessionPersistence:
     def test_get_session_tree_nested(self, tmp_path):
         """get_session_tree must return multi-level hierarchy."""
         from src.core.memory.session_store import SessionStore
+
         store = SessionStore(workdir=str(tmp_path))
         store.register_child_session("root", "child-a", "analyst", "task A")
         store.register_child_session("child-a", "grandchild-1", "reviewer", "review")
@@ -759,6 +917,7 @@ class TestChildSessionPersistence:
         """delegate_task result string must include child_session_id."""
         import inspect
         from src.tools import subagent_tools
+
         src = inspect.getsource(subagent_tools)
         assert "child_session_id" in src
         assert "register_child_session" in src
@@ -766,10 +925,12 @@ class TestChildSessionPersistence:
 
 # ── SPAWN-W5 — spawn permission gate ─────────────────────────────────────────
 
+
 class TestSpawnPermissionGate:
     def test_delegate_task_is_prompt_permission(self):
         """delegate_task must be registered as PROMPT permission level."""
         from src.tools.tools_config import TOOL_PERMISSIONS, PermissionLevel
+
         assert "delegate_task" in TOOL_PERMISSIONS
         assert TOOL_PERMISSIONS["delegate_task"] == PermissionLevel.PROMPT
 
@@ -777,19 +938,26 @@ class TestSpawnPermissionGate:
         """execute_tool must publish spawn.permission_required for delegate_task."""
         import inspect
         import src.core.orchestration.orchestrator as orch_mod
-        src = inspect.getsource(orch_mod)
+        import src.core.orchestration.tool_execution_pipeline as pipeline_mod
+
+        # Phase C: body moved to tool_execution_pipeline; check either module
+        src = inspect.getsource(orch_mod) + inspect.getsource(pipeline_mod)
         assert "spawn.permission_required" in src
         assert "SPAWN-W5" in src
 
 
 # ── SES-W2 — full conversation pair storage ───────────────────────────────────
 
+
 class TestFullConversationPairStorage:
     def test_user_message_stored_in_session_store(self, tmp_path):
         """run_agent_once must persist user prompt to session_store."""
         import inspect
         import src.core.orchestration.orchestrator as orch_mod
-        src = inspect.getsource(orch_mod)
+        import src.core.orchestration.inference_loop as inference_loop_mod
+
+        # Phase E: body moved to inference_loop; check either module
+        src = inspect.getsource(orch_mod) + inspect.getsource(inference_loop_mod)
         assert "SES-W2" in src
         assert 'role="user"' in src or '"user"' in src
 
@@ -797,13 +965,17 @@ class TestFullConversationPairStorage:
         """run_agent_once must persist assistant response to session_store."""
         import inspect
         import src.core.orchestration.orchestrator as orch_mod
-        src = inspect.getsource(orch_mod)
+        import src.core.orchestration.inference_loop as inference_loop_mod
+
+        # Phase E: body moved to inference_loop; check either module
+        src = inspect.getsource(orch_mod) + inspect.getsource(inference_loop_mod)
         # Both user and assistant add_message calls must be present
         assert src.count('role="assistant"') >= 1 or '"assistant"' in src
 
     def test_add_message_accepts_both_roles(self, tmp_path):
         """SessionStore.add_message must accept user and assistant roles."""
         from src.core.memory.session_store import SessionStore
+
         store = SessionStore(workdir=str(tmp_path))
         store.add_message("sess1", "user", "Hello world")
         store.add_message("sess1", "assistant", "I'll help you.")
@@ -815,19 +987,23 @@ class TestFullConversationPairStorage:
 
 # ── SES-W3 — per-model-per-role config ───────────────────────────────────────
 
+
 class TestPerModelPerRoleConfig:
     def test_get_model_for_role_importable(self):
         from src.core.config_loader import get_model_for_role
+
         assert callable(get_model_for_role)
 
     def test_get_model_for_role_returns_none_when_unconfigured(self):
         """When providers.json has no per-role override, return None."""
         from src.core.config_loader import get_model_for_role
+
         result = get_model_for_role("strategic")
         assert result is None or isinstance(result, str)
 
     def test_get_model_for_role_unknown_role_returns_none(self):
         from src.core.config_loader import get_model_for_role
+
         result = get_model_for_role("nonexistent_role_xyz")
         assert result is None
 
@@ -835,6 +1011,7 @@ class TestPerModelPerRoleConfig:
         """planning_node source must check get_model_for_role."""
         import inspect
         import src.core.orchestration.graph.nodes.planning_node as pn_mod
+
         src = inspect.getsource(pn_mod)
         assert "get_model_for_role" in src or "_planning_model_override" in src
 
@@ -842,6 +1019,7 @@ class TestPerModelPerRoleConfig:
         """execution_node source must check get_model_for_role."""
         import inspect
         import src.core.orchestration.graph.nodes.execution_node as en_mod
+
         src = inspect.getsource(en_mod)
         assert "get_model_for_role" in src or "_exec_model_override" in src
 
@@ -849,6 +1027,7 @@ class TestPerModelPerRoleConfig:
         """_ROLE_MODEL_KEYS mapping must be present in config_loader."""
         import inspect
         from src.core import config_loader
+
         src = inspect.getsource(config_loader)
         assert "planning_model" in src
         assert "execution_model" in src

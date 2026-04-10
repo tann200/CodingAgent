@@ -5,7 +5,7 @@ These tests verify the async behavior of LangGraph nodes.
 """
 
 import pytest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, AsyncMock, patch
 from typing import Any
 
 from src.core.orchestration.graph.state import AgentState
@@ -240,8 +240,10 @@ class TestRouteAfterPerception:
         assert result == "execution"
 
     def test_route_standard_path_when_no_action(self):
-        """Test standard path when no next_action."""
-        state = _make_state(next_action=None)
+        """Test standard path when no next_action on a complex task (goes to analysis)."""
+        # P2-A: simple tasks on rounds==0 bypass analysis → planning.
+        # Use a complex task keyword to exercise the analysis path.
+        state = _make_state(next_action=None, task="refactor the authentication module")
 
         result = route_after_perception(state)
 
@@ -503,7 +505,20 @@ class TestPlanPersistence:
         )
         config = {"configurable": {"orchestrator": MagicMock()}}
 
-        result = await planning_node(state, config)
+        _mock_plan_resp = {
+            "choices": [
+                {
+                    "message": {
+                        "content": '[{"description": "Step 1"}, {"description": "Step 2"}]'
+                    }
+                }
+            ]
+        }
+        with patch(
+            "src.core.inference.llm_manager.call_model",
+            new=AsyncMock(return_value=_mock_plan_resp),
+        ):
+            result = await planning_node(state, config)
 
         # Check that a plan was created
         assert result.get("current_plan") is not None

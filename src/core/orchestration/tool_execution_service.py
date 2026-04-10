@@ -192,9 +192,10 @@ class ToolExecutionService:
             pass
 
         # 2. Strip LLM-injected user_approved (prevents WorkspaceGuard bypass).
-        # Work on a copy so the caller's dict is not mutated.
-        args = dict(args)
+        # SEC-4: Strip from the original dict so any code path that re-reads the
+        # caller's args after pre_execute() returns also sees the cleaned version.
         args.pop("user_approved", None)
+        args = dict(args)  # defensive copy for local mutation only
 
         # 3. PermissionLevel gate
         verdict = await self._check_permission_gate(name, args)

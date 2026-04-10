@@ -1,6 +1,6 @@
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, AsyncMock, patch
 import warnings
 import tomli
 import pytest
@@ -177,3 +177,111 @@ def mock_bridge():
     bridge._subscriptions: list = []  # type: ignore[assignment]
     bridge.setup_subscriptions()
     return bridge, bus, mock_app
+
+
+# ── NO_LM_STUDIO kill switch ──────────────────────────────────────────────────
+# Set NO_LM_STUDIO=1 to guarantee that no test sends a real request to LM Studio.
+# This is useful when LM Studio is running locally and you want to run the full
+# test suite without accidentally triggering context-overflow spam.
+#
+# Effect when NO_LM_STUDIO=1:
+#   1. All @pytest.mark.lmstudio tests are skipped.
+#   2. The call_model LLM mock is also applied to @pytest.mark.real_llm and
+#      @pytest.mark.integration tests (they no longer get real network access).
+#   3. Any HTTP request whose URL contains the LM Studio base URL (default
+#      http://localhost:1234) is blocked at the network layer — a hard guard
+#      that catches adapter calls that bypass the call_model mock entirely.
+
+import os as _os
+
+_NO_LM_STUDIO = _os.getenv("NO_LM_STUDIO", "").strip() in ("1", "true", "yes")
+_LM_STUDIO_BLOCK_URL = _os.getenv("LM_STUDIO_URL", "http://localhost:1234")
+
+
+def pytest_collection_modifyitems(config, items):
+    """Skip lmstudio-marked tests when NO_LM_STUDIO=1."""
+    if not _NO_LM_STUDIO:
+        return
+    skip_mark = pytest.mark.skip(reason="NO_LM_STUDIO=1 — LM Studio kill switch active")
+    for item in items:
+        if item.get_closest_marker("lmstudio"):
+            item.add_marker(skip_mark)
+
+
+# ── Global safety net: prevent real LLM network calls during tests ────────────
+# Any test that accidentally calls src.core.inference.llm_manager.call_model
+# without an explicit mock will get a canned response instead of hanging.
+# Tests that need specific LLM responses should mock call_model themselves
+# (their mock will take priority over this autouse fixture's patch via pytest
+# fixture ordering or explicit context-manager patches).
+
+_CANNED_LLM_RESPONSE = {
+    "choices": [{"message": {"content": "PASS - mock response from conftest"}}]
+}
+
+
+@pytest.fixture(autouse=True)
+def _no_real_llm_calls(request):
+    """Block real LLM network calls in all unit tests.
+
+    Integration tests (marked with @pytest.mark.integration) are exempt unless
+    NO_LM_STUDIO=1 is set, in which case ALL tests get the mock.
+    Tests that explicitly patch call_model themselves are unaffected because
+    unittest.mock.patch stacks — the innermost patch wins.
+    Tests that need the real call_model (e.g. circuit breaker tests) can opt
+    out by marking with @pytest.mark.real_llm — unless NO_LM_STUDIO=1.
+    """
+    if not _NO_LM_STUDIO:
+        if request.node.get_closest_marker("integration"):
+            yield
+            return
+        if request.node.get_closest_marker("real_llm"):
+            yield
+            return
+
+    with (
+        patch(
+            "src.core.inference.llm_manager.call_model",
+            new=AsyncMock(return_value=_CANNED_LLM_RESPONSE),
+        ),
+        patch(
+            "src.core.inference.llm_manager._ensure_provider_manager_initialized_sync",
+            return_value=None,
+        ),
+    ):
+        yield
+
+
+@pytest.fixture(autouse=True)
+def _lm_studio_network_block(request):
+    """Hard network-layer block for LM Studio when NO_LM_STUDIO=1.
+
+    Intercepts requests.Session.send and raises ConnectionRefusedError if the
+    prepared request targets the LM Studio base URL. This catches adapter calls
+    that bypass the call_model mock (e.g. direct httpx/requests usage in tests).
+    """
+    if not _NO_LM_STUDIO:
+        yield
+        return
+
+    import urllib.parse as _urlparse
+
+    _block_host = _urlparse.urlparse(_LM_STUDIO_BLOCK_URL).netloc  # e.g. "localhost:1234"
+
+    try:
+        import requests as _requests
+
+        _orig_send = _requests.Session.send
+
+        def _blocked_send(self, prepared_request, **kwargs):
+            url = getattr(prepared_request, "url", "") or ""
+            if _block_host in url:
+                raise ConnectionRefusedError(
+                    f"NO_LM_STUDIO=1: request to {url!r} blocked (kill switch active)"
+                )
+            return _orig_send(self, prepared_request, **kwargs)
+
+        with patch.object(_requests.Session, "send", _blocked_send):
+            yield
+    except ImportError:
+        yield
