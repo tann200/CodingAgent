@@ -14,7 +14,7 @@ import functools
 import os
 import tempfile
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple, Awaitable
 from pathlib import Path
 import json
 import inspect
@@ -52,8 +52,48 @@ try:
 except Exception:
     _get_token_budget_monitor = None  # type: ignore[assignment]
 
+try:
+    # Helper to propagate ContextVars into worker threads
+    from src.core.orchestration.event_bus import run_with_correlation
+except Exception:
+    # Fallback: simple shim that calls loop.run_in_executor when event_bus isn't importable
+    def run_with_correlation(
+        loop: Any, executor: Any, fn: Callable[..., Any], *args: Any
+    ) -> Awaitable[Any]:
+        """Fallback run_with_correlation that safely copies the current Context
+        and runs the callable inside that context in the executor. This avoids
+        circular import with event_bus while still propagating ContextVars.
+
+        The return type is Awaitable[Any] to make type-checkers happy when the
+        caller awaits the result of run_in_executor.
+        """
+        try:
+            import contextvars as _contextvars
+            import functools as _functools
+
+            ctx = _contextvars.copy_context()
+            fn_partial = _functools.partial(ctx.run, fn, *args)
+            return loop.run_in_executor(executor, fn_partial)
+        except Exception:
+            # Last-resort fallback: direct run_in_executor without context copy
+            return loop.run_in_executor(executor, fn, *args)
+
+
 # Simple in-memory caches (protected by RLock for thread safety - C8 fix)
 import threading as _threading
+
+# Gap 3: Plugin hooks — lazy import so the registry is not required at import time.
+try:
+    from src.core.plugin.hook_registry import (
+        registry as _hook_registry,
+        HOOK_LLM_RESPONSE as _HOOK_LLM_RESPONSE,
+    )
+
+    _LLM_MGR_HAS_HOOKS = True
+except Exception:
+    _hook_registry = None  # type: ignore[assignment]
+    _HOOK_LLM_RESPONSE = "llm.response"
+    _LLM_MGR_HAS_HOOKS = False
 
 _MODEL_CACHE: Dict[str, List[str]] = {}
 _MODEL_CACHE_TIME: Dict[str, float] = {}
@@ -768,14 +808,22 @@ class ProviderManager:
                                                 active_model
                                             )
                                             if ctx_len and ctx_len > 0:
-                                                self._event_bus.publish(
-                                                    "provider.context_window",
-                                                    {
-                                                        "provider": prov_key,
-                                                        "model": active_model,
-                                                        "context_window": ctx_len,
-                                                    },
+                                                # Set directly so headless mode (no TUI
+                                                # event subscriber) also gets the live value.
+                                                from src.core.inference.provider_context import (
+                                                    set_active_context_length,
                                                 )
+
+                                                set_active_context_length(ctx_len)
+                                                if self._event_bus:
+                                                    self._event_bus.publish(
+                                                        "provider.context_window",
+                                                        {
+                                                            "provider": prov_key,
+                                                            "model": active_model,
+                                                            "context_window": ctx_len,
+                                                        },
+                                                    )
                                         except Exception:
                                             pass
                                 except Exception:
@@ -1099,12 +1147,13 @@ async def _call_model_internal(
                     format_json=format_json,
                     **(kwargs or {}),
                 )
-                res = await loop.run_in_executor(None, fn)
+                # Propagate ContextVars (correlation id) into worker thread
+                res = await run_with_correlation(loop, None, fn)
                 # M1: If stream=True the adapter may return a raw requests.Response;
                 # consume the SSE stream and return the accumulated text as a dict.
                 if stream and hasattr(res, "iter_lines"):
-                    text = await loop.run_in_executor(
-                        None, functools.partial(_consume_sse_stream, res, model)
+                    text = await run_with_correlation(
+                        loop, None, functools.partial(_consume_sse_stream, res, model)
                     )
                     return {"ok": True, "text": text, "streamed": True}
                 return res
@@ -1122,11 +1171,12 @@ async def _call_model_internal(
                     format_json=format_json,
                     **(kwargs or {}),
                 )
-                res = await loop.run_in_executor(None, fn)
+                # Propagate ContextVars into worker thread
+                res = await run_with_correlation(loop, None, fn)
                 # M1: Same SSE consumption for generate path
                 if stream and hasattr(res, "iter_lines"):
-                    text = await loop.run_in_executor(
-                        None, functools.partial(_consume_sse_stream, res, model)
+                    text = await run_with_correlation(
+                        loop, None, functools.partial(_consume_sse_stream, res, model)
                     )
                     return {"ok": True, "text": text, "streamed": True}
                 return res
@@ -1134,7 +1184,7 @@ async def _call_model_internal(
                 try:
                     # fallback: positional
                     fn = functools.partial(adapter.generate, messages)
-                    res = await loop.run_in_executor(None, fn)
+                    res = await run_with_correlation(loop, None, fn)
                     return res
                 except Exception as e:
                     last_err = e
@@ -1518,6 +1568,22 @@ async def call_model(
                     _get_token_budget_monitor().record_usage(session_id, _pt, _ct, _tt)
             except Exception:
                 pass  # never let budget tracking break LLM calls
+
+    # Gap 3: HOOK_LLM_RESPONSE — lets plugins observe every model response.
+    if _LLM_MGR_HAS_HOOKS and _hook_registry is not None:
+        try:
+            _text = res.get("text", "") if isinstance(res, dict) else ""
+            _hook_registry.call(
+                _HOOK_LLM_RESPONSE,
+                {
+                    "content": _text,
+                    "model": model or "",
+                    "provider": provider or "",
+                    "ok": res.get("ok", True) if isinstance(res, dict) else True,
+                },
+            )
+        except Exception:
+            pass
 
     return res
 

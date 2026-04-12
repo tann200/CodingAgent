@@ -15,6 +15,39 @@ from src.core.orchestration.graph.nodes.node_utils import (
 )
 from src.core.orchestration.event_bus import run_with_correlation
 
+# Gap 8: OTel tracing — no-op when opentelemetry-sdk is not installed.
+try:
+    from src.core.telemetry.tracer import span_node as _otel_span_node
+
+    _HAS_TRACER = True
+except Exception:
+    _otel_span_node = None  # type: ignore[assignment]
+    _HAS_TRACER = False
+
+
+def _span_node(name: str, attributes: "dict | None" = None):
+    """Thin wrapper: delegates to OTel span_node or returns a no-op context."""
+    if _HAS_TRACER and _otel_span_node is not None:
+        return _otel_span_node(name, attributes)
+    import contextlib
+
+    return contextlib.nullcontext()
+
+
+# Gap 3: Plugin hooks — lazy import so the registry is not required at import time.
+try:
+    from src.core.plugin.hook_registry import (
+        registry as _hook_registry,
+        HOOK_ROUND_END as _HOOK_ROUND_END,
+    )
+
+    _HAS_HOOKS = True
+except Exception:
+    _hook_registry = None  # type: ignore[assignment]
+    _HOOK_ROUND_END = "round.end"
+    _HAS_HOOKS = False
+
+
 # CODE_QUALITY_AUDIT #7 fix: promote deferred intra-function imports to module
 # level.  perception_node() is called on every agent round; re-importing 11
 # symbols on each invocation was unnecessary overhead.
@@ -75,9 +108,12 @@ logger = logging.getLogger(__name__)
 # PRUNE: Placeholder inserted in place of old tool result content.
 _PRUNED_TOOL_PLACEHOLDER = "[Old tool result content cleared to save context]"
 # PRUNE: Token threshold (from the end of history) beyond which tool outputs
-# are zeroed.  Mirrors OpenCode's PRUNE_PROTECT = 40_000, but set smaller
-# here to suit the 7 600-token default context of LM Studio.
-_PRUNE_PROTECT_TOKENS = 15_000
+# are zeroed.  OP-3: Raised from 15K → 40K to match OpenCode's PRUNE_PROTECT.
+# The 15K value was calibrated for the old 7600-token LM Studio default context;
+# that override was removed in P1-A.  Modern models (Gemma 4: 128K-256K ctx,
+# LM Studio defaults: 32K-128K) can safely protect 40K tokens of recent history.
+# Raising this reduces spurious "content cleared" entries in mid-session context.
+_PRUNE_PROTECT_TOKENS = 40_000
 # PRUNE: Always keep this many recent messages intact regardless of size.
 _PRUNE_PROTECT_RECENT = 6
 
@@ -85,11 +121,15 @@ _PRUNE_PROTECT_RECENT = 6
 def _prune_tool_outputs(history: list) -> tuple:
     """Zero out old tool-result content beyond the _PRUNE_PROTECT_TOKENS boundary.
 
-    Walks the history from newest to oldest, accumulating a rough token count.
+    Walks the history from newest to oldest, accumulating a token count.
     Once the running total exceeds _PRUNE_PROTECT_TOKENS, any subsequent
     messages whose content looks like a tool_execution_result are replaced with
     the _PRUNED_TOOL_PLACEHOLDER.  The last _PRUNE_PROTECT_RECENT messages are
     always preserved verbatim.
+
+    OP-10: Messages with ``metadata.preserve = True`` are never pruned.
+    P2-D: Uses tiktoken for accurate token counting when available; falls back
+          to ``len // 4`` rather than the aggressive ``len // 4`` estimate.
 
     Returns (pruned_history, pruned_count) — pruned_history is a new list
     (input is not mutated), pruned_count is the number of messages zeroed.
@@ -97,10 +137,24 @@ def _prune_tool_outputs(history: list) -> tuple:
     if not history:
         return history, 0
 
-    def _est(msg: dict) -> int:
-        c = msg.get("content") or ""
-        s = c if isinstance(c, str) else str(c)
-        return max(1, len(s) // 4)
+    # P2-D: prefer tiktoken for accurate counting; fall back to char heuristic.
+    try:
+        from src.core.inference.tokenizer import count_tokens as _count_tokens
+
+        def _est(msg: dict) -> int:
+            c = msg.get("content") or ""
+            s = c if isinstance(c, str) else str(c)
+            try:
+                return max(1, _count_tokens(s))
+            except Exception:
+                return max(1, len(s) // 4)
+
+    except Exception:
+
+        def _est(msg: dict) -> int:  # type: ignore[misc]
+            c = msg.get("content") or ""
+            s = c if isinstance(c, str) else str(c)
+            return max(1, len(s) // 4)
 
     def _is_tool_result(msg: dict) -> bool:
         if msg.get("role") == "tool":
@@ -121,6 +175,10 @@ def _prune_tool_outputs(history: list) -> tuple:
         if (total - 1 - i) < _PRUNE_PROTECT_RECENT:
             running_tokens += _est(msg)
             continue
+        # OP-10: Never prune messages tagged with preserve=True metadata.
+        if msg.get("metadata", {}).get("preserve"):
+            running_tokens += _est(msg)
+            continue
         running_tokens += _est(msg)
         if running_tokens > _PRUNE_PROTECT_TOKENS and _is_tool_result(msg):
             if msg.get("content") != _PRUNED_TOOL_PLACEHOLDER:
@@ -130,6 +188,62 @@ def _prune_tool_outputs(history: list) -> tuple:
     return result, pruned_count
 
 
+# P1-D: Graduated corrective prompts helper.
+# Selects a corrective prompt variant based on the number of consecutive empty/no-tool
+# responses (attempt) and model tier. The truncated_yaml path is a special-case that
+# instructs the model to emit a minimal tool call.
+def _select_corrective_prompt(
+    attempt: int = 1, model_tier: str | None = None, truncated_yaml: bool = False
+) -> str:
+    try:
+        att = int(attempt or 1)
+    except Exception:
+        att = 1
+    # Truncated YAML gets a concise, explicit prompt.
+    if truncated_yaml:
+        return (
+            "\n\n<system_reminder>\n"
+            "Your response may have been cut off because the context window is full. "
+            "Please output a minimal YAML tool call — include the tool name and at most 1-2 arguments. "
+            "Keep the response brief (under 50 tokens). No analysis or preamble.\n"
+            "```yaml\nname: tool_name\narguments:\n  key: value\n```\n"
+            "</system_reminder>\n"
+        )
+    # Graduated prompts: gentle -> specific -> critical
+    prompts = [
+        # 1st attempt: gentle reminder and fallback to 'respond' tool
+        (
+            "\n\n<system_reminder>\n"
+            "Please provide a valid YAML tool call for your next action. Avoid empty responses or thinking-only blocks.\n"
+            "If you cannot determine the next action, you may use the 'respond' tool to explain what you need.\n"
+            "</system_reminder>\n"
+        ),
+        # 2nd attempt: prescriptive example and formatting guidance
+        (
+            "\n\n<system_reminder>\n"
+            "Please output a valid YAML tool call block now. Use the YAML format below and keep it concise (name and at most 1-2 arguments). No analysis or preamble.\n"
+            "```yaml\nname: tool_name\narguments:\n  key: value\n```\n"
+            "</system_reminder>\n"
+        ),
+        # 3rd+ attempt: firmer guidance while remaining polite
+        (
+            "\n\n<system_reminder>\n"
+            "Important: Please provide a valid YAML tool call block. "
+            "Format:\n```yaml\nname: tool_name\narguments:\n  key: value\n```\n"
+            "Avoid thinking-only responses or empty outputs.\n"
+            "</system_reminder>\n"
+        ),
+    ]
+    idx = max(0, min(att - 1, len(prompts) - 1))
+    # Model-tier adjustments: for 'nano' models use the most concise variant
+    # for attempts >=2 to reduce token usage.
+    tier = (model_tier or "").lower()
+    if tier == "nano" and att >= 2:
+        # Return the prescriptive example (index 1) which is compact.
+        return prompts[1]
+    return prompts[idx]
+
+
 async def perception_node(state: Mapping[str, Any], config: Any) -> Dict[str, Any]:
     """
     Perception Layer: Responsible for generating the next action or thought.
@@ -137,7 +251,26 @@ async def perception_node(state: Mapping[str, Any], config: Any) -> Dict[str, An
     Dynamic skill injection: If task involves debugging/searching, injects 'context_hygiene' skill.
     """
     logger.info("=== perception_node START ===")
+    with _span_node("perception", {"round": state.get("rounds", 0)}):
+        result = await _perception_node_impl(state, config)
+    # Gap 3: fire HOOK_ROUND_END after every perception round.
+    if _HAS_HOOKS and _hook_registry is not None:
+        try:
+            _hook_registry.call(
+                _HOOK_ROUND_END,
+                {
+                    "round": result.get("rounds", 0),
+                    "next_action": result.get("next_action"),
+                },
+            )
+        except Exception:
+            pass
+    return result
 
+
+async def _perception_node_impl(
+    state: Mapping[str, Any], config: Any
+) -> Dict[str, Any]:  # noqa: C901
     # Validate state invariants at node entry (D-02: non-fatal, logs on issues)
     validate_state(state)
 
@@ -516,7 +649,27 @@ async def perception_node(state: Mapping[str, Any], config: Any) -> Dict[str, An
             preserve_recent=_ac_preserve,
             max_tokens=_ac_max_tokens,
         )
-        if _should_compact(_history_for_prompt, _ac_config):
+        # P2-C: Min-gap guard — skip compaction for 3 rounds after the last
+        # compaction to prevent it from re-triggering every turn once the
+        # threshold is crossed.  New messages in the 3-turn gap are still
+        # appended to _compacted_history above (delta-append path).
+        _compaction_last_round = state.get("_compaction_last_round")
+        _current_rounds = int(state.get("rounds") or 0)
+        _COMPACTION_MIN_GAP = 3
+        _compaction_on_cooldown = (
+            _compaction_last_round is not None
+            and (_current_rounds - int(_compaction_last_round)) < _COMPACTION_MIN_GAP
+        )
+        if _compaction_on_cooldown:
+            logger.debug(
+                "perception_node CP-6: skipping compaction — cooldown active "
+                "(last=%d, current=%d, gap=%d < %d)",
+                _compaction_last_round,
+                _current_rounds,
+                _current_rounds - int(_compaction_last_round),
+                _COMPACTION_MIN_GAP,
+            )
+        elif _should_compact(_history_for_prompt, _ac_config):
             _compact_result = _compact_messages(_history_for_prompt, _ac_config)
             if _compact_result.removed_message_count > 0:
                 _history_for_prompt = _compact_result.compacted_messages
@@ -585,6 +738,18 @@ async def perception_node(state: Mapping[str, Any], config: Any) -> Dict[str, An
     )
     _perception_role = "strategic" if _agent_mode == "planning" else "operational"
 
+    # OP-1: Resolve active model name for per-provider prompt selection.
+    _active_model_name: str = ""
+    try:
+        if orchestrator and orchestrator.adapter:
+            _models = getattr(orchestrator.adapter, "models", None)
+            if _models:
+                _active_model_name = (
+                    _models[0] if isinstance(_models, list) else str(_models)
+                )
+    except Exception:
+        pass
+
     messages = builder.build_prompt(
         role_name=_perception_role,
         active_skills=active_skills,
@@ -600,6 +765,7 @@ async def perception_node(state: Mapping[str, Any], config: Any) -> Dict[str, An
         model_tier=state.get(
             "model_tier"
         ),  # S1-B/S1-C: pass tier for partial + pruning
+        model_name=_active_model_name,  # OP-1: per-provider prompt selection
     )
 
     # S9-A: Inject prior-session memories into the system message (round 0 only).
@@ -658,6 +824,35 @@ async def perception_node(state: Mapping[str, Any], config: Any) -> Dict[str, An
         except Exception:
             pass
 
+    # MID-INJ: On rounds > 0, drain any mid-run user messages buffered by the
+    # TUI bridge and inject them as <system-reminder> blocks appended to the
+    # messages list (OpenCode pattern: prompt.ts:1487–1503).
+    _current_round = state.get("rounds") or 0
+    if _current_round > 0:
+        try:
+            _inj_source = state.get("_pending_injections_source")
+            if _inj_source is not None and callable(
+                getattr(_inj_source, "pop_pending_injections", None)
+            ):
+                _injected_msgs = _inj_source.pop_pending_injections()
+                for _inj_text in _injected_msgs:
+                    _reminder = (
+                        "<system-reminder>\n"
+                        "The user sent the following message:\n"
+                        f"{_inj_text}\n\n"
+                        "Please address this message and continue with your tasks.\n"
+                        "</system-reminder>"
+                    )
+                    messages.append({"role": "user", "content": _reminder})
+                    logger.info(
+                        "MID-INJ: injected mid-run user message as system-reminder "
+                        "(round=%d, len=%d)",
+                        _current_round,
+                        len(_inj_text),
+                    )
+        except Exception as _inj_err:
+            logger.debug("MID-INJ: injection skipped (non-fatal): %s", _inj_err)
+
     # Determine model/provider
     provider = None
     model = None
@@ -689,25 +884,104 @@ async def perception_node(state: Mapping[str, Any], config: Any) -> Dict[str, An
         except Exception:
             pass
 
+    # GAP-10: Warn once on round 0 when the context window is suspiciously small
+    # for SMALL/FRONTIER models.  The primary trigger is Gemma 4 E4B running in
+    # LM Studio with the default n_ctx=7168 — the model supports 128K but the
+    # slot configuration limits it to 7168, causing context overflow within a
+    # few turns.  Published as ui.notification (warning) so the TUI toast fires.
+    _rounds_now = state.get("rounds") or 0
+    if _rounds_now == 0 and _model_tier_str in ("small", "frontier"):
+        try:
+            _ctx_win = 0
+            if adapter and hasattr(adapter, "context_window"):
+                _ctx_win = int(adapter.context_window or 0)
+            # 16384 = 16K threshold: anything below this for a SMALL/FRONTIER
+            # model is almost certainly a misconfigured slot, not intentional.
+            if 0 < _ctx_win < 16384:
+                _warn_msg = (
+                    f"Context window is very small ({_ctx_win:,} tokens) for "
+                    f"{model}. "
+                    f"The model supports up to 128K\u2013256K tokens. "
+                    f"Increase n_ctx in LM Studio to at least 32768 for better "
+                    f"agentic performance."
+                )
+                logger.warning("GAP-10 context-window warning: %s", _warn_msg)
+                try:
+                    if orchestrator and hasattr(orchestrator, "event_bus"):
+                        orchestrator.event_bus.publish(
+                            "ui.notification",
+                            {
+                                "level": "warning",
+                                "message": _warn_msg,
+                                "source": "context_window_check",
+                            },
+                        )
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
     # GAP-SMALL-4: Clarification guard for NANO/SMALL models on round 0.
     # When the task string is very short (< 8 words) and contains no file
     # references, code identifiers, or clear action verbs, small models are
     # likely to hallucinate a plan.  Return a clarifying question instead of
     # entering the pipeline on a bad premise.
-    _rounds_now = state.get("rounds") or 0
     if _rounds_now == 0 and _model_tier_str in ("nano", "small"):
         _raw_task = (state.get("task") or "").strip()
         _task_words = _raw_task.split()
         _ACTION_VERBS = {
-            "add", "fix", "update", "change", "create", "delete", "remove",
-            "refactor", "write", "read", "run", "test", "debug", "find",
-            "search", "show", "list", "explain", "implement", "build",
-            "install", "deploy", "check", "verify", "move", "rename",
+            "add",
+            "fix",
+            "update",
+            "change",
+            "create",
+            "delete",
+            "remove",
+            "refactor",
+            "write",
+            "read",
+            "run",
+            "test",
+            "debug",
+            "find",
+            "search",
+            "show",
+            "list",
+            "explain",
+            "implement",
+            "build",
+            "install",
+            "deploy",
+            "check",
+            "verify",
+            "move",
+            "rename",
+            # GAP-SMALL-4 fix: common summarization / information verbs that
+            # were missing and caused "summarize the project readme" to be
+            # misclassified as ambiguous, triggering unnecessary clarification.
+            "summarize",
+            "summary",
+            "describe",
+            "review",
+            "analyse",
+            "analyze",
+            "generate",
+            "print",
+            "display",
+            "get",
+            "fetch",
+            "make",
+            "set",
         }
         _has_action = any(w.lower() in _ACTION_VERBS for w in _task_words)
         _has_file_ref = bool(re.search(r"\w+\.\w+|/\w+|\w+\.py\b", _raw_task))
         _has_code_id = bool(re.search(r"`[^`]+`|\"[A-Za-z_]\w+\"", _raw_task))
-        if len(_task_words) < 8 and not _has_action and not _has_file_ref and not _has_code_id:
+        if (
+            len(_task_words) < 8
+            and not _has_action
+            and not _has_file_ref
+            and not _has_code_id
+        ):
             logger.info(
                 "perception_node: GAP-SMALL-4 ambiguous task detected for small model, "
                 "returning clarification prompt (task=%r, words=%d)",
@@ -729,8 +1003,6 @@ async def perception_node(state: Mapping[str, Any], config: Any) -> Dict[str, An
                 "empty_response_count": 0,
                 **({"model_tier": _model_tier_str} if _model_tier_str else {}),
             }
-
-    # Determine deterministic overrides if orchestrator requests them
     llm_kwargs = {}
     try:
         if orchestrator and getattr(orchestrator, "deterministic", False):
@@ -880,7 +1152,7 @@ async def perception_node(state: Mapping[str, Any], config: Any) -> Dict[str, An
             "errors=['context_overflow'] will route to memory_sync"
         )
         return {
-            "history": [],          # nothing new to append (operator.add)
+            "history": [],  # nothing new to append (operator.add)
             "_compacted_history": _truncated,  # replace-semantics: sets compacted base
             "next_action": None,
             "rounds": state.get("rounds", 0) + 1,
@@ -939,17 +1211,22 @@ async def perception_node(state: Mapping[str, Any], config: Any) -> Dict[str, An
                 logger.debug(f"Token tracking error: {e}")
 
         # Context overflow detection with reserved buffer (mirrors opencode's 20k reserve).
-        # If the prompt already consumed more than (context_budget - RESERVED_OUTPUT_BUFFER)
+        # If the prompt already consumed more than (context_window - RESERVED_OUTPUT_BUFFER)
         # tokens, the next round will almost certainly exceed the model's context window.
         # Trigger compaction now rather than waiting for a truncation error.
+        #
+        # OP-4: Use get_actual_context_window() instead of get_context_budget() so
+        # the overflow threshold reflects the real hard limit (e.g. 200K for Gemma 4)
+        # rather than the 0.65×window budget capped at 131K.  A 200K model would never
+        # trigger overflow detection under the old cap even when the prompt was at 180K.
         try:
-            from src.core.inference.provider_context import get_context_budget
+            from src.core.inference.provider_context import get_actual_context_window
 
             _prompt_tokens = _resp_prompt_tokens
             _RESERVED_OUTPUT_BUFFER = (
                 4096  # tokens reserved for model to generate output
             )
-            _budget = get_context_budget()
+            _budget = get_actual_context_window()
             _available = _budget - _RESERVED_OUTPUT_BUFFER
             if _prompt_tokens > 0 and _prompt_tokens >= _available:
                 logger.warning(
@@ -968,7 +1245,7 @@ async def perception_node(state: Mapping[str, Any], config: Any) -> Dict[str, An
                             "context.overflow",
                             {
                                 "prompt_tokens": _prompt_tokens,
-                                "budget": _budget,
+                                "context_window": _budget,
                                 "reserved": _RESERVED_OUTPUT_BUFFER,
                                 "session_id": state.get("session_id"),
                             },
@@ -1022,11 +1299,19 @@ async def perception_node(state: Mapping[str, Any], config: Any) -> Dict[str, An
     empty_response_count = int(state.get("empty_response_count") or 0)
     content_stripped = content.strip() if content else ""
 
+    # P1-C fix: Use strip_thinking() (re.sub DOTALL) to correctly remove the full
+    # <think>...</think> block including its content.  The old .replace("<think>","")
+    # approach only removed the tag markers, leaving the reasoning text behind — so a
+    # thinking-only response like "<think>plan here</think>" was NOT detected as empty.
+    try:
+        from src.core.inference.thinking_utils import strip_thinking as _strip_thinking
+
+        _content_no_thinking = _strip_thinking(content_stripped)
+    except Exception:
+        _content_no_thinking = content_stripped
+
     # Check if content is empty or just contains thinking blocks
-    is_empty_response = (
-        not content_stripped
-        or content_stripped.replace("<think>", "").replace("</think>", "").strip() == ""
-    )
+    is_empty_response = not content_stripped or not _content_no_thinking
 
     if is_empty_response:
         empty_response_count += 1
@@ -1035,10 +1320,22 @@ async def perception_node(state: Mapping[str, Any], config: Any) -> Dict[str, An
             f"perception_node: Empty/stripped response (count: {empty_response_count})"
         )
 
-        # After 3 consecutive empty responses, force stop the loop
-        if empty_response_count >= 3:
+        # P1-D: Tier-aware corrective attempt cap.
+        # Smaller models don't recover from repeated empty responses — fail faster
+        # so the user sees an error instead of wasting N extra LLM calls.
+        # NANO→1, SMALL→2, MEDIUM→3, LARGE/FRONTIER→3 (larger models can be coaxed)
+        _tier_str_lower = (_model_tier_str or "").lower()
+        if _tier_str_lower == "nano":
+            _max_corrective = 1
+        elif _tier_str_lower == "small":
+            _max_corrective = 2
+        else:
+            _max_corrective = 3
+
+        if empty_response_count >= _max_corrective:
             logger.error(
-                "perception_node: 3 consecutive empty responses - breaking loop"
+                f"perception_node: {_max_corrective} consecutive empty responses "
+                f"(tier={_tier_str_lower}) - breaking loop"
             )
             return {
                 "history": state.get("history", []),
@@ -1046,18 +1343,20 @@ async def perception_node(state: Mapping[str, Any], config: Any) -> Dict[str, An
                 "rounds": state.get("rounds", 0) + 1,
                 "last_result": {
                     "ok": False,
-                    "error": "Infinite loop detected: model produced 3 consecutive empty responses",
+                    "error": (
+                        f"Model produced {_max_corrective} consecutive empty responses "
+                        f"(tier={_tier_str_lower or 'unknown'}). Task aborted."
+                    ),
                 },
                 "errors": ["infinite_loop_empty_response"],
                 "empty_response_count": 0,
             }
 
-        # Inject corrective prompt for empty responses
-        corrective_prompt = (
-            "\n\n<system_reminder>\n"
-            "You must output a valid YAML tool call. Do not output empty responses or thinking blocks only.\n"
-            "If you cannot determine the next action, use the 'respond' tool to explain what you need.\n"
-            "</system_reminder>\n"
+        # Inject corrective prompt for empty responses (graduated based on attempts)
+        corrective_prompt = _select_corrective_prompt(
+            attempt=empty_response_count,
+            model_tier=_model_tier_str,
+            truncated_yaml=False,
         )
         # FIX: Return only NEW messages for LangGraph to append, not the full history
         new_messages = [
@@ -1068,6 +1367,25 @@ async def perception_node(state: Mapping[str, Any], config: Any) -> Dict[str, An
                 + "\n\nPlease provide a valid YAML tool call for your next action.",
             },
         ]
+        # Emit telemetry/event for corrective prompt issuance
+        try:
+            if orchestrator and hasattr(orchestrator, "event_bus"):
+                evt = {
+                    "session_id": state.get("session_id"),
+                    "attempt": empty_response_count,
+                    "reason": "empty_response",
+                    "truncated_yaml": False,
+                    "model_tier": _model_tier_str,
+                }
+                try:
+                    orchestrator.event_bus.publish("perception.corrective_prompt", evt)
+                except Exception:
+                    # Some test harnesses use MagicMock without publish; tolerate both
+                    pub = getattr(orchestrator.event_bus, "publish", None)
+                    if callable(pub):
+                        pub("perception.corrective_prompt", evt)
+        except Exception:
+            pass
 
         return {
             "history": new_messages,
@@ -1137,7 +1455,19 @@ async def perception_node(state: Mapping[str, Any], config: Any) -> Dict[str, An
             and "tool_execution_result" not in content
             and '"tool_execution_result"' not in content
         ):
-            tool_call = parse_tool_block(content)
+            # P1-C fix: Try parsing on thinking-stripped content first so that a
+            # response of "<think>reasoning</think>\n```yaml\n..." succeeds on the
+            # first attempt instead of requiring a corrective-prompt round-trip.
+            try:
+                from src.core.inference.thinking_utils import strip_thinking as _st
+
+                _stripped_for_parse = _st(content)
+                if _stripped_for_parse:
+                    tool_call = parse_tool_block(_stripped_for_parse)
+            except Exception:
+                _stripped_for_parse = content
+            if not tool_call:
+                tool_call = parse_tool_block(content)
         elif not tool_call:
             logger.info(
                 "perception_node: skipping parse_tool_block because content contains tool_execution_result"
@@ -1190,9 +1520,18 @@ async def perception_node(state: Mapping[str, Any], config: Any) -> Dict[str, An
     # ULTIMATE FALLBACK: If tool_call is None and content was supposed to have YAML,
     # treat as empty to trigger loop breaker
     content_stripped = content.strip() if content else ""
-    thinking_only = (
-        content_stripped.replace("<think>", "").replace("</think>", "").strip() == ""
-    )
+    # P1-C fix: use the already-computed _content_no_thinking (strip_thinking result)
+    # so thinking-only responses are correctly flagged here too.
+    try:
+        _no_think_post = _content_no_thinking  # set earlier in this function
+    except NameError:
+        try:
+            from src.core.inference.thinking_utils import strip_thinking as _st2
+
+            _no_think_post = _st2(content_stripped)
+        except Exception:
+            _no_think_post = content_stripped
+    thinking_only = not _no_think_post
 
     # Completion detection: if the model output looks like a task-completion summary
     # (RESULT/STATUS format, or "task is complete" phrasing) rather than a tool call,
@@ -1250,9 +1589,20 @@ async def perception_node(state: Mapping[str, Any], config: Any) -> Dict[str, An
             f"perception_node: No tool call extracted (count: {empty_response_count})"
         )
 
-        if empty_response_count >= 3:
+        # P1-D: Tier-aware corrective attempt cap (mirrors the cap in the REACT-OVF
+        # path above).  NANO→1, SMALL→2, MEDIUM+→3.
+        _tier_str_lower_2 = (_model_tier_str or "").lower()
+        if _tier_str_lower_2 == "nano":
+            _max_corrective_2 = 1
+        elif _tier_str_lower_2 == "small":
+            _max_corrective_2 = 2
+        else:
+            _max_corrective_2 = 3
+
+        if empty_response_count >= _max_corrective_2:
             logger.error(
-                "perception_node: 3 consecutive failed tool extractions - breaking loop"
+                f"perception_node: {_max_corrective_2} consecutive failed tool extractions "
+                f"(tier={_tier_str_lower_2}) - breaking loop"
             )
             return {
                 "history": [{"role": "assistant", "content": content or ""}],
@@ -1260,30 +1610,19 @@ async def perception_node(state: Mapping[str, Any], config: Any) -> Dict[str, An
                 "rounds": state.get("rounds", 0) + 1,
                 "last_result": {
                     "ok": False,
-                    "error": "Infinite loop detected: model failed to generate valid tool calls 3 times",
+                    "error": f"Infinite loop detected: model failed to generate valid tool calls {_max_corrective_2} times",
                 },
                 "errors": ["infinite_loop_no_tool"],
                 "empty_response_count": 0,
             }
 
         # Inject corrective prompt — context-window-aware when YAML was truncated
-        if _is_truncated_yaml:
-            corrective_prompt = (
-                "\n\n<system_reminder>\n"
-                "Your response was cut off because the context window is full. "
-                "Output a MINIMAL YAML tool call — tool name and at most 2 arguments. "
-                "Keep your entire response under 50 tokens. No thinking. No preamble.\n"
-                "```yaml\nname: tool_name\narguments:\n  key: value\n```\n"
-                "</system_reminder>\n"
-            )
-        else:
-            corrective_prompt = (
-                "\n\n<system_reminder>\n"
-                "CRITICAL: You MUST output a valid YAML tool call block. "
-                "Format:\n```yaml\nname: tool_name\narguments:\n  key: value\n```\n"
-                "Do NOT output thinking blocks only. Do NOT output empty content.\n"
-                "</system_reminder>\n"
-            )
+        # Use a graduated corrective prompt (truncated YAML path is a special case)
+        corrective_prompt = _select_corrective_prompt(
+            attempt=empty_response_count,
+            model_tier=_model_tier_str,
+            truncated_yaml=bool(_is_truncated_yaml),
+        )
         new_messages = [
             {"role": "assistant", "content": content or ""},
             {
@@ -1292,6 +1631,24 @@ async def perception_node(state: Mapping[str, Any], config: Any) -> Dict[str, An
                 + "\n\nProvide a valid YAML tool call now.",
             },
         ]
+        # Emit telemetry/event for corrective prompt issuance (truncated YAML or no-tool)
+        try:
+            if orchestrator and hasattr(orchestrator, "event_bus"):
+                evt = {
+                    "session_id": state.get("session_id"),
+                    "attempt": empty_response_count,
+                    "reason": "truncated_yaml" if _is_truncated_yaml else "no_tool",
+                    "truncated_yaml": bool(_is_truncated_yaml),
+                    "model_tier": _model_tier_str,
+                }
+                try:
+                    orchestrator.event_bus.publish("perception.corrective_prompt", evt)
+                except Exception:
+                    pub = getattr(orchestrator.event_bus, "publish", None)
+                    if callable(pub):
+                        pub("perception.corrective_prompt", evt)
+        except Exception:
+            pass
         return {
             "history": new_messages,
             "next_action": None,
@@ -1321,6 +1678,10 @@ async def perception_node(state: Mapping[str, Any], config: Any) -> Dict[str, An
         "rounds": state.get("rounds", 0) + 1,
         "turn_count": turn_count,
         "empty_response_count": empty_response_count,
+        # CF-1 fix: clear errors from prior turns so stale context_overflow (or any
+        # previous error) does not propagate into the next graph round and cause
+        # route_after_perception to mis-route to memory_sync without doing anything.
+        "errors": [],
         **_overflow_compaction,
     }
 
@@ -1343,7 +1704,9 @@ async def perception_node(state: Mapping[str, Any], config: Any) -> Dict[str, An
         if _snap_mgr is not None:
             _snap_hash = await _snap_mgr.track()
             if _snap_hash:
-                _prior_snaps = list(state.get("snapshots") or [])
+                # P1-G: cap snapshots to the most recent 10 entries to prevent
+                # unbounded list growth over a long multi-task session.
+                _prior_snaps = list(state.get("snapshots") or [])[-9:]
                 _prior_snaps.append(_snap_hash)
                 result["snapshots"] = _prior_snaps
     except Exception:
@@ -1382,7 +1745,9 @@ async def perception_node(state: Mapping[str, Any], config: Any) -> Dict[str, An
     # CP6-PERSIST: Write the new compacted snapshot back to AgentState so the
     # next turn starts from the compacted base rather than re-compacting the
     # ever-growing raw history.
+    # P2-C: Also record the round number for the min-gap cooldown.
     if _new_compacted_history is not None:
         result["_compacted_history"] = _new_compacted_history
+        result["_compaction_last_round"] = int(state.get("rounds") or 0)
 
     return result

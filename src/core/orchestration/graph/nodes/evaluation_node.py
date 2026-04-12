@@ -167,7 +167,9 @@ async def evaluation_node(state: Mapping[str, Any], config: Any) -> Dict[str, An
                     {
                         "role": "user",
                         "content": (
-                            f"Task: {state.get('task', '')}\n\n"
+                            # DOOM-LOOP FIX: use original_task as authoritative task
+                            # string; state["task"] may have been clobbered by planning_node.
+                            f"Task: {state.get('original_task') or state.get('task', '')}\n\n"
                             f"Plan executed:\n{json.dumps(current_plan, indent=2)}\n\n"
                             f"Verification result: {json.dumps(verification_result)}\n\n"
                             "Did the agent accomplish the task? Reply PASS or FAIL."

@@ -20,11 +20,95 @@ from src.core.orchestration.loop_guards import (
     MODIFYING_TOOLS,  # single source of truth (includes manage_todo — TS-5)
     RECENT_CALLS_WINDOW as _RECENT_CALLS_WINDOW,
 )
+from src.core.orchestration.event_bus import run_with_correlation
+
+# Gap 8: OTel tracing — no-op when opentelemetry-sdk is not installed.
+try:
+    from src.core.telemetry.tracer import span_node as _otel_span_node
+
+    _HAS_TRACER = True
+except Exception:
+    _otel_span_node = None  # type: ignore[assignment]
+    _HAS_TRACER = False
+
+
+def _span_node(name: str, attributes: "dict | None" = None):
+    """Thin wrapper: delegates to OTel span_node or returns a no-op context."""
+    if _HAS_TRACER and _otel_span_node is not None:
+        return _otel_span_node(name, attributes)
+    import contextlib
+
+    return contextlib.nullcontext()
+
+
+# Gap 3: Plugin hooks — lazy import so the registry is not required at import time.
+try:
+    from src.core.plugin.hook_registry import (
+        registry as _hook_registry,
+        HOOK_TOOL_RESULT as _HOOK_TOOL_RESULT,
+    )
+
+    _HAS_HOOKS = True
+except Exception:
+    _hook_registry = None  # type: ignore[assignment]
+    _HOOK_TOOL_RESULT = "tool.result"
+    _HAS_HOOKS = False
+
 
 logger = logging.getLogger(__name__)
 
 # D-11: Named constants — avoids magic numbers scattered through the node body.
 _EXECUTION_MAX_PROMPT_TOKENS = 4000  # token budget passed to ContextBuilder
+
+# OP-9: Safety-net cap on serialized tool output entering LLM history.
+# Individual tools already truncate internally (bash at ~16KB, read_file at 50K chars);
+# this catches edge cases (large glob results, git diffs, combined fields).
+_TOOL_OUTPUT_MAX_BYTES = 50_000
+# Fields that typically carry large text payloads, in descending priority for truncation.
+_TOOL_LARGE_TEXT_FIELDS = ("output", "content", "diff", "text", "stdout", "stderr")
+
+
+def _truncate_tool_output(res: dict) -> dict:
+    """OP-9: Cap any large text fields in a tool result before it enters history.
+
+    Returns the original dict unchanged when under the limit; returns a shallow
+    copy with the largest text field(s) trimmed when over the limit.
+    """
+    try:
+        serialized = json.dumps(res, default=str)
+    except Exception:
+        return res
+    if len(serialized.encode("utf-8", errors="replace")) <= _TOOL_OUTPUT_MAX_BYTES:
+        return res
+
+    truncated = dict(res)
+    for field in _TOOL_LARGE_TEXT_FIELDS:
+        val = truncated.get(field)
+        if not isinstance(val, str) or len(val) < 500:
+            continue
+        try:
+            current_size = len(
+                json.dumps(truncated, default=str).encode("utf-8", errors="replace")
+            )
+        except Exception:
+            break
+        if current_size <= _TOOL_OUTPUT_MAX_BYTES:
+            break
+        excess = current_size - _TOOL_OUTPUT_MAX_BYTES
+        new_len = max(200, len(val) - excess - 80)
+        omitted = len(val) - new_len
+        truncated[field] = (
+            val[:new_len]
+            + f"\n…[OP-9: {omitted} chars truncated — output exceeded 50 KB limit]"
+        )
+        truncated["_output_truncated"] = True
+        logger.debug(
+            "_truncate_tool_output: truncated field=%r by %d chars (was %d B over limit)",
+            field,
+            omitted,
+            excess,
+        )
+    return truncated
 
 
 def _inc_step_retry(state: Mapping[str, Any], current_step: int) -> dict:
@@ -35,8 +119,39 @@ def _inc_step_retry(state: Mapping[str, Any], current_step: int) -> dict:
     return counts
 
 
+# P2-B: Tiers that benefit from offloading execute_tool to a thread pool.
+# NANO/SMALL primarily run fast read tools (<100 ms); the threading overhead
+# (Task creation, context switch) exceeds the savings.  MEDIUM+ may run bash
+# commands, pytest, git operations that block for seconds.
+_ASYNC_TOOL_TIERS = frozenset(("medium", "large", "frontier"))
+
+
+async def _dispatch_tool(
+    orchestrator: Any,
+    action: Dict[str, Any],
+    model_tier: str = "",
+) -> Dict[str, Any]:
+    """P2-B: Dispatch a synchronous tool call without blocking the event loop.
+
+    For MEDIUM/LARGE/FRONTIER, delegates to ``asyncio.to_thread`` so the event
+    loop remains responsive during long-running tools (bash, pytest, git).
+    For NANO/SMALL, calls synchronously — the tools are fast enough that
+    thread overhead is not worth it.
+    """
+    if model_tier.lower() in _ASYNC_TOOL_TIERS:
+        # Propagate ContextVars (correlation id etc.) into the worker thread
+        loop = asyncio.get_running_loop()
+        return await run_with_correlation(loop, None, orchestrator.execute_tool, action)
+    return orchestrator.execute_tool(action)
+
+
 async def _execute_tool_with_locks(
-    tool_name: str, args: Dict, lock_manager, orchestrator: Any, agent_id: str = "main"
+    tool_name: str,
+    args: Dict,
+    lock_manager: Any,
+    orchestrator: Any,
+    agent_id: str = "main",
+    model_tier: str = "",
 ) -> Dict:
     """
     Execute a tool with file locking for PRSW.
@@ -64,7 +179,19 @@ async def _execute_tool_with_locks(
                 await lock_manager.acquire_read_async(f, agent_id)
             acquired.append(f)
 
-        result = orchestrator.execute_tool({"name": tool_name, "arguments": args})
+        # P2-B: offload blocking tool dispatch for MEDIUM+ tiers.
+        result = await _dispatch_tool(
+            orchestrator, {"name": tool_name, "arguments": args}, model_tier
+        )
+        # Gap 3: HOOK_TOOL_RESULT — lets plugins observe every tool call outcome.
+        if _HAS_HOOKS and _hook_registry is not None:
+            try:
+                _hook_registry.call(
+                    _HOOK_TOOL_RESULT,
+                    {"tool_name": tool_name, "args": args, "result": result},
+                )
+            except Exception:
+                pass
         return result
 
     except Exception as e:
@@ -91,6 +218,11 @@ async def execution_node(state: Mapping[str, Any], config: Any) -> Dict[str, Any
     Uses the 'operational' role from ContextBuilder (loaded from agent-brain).
     Dynamic skill injection: If len(relevant_files) > 2, injects 'dry' skill.
     """
+    with _span_node("execution", {"step": state.get("current_step", 0)}):
+        return await _execution_node_impl(state, config)
+
+
+async def _execution_node_impl(state: Mapping[str, Any], config: Any) -> Dict[str, Any]:  # noqa: C901
     # Validate state invariants at node entry (D-02: non-fatal, logs on issues)
     validate_state(state)
 
@@ -733,13 +865,21 @@ Generate the appropriate tool call to complete this step. Respond with ONLY a to
     except Exception:
         pass
 
+    _exec_model_tier = state.get("model_tier") or ""
     if lock_manager and (state.get("execution_waves") or state.get("plan_dag")):
         agent_id = state.get("session_id") or "main"
         res = await _execute_tool_with_locks(
-            tool_name, args, lock_manager, orchestrator, agent_id
+            tool_name,
+            args,
+            lock_manager,
+            orchestrator,
+            agent_id,
+            model_tier=_exec_model_tier,
         )
     else:
-        res = orchestrator.execute_tool(action)
+        # P2-B: offload synchronous tool dispatch for MEDIUM+ so the event loop
+        # stays responsive during long-running tools (bash, pytest, git).
+        res = await _dispatch_tool(orchestrator, action, _exec_model_tier)
 
     # TASK-13: Async post-tool hooks — fire-and-forget, non-blocking.
     # The synchronous run_post() inside execute_tool() may block the thread
@@ -814,6 +954,13 @@ Generate the appropriate tool call to complete this step. Respond with ONLY a to
     # Record this tool execution in cooldown tracker (use pre-increment count as key)
     _cooldown_key = f"{tool_name}:{path_arg or ''}"
     _tool_last_used_update[_cooldown_key] = _current_count
+    # P1-G: Cap tool_last_used to prevent unbounded growth over a long session.
+    # Keep only the most recent _MAX_TOOL_LAST_USED entries (highest call-count
+    # values), which are the ones actually queried for cooldown checks.
+    _MAX_TOOL_LAST_USED = 100
+    if len(_tool_last_used_update) > _MAX_TOOL_LAST_USED:
+        _sorted_entries = sorted(_tool_last_used_update.items(), key=lambda x: x[1])
+        _tool_last_used_update = dict(_sorted_entries[-_MAX_TOOL_LAST_USED:])
 
     # Check for multi-step plan completion
     if current_plan and current_step < len(current_plan):
@@ -967,7 +1114,7 @@ Generate the appropriate tool call to complete this step. Respond with ONLY a to
                             "role": "user",
                             "content": json.dumps(
                                 {
-                                    "tool_execution_result": res,
+                                    "tool_execution_result": _truncate_tool_output(res),
                                     "orchestration_hint": "write_required",
                                     "file_path": path_arg,
                                     "enhanced_context": enhanced_context,
@@ -996,8 +1143,14 @@ Generate the appropriate tool call to complete this step. Respond with ONLY a to
     # FIX: Return ONLY the new message as "user" role so ContextBuilder doesn't filter it out.
     # The ContextBuilder filters out non-user/assistant roles, so tool results need to be "user".
     # Also, we must NOT mutate the existing history list in place - LangGraph will duplicate it!
+    # OP-9: Cap the serialized result at 50 KB before it enters LLM context.
     new_messages = [
-        {"role": "user", "content": json.dumps({"tool_execution_result": res})}
+        {
+            "role": "user",
+            "content": json.dumps(
+                {"tool_execution_result": _truncate_tool_output(res)}
+            ),
+        }
     ]
 
     # Phase 2: Patch Size Guard - Intercept requires_split flag

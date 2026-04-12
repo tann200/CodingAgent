@@ -552,6 +552,7 @@ class TestSendPromptConcurrentExecutionPrevention:
         bridge._agent_running = False
         bridge._history_lock = threading.Lock()
         bridge._cancel_event = _MM()
+        bridge._pending_injections = []  # MID-INJ: required by send_prompt
         return bridge
 
     def test_agent_running_flag_initialized_false(self):

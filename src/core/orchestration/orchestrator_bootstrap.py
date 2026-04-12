@@ -47,6 +47,7 @@ from src.core.inference.llm_manager import (
 # Phase 1 — Core infrastructure
 # ---------------------------------------------------------------------------
 
+
 def _init_infrastructure(orch: Any, message_max_tokens: Optional[int]) -> None:
     """Wire MessageManager, thread pools, working directory, and all managers."""
     # Wire the MessageManager with compaction support so dropped messages
@@ -175,6 +176,7 @@ def _init_infrastructure(orch: Any, message_max_tokens: Optional[int]) -> None:
 # Phase 2 — Provider / adapter wiring
 # ---------------------------------------------------------------------------
 
+
 def _init_providers(orch: Any) -> None:
     """Select and activate the LLM provider adapter; publish startup events."""
     pm = None
@@ -233,6 +235,7 @@ def _init_providers(orch: Any) -> None:
 # ---------------------------------------------------------------------------
 # Phase 3 — Event-bus subscriptions
 # ---------------------------------------------------------------------------
+
 
 def _init_event_subscriptions(orch: Any) -> None:
     """Register all event-bus subscribers (provider, session, permission, bash)."""
@@ -392,6 +395,7 @@ def _init_event_subscriptions(orch: Any) -> None:
 # Phase 4 — Service layer
 # ---------------------------------------------------------------------------
 
+
 def _init_services(orch: Any) -> None:
     """Initialise token monitor, preview service, plan mode, cost tracker, and tool service."""
     # async check in background
@@ -481,10 +485,62 @@ def _init_services(orch: Any) -> None:
     # MCP STDIO server (Step 9): instantiated but not started by default.
     orch._mcp_server = None
 
+    # Gap 1: outbound MCP multi-server manager (config-driven).
+    try:
+        from src.core.mcp.manager import McpServerManager
+
+        orch._mcp_manager = McpServerManager(
+            registry=orch.tool_registry,
+            event_bus=orch.event_bus,
+            working_dir=orch.working_dir,
+        )
+        # Public alias consumed by deferred_init (trusted-gated startup).
+        orch.mcp_manager = orch._mcp_manager
+    except Exception:
+        orch._mcp_manager = None
+        orch.mcp_manager = None
+
+    # Gap 2: HTTP/SSE server for multi-client architecture
+    try:
+        from src.server.app import ServerEventBusAdapter, run_server
+        import threading
+
+        # Only start server if enabled via environment variable or config
+        import os
+
+        if os.getenv("CODING_AGENT_HTTP_SERVER", "false").lower() == "true":
+            # Import the server module to set global instances
+            import src.server.app as server_app
+
+            # Register the orchestrator EventBus with the server module so
+            # the server can attach its internal subscribers (metrics, SSE
+            # adapter) rather than assigning globals directly.
+            try:
+                server_app.register_event_bus(orch.event_bus)
+            except Exception:
+                # Fallback: preserve previous behaviour in case register_event_bus
+                # is unavailable for some environment or packaging reason.
+                server_app.event_bus = orch.event_bus
+                server_app.sse_adapter = ServerEventBusAdapter(orch.event_bus)
+
+            # Start server in a background thread
+            server_thread = threading.Thread(
+                target=lambda: run_server(host="127.0.0.1", port=8000), daemon=True
+            )
+            server_thread.start()
+            orch._http_server_thread = server_thread
+            guilogger.info("HTTP/SSE server started on http://127.0.0.1:8000")
+        else:
+            orch._http_server_thread = None
+    except Exception as e:
+        guilogger.warning(f"Failed to start HTTP/SSE server: {e}")
+        orch._http_server_thread = None
+
 
 # ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
+
 
 def bootstrap_orchestrator(orch: Any, message_max_tokens: Optional[int]) -> None:
     """Wire all subsystems onto orch.  Called from Orchestrator.__init__ after
@@ -504,3 +560,11 @@ def bootstrap_orchestrator(orch: Any, message_max_tokens: Optional[int]) -> None
     _init_providers(orch)
     _init_event_subscriptions(orch)
     _init_services(orch)
+
+    # Gap 8: Bridge EventBus topics to OTel span events (no-op when OTel is disabled).
+    try:
+        from src.core.telemetry.tracer import wire_event_bus as _wire_otel
+
+        _wire_otel(orch.event_bus)
+    except Exception:
+        pass

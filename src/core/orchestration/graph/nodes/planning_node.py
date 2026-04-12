@@ -11,6 +11,25 @@ from src.core.inference.llm_manager import call_model
 from src.core.orchestration.graph.nodes.node_utils import _resolve_orchestrator
 from src.core.orchestration.agent_brain import get_agent_brain_manager
 
+# Gap 8: OTel tracing — no-op when opentelemetry-sdk is not installed.
+try:
+    from src.core.telemetry.tracer import span_node as _otel_span_node
+
+    _HAS_TRACER = True
+except Exception:
+    _otel_span_node = None  # type: ignore[assignment]
+    _HAS_TRACER = False
+
+
+def _span_node(name: str, attributes: "dict | None" = None):
+    """Thin wrapper: delegates to OTel span_node or returns a no-op context."""
+    if _HAS_TRACER and _otel_span_node is not None:
+        return _otel_span_node(name, attributes)
+    import contextlib
+
+    return contextlib.nullcontext()
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -57,6 +76,11 @@ async def planning_node(state: Mapping[str, Any], config: Any) -> Dict[str, Any]
     Planning Layer: Converts perception outputs into a structured plan.
     Uses the 'strategic' role from ContextBuilder (loaded from agent-brain).
     """
+    with _span_node("planning", {"plan_attempts": state.get("plan_attempts", 0)}):
+        return await _planning_node_impl(state, config)
+
+
+async def _planning_node_impl(state: Mapping[str, Any], config: Any) -> Dict[str, Any]:  # noqa: C901
     # P1-2: Increment inner planning-loop counter FIRST so all return paths carry it
     plan_attempts = int(state.get("plan_attempts") or 0) + 1
 
@@ -180,10 +204,15 @@ async def planning_node(state: Mapping[str, Any], config: Any) -> Dict[str, Any]
         step_desc = ""
         if current_step < len(current_plan):
             step_desc = str(current_plan[current_step].get("description", ""))
+        # DOOM-LOOP FIX: Do NOT set "task": step_desc here.
+        # Overwriting state["task"] with the step description caused cascading
+        # "Task: Task: Task:..." prefix accumulation across debug/replan cycles.
+        # The original task is preserved in state["task"] and state["original_task"].
+        # The step description is communicated via state["step_description"] instead.
         return {
             "current_plan": current_plan,
             "current_step": current_step,
-            "task": step_desc,
+            "step_description": step_desc,
             "task_decomposed": True,
             "plan_attempts": plan_attempts,
             "plan_mode_approved": None,
@@ -298,7 +327,10 @@ async def planning_node(state: Mapping[str, Any], config: Any) -> Dict[str, Any]
         # GAP-FRONTIER-6: Tier-dependent step limit — frontier models can plan more steps.
         _plan_step_limit = 8  # default (MEDIUM / unknown)
         try:
-            from src.core.inference.model_tiers import ModelTier, get_plan_step_limit as _gsl
+            from src.core.inference.model_tiers import (
+                ModelTier,
+                get_plan_step_limit as _gsl,
+            )
 
             _mt = state.get("model_tier")
             _plan_step_limit = _gsl(ModelTier(_mt)) if _mt else 8

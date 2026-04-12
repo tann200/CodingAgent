@@ -75,6 +75,22 @@ except Exception:
     _register_tool_gate = None  # type: ignore[assignment]
     _tool_denied_map = None  # type: ignore[assignment]
 
+try:
+    from src.core.orchestration.permission_policy import (
+        get_permission_policy as _get_permission_policy,
+        PermissionPolicy as _PermissionPolicy,
+        Behavior as _Behavior,
+    )
+except Exception:
+    _get_permission_policy = None  # type: ignore[assignment]
+    _PermissionPolicy = None  # type: ignore[assignment]
+    _Behavior = None  # type: ignore[assignment]
+
+try:
+    from src.tools.permission_context import get_permission_context as _get_permission_context
+except Exception:
+    _get_permission_context = None  # type: ignore[assignment]
+
 logger = logging.getLogger(__name__)
 
 # Ordering of permission levels from least to most permissive.
@@ -179,6 +195,11 @@ class PermissionGateway:
         if result.blocked:
             return result
 
+        # TASK-4: Gate 2b — PermissionPolicy rule evaluation (DENY/ASK/ALLOW)
+        result = self._gate2b_policy_rules(name, args)
+        if result.blocked:
+            return result
+
         needs_gate, result = self._gate3_permission_level(name, args)
         if result.blocked:
             return result
@@ -249,6 +270,79 @@ class PermissionGateway:
                     )
             except Exception:
                 pass
+        return PermissionResult(allowed=True)
+
+    def _gate2b_policy_rules(self, name: str, args: Dict[str, Any]) -> PermissionResult:
+        """Gate 2b: Evaluate user/project PermissionPolicy rules (TASK-4).
+
+        Loads the user-level singleton policy (``~/.coding_agent/permissions.json``)
+        and, when a project working directory is set, merges it with the project-level
+        policy (``.agent-context/permissions.json``).  Project rules are appended
+        last so they win under last-matching-wins semantics.
+
+        DENY  → return blocked PermissionResult immediately.
+        ASK   → delegate to ``_gate5_user_approval()`` (reuses TUI event flow).
+        ALLOW → return allowed, continue to Gate 3.
+
+        Exceptions are caught and silently ignored so a broken or absent policy
+        file never prevents a tool from running.
+        """
+        if _get_permission_policy is None or _Behavior is None:
+            return PermissionResult(allowed=True)
+
+        try:
+            policy = _get_permission_policy()
+
+            # Merge with project-level permissions.json when present.
+            _wd = getattr(self._orch, "working_dir", None)
+            if _wd is not None and _PermissionPolicy is not None:
+                try:
+                    from pathlib import Path as _Path
+                    _proj_path = _Path(_wd) / ".agent-context" / "permissions.json"
+                    if _proj_path.exists():
+                        _proj_policy = _PermissionPolicy.load(_proj_path)
+                        if len(_proj_policy) > 0:
+                            # Project rules appended last so they take precedence.
+                            merged_rules = list(policy) + list(_proj_policy)
+                            policy = _PermissionPolicy(
+                                rules=merged_rules,
+                                default_behavior=policy._default,
+                            )
+                except Exception:
+                    pass
+
+            # Gather CLI context (may be None if not configured).
+            cli_ctx = None
+            if _get_permission_context is not None:
+                try:
+                    cli_ctx = _get_permission_context()
+                except Exception:
+                    pass
+
+            behavior = policy.combined_check(name, cli_context=cli_ctx)
+
+            if behavior == _Behavior.DENY:
+                return PermissionResult(
+                    allowed=False,
+                    gate=2,
+                    reason=f"PermissionPolicy denied tool '{name}'",
+                    rejection={
+                        "ok": False,
+                        "error": (
+                            f"Tool '{name}' is blocked by a permission policy rule. "
+                            "Edit ~/.coding_agent/permissions.json or "
+                            ".agent-context/permissions.json to change this."
+                        ),
+                    },
+                )
+
+            if behavior == _Behavior.ASK:
+                # Reuse Gate 5's interactive TUI-event flow.
+                return self._gate5_user_approval(name, args)
+
+        except Exception:
+            pass  # policy failures must never block tool execution
+
         return PermissionResult(allowed=True)
 
     def _gate3_permission_level(

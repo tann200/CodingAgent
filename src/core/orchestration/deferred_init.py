@@ -96,13 +96,27 @@ async def run_deferred_init(
 
     logger.info("deferred_init: trusted workspace — starting optional subsystems")
 
-    # ── 1. MCP stdio server ──────────────────────────────────────────────────
+    # ── 1. MCP server(s) ─────────────────────────────────────────────────────
     try:
-        mcp_server = getattr(orchestrator, "mcp_server", None)
-        if mcp_server is not None and hasattr(mcp_server, "start"):
-            await mcp_server.start()
+        # Preferred: outbound MCP manager (Gap 1 multi-server support).
+        _attrs = (
+            getattr(orchestrator, "__dict__", {}) if orchestrator is not None else {}
+        )
+        mcp_manager = _attrs.get("mcp_manager")
+        if mcp_manager is None:
+            mcp_manager = _attrs.get("_mcp_manager")
+
+        if mcp_manager is not None and hasattr(mcp_manager, "start"):
+            await mcp_manager.start()
             result.mcp_started = True
-            logger.info("deferred_init: MCP server started")
+            logger.info("deferred_init: MCP manager started")
+        else:
+            # Backward-compat fallback: legacy single mcp_server.start().
+            mcp_server = getattr(orchestrator, "mcp_server", None)
+            if mcp_server is not None and hasattr(mcp_server, "start"):
+                await mcp_server.start()
+                result.mcp_started = True
+                logger.info("deferred_init: MCP server started")
     except Exception as exc:
         msg = f"MCP server start failed: {exc}"
         result.errors.append(msg)

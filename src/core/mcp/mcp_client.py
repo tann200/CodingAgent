@@ -36,7 +36,7 @@ import asyncio
 import json
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +88,22 @@ class McpStdioClient:
         self._pending: Dict[int, asyncio.Future] = {}
         self._reader_task: Optional[asyncio.Task] = None
         self._connected: bool = False
+        self._notification_handlers: List[
+            Callable[[str, Dict[str, Any]], Optional[Awaitable[None]]]
+        ] = []
+
+    def add_notification_handler(
+        self,
+        handler: Callable[[str, Dict[str, Any]], Optional[Awaitable[None]]],
+    ) -> None:
+        """Register a callback for inbound server notifications.
+
+        The handler receives ``(method, params)`` for JSON-RPC notifications
+        where the server message has a ``method`` field and no ``id``.
+        """
+        if not callable(handler):
+            raise TypeError("notification handler must be callable")
+        self._notification_handlers.append(handler)
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -241,13 +257,22 @@ class McpStdioClient:
                 return {"ok": False, "error": result.error}
 
             try:
-                registry.register(
-                    name=tool_name,
-                    fn=_async_call,
-                    description=tool_def.description,
-                    schema=tool_def.input_schema,
-                    origin="mcp",
-                )
+                try:
+                    # Preferred path for src.tools._registry.ToolRegistry
+                    registry.register(
+                        name=tool_name,
+                        fn=_async_call,
+                        description=tool_def.description,
+                        schema=tool_def.input_schema,
+                        origin="mcp",
+                    )
+                except TypeError:
+                    # Backward-compat path for orchestration ToolRegistry
+                    registry.register(
+                        name=tool_name,
+                        fn=_async_call,
+                        description=tool_def.description,
+                    )
                 count += 1
             except Exception as exc:
                 logger.warning(
@@ -344,6 +369,24 @@ class McpStdioClient:
                         fut.set_exception(RuntimeError(str(msg["error"])))
                     else:
                         fut.set_result(msg.get("result", {}))
+                else:
+                    method = msg.get("method")
+                    if method and isinstance(method, str):
+                        params = msg.get("params")
+                        if not isinstance(params, dict):
+                            params = {}
+                        for handler in list(self._notification_handlers):
+                            try:
+                                maybe_coro = handler(method, params)
+                                if asyncio.iscoroutine(maybe_coro):
+                                    await maybe_coro
+                            except Exception as notify_exc:
+                                logger.debug(
+                                    "mcp_client[%s]: notification handler error (%s): %s",
+                                    self.name,
+                                    method,
+                                    notify_exc,
+                                )
         except asyncio.CancelledError:
             pass
         except Exception as exc:
@@ -354,3 +397,79 @@ class McpStdioClient:
                 if not fut.done():
                     fut.set_exception(RuntimeError("MCP client disconnected"))
             self._pending.clear()
+
+
+# ---------------------------------------------------------------------------
+# TASK-9 / TASK-10: Multi-transport factory
+# ---------------------------------------------------------------------------
+
+
+def create_mcp_client(
+    name: str,
+    *,
+    cmd: Optional[List[str]] = None,
+    url: Optional[str] = None,
+    headers: Optional[Dict[str, Any]] = None,
+) -> Any:
+    """Return the appropriate MCP client for the given transport.
+
+    Transport selection:
+    - If *cmd* is provided → stdio transport (``McpStdioClient``).
+    - If *url* starts with ``ws://`` or ``wss://`` → WebSocket transport
+      (``McpWsClient``).
+    - If *url* starts with ``http://`` or ``https://`` → SSE transport
+      (``McpSseClient``).
+
+    Parameters
+    ----------
+    name:
+        Human-readable server name used as tool origin tag.
+    cmd:
+        Command to launch the MCP server subprocess (stdio transport).
+    url:
+        URL of the MCP server (SSE or WebSocket transport).
+    headers:
+        Optional extra HTTP headers (SSE / WebSocket only).
+
+    Returns
+    -------
+    McpStdioClient | McpSseClient | McpWsClient
+
+    Raises
+    ------
+    ValueError
+        When neither *cmd* nor *url* is provided, or when the URL scheme is
+        not recognised.
+
+    Examples
+    --------
+    ::
+
+        # stdio
+        client = create_mcp_client("fs", cmd=["npx", "@mcp/server-filesystem", "/tmp"])
+
+        # SSE
+        client = create_mcp_client("remote", url="http://localhost:3000")
+
+        # WebSocket
+        client = create_mcp_client("ws_server", url="ws://localhost:3000/ws")
+    """
+    if cmd is not None:
+        return McpStdioClient(name=name, cmd=cmd)
+
+    if url is not None:
+        scheme = url.split("://", 1)[0].lower() if "://" in url else ""
+        if scheme in ("ws", "wss"):
+            from src.core.mcp.mcp_ws_client import McpWsClient
+            return McpWsClient(name=name, url=url, headers=headers)
+        if scheme in ("http", "https"):
+            from src.core.mcp.mcp_sse_client import McpSseClient
+            return McpSseClient(name=name, url=url, headers=headers)
+        raise ValueError(
+            f"create_mcp_client: unrecognised URL scheme {scheme!r} in {url!r}. "
+            "Expected http://, https://, ws://, or wss://."
+        )
+
+    raise ValueError(
+        "create_mcp_client: provide either 'cmd' (stdio) or 'url' (SSE/WebSocket)."
+    )

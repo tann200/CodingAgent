@@ -25,6 +25,8 @@ async def replan_node(state: Mapping[str, Any], config: Any) -> Dict[str, Any]:
     current_step = state.get("current_step") or 0
     # P1-3: Increment inner replan-loop counter
     replan_attempts = int(state.get("replan_attempts") or 0) + 1
+    # P2-A: global recovery cap (shared with debug_node)
+    total_recovery_attempts = int(state.get("total_recovery_attempts") or 0) + 1
 
     orchestrator = _resolve_orchestrator(state, config)
     if orchestrator is None:
@@ -33,6 +35,7 @@ async def replan_node(state: Mapping[str, Any], config: Any) -> Dict[str, Any]:
             "replan_required": None,
             "action_failed": False,
             "replan_attempts": replan_attempts,
+            "total_recovery_attempts": total_recovery_attempts,
             "errors": ["orchestrator not found"],
         }
 
@@ -122,6 +125,7 @@ Respond ONLY with the JSON array, no other text."""
                     "replan_required": None,
                     "action_failed": False,
                     "replan_attempts": replan_attempts,
+                    "total_recovery_attempts": total_recovery_attempts,
                     "errors": ["canceled"],
                 }
             if (
@@ -136,6 +140,7 @@ Respond ONLY with the JSON array, no other text."""
                     "replan_required": None,
                     "action_failed": False,
                     "replan_attempts": replan_attempts,
+                    "total_recovery_attempts": total_recovery_attempts,
                     "errors": [f"llm_timeout:{_replan_llm_timeout}s"],
                 }
             await asyncio.sleep(0.2)
@@ -217,6 +222,7 @@ Respond ONLY with the JSON array, no other text."""
                 "replan_required": None,
                 "action_failed": False,
                 "replan_attempts": replan_attempts,
+                "total_recovery_attempts": total_recovery_attempts,
                 "last_plan_hash": _new_hash,
                 # HR-13 fix: use system role with [internal] prefix to prevent
                 # LLM from interpreting this as a user instruction
@@ -234,6 +240,7 @@ Respond ONLY with the JSON array, no other text."""
                 "replan_required": None,
                 "action_failed": False,
                 "replan_attempts": replan_attempts,
+                "total_recovery_attempts": total_recovery_attempts,
                 "errors": ["Failed to generate smaller steps"],
                 # HR-13 fix: use system role with [internal] prefix
                 "history": [
@@ -250,5 +257,6 @@ Respond ONLY with the JSON array, no other text."""
             "replan_required": None,
             "action_failed": False,
             "replan_attempts": replan_attempts,
+            "total_recovery_attempts": total_recovery_attempts,
             "errors": [f"replan failed: {e}"],
         }

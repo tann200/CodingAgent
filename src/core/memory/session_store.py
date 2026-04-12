@@ -643,6 +643,7 @@ class SessionStore:
     def revert_session(
         self,
         session_id: str,
+        snapshot_id: Optional[str] = None,
         keep_messages: bool = False,
     ) -> Dict[str, Any]:
         """Remove all mutable data for *session_id* from the store.
@@ -659,7 +660,17 @@ class SessionStore:
         separately by ``GitSnapshotManager.revert()``; see the orchestrator's
         ``revert_to_snapshot()`` helper which chains both calls.
         """
-        tables: list[tuple[str, bool]] = [
+        # Backwards-compatible: callers may pass the second positional arg as a
+        # boolean (keep_messages) or as a snapshot_id string.  Handle both
+        # forms while also supporting the modern keyword args
+        # revert_session(session_id, snapshot_id=<id>) or revert_session(session_id, keep_messages=True)
+        if isinstance(snapshot_id, bool) and keep_messages is False:
+            # Called as revert_session(session_id, True)
+            keep_messages = bool(snapshot_id)
+            snapshot_id = None
+
+        tables: list[tuple[str, bool]]
+        tables = [
             ("tool_calls", True),
             ("errors", True),
             ("plans", True),
@@ -671,15 +682,59 @@ class SessionStore:
         with self._lock:
             conn = self._get_connection()
             try:
-                for table, do_delete in tables:
-                    if do_delete:
-                        cur = conn.execute(
-                            f"DELETE FROM {table} WHERE session_id = ?",
-                            (session_id,),
+                if snapshot_id is None:
+                    for table, do_delete in tables:
+                        if do_delete:
+                            cur = conn.execute(
+                                f"DELETE FROM {table} WHERE session_id = ?",
+                                (session_id,),
+                            )
+                            deleted[table] = cur.rowcount
+                    conn.commit()
+                    logger.info(
+                        f"SessionStore: reverted session '{session_id}': {deleted}"
+                    )
+                else:
+                    # Revert to snapshot: read snapshot sidecar and truncate messages
+                    snap = self.get_snapshot(session_id, snapshot_id)
+                    if snap is None:
+                        logger.warning(
+                            "SessionStore.revert_session: snapshot '%s' not found for '%s'",
+                            snapshot_id,
+                            session_id,
                         )
-                        deleted[table] = cur.rowcount
-                conn.commit()
-                logger.info(f"SessionStore: reverted session '{session_id}': {deleted}")
+                        return {
+                            "ok": False,
+                            "error": "snapshot not found",
+                            "deleted": deleted,
+                        }
+                    try:
+                        meta = json.loads(snap)
+                        max_msg_id = int(meta.get("_max_message_id", 0))
+                    except Exception as exc:
+                        logger.warning(
+                            "SessionStore.revert_session: bad snapshot metadata: %s",
+                            exc,
+                        )
+                        return {
+                            "ok": False,
+                            "error": "bad snapshot metadata",
+                            "deleted": deleted,
+                        }
+
+                    # Delete messages with id greater than max_msg_id
+                    cur = conn.execute(
+                        "DELETE FROM messages WHERE session_id = ? AND id > ?",
+                        (session_id, max_msg_id),
+                    )
+                    deleted["messages"] = cur.rowcount
+                    conn.commit()
+                    logger.info(
+                        "SessionStore: reverted session '%s' to snapshot '%s': %s",
+                        session_id,
+                        snapshot_id,
+                        deleted,
+                    )
             except Exception as e:
                 conn.rollback()
                 logger.error(f"SessionStore: revert_session failed: {e}")
@@ -782,3 +837,115 @@ class SessionStore:
             except Exception as exc:
                 logger.error("load_session_state: failed: %s", exc)
                 return None
+
+    # ------------------------------------------------------------------
+    # Snapshot sidecar helpers (to mirror JsonlSessionStore behavior)
+    # ------------------------------------------------------------------
+
+    def _snapshot_dir(self) -> Path:
+        return self.workdir / ".agent-context" / "snapshots"
+
+    def _snapshot_path(self, session_id: str, snapshot_id: str) -> Path:
+        return self._snapshot_dir() / f"{session_id}.{snapshot_id}.json"
+
+    def save_snapshot(self, session_id: str, state_json: str) -> str:
+        """Persist a snapshot sidecar and return a snapshot id.
+
+        Records the current max message id so revert can truncate to that point.
+        """
+        snapshot_id = uuid.uuid4().hex
+        with self._lock:
+            conn = self._get_connection()
+            row = conn.execute(
+                "SELECT MAX(id) FROM messages WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+            max_msg_id = int(row[0]) if row and row[0] is not None else 0
+
+        snap_dir = self._snapshot_dir()
+        snap_dir.mkdir(parents=True, exist_ok=True)
+        sidecar = self._snapshot_path(session_id, snapshot_id)
+        payload = {
+            "snapshot_id": snapshot_id,
+            "session_id": session_id,
+            "state_json": state_json,
+            "_max_message_id": max_msg_id,
+            "ts": None,
+        }
+        try:
+            sidecar.write_text(
+                json.dumps(payload, ensure_ascii=False), encoding="utf-8"
+            )
+        except Exception as exc:
+            logger.error("SessionStore.save_snapshot: sidecar write failed: %s", exc)
+        return snapshot_id
+
+    def get_snapshot(self, session_id: str, snapshot_id: str) -> Optional[str]:
+        sidecar = self._snapshot_path(session_id, snapshot_id)
+        if not sidecar.exists():
+            return None
+        try:
+            data = json.loads(sidecar.read_text(encoding="utf-8"))
+            return json.dumps(
+                {
+                    "state_json": data.get("state_json", ""),
+                    "_max_message_id": data.get("_max_message_id", 0),
+                }
+            )
+        except Exception as exc:
+            logger.warning("SessionStore.get_snapshot: failed to read sidecar: %s", exc)
+            return None
+
+
+# ---------------------------------------------------------------------------
+# TASK-8: Storage backend factory
+# ---------------------------------------------------------------------------
+
+
+def get_session_store(workdir: Optional[str] = None) -> Any:
+    """Return the configured session store backend.
+
+    Reads the ``session_backend`` key from the agent config:
+
+    - ``"sqlite"`` (default) — SQLite-backed ``SessionStore``
+    - ``"jsonl"``            — Append-only ``JsonlSessionStore``
+
+    The config key can be set in ``providers.json`` or ``.agent/config.json``::
+
+        {"session_backend": "jsonl"}
+
+    Parameters
+    ----------
+    workdir:
+        Project root directory passed to the chosen store implementation.
+
+    Returns
+    -------
+    SessionStore | JsonlSessionStore
+        Satisfies ``SessionStoreProtocol`` either way.
+    """
+    backend = "sqlite"
+    try:
+        from src.core.config_loader import get as _cfg_get
+
+        backend = str(_cfg_get("session_backend") or "sqlite").lower().strip()
+    except Exception:
+        pass
+
+    if backend == "jsonl":
+        try:
+            from src.core.memory.jsonl_session_store import JsonlSessionStore
+
+            logger.debug(
+                "get_session_store: using JsonlSessionStore (workdir=%s)", workdir
+            )
+            return JsonlSessionStore(workdir=workdir)
+        except Exception as exc:
+            logger.warning(
+                "get_session_store: failed to create JsonlSessionStore (%s); "
+                "falling back to SQLite",
+                exc,
+            )
+
+    logger.debug("get_session_store: using SQLite SessionStore (workdir=%s)", workdir)
+    return SessionStore(workdir=workdir)

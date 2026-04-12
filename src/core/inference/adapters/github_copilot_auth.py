@@ -26,6 +26,15 @@ GitHub Enterprise is also supported: pass enterprise_url to start_device_flow() 
 the device-code / polling requests are routed to that domain instead of github.com.
 The enterpriseUrl is stored in the auth.json entry and used to build the Copilot
 base URL (https://copilot-api.<domain>).
+
+Architecture note
+-----------------
+``GitHubDeviceFlow`` is the concrete implementation of the generic
+``src.core.auth.device_flow.DeviceFlowProvider`` ABC.  All module-level
+functions (``start_device_flow``, ``poll_for_token``, ``save_token``,
+``load_token``, ``clear_token``, ``is_authenticated``) are kept as thin
+backward-compat wrappers that delegate to a shared ``_default_provider``
+singleton so existing callers do not need to be updated.
 """
 
 from __future__ import annotations
@@ -37,11 +46,20 @@ import stat
 import tempfile
 import threading
 import time
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Union
 
 import requests
+
+from src.core.auth.device_flow import (
+    AuthCancelled,
+    DeviceCodeExpired,
+    DeviceCodeRequest,
+    DeviceCodeResponse,
+    DeviceFlowProvider,
+    TokenResult,
+    interruptible_sleep,
+)
 
 _logger = logging.getLogger(__name__)
 
@@ -60,17 +78,7 @@ TOKEN_REFRESH_MARGIN = (
 )
 
 
-# ── Exceptions ────────────────────────────────────────────────────────────────
-# Defined early so helper functions below can reference them before the
-# device-flow functions are declared.
-
-
-class DeviceCodeExpired(Exception):
-    """Raised when the GitHub device code expires before the user authorizes."""
-
-
-class AuthCancelled(Exception):
-    """Raised when the user explicitly denies or cancels the GitHub authorization."""
+# ── Internal helpers ──────────────────────────────────────────────────────────
 
 
 def _normalize_domain(url: str) -> str:
@@ -156,219 +164,241 @@ def _write_auth_json(data: dict) -> None:
         raise
 
 
-# ── Data types ────────────────────────────────────────────────────────────────
+# ── GitHubDeviceFlow — concrete DeviceFlowProvider ───────────────────────────
 
 
-@dataclass
-class DeviceCodeResponse:
-    device_code: str
-    user_code: str
-    verification_uri: str
-    interval: int  # seconds between poll attempts
-    expires_in: int = 900  # seconds until device_code expires
-    domain: str = "github.com"  # used for the polling URL
-
-
-@dataclass
-class TokenResult:
-    """Result from poll_for_token() containing access + optional refresh token."""
-
-    access_token: str
-    refresh_token: Optional[str] = None
-    expires_in: int = 0  # seconds until access_token expires; 0 = no expiry
-    refresh_token_expires_in: int = (
-        0  # seconds until refresh_token expires; 0 = no expiry
-    )
-
-
-# ── Device flow ───────────────────────────────────────────────────────────────
-
-
-def start_device_flow(enterprise_url: Optional[str] = None) -> DeviceCodeResponse:
-    """POST /login/device/code and return device + user codes.
+class GitHubDeviceFlow(DeviceFlowProvider):
+    """Concrete RFC 8628 device-flow implementation for GitHub (and GHE).
 
     Parameters
     ----------
     enterprise_url:
-        Optional GitHub Enterprise URL or bare domain (e.g. ``company.ghe.com``
-        or ``https://company.ghe.com``).  When None, uses github.com.
-
-    Raises:
-        requests.HTTPError   — non-2xx from GitHub
-        ValueError           — response missing required fields
+        Optional GitHub Enterprise base URL or bare domain
+        (e.g. ``"company.ghe.com"`` or ``"https://company.ghe.com"``).
+        When ``None``, uses ``github.com``.
+    client_id:
+        OAuth App client ID.  Defaults to :data:`CLIENT_ID`.
+    scope:
+        OAuth scope string.  Defaults to :data:`GITHUB_SCOPE`.
+    poll_timeout:
+        Maximum seconds to wait for user approval in :meth:`poll_for_token`.
     """
-    domain = _normalize_domain(enterprise_url) if enterprise_url else "github.com"
-    device_code_url, _ = _get_urls(domain)
 
-    resp = requests.post(
-        device_code_url,
-        json={"client_id": CLIENT_ID, "scope": GITHUB_SCOPE},
-        headers={
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-            "User-Agent": _USER_AGENT,
-        },
-        timeout=15,
-    )
-    resp.raise_for_status()
-    data = resp.json()
-    for field in ("device_code", "user_code", "verification_uri", "interval"):
-        if field not in data:
-            raise ValueError(f"GitHub device flow: missing field '{field}' in response")
-    return DeviceCodeResponse(
-        device_code=data["device_code"],
-        user_code=data["user_code"],
-        verification_uri=data["verification_uri"],
-        interval=int(data["interval"]),
-        expires_in=int(data.get("expires_in", 900)),
-        domain=domain,
-    )
+    def __init__(
+        self,
+        enterprise_url: Optional[str] = None,
+        client_id: str = CLIENT_ID,
+        scope: str = GITHUB_SCOPE,
+        poll_timeout: float = 900.0,
+    ) -> None:
+        self._domain = (
+            _normalize_domain(enterprise_url) if enterprise_url else "github.com"
+        )
+        self._enterprise_url: Optional[str] = (
+            _normalize_domain(enterprise_url) if enterprise_url else None
+        )
+        self._client_id = client_id
+        self._scope = scope
+        self._poll_timeout = poll_timeout
 
+    # ── DeviceFlowProvider interface ──────────────────────────────────────
 
-def _interruptible_sleep(total: float, cancel_event: "threading.Event") -> None:
-    """Sleep for *total* seconds in 0.5 s chunks, aborting if cancel_event is set."""
-    slept = 0.0
-    while slept < total:
-        if cancel_event.is_set():
-            raise AuthCancelled("Login cancelled by user.")
-        chunk = min(0.5, total - slept)
-        time.sleep(chunk)
-        slept += chunk
+    def request_device_code(self, req: DeviceCodeRequest) -> DeviceCodeResponse:
+        """POST /login/device/code and return device + user codes.
 
+        *req.domain* and *req.client_id* / *req.scope* override the values
+        passed to ``__init__`` when they differ, allowing the same instance to
+        be used for multiple domains if needed.
 
-def poll_for_token(
-    device_code: str,
-    interval: int,
-    domain: str = "github.com",
-    timeout: float = 900.0,
-    cancel_event: Optional["threading.Event"] = None,
-) -> "TokenResult":
-    """Block-poll POST /login/oauth/access_token until the user approves.
-
-    Implements RFC 8628 error handling (identical to OpenCode's copilot.ts):
-      authorization_pending  → wait interval + safety margin, retry
-      slow_down              → reset to original_interval + 5 s (CP-09), retry
-      expired_token          → raise DeviceCodeExpired
-      access_denied          → raise AuthCancelled
-
-    *cancel_event* — optional threading.Event; if set(), the loop raises
-    AuthCancelled immediately (used by the TUI Cancel button).
-
-    Returns a TokenResult containing:
-      - access_token: the GitHub OAuth access token (ghu_ for GitHub Apps,
-        gho_ for Classic OAuth Apps)
-      - refresh_token: the refresh token if GitHub returned one (GitHub App
-        tokens only; None for Classic OAuth App tokens)
-      - expires_in: seconds until access_token expires (0 if not provided,
-        meaning "no expiry" — Classic OAuth App behaviour)
-      - refresh_token_expires_in: seconds until refresh_token expires (0 if
-        not provided)
-
-    CP-05: Poll first, sleep after (matches OpenCode copilot.ts behaviour).
-    """
-    if cancel_event is None:
-        cancel_event = threading.Event()
-
-    _, access_token_url = _get_urls(domain)
-    deadline = time.monotonic() + timeout
-    original_interval = interval  # CP-09: baseline for slow_down resets
-    current_interval = interval
-
-    while time.monotonic() < deadline:
-        if cancel_event.is_set():
-            raise AuthCancelled("Login cancelled by user.")
-
-        # CP-05: issue the poll request BEFORE sleeping so the first attempt
-        # fires immediately (matches OpenCode copilot.ts).
-        try:
-            resp = requests.post(
-                access_token_url,
-                json={
-                    "client_id": CLIENT_ID,
-                    "device_code": device_code,
-                    "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
-                },
-                headers={
-                    "Accept": "application/json",
-                    "Content-Type": "application/json",
-                    "User-Agent": _USER_AGENT,
-                },
-                timeout=15,
-            )
-            resp.raise_for_status()
-        except requests.RequestException as e:
-            _logger.warning("github_copilot_auth: poll request failed: %s", e)
-            # Sleep before retrying on network error
-            _interruptible_sleep(current_interval + _POLL_SAFETY_MARGIN, cancel_event)
-            continue
-
+        Raises
+        ------
+        requests.HTTPError
+            Non-2xx response from GitHub.
+        ValueError
+            Response missing required fields.
+        """
+        domain = req.domain or self._domain
+        device_code_url, _ = _get_urls(domain)
+        resp = requests.post(
+            device_code_url,
+            json={
+                "client_id": req.client_id or self._client_id,
+                "scope": req.scope or self._scope,
+            },
+            headers={
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+                "User-Agent": _USER_AGENT,
+            },
+            timeout=15,
+        )
+        resp.raise_for_status()
         data = resp.json()
+        for field_name in ("device_code", "user_code", "verification_uri", "interval"):
+            if field_name not in data:
+                raise ValueError(
+                    f"GitHub device flow: missing field '{field_name}' in response"
+                )
+        return DeviceCodeResponse(
+            device_code=data["device_code"],
+            user_code=data["user_code"],
+            verification_uri=data["verification_uri"],
+            interval=int(data["interval"]),
+            expires_in=int(data.get("expires_in", 900)),
+            domain=domain,
+        )
 
-        if "access_token" in data:
-            return TokenResult(
-                access_token=data["access_token"],
-                refresh_token=data.get("refresh_token") or None,
-                expires_in=int(data.get("expires_in") or 0),
-                refresh_token_expires_in=int(data.get("refresh_token_expires_in") or 0),
-            )
+    def poll_for_token(
+        self,
+        dcr: DeviceCodeResponse,
+        cancel_event: Optional["threading.Event"] = None,
+    ) -> TokenResult:
+        """Block-poll POST /login/oauth/access_token until the user approves.
 
-        error = data.get("error", "")
-        if error == "authorization_pending":
-            # Sleep AFTER the response, not before (CP-05)
-            _interruptible_sleep(current_interval + _POLL_SAFETY_MARGIN, cancel_event)
-            continue
-        elif error == "slow_down":
-            # RFC 8628 §3.5: use server-provided interval if present, else
-            # reset to original_interval + 5 (CP-09 — do not compound).
-            server_interval = data.get("interval")
-            if (
-                server_interval
-                and isinstance(server_interval, (int, float))
-                and server_interval > 0
-            ):
-                current_interval = int(server_interval)
+        Implements RFC 8628 error handling (identical to OpenCode's copilot.ts):
+          authorization_pending  → wait interval + safety margin, retry
+          slow_down              → reset to original_interval + 5 s (CP-09), retry
+          expired_token          → raise DeviceCodeExpired
+          access_denied          → raise AuthCancelled
+
+        *cancel_event* — optional threading.Event; if set(), the loop raises
+        AuthCancelled immediately (used by the TUI Cancel button).
+
+        CP-05: Poll first, sleep after (matches OpenCode copilot.ts behaviour).
+        """
+        if cancel_event is None:
+            cancel_event = threading.Event()
+
+        domain = dcr.domain or self._domain
+        _, access_token_url = _get_urls(domain)
+        deadline = time.monotonic() + self._poll_timeout
+        original_interval = dcr.interval
+        current_interval = dcr.interval
+        client_id = self._client_id
+
+        while time.monotonic() < deadline:
+            if cancel_event.is_set():
+                raise AuthCancelled("Login cancelled by user.")
+
+            # CP-05: issue the poll request BEFORE sleeping so the first attempt
+            # fires immediately (matches OpenCode copilot.ts).
+            try:
+                resp = requests.post(
+                    access_token_url,
+                    json={
+                        "client_id": client_id,
+                        "device_code": dcr.device_code,
+                        "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+                    },
+                    headers={
+                        "Accept": "application/json",
+                        "Content-Type": "application/json",
+                        "User-Agent": _USER_AGENT,
+                    },
+                    timeout=15,
+                )
+                resp.raise_for_status()
+            except requests.RequestException as e:
+                _logger.warning("github_copilot_auth: poll request failed: %s", e)
+                interruptible_sleep(
+                    current_interval + _POLL_SAFETY_MARGIN, cancel_event
+                )
+                continue
+
+            data = resp.json()
+
+            if "access_token" in data:
+                return TokenResult(
+                    access_token=data["access_token"],
+                    refresh_token=data.get("refresh_token") or None,
+                    expires_in=int(data.get("expires_in") or 0),
+                    refresh_token_expires_in=int(
+                        data.get("refresh_token_expires_in") or 0
+                    ),
+                )
+
+            error = data.get("error", "")
+            if error == "authorization_pending":
+                interruptible_sleep(
+                    current_interval + _POLL_SAFETY_MARGIN, cancel_event
+                )
+                continue
+            elif error == "slow_down":
+                # RFC 8628 §3.5: use server-provided interval if present, else
+                # reset to original_interval + 5 (CP-09 — do not compound).
+                server_interval = data.get("interval")
+                if (
+                    server_interval
+                    and isinstance(server_interval, (int, float))
+                    and server_interval > 0
+                ):
+                    current_interval = int(server_interval)
+                else:
+                    current_interval = original_interval + 5
+                interruptible_sleep(
+                    current_interval + _POLL_SAFETY_MARGIN, cancel_event
+                )
+                continue
+            elif error in ("expired_token", "device_flow_unauthorized"):
+                raise DeviceCodeExpired(
+                    "GitHub device code expired before user authorized."
+                )
+            elif error == "access_denied":
+                raise AuthCancelled("GitHub authorization was denied by the user.")
             else:
-                current_interval = original_interval + 5
-            _interruptible_sleep(current_interval + _POLL_SAFETY_MARGIN, cancel_event)
-            continue
-        elif error in ("expired_token", "device_flow_unauthorized"):
-            raise DeviceCodeExpired(
-                "GitHub device code expired before user authorized."
-            )
-        elif error == "access_denied":
-            raise AuthCancelled("GitHub authorization was denied by the user.")
-        else:
-            _logger.warning("github_copilot_auth: unexpected poll response: %s", data)
-            continue
+                _logger.warning(
+                    "github_copilot_auth: unexpected poll response: %s", data
+                )
+                continue
 
-    raise TimeoutError(f"GitHub Copilot login timed out after {timeout:.0f}s.")
+        raise TimeoutError(
+            f"GitHub Copilot login timed out after {self._poll_timeout:.0f}s."
+        )
+
+    def save_token(  # type: ignore[override]
+        self,
+        token: "Union[TokenResult, str]",
+        enterprise_url: Optional[str] = None,
+    ) -> None:
+        """Write the GitHub OAuth token to auth.json under key 'github-copilot'.
+
+        Accepts either a TokenResult (from poll_for_token) or a bare string
+        (legacy / CLI usage).
+
+        The ``enterprise_url`` parameter overrides the one set at construction
+        time, allowing callers to save tokens for different GHE instances.
+        """
+        ent = enterprise_url or self._enterprise_url
+        _save_token_impl(token, enterprise_url=ent)
+
+    def load_token(self) -> Optional[str]:
+        """Return the stored GitHub OAuth access token, refreshing if near expiry."""
+        return _load_token_impl()
+
+    def clear_token(self) -> bool:
+        """Remove the GitHub Copilot entry from auth.json (logout)."""
+        return _clear_token_impl()
+
+    def load_enterprise_url(self) -> Optional[str]:
+        """Return the stored enterpriseUrl if the token was for a GHE instance."""
+        return load_enterprise_url()
+
+    def refresh_access_token(
+        self,
+        refresh_token: str,
+        domain: Optional[str] = None,
+    ) -> TokenResult:
+        """Exchange a refresh token for a new access + refresh token pair."""
+        return _refresh_access_token_impl(refresh_token, domain=domain or self._domain)
 
 
-# ── Token persistence — OpenCode-compatible auth.json ─────────────────────────
+# ── Shared implementation functions (used by both the class and the module API) ─
 
 
-def save_token(
+def _save_token_impl(
     token: "Union[TokenResult, str]",
     enterprise_url: Optional[str] = None,
 ) -> None:
-    """Write the GitHub OAuth token to auth.json under key 'github-copilot'.
-
-    Accepts either a TokenResult (from poll_for_token) or a bare string
-    (legacy / CLI usage).
-
-    Stored format:
-      {
-        "type": "oauth",
-        "refresh": <refresh_token or access_token for Classic OAuth>,
-        "access": <access_token>,
-        "expires": <unix epoch seconds when access_token expires; 0 = never>,
-        "refresh_expires": <unix epoch seconds when refresh_token expires; 0 = never>,
-        ["enterpriseUrl": domain]
-      }
-
-    "expires": 0 means the token has no client-side expiry (Classic OAuth App
-    gho_ tokens).  Non-zero means a GitHub App ghu_ token that needs refreshing.
-    """
     now = int(time.time())
     if isinstance(token, TokenResult):
         access = token.access_token
@@ -401,23 +431,11 @@ def save_token(
     _logger.info("github_copilot_auth: token saved to %s", _auth_json_path())
 
 
-def refresh_access_token(
+def _refresh_access_token_impl(
     refresh_token: str,
     domain: str = "github.com",
-) -> "TokenResult":
-    """Exchange a refresh token for a new access + refresh token pair.
-
-    Calls POST https://<domain>/login/oauth/access_token with
-    grant_type=refresh_token.  No client_secret is required when the original
-    token was obtained via the device flow.
-
-    Returns a TokenResult with the new access_token, refresh_token, and expiry
-    durations.
-
-    Raises:
-        requests.HTTPError   — non-2xx response
-        ValueError           — response missing access_token field
-    """
+) -> TokenResult:
+    """Exchange a refresh token for a new access + refresh token pair."""
     _, access_token_url = _get_urls(domain)
     resp = requests.post(
         access_token_url,
@@ -447,17 +465,7 @@ def refresh_access_token(
     )
 
 
-def load_token() -> Optional[str]:
-    """Return the stored GitHub OAuth access token, refreshing if near expiry.
-
-    If the stored access token has an expiry timestamp and it will expire within
-    TOKEN_REFRESH_MARGIN seconds, attempts to refresh it using the stored refresh
-    token.  On refresh success the new tokens are saved and the new access token
-    is returned.  On refresh failure the old (possibly expired) access token is
-    returned so the caller can attempt the request and handle a 401 gracefully.
-
-    Returns None when no token is stored at all.
-    """
+def _load_token_impl() -> Optional[str]:
     try:
         data = _read_auth_json()
         entry = data.get(_PROVIDER_KEY)
@@ -496,8 +504,10 @@ def load_token() -> Optional[str]:
             max(0, expires - now),
         )
         try:
+            # Use the public wrapper so tests (and callers) can monkeypatch
+            # refresh behaviour via github_copilot_auth.refresh_access_token.
             new_result = refresh_access_token(refresh_tok, domain=domain)
-            save_token(new_result, enterprise_url=enterprise_url)
+            _save_token_impl(new_result, enterprise_url=enterprise_url)
             return new_result.access_token
         except Exception as exc:
             _logger.warning(
@@ -507,6 +517,111 @@ def load_token() -> Optional[str]:
             return access
     except Exception:
         return None
+
+
+def _clear_token_impl() -> bool:
+    try:
+        data = _read_auth_json()
+        data.pop(_PROVIDER_KEY, None)
+        _write_auth_json(data)
+        _logger.info("github_copilot_auth: token cleared")
+        return True
+    except Exception as e:
+        _logger.warning("github_copilot_auth: clear_token failed: %s", e)
+        return False
+
+
+# ── Default provider singleton ────────────────────────────────────────────────
+
+_default_provider = GitHubDeviceFlow()
+
+
+# ── Backward-compat module-level API ─────────────────────────────────────────
+# All callers that use the old flat functions continue to work unchanged.
+
+
+def start_device_flow(enterprise_url: Optional[str] = None) -> DeviceCodeResponse:
+    """POST /login/device/code and return device + user codes.
+
+    Parameters
+    ----------
+    enterprise_url:
+        Optional GitHub Enterprise URL or bare domain (e.g. ``company.ghe.com``
+        or ``https://company.ghe.com``).  When None, uses github.com.
+
+    Raises:
+        requests.HTTPError   — non-2xx from GitHub
+        ValueError           — response missing required fields
+    """
+    domain = _normalize_domain(enterprise_url) if enterprise_url else "github.com"
+    provider = GitHubDeviceFlow(enterprise_url=enterprise_url)
+    req = DeviceCodeRequest(
+        client_id=CLIENT_ID,
+        scope=GITHUB_SCOPE,
+        domain=domain,
+    )
+    return provider.request_device_code(req)
+
+
+def _interruptible_sleep(total: float, cancel_event: "threading.Event") -> None:
+    """Sleep for *total* seconds in 0.5 s chunks, aborting if cancel_event is set.
+
+    .. deprecated::
+        Use :func:`src.core.auth.device_flow.interruptible_sleep` directly.
+    """
+    interruptible_sleep(total, cancel_event)
+
+
+def poll_for_token(
+    device_code: str,
+    interval: int,
+    domain: str = "github.com",
+    timeout: float = 900.0,
+    cancel_event: Optional["threading.Event"] = None,
+) -> "TokenResult":
+    """Block-poll POST /login/oauth/access_token until the user approves.
+
+    Backward-compat wrapper — delegates to :class:`GitHubDeviceFlow`.
+    """
+    provider = GitHubDeviceFlow(poll_timeout=timeout)
+    dcr = DeviceCodeResponse(
+        device_code=device_code,
+        user_code="",  # not needed for polling
+        verification_uri="",  # not needed for polling
+        interval=interval,
+        domain=domain,
+    )
+    return provider.poll_for_token(dcr, cancel_event=cancel_event)
+
+
+def save_token(
+    token: "Union[TokenResult, str]",
+    enterprise_url: Optional[str] = None,
+) -> None:
+    """Write the GitHub OAuth token to auth.json under key 'github-copilot'.
+
+    Backward-compat wrapper — delegates to :func:`_save_token_impl`.
+    """
+    _save_token_impl(token, enterprise_url=enterprise_url)
+
+
+def refresh_access_token(
+    refresh_token: str,
+    domain: str = "github.com",
+) -> "TokenResult":
+    """Exchange a refresh token for a new access + refresh token pair.
+
+    Backward-compat wrapper — delegates to :func:`_refresh_access_token_impl`.
+    """
+    return _refresh_access_token_impl(refresh_token, domain=domain)
+
+
+def load_token() -> Optional[str]:
+    """Return the stored GitHub OAuth access token, refreshing if near expiry.
+
+    Backward-compat wrapper — delegates to :func:`_load_token_impl`.
+    """
+    return _load_token_impl()
 
 
 def load_enterprise_url() -> Optional[str]:
@@ -524,26 +639,42 @@ def load_enterprise_url() -> Optional[str]:
 def clear_token() -> bool:
     """Remove the GitHub Copilot entry from auth.json (logout).
 
-    Returns True on success, False if the file could not be written (CP-08).
+    Backward-compat wrapper — delegates to :func:`_clear_token_impl`.
     """
-    try:
-        data = _read_auth_json()
-        data.pop(_PROVIDER_KEY, None)
-        _write_auth_json(data)
-        _logger.info("github_copilot_auth: token cleared")
-        return True
-    except Exception as e:
-        _logger.warning("github_copilot_auth: clear_token failed: %s", e)
-        return False
+    return _clear_token_impl()
 
 
 def is_authenticated() -> bool:
     """Return True if a non-empty GitHub token is stored (no network call)."""
-    tok = load_token()
-    return bool(tok and tok.strip())
+    return _default_provider.is_authenticated()
 
 
-# ── Exceptions (see top of file) ─────────────────────────────────────────────
-# DeviceCodeExpired and AuthCancelled are defined near the top of this module
-# so helper functions like _interruptible_sleep can raise them without a
-# forward-reference problem.
+# ── Re-export exceptions for callers that import them from this module ─────────
+# DeviceCodeExpired and AuthCancelled are now defined in device_flow.py but are
+# re-exported here so existing ``from ... import DeviceCodeExpired`` statements
+# continue to work without modification.
+__all__ = [
+    # classes
+    "GitHubDeviceFlow",
+    # data-classes (re-exported from device_flow)
+    "DeviceCodeRequest",
+    "DeviceCodeResponse",
+    "TokenResult",
+    # exceptions (re-exported from device_flow)
+    "AuthCancelled",
+    "DeviceCodeExpired",
+    # constants
+    "CLIENT_ID",
+    "GITHUB_CLIENT_ID",
+    "GITHUB_SCOPE",
+    "TOKEN_REFRESH_MARGIN",
+    # module-level backward-compat functions
+    "start_device_flow",
+    "poll_for_token",
+    "save_token",
+    "load_token",
+    "load_enterprise_url",
+    "refresh_access_token",
+    "clear_token",
+    "is_authenticated",
+]

@@ -95,15 +95,15 @@ def test_call_llm_sync_safe_outside_loop():
 
 
 def test_call_llm_sync_uses_thread_executor_not_asyncio_run_in_running_loop():
-    """C9: Verify the source uses ThreadPoolExecutor instead of asyncio.run()
-    when a running loop is detected."""
+    """C9/HR-1: Verify the source submits to an executor when a running loop is
+    detected (not a raw asyncio.run() in the hot path) and uses the singleton."""
     import inspect
     from src.core.memory import distiller as dist_mod
 
     src = inspect.getsource(dist_mod._call_llm_sync)
-    assert "ThreadPoolExecutor" in src, (
-        "C9: must use ThreadPoolExecutor when loop is running"
+    # HR-1 fix: uses _get_distiller_executor() singleton instead of per-call constructor
+    assert "_get_distiller_executor" in src, (
+        "C9/HR-1: must use _get_distiller_executor() singleton when loop is running"
     )
-    # The bare asyncio.run() call inside the 'running loop detected' branch must be gone
-    # (it may still exist in the no-loop branch, so we check the comment is present)
+    # The running-loop branch must still exist
     assert "Running loop detected" in src or "running loop" in src.lower()

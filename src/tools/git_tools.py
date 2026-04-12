@@ -13,7 +13,7 @@ import logging
 from pathlib import Path
 from typing import Dict, Any, Optional
 
-from src.tools._tool import tool
+from src.tools._tool import tool, PermissionKind
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +46,7 @@ def _run_git(args: list[str], workdir: Path, timeout: int = 30) -> Dict[str, Any
         return {"status": "error", "error": str(e)}
 
 
-@tool(tags=["coding"])
+@tool(tags=["coding"], permission_kind=PermissionKind.GIT_READ)
 def git_status(workdir: Path = DEFAULT_WORKDIR) -> Dict[str, Any]:
     """
     Return the working-tree status in short format.
@@ -69,7 +69,7 @@ def git_status(workdir: Path = DEFAULT_WORKDIR) -> Dict[str, Any]:
     return result
 
 
-@tool(tags=["coding"])
+@tool(tags=["coding"], permission_kind=PermissionKind.GIT_READ)
 def git_log(
     workdir: Path = DEFAULT_WORKDIR,
     max_count: int = 10,
@@ -89,7 +89,7 @@ def git_log(
     return result
 
 
-@tool(tags=["coding"])
+@tool(tags=["coding"], permission_kind=PermissionKind.GIT_READ)
 def git_diff(
     workdir: Path = DEFAULT_WORKDIR,
     staged: bool = False,
@@ -113,7 +113,7 @@ def git_diff(
     return result
 
 
-@tool(side_effects=["write"], tags=["coding"])
+@tool(side_effects=["write"], tags=["coding"], permission_kind=PermissionKind.GIT_WRITE)
 def git_commit(
     message: str,
     workdir: Path = DEFAULT_WORKDIR,
@@ -152,7 +152,7 @@ def git_commit(
     return result
 
 
-@tool(side_effects=["write"], tags=["coding"])
+@tool(side_effects=["write"], tags=["coding"], permission_kind=PermissionKind.GIT_WRITE)
 def git_stash(
     workdir: Path = DEFAULT_WORKDIR,
     message: Optional[str] = None,
@@ -169,7 +169,7 @@ def git_stash(
     return _run_git(args, workdir)
 
 
-@tool(side_effects=["write"], tags=["coding"])
+@tool(side_effects=["write"], tags=["coding"], permission_kind=PermissionKind.GIT_WRITE)
 def git_restore(
     path: str,
     workdir: Path = DEFAULT_WORKDIR,

@@ -35,6 +35,20 @@ def _step_requests_verification(state: Mapping[str, Any]) -> bool:
     return False
 
 
+# P3-B: Write tools that always require verification even on SMALL tier.
+_WRITE_TOOLS_ALWAYS_VERIFY = {
+    "write_file",
+    "edit_file",
+    "edit_file_atomic",
+    "edit_by_line_range",
+    "bash",
+    "patch_apply",
+    "apply_patch",
+    "create_file",
+    "delete_file",
+}
+
+
 async def verification_node(state: Mapping[str, Any], config: Any) -> Dict[str, Any]:
     """
     Verification Layer: Run tests / linters / syntax checks on proposed edits.
@@ -42,8 +56,34 @@ async def verification_node(state: Mapping[str, Any], config: Any) -> Dict[str, 
     This node is intentionally conservative: it will only run verification tools when
     the state indicates a recent edit or when the `current_plan` requests validation.
     Uses the 'reviewer' role for quality assurance.
+
+    P3-B: Tier-gated verification:
+    - NANO: always skip (step limit already caps damage; overhead >30% of total time)
+    - SMALL: skip for read-only tool results; verify writes only
+    - MEDIUM+: full verification + evaluation (unchanged)
     """
     logger.info("=== verification_node START ===")
+
+    # P3-B: Tier-gated early exits.
+    _tier = (state.get("model_tier") or "").lower()
+    _last_tool = state.get("last_tool_name") or ""
+    if _tier == "nano":
+        logger.info(
+            "verification_node: P3-B NANO tier — skipping verification (overhead not justified)"
+        )
+        return {
+            "verification_passed": True,
+            "verification_result": {"status": "skipped_nano"},
+        }
+    if _tier == "small" and _last_tool not in _WRITE_TOOLS_ALWAYS_VERIFY:
+        logger.info(
+            "verification_node: P3-B SMALL tier + read-only tool '%s' — skipping verification",
+            _last_tool,
+        )
+        return {
+            "verification_passed": True,
+            "verification_result": {"status": "skipped_small_readonly"},
+        }
 
     # Decide whether verification is needed
     last_result = state.get("last_result") or {}

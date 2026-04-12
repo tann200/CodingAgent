@@ -87,6 +87,11 @@ def flush_execution_trace_impl(orch: Any) -> None:
         trace = _read_execution_trace_impl(orch)
         trace.extend(orch._execution_trace_buffer)
         orch._execution_trace_buffer = []
+        # HR-2 fix: cap trace at 2000 entries to prevent unbounded file growth.
+        # Loop detection only looks at a 300-second window, so older entries are stale.
+        _TRACE_MAX = 2000
+        if len(trace) > _TRACE_MAX:
+            trace = trace[-_TRACE_MAX:]
         trace_path = orch.working_dir / ".agent-context" / "execution_trace.json"
 
         def serializer(obj: Any) -> str:

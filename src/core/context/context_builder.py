@@ -7,6 +7,19 @@ import threading
 from collections import OrderedDict
 from pathlib import Path
 
+# Gap 3: Plugin hooks — lazy import so the registry is not required at import time.
+try:
+    from src.core.plugin.hook_registry import (
+        registry as _hook_registry,
+        HOOK_CONTEXT_BUILT as _HOOK_CONTEXT_BUILT,
+    )
+
+    _HAS_HOOKS = True
+except Exception:
+    _hook_registry = None  # type: ignore[assignment]
+    _HOOK_CONTEXT_BUILT = "context.built"
+    _HAS_HOOKS = False
+
 # CP-12: Sentinel string that marks the boundary between the static (cacheable)
 # and dynamic (per-turn) portions of the system prompt.
 #
@@ -184,15 +197,43 @@ class ContextBuilder:
         """Get skill content by name."""
         return self.skills.get(skill_name, "")
 
-    def _select_role_for_tier(self, role_name: str, tier: str) -> str:
-        """GAP-SMALL-2 / GAP-FRONTIER-2: Return the best role prompt for the tier.
+    @staticmethod
+    def _get_provider_variant(model_name: str) -> Optional[str]:
+        """Return a provider-specific role suffix for known model families.
 
-        For the `operational` role only, we have tier-specific variants:
+        Returns 'gemma4' for any Gemma 4 model, None otherwise.
+        Extend this as new per-provider prompts are added.
+        """
+        if not model_name:
+            return None
+        name_lower = model_name.lower()
+        if "gemma-4" in name_lower or "gemma4" in name_lower or "gemma_4" in name_lower:
+            return "gemma4"
+        return None
+
+    def _select_role_for_tier(
+        self, role_name: str, tier: str, model_name: str = ""
+    ) -> str:
+        """Return the best role prompt for the given tier and model.
+
+        Selection priority (highest wins):
+          1. role-provider variant  (e.g. operational-gemma4)
+          2. role-tier variant      (e.g. operational-small, operational-frontier)
+          3. base role              (e.g. operational)
+
+        For the `operational` role:
           - NANO / SMALL → operational-small  (stripped, ≤60 lines)
           - LARGE / FRONTIER → operational-frontier  (exhaustive, reflection gate)
           - MEDIUM and all other roles → base role unchanged
         """
         if role_name == "operational":
+            # 1. Provider-specific variant (highest priority)
+            provider_variant = self._get_provider_variant(model_name)
+            if provider_variant:
+                content = self.roles.get(f"operational-{provider_variant}", "")
+                if content:
+                    return content
+            # 2. Tier variant
             if tier in ("nano", "small"):
                 content = self.roles.get("operational-small", "")
                 if content:
@@ -379,7 +420,9 @@ class ContextBuilder:
                 if _mem_text.strip():
                     # Include at most the last 20 entries to avoid flooding the prompt
                     _entries = [
-                        ln for ln in _mem_text.splitlines() if ln.strip().startswith("- [")
+                        ln
+                        for ln in _mem_text.splitlines()
+                        if ln.strip().startswith("- [")
                     ]
                     for entry in _entries[-20:]:
                         lines.append(entry[:250])
@@ -388,7 +431,11 @@ class ContextBuilder:
 
         if not lines:
             return ""
-        return "\n".join(["<prior_context>", "Relevant context from previous sessions:"] + lines + ["</prior_context>"])
+        return "\n".join(
+            ["<prior_context>", "Relevant context from previous sessions:"]
+            + lines
+            + ["</prior_context>"]
+        )
 
     # ------------------------------------------------------------------
     # S1-B / S1-C helpers
@@ -412,11 +459,19 @@ class ContextBuilder:
         (r"o1|o3|o4", "openai-reasoning.md"),
         (r"gpt-4o|gpt-4\.5|gpt-4-turbo", "openai-frontier.md"),
         # Anthropic — separate frontier vs small
-        (r"claude-opus|claude-3-7|claude-sonnet-4-[5-9]|claude-3-5-sonnet", "anthropic-frontier.md"),
+        (
+            r"claude-opus|claude-3-7|claude-sonnet-4-[5-9]|claude-3-5-sonnet",
+            "anthropic-frontier.md",
+        ),
         (r"claude-haiku|claude-3-5-haiku|claude-3-haiku", "anthropic-small.md"),
         # Gemini — frontier vs flash/nano
         (r"gemini-2\.5-pro|gemini-pro|gemini-ultra", "gemini-frontier.md"),
         (r"gemini-flash|gemini-nano|gemini-2\.0-flash", "gemini-small.md"),
+        # Gemma 4 — large (31B dense, 26B MoE) → frontier partial;
+        # edge (E2B, E4B) → small partial.
+        # 16GB VRAM target: 31B q4 (~15.5GB) and 26B MoE q4 (~13GB) both fit.
+        (r"gemma-4-31b|gemma-4-26b|gemma4:31b|gemma4:26b", "gemini-frontier.md"),
+        (r"gemma-4-e[24]b|gemma4:e[24]b|gemma4-e[24]b", "local-small.md"),
     ]
 
     def _select_prompt_partial(
@@ -586,6 +641,7 @@ class ContextBuilder:
         provider_capabilities: Optional[Dict],
         use_native_tools: bool,
         is_simple_mode: bool,
+        model_name: str = "",
     ) -> str:
         """Return the static portion of the system prompt (before DYNAMIC_BOUNDARY).
 
@@ -594,7 +650,13 @@ class ContextBuilder:
         _STATIC_PROMPT_CACHE keyed by a tuple of all inputs that affect it.
         The cache is cleared at each task boundary by clear_cache().
         """
-        # Derive a compact key for the tools list (hash of names+first-50-chars each).
+        # P1-B: Prune tools to the tier limit FIRST so the cache key reflects the
+        # actual rendered tool set (not the raw caller-supplied list).  This makes
+        # the cache more efficient: two callers passing different-sized lists that
+        # prune to the same set will share a cache entry.
+        tools = self._prune_tools(tools, model_tier)
+
+        # Derive a compact key for the (pruned) tools list.
         try:
             tools_key = hash(
                 tuple(
@@ -607,6 +669,9 @@ class ContextBuilder:
 
         caps = provider_capabilities or {}
         provider_family = caps.get("provider_family", "")
+        # OP-1: Include provider variant (e.g. "gemma4") in cache key so
+        # per-provider prompt variants are cached separately.
+        provider_variant = self._get_provider_variant(model_name) or ""
         cache_key: Tuple = (
             role_name,
             tuple(active_skills),
@@ -615,6 +680,7 @@ class ContextBuilder:
             provider_family,
             use_native_tools,
             is_simple_mode,
+            provider_variant,
             # Include working_dir so that different projects (or test tmp_paths)
             # with different AGENTS.md / instruction files get separate cache entries.
             str(self._agent_context_dir.parent),
@@ -631,10 +697,44 @@ class ContextBuilder:
         # GAP-SMALL-2 / GAP-FRONTIER-2: select tier-appropriate role prompt for
         # the operational role so that small models get a stripped-down prompt
         # and frontier models get exhaustive instructions.
+        # OP-1: Also check for per-provider variant (e.g. operational-gemma4).
         tier_str = (model_tier or "").lower()
-        role_content = self._select_role_for_tier(role_name, tier_str)
+        role_content = self._select_role_for_tier(role_name, tier_str, model_name)
         parts.append(f"<identity>\n{self._sanitize_text(self.soul)}\n</identity>")
         parts.append(f"<role>\n{self._sanitize_text(role_content)}\n</role>")
+
+        # P1-E: Model constraints block for NANO/SMALL tiers.
+        # Injects a concise <model_constraints> block that tells small models
+        # their tier, tool count, step limit, and required output format so they
+        # don't try to use tools / format features they don't have.
+        if tier_str in ("nano", "small"):
+            try:
+                from src.core.inference.model_tiers import ModelTier, get_plan_step_limit
+
+                _p1e_tier_enum = ModelTier(tier_str) if tier_str else None
+                _p1e_step_limit = (
+                    get_plan_step_limit(_p1e_tier_enum) if _p1e_tier_enum else 6
+                )
+                _p1e_tool_count = len(tools)  # already pruned
+                _p1e_ctx_tokens = 0
+                try:
+                    from src.core.inference.provider_context import get_context_budget
+
+                    _p1e_ctx_tokens = get_context_budget(model_tier=tier_str)
+                except Exception:
+                    pass
+                _p1e_lines = [
+                    f"Tier: {tier_str.upper()} | Context: {_p1e_ctx_tokens:,} tokens | Tools: {_p1e_tool_count} available",
+                    f"Max plan steps: {_p1e_step_limit} | Output format: YAML tool calls only (no JSON, no prose before tool call)",
+                    "Not available: parallel tool calls, subagent delegation, extended reasoning",
+                ]
+                parts.append(
+                    "<model_constraints>\n"
+                    + "\n".join(_p1e_lines)
+                    + "\n</model_constraints>"
+                )
+            except Exception:
+                pass
 
         # CP-11: Ancestor instruction file injection.
         try:
@@ -654,6 +754,22 @@ class ContextBuilder:
         except Exception:
             pass
 
+        # OP-5: Per-project instructions from .agent-context/config.json.
+        # These come after CP-11 file instructions so they take higher precedence.
+        # Injected inside the static prefix so they are cached with the rest.
+        try:
+            from src.core.config_loader import get_project_instructions as _gpi
+
+            _proj_instructions = _gpi(str(self._agent_context_dir.parent))
+            if _proj_instructions:
+                _proj_block = "\n".join(f"- {instr}" for instr in _proj_instructions)
+                parts.append(
+                    f"<project_config_instructions>\n{_proj_block}\n"
+                    "</project_config_instructions>"
+                )
+        except Exception:
+            pass
+
         # Dynamic boundary sentinel — Anthropic adapter splits here.
         parts.append(SYSTEM_PROMPT_DYNAMIC_BOUNDARY)
 
@@ -668,6 +784,7 @@ class ContextBuilder:
                     f"<active_skills>\n{chr(10).join(skill_contents)}\n</active_skills>"
                 )
 
+        # tools already pruned above; render descriptions for the tier.
         tools_text = self._render_tools_for_tier(tools, model_tier)
         parts.append(f"<available_tools>\n{tools_text}\n</available_tools>")
 
@@ -785,6 +902,7 @@ class ContextBuilder:
         provider_capabilities: Optional[Dict] = None,
         context_controller=None,
         model_tier: Optional[str] = None,
+        model_name: Optional[str] = None,
     ) -> List[Dict[str, str]]:
         # F10: Use dynamic token budget when max_tokens is not explicitly provided.
         if max_tokens is None:
@@ -828,11 +946,10 @@ class ContextBuilder:
             and provider_capabilities.get("supports_native_tools", False)
         )
 
-        # S1-C: Prune tool list based on model tier before rendering.
-        if model_tier:
-            tools = self._prune_tools(tools, model_tier)
-
         # P3-A: Fetch (or build + cache) the static system prefix.
+        # NOTE: _prune_tools() is called inside _build_static_system_prefix() (P1-B)
+        # so the tools list passed here is intentionally unpruned — pruning and rendering
+        # are co-located so the cache key reflects the pruned output correctly.
         static_prefix = self._build_static_system_prefix(
             role_name=role_name,
             active_skills=active_skills,
@@ -841,6 +958,7 @@ class ContextBuilder:
             provider_capabilities=provider_capabilities,
             use_native_tools=use_native_tools,
             is_simple_mode=_is_simple_mode,
+            model_name=model_name or "",
         )
 
         # Dynamic parts (appended after the static prefix).
@@ -1037,6 +1155,20 @@ class ContextBuilder:
                 last_msg["content"] = (
                     f"<task>\n{last_msg['content']}\n</task>\n\nExecute the next action using the YAML tool format."
                 )
+
+        # Gap 3: HOOK_CONTEXT_BUILT — lets plugins inspect/log the final prompt.
+        if _HAS_HOOKS and _hook_registry is not None:
+            try:
+                _ctx_dir = getattr(self, "_agent_context_dir", None)
+                _hook_registry.call(
+                    _HOOK_CONTEXT_BUILT,
+                    {
+                        "messages": built_messages,
+                        "working_dir": str(_ctx_dir.parent) if _ctx_dir else "",
+                    },
+                )
+            except Exception:
+                pass
 
         return built_messages
 

@@ -18,7 +18,7 @@ from typing import Dict, Any
 _logger = logging.getLogger(__name__)
 
 from src.tools._path_utils import safe_resolve as _safe_resolve_impl
-from src.tools._tool import tool
+from src.tools._tool import tool, PermissionKind
 from src.tools._diff_gate import (
     _publish_diff_preview,
     register_preview_gate,
@@ -52,6 +52,39 @@ def _safe_resolve(path: str, workdir: Path) -> Path:
     return _safe_resolve_impl(path, workdir)
 
 
+def _check_project_deny_write(abs_path: Path, workdir: Path) -> None:
+    """Raise PermissionError if *abs_path* matches a project config deny_write pattern.
+
+    OP-5: Reads ``deny_write`` patterns from ``.agent-context/config.json``
+    (relative to *workdir*) and applies them via ``fnmatch.fnmatch`` against
+    the relative path of *abs_path*.  No-ops silently when the config file is
+    absent or when no patterns are configured.
+    """
+    import fnmatch
+
+    try:
+        from src.core.config_loader import get_project_deny_write_patterns
+
+        patterns = get_project_deny_write_patterns(str(workdir))
+        if not patterns:
+            return
+        try:
+            rel = abs_path.relative_to(workdir)
+        except ValueError:
+            rel = abs_path  # can't relativise — compare against full path
+        rel_str = str(rel).replace("\\", "/")
+        for pattern in patterns:
+            if fnmatch.fnmatch(rel_str, pattern):
+                raise PermissionError(
+                    f"write blocked by project config: '{rel_str}' matches "
+                    f"deny_write pattern '{pattern}'"
+                )
+    except PermissionError:
+        raise
+    except Exception:
+        pass  # non-fatal — don't let config errors prevent writes
+
+
 _OS_JUNK = frozenset(
     {
         ".DS_Store",
@@ -65,7 +98,7 @@ _OS_JUNK = frozenset(
 )
 
 
-@tool(side_effects=["write"], tags=["coding"])
+@tool(side_effects=["write"], tags=["coding"], permission_kind=PermissionKind.WRITE_FILE)
 def write_file(
     path: str,
     content: str,
@@ -94,6 +127,13 @@ def write_file(
     import difflib
 
     p = _safe_resolve(path, workdir)
+
+    # OP-5: Apply project-level deny_write patterns from .agent-context/config.json.
+    try:
+        _check_project_deny_write(p, workdir)
+    except PermissionError as _pe:
+        return {"path": path, "status": "error", "error": str(_pe)}
+
     p.parent.mkdir(parents=True, exist_ok=True)
 
     # Read original content BEFORE modification for diff generation
@@ -244,7 +284,7 @@ def write_file(
     return result
 
 
-@tool(tags=["coding", "planning", "debug", "review"])
+@tool(tags=["coding", "planning", "debug", "review"], permission_kind=PermissionKind.READ_FILE)
 def read_file(
     path: str,
     summarize: bool = False,
@@ -323,7 +363,7 @@ def read_file(
     return result
 
 
-@tool(name="list_files", tags=["coding", "planning", "debug", "review"])
+@tool(name="list_files", tags=["coding", "planning", "debug", "review"], permission_kind=PermissionKind.READ_FILE)
 def list_dir(path: str = ".", workdir: Path = None) -> Dict[str, Any]:  # type: ignore[assignment]
     if workdir is None:
         workdir = Path.cwd()
@@ -336,7 +376,7 @@ def list_dir(path: str = ".", workdir: Path = None) -> Dict[str, Any]:  # type: 
     return {"path": str(p), "status": "ok", "items": items}
 
 
-@tool(side_effects=["write"], tags=["coding"])
+@tool(side_effects=["write"], tags=["coding"], permission_kind=PermissionKind.WRITE_FILE)
 def delete_file(
     path: str,
     workdir: Path = None,
@@ -404,7 +444,7 @@ def delete_file(
         return {"status": "error", "error": str(e)}
 
 
-@tool(side_effects=["write"], tags=["coding"])
+@tool(side_effects=["write"], tags=["coding"], permission_kind=PermissionKind.WRITE_FILE)
 def rename_file(
     path: str = "",
     new_path: str = "",
@@ -475,7 +515,7 @@ def sandbox_info(workdir: Path = None) -> Dict[str, Any]:  # type: ignore[assign
     return {"workdir": str(workdir.resolve())}
 
 
-@tool(tags=["coding"])
+@tool(tags=["coding"], permission_kind=PermissionKind.READ_FILE)
 def read_file_chunk(
     path: str,
     offset: int = 0,
@@ -507,7 +547,7 @@ def read_file_chunk(
         }
 
 
-@tool(tags=["coding"])
+@tool(tags=["coding"], permission_kind=PermissionKind.READ_FILE)
 def glob(pattern: str, workdir: Path = None) -> Dict[str, Any]:  # type: ignore[assignment]
     """Find files matching a glob pattern. Supports ** for recursive matching."""
     if workdir is None:
@@ -561,7 +601,7 @@ def glob(pattern: str, workdir: Path = None) -> Dict[str, Any]:  # type: ignore[
         return {"status": "error", "error": str(e)}
 
 
-@tool(tags=["coding", "debug"])
+@tool(tags=["coding", "debug"], permission_kind=PermissionKind.READ_FILE)
 def tail_log_file(
     path: str,
     lines: int = 50,
@@ -589,7 +629,7 @@ def tail_log_file(
     }
 
 
-@tool(side_effects=["write"], tags=["coding"])
+@tool(side_effects=["write"], tags=["coding"], permission_kind=PermissionKind.WRITE_FILE)
 def create_directory(path: str, workdir: Path = None) -> Dict[str, Any]:  # type: ignore[assignment]
     """Create a directory and all necessary parents."""
     if workdir is None:
@@ -605,7 +645,7 @@ def create_directory(path: str, workdir: Path = None) -> Dict[str, Any]:  # type
         return {"status": "error", "error": str(e)}
 
 
-@tool(tags=["coding", "debug"])
+@tool(tags=["coding", "debug"], permission_kind=PermissionKind.READ_FILE)
 def read_file_bytes(
     path: str,
     max_bytes: int = 1048576,

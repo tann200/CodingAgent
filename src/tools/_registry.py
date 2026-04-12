@@ -29,7 +29,7 @@ import threading
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-from src.tools._tool import TOOL_ATTR, ToolDefinition
+from src.tools._tool import TOOL_ATTR, ToolDefinition, PermissionKind
 
 logger = logging.getLogger(__name__)
 
@@ -225,6 +225,32 @@ class ToolRegistry:
         """Return the tool entry dict or *None* if not found."""
         with self._lock:
             return self._tools.get(name)
+
+    def get_permission_kind(self, name: str) -> PermissionKind:
+        """Return the PermissionKind for *name*, or PermissionKind.NONE if unknown.
+
+        Reads the ``permission_kind`` field from the ToolDefinition attached to
+        the tool's function, falling back to NONE for tools that predate TASK-3.
+        Also accepts plain-string ``permission_kind`` values stored in LSP-style
+        schema dicts.
+        """
+        entry = self.get(name)
+        if entry is None:
+            return PermissionKind.NONE
+        # Check ToolDefinition attribute (decorator-registered tools)
+        fn = entry.get("fn")
+        if fn is not None:
+            defn: Optional[ToolDefinition] = getattr(fn, TOOL_ATTR, None)
+            if defn is not None:
+                return defn.permission_kind
+        # Check plain-string field (LSP-style schema dicts)
+        raw = entry.get("permission_kind")
+        if raw:
+            try:
+                return PermissionKind(raw)
+            except ValueError:
+                pass
+        return PermissionKind.NONE
 
     def list(self) -> List[str]:
         """Return all registered tool names."""

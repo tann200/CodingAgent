@@ -683,15 +683,18 @@ class TestOrchestratorToolRoleFallbackEmitsWarning:
 class TestDistillerPoolFuturesCancelledOnTimeout:
     """SCAN-6: distiller must not block when future times out."""
 
-    def test_pool_uses_shutdown_wait_false(self):
-        """After SCAN-6 fix the pool must use shutdown(wait=False)."""
+    def test_pool_uses_singleton_not_per_call_shutdown(self):
+        """HR-1: After the singleton refactor the pool must NOT shutdown per call.
+        The singleton executor is never shut down mid-run — it persists for the
+        module lifetime, which is safer than per-call shutdown(wait=False)."""
         import inspect
         from src.core.memory import distiller as d_mod
 
         src = inspect.getsource(d_mod._call_llm_sync)
-        assert "shutdown(wait=False)" in src, (
-            "SCAN-6: pool must call shutdown(wait=False) so a timed-out thread "
-            "does not block the caller"
+        # With the singleton, there is no per-call shutdown — that's the whole point.
+        assert "shutdown" not in src, (
+            "HR-1: _call_llm_sync must not call shutdown() — use the singleton "
+            "executor (_get_distiller_executor) which is never shut down per call"
         )
 
     def test_future_cancel_called_on_error(self):

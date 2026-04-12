@@ -105,6 +105,13 @@ def _parse_yaml_block(yaml_content: str) -> Optional[Dict[str, Any]]:
             return v
 
         parsed = _yaml.safe_load(yaml_content)
+        if not isinstance(parsed, dict):
+            # P2-H: safe_load succeeded but returned a scalar or list — this is
+            # not a tool call.  Return None immediately so we don't fall through
+            # to the custom line-by-line parser, which would silently extract
+            # garbage (e.g. treat a YAML timestamp as a tool name).
+            if parsed is not None:
+                return None
         if isinstance(parsed, dict):
             # Standard format: {name: "tool", arguments: {...}}
             if "name" in parsed:

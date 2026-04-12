@@ -1,3 +1,4 @@
+import concurrent.futures
 import json
 import logging
 import re
@@ -5,6 +6,23 @@ from typing import Any, Dict, List, Optional
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+# HR-1 fix: module-level singleton executor so _call_llm_sync does not create a new
+# ThreadPoolExecutor per invocation.  Creating one per call means that on LLM timeout
+# the worker thread is leaked (asyncio.run() cannot be preempted, and future.cancel()
+# has no effect on an already-started task).  A persistent singleton avoids the
+# thread-creation overhead and keeps the leaked-thread count bounded to 1.
+_DISTILLER_LLM_EXECUTOR: concurrent.futures.ThreadPoolExecutor | None = None
+
+
+def _get_distiller_executor() -> concurrent.futures.ThreadPoolExecutor:
+    global _DISTILLER_LLM_EXECUTOR
+    if _DISTILLER_LLM_EXECUTOR is None:
+        _DISTILLER_LLM_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="distiller_llm"
+        )
+    return _DISTILLER_LLM_EXECUTOR
+
 
 # TASK-07: Number of recent messages to keep after compaction so the agent
 # retains immediate context alongside the summary.
@@ -30,9 +48,11 @@ def _call_llm_sync(messages: list, format_json: bool = False, **kwargs) -> str:
 
     C9 fix: asyncio.run() cannot be called when another event loop is already
     running (e.g. when distill_context is invoked from an async node via
-    asyncio.gather).  When a running loop is detected we spin up a fresh
-    ThreadPoolExecutor thread — that thread has no event loop, so asyncio.run()
-    works correctly and the coroutine gets its own isolated loop.
+    asyncio.gather).  When a running loop is detected we submit to the
+    module-level singleton executor whose worker thread has no event loop,
+    so asyncio.run() works correctly inside that isolated thread.
+    HR-1 fix: uses _get_distiller_executor() (singleton) instead of creating
+    a fresh executor per call.
 
     SM-1: If ``model`` is not already in *kwargs*, attempt to inject the
     configured ``small_model`` from config so background tasks (compaction,
@@ -41,7 +61,6 @@ def _call_llm_sync(messages: list, format_json: bool = False, **kwargs) -> str:
     """
     import asyncio
     import inspect
-    import concurrent.futures
     from src.core.inference.llm_manager import call_model
 
     # SM-1: inject small_model when not explicitly overridden by caller
@@ -71,25 +90,22 @@ def _call_llm_sync(messages: list, format_json: bool = False, **kwargs) -> str:
         try:
             asyncio.get_running_loop()
             # Running loop detected — must NOT call asyncio.run() here (C9).
-            # Submit to a new thread that has no event loop so asyncio.run() is safe.
-            # SCAN-6 fix: cancel the future BEFORE the pool's context manager
-            # calls shutdown(wait=True).  Without this, a TimeoutError from
-            # future.result() is caught and "" is returned, but then __exit__
-            # blocks indefinitely waiting for the background asyncio.run() thread
-            # to finish its LLM call.
-            _pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+            # Submit to the module-level singleton executor whose thread has no
+            # event loop, so asyncio.run() is safe there.
+            # HR-1 fix: reuse the singleton instead of creating a per-call pool so
+            # timeout-leaked threads stay bounded to the one persistent worker.
+            _pool = _get_distiller_executor()
+            # Ensure ContextVars are propagated into the distiller executor thread.
+            import contextvars as _cv
+
+            _ctx = _cv.copy_context()
+            future = _pool.submit(_ctx.run, asyncio.run, candidate)
             try:
-                future = _pool.submit(asyncio.run, candidate)
-                try:
-                    resp = future.result(timeout=120)
-                except Exception as thread_err:
-                    logger.error(
-                        f"_call_llm_sync: thread executor failed: {thread_err}"
-                    )
-                    future.cancel()
-                    return ""
-            finally:
-                _pool.shutdown(wait=False)
+                resp = future.result(timeout=120)
+            except Exception as thread_err:
+                logger.error(f"_call_llm_sync: thread executor failed: {thread_err}")
+                future.cancel()
+                return ""
         except RuntimeError:
             # No running loop — safe to call asyncio.run() directly.
             resp = asyncio.run(candidate)
@@ -136,20 +152,32 @@ def compact_messages_to_prose(
         parts.append(f"[{role}]: {content}")
     transcript = "\n\n".join(parts)
 
+    # OP-2: Use a structured prompt so the summary is machine-parseable and
+    # mirrors the Goal/Instructions/Discoveries/Accomplished/Relevant-files
+    # schema used by OpenCode's compact.rs — this makes it easier for the agent
+    # to resume mid-task without losing orientation.
     prompt = (
         "You are a coding-session historian. Summarize the conversation excerpt "
         "below for a coding AI agent.\n\n"
         "The summary REPLACES these messages in the agent's conversation history. "
         "The agent must be able to continue working from your summary alone.\n\n"
-        "Include ALL sections that are relevant:\n"
-        "- **Task**: What the user requested\n"
-        "- **Files Touched**: Files read, created, modified, or deleted (exact paths)\n"
-        "- **Actions Taken**: Key steps and tool calls executed\n"
-        "- **Errors & Fixes**: Errors encountered and how they were resolved\n"
-        "- **Current State**: What is complete, what is still in progress\n\n"
-        "Rules: plain prose (no JSON), max 600 words, preserve exact file paths, "
-        "include critical code snippets if needed.\n\n"
-        f"Conversation:\n\n{transcript}\n\nWrite the summary now:"
+        "Use EXACTLY this structure (include every section even if empty):\n\n"
+        "## Goal\n"
+        "One sentence — what the user asked for.\n\n"
+        "## Instructions\n"
+        "Constraints, rules, and conventions established during this session.\n\n"
+        "## Discoveries\n"
+        "What was learned: file locations, API shapes, error root causes, test "
+        "results, key symbols found.\n\n"
+        "## Accomplished\n"
+        "Completed steps with exact file paths and the changes made to each.\n\n"
+        "## Relevant Files\n"
+        "Exact paths of every file read, created, modified, or deleted.\n\n"
+        "## Current State\n"
+        "What is done, what is still in progress, and the immediate next step.\n\n"
+        "Rules: plain prose (no JSON), max 700 words total, preserve exact file "
+        "paths, include critical code snippets where essential.\n\n"
+        f"Conversation:\n\n{transcript}\n\nWrite the structured summary now:"
     )
 
     try:
@@ -241,11 +269,16 @@ def distill_context(
                 _recent = (
                     messages[-_KEEP_RECENT:] if len(messages) > _KEEP_RECENT else []
                 )
+                # OP-8: Prefix the compacted message with [COMPACTED] so the TUI
+                # and log consumers can identify it as a synthetic summary rather
+                # than an original conversation turn.
                 _compacted_history = (
                     [
                         {
                             "role": "system",
-                            "content": "<summary>\n" + summary + "\n</summary>",
+                            "content": "[COMPACTED] <summary>\n"
+                            + summary
+                            + "\n</summary>",
                         }
                     ]
                     + _recent

@@ -18,7 +18,7 @@ from typing import Dict, Any, Optional
 _logger = logging.getLogger(__name__)
 
 from src.tools._path_utils import safe_resolve as _safe_resolve_impl
-from src.tools._tool import tool
+from src.tools._tool import tool, PermissionKind
 from src.tools._diff_gate import (
     _publish_diff_preview,
     register_preview_gate,

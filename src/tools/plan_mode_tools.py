@@ -24,10 +24,10 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from src.tools._tool import tool
+from src.tools._tool import tool, PermissionKind
 
 
-@tool(side_effects=[], tags=["planning", "mode"])
+@tool(side_effects=[], tags=["planning", "mode"], permission_kind=PermissionKind.PLAN)
 def plan_enter(
     reason: Optional[str] = None,
     workdir: Optional[str] = None,
@@ -55,7 +55,7 @@ def plan_enter(
     }
 
 
-@tool(side_effects=[], tags=["planning", "mode"])
+@tool(side_effects=[], tags=["planning", "mode"], permission_kind=PermissionKind.PLAN)
 def plan_exit(
     steps: Optional[List[Dict[str, Any]]] = None,
     reason: Optional[str] = None,

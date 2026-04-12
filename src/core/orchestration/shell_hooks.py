@@ -41,6 +41,7 @@ Design:
 from __future__ import annotations
 
 import asyncio
+import fnmatch
 import json
 import logging
 import os
@@ -83,14 +84,53 @@ class HookResult:
 # ---------------------------------------------------------------------------
 
 
-def _load_hooks_config(workdir: str | Path | None = None) -> dict[str, list[str]]:
+def _normalise_hook_entry(entry: Any) -> dict[str, str] | None:
+    """Normalise a raw hook config entry to ``{"matcher": str, "command": str}``.
+
+    Accepts:
+    - Plain string — command applies to all tools (matcher ``"*"``).
+    - Dict with ``"command"`` key — optional ``"matcher"`` key (defaults to ``"*"``).
+
+    Returns None for malformed entries so callers can skip them.
+    """
+    if isinstance(entry, str):
+        cmd = entry.strip()
+        return {"matcher": "*", "command": cmd} if cmd else None
+    if isinstance(entry, dict):
+        cmd = str(entry.get("command", "")).strip()
+        if not cmd:
+            logger.debug("shell_hooks: hook entry missing 'command'; skipping: %r", entry)
+            return None
+        matcher = str(entry.get("matcher", "*")).strip() or "*"
+        return {"matcher": matcher, "command": cmd}
+    logger.debug("shell_hooks: unrecognised hook entry type %r; skipping", type(entry))
+    return None
+
+
+# TASK-8c: config now stores normalised dicts; key "matcher" filters by tool name.
+def _load_hooks_config(workdir: str | Path | None = None) -> dict[str, list[dict[str, str]]]:
     """Load the hooks section from ``.agent/settings.json``.
 
-    Returns a dict with keys ``"PreToolUse"`` and ``"PostToolUse"`` (each a
-    possibly-empty list of command strings).  Never raises — returns empty
-    lists on any error.
+    Returns a dict with keys ``"PreToolUse"`` and ``"PostToolUse"``.  Each
+    value is a list of normalised hook entries (dicts with ``"matcher"`` and
+    ``"command"`` keys).  Never raises — returns empty lists on any error.
+
+    Hook entries support an optional ``"matcher"`` field (fnmatch pattern that
+    must match the tool name for the hook to run).  Plain string entries are
+    treated as ``"matcher": "*"`` (run for every tool):
+
+    .. code-block:: json
+
+        {
+          "hooks": {
+            "PreToolUse": [
+              "./scripts/pre_all.sh",
+              {"matcher": "bash", "command": "./scripts/pre_bash_only.sh"}
+            ]
+          }
+        }
     """
-    empty: dict[str, list[str]] = {"PreToolUse": [], "PostToolUse": []}
+    empty: dict[str, list[dict[str, str]]] = {"PreToolUse": [], "PostToolUse": []}
     try:
         base = Path(workdir) if workdir else Path.cwd()
         settings_path = base / _SETTINGS_FILE
@@ -100,13 +140,27 @@ def _load_hooks_config(workdir: str | Path | None = None) -> dict[str, list[str]
         hooks = data.get("hooks", {})
         if not isinstance(hooks, dict):
             return empty
-        return {
-            "PreToolUse": [str(c) for c in hooks.get("PreToolUse", [])],
-            "PostToolUse": [str(c) for c in hooks.get("PostToolUse", [])],
-        }
+        result: dict[str, list[dict[str, str]]] = {"PreToolUse": [], "PostToolUse": []}
+        for event_key in ("PreToolUse", "PostToolUse"):
+            for raw in hooks.get(event_key, []):
+                normalised = _normalise_hook_entry(raw)
+                if normalised is not None:
+                    result[event_key].append(normalised)
+        return result
     except Exception as exc:
         logger.debug("shell_hooks: failed to load settings: %s", exc)
         return {"PreToolUse": [], "PostToolUse": []}
+
+
+def _matching_commands(
+    entries: list[dict[str, str]], tool_name: str
+) -> list[str]:
+    """Return the commands from *entries* whose matcher pattern matches *tool_name*."""
+    return [
+        e["command"]
+        for e in entries
+        if fnmatch.fnmatch(tool_name.lower(), e["matcher"].lower())
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -281,9 +335,11 @@ class ShellHookRunner:
         """Run ``PreToolUse`` hooks synchronously.
 
         Returns a ``HookResult``; ``denied=True`` means the tool should be
-        blocked.
+        blocked.  Only hooks whose ``matcher`` pattern matches *tool_name* are
+        executed (TASK-8c).
         """
-        commands = self._get_config().get("PreToolUse", [])
+        entries = self._get_config().get("PreToolUse", [])
+        commands = _matching_commands(entries, tool_name)
         result = _run_commands("PreToolUse", commands, tool_name, args, None, False)
         self._publish_messages(result.messages, tool_name, "PreToolUse")
         return result
@@ -297,9 +353,11 @@ class ShellHookRunner:
         """Run ``PostToolUse`` hooks synchronously.
 
         Returns a ``HookResult``; ``denied=True`` means the tool result should
-        be marked ``is_error=True``.
+        be marked ``is_error=True``.  Only hooks whose ``matcher`` pattern
+        matches *tool_name* are executed (TASK-8c).
         """
-        commands = self._get_config().get("PostToolUse", [])
+        entries = self._get_config().get("PostToolUse", [])
+        commands = _matching_commands(entries, tool_name)
         tool_output = _extract_tool_output(result)
         is_error = not result.get("ok", True)
         hook_result = _run_commands(
@@ -318,7 +376,42 @@ class ShellHookRunner:
         # LOW-5 fix: get_event_loop() is deprecated in Python 3.10+ when there is
         # no running loop; get_running_loop() is correct inside an async function.
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, self.run_post, tool_name, args, result)
+        try:
+            # Prefer the run_with_correlation helper so ContextVars (eg. correlation
+            # id) are propagated into the worker thread where hooks run.
+            from src.core.orchestration.event_bus import run_with_correlation
+
+            from typing import cast as _cast
+
+            return _cast(
+                HookResult,
+                await run_with_correlation(
+                    loop, None, self.run_post, tool_name, args, result
+                ),
+            )
+        except Exception:
+            # Fallback: copy the current context and run the call inside it so
+            # ContextVars (eg. correlation id) propagate into the hook thread.
+            try:
+                import contextvars as _contextvars
+
+                _ctx = _contextvars.copy_context()
+
+                from typing import cast as _cast
+
+                def _call_run_post() -> HookResult:
+                    # ctx.run is untyped; cast the result to HookResult to satisfy
+                    # static type checkers. At runtime this simply returns the value.
+                    return _cast(
+                        HookResult, _ctx.run(self.run_post, tool_name, args, result)
+                    )
+
+                return await loop.run_in_executor(None, _call_run_post)
+            except Exception:
+                # Last-resort: direct run_in_executor without context copy
+                return await loop.run_in_executor(
+                    None, self.run_post, tool_name, args, result
+                )
 
     # ------------------------------------------------------------------
     # Internal

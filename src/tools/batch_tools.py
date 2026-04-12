@@ -115,11 +115,15 @@ def batch(calls: List[Dict[str, Any]]) -> Dict[str, Any]:
             # MED-2 fix: cap thread count to avoid spawning hundreds of threads for
             # large batches; an unbounded pool can exhaust OS thread limits.
             _max_workers = min(len(calls), 16)
+            import contextvars as _cv
+
+            _ctx = _cv.copy_context()
             with concurrent.futures.ThreadPoolExecutor(
                 max_workers=_max_workers
             ) as pool:
                 futs = [
                     pool.submit(
+                        _ctx.run,
                         orchestrator.execute_tool,
                         {"name": c["tool"], "arguments": c.get("input", {})},
                     )

@@ -192,9 +192,16 @@ async def memory_update_node(state: Mapping[str, Any], config: Any) -> Dict[str,
             review_agent = ReviewAgent(str(workdir_path))
             # Always inside asyncio.gather so a running loop always exists (NEW-13)
             loop = asyncio.get_running_loop()
-            review_result = await loop.run_in_executor(
-                _executor, review_agent.review_patch, patch
-            )
+            try:
+                from src.core.orchestration.event_bus import run_with_correlation
+
+                review_result = await run_with_correlation(
+                    loop, _executor, review_agent.review_patch, patch
+                )
+            except Exception:
+                review_result = await loop.run_in_executor(
+                    _executor, review_agent.review_patch, patch
+                )
             logger.info(
                 f"memory_update_node: patch review complete: {review_result.get('overall', 'unknown')}"
             )
@@ -219,9 +226,21 @@ async def memory_update_node(state: Mapping[str, Any], config: Any) -> Dict[str,
                 try:
                     # Always inside asyncio.gather so a running loop always exists (NEW-13)
                     loop = asyncio.get_running_loop()
-                    smells = await loop.run_in_executor(
-                        _executor, refactoring_agent.detect_code_smells, file_path
-                    )
+                    try:
+                        from src.core.orchestration.event_bus import (
+                            run_with_correlation,
+                        )
+
+                        smells = await run_with_correlation(
+                            loop,
+                            _executor,
+                            refactoring_agent.detect_code_smells,
+                            file_path,
+                        )
+                    except Exception:
+                        smells = await loop.run_in_executor(
+                            _executor, refactoring_agent.detect_code_smells, file_path
+                        )
                     if smells:
                         logger.info(
                             f"memory_update_node: found {len(smells)} code smells in {file_path}"
@@ -305,7 +324,9 @@ async def memory_update_node(state: Mapping[str, Any], config: Any) -> Dict[str,
     logger.info("=== memory_update_node END ===")
     # HR-2 / ME-3 fix: return updated history and distilled summary via return dict.
     # Also clear _force_compact flag so it does not persist to the next turn.
-    result: Dict[str, Any] = {"_force_compact": False}
+    # CF-1 fix: clear errors so transient pipeline errors (e.g. context_overflow) do
+    # not leak into the next outer-loop round and cause mis-routing.
+    result: Dict[str, Any] = {"_force_compact": False, "errors": []}
     if _distilled_summary:
         result["analysis_summary"] = _distilled_summary
     if _updated_history is not None:

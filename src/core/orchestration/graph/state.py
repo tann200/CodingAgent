@@ -163,6 +163,10 @@ class AgentState(TypedDict):
     plan_attempts: int | None  # defaults to 0 at runtime
     # P1-3: evaluation→replan inner-loop counter
     replan_attempts: int | None  # defaults to 0 at runtime
+    # P2-A: Global recovery cap — incremented by BOTH debug_node and replan_node.
+    # Prevents unbounded loops when errors alternate between error types, exhausting
+    # debug_attempts then replan_attempts then debug_attempts again.
+    total_recovery_attempts: int | None  # defaults to 0 at runtime
     # P3-1: Structured call graph and test map from analysis phase (JSON dicts, not prose)
     call_graph: Dict[str, Any] | None
     test_map: Dict[str, Any] | None
@@ -211,8 +215,17 @@ class AgentState(TypedDict):
     # _history_for_prompt instead of the ever-growing raw `history` list.
     # This field is a plain replace (last-write-wins) rather than operator.add.
     _compacted_history: List[Dict[str, Any]] | None
+    # P2-C: Round number when CP-6 last fired.  Compaction is skipped for
+    # the next 3 rounds (min-gap) to prevent it from re-triggering every
+    # turn once the threshold is crossed.  None means never compacted.
+    _compaction_last_round: int | None
     # WF-4: SHA-256 of the last plan seen by replan_node; used to detect plan divergence.
     last_plan_hash: str | None
+    # MID-INJ: Reference to the object that supplies pop_pending_injections().
+    # Set to the CoreBridge instance (or any object with that method) before the
+    # graph runs.  perception_node calls .pop_pending_injections() each round to
+    # drain mid-run user messages and wrap them in <system-reminder> blocks.
+    _pending_injections_source: Any | None
 
 
 # ---------------------------------------------------------------------------

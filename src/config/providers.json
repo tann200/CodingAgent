@@ -4,12 +4,15 @@
     "type": "lm_studio",
     "base_url": "http://localhost:1234/v1",
     "models": [
+      "gemma-4-26b-a4b-it",
       "gemma-4-e4b-it"
     ],
-    "supports_native_tools": false,
+    "supports_native_tools": true,
     "provider_supports_parallel_tools": false,
-    "disable_thinking": true,
-    "context_length": 7600,
+    "disable_thinking": false,
+    "thinking_budget_tokens": 4096,
+    "temperature_structured": 0.0,
+    "temperature_creative": 0.4,
     "active": true
   },
   {

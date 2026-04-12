@@ -196,16 +196,44 @@ import os as _os
 
 _NO_LM_STUDIO = _os.getenv("NO_LM_STUDIO", "").strip() in ("1", "true", "yes")
 _LM_STUDIO_BLOCK_URL = _os.getenv("LM_STUDIO_URL", "http://localhost:1234")
+_RUN_INTEGRATION = _os.getenv("RUN_INTEGRATION", "").strip() in (
+    "1",
+    "true",
+    "yes",
+)
 
 
 def pytest_collection_modifyitems(config, items):
-    """Skip lmstudio-marked tests when NO_LM_STUDIO=1."""
-    if not _NO_LM_STUDIO:
-        return
-    skip_mark = pytest.mark.skip(reason="NO_LM_STUDIO=1 — LM Studio kill switch active")
+    """Apply global test-suite safety skips.
+
+    Rules:
+    1) Integration/e2e tests are skipped unless RUN_INTEGRATION=1.
+    2) lmstudio-marked tests are skipped when NO_LM_STUDIO=1.
+    """
+    skip_integration = pytest.mark.skip(
+        reason="RUN_INTEGRATION!=1 — integration/e2e tests disabled"
+    )
+    skip_lmstudio = pytest.mark.skip(
+        reason="NO_LM_STUDIO=1 — LM Studio kill switch active"
+    )
+
     for item in items:
-        if item.get_closest_marker("lmstudio"):
-            item.add_marker(skip_mark)
+        nodeid = str(getattr(item, "nodeid", ""))
+
+        # Default to fast local runs: don't execute integration/e2e unless
+        # explicitly requested via RUN_INTEGRATION=1.
+        if not _RUN_INTEGRATION:
+            is_integration_or_e2e = (
+                item.get_closest_marker("integration") is not None
+                or item.get_closest_marker("e2e") is not None
+                or "tests/integration/" in nodeid
+                or "tests/e2e/" in nodeid
+            )
+            if is_integration_or_e2e:
+                item.add_marker(skip_integration)
+
+        if _NO_LM_STUDIO and item.get_closest_marker("lmstudio"):
+            item.add_marker(skip_lmstudio)
 
 
 # ── Global safety net: prevent real LLM network calls during tests ────────────
@@ -266,7 +294,9 @@ def _lm_studio_network_block(request):
 
     import urllib.parse as _urlparse
 
-    _block_host = _urlparse.urlparse(_LM_STUDIO_BLOCK_URL).netloc  # e.g. "localhost:1234"
+    _block_host = _urlparse.urlparse(
+        _LM_STUDIO_BLOCK_URL
+    ).netloc  # e.g. "localhost:1234"
 
     try:
         import requests as _requests

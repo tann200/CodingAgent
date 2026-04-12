@@ -24,6 +24,41 @@ from src.core.orchestration.tool_result_formatter import (
 
 
 # ---------------------------------------------------------------------------
+# GAP-9: Tier-aware max_turns helper
+# ---------------------------------------------------------------------------
+
+
+def _compute_default_max_turns(orch) -> int:
+    """Return the tier-appropriate default max_turns for the active model.
+
+    GAP-9: SMALL models (e.g. Gemma 4 E4B) exhaust context in ~25 turns.
+    FRONTIER models (Gemma 4 31B/26B, Claude, GPT-4o) support 80-turn runs.
+    Falls back to 50 if the model cannot be classified.
+
+    The project-level maxTurns setting and --max-turns CLI flag still take
+    precedence (applied later in perception_node and the TASK-12 guard).
+    """
+    try:
+        from src.core.inference.model_tiers import classify_model, get_max_turns
+
+        adapter = getattr(orch, "adapter", None) or getattr(orch, "_adapter", None)
+        if adapter is None:
+            return 50
+        model = None
+        if hasattr(adapter, "models") and adapter.models:
+            model = adapter.models[0]
+        elif hasattr(adapter, "default_model") and adapter.default_model:
+            model = adapter.default_model
+        if not model:
+            return 50
+        ctx_window = int(getattr(adapter, "context_window", 0) or 0)
+        tier = classify_model(model, ctx_window)
+        return get_max_turns(tier)
+    except Exception:
+        return 50
+
+
+# ---------------------------------------------------------------------------
 # _generate_work_summary — copied verbatim from orchestrator.py
 # ---------------------------------------------------------------------------
 
@@ -166,6 +201,27 @@ def run_agent_once_impl(
     except Exception:
         pass
 
+    # Probe the active adapter for context window length so get_context_budget()
+    # reflects the currently loaded model even in headless (no-TUI) mode.
+    try:
+        from src.core.inference.llm_manager import get_provider_manager
+        from src.core.inference.provider_context import set_active_context_length
+
+        pm = get_provider_manager()
+        active_adapter = (
+            pm.get_active_adapter() if hasattr(pm, "get_active_adapter") else None
+        )
+        if active_adapter and hasattr(active_adapter, "get_loaded_context_length"):
+            active_models = (
+                pm.get_active_models() if hasattr(pm, "get_active_models") else []
+            )
+            model_name = active_models[0] if active_models else ""
+            ctx_len = active_adapter.get_loaded_context_length(model_name)
+            if ctx_len and ctx_len > 0:
+                set_active_context_length(ctx_len)
+    except Exception:
+        pass
+
     full_system_prompt = (
         load_system_prompt(system_prompt_name) or "You are a helpful coding assistant."
     )
@@ -267,14 +323,18 @@ def run_agent_once_impl(
         # P1-2/P1-3: Inner-loop counters
         "plan_attempts": 0,
         "replan_attempts": 0,
+        # P2-A: Global recovery cap across debug + replan (prevents alternating loops)
+        "total_recovery_attempts": 0,
         # P1-6: Warnings are advisory only — enforce_warnings=True triggers infinite
         # replanning loops because any plan without an explicit test/verify step is
         # rejected. The plan_attempts guard (>=3 → force execution) was added as a
         # band-aid but the recursion limit is hit before it fires. Keep False.
         "plan_enforce_warnings": False,
         # Turn limit: independent of tool_call_count; bounded by max_turns
+        # GAP-9: Use tier-aware default so small models (NANO/SMALL) stop before
+        # exhausting their context window, and frontier models can run longer.
         "turn_count": 0,
-        "max_turns": 50,
+        "max_turns": _compute_default_max_turns(orch),
         "plan_strict_mode": False,
         # P3-1: Structured dependency data from analysis phase
         "call_graph": None,
@@ -304,7 +364,10 @@ def run_agent_once_impl(
         "last_debug_error_type": None,
         "last_tool_name": None,
         "no_plan_fail_count": 0,
-        "original_task": None,
+        # DOOM-LOOP FIX: Always populate original_task from the user prompt so
+        # nodes can safely use state["original_task"] as the authoritative
+        # task string regardless of what planning_node does to state["task"].
+        "original_task": prompt,
         "plan_progress": None,
         "plan_validation": None,
         "planned_action": None,
@@ -319,6 +382,10 @@ def run_agent_once_impl(
         "agent_mode": None,
         # SPAWN-W1: Parent session ID for delegated child sessions.  None = top-level.
         "parent_session_id": None,
+        # MID-INJ: Source object for mid-run user message injection.
+        # Set by core_bridge before calling run_agent_once (orch._injection_source).
+        # perception_node calls .pop_pending_injections() each round.
+        "_pending_injections_source": getattr(orch, "_injection_source", None),
     }
 
     # 2. Compile and Run Graph — P1 fix: use module-level cached graph so compilation
@@ -398,7 +465,10 @@ def run_agent_once_impl(
                 try:
                     asyncio.get_running_loop()
                     # Running loop detected — submit to the reused executor (P2 fix)
-                    future = _graph_executor.submit(_run_graph, current_state)
+                    import contextvars as _cv
+
+                    _ctx = _cv.copy_context()
+                    future = _graph_executor.submit(_ctx.run, _run_graph, current_state)
                     next_state = future.result()
                 except RuntimeError:
                     next_state = _run_graph(current_state)
@@ -751,13 +821,21 @@ def run_agent_once_impl(
                 try:
                     asyncio.get_running_loop()
                     # Already inside an event loop — submit to thread executor.
+                    import contextvars as _cv
+
+                    _ctx = _cv.copy_context()
                     _fb_executor = getattr(orch, "_graph_executor", None)
                     if _fb_executor is not None:
-                        resp = _fb_executor.submit(asyncio.run, _call_coro).result()
+                        resp = _fb_executor.submit(
+                            _ctx.run, asyncio.run, _call_coro
+                        ).result()
                     else:
                         import concurrent.futures as _cf_fb
+
                         with _cf_fb.ThreadPoolExecutor(max_workers=1) as _ex:
-                            resp = _ex.submit(asyncio.run, _call_coro).result()
+                            resp = _ex.submit(
+                                _ctx.run, asyncio.run, _call_coro
+                            ).result()
                 except RuntimeError:
                     # No running loop — safe to call asyncio.run() directly.
                     resp = asyncio.run(_call_coro)

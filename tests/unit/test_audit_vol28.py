@@ -54,9 +54,7 @@ class TestOvf1LmStudioOverflowPatternDetected:
         msg = err.get("message", "")
         msg_lower = msg.lower()
         detected = any(p in msg_lower for p in _OVERFLOW_PATTERNS)
-        assert detected, (
-            "OVF-1: LM Studio error message must match an overflow pattern"
-        )
+        assert detected, "OVF-1: LM Studio error message must match an overflow pattern"
 
 
 class TestOvf2PerceptionNodeEarlyExitOnOverflow:
@@ -91,13 +89,16 @@ class TestOvf2PerceptionNodeEarlyExitOnOverflow:
         # The REACT-OVF-EARLY-EXIT block must contain a return statement,
         # proving that we exit before the corrective-prompt retry loop.
         ovf_idx = src_text.find("REACT-OVF-EARLY-EXIT")
-        corrective_idx = src_text.find("corrective_prompt", ovf_idx)
+        # The code previously referenced a local variable named 'corrective_prompt'.
+        # Newer implementations centralise corrective wording in a helper. Search
+        # for that helper name instead to avoid brittle source-string checks.
+        select_idx = src_text.find("_select_corrective_prompt", ovf_idx)
         assert ovf_idx != -1, "REACT-OVF-EARLY-EXIT block not found"
-        # There must be a 'return {' before the corrective_prompt section
+        # There must be a 'return {' before the corrective prompt helper is invoked.
         return_idx = src_text.find("return {", ovf_idx)
         assert return_idx != -1, "No return statement found after REACT-OVF-EARLY-EXIT"
-        assert return_idx < corrective_idx or corrective_idx == -1, (
-            "OVF-2: early-exit return must appear BEFORE the corrective_prompt block"
+        assert return_idx < select_idx or select_idx == -1, (
+            "OVF-2: early-exit return must appear BEFORE the corrective prompt helper invocation"
         )
 
 
@@ -157,9 +158,9 @@ class TestOvf4PlanningNodeTaskPrefixStrip:
         import src.core.orchestration.graph.nodes.planning_node as pn
 
         src_text = inspect.getsource(pn)
-        assert "startswith(\"Task: \")" in src_text or "startswith('Task: ')" in src_text, (
-            "OVF-4: planning_node must strip 'Task: ' prefix from task"
-        )
+        assert (
+            'startswith("Task: ")' in src_text or "startswith('Task: ')" in src_text
+        ), "OVF-4: planning_node must strip 'Task: ' prefix from task"
 
     def test_strip_removes_cascaded_prefixes(self):
         """Multiple 'Task: Task: ' prefixes must all be stripped via the while loop."""
@@ -282,6 +283,11 @@ class TestOvf6RouteExecutionContextOverflow:
             "last_result": {"ok": True},
         }
         result = route_execution(state)
-        assert result in ("step_controller", "memory_sync", "replan", "analysis", "perception", "wait_for_user"), (
-            f"OVF-6: normal routing must return a valid destination, got {result!r}"
-        )
+        assert result in (
+            "step_controller",
+            "memory_sync",
+            "replan",
+            "analysis",
+            "perception",
+            "wait_for_user",
+        ), f"OVF-6: normal routing must return a valid destination, got {result!r}"

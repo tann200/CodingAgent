@@ -39,6 +39,7 @@ def _make_bridge():
     bridge.history = []
     bridge._cancel_event = threading.Event()
     bridge._subscriptions = []
+    bridge._pending_injections = []  # MID-INJ: required by send_prompt
 
     # Stub orchestrator so no real LLM calls happen
     orch = MagicMock()

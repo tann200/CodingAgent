@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from src.tools.tools_config import agent_context_path
-from src.tools._tool import tool
+from src.tools._tool import tool, PermissionKind
 
 logger = logging.getLogger(__name__)
 
@@ -82,7 +82,7 @@ def _search_file(path: Path, query: str, source_name: str) -> List[Dict[str, Any
     return results[:5]
 
 
-@tool(tags=["coding", "debug", "planning", "review"])
+@tool(tags=["coding", "debug", "planning", "review"], permission_kind=PermissionKind.NONE)
 def memory_search(
     query: str,
     workdir: Optional[str] = None,
@@ -161,7 +161,7 @@ _MEMORY_FILE = Path.home() / ".coding_agent" / "memory.md"
 _MEMORY_MAX_BYTES = 50_000  # ~50 KB; trim oldest entries when exceeded
 
 
-@tool(tags=["coding", "planning", "review"])
+@tool(tags=["coding", "planning", "review"], permission_kind=PermissionKind.MEMORY)
 def memory_save(
     content: str,
     category: Optional[str] = None,

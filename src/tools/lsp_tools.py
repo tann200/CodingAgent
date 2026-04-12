@@ -344,6 +344,7 @@ LSP_TOOL_SCHEMAS = [
         "name": "lsp_diagnostics",
         "description": "Get lint/type errors for a file from the language server.",
         "permission": "read_only",
+        "permission_kind": "LSP",
         "parameters": {
             "type": "object",
             "properties": {
@@ -357,6 +358,7 @@ LSP_TOOL_SCHEMAS = [
         "name": "lsp_references",
         "description": "Find all references to the symbol at the given line/column.",
         "permission": "read_only",
+        "permission_kind": "LSP",
         "parameters": {
             "type": "object",
             "properties": {
@@ -372,6 +374,7 @@ LSP_TOOL_SCHEMAS = [
         "name": "lsp_definition",
         "description": "Go to the definition of the symbol at the given line/column.",
         "permission": "read_only",
+        "permission_kind": "LSP",
         "parameters": {
             "type": "object",
             "properties": {
@@ -387,6 +390,7 @@ LSP_TOOL_SCHEMAS = [
         "name": "lsp_symbols",
         "description": "List all symbols (functions, classes, variables) in a file.",
         "permission": "read_only",
+        "permission_kind": "LSP",
         "parameters": {
             "type": "object",
             "properties": {
@@ -400,6 +404,7 @@ LSP_TOOL_SCHEMAS = [
         "name": "lsp_hover",
         "description": "Get type information and documentation for symbol at position.",
         "permission": "read_only",
+        "permission_kind": "LSP",
         "parameters": {
             "type": "object",
             "properties": {
@@ -415,6 +420,7 @@ LSP_TOOL_SCHEMAS = [
         "name": "lsp_rename",
         "description": "Rename a symbol and all its references across the workspace.",
         "permission": "workspace_write",
+        "permission_kind": "LSPWrite",
         "parameters": {
             "type": "object",
             "properties": {

@@ -6,6 +6,7 @@ import pytest
 from src.core.inference.model_tiers import (
     ModelTier,
     classify_model,
+    get_max_turns,
     get_tool_limit,
     is_simple_mode,
     supports_native_tools,
@@ -124,3 +125,83 @@ class TestModeFlags:
     def test_tier_values_are_strings(self):
         for tier in ModelTier:
             assert isinstance(tier.value, str)
+
+
+class TestGemma4Classification:
+    """GAP-9 / model_tiers: Gemma 4 family must classify correctly."""
+
+    # Edge models (E2B / E4B) → SMALL
+    def test_gemma4_e4b_hf_style(self):
+        assert classify_model("gemma-4-e4b-it") == ModelTier.SMALL
+
+    def test_gemma4_e2b_hf_style(self):
+        assert classify_model("gemma-4-e2b-it") == ModelTier.SMALL
+
+    def test_gemma4_e4b_ollama_style(self):
+        assert classify_model("gemma4:e4b") == ModelTier.SMALL
+
+    def test_gemma4_e2b_ollama_style(self):
+        assert classify_model("gemma4:e2b") == ModelTier.SMALL
+
+    def test_gemma4_e4b_lmstudio_style(self):
+        # LM Studio sometimes uses underscores or longer suffixes
+        assert classify_model("gemma-4-e4b-it-q8_0") == ModelTier.SMALL
+
+    # Dense 31B → FRONTIER; MoE 26B A4B → MEDIUM
+    def test_gemma4_31b_hf_style(self):
+        assert classify_model("gemma-4-31b-it") == ModelTier.FRONTIER
+
+    def test_gemma4_26b_hf_style(self):
+        # 26B A4B is MEDIUM: MoE, 4B active params, runs at 4B inference speed,
+        # no parallel tool calling. MEDIUM capability (77% LiveCodeBench).
+        assert classify_model("gemma-4-26b-a4b-it") == ModelTier.MEDIUM
+
+    def test_gemma4_31b_ollama_style(self):
+        assert classify_model("gemma4:31b") == ModelTier.FRONTIER
+
+    def test_gemma4_26b_ollama_style(self):
+        # Ollama style — matches _GEMMA4_MEDIUM_PATTERNS
+        assert classify_model("gemma4:26b") == ModelTier.MEDIUM
+
+    def test_gemma4_31b_uppercase(self):
+        # Case-insensitive match
+        assert classify_model("Gemma-4-31B-IT") == ModelTier.FRONTIER
+
+
+class TestGetMaxTurns:
+    """GAP-9: get_max_turns() must return tier-appropriate defaults."""
+
+    @pytest.mark.parametrize(
+        "tier,expected",
+        [
+            (ModelTier.NANO, 15),
+            (ModelTier.SMALL, 25),
+            (ModelTier.MEDIUM, 40),
+            (ModelTier.LARGE, 60),
+            (ModelTier.FRONTIER, 80),
+        ],
+    )
+    def test_max_turns_by_tier(self, tier, expected):
+        assert get_max_turns(tier) == expected
+
+    def test_small_lt_medium(self):
+        assert get_max_turns(ModelTier.SMALL) < get_max_turns(ModelTier.MEDIUM)
+
+    def test_frontier_is_highest(self):
+        for tier in (
+            ModelTier.NANO,
+            ModelTier.SMALL,
+            ModelTier.MEDIUM,
+            ModelTier.LARGE,
+        ):
+            assert get_max_turns(ModelTier.FRONTIER) > get_max_turns(tier)
+
+    def test_gemma4_e4b_gets_small_max_turns(self):
+        # End-to-end: classify E4B → SMALL → get_max_turns(SMALL) == 25
+        tier = classify_model("gemma-4-e4b-it")
+        assert get_max_turns(tier) == 25
+
+    def test_gemma4_31b_gets_frontier_max_turns(self):
+        # End-to-end: classify 31B → FRONTIER → get_max_turns(FRONTIER) == 80
+        tier = classify_model("gemma-4-31b-it")
+        assert get_max_turns(tier) == 80

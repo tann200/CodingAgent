@@ -55,7 +55,14 @@ async def debug_node(state: Mapping[str, Any], config: Any) -> Dict[str, Any]:
     last_error_type: str = state.get("last_debug_error_type") or ""
     last_result = state.get("last_result") or {}
     verification_result = state.get("verification_result") or {}
-    task = str(state.get("task") or "")
+    # DOOM-LOOP FIX: Use original_task as the authoritative task string.
+    # state["task"] may have been overwritten by planning_node with a step
+    # description, which causes "Task: Task: Task:..." accumulation when
+    # debug_node prefixes it with "Task: " again.
+    task = str(state.get("original_task") or state.get("task") or "")
+    # Defensive strip: remove any leftover "Task: " prefixes.
+    while task.startswith("Task: ") or task.startswith("Task:\t"):
+        task = task[6:]
 
     logger.info(f"debug_node: attempt {current_attempt + 1}/{max_attempts}")
 
@@ -105,6 +112,8 @@ async def debug_node(state: Mapping[str, Any], config: Any) -> Dict[str, Any]:
 
     next_attempt = current_attempt + 1
     next_total = total_debug_attempts + 1
+    # P2-A: global recovery cap (debug + replan combined)
+    next_recovery = int(state.get("total_recovery_attempts") or 0) + 1
 
     # Classify the error for more targeted fixes
     error_type = _classify_error(error_summary)
@@ -218,6 +227,7 @@ Generate a YAML tool call to fix the issue. Use edit_file, write_file, or bash a
                     "next_action": None,
                     "debug_attempts": next_attempt,
                     "total_debug_attempts": next_total,
+                    "total_recovery_attempts": next_recovery,
                     "errors": ["canceled"],
                 }
             if (
@@ -232,6 +242,7 @@ Generate a YAML tool call to fix the issue. Use edit_file, write_file, or bash a
                     "next_action": None,
                     "debug_attempts": next_attempt,
                     "total_debug_attempts": next_total,
+                    "total_recovery_attempts": next_recovery,
                     "errors": [f"llm_timeout:{_debug_llm_timeout}s"],
                 }
             await asyncio.sleep(0.2)
@@ -254,6 +265,7 @@ Generate a YAML tool call to fix the issue. Use edit_file, write_file, or bash a
                 "next_action": tool_call,
                 "debug_attempts": next_attempt,
                 "total_debug_attempts": next_total,
+                "total_recovery_attempts": next_recovery,
                 "last_debug_error_type": error_type,
             }
         else:
@@ -262,6 +274,7 @@ Generate a YAML tool call to fix the issue. Use edit_file, write_file, or bash a
                 "next_action": None,
                 "debug_attempts": next_attempt,
                 "total_debug_attempts": next_total,
+                "total_recovery_attempts": next_recovery,
                 "last_debug_error_type": error_type,
                 "errors": ["Debug node could not generate fix"],
             }
@@ -272,6 +285,7 @@ Generate a YAML tool call to fix the issue. Use edit_file, write_file, or bash a
             "next_action": None,
             "debug_attempts": next_attempt,
             "total_debug_attempts": next_total,
+            "total_recovery_attempts": next_recovery,
             "last_debug_error_type": error_type,
             "errors": [str(e)],
         }

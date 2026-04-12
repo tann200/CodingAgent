@@ -67,11 +67,14 @@ def test_planning_node_uses_decomposed_plan(tmp_path):
 
     res = run_async(planning_node(state, config))
 
-    # Should return the plan and update task to current step
+    # Should return the plan and update step_description to current step.
+    # NOTE: planning_node intentionally does NOT overwrite state["task"] with
+    # the step description (doom-loop fix).  The step is communicated via
+    # state["step_description"] instead.
     assert "current_plan" in res
     assert "current_step" in res
     assert res.get("current_step") == 0
-    assert "step 1" in str(res.get("task", ""))
+    assert "step 1" in str(res.get("step_description", ""))
 
 
 def test_planning_node_handles_no_plan(tmp_path):

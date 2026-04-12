@@ -9,6 +9,10 @@ This adapter extends OpenAICompatibleAdapter with:
   - Optional API key from UserPrefs or environment (LITELLM_API_KEY).
   - No REQUIRES_API_KEY flag — LiteLLM can run without auth (local setup).
   - Model list from providers.json (or fetched via /models if omitted).
+  - GAP-4: model_tier property — classifies the active model so context_builder
+    and perception_node behave correctly for frontier vs local models.
+  - GAP-4: thinking_utils integration — strips <think> blocks from responses
+    produced by reasoning models (Qwen3, DeepSeek-R1, etc.) routed via LiteLLM.
 
 Configuration example in providers.json::
 
@@ -35,6 +39,26 @@ from typing import Any, Dict, List, Optional
 from src.core.inference.adapters.openai_compat_adapter import OpenAICompatibleAdapter
 
 _logger = logging.getLogger(__name__)
+
+# GAP-4: lazy imports for model classification and thinking-token stripping.
+# Wrapped in try/except so the adapter remains functional in minimal test envs.
+try:
+    from src.core.inference.model_tiers import (
+        ModelTier,
+        classify_model as _classify_model,
+    )
+except Exception:  # pragma: no cover
+    _classify_model = None  # type: ignore[assignment]
+    ModelTier = None  # type: ignore[assignment]
+
+try:
+    from src.core.inference.thinking_utils import (
+        is_reasoning_model as _is_reasoning_model,
+        strip_thinking as _strip_thinking,
+    )
+except Exception:  # pragma: no cover
+    _is_reasoning_model = None  # type: ignore[assignment]
+    _strip_thinking = None  # type: ignore[assignment]
 
 _DEFAULT_BASE_URL = "http://localhost:4000"
 _DEFAULT_MODEL = "gpt-4o"
@@ -87,6 +111,83 @@ class LiteLLMAdapter(OpenAICompatibleAdapter):
 
         if small_model:
             self.small_model = small_model
+
+    # ------------------------------------------------------------------
+    # GAP-4: Model tier classification
+    # ------------------------------------------------------------------
+
+    @property
+    def model_tier(self) -> str:
+        """Return the ModelTier string for the active model (GAP-4).
+
+        Used by context_builder.py and perception_node.py to apply tier-aware
+        tool limits, prompt formats, and step limits.  Falls back to "medium"
+        when classification is unavailable (e.g. in test environments).
+        """
+        if _classify_model is None:
+            return "medium"
+        try:
+            model = (
+                self.models[0]
+                if isinstance(self.models, list) and self.models
+                else self.default_model or ""
+            )
+            if not model:
+                return "medium"
+            ctx_window = int(getattr(self, "context_window", 0) or 0)
+            tier = _classify_model(model, ctx_window)
+            return tier.value
+        except Exception:
+            return "medium"
+
+    # ------------------------------------------------------------------
+    # GAP-4: Thinking-token stripping for reasoning models
+    # ------------------------------------------------------------------
+
+    def generate(self, messages, model=None, stream=False, timeout=None, **kwargs):
+        """Call the parent generate() then strip <think> blocks if needed.
+
+        LiteLLM routes requests to many providers, including local reasoning
+        models (Qwen3, DeepSeek-R1) that emit raw <think>...</think> blocks.
+        The base OpenAICompatibleAdapter already falls back to reasoning_content
+        when content is empty, but does not strip inline <think> tags.  This
+        override applies strip_thinking() on the way out so callers always
+        receive clean text.
+        """
+        result = super().generate(
+            messages, model=model, stream=stream, timeout=timeout, **kwargs
+        )
+
+        # Only strip when the active model is a known reasoning model and
+        # thinking_utils is available.
+        if _is_reasoning_model is None or _strip_thinking is None or stream:
+            return result
+
+        try:
+            active_model = model or (
+                self.models[0]
+                if isinstance(self.models, list) and self.models
+                else self.default_model or ""
+            )
+            if not _is_reasoning_model(active_model):
+                return result
+
+            choices = result.get("choices") or []
+            if not choices:
+                return result
+
+            cleaned_choices = []
+            for choice in choices:
+                msg = choice.get("message", {})
+                content = msg.get("content", "") or ""
+                if "<think>" in content:
+                    content = _strip_thinking(content)
+                cleaned_choices.append(
+                    {**choice, "message": {**msg, "content": content}}
+                )
+            return {**result, "choices": cleaned_choices}
+        except Exception:
+            return result
 
     # ------------------------------------------------------------------
     # Model listing

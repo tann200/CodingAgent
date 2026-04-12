@@ -16,7 +16,7 @@ from contextvars import ContextVar
 from typing import Dict, Any, List, Optional, cast
 from pathlib import Path
 
-from src.tools._tool import tool
+from src.tools._tool import tool, PermissionKind
 
 # SPAWN-W1: ContextVar that carries the parent orchestrator reference into tool calls.
 # Set by Orchestrator.execute_tool() before dispatching; cleared automatically on exit.
@@ -187,7 +187,7 @@ class SubagentOrchestrator:
         return list(set(base_denied) | self._denied_tools)
 
 
-@tool(side_effects=["execute"], tags=["planning"])
+@tool(side_effects=["execute"], tags=["planning"], permission_kind=PermissionKind.DELEGATE)
 def delegate_task(
     role: str,
     subtask_description: str,
@@ -540,6 +540,8 @@ def delegate_task(
             _child_ctx = _cv.copy_context()
             _child_ctx.run(_DELEGATION_DEPTH_VAR.set, depth + 1)
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                # Ensure ContextVars (delegation depth, parent orchestrator, etc.)
+                # are visible inside the worker thread by submitting ctx.run.
                 future = executor.submit(_child_ctx.run, _run_subagent)
                 final_state = future.result(timeout=300)
 
@@ -572,8 +574,10 @@ def delegate_task(
                         for _m in _raw:
                             if hasattr(_m, "type") and hasattr(_m, "content"):
                                 _child_msgs.append(
-                                    {"role": getattr(_m, "type", "unknown"),
-                                     "content": str(_m.content)}
+                                    {
+                                        "role": getattr(_m, "type", "unknown"),
+                                        "content": str(_m.content),
+                                    }
                                 )
                 except Exception:
                     pass
@@ -590,16 +594,19 @@ def delegate_task(
                     "ok": True,
                 }
                 import tempfile as _tempfile
+
                 _sp = _sessions_dir / f"session_{child_session_id}.json"
                 _fd, _tmp = _tempfile.mkstemp(dir=str(_sessions_dir), suffix=".tmp")
                 try:
                     import os as _os
+
                     with _os.fdopen(_fd, "w", encoding="utf-8") as _f:
                         _json.dump(_session_payload, _f, ensure_ascii=False)
                     _os.replace(_tmp, str(_sp))
                 except Exception:
                     try:
                         import os as _os2
+
                         _os2.unlink(_tmp)
                     except OSError:
                         pass
@@ -612,9 +619,11 @@ def delegate_task(
                 if parent_orchestrator is not None:
                     _pbus = getattr(parent_orchestrator, "event_bus", None)
                     if _pbus is not None:
-                        _child_cost = float(
-                            final_state.get("session_cost_usd") or 0.0
-                        ) if final_state else 0.0
+                        _child_cost = (
+                            float(final_state.get("session_cost_usd") or 0.0)
+                            if final_state
+                            else 0.0
+                        )
                         _pbus.publish(
                             "delegation.finish",
                             {
@@ -672,16 +681,19 @@ def delegate_task(
                     "error": str(_subagent_err),
                 }
                 import tempfile as _tempfile
+
                 _sp = _sessions_dir / f"session_{child_session_id}.json"
                 _fd, _tmp = _tempfile.mkstemp(dir=str(_sessions_dir), suffix=".tmp")
                 try:
                     import os as _os
+
                     with _os.fdopen(_fd, "w", encoding="utf-8") as _f:
                         _json.dump(_session_payload, _f, ensure_ascii=False)
                     _os.replace(_tmp, str(_sp))
                 except Exception:
                     try:
                         import os as _os2
+
                         _os2.unlink(_tmp)
                     except OSError:
                         pass
@@ -800,7 +812,7 @@ def delegate_task(
         return f"Subagent [{role}] failed during execution: {str(e)}"
 
 
-@tool(tags=["planning"])
+@tool(tags=["planning"], permission_kind=PermissionKind.NONE)
 def list_subagent_roles() -> Dict[str, Any]:
     """
     List available subagent roles and their purposes.
@@ -866,12 +878,13 @@ async def delegate_task_async(
     # HR-12 fix: add timeout to prevent subagent from hanging forever
     _DELEGATION_TIMEOUT_SECONDS = 300.0  # 5 minutes max per subagent
 
+    import contextvars as _cv
+
+    _ctx = _cv.copy_context()
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        # Propagate ContextVars into the subagent thread
         future = executor.submit(
-            delegate_task,
-            role,
-            subtask_description,
-            working_dir,
+            _ctx.run, delegate_task, role, subtask_description, working_dir
         )
         try:
             return future.result(timeout=_DELEGATION_TIMEOUT_SECONDS)

@@ -114,11 +114,36 @@ class AsyncGate:
             ev = self._sync_event
             if ev is None:
                 raise RuntimeError("ApprovalGate._sync_event is None in fallback path")
+
             try:
-                await _asyncio.wait_for(
-                    loop.run_in_executor(None, lambda: ev.wait(timeout)),
-                    timeout=timeout + 1,
-                )
+                # Prefer the central helper which copies the current context
+                # and runs the callable in the executor so ContextVars
+                # (eg. correlation id) propagate into the worker thread.
+                try:
+                    from src.core.orchestration.event_bus import run_with_correlation
+
+                    await _asyncio.wait_for(
+                        run_with_correlation(loop, None, lambda: ev.wait(timeout)),
+                        timeout=timeout + 1,
+                    )
+                except Exception:
+                    # Best-effort fallback when the helper isn't importable
+                    # (circular import risk): copy the current context and
+                    # use loop.run_in_executor with ctx.run.
+                    import contextvars as _contextvars
+
+                    ctx = _contextvars.copy_context()
+
+                    # Wrap ctx.run in a zero-argument callable so run_in_executor
+                    # receives a single callable; this avoids typechecker/LSP
+                    # complaints about variadic call signatures.
+                    def _wait_in_thread() -> bool:
+                        return ctx.run(lambda: ev.wait(timeout))
+
+                    await _asyncio.wait_for(
+                        loop.run_in_executor(None, _wait_in_thread),
+                        timeout=timeout + 1,
+                    )
                 return ev.is_set()
             except _asyncio.TimeoutError:
                 return False

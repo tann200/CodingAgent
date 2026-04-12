@@ -140,3 +140,13 @@
 [src.main] app.run() returned
 [src.main] main() starting; argv=[]
 [src.main] Delegating startup to CodingAgentApp.run()
+[src.main] main() starting; argv=[]
+[src.main] Failed to start app: No module named 'src.ui'
+[src.main] main() starting; argv=[]
+[src.main] Failed to start app: No module named 'src.ui'
+[src.main] main() starting; argv=[]
+[src.main] Delegating startup to AgentApp (new TUI)
+[src.main] main() starting; argv=[]
+[src.main] Delegating startup to AgentApp (new TUI)
+[src.main] main() starting; argv=[]
+[src.main] Delegating startup to AgentApp (new TUI)

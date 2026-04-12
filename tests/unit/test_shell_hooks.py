@@ -73,10 +73,11 @@ class TestLoadHooksConfig:
         assert config == {"PreToolUse": [], "PostToolUse": []}
 
     def test_loads_pre_and_post_commands(self, tmp_path):
+        # TASK-8c: _load_hooks_config now returns normalised dicts with matcher/command.
         _write_settings(tmp_path, ["cmd_a"], ["cmd_b"])
         config = _load_hooks_config(tmp_path)
-        assert config["PreToolUse"] == ["cmd_a"]
-        assert config["PostToolUse"] == ["cmd_b"]
+        assert config["PreToolUse"] == [{"matcher": "*", "command": "cmd_a"}]
+        assert config["PostToolUse"] == [{"matcher": "*", "command": "cmd_b"}]
 
     def test_missing_hooks_key_returns_empty(self, tmp_path):
         agent_dir = tmp_path / ".agent"

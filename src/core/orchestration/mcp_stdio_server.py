@@ -79,7 +79,10 @@ class MCPStdioServer:
         # PERF-VOL24-1: Reuse a single thread executor across sampling/create
         # calls instead of creating a new ThreadPoolExecutor per request.
         import concurrent.futures as _cf
-        self._sampling_executor = _cf.ThreadPoolExecutor(max_workers=1, thread_name_prefix="mcp-sampling")
+
+        self._sampling_executor = _cf.ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="mcp-sampling"
+        )
 
     def _get_event_bus(self):
         """Lazy-load EventBus to avoid circular imports."""
@@ -302,8 +305,11 @@ class MCPStdioServer:
                     # Security: reject path traversal outside working dir.
                     # Use os.sep suffix to prevent /workdir-evil from matching /workdir.
                     import os as _os
+
                     _base_prefix = str(base) + _os.sep
-                    if (str(target) == str(base) or str(target).startswith(_base_prefix)) and target.is_file():
+                    if (
+                        str(target) == str(base) or str(target).startswith(_base_prefix)
+                    ) and target.is_file():
                         text = target.read_text(encoding="utf-8", errors="replace")
                         contents = [
                             {"uri": uri, "mimeType": "text/plain", "text": text}
@@ -395,7 +401,15 @@ class MCPStdioServer:
                         finally:
                             _loop.close()
 
-                    resp = self._sampling_executor.submit(_call_model_in_new_loop).result(timeout=60)
+                    # Ensure ContextVars (eg. correlation id) propagate into the
+                    # sampling thread by capturing the current context and using
+                    # ctx.run as the submitted callable.
+                    import contextvars as _contextvars
+
+                    ctx = _contextvars.copy_context()
+                    resp = self._sampling_executor.submit(
+                        ctx.run, _call_model_in_new_loop
+                    ).result(timeout=60)
                     if isinstance(resp, str):
                         text = resp
                     elif isinstance(resp, dict):
@@ -595,10 +609,30 @@ class MCPStdioServer:
         except Exception:
             pass
 
-        # Run stdin reader in thread pool since it's blocking
+        # Run stdin reader in thread pool since it's blocking. Use
+        # run_with_correlation so ContextVars are propagated into the reader
+        # thread (ensures events emitted from that thread carry correlation).
         loop = asyncio.get_running_loop()
         try:
-            await loop.run_in_executor(None, self._read_stdin, loop)
+            try:
+                from src.core.orchestration.event_bus import run_with_correlation
+
+                await run_with_correlation(loop, None, self._read_stdin, loop)
+            except Exception:
+                # Best-effort: copy the current context so ContextVars (eg. correlation id)
+                # propagate into the reader thread. Use functools.partial so a single
+                # callable is passed to run_in_executor which avoids LSP/typechecker
+                # complaints about variadic call signatures.
+                import contextvars as _contextvars
+
+                _ctx = _contextvars.copy_context()
+
+                # Wrap ctx.run in a zero-argument callable so run_in_executor
+                # receives a single callable (avoids variadic typing issues).
+                def _call_reader_in_thread() -> None:
+                    return _ctx.run(self._read_stdin, loop)
+
+                await loop.run_in_executor(None, _call_reader_in_thread)
         finally:
             # TUI-08: notify TUI that MCP server has stopped
             try:

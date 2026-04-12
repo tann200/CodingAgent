@@ -8,8 +8,11 @@ from src.core.orchestration.graph.builder import (
     route_after_perception,
     route_execution,
     should_after_analysis,
+    should_after_plan_validator,
     _task_is_complex,
     _task_has_more_steps,
+    _is_large_or_frontier,
+    _is_nano_or_small,
 )
 from src.core.orchestration.graph.state import AgentState
 
@@ -55,6 +58,12 @@ def _make_state(**kwargs: Any) -> AgentState:
         "delegation_results": None,
         "delegations": None,
         "last_tool_name": None,
+        # P3b / tier-aware routing fields
+        "model_tier": None,
+        "plan_mode_enabled": False,
+        "plan_mode_approved": False,
+        "plan_validation": None,
+        "task_complexity": None,
     }
     for key, value in kwargs.items():
         if key in default:
@@ -1101,4 +1110,398 @@ class TestRouteExecutionCompletionDetected:
         assert result == "perception", (
             f"Without _completion_detected, write tool success should route to perception "
             f"(got {result!r})"
+        )
+
+
+# ---------------------------------------------------------------------------
+# P3b: LARGE/FRONTIER pipeline simplification tests
+# ---------------------------------------------------------------------------
+
+class TestIsLargeOrFrontier:
+    """Unit tests for the _is_large_or_frontier() helper."""
+
+    def test_large_tier_returns_true(self):
+        assert _is_large_or_frontier({"model_tier": "large"}) is True
+
+    def test_frontier_tier_returns_true(self):
+        assert _is_large_or_frontier({"model_tier": "frontier"}) is True
+
+    def test_medium_tier_returns_false(self):
+        assert _is_large_or_frontier({"model_tier": "medium"}) is False
+
+    def test_small_tier_returns_false(self):
+        assert _is_large_or_frontier({"model_tier": "small"}) is False
+
+    def test_none_tier_returns_false(self):
+        assert _is_large_or_frontier({"model_tier": None}) is False
+
+    def test_missing_tier_returns_false(self):
+        assert _is_large_or_frontier({}) is False
+
+
+class TestP3bARouteAfterPerception:
+    """P3b-A: LARGE/FRONTIER complex tasks skip analysis → go to planning."""
+
+    def test_large_complex_flag_goes_to_planning(self):
+        """Complex task (flag) on LARGE tier routes to planning, not analysis."""
+        state = _make_state(
+            task="refactor the entire authentication module",
+            task_complexity="complex",
+            model_tier="large",
+        )
+        result = route_after_perception(state)
+        assert result == "planning", (
+            f"P3b-A: LARGE + complex task should go to planning, got {result!r}"
+        )
+
+    def test_frontier_complex_flag_goes_to_planning(self):
+        """Complex task (flag) on FRONTIER tier routes to planning, not analysis."""
+        state = _make_state(
+            task="implement a new API layer",
+            task_complexity="complex",
+            model_tier="frontier",
+        )
+        result = route_after_perception(state)
+        assert result == "planning", (
+            f"P3b-A: FRONTIER + complex task should go to planning, got {result!r}"
+        )
+
+    def test_medium_complex_flag_still_goes_to_analysis(self):
+        """MEDIUM tier still routes complex tasks through analysis (unchanged)."""
+        state = _make_state(
+            task="refactor the authentication module",
+            task_complexity="complex",
+            model_tier="medium",
+        )
+        result = route_after_perception(state)
+        assert result == "analysis", (
+            f"MEDIUM + complex task should still go to analysis, got {result!r}"
+        )
+
+    def test_large_complex_heuristic_goes_to_planning(self):
+        """Heuristic-complex task on LARGE tier routes to planning, not analysis."""
+        state = _make_state(
+            task="refactor the codebase",
+            task_complexity=None,  # no flag — heuristic fires
+            model_tier="large",
+        )
+        result = route_after_perception(state)
+        assert result == "planning", (
+            f"P3b-A: LARGE + heuristic-complex should go to planning, got {result!r}"
+        )
+
+    def test_large_first_round_no_action_goes_to_planning(self):
+        """P3b-A: LARGE first round with no next_action skips analysis → planning."""
+        state = _make_state(
+            task="write a utility function",
+            rounds=0,
+            model_tier="large",
+            next_action=None,
+        )
+        result = route_after_perception(state)
+        assert result == "planning", (
+            f"P3b-A: LARGE first round should skip analysis, got {result!r}"
+        )
+
+    def test_large_complex_task_with_next_action_goes_to_planning(self):
+        """LARGE + next_action set + complex flag → planning (P3b-A skips analysis)."""
+        state = _make_state(
+            task="implement a feature",
+            task_complexity="complex",
+            model_tier="large",
+            next_action={"tool": "read_file", "args": {}},
+        )
+        result = route_after_perception(state)
+        assert result == "planning", (
+            f"P3b-A: LARGE + complex flag + next_action should go to planning, got {result!r}"
+        )
+
+
+class TestP3bERouteAfterPerception:
+    """P3b-E: LARGE/FRONTIER simple task + next_action → direct execution."""
+
+    def test_large_simple_with_next_action_goes_to_execution(self):
+        """LARGE + simple flag + next_action → direct execution (fastest path)."""
+        state = _make_state(
+            task="read the config file",
+            task_complexity="simple",
+            model_tier="large",
+            next_action={"tool": "read_file", "args": {}},
+        )
+        result = route_after_perception(state)
+        assert result == "execution", (
+            f"P3b-E: LARGE + simple + next_action should go to execution, got {result!r}"
+        )
+
+    def test_frontier_simple_with_next_action_goes_to_execution(self):
+        """FRONTIER + simple + next_action → execution."""
+        state = _make_state(
+            task="list files",
+            task_complexity="simple",
+            model_tier="frontier",
+            next_action={"tool": "glob", "args": {}},
+        )
+        result = route_after_perception(state)
+        assert result == "execution", (
+            f"P3b-E: FRONTIER + simple + next_action should go to execution, got {result!r}"
+        )
+
+    def test_medium_simple_with_next_action_still_goes_to_execution(self):
+        """MEDIUM + simple + next_action also goes to execution (existing fast-path)."""
+        state = _make_state(
+            task="read the config file",
+            task_complexity="simple",
+            model_tier="medium",
+            next_action={"tool": "read_file", "args": {}},
+        )
+        result = route_after_perception(state)
+        assert result == "execution", (
+            f"MEDIUM + simple + next_action should go to execution, got {result!r}"
+        )
+
+
+class TestP3bBShouldAfterPlanValidator:
+    """P3b-B: LARGE/FRONTIER skip plan validation → execute immediately."""
+
+    def test_large_tier_goes_to_execute(self):
+        """LARGE tier always routes to execute after plan_validator."""
+        state = _make_state(
+            model_tier="large",
+            plan_validation=None,  # validator result not set / not run
+            action_failed=False,
+            rounds=1,
+        )
+        result = should_after_plan_validator(state)
+        assert result == "execute", (
+            f"P3b-B: LARGE should skip validation and execute, got {result!r}"
+        )
+
+    def test_frontier_tier_goes_to_execute(self):
+        """FRONTIER tier always routes to execute after plan_validator."""
+        state = _make_state(
+            model_tier="frontier",
+            plan_validation={"valid": False},  # even an invalid result is ignored
+            action_failed=False,
+            rounds=1,
+        )
+        result = should_after_plan_validator(state)
+        assert result == "execute", (
+            f"P3b-B: FRONTIER should skip validation even on invalid result, got {result!r}"
+        )
+
+    def test_medium_tier_invalid_plan_routes_to_planning(self):
+        """MEDIUM tier still re-plans on invalid validation (unchanged)."""
+        state = _make_state(
+            model_tier="medium",
+            plan_validation={"valid": False},
+            action_failed=False,
+            rounds=1,
+        )
+        result = should_after_plan_validator(state)
+        assert result == "planning", (
+            f"MEDIUM + invalid plan should route to planning, got {result!r}"
+        )
+
+    def test_large_tier_plan_mode_waits_for_user(self):
+        """Even LARGE tier must pause for user approval when plan_mode is enabled."""
+        state = _make_state(
+            model_tier="large",
+            plan_validation={"valid": True},
+            action_failed=False,
+            rounds=1,
+            plan_mode_enabled=True,
+            plan_mode_approved=False,
+        )
+        result = should_after_plan_validator(state)
+        assert result == "wait_for_user", (
+            f"P3b-B: LARGE + plan_mode_enabled should still wait for user, got {result!r}"
+        )
+
+    def test_large_tier_plan_mode_already_approved_executes(self):
+        """LARGE tier + plan_mode_enabled + already approved → execute."""
+        state = _make_state(
+            model_tier="large",
+            plan_validation={"valid": True},
+            action_failed=False,
+            rounds=1,
+            plan_mode_enabled=True,
+            plan_mode_approved=True,
+        )
+        result = should_after_plan_validator(state)
+        assert result == "execute", (
+            f"P3b-B: LARGE + plan_mode already approved should execute, got {result!r}"
+        )
+
+    def test_large_tier_resumed_plan_executes(self):
+        """plan_resumed=True always executes regardless of tier."""
+        state = _make_state(
+            model_tier="large",
+            plan_resumed=True,
+            plan_validation=None,
+        )
+        result = should_after_plan_validator(state)
+        assert result == "execute", (
+            f"plan_resumed=True should always execute, got {result!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# P3-A: NANO/SMALL tier routing tests
+# ---------------------------------------------------------------------------
+
+class TestIsNanoOrSmall:
+    """Unit tests for the _is_nano_or_small() helper."""
+
+    def test_nano_returns_true(self):
+        assert _is_nano_or_small({"model_tier": "nano"}) is True
+
+    def test_small_returns_true(self):
+        assert _is_nano_or_small({"model_tier": "small"}) is True
+
+    def test_medium_returns_false(self):
+        assert _is_nano_or_small({"model_tier": "medium"}) is False
+
+    def test_large_returns_false(self):
+        assert _is_nano_or_small({"model_tier": "large"}) is False
+
+    def test_frontier_returns_false(self):
+        assert _is_nano_or_small({"model_tier": "frontier"}) is False
+
+    def test_missing_tier_returns_false(self):
+        assert _is_nano_or_small({}) is False
+
+
+class TestP3ARouteAfterPerception:
+    """P3-A: NANO/SMALL always skip analysis."""
+
+    def test_nano_complex_first_round_goes_to_planning(self):
+        """NANO + complex task + round 0 → planning (skip analysis)."""
+        state = _make_state(
+            task="refactor the entire authentication module",
+            task_complexity="complex",
+            model_tier="nano",
+            rounds=0,
+        )
+        result = route_after_perception(state)
+        assert result == "planning", (
+            f"P3-A: NANO + complex task should go to planning, got {result!r}"
+        )
+
+    def test_small_complex_first_round_goes_to_planning(self):
+        """SMALL + complex + round 0 → planning."""
+        state = _make_state(
+            task="implement a new API layer",
+            task_complexity="complex",
+            model_tier="small",
+            rounds=0,
+        )
+        result = route_after_perception(state)
+        assert result == "planning", (
+            f"P3-A: SMALL + complex should go to planning, got {result!r}"
+        )
+
+    def test_medium_complex_first_round_goes_to_analysis(self):
+        """MEDIUM + complex + round 0 still goes to analysis."""
+        state = _make_state(
+            task="refactor the auth module",
+            task_complexity="complex",
+            model_tier="medium",
+            rounds=0,
+        )
+        result = route_after_perception(state)
+        assert result == "analysis", (
+            f"MEDIUM + complex should still go to analysis, got {result!r}"
+        )
+
+    def test_nano_with_next_action_goes_to_execution(self):
+        """NANO + next_action set → execution always (skip analysis + planning override)."""
+        state = _make_state(
+            task="refactor the codebase",
+            task_complexity="complex",
+            model_tier="nano",
+            next_action={"tool": "read_file", "args": {}},
+        )
+        result = route_after_perception(state)
+        assert result == "execution", (
+            f"P3-A: NANO + next_action should always execute, got {result!r}"
+        )
+
+    def test_small_with_next_action_complex_goes_to_execution(self):
+        """SMALL + next_action + complex task → execution (trust the model's choice)."""
+        state = _make_state(
+            task="implement authentication system",
+            task_complexity="complex",
+            model_tier="small",
+            next_action={"tool": "write_file", "args": {}},
+        )
+        result = route_after_perception(state)
+        assert result == "execution", (
+            f"P3-A: SMALL + next_action + complex should execute, got {result!r}"
+        )
+
+    def test_nano_no_action_heuristic_complex_goes_to_planning(self):
+        """NANO with no next_action and heuristic-complex task → planning (not analysis)."""
+        state = _make_state(
+            task="refactor the codebase",
+            task_complexity=None,  # no flag — heuristic would fire
+            model_tier="nano",
+            rounds=0,
+        )
+        result = route_after_perception(state)
+        assert result == "planning", (
+            f"P3-A: NANO first round with no action should go to planning, got {result!r}"
+        )
+
+
+class TestP3AShouldAfterAnalysis:
+    """P3-A: NANO/SMALL always skip analyst_delegation."""
+
+    def test_nano_always_goes_to_planning(self):
+        """NANO skips analyst_delegation even on complex tasks."""
+        state = _make_state(
+            task="refactor the entire authentication module",
+            task_complexity="complex",
+            model_tier="nano",
+            relevant_files=["a.py", "b.py", "c.py", "d.py"],  # >3 → complex heuristic
+        )
+        result = should_after_analysis(state)
+        assert result == "planning", (
+            f"P3-A: NANO should skip analyst_delegation and go to planning, got {result!r}"
+        )
+
+    def test_small_always_goes_to_planning(self):
+        """SMALL also skips analyst_delegation."""
+        state = _make_state(
+            task="implement a new feature",
+            task_complexity="complex",
+            model_tier="small",
+        )
+        result = should_after_analysis(state)
+        assert result == "planning", (
+            f"P3-A: SMALL should skip analyst_delegation, got {result!r}"
+        )
+
+    def test_medium_complex_goes_to_analyst_delegation(self):
+        """MEDIUM + complex task still routes to analyst_delegation."""
+        state = _make_state(
+            task="refactor the authentication module",
+            task_complexity="complex",
+            model_tier="medium",
+            relevant_files=["a.py", "b.py", "c.py", "d.py"],
+        )
+        result = should_after_analysis(state)
+        assert result == "analyst_delegation", (
+            f"MEDIUM + complex should go to analyst_delegation, got {result!r}"
+        )
+
+    def test_medium_simple_goes_to_planning(self):
+        """MEDIUM + simple task still goes to planning directly."""
+        state = _make_state(
+            task="add a docstring",
+            task_complexity="simple",
+            model_tier="medium",
+        )
+        result = should_after_analysis(state)
+        assert result == "planning", (
+            f"MEDIUM + simple should go to planning, got {result!r}"
         )

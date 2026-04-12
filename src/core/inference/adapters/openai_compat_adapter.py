@@ -51,6 +51,10 @@ class OpenAICompatibleAdapter(LLMClient):
         self.default_model = default_model or kwargs.get("model") or None
         self.models: List[str] = models or []
         self.name = name
+        # LIVE-CTX: set dynamically by the provider.context_window event handler
+        # (via llm_manager.py → EventBus → core_bridge).  Declared here so that
+        # static analysis and hasattr() checks in perception_node work correctly.
+        self.context_window: int = 0
 
     # ------------------------------------------------------------------
     # URL helpers
@@ -393,9 +397,13 @@ class OpenAICompatibleAdapter(LLMClient):
                     )
                 if _attempt < _MAX_RETRIES - 1:
                     # GAP-NEW-1: honour Retry-After header from provider (caps at 30s).
-                    _retry_wait = 2 ** _attempt  # default: 1s, 2s
+                    _retry_wait = 2**_attempt  # default: 1s, 2s
                     if r is not None and r.status_code == 429:
-                        for _hdr in ("retry-after", "x-ratelimit-reset-requests", "x-ratelimit-reset"):
+                        for _hdr in (
+                            "retry-after",
+                            "x-ratelimit-reset-requests",
+                            "x-ratelimit-reset",
+                        ):
                             _hval = r.headers.get(_hdr)
                             if _hval:
                                 try:
@@ -415,7 +423,9 @@ class OpenAICompatibleAdapter(LLMClient):
             # if r were still None we'd have raised last_exc above, or
             # ConnectionError would have propagated.
             if r is None:  # pragma: no cover — defensive; satisfies type narrowing
-                raise RuntimeError("HTTP response is None after retry loop (unexpected)")
+                raise RuntimeError(
+                    "HTTP response is None after retry loop (unexpected)"
+                )
 
             try:
                 r.raise_for_status()

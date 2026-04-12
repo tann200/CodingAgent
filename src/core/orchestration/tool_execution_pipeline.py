@@ -646,6 +646,25 @@ def execute_tool_impl(orch: Any, tool_call: Dict[str, Any]) -> Dict[str, Any]:
 
         try:
             import concurrent.futures as _cf
+            import contextvars as _contextvars
+            import inspect as _inspect
+
+            def _run_tool_callable(fn, kwargs):
+                """Run the tool callable in the worker thread, normalising async fns.
+
+                If the callable returns an awaitable, run it to completion using
+                asyncio.run() since we're inside a worker thread.
+                """
+                try:
+                    rv = fn(**kwargs)
+                    if _inspect.isawaitable(rv):
+                        import asyncio as _asyncio
+
+                        return _asyncio.run(rv)
+                    return rv
+                except Exception:
+                    # Let the executor capture the exception for the caller to observe
+                    raise
 
             if timeout_seconds > 0:
                 # HR-3 fix: reuse the long-lived _tool_executor instead of
@@ -654,7 +673,14 @@ def execute_tool_impl(orch: Any, tool_call: Dict[str, Any]) -> Dict[str, Any]:
                 if _tex is None:
                     _tex = _cf.ThreadPoolExecutor(max_workers=2)
                     orch._tool_executor = _tex
-                _future = _tex.submit(tool["fn"], **args)
+                # Capture current context so ContextVars (correlation id etc.) are
+                # available in the tool thread.
+                try:
+                    ctx = _contextvars.copy_context()
+                    _future = _tex.submit(ctx.run, _run_tool_callable, tool["fn"], args)
+                except Exception:
+                    # Fallback: submit without explicit ctx.run
+                    _future = _tex.submit(_run_tool_callable, tool["fn"], args)
                 try:
                     res = _future.result(timeout=timeout_seconds)
                 except _cf.TimeoutError:
@@ -663,7 +689,8 @@ def execute_tool_impl(orch: Any, tool_call: Dict[str, Any]) -> Dict[str, Any]:
                         f"Tool '{name}' timed out after {timeout_seconds} seconds"
                     )
             else:
-                res = tool["fn"](**args)
+                # No timeout: run synchronously in this thread and normalise async
+                res = _run_tool_callable(tool["fn"], args)
         except TimeoutError:
             guilogger.warning(f"Tool '{name}' timed out after {timeout_seconds}s")
             # SPAWN-W1: Reset ContextVar on early return paths too.

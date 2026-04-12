@@ -27,7 +27,7 @@ from src.tools._security import (
     GIT_SAFE_SUBCOMMANDS,
     SED_WRITE_FLAGS,
 )
-from src.tools._tool import tool
+from src.tools._tool import tool, PermissionKind
 
 # Sentinel for workdir default — resolved lazily to Path.cwd() at call time
 # so the module can be imported without a fixed working directory.

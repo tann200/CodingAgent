@@ -70,6 +70,41 @@ from src.core.orchestration.registry_builder import example_registry  # noqa: E4
 
 
 class Orchestrator:
+    # Attributes populated by bootstrap_orchestrator() or other runtime wiring.
+    # Declared here so static type-checkers (pyright) know these attributes exist
+    # even though they are assigned dynamically during bootstrap.
+    msg_mgr: Any
+    session_mgr: Any
+    _usage_buffer: Dict[str, int]
+    _step_snapshot_id: Optional[str]
+    _current_snapshot_id: Optional[str]
+    rollback_manager: Any
+    current_role: Optional[str]
+    cancel_event: Any
+    _pending_delegations: Any
+    session_store: Any
+    _tool_executor: Any
+    _graph_executor: Any
+    # _normalize_tool_result is a method; do not shadow it with an attribute.
+    _dry_run_log: Any
+    _agent_mode: Any
+    _pending_preview_id: Any
+    _plan_approval_event: Any
+    _plan_approved: bool
+    explore_mode: bool
+    role_manager: Any
+    _permission_gate: Any
+    _permission_granted: bool
+    preview_coordinator: Any
+    mcp_manager: Any
+    _http_server_thread: Any
+    lifecycle_manager: Any
+    token_monitor: Any
+    context_controller: Any
+    cost_tracker: Any
+    tool_execution_service: Any
+    _mcp_server: Any
+
     def __init__(
         self,
         adapter: Any = None,
@@ -104,19 +139,9 @@ class Orchestrator:
         # Set working_dir and _allow_external now so bootstrap can use them
         self.working_dir = Path(working_dir) if working_dir else None
         self._allow_external = allow_external_working_dir  # boolified in bootstrap
-        # Declare attributes set by bootstrap_orchestrator so static type checkers
-        # (Pyright) know they exist on the class.  Actual values are assigned inside
-        # bootstrap_orchestrator(); these sentinels are never observed at runtime.
-        import concurrent.futures as _cf_hint
-        from src.core.orchestration.session_manager import SessionManager as _SM
-
-        self.session_mgr: _SM  # set by bootstrap_orchestrator
-        self._graph_executor: (
-            _cf_hint.ThreadPoolExecutor
-        )  # set by bootstrap_orchestrator
-        self._tool_executor: (
-            _cf_hint.ThreadPoolExecutor
-        )  # set by bootstrap_orchestrator
+        # bootstrap_orchestrator will populate many attributes (executors,
+        # managers, coordinators).  We declare these at class-level so static
+        # checkers know they exist; no runtime action needed here.
 
         # Delegate all remaining subsystem wiring to bootstrap
         from src.core.orchestration.orchestrator_bootstrap import bootstrap_orchestrator

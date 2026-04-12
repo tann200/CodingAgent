@@ -9,6 +9,11 @@ each ancestor directory for any of the following instruction files:
     AGENTS.local.md
     .agent/AGENTS.md
     .agent/instructions.md
+    CLAUDE.md
+    CLAUDE.local.md
+    .claude/CLAUDE.md
+    .claw/CLAUDE.md
+    .claw/instructions.md
 
 Files are deduplicated using a stable content hash (normalised whitespace).
 Per-file budget: 4,000 chars.  Total budget: 12,000 chars.
@@ -33,12 +38,21 @@ MAX_INSTRUCTION_FILE_CHARS: int = 4_000
 MAX_TOTAL_INSTRUCTION_CHARS: int = 12_000
 
 # File names to probe in each ancestor directory (in order, within each dir).
-# Mirrors: CLAW.md, CLAW.local.md, .claw/CLAW.md, .claw/instructions.md
+# TASK-1: extended to cover Claude Code / claw-code CLAUDE.md convention in
+# addition to the original AGENTS.md convention.  SHA-256 dedup handles the
+# case where both variants exist with identical content.
 _CANDIDATE_NAMES: tuple[tuple[str, ...], ...] = (
+    # CodingAgent / OpenCode convention
     ("AGENTS.md",),
     ("AGENTS.local.md",),
     (".agent", "AGENTS.md"),
     (".agent", "instructions.md"),
+    # Claude Code / claw-code convention (TASK-1)
+    ("CLAUDE.md",),
+    ("CLAUDE.local.md",),
+    (".claude", "CLAUDE.md"),
+    (".claw", "CLAUDE.md"),
+    (".claw", "instructions.md"),
 )
 
 

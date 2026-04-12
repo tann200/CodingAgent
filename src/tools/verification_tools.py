@@ -6,7 +6,7 @@ import os
 import re
 import time
 
-from src.tools._tool import tool
+from src.tools._tool import tool, PermissionKind
 
 
 def _safe_resolve_workdir(workdir: str) -> str:
@@ -44,7 +44,7 @@ def _safe_resolve_workdir(workdir: str) -> str:
         raise ValueError(f"Invalid workdir: {workdir!r}")
 
 
-@tool(side_effects=["execute"], tags=["coding"])
+@tool(side_effects=["execute"], tags=["coding"], permission_kind=PermissionKind.EXECUTE_BASH)
 def run_tests(
     workdir: str,
     test_files: Optional[List[str]] = None,
@@ -269,7 +269,7 @@ def _extract_tracebacks(output: str) -> List[str]:
     return tracebacks
 
 
-@tool(side_effects=["execute"], tags=["coding"])
+@tool(side_effects=["execute"], tags=["coding"], permission_kind=PermissionKind.EXECUTE_BASH)
 def run_linter(
     workdir: str, fix: bool = False, paths: Optional[List[str]] = None
 ) -> Dict[str, Any]:
@@ -527,7 +527,7 @@ def _parse_ruff_output(output: str) -> List[Dict[str, Any]]:
     return errors
 
 
-@tool(tags=["coding"])
+@tool(tags=["coding"], permission_kind=PermissionKind.EXECUTE_BASH)
 def syntax_check(workdir: str, timeout_secs: float = 30.0) -> Dict[str, Any]:
     """Multi-language syntax check.
 

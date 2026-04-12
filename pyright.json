@@ -1,0 +1,1038 @@
+{
+    "version": "1.1.408",
+    "time": "1776013595541",
+    "generalDiagnostics": [
+        {
+            "file": "/Users/tann200/PycharmProjects/CodingAgent/scripts/lmstudio_diagnostic.py",
+            "severity": "warning",
+            "message": "Import \"psutil\" could not be resolved from source",
+            "range": {
+                "start": {
+                    "line": 30,
+                    "character": 11
+                },
+                "end": {
+                    "line": 30,
+                    "character": 17
+                }
+            },
+            "rule": "reportMissingModuleSource"
+        },
+        {
+            "file": "/Users/tann200/PycharmProjects/CodingAgent/scripts/test_tools.py",
+            "severity": "error",
+            "message": "Operator \"/\" not supported for \"None\"",
+            "range": {
+                "start": {
+                    "line": 26,
+                    "character": 62
+                },
+                "end": {
+                    "line": 26,
+                    "character": 78
+                }
+            },
+            "rule": "reportOptionalOperand"
+        },
+        {
+            "file": "/Users/tann200/PycharmProjects/CodingAgent/src/core/inference/llm_client.py",
+            "severity": "error",
+            "message": "Type \"_T@run\" is not assignable to return type \"Dict[str, Any]\"\n  \"object*\" is not assignable to \"Dict[str, Any]\"",
+            "range": {
+                "start": {
+                    "line": 42,
+                    "character": 19
+                },
+                "end": {
+                    "line": 42,
+                    "character": 82
+                }
+            },
+            "rule": "reportReturnType"
+        },
+        {
+            "file": "/Users/tann200/PycharmProjects/CodingAgent/src/core/mcp/mcp_ws_client.py",
+            "severity": "error",
+            "message": "\"ws_connect\" is not a known attribute of \"None\"",
+            "range": {
+                "start": {
+                    "line": 107,
+                    "character": 43
+                },
+                "end": {
+                    "line": 107,
+                    "character": 53
+                }
+            },
+            "rule": "reportOptionalMemberAccess"
+        },
+        {
+            "file": "/Users/tann200/PycharmProjects/CodingAgent/src/core/orchestration/graph/nodes/execution_node.py",
+            "severity": "error",
+            "message": "Type \"_T@run\" is not assignable to return type \"Dict[str, Any]\"\n  \"object*\" is not assignable to \"Dict[str, Any]\"",
+            "range": {
+                "start": {
+                    "line": 143,
+                    "character": 15
+                },
+                "end": {
+                    "line": 143,
+                    "character": 88
+                }
+            },
+            "rule": "reportReturnType"
+        },
+        {
+            "file": "/Users/tann200/PycharmProjects/CodingAgent/src/core/orchestration/graph/nodes/memory_update_node.py",
+            "severity": "error",
+            "message": "Cannot access attribute \"get\" for class \"object*\"\n  Attribute \"get\" is unknown",
+            "range": {
+                "start": {
+                    "line": 205,
+                    "character": 76
+                },
+                "end": {
+                    "line": 205,
+                    "character": 79
+                }
+            },
+            "rule": "reportAttributeAccessIssue"
+        },
+        {
+            "file": "/Users/tann200/PycharmProjects/CodingAgent/src/core/orchestration/graph/nodes/memory_update_node.py",
+            "severity": "error",
+            "message": "Argument of type \"_T@run | Dict[str, Any]\" cannot be assigned to parameter \"review\" of type \"Dict[str, Any]\" in function \"save_review\"\n  Type \"object* | Dict[str, Any]\" is not assignable to type \"Dict[str, Any]\"\n    \"object*\" is not assignable to \"Dict[str, Any]\"",
+            "range": {
+                "start": {
+                    "line": 209,
+                    "character": 37
+                },
+                "end": {
+                    "line": 209,
+                    "character": 50
+                }
+            },
+            "rule": "reportArgumentType"
+        },
+        {
+            "file": "/Users/tann200/PycharmProjects/CodingAgent/src/core/orchestration/graph/nodes/memory_update_node.py",
+            "severity": "error",
+            "message": "Argument of type \"_T@run | List[Dict[Unknown, Unknown]]\" cannot be assigned to parameter \"obj\" of type \"Sized\" in function \"len\"\n  Type \"object* | List[Dict[Unknown, Unknown]]\" is not assignable to type \"Sized\"\n    \"object*\" is incompatible with protocol \"Sized\"\n      \"__len__\" is not present",
+            "range": {
+                "start": {
+                    "line": 245,
+                    "character": 61
+                },
+                "end": {
+                    "line": 245,
+                    "character": 67
+                }
+            },
+            "rule": "reportArgumentType"
+        },
+        {
+            "file": "/Users/tann200/PycharmProjects/CodingAgent/src/core/orchestration/graph/nodes/memory_update_node.py",
+            "severity": "error",
+            "message": "Argument of type \"list[Unknown] | _T@run | List[Dict[Unknown, Unknown]]\" cannot be assigned to parameter \"iterable\" of type \"Iterable[Unknown]\" in function \"extend\"\n  Type \"list[Unknown] | object* | List[Dict[Unknown, Unknown]]\" is not assignable to type \"Iterable[Unknown]\"\n    \"object*\" is incompatible with protocol \"Iterable[Unknown]\"\n      \"__iter__\" is not present",
+            "range": {
+                "start": {
+                    "line": 258,
+                    "character": 34
+                },
+                "end": {
+                    "line": 258,
+                    "character": 40
+                }
+            },
+            "rule": "reportArgumentType"
+        },
+        {
+            "file": "/Users/tann200/PycharmProjects/CodingAgent/src/core/orchestration/graph/nodes/perception_node.py",
+            "severity": "error",
+            "message": "Code is too complex to analyze; reduce complexity by refactoring into subroutines or reducing conditional code paths",
+            "range": {
+                "start": {
+                    "line": 270,
+                    "character": 10
+                },
+                "end": {
+                    "line": 270,
+                    "character": 31
+                }
+            },
+            "rule": "reportGeneralTypeIssues"
+        },
+        {
+            "file": "/Users/tann200/PycharmProjects/CodingAgent/src/core/orchestration/inference_loop.py",
+            "severity": "error",
+            "message": "Cannot access attribute \"get_active_adapter\" for class \"ProviderManager\"\n  Attribute \"get_active_adapter\" is unknown",
+            "range": {
+                "start": {
+                    "line": 211,
+                    "character": 15
+                },
+                "end": {
+                    "line": 211,
+                    "character": 33
+                }
+            },
+            "rule": "reportAttributeAccessIssue"
+        },
+        {
+            "file": "/Users/tann200/PycharmProjects/CodingAgent/src/core/orchestration/inference_loop.py",
+            "severity": "error",
+            "message": "Cannot access attribute \"get_active_models\" for class \"ProviderManager\"\n  Attribute \"get_active_models\" is unknown",
+            "range": {
+                "start": {
+                    "line": 215,
+                    "character": 19
+                },
+                "end": {
+                    "line": 215,
+                    "character": 36
+                }
+            },
+            "rule": "reportAttributeAccessIssue"
+        },
+        {
+            "file": "/Users/tann200/PycharmProjects/CodingAgent/src/core/orchestration/permission_gateway.py",
+            "severity": "error",
+            "message": "\"get_permission_context\" is unknown import symbol",
+            "range": {
+                "start": {
+                    "line": 89,
+                    "character": 45
+                },
+                "end": {
+                    "line": 89,
+                    "character": 67
+                }
+            },
+            "rule": "reportAttributeAccessIssue"
+        },
+        {
+            "file": "/Users/tann200/PycharmProjects/CodingAgent/src/core/orchestration/shell_hooks.py",
+            "severity": "error",
+            "message": "Cannot assign to attribute \"_config\" for class \"ShellHookRunner*\"\n  Type \"dict[str, list[dict[str, str]]]\" is not assignable to type \"dict[str, list[str]] | None\"\n    \"dict[str, list[dict[str, str]]]\" is not assignable to \"dict[str, list[str]]\"\n      Type parameter \"_VT@dict\" is invariant, but \"list[dict[str, str]]\" is not the same as \"list[str]\"\n      Consider switching from \"dict\" to \"Mapping\" which is covariant in the value type\n    \"dict[str, list[dict[str, str]]]\" is not assignable to \"None\"",
+            "range": {
+                "start": {
+                    "line": 322,
+                    "character": 27
+                },
+                "end": {
+                    "line": 322,
+                    "character": 60
+                }
+            },
+            "rule": "reportAttributeAccessIssue"
+        },
+        {
+            "file": "/Users/tann200/PycharmProjects/CodingAgent/src/core/orchestration/shell_hooks.py",
+            "severity": "error",
+            "message": "Type \"dict[str, list[str]] | None\" is not assignable to return type \"dict[str, list[str]]\"\n  Type \"dict[str, list[str]] | None\" is not assignable to type \"dict[str, list[str]]\"\n    \"None\" is not assignable to \"dict[str, list[str]]\"",
+            "range": {
+                "start": {
+                    "line": 323,
+                    "character": 15
+                },
+                "end": {
+                    "line": 323,
+                    "character": 27
+                }
+            },
+            "rule": "reportReturnType"
+        },
+        {
+            "file": "/Users/tann200/PycharmProjects/CodingAgent/src/core/orchestration/shell_hooks.py",
+            "severity": "error",
+            "message": "Argument of type \"list[str]\" cannot be assigned to parameter \"entries\" of type \"list[dict[str, str]]\" in function \"_matching_commands\"\n  \"list[str]\" is not assignable to \"list[dict[str, str]]\"\n    Type parameter \"_T@list\" is invariant, but \"str\" is not the same as \"dict[str, str]\"\n    Consider switching from \"list\" to \"Sequence\" which is covariant",
+            "range": {
+                "start": {
+                    "line": 341,
+                    "character": 38
+                },
+                "end": {
+                    "line": 341,
+                    "character": 45
+                }
+            },
+            "rule": "reportArgumentType"
+        },
+        {
+            "file": "/Users/tann200/PycharmProjects/CodingAgent/src/core/orchestration/shell_hooks.py",
+            "severity": "error",
+            "message": "Argument of type \"list[str]\" cannot be assigned to parameter \"entries\" of type \"list[dict[str, str]]\" in function \"_matching_commands\"\n  \"list[str]\" is not assignable to \"list[dict[str, str]]\"\n    Type parameter \"_T@list\" is invariant, but \"str\" is not the same as \"dict[str, str]\"\n    Consider switching from \"list\" to \"Sequence\" which is covariant",
+            "range": {
+                "start": {
+                    "line": 359,
+                    "character": 38
+                },
+                "end": {
+                    "line": 359,
+                    "character": 45
+                }
+            },
+            "rule": "reportArgumentType"
+        },
+        {
+            "file": "/Users/tann200/PycharmProjects/CodingAgent/src/core/orchestration/task_lifecycle.py",
+            "severity": "error",
+            "message": "Expected 1 positional argument",
+            "range": {
+                "start": {
+                    "line": 218,
+                    "character": 83
+                },
+                "end": {
+                    "line": 218,
+                    "character": 93
+                }
+            },
+            "rule": "reportCallIssue"
+        },
+        {
+            "file": "/Users/tann200/PycharmProjects/CodingAgent/src/core/orchestration/tool_execution_pipeline.py",
+            "severity": "error",
+            "message": "Argument of type \"Awaitable[Any]\" cannot be assigned to parameter \"main\" of type \"Coroutine[Any, Any, _T@run]\" in function \"run\"\n  \"Awaitable[Any]\" is not assignable to \"Coroutine[Any, Any, _T@run]\"",
+            "range": {
+                "start": {
+                    "line": 662,
+                    "character": 44
+                },
+                "end": {
+                    "line": 662,
+                    "character": 46
+                }
+            },
+            "rule": "reportArgumentType"
+        },
+        {
+            "file": "/Users/tann200/PycharmProjects/CodingAgent/src/tools/_file_io.py",
+            "severity": "error",
+            "message": "Expression of type \"None\" cannot be assigned to parameter of type \"Path\"\n  \"None\" is not assignable to \"Path\"",
+            "range": {
+                "start": {
+                    "line": 381,
+                    "character": 20
+                },
+                "end": {
+                    "line": 381,
+                    "character": 24
+                }
+            },
+            "rule": "reportArgumentType"
+        },
+        {
+            "file": "/Users/tann200/PycharmProjects/CodingAgent/tests/unit/test_audit_vol23.py",
+            "severity": "error",
+            "message": "Argument of type \"dict[Unknown, Unknown]\" cannot be assigned to parameter \"state\" of type \"AgentState\" in function \"should_after_planning\"\n  \"dict[Unknown, Unknown]\" is not assignable to \"AgentState\"",
+            "range": {
+                "start": {
+                    "line": 126,
+                    "character": 39
+                },
+                "end": {
+                    "line": 126,
+                    "character": 44
+                }
+            },
+            "rule": "reportArgumentType"
+        },
+        {
+            "file": "/Users/tann200/PycharmProjects/CodingAgent/tests/unit/test_audit_vol23.py",
+            "severity": "error",
+            "message": "Argument of type \"dict[str, int]\" cannot be assigned to parameter \"state\" of type \"AgentState\" in function \"should_after_planning\"\n  \"dict[str, int]\" is not assignable to \"AgentState\"",
+            "range": {
+                "start": {
+                    "line": 134,
+                    "character": 37
+                },
+                "end": {
+                    "line": 134,
+                    "character": 42
+                }
+            },
+            "rule": "reportArgumentType"
+        },
+        {
+            "file": "/Users/tann200/PycharmProjects/CodingAgent/tests/unit/test_audit_vol26.py",
+            "severity": "error",
+            "message": "Argument of type \"None\" cannot be assigned to parameter \"needs_clarification_val\" of type \"bool\" in function \"_make_mock_orch\"\n  \"None\" is not assignable to \"bool\"",
+            "range": {
+                "start": {
+                    "line": 251,
+                    "character": 60
+                },
+                "end": {
+                    "line": 251,
+                    "character": 64
+                }
+            },
+            "rule": "reportArgumentType"
+        },
+        {
+            "file": "/Users/tann200/PycharmProjects/CodingAgent/tests/unit/test_audit_vol28.py",
+            "severity": "error",
+            "message": "\"get\" is not a known attribute of \"None\"",
+            "range": {
+                "start": {
+                    "line": 53,
+                    "character": 18
+                },
+                "end": {
+                    "line": 53,
+                    "character": 21
+                }
+            },
+            "rule": "reportOptionalMemberAccess"
+        },
+        {
+            "file": "/Users/tann200/PycharmProjects/CodingAgent/tests/unit/test_claw_parity.py",
+            "severity": "error",
+            "message": "Argument of type \"dict[str, Unknown]\" cannot be assigned to parameter \"state\" of type \"AgentState\" in function \"frontier_loop_node\"\n  \"dict[str, Unknown]\" is not assignable to \"AgentState\"",
+            "range": {
+                "start": {
+                    "line": 381,
+                    "character": 46
+                },
+                "end": {
+                    "line": 381,
+                    "character": 51
+                }
+            },
+            "rule": "reportArgumentType"
+        },
+        {
+            "file": "/Users/tann200/PycharmProjects/CodingAgent/tests/unit/test_claw_parity.py",
+            "severity": "error",
+            "message": "Argument of type \"dict[str, Unknown]\" cannot be assigned to parameter \"state\" of type \"AgentState\" in function \"frontier_loop_node\"\n  \"dict[str, Unknown]\" is not assignable to \"AgentState\"",
+            "range": {
+                "start": {
+                    "line": 432,
+                    "character": 46
+                },
+                "end": {
+                    "line": 432,
+                    "character": 51
+                }
+            },
+            "rule": "reportArgumentType"
+        },
+        {
+            "file": "/Users/tann200/PycharmProjects/CodingAgent/tests/unit/test_claw_parity.py",
+            "severity": "error",
+            "message": "Argument of type \"dict[str, Unknown]\" cannot be assigned to parameter \"state\" of type \"AgentState\" in function \"frontier_loop_node\"\n  \"dict[str, Unknown]\" is not assignable to \"AgentState\"",
+            "range": {
+                "start": {
+                    "line": 468,
+                    "character": 46
+                },
+                "end": {
+                    "line": 468,
+                    "character": 51
+                }
+            },
+            "rule": "reportArgumentType"
+        },
+        {
+            "file": "/Users/tann200/PycharmProjects/CodingAgent/tests/unit/test_claw_parity.py",
+            "severity": "error",
+            "message": "Argument of type \"dict[str, Unknown]\" cannot be assigned to parameter \"state\" of type \"AgentState\" in function \"frontier_loop_node\"\n  \"dict[str, Unknown]\" is not assignable to \"AgentState\"",
+            "range": {
+                "start": {
+                    "line": 492,
+                    "character": 46
+                },
+                "end": {
+                    "line": 492,
+                    "character": 51
+                }
+            },
+            "rule": "reportArgumentType"
+        },
+        {
+            "file": "/Users/tann200/PycharmProjects/CodingAgent/tests/unit/test_claw_parity.py",
+            "severity": "error",
+            "message": "Argument of type \"dict[str, Unknown]\" cannot be assigned to parameter \"state\" of type \"AgentState\" in function \"frontier_loop_node\"\n  \"dict[str, Unknown]\" is not assignable to \"AgentState\"",
+            "range": {
+                "start": {
+                    "line": 532,
+                    "character": 50
+                },
+                "end": {
+                    "line": 532,
+                    "character": 55
+                }
+            },
+            "rule": "reportArgumentType"
+        },
+        {
+            "file": "/Users/tann200/PycharmProjects/CodingAgent/tests/unit/test_claw_parity.py",
+            "severity": "error",
+            "message": "Argument of type \"list[dict[str, str] | None]\" cannot be assigned to parameter \"entries\" of type \"list[dict[str, str]]\" in function \"_matching_commands\"\n  Type \"dict[str, str] | None\" is not assignable to type \"dict[str, str]\"\n    \"None\" is not assignable to \"dict[str, str]\"",
+            "range": {
+                "start": {
+                    "line": 735,
+                    "character": 35
+                },
+                "end": {
+                    "line": 735,
+                    "character": 40
+                }
+            },
+            "rule": "reportArgumentType"
+        },
+        {
+            "file": "/Users/tann200/PycharmProjects/CodingAgent/tests/unit/test_claw_parity.py",
+            "severity": "error",
+            "message": "Argument of type \"list[dict[str, str] | None]\" cannot be assigned to parameter \"entries\" of type \"list[dict[str, str]]\" in function \"_matching_commands\"\n  Type \"dict[str, str] | None\" is not assignable to type \"dict[str, str]\"\n    \"None\" is not assignable to \"dict[str, str]\"",
+            "range": {
+                "start": {
+                    "line": 745,
+                    "character": 40
+                },
+                "end": {
+                    "line": 745,
+                    "character": 45
+                }
+            },
+            "rule": "reportArgumentType"
+        },
+        {
+            "file": "/Users/tann200/PycharmProjects/CodingAgent/tests/unit/test_claw_parity.py",
+            "severity": "error",
+            "message": "Argument of type \"list[dict[str, str] | None]\" cannot be assigned to parameter \"entries\" of type \"list[dict[str, str]]\" in function \"_matching_commands\"\n  Type \"dict[str, str] | None\" is not assignable to type \"dict[str, str]\"\n    \"None\" is not assignable to \"dict[str, str]\"",
+            "range": {
+                "start": {
+                    "line": 746,
+                    "character": 41
+                },
+                "end": {
+                    "line": 746,
+                    "character": 46
+                }
+            },
+            "rule": "reportArgumentType"
+        },
+        {
+            "file": "/Users/tann200/PycharmProjects/CodingAgent/tests/unit/test_claw_parity.py",
+            "severity": "error",
+            "message": "Argument of type \"list[dict[str, str] | None]\" cannot be assigned to parameter \"entries\" of type \"list[dict[str, str]]\" in function \"_matching_commands\"\n  Type \"dict[str, str] | None\" is not assignable to type \"dict[str, str]\"\n    \"None\" is not assignable to \"dict[str, str]\"",
+            "range": {
+                "start": {
+                    "line": 759,
+                    "character": 35
+                },
+                "end": {
+                    "line": 759,
+                    "character": 40
+                }
+            },
+            "rule": "reportArgumentType"
+        },
+        {
+            "file": "/Users/tann200/PycharmProjects/CodingAgent/tests/unit/test_claw_parity.py",
+            "severity": "error",
+            "message": "Argument of type \"list[dict[str, str] | None]\" cannot be assigned to parameter \"entries\" of type \"list[dict[str, str]]\" in function \"_matching_commands\"\n  Type \"dict[str, str] | None\" is not assignable to type \"dict[str, str]\"\n    \"None\" is not assignable to \"dict[str, str]\"",
+            "range": {
+                "start": {
+                    "line": 760,
+                    "character": 35
+                },
+                "end": {
+                    "line": 760,
+                    "character": 40
+                }
+            },
+            "rule": "reportArgumentType"
+        },
+        {
+            "file": "/Users/tann200/PycharmProjects/CodingAgent/tests/unit/test_contextvar_propagation.py",
+            "severity": "error",
+            "message": "Argument of type \"Literal['parent']\" cannot be assigned to parameter \"value\" of type \"None\" in function \"set\"\n  \"Literal['parent']\" is not assignable to \"None\"",
+            "range": {
+                "start": {
+                    "line": 8,
+                    "character": 12
+                },
+                "end": {
+                    "line": 8,
+                    "character": 20
+                }
+            },
+            "rule": "reportArgumentType"
+        },
+        {
+            "file": "/Users/tann200/PycharmProjects/CodingAgent/tests/unit/test_contextvar_propagation.py",
+            "severity": "error",
+            "message": "Argument of type \"Literal['cid-1234']\" cannot be assigned to parameter \"value\" of type \"None\" in function \"set\"\n  \"Literal['cid-1234']\" is not assignable to \"None\"",
+            "range": {
+                "start": {
+                    "line": 26,
+                    "character": 12
+                },
+                "end": {
+                    "line": 26,
+                    "character": 22
+                }
+            },
+            "rule": "reportArgumentType"
+        },
+        {
+            "file": "/Users/tann200/PycharmProjects/CodingAgent/tests/unit/test_gap_analysis_improvements.py",
+            "severity": "error",
+            "message": "\"ContextBuilder\" is not defined",
+            "range": {
+                "start": {
+                    "line": 54,
+                    "character": 56
+                },
+                "end": {
+                    "line": 54,
+                    "character": 70
+                }
+            },
+            "rule": "reportUndefinedVariable"
+        },
+        {
+            "file": "/Users/tann200/PycharmProjects/CodingAgent/tests/unit/test_gap_analysis_improvements3.py",
+            "severity": "error",
+            "message": "Cannot assign to attribute \"_app\" for class \"AgentBridge\"\n  Attribute \"_app\" is unknown",
+            "range": {
+                "start": {
+                    "line": 493,
+                    "character": 15
+                },
+                "end": {
+                    "line": 493,
+                    "character": 19
+                }
+            },
+            "rule": "reportAttributeAccessIssue"
+        },
+        {
+            "file": "/Users/tann200/PycharmProjects/CodingAgent/tests/unit/test_mcp_sampling_correlation.py",
+            "severity": "error",
+            "message": "Argument of type \"str | None\" cannot be assigned to parameter \"s\" of type \"str | bytes | bytearray\" in function \"loads\"\n  Type \"str | None\" is not assignable to type \"str | bytes | bytearray\"\n    Type \"None\" is not assignable to type \"str | bytes | bytearray\"\n      \"None\" is not assignable to \"str\"\n      \"None\" is not assignable to \"bytes\"\n      \"None\" is not assignable to \"bytearray\"",
+            "range": {
+                "start": {
+                    "line": 27,
+                    "character": 22
+                },
+                "end": {
+                    "line": 27,
+                    "character": 30
+                }
+            },
+            "rule": "reportArgumentType"
+        },
+        {
+            "file": "/Users/tann200/PycharmProjects/CodingAgent/tests/unit/test_orchestrator_bootstrap_server.py",
+            "severity": "error",
+            "message": "Cannot assign to attribute \"register_event_bus\" for class \"ModuleType\"\n  Attribute \"register_event_bus\" is unknown",
+            "range": {
+                "start": {
+                    "line": 16,
+                    "character": 12
+                },
+                "end": {
+                    "line": 16,
+                    "character": 30
+                }
+            },
+            "rule": "reportAttributeAccessIssue"
+        },
+        {
+            "file": "/Users/tann200/PycharmProjects/CodingAgent/tests/unit/test_orchestrator_bootstrap_server.py",
+            "severity": "error",
+            "message": "Cannot assign to attribute \"ServerEventBusAdapter\" for class \"ModuleType\"\n  Attribute \"ServerEventBusAdapter\" is unknown",
+            "range": {
+                "start": {
+                    "line": 17,
+                    "character": 12
+                },
+                "end": {
+                    "line": 17,
+                    "character": 33
+                }
+            },
+            "rule": "reportAttributeAccessIssue"
+        },
+        {
+            "file": "/Users/tann200/PycharmProjects/CodingAgent/tests/unit/test_orchestrator_bootstrap_server.py",
+            "severity": "error",
+            "message": "Cannot assign to attribute \"run_server\" for class \"ModuleType\"\n  Attribute \"run_server\" is unknown",
+            "range": {
+                "start": {
+                    "line": 18,
+                    "character": 12
+                },
+                "end": {
+                    "line": 18,
+                    "character": 22
+                }
+            },
+            "rule": "reportAttributeAccessIssue"
+        },
+        {
+            "file": "/Users/tann200/PycharmProjects/CodingAgent/tests/unit/test_orchestrator_bootstrap_server.py",
+            "severity": "error",
+            "message": "Cannot assign to attribute \"app\" for class \"ModuleType\"\n  Attribute \"app\" is unknown",
+            "range": {
+                "start": {
+                    "line": 22,
+                    "character": 15
+                },
+                "end": {
+                    "line": 22,
+                    "character": 18
+                }
+            },
+            "rule": "reportAttributeAccessIssue"
+        },
+        {
+            "file": "/Users/tann200/PycharmProjects/CodingAgent/tests/unit/test_subagent_session_visibility.py",
+            "severity": "error",
+            "message": "Cannot assign to attribute \"post_message\" for class \"SubagentProgress\"\n  Type \"(m: Message) -> None\" is not assignable to type \"(message: Message) -> bool\"\n    Parameter name mismatch: \"message\" versus \"m\"\n    Function return type \"None\" is incompatible with type \"bool\"\n      \"None\" is not assignable to \"bool\"",
+            "range": {
+                "start": {
+                    "line": 75,
+                    "character": 25
+                },
+                "end": {
+                    "line": 75,
+                    "character": 51
+                }
+            },
+            "rule": "reportAttributeAccessIssue"
+        },
+        {
+            "file": "/Users/tann200/PycharmProjects/CodingAgent/tests/unit/test_subagent_session_visibility.py",
+            "severity": "error",
+            "message": "Cannot assign to attribute \"post_message\" for class \"SubagentProgress\"\n  Type \"(m: Message) -> None\" is not assignable to type \"(message: Message) -> bool\"\n    Parameter name mismatch: \"message\" versus \"m\"\n    Function return type \"None\" is incompatible with type \"bool\"\n      \"None\" is not assignable to \"bool\"",
+            "range": {
+                "start": {
+                    "line": 84,
+                    "character": 25
+                },
+                "end": {
+                    "line": 84,
+                    "character": 51
+                }
+            },
+            "rule": "reportAttributeAccessIssue"
+        },
+        {
+            "file": "/Users/tann200/PycharmProjects/CodingAgent/tests/unit/test_subagent_session_visibility.py",
+            "severity": "error",
+            "message": "Cannot assign to attribute \"post_message\" for class \"SubagentProgress\"\n  Type \"(m: Message) -> None\" is not assignable to type \"(message: Message) -> bool\"\n    Parameter name mismatch: \"message\" versus \"m\"\n    Function return type \"None\" is incompatible with type \"bool\"\n      \"None\" is not assignable to \"bool\"",
+            "range": {
+                "start": {
+                    "line": 93,
+                    "character": 25
+                },
+                "end": {
+                    "line": 93,
+                    "character": 51
+                }
+            },
+            "rule": "reportAttributeAccessIssue"
+        },
+        {
+            "file": "/Users/tann200/PycharmProjects/CodingAgent/tests/unit/test_subagent_session_visibility.py",
+            "severity": "error",
+            "message": "Cannot assign to attribute \"query_one\" for class \"SessionListScreen\"\n  One or more overloads of \"query_one\" is not assignable\n    Type \"(*a: Unknown, **kw: Unknown) -> FakeStatic\" is not assignable to type \"(selector: str) -> Widget\"\n      Function return type \"FakeStatic\" is incompatible with type \"Widget\"\n        \"FakeStatic\" is not assignable to \"Widget\"",
+            "range": {
+                "start": {
+                    "line": 211,
+                    "character": 27
+                },
+                "end": {
+                    "line": 211,
+                    "character": 56
+                }
+            },
+            "rule": "reportAttributeAccessIssue"
+        },
+        {
+            "file": "/Users/tann200/PycharmProjects/CodingAgent/tests/unit/test_subagent_session_visibility.py",
+            "severity": "error",
+            "message": "Cannot assign to attribute \"query_one\" for class \"SessionListScreen\"\n  One or more overloads of \"query_one\" is not assignable\n    Type \"(*a: Unknown, **kw: Unknown) -> FakeStatic\" is not assignable to type \"(selector: str) -> Widget\"\n      Function return type \"FakeStatic\" is incompatible with type \"Widget\"\n        \"FakeStatic\" is not assignable to \"Widget\"",
+            "range": {
+                "start": {
+                    "line": 230,
+                    "character": 27
+                },
+                "end": {
+                    "line": 230,
+                    "character": 56
+                }
+            },
+            "rule": "reportAttributeAccessIssue"
+        },
+        {
+            "file": "/Users/tann200/PycharmProjects/CodingAgent/tests/unit/test_tool_execution_pipeline.py",
+            "severity": "error",
+            "message": "Cannot assign to attribute \"plan_mode\" for class \"Orchestrator\"\n  Attribute \"plan_mode\" is unknown",
+            "range": {
+                "start": {
+                    "line": 40,
+                    "character": 9
+                },
+                "end": {
+                    "line": 40,
+                    "character": 18
+                }
+            },
+            "rule": "reportAttributeAccessIssue"
+        },
+        {
+            "file": "/Users/tann200/PycharmProjects/CodingAgent/tests/unit/test_tool_execution_pipeline.py",
+            "severity": "error",
+            "message": "Cannot assign to attribute \"_plan_mode_approved\" for class \"Orchestrator\"\n  Attribute \"_plan_mode_approved\" is unknown",
+            "range": {
+                "start": {
+                    "line": 41,
+                    "character": 9
+                },
+                "end": {
+                    "line": 41,
+                    "character": 28
+                }
+            },
+            "rule": "reportAttributeAccessIssue"
+        },
+        {
+            "file": "/Users/tann200/PycharmProjects/CodingAgent/tests/unit/test_tool_execution_pipeline.py",
+            "severity": "error",
+            "message": "Cannot assign to attribute \"_normalize_tool_result\" for class \"Orchestrator\"\n  Type \"(r: Any) -> (dict[Unknown, Unknown] | dict[str, Any])\" is not assignable to type \"(res: Any) -> Dict[str, Any]\"\n    Parameter name mismatch: \"res\" versus \"r\"",
+            "range": {
+                "start": {
+                    "line": 124,
+                    "character": 38
+                },
+                "end": {
+                    "line": 126,
+                    "character": 9
+                }
+            },
+            "rule": "reportAttributeAccessIssue"
+        },
+        {
+            "file": "/Users/tann200/PycharmProjects/CodingAgent/tests/unit/test_tool_execution_pipeline.py",
+            "severity": "error",
+            "message": "Cannot assign to attribute \"_normalize_tool_result\" for class \"Orchestrator\"\n  Type \"(r: Any) -> (dict[Unknown, Unknown] | dict[str, Any])\" is not assignable to type \"(res: Any) -> Dict[str, Any]\"\n    Parameter name mismatch: \"res\" versus \"r\"",
+            "range": {
+                "start": {
+                    "line": 186,
+                    "character": 38
+                },
+                "end": {
+                    "line": 188,
+                    "character": 9
+                }
+            },
+            "rule": "reportAttributeAccessIssue"
+        },
+        {
+            "file": "/Users/tann200/PycharmProjects/CodingAgent/tests/unit/test_tool_execution_pipeline.py",
+            "severity": "error",
+            "message": "Cannot assign to attribute \"_normalize_tool_result\" for class \"Orchestrator\"\n  Type \"(r: Any) -> (dict[Unknown, Unknown] | dict[str, Any])\" is not assignable to type \"(res: Any) -> Dict[str, Any]\"\n    Parameter name mismatch: \"res\" versus \"r\"",
+            "range": {
+                "start": {
+                    "line": 268,
+                    "character": 38
+                },
+                "end": {
+                    "line": 270,
+                    "character": 9
+                }
+            },
+            "rule": "reportAttributeAccessIssue"
+        },
+        {
+            "file": "/Users/tann200/PycharmProjects/CodingAgent/tests/unit/test_tool_execution_pipeline.py",
+            "severity": "error",
+            "message": "Cannot assign to attribute \"_normalize_tool_result\" for class \"Orchestrator\"\n  Type \"(r: Any) -> (dict[Unknown, Unknown] | dict[str, Any])\" is not assignable to type \"(res: Any) -> Dict[str, Any]\"\n    Parameter name mismatch: \"res\" versus \"r\"",
+            "range": {
+                "start": {
+                    "line": 314,
+                    "character": 38
+                },
+                "end": {
+                    "line": 316,
+                    "character": 9
+                }
+            },
+            "rule": "reportAttributeAccessIssue"
+        },
+        {
+            "file": "/Users/tann200/PycharmProjects/CodingAgent/tests/unit/test_tool_execution_pipeline.py",
+            "severity": "error",
+            "message": "Cannot assign to attribute \"_normalize_tool_result\" for class \"Orchestrator\"\n  Type \"(r: Any) -> (dict[Unknown, Unknown] | dict[str, Any])\" is not assignable to type \"(res: Any) -> Dict[str, Any]\"\n    Parameter name mismatch: \"res\" versus \"r\"",
+            "range": {
+                "start": {
+                    "line": 355,
+                    "character": 38
+                },
+                "end": {
+                    "line": 357,
+                    "character": 9
+                }
+            },
+            "rule": "reportAttributeAccessIssue"
+        },
+        {
+            "file": "/Users/tann200/PycharmProjects/CodingAgent/tests/unit/test_tool_safety_node_caching_plan_contracts.py",
+            "severity": "error",
+            "message": "Cannot access attribute \"plan_mode\" for class \"Orchestrator\"\n  Attribute \"plan_mode\" is unknown",
+            "range": {
+                "start": {
+                    "line": 283,
+                    "character": 20
+                },
+                "end": {
+                    "line": 283,
+                    "character": 29
+                }
+            },
+            "rule": "reportAttributeAccessIssue"
+        },
+        {
+            "file": "/Users/tann200/PycharmProjects/CodingAgent/tests/unit/test_tool_safety_node_caching_plan_contracts.py",
+            "severity": "error",
+            "message": "Cannot access attribute \"plan_mode\" for class \"Orchestrator\"\n  Attribute \"plan_mode\" is unknown",
+            "range": {
+                "start": {
+                    "line": 294,
+                    "character": 16
+                },
+                "end": {
+                    "line": 294,
+                    "character": 25
+                }
+            },
+            "rule": "reportAttributeAccessIssue"
+        },
+        {
+            "file": "/Users/tann200/PycharmProjects/CodingAgent/tests/unit/test_tool_safety_node_caching_plan_contracts.py",
+            "severity": "error",
+            "message": "Cannot access attribute \"plan_mode\" for class \"Orchestrator\"\n  Attribute \"plan_mode\" is unknown",
+            "range": {
+                "start": {
+                    "line": 295,
+                    "character": 17
+                },
+                "end": {
+                    "line": 295,
+                    "character": 26
+                }
+            },
+            "rule": "reportAttributeAccessIssue"
+        },
+        {
+            "file": "/Users/tann200/PycharmProjects/CodingAgent/tests/unit/test_tool_safety_node_caching_plan_contracts.py",
+            "severity": "error",
+            "message": "Cannot access attribute \"plan_mode\" for class \"Orchestrator\"\n  Attribute \"plan_mode\" is unknown",
+            "range": {
+                "start": {
+                    "line": 307,
+                    "character": 17
+                },
+                "end": {
+                    "line": 307,
+                    "character": 26
+                }
+            },
+            "rule": "reportAttributeAccessIssue"
+        },
+        {
+            "file": "/Users/tann200/PycharmProjects/CodingAgent/tui/src/ui/screens/subagent_detail.py",
+            "severity": "error",
+            "message": "Cannot assign to attribute \"_task\" for class \"SubagentDetailScreen*\"\n  Type \"str\" is not assignable to type \"Task[Unknown] | None\"\n    \"str\" is not assignable to \"Task[Unknown]\"\n    \"str\" is not assignable to \"None\"",
+            "range": {
+                "start": {
+                    "line": 82,
+                    "character": 21
+                },
+                "end": {
+                    "line": 82,
+                    "character": 25
+                }
+            },
+            "rule": "reportAttributeAccessIssue"
+        },
+        {
+            "file": "/Users/tann200/PycharmProjects/CodingAgent/tui/src/ui/screens/subagent_detail.py",
+            "severity": "error",
+            "message": "\"__getitem__\" method not defined on type \"Task[Unknown]\"",
+            "range": {
+                "start": {
+                    "line": 106,
+                    "character": 40
+                },
+                "end": {
+                    "line": 106,
+                    "character": 50
+                }
+            },
+            "rule": "reportIndexIssue"
+        },
+        {
+            "file": "/Users/tann200/PycharmProjects/CodingAgent/tui/src/ui/screens/subagent_detail.py",
+            "severity": "error",
+            "message": "Object of type \"None\" is not subscriptable",
+            "range": {
+                "start": {
+                    "line": 106,
+                    "character": 40
+                },
+                "end": {
+                    "line": 106,
+                    "character": 50
+                }
+            },
+            "rule": "reportOptionalSubscript"
+        },
+        {
+            "file": "/Users/tann200/PycharmProjects/CodingAgent/tui/src/ui/screens/subagent_detail.py",
+            "severity": "error",
+            "message": "\"__getitem__\" method not defined on type \"Task[Unknown]\"",
+            "range": {
+                "start": {
+                    "line": 111,
+                    "character": 40
+                },
+                "end": {
+                    "line": 111,
+                    "character": 50
+                }
+            },
+            "rule": "reportIndexIssue"
+        },
+        {
+            "file": "/Users/tann200/PycharmProjects/CodingAgent/tui/src/ui/screens/subagent_detail.py",
+            "severity": "error",
+            "message": "Object of type \"None\" is not subscriptable",
+            "range": {
+                "start": {
+                    "line": 111,
+                    "character": 40
+                },
+                "end": {
+                    "line": 111,
+                    "character": 50
+                }
+            },
+            "rule": "reportOptionalSubscript"
+        }
+    ],
+    "summary": {
+        "filesAnalyzed": 497,
+        "errorCount": 63,
+        "warningCount": 1,
+        "informationCount": 0,
+        "timeInSec": 10.391
+    }
+}
+

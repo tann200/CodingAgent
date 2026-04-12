@@ -29,6 +29,11 @@ dev = [
   "mypy>=1.0.0",
 ]
 
+server = [
+  "fastapi>=0.104.0",
+  "uvicorn[standard]>=0.24.0",
+]
+
 [build-system]
 requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"

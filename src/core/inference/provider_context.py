@@ -154,10 +154,37 @@ def _load_active_context_length() -> int:
     return _DEFAULT_CONTEXT_LENGTH
 
 
+def get_actual_context_window() -> int:
+    """Return the raw context window size of the active provider.
+
+    Unlike ``get_context_budget()``, this does NOT apply a fraction or an
+    upper cap.  Use this for overflow detection where the goal is to know
+    whether the prompt is approaching the hard limit, not the soft budget.
+
+    OP-4: replaces ``get_context_budget()`` in the overflow-detection path of
+    perception_node so that 200K-window models correctly detect overflow at
+    ~196K tokens instead of the 131K cap that ``get_context_budget`` imposes.
+    """
+    return _load_active_context_length()
+
+
+# P3-F: Per-tier context fractions.
+# NANO models need to reserve more for their short output (4K ctx → output needs ~50%).
+# Frontier models with 200K+ context can allocate 80% to the prompt safely.
+_TIER_CONTEXT_FRACTION: dict[str, float] = {
+    "nano":     0.50,   # ≤7B / ≤8K ctx — output needs half the window
+    "small":    0.60,   # 7–14B / 8–32K ctx
+    "medium":   0.70,   # 14–70B / 32–128K ctx
+    "large":    0.75,   # 70B+ / 128K+ ctx
+    "frontier": 0.80,   # cloud / 31B+ / 256K ctx
+}
+
+
 def get_context_budget(
     fraction: float = 0.65,
     min_tokens: int = 6000,
-    max_tokens: int = 32000,
+    max_tokens: int = 131072,
+    model_tier: str = "",
 ) -> int:
     """
     Return a token budget for context-building based on the active provider's
@@ -166,10 +193,18 @@ def get_context_budget(
     Prefers the live context length reported by the models endpoint (set via
     ``set_active_context_length()``) over the static providers.json value.
 
-    fraction  — portion of the context window to allocate (default 0.65)
+    P3-F: When *model_tier* is provided, overrides *fraction* with the
+    tier-specific value from ``_TIER_CONTEXT_FRACTION`` so that NANO models
+    (which have tiny context windows) get a smaller budget than frontier models
+    that have 200K+ tokens to work with.
+
+    fraction   — default fraction when model_tier is absent or unknown (0.65)
     min_tokens — lower clamp (guarantees a usable minimum even for tiny models)
     max_tokens — upper clamp (avoids bloated prompts for very large context windows)
+    model_tier — optional tier string (e.g. "nano", "small", "frontier")
     """
+    if model_tier:
+        fraction = _TIER_CONTEXT_FRACTION.get(model_tier.lower(), fraction)
     ctx_len = _load_active_context_length()
     budget = int(ctx_len * fraction)
     return max(min_tokens, min(budget, max_tokens))

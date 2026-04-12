@@ -26,10 +26,48 @@ auto-register decorated functions.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any, Callable, List, Optional
 
 # Attribute name stored on decorated functions
 TOOL_ATTR = "__tool_meta__"
+
+
+# ---------------------------------------------------------------------------
+# PermissionKind — TASK-3
+# ---------------------------------------------------------------------------
+
+
+class PermissionKind(str, Enum):
+    """Semantic permission category for a tool call.
+
+    Mirrors claw-code's ``PermissionKind`` enum from ``tools/src/lib.rs``.
+    Used by ``PermissionGateway`` (TASK-4) and the ``@tool`` decorator so
+    each tool's required privilege is declared at definition time rather than
+    inferred from ``side_effects``.
+
+    ``side_effects`` is kept for backward compatibility with code that reads
+    it (preflight path-containment check, MODIFYING_TOOLS sets, etc.).
+    ``permission_kind`` is the authoritative, semantically richer field.
+    """
+
+    READ_FILE    = "ReadFile"     # read file contents, list dirs, glob
+    WRITE_FILE   = "WriteFile"    # create / overwrite / edit files
+    EXECUTE_BASH = "ExecuteBash"  # run arbitrary shell commands
+    NETWORK      = "NetworkFetch" # fetch URLs, web search
+    GIT_READ     = "GitRead"      # git status / log / diff (no state change)
+    GIT_WRITE    = "GitWrite"     # git commit / stash / restore (state change)
+    MEMORY       = "MemoryWrite"  # update persistent vector memory
+    DELEGATE     = "Delegate"     # spawn a sub-agent session
+    LSP_READ     = "LSP"          # LSP queries (diagnostics, refs, hover)
+    LSP_WRITE    = "LSPWrite"     # LSP rename (modifies files via language server)
+    PLAN         = "Plan"         # toggle plan mode (meta-control)
+    NONE         = "None"         # read-only, no side effects
+
+
+# ---------------------------------------------------------------------------
+# ToolDefinition
+# ---------------------------------------------------------------------------
 
 
 @dataclass
@@ -44,6 +82,9 @@ class ToolDefinition:
     # The authoritative membership is the YAML files; tags are for
     # documentation and potential auto-generation.
     tags: List[str] = field(default_factory=list)
+    # TASK-3: explicit semantic permission category (supercedes side_effects
+    # for permission-policy evaluation).
+    permission_kind: PermissionKind = PermissionKind.NONE
 
     def to_openai_schema(self) -> dict:
         """Return an OpenAI function-calling schema dict for this tool."""
@@ -110,6 +151,7 @@ def tool(
     side_effects: Optional[List[str]] = None,
     tags: Optional[List[str]] = None,
     description: Optional[str] = None,
+    permission_kind: Optional[PermissionKind] = None,  # TASK-3
 ) -> Any:
     """Decorator that marks a function as an agent tool.
 
@@ -118,19 +160,40 @@ def tool(
         @tool
         def my_tool(...): ...
 
-        @tool(side_effects=["write"], tags=["coding"])
+        @tool(side_effects=["write"], tags=["coding"], permission_kind=PermissionKind.WRITE_FILE)
         def my_tool(...): ...
+
+    Parameters
+    ----------
+    permission_kind:
+        Explicit semantic permission category (TASK-3).  When omitted the
+        decorator infers a sensible default from ``side_effects``:
+        ``["write"]`` → ``WRITE_FILE``, ``["execute"]`` → ``EXECUTE_BASH``,
+        ``["network"]`` → ``NETWORK``, otherwise ``NONE``.
     """
 
     def _wrap(fn: Callable) -> Callable:
         _name = name or fn.__name__
         _desc = description or (fn.__doc__ or "").strip().split("\n")[0]
+        # Infer permission_kind from side_effects when not explicitly set
+        _perm = permission_kind
+        if _perm is None:
+            _se = [s.lower() for s in (side_effects or [])]
+            if "execute" in _se:
+                _perm = PermissionKind.EXECUTE_BASH
+            elif "network" in _se:
+                _perm = PermissionKind.NETWORK
+            elif "write" in _se:
+                _perm = PermissionKind.WRITE_FILE
+            else:
+                _perm = PermissionKind.NONE
         defn = ToolDefinition(
             name=_name,
             fn=fn,
             description=_desc,
             side_effects=list(side_effects or []),
             tags=list(tags or []),
+            permission_kind=_perm,
         )
         setattr(fn, TOOL_ATTR, defn)
         return fn

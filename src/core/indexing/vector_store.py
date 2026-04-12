@@ -164,8 +164,11 @@ class VectorStore:
             return tbl.search(query_vector).limit(limit).to_pandas()
 
         try:
+            import contextvars as _cv
+
+            _ctx = _cv.copy_context()
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _ex:
-                results = _ex.submit(_do_search).result(timeout=10)
+                results = _ex.submit(_ctx.run, _do_search).result(timeout=10)
         except concurrent.futures.TimeoutError:
             logger.warning(
                 "VectorStore.search timed out after 10 s — returning empty results"
@@ -240,8 +243,11 @@ class VectorStore:
             return tbl.search(query_vector).limit(limit).to_pandas()
 
         try:
+            import contextvars as _cv
+
+            _ctx = _cv.copy_context()
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _ex:
-                results = _ex.submit(_do_search).result(timeout=10)
+                results = _ex.submit(_ctx.run, _do_search).result(timeout=10)
         except concurrent.futures.TimeoutError:
             return []
 

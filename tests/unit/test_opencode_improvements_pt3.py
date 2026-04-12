@@ -107,7 +107,7 @@ async def test_context_overflow_sets_compaction_flag():
         ),
         patch("src.core.orchestration.graph.nodes.perception_node.ContextBuilder"),
         patch(
-            "src.core.inference.provider_context.get_context_budget",
+            "src.core.inference.provider_context.get_actual_context_window",
             return_value=_BUDGET,
         ),
     ):
@@ -155,7 +155,7 @@ async def test_context_overflow_fires_event():
         ),
         patch("src.core.orchestration.graph.nodes.perception_node.ContextBuilder"),
         patch(
-            "src.core.inference.provider_context.get_context_budget",
+            "src.core.inference.provider_context.get_actual_context_window",
             return_value=_BUDGET,
         ),
     ):
@@ -200,7 +200,7 @@ async def test_no_overflow_when_within_budget():
         ),
         patch("src.core.orchestration.graph.nodes.perception_node.ContextBuilder"),
         patch(
-            "src.core.inference.provider_context.get_context_budget",
+            "src.core.inference.provider_context.get_actual_context_window",
             return_value=_BUDGET,
         ),
     ):
@@ -308,18 +308,18 @@ def _make_bare_orchestrator() -> Any:
 
     orc = Orchestrator.__new__(Orchestrator)
     orc.working_dir = None  # type: ignore[attr-defined]
-    orc._session_read_files = set()
-    orc._usage_buffer = {}
-    orc._step_snapshot_id = None
-    orc.rollback_manager = MagicMock()
+    orc._session_read_files = set()  # type: ignore[misc]
+    orc._usage_buffer = {}  # type: ignore[attr-defined]
+    orc._step_snapshot_id = None  # type: ignore[attr-defined]
+    orc.rollback_manager = MagicMock()  # type: ignore[attr-defined]
     orc.event_bus = MagicMock()
     orc.plan_mode = None  # type: ignore[attr-defined]
     orc._plan_mode_approved = None  # type: ignore[attr-defined]
-    orc.current_role = None
+    orc.current_role = None  # type: ignore[attr-defined]
     orc._tool_executor = None  # type: ignore[attr-defined]
-    orc._permission_gate = None
-    orc._permission_granted = False
-    orc.explore_mode = False
+    orc._permission_gate = None  # type: ignore[attr-defined]
+    orc._permission_granted = False  # type: ignore[attr-defined]
+    orc.explore_mode = False  # type: ignore[attr-defined]
     return orc
 
 

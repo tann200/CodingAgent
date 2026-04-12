@@ -57,8 +57,12 @@ async def step_controller_node(state: Mapping[str, Any], config: Any) -> Dict[st
 
     # WF-3: Lightweight per-step lint check — run quick_lint on any .py file written
     # in the last step so syntax errors surface before advancing to the next step.
+    # P3b-C: Skip for LARGE/FRONTIER — capable 30B+ models rarely produce syntax
+    # errors and the extra lint round-trip adds latency without value.
+    _tier_for_lint = (state.get("model_tier") or "").lower()
+    _skip_lint = _tier_for_lint in ("large", "frontier")
     step_lint_warnings: List[str] = []
-    if last_result and isinstance(last_result, dict) and not step_failed:
+    if not _skip_lint and last_result and isinstance(last_result, dict) and not step_failed:
         _written_path = last_result.get("path") or last_result.get("file")
         if _written_path and str(_written_path).endswith(".py"):
             try:
@@ -84,6 +88,11 @@ async def step_controller_node(state: Mapping[str, Any], config: Any) -> Dict[st
                     "step_controller_node WF-3: lint check skipped (non-fatal): %s",
                     _lint_exc,
                 )
+    elif _skip_lint:
+        logger.debug(
+            "step_controller_node WF-3: skipping lint for capable tier=%s (P3b-C)",
+            _tier_for_lint,
+        )
 
     logger.info(
         f"step_controller_node: enforcing step {current_step + 1}/{plan_len}: {step_description}"

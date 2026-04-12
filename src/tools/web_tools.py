@@ -12,7 +12,7 @@ import ipaddress
 from typing import Any, Dict, List, Optional
 from pathlib import Path
 
-from src.tools._tool import tool
+from src.tools._tool import tool, PermissionKind
 
 logger = logging.getLogger(__name__)
 
@@ -79,7 +79,7 @@ def _is_url_blocked(url: str) -> bool:
         return True  # Block on any parse failure
 
 
-@tool(tags=["coding", "planning", "debug"])
+@tool(tags=["coding", "planning", "debug"], permission_kind=PermissionKind.NETWORK)
 def web_search(query: str, max_results: int = 5) -> Dict[str, Any]:
     """Search the web for documentation, error messages, or package information.
 
@@ -157,7 +157,7 @@ def web_search(query: str, max_results: int = 5) -> Dict[str, Any]:
         return {"status": "error", "error": f"web_search failed: {e}"}
 
 
-@tool(tags=["coding", "planning"])
+@tool(tags=["coding", "planning"], permission_kind=PermissionKind.NETWORK)
 def read_web_page(url: str, format: str = "markdown") -> Dict[str, Any]:
     """Fetch and return the text content of a web page.
 

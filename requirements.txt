@@ -22,6 +22,17 @@ black==23.9.0
 mypy>=1.0.0
 tomli>=2.0.0
 
+# Optional: OpenTelemetry tracing (Gap 8)
+# Enable by setting OTEL_EXPORTER_OTLP_ENDPOINT env var.
+# Install the exporter that matches your backend:
+#   gRPC (port 4317, e.g. Grafana Tempo / Jaeger):
+#     pip install opentelemetry-sdk opentelemetry-exporter-otlp-proto-grpc
+#   HTTP (port 4318 / Honeycomb / OTLP/HTTP backends):
+#     pip install opentelemetry-sdk opentelemetry-exporter-otlp-proto-http
+# opentelemetry-sdk>=1.20.0
+# opentelemetry-exporter-otlp-proto-grpc>=1.20.0
+# opentelemetry-exporter-otlp-proto-http>=1.20.0
+
 # Create virtualenv with
 # python -m venv .venv
 # and activate with

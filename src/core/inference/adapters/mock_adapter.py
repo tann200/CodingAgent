@@ -80,6 +80,7 @@ class MockAdapter:
         **kwargs,
     ) -> Dict[str, Any]:
         """Return the next scripted response as a normalised payload."""
+        # Record call for inspection in tests
         self.call_log.append(list(messages))
         text = self._next_response(messages)
         self.call_count += 1
@@ -117,6 +118,15 @@ class MockAdapter:
                 }
             ],
         }
+
+    # Compatibility properties expected by ApiClientProtocol
+    @property
+    def model_name(self) -> str:
+        return self.default_model
+
+    @property
+    def provider_name(self) -> str:
+        return self.provider.get("name", "mock")
 
     def get_models_from_api(self) -> Dict[str, Any]:
         """Return a minimal models dict so provider detection works."""

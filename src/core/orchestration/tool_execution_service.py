@@ -145,7 +145,7 @@ class ToolExecutionService:
     def __init__(
         self,
         registry: Any,
-        event_bus: Any,
+        event_bus: Optional[Any] = None,
         hook_runner: Optional[Any] = None,
     ) -> None:
         self._registry = registry
@@ -236,6 +236,33 @@ class ToolExecutionService:
 
         return ExecutionVerdict(blocked=False)
 
+    async def execute(
+        self, name: str, args: Dict[str, Any], *, working_dir: Optional[str] = None
+    ) -> Any:
+        """Dispatch the tool call to the underlying registry/executor.
+
+        This helper is provided so tests can treat ToolExecutionService as a
+        ToolExecutorProtocol implementation (it proxies to a registry that may
+        expose either a synchronous ``execute_tool`` or an async ``execute``).
+        """
+        # Prefer an async execute if present
+        if hasattr(self._registry, "execute"):
+            maybe = getattr(self._registry, "execute")
+            if asyncio.iscoroutinefunction(maybe):
+                return await maybe(name, args, working_dir=working_dir)
+            # else fall through to call synchronously in thread
+
+        # Synchronous execution: run in thread pool to avoid blocking the caller
+        def _call() -> Any:
+            if hasattr(self._registry, "execute_tool"):
+                return getattr(self._registry, "execute_tool")(name, args)
+            if hasattr(self._registry, "execute"):
+                return getattr(self._registry, "execute")(name, args)
+            raise RuntimeError("No executable method found on registry")
+
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, _call)
+
     async def post_execute_async(
         self,
         name: str,
@@ -306,10 +333,11 @@ class ToolExecutionService:
             _t4_id = uuid.uuid4().hex[:8]
             _t4_ev = register_tool_gate(_t4_id)
             try:
-                self._event_bus.publish(
-                    "tool.permission_required",
-                    {"tool": name, "args": args, "tool_id": _t4_id},
-                )
+                if self._event_bus is not None and hasattr(self._event_bus, "publish"):
+                    self._event_bus.publish(
+                        "tool.permission_required",
+                        {"tool": name, "args": args, "tool_id": _t4_id},
+                    )
             except Exception:
                 pass
             granted = await _t4_ev.wait_async(timeout=120.0)

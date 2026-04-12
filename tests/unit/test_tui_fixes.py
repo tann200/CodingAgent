@@ -52,6 +52,7 @@ def _make_bridge():
     bridge._cancel_event = threading.Event()
     bridge._history_lock = threading.Lock()
     bridge.history = []
+    bridge._pending_injections = []  # MID-INJ: required by send_prompt
     bridge._orchestrator = MagicMock()
     bridge._orchestrator.run_agent_once.return_value = {
         "assistant_message": "ok",

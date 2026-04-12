@@ -70,8 +70,12 @@ def run_with_correlation(loop, executor, fn, *args):
         result = await run_with_correlation(loop, None, my_sync_fn, arg1, arg2)
     """
     import contextvars
+    import functools
+
     ctx = contextvars.copy_context()
-    return loop.run_in_executor(executor, ctx.run, fn, *args)
+    # Use functools.partial so a single callable is passed to run_in_executor.
+    fn_partial = functools.partial(ctx.run, fn, *args)
+    return loop.run_in_executor(executor, fn_partial)
 
 
 class MessagePriority(IntEnum):

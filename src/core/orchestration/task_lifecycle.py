@@ -103,6 +103,35 @@ def start_new_task_impl(orch) -> str:
     except Exception:
         pass
 
+    # P2-C: Reset compaction cooldown fields so the new task starts fresh.
+    if hasattr(orch, "_state") and isinstance(orch._state, dict):
+        orch._state["_compacted_history"] = None
+        orch._state["_compaction_last_round"] = None
+
+    # CROSS-SESSION FIX: Delete TODO.md and TASK_STATE.md at the start of each
+    # new task so ContextBuilder does not inject the previous task's plan as
+    # <task_progress> into the round-0 system prompt.
+    #
+    # Without this, a stale TODO.md from "add hello-world function" is read by
+    # ContextBuilder._get_todo_content() and injected verbatim into the system
+    # message for the very next task ("summarize the project readme"), causing
+    # the agent to follow the old plan (list files → read main.py) instead of
+    # the new one (read README.md).
+    #
+    # planning_node recreates TODO.md as soon as it produces a new plan, so
+    # deleting it here only removes the window where stale content is visible.
+    try:
+        _agent_ctx = Path(orch.working_dir) / ".agent-context"
+        for _stale_file in ("TODO.md", "TASK_STATE.md"):
+            _p = _agent_ctx / _stale_file
+            if _p.exists():
+                _p.unlink()
+                guilogger.info(
+                    f"start_new_task: deleted stale {_stale_file} to prevent cross-session prompt contamination"
+                )
+    except Exception:
+        pass
+
     # PB-2 fix: Invalidate ContextBuilder module-level file caches so that
     # role/skill YAML files modified on disk between tasks are re-read rather
     # than served from a process-global stale cache entry.
@@ -161,7 +190,9 @@ def start_new_task_impl(orch) -> str:
     # CF-3: Reset GAP-SMALL-4 clarification flag so a stale True from the
     # previous task doesn't immediately short-circuit route_after_perception.
     try:
-        if hasattr(orch, "_last_agent_state") and isinstance(orch._last_agent_state, dict):
+        if hasattr(orch, "_last_agent_state") and isinstance(
+            orch._last_agent_state, dict
+        ):
             orch._last_agent_state["needs_clarification"] = None
     except Exception:
         pass
@@ -170,6 +201,27 @@ def start_new_task_impl(orch) -> str:
     orch._session_title = None
     # ORCH-W4: Reset agent mode to "execution" for the new task.
     orch._agent_mode = "execution"
+
+    # OP-5: Apply per-project tool enable/disable overrides from
+    # .agent-context/config.json so project-specific tool restrictions
+    # are enforced at the start of each task.
+    try:
+        from src.core.config_loader import get_project_tool_overrides
+
+        _wd_str = str(orch.working_dir) if orch.working_dir else ""
+        if _wd_str and hasattr(orch, "tool_registry"):
+            _tool_overrides = get_project_tool_overrides(_wd_str)
+            for _tool_name, _enabled in _tool_overrides.items():
+                if not _enabled:
+                    try:
+                        orch.tool_registry.deregister(_tool_name)
+                        guilogger.info(
+                            "start_new_task: disabled tool '%s' (project config)", _tool_name
+                        )
+                    except Exception:
+                        pass
+    except Exception:
+        pass
 
     guilogger.info(f"Started new task with ID: {orch._current_task_id}")
     # TUI-07: publish git status so the sidebar branch chip is current

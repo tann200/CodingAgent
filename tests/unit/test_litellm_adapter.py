@@ -43,13 +43,13 @@ class TestLiteLLMAdapter:
 
         with patch("src.core.user_prefs.UserPrefs.load", side_effect=Exception):
             a = LiteLLMAdapter()
-        assert "localhost:4000" in a.base_url
+        assert a.base_url is not None and "localhost:4000" in a.base_url
 
     def test_custom_base_url(self):
         from src.core.inference.adapters.litellm_adapter import LiteLLMAdapter
 
         a = LiteLLMAdapter(base_url="http://litellm.company.com:8000")
-        assert "company.com" in a.base_url
+        assert a.base_url is not None and "company.com" in a.base_url
 
     def test_no_api_key_is_allowed(self):
         """LiteLLM runs locally without auth — no key is not an error."""
@@ -140,3 +140,129 @@ class TestLiteLLMAdapter:
         litellm_entries = [p for p in providers if p.get("type") == "litellm"]
         assert len(litellm_entries) == 1
         assert litellm_entries[0]["active"] is False
+
+
+class TestLiteLLMAdapterGap4:
+    """GAP-4: model_tier property and thinking-token stripping."""
+
+    def test_model_tier_small_for_edge_model(self):
+        from src.core.inference.adapters.litellm_adapter import LiteLLMAdapter
+
+        a = LiteLLMAdapter(models=["gemma-4-e4b-it"])
+        assert a.model_tier == "small"
+
+    def test_model_tier_frontier_for_large_model(self):
+        from src.core.inference.adapters.litellm_adapter import LiteLLMAdapter
+
+        a = LiteLLMAdapter(models=["gemma-4-31b-it"])
+        assert a.model_tier == "frontier"
+
+    def test_model_tier_frontier_for_gpt4o(self):
+        from src.core.inference.adapters.litellm_adapter import LiteLLMAdapter
+
+        a = LiteLLMAdapter(models=["gpt-4o"])
+        assert a.model_tier == "frontier"
+
+    def test_model_tier_small_for_14b(self):
+        from src.core.inference.adapters.litellm_adapter import LiteLLMAdapter
+
+        a = LiteLLMAdapter(models=["qwen3:14b"])
+        assert a.model_tier == "small"
+
+    def test_model_tier_medium_for_unknown_model(self):
+        from src.core.inference.adapters.litellm_adapter import LiteLLMAdapter
+
+        a = LiteLLMAdapter(models=["some-unknown-model-xyz"])
+        assert a.model_tier == "medium"
+
+    def test_model_tier_respects_context_window(self):
+        """A model with no param count but large context window → MEDIUM or LARGE."""
+        from src.core.inference.adapters.litellm_adapter import LiteLLMAdapter
+
+        a = LiteLLMAdapter(models=["mystery-model"])
+        # Set context_window dynamically (as production code does via event)
+        a.context_window = 200000
+        # 200K context → LARGE
+        assert a.model_tier == "large"
+
+    def test_thinking_stripping_for_reasoning_model(self):
+        """generate() strips <think> tags for qwen3 models."""
+        from unittest.mock import patch
+        from src.core.inference.adapters.litellm_adapter import LiteLLMAdapter
+
+        a = LiteLLMAdapter(models=["qwen3:14b"])
+
+        fake_response = {
+            "ok": True,
+            "provider": "litellm",
+            "model": "qwen3:14b",
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "<think>internal thought</think>Final answer here.",
+                    },
+                    "finish_reason": "stop",
+                }
+            ],
+            "prompt_tokens": 10,
+            "completion_tokens": 5,
+            "total_tokens": 15,
+        }
+
+        with patch.object(
+            a.__class__.__bases__[0],  # OpenAICompatibleAdapter
+            "generate",
+            return_value=fake_response,
+        ):
+            result = a.generate([{"role": "user", "content": "hello"}])
+
+        content = result["choices"][0]["message"]["content"]
+        assert "<think>" not in content
+        assert "Final answer here." in content
+
+    def test_no_stripping_for_non_reasoning_model(self):
+        """generate() does NOT modify content for non-reasoning models."""
+        from unittest.mock import patch
+        from src.core.inference.adapters.litellm_adapter import LiteLLMAdapter
+
+        a = LiteLLMAdapter(models=["gpt-4o"])
+        original_content = "This is a normal response."
+        fake_response = {
+            "ok": True,
+            "provider": "litellm",
+            "model": "gpt-4o",
+            "choices": [
+                {
+                    "message": {"role": "assistant", "content": original_content},
+                    "finish_reason": "stop",
+                }
+            ],
+        }
+
+        with patch.object(
+            a.__class__.__bases__[0],
+            "generate",
+            return_value=fake_response,
+        ):
+            result = a.generate([{"role": "user", "content": "hi"}])
+
+        assert result["choices"][0]["message"]["content"] == original_content
+
+    def test_no_stripping_in_stream_mode(self):
+        """Streaming responses are passed through unchanged."""
+        from unittest.mock import patch, MagicMock
+        from src.core.inference.adapters.litellm_adapter import LiteLLMAdapter
+
+        a = LiteLLMAdapter(models=["qwen3:14b"])
+        stream_sentinel = MagicMock()
+
+        with patch.object(
+            a.__class__.__bases__[0],
+            "generate",
+            return_value=stream_sentinel,
+        ):
+            result = a.generate([], stream=True)
+
+        # Stream response returned unchanged (no stripping attempted)
+        assert result is stream_sentinel

@@ -484,3 +484,102 @@ def get_small_model(working_dir: Optional[Path] = None) -> Optional[str]:
         return val
 
     return None
+
+
+# ---------------------------------------------------------------------------
+# OP-5: Project-level config — .agent-context/config.json
+# ---------------------------------------------------------------------------
+
+_PROJECT_CONFIG_FILENAME = "config.json"
+_PROJECT_CONFIG_CACHE: Dict[str, tuple] = {}  # path_str → (mtime, config_dict)
+
+
+def load_project_config(working_dir: str) -> Dict[str, Any]:
+    """Load ``.agent-context/config.json`` from *working_dir* if it exists.
+
+    Uses mtime-based caching so hot paths (every LLM call) only hit disk when
+    the file has changed since the last read.  Returns ``{}`` on missing or
+    invalid JSON — callers never need to guard.
+
+    Schema (all fields optional):
+
+    .. code-block:: json
+
+        {
+          "model": "gemma-4-26b-a4b-it",
+          "instructions": ["Use pnpm, never npm.", "Tests: .venv/bin/pytest."],
+          "tools": {"bash": false, "glob": true},
+          "permissions": {"deny_write": ["*.env", "db/migrations/*"]}
+        }
+    """
+    path = Path(working_dir) / ".agent-context" / _PROJECT_CONFIG_FILENAME
+    if not path.exists():
+        return {}
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return {}
+    cached = _PROJECT_CONFIG_CACHE.get(str(path))
+    if cached is not None:
+        cached_mtime, cached_cfg = cached
+        if mtime == cached_mtime:
+            return cached_cfg
+    try:
+        cfg = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(cfg, dict):
+            cfg = {}
+        _PROJECT_CONFIG_CACHE[str(path)] = (mtime, cfg)
+        return cfg
+    except Exception as exc:
+        logger.warning("load_project_config: failed to parse %s: %s", path, exc)
+        return {}
+
+
+def get_project_instructions(working_dir: str) -> List[str]:
+    """Return the ``instructions`` list from the project config.
+
+    Each element is a plain-text instruction that will be injected into the
+    system prompt as a ``<project_instructions>`` block.
+    """
+    raw = load_project_config(working_dir).get("instructions", [])
+    if not isinstance(raw, list):
+        return []
+    return [str(item) for item in raw if item]
+
+
+def get_project_tool_overrides(working_dir: str) -> Dict[str, bool]:
+    """Return tool enable/disable overrides from the project config.
+
+    Keys are tool names; values are ``True`` (keep enabled) or ``False``
+    (deregister before the next task).
+    """
+    raw = load_project_config(working_dir).get("tools", {})
+    if not isinstance(raw, dict):
+        return {}
+    return {k: bool(v) for k, v in raw.items()}
+
+
+def get_project_deny_write_patterns(working_dir: str) -> List[str]:
+    """Return path glob patterns that must never be written by the agent.
+
+    Patterns are matched against the *relative* path of the target file
+    (relative to *working_dir*) using ``fnmatch.fnmatch``.
+
+    Example: ``[".env*", "db/migrations/*"]``
+    """
+    raw = load_project_config(working_dir).get("permissions", {})
+    if not isinstance(raw, dict):
+        return []
+    deny = raw.get("deny_write", [])
+    if not isinstance(deny, list):
+        return []
+    return [str(p) for p in deny if p]
+
+
+def get_project_model_override(working_dir: str) -> Optional[str]:
+    """Return the per-project model name override, or ``None``.
+
+    When set, this takes precedence over the provider's default model.
+    """
+    val = load_project_config(working_dir).get("model")
+    return str(val) if val and isinstance(val, str) else None

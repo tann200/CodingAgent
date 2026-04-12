@@ -46,8 +46,11 @@ def should_after_planning(
     Routing after planning node.
 
     NOT WIRED IN compile_agent_graph() — the main graph routes planning →
-    plan_validator_node unconditionally. This function is kept for GraphFactory
-    subgraphs that bypass plan_validator. Do not call from main graph code.
+    plan_validator_node unconditionally.
+
+    P2-E audit note: function is still used by graph_factory.py (two call sites
+    at lines 56 and 73) for lightweight subgraph flavors that bypass
+    plan_validator.  Not dead code; do not remove.
     """
     logger.info(
         f"should_after_planning: rounds={state.get('rounds')}, next_action={state.get('next_action')}, current_plan={state.get('current_plan')}"
@@ -75,6 +78,12 @@ def should_after_plan_validator(
     Invalid plan                                           → planning (F10 fix).
     Emergency loop guard (rounds >= 8)                    → execute to break cycle.
     Resumed plan (plan_resumed=True)                      → execute directly (CF-5 fix).
+
+    P3b-B: LARGE/FRONTIER models skip plan_validator logic entirely.
+    The validator was designed to catch hallucinated tool names and missing
+    steps from small models. Capable 30B+ models produce structurally sound
+    plans; the validation adds one extra LLM call with negligible value.
+    plan_mode approval is still honoured even for capable tiers.
     """
     plan_validation = state.get("plan_validation")
     action_failed = state.get("action_failed")
@@ -90,6 +99,22 @@ def should_after_plan_validator(
     if state.get("plan_resumed", False):
         logger.info(
             "should_after_plan_validator: plan_resumed=True — skipping re-validation, executing"
+        )
+        return "execute"
+
+    # P3b-B: Capable models (LARGE/FRONTIER) trust their own plan output.
+    # Still honour plan_mode approval requirement.
+    if _is_large_or_frontier(state):
+        if state.get("plan_mode_enabled", False) and not state.get(
+            "plan_mode_approved", False
+        ):
+            logger.info(
+                "should_after_plan_validator: P3b-B capable tier + plan_mode — "
+                "suspending for user approval"
+            )
+            return "wait_for_user"
+        logger.info(
+            "should_after_plan_validator: P3b-B capable tier — skipping validation, executing"
         )
         return "execute"
 
@@ -281,6 +306,27 @@ def _task_has_more_steps(state: Mapping[str, Any]) -> bool:
     return False
 
 
+def _is_large_or_frontier(state: Mapping[str, Any]) -> bool:
+    """Return True when the active model tier is LARGE or FRONTIER.
+
+    Used by P3b-A/B/E to bypass overhead nodes (analyst_delegation,
+    plan_validator) that were calibrated for 7–9B failure modes and add
+    pure latency for capable 30B+ models.
+    """
+    tier = (state.get("model_tier") or "").lower()
+    return tier in ("large", "frontier")
+
+
+def _is_nano_or_small(state: Mapping[str, Any]) -> bool:
+    """Return True when the active model tier is NANO or SMALL.
+
+    Used by P3-A to skip expensive overhead nodes (analysis, analyst_delegation)
+    that add context pressure without improving outcomes on 1–9B models.
+    """
+    tier = (state.get("model_tier") or "").lower()
+    return tier in ("nano", "small")
+
+
 def route_after_perception(
     state: Mapping[str, Any],
 ) -> Literal["execution", "analysis", "memory_sync", "planning"]:
@@ -295,6 +341,11 @@ def route_after_perception(
     clearly single-action (explanation, single-file read, single annotation,
     etc.).  The classification uses the `task_complexity` flag already set by
     perception_node, falling back to `_task_is_complex()`.
+
+    P3b-A: LARGE/FRONTIER models skip analysis AND analyst_delegation entirely.
+    These pipeline nodes were designed to compensate for 7–9B reasoning gaps;
+    30B+ models produce better plans without the extra overhead. Complex tasks
+    on capable models now route perception → planning directly.
 
     CRITICAL FIX: When next_action=None after successful execution:
     - If task appears to have more steps (multi-step detected), continue to analysis
@@ -322,10 +373,12 @@ def route_after_perception(
     next_action = state.get("next_action")
     last_result = state.get("last_result")
     rounds = state.get("rounds", 0)
+    _capable = _is_large_or_frontier(state)
+    _constrained = _is_nano_or_small(state)
 
     logger.info(
         f"route_after_perception: next_action={next_action is not None}, "
-        f"rounds={rounds}"
+        f"rounds={rounds}, capable_tier={_capable}, constrained_tier={_constrained}"
     )
 
     if next_action:
@@ -333,7 +386,36 @@ def route_after_perception(
         # Falls back to _task_is_complex() for state dicts that don't carry the flag
         # (e.g. resumed sessions, tests that don't go through perception_node).
         _tc = state.get("task_complexity")
+
+        # P3-A: NANO/SMALL already generated a tool call — trust it and execute.
+        # Analysis is an extra LLM call that exhausts the tiny context window; the
+        # model has already decided what to do.
+        if _constrained:
+            logger.info(
+                "route_after_perception: P3-A next_action on constrained tier — "
+                "executing directly (skipping analysis)"
+            )
+            return "execution"
+
+        # P3b-E: LARGE/FRONTIER + simple task + pre-computed action → direct execution.
+        # Skips both analysis AND planning for the fastest possible path.
+        if _capable and _tc == "simple":
+            logger.info(
+                "route_after_perception: P3b-E simple task on capable tier — "
+                "direct execution (skipping analysis + planning)"
+            )
+            return "execution"
+
         if _tc == "complex":
+            if _capable:
+                # P3b-A: Skip analysis/analyst_delegation for capable models.
+                # Route complex tasks straight to planning — the model is capable
+                # enough to produce a good plan without the pre-analysis LLM call.
+                logger.info(
+                    "route_after_perception: P3b-A complex task on capable tier — "
+                    "skipping analysis, going directly to planning"
+                )
+                return "planning"
             logger.info(
                 "route_after_perception: complex task (flag) - overriding fast-path, "
                 "going to analysis"
@@ -346,6 +428,13 @@ def route_after_perception(
             return "execution"
         # Flag absent — fall back to heuristic
         if _task_is_complex(state):
+            if _capable:
+                # P3b-A: Same skip for heuristic-complex on capable models.
+                logger.info(
+                    "route_after_perception: P3b-A complex task (heuristic) on capable tier — "
+                    "skipping analysis, going directly to planning"
+                )
+                return "planning"
             logger.info(
                 "route_after_perception: complex task - overriding fast-path, "
                 "going to analysis"
@@ -363,6 +452,9 @@ def route_after_perception(
                 logger.info(
                     "route_after_perception: task has more steps, continuing execution"
                 )
+                # P3-A: NANO/SMALL skip analysis even for multi-step continuation.
+                if _constrained:
+                    return "planning"
                 return "analysis"
             logger.info("route_after_perception: task complete, going to memory_sync")
             return "memory_sync"
@@ -378,6 +470,15 @@ def route_after_perception(
             logger.info(
                 "route_after_perception: simple task on first round — bypassing "
                 "analysis, going directly to planning"
+            )
+            return "planning"
+        # P3b-A: LARGE/FRONTIER always skip analysis on the first round.
+        # P3-A: NANO/SMALL also skip analysis — it consumes context without benefit.
+        if _capable or _constrained:
+            logger.info(
+                "route_after_perception: P3b-A/P3-A first round on %s tier — "
+                "skipping analysis, going directly to planning",
+                "capable" if _capable else "constrained",
             )
             return "planning"
         if _tc != "complex" and not _task_is_complex(state):
@@ -405,9 +506,9 @@ def should_after_execution(
     - Otherwise -> verification
     W12: If tool_call_count >= max_tool_calls, bail to memory_sync.
 
-    NOT WIRED IN compile_agent_graph() — the live router is route_execution
-    (line 1042). This function is used by should_after_execution_with_replan
-    and GraphFactory subgraphs. Do not call from main graph code.
+    NOT WIRED IN compile_agent_graph() — the live router is route_execution.
+    P2-E audit note: used by should_after_execution_with_replan (which IS wired)
+    and by GraphFactory subgraphs.  Not dead code; do not remove.
     """
     # W12: Enforce tool call budget
     tool_call_count = int(state.get("tool_call_count") or 0)
@@ -576,11 +677,14 @@ def should_after_execution_with_replan(
 
     replan_required = state.get("replan_required")
     if replan_required:
-        # P1-3: Guard against unbounded replan cycles (cap at 5 attempts)
+        # P1-3: Guard against unbounded replan cycles.
+        # P3b-D: Cap is lower (3) for LARGE/FRONTIER — capable models that
+        # need 3+ replans are stuck, not approaching a solution.
         replan_attempts = int(state.get("replan_attempts") or 0)
-        if replan_attempts >= 5:
+        _replan_cap = 3 if _is_large_or_frontier(state) else 5
+        if replan_attempts >= _replan_cap:
             logger.warning(
-                f"should_after_execution_with_replan: replan_attempts={replan_attempts} >= 5, "
+                f"should_after_execution_with_replan: replan_attempts={replan_attempts} >= {_replan_cap}, "
                 "giving up replan and routing to memory_sync"
             )
             return "memory_sync"
@@ -603,8 +707,9 @@ def should_after_verification(
 
     NOT WIRED IN compile_agent_graph() — the main graph uses a fixed edge
     verification → evaluation (evaluation_node handles the same routing with
-    richer context). This function is kept for GraphFactory subgraphs that
-    skip evaluation. Do not call from main graph code.
+    richer context).
+    P2-E audit note: used by GraphFactory subgraphs that skip evaluation, and
+    referenced by regression tests.  Not dead code; do not remove.
 
     Uses state["verification_passed"] as the authoritative truth (set by
     verification_node); falls back to checking all 6 result keys (Python +
@@ -658,6 +763,20 @@ def should_after_debug(
     debug_attempts: int = int(state.get("debug_attempts") or 0)
     max_debug_attempts: int = int(state.get("max_debug_attempts") or 3)
 
+    # P2-A: Global recovery cap — tier-aware hard stop across debug + replan combined.
+    # Prevents unbounded loops when errors alternate between types, resetting individual
+    # counters while total_recovery_attempts keeps growing.
+    _total_recovery = int(state.get("total_recovery_attempts") or 0)
+    _model_tier = (state.get("model_tier") or "medium").lower()
+    _RECOVERY_CAPS = {"nano": 2, "small": 4, "medium": 8, "large": 12, "frontier": 12}
+    _recovery_cap = _RECOVERY_CAPS.get(_model_tier, 8)
+    if _total_recovery >= _recovery_cap:
+        logger.warning(
+            f"should_after_debug: global recovery cap ({_recovery_cap}) reached "
+            f"(total_recovery_attempts={_total_recovery}, tier={_model_tier}) — routing to memory_sync"
+        )
+        return "memory_sync"
+
     if next_action:
         logger.info("should_after_debug: fix generated, going to execution")
         return "execution"
@@ -672,11 +791,23 @@ def should_after_debug(
 
 def should_after_replan(
     state: Mapping[str, Any],
-) -> Literal["step_controller", "perception"]:
+) -> Literal["step_controller", "perception", "memory_sync"]:
     """
     Decide routing after replan node.
     After splitting oversized steps, go back to step_controller to execute the new smaller steps.
     """
+    # P2-A: Global recovery cap check (mirrors should_after_debug).
+    _total_recovery = int(state.get("total_recovery_attempts") or 0)
+    _model_tier = (state.get("model_tier") or "medium").lower()
+    _RECOVERY_CAPS = {"nano": 2, "small": 4, "medium": 8, "large": 12, "frontier": 12}
+    _recovery_cap = _RECOVERY_CAPS.get(_model_tier, 8)
+    if _total_recovery >= _recovery_cap:
+        logger.warning(
+            f"should_after_replan: global recovery cap ({_recovery_cap}) reached "
+            f"(total_recovery_attempts={_total_recovery}, tier={_model_tier}) — routing to memory_sync"
+        )
+        return "memory_sync"
+
     replan_required = state.get("replan_required")
     if replan_required:
         # Replan still has an issue, go to perception for help
@@ -722,8 +853,9 @@ def should_after_evaluation(
                 f"should_after_evaluation: replan requested but step {_current_step} has "
                 f"exhausted retries ({_step_retries}/{_MAX_STEP_RETRIES}) — routing to debug"
             )
-            # Use the same total_debug_attempts guard as the "debug" branch above
-            MAX_TOTAL_DEBUG = 9
+            # Use the same total_debug_attempts guard as the "debug" branch above.
+            # P3b-D: Capable models fail faster — 5 debug attempts vs 9 for small models.
+            MAX_TOTAL_DEBUG = 5 if _is_large_or_frontier(state) else 9
             total_debug = int(state.get("total_debug_attempts") or 0)
             if total_debug >= MAX_TOTAL_DEBUG:
                 logger.warning(
@@ -736,8 +868,10 @@ def should_after_evaluation(
         )
         return "step_controller"
     elif evaluation_result == "debug":
-        # W4: Global cap prevents alternating-error-type loops (3 types × 3 attempts = 9)
-        MAX_TOTAL_DEBUG = 9
+        # W4: Global cap prevents alternating-error-type loops.
+        # P3b-D: Lower cap (5) for LARGE/FRONTIER — capable models that hit 5 debug
+        # cycles are genuinely stuck, not converging toward a solution.
+        MAX_TOTAL_DEBUG = 5 if _is_large_or_frontier(state) else 9
         total_debug = int(state.get("total_debug_attempts") or 0)
         if total_debug >= MAX_TOTAL_DEBUG:
             logger.warning(
@@ -827,7 +961,18 @@ def should_after_analysis(
     or `current_plan` (≥2 steps triggers complexity), so the classification may
     differ from the route_after_perception call that sent the task here.  The
     duplicate call is deliberate — not dead code.
+
+    P3-A: NANO/SMALL models skip analyst_delegation — the subagent adds one more
+    LLM call that small models can't use effectively. Route directly to planning.
     """
+    # P3-A: Constrained models can't effectively process analyst_delegation output.
+    if _is_nano_or_small(state):
+        logger.info(
+            "should_after_analysis: P3-A constrained tier — skipping analyst_delegation, "
+            "going directly to planning"
+        )
+        return "planning"
+
     if _task_is_complex(state):
         logger.info(
             "should_after_analysis: complex task → analyst_delegation before planning"
@@ -994,7 +1139,11 @@ def compile_agent_graph():
     workflow.add_conditional_edges(
         "replan",
         should_after_replan,
-        {"step_controller": "step_controller", "perception": "perception"},
+        {
+            "step_controller": "step_controller",
+            "perception": "perception",
+            "memory_sync": "memory_sync",  # P2-A: global recovery cap exit
+        },
     )
 
     # Step controller -> execution or verification
@@ -1111,6 +1260,11 @@ def compile_agent_graph():
 _COMPILED_GRAPH = None
 _COMPILED_GRAPH_LOCK = threading.Lock()
 
+# TASK-6: Per-tier graph cache.  Keys: "standard", "frontier".
+# Compiled once on first use; reset by _reset_compiled_graph().
+_GRAPH_CACHE: Dict[str, Any] = {}
+_GRAPH_CACHE_LOCK = threading.Lock()
+
 
 def _get_compiled_graph():
     """Return the cached compiled agent graph, compiling it on first call."""
@@ -1124,8 +1278,239 @@ def _get_compiled_graph():
 
 def _reset_compiled_graph() -> None:
     """Reset the cached graph (for tests that need a fresh compile)."""
-    global _COMPILED_GRAPH
+    global _COMPILED_GRAPH, _GRAPH_CACHE
     _COMPILED_GRAPH = None
+    with _GRAPH_CACHE_LOCK:
+        _GRAPH_CACHE.clear()
+
+
+# ---------------------------------------------------------------------------
+# TASK-6: Tier-aware graph factory
+# ---------------------------------------------------------------------------
+
+
+def _compile_frontier_graph():
+    """Compile a lighter graph for LARGE/FRONTIER models.
+
+    The frontier graph replaces the full 16-node pipeline with a
+    ``frontier_loop_node`` that runs LLM+tool iterations internally,
+    then routes to verification / memory_sync on exit.
+
+    Graph topology (simplified)::
+
+        perception → frontier_loop
+        frontier_loop → verification | memory_sync | wait_for_user
+        verification → evaluation → memory_sync | debug | end
+        debug → execution | memory_sync | end
+        memory_sync → delegation | perception | end
+        delegation → end
+
+    ``perception`` still runs so that tasks with ``next_action`` pre-set
+    (fast-path) and context-overflow handling work correctly.
+    """
+    from src.core.orchestration.graph.nodes.frontier_loop_node import (
+        frontier_loop_node,
+    )
+
+    workflow = StateGraph(AgentState)
+
+    async def _perception(state: AgentState, config: RunnableConfig):
+        return await perception_node(state, config)
+
+    async def _frontier_loop(state: AgentState, config: RunnableConfig):
+        return await frontier_loop_node(state, config)
+
+    async def _verification(state: AgentState, config: RunnableConfig):
+        return await verification_node(state, config)
+
+    async def _evaluation(state: AgentState, config: RunnableConfig):
+        return await evaluation_node(state, config)
+
+    async def _debug(state: AgentState, config: RunnableConfig):
+        return await debug_node(state, config)
+
+    async def _memory_sync(state: AgentState, config: RunnableConfig):
+        return await memory_update_node(state, config)
+
+    async def _delegation(state: AgentState, config: RunnableConfig):
+        return await delegation_node(state, config)
+
+    async def _wait_for_user(state: AgentState, config: RunnableConfig):
+        from src.core.orchestration.graph.nodes.wait_for_user_node import (
+            wait_for_user_node,
+        )
+        return await wait_for_user_node(state, config)
+
+    workflow.add_node("perception", _perception)
+    workflow.add_node("frontier_loop", _frontier_loop)
+    workflow.add_node("verification", _verification)
+    workflow.add_node("evaluation", _evaluation)
+    workflow.add_node("debug", _debug)
+    workflow.add_node("memory_sync", _memory_sync)
+    workflow.add_node("delegation", _delegation)
+    workflow.add_node("wait_for_user", _wait_for_user)
+
+    workflow.set_entry_point("perception")
+
+    # perception → frontier_loop (always for this graph — tier is already frontier)
+    # Still honour context overflow and clarification exits from perception.
+    def _route_perception_frontier(
+        state: Mapping[str, Any],
+    ) -> Literal["frontier_loop", "memory_sync"]:
+        if state.get("needs_clarification"):
+            return "memory_sync"
+        if "context_overflow" in (state.get("errors") or []):
+            return "memory_sync"
+        return "frontier_loop"
+
+    workflow.add_conditional_edges(
+        "perception",
+        _route_perception_frontier,
+        {"frontier_loop": "frontier_loop", "memory_sync": "memory_sync"},
+    )
+
+    # frontier_loop → verification | memory_sync | wait_for_user
+    def _route_frontier_loop_exit(
+        state: Mapping[str, Any],
+    ) -> Literal["verification", "memory_sync", "wait_for_user"]:
+        if state.get("awaiting_plan_approval"):
+            return "wait_for_user"
+        if "context_overflow" in (state.get("errors") or []):
+            return "memory_sync"
+        last_result = state.get("last_result")
+        if last_result is None:
+            # No tools were called — pure LLM response, task answered
+            return "memory_sync"
+        return "verification"
+
+    workflow.add_conditional_edges(
+        "frontier_loop",
+        _route_frontier_loop_exit,
+        {
+            "verification": "verification",
+            "memory_sync": "memory_sync",
+            "wait_for_user": "wait_for_user",
+        },
+    )
+
+    # wait_for_user → frontier_loop (resume after plan approval)
+    def _route_wait_frontier(
+        state: Mapping[str, Any],
+    ) -> Literal["frontier_loop", "memory_sync"]:
+        if state.get("plan_mode_approved"):
+            return "frontier_loop"
+        return "memory_sync"
+
+    workflow.add_conditional_edges(
+        "wait_for_user",
+        _route_wait_frontier,
+        {"frontier_loop": "frontier_loop", "memory_sync": "memory_sync"},
+    )
+
+    # verification → evaluation
+    workflow.add_edge("verification", "evaluation")
+
+    # evaluation → memory_sync | debug | end
+    workflow.add_conditional_edges(
+        "evaluation",
+        should_after_evaluation,
+        {
+            "memory_sync": "memory_sync",
+            "step_controller": "memory_sync",  # no step_controller in frontier graph
+            "debug": "debug",
+            "end": END,
+        },
+    )
+
+    # debug → frontier_loop (apply fix inline) | memory_sync | end
+    def _route_debug_frontier(
+        state: Mapping[str, Any],
+    ) -> Literal["frontier_loop", "memory_sync", "end"]:
+        r = should_after_debug(state)
+        if r == "execution":
+            return "frontier_loop"
+        return r  # type: ignore[return-value]
+
+    workflow.add_conditional_edges(
+        "debug",
+        _route_debug_frontier,
+        {"frontier_loop": "frontier_loop", "memory_sync": "memory_sync", "end": END},
+    )
+
+    # memory_sync → delegation | perception | end
+    def _should_after_memory_sync_frontier(
+        state: Mapping[str, Any],
+    ) -> Literal["delegation", "perception", "end"]:
+        evaluation_result = state.get("evaluation_result") or ""
+        if evaluation_result == "complete":
+            return "end"
+        if state.get("needs_clarification"):
+            return "end"
+        current_plan = state.get("current_plan") or []
+        next_action = state.get("next_action")
+        last_result = state.get("last_result") or {}
+        execution_ok = last_result.get("ok") or last_result.get("status") == "ok"
+        rounds = int(state.get("rounds") or 0)
+        if not current_plan and not next_action and execution_ok and rounds > 0:
+            return "end"
+        delegations = state.get("delegations") or []
+        if delegations:
+            return "delegation"
+        return "perception"
+
+    workflow.add_conditional_edges(
+        "memory_sync",
+        _should_after_memory_sync_frontier,
+        {"delegation": "delegation", "perception": "perception", "end": END},
+    )
+
+    workflow.add_edge("delegation", END)
+
+    return workflow.compile()
+
+
+def build_tier_graph(tier: str):
+    """Return a compiled LangGraph graph appropriate for *tier*.
+
+    Parameters
+    ----------
+    tier:
+        Model tier string (e.g. ``"frontier"``, ``"large"``, ``"medium"``).
+        Case-insensitive.  ``"large"`` and ``"frontier"`` get the
+        ``frontier_loop_node`` graph; all others get the standard graph.
+
+    Returns
+    -------
+    CompiledStateGraph
+        Thread-safe, cached compiled graph.
+
+    Notes
+    -----
+    - Compiled once per tier key, then stored in ``_GRAPH_CACHE``.
+    - Thread-safe: uses ``_GRAPH_CACHE_LOCK``.
+    - Callers can force recompilation by calling ``_reset_compiled_graph()``.
+    """
+    _tier = (tier or "").lower()
+    cache_key = "frontier" if _tier in ("large", "frontier") else "standard"
+
+    # Fast path (no lock)
+    cached = _GRAPH_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    with _GRAPH_CACHE_LOCK:
+        # Re-check under lock to avoid double compilation race
+        cached = _GRAPH_CACHE.get(cache_key)
+        if cached is not None:
+            return cached
+        logger.info("build_tier_graph: compiling '%s' graph", cache_key)
+        if cache_key == "frontier":
+            compiled = _compile_frontier_graph()
+        else:
+            compiled = compile_agent_graph()
+        _GRAPH_CACHE[cache_key] = compiled
+        logger.info("build_tier_graph: '%s' graph compiled and cached", cache_key)
+        return compiled
 
 
 def _check_tool_budget(state: Mapping[str, Any]) -> bool:
@@ -1158,9 +1543,11 @@ def _check_replan_required(
     if not state.get("replan_required"):
         return None
     replan_attempts = int(state.get("replan_attempts") or 0)
-    if replan_attempts >= 5:
+    # P3b-D: Capable models that need 3+ replans are stuck; fail faster.
+    _replan_cap = 3 if _is_large_or_frontier(state) else 5
+    if replan_attempts >= _replan_cap:
         logger.warning(
-            f"route_execution: replan_attempts={replan_attempts} >= 5, "
+            f"route_execution: replan_attempts={replan_attempts} >= {_replan_cap}, "
             "giving up replan and routing to memory_sync"
         )
         return "memory_sync"
@@ -1258,6 +1645,11 @@ def _check_no_plan_fast_path(state: Mapping[str, Any]) -> str | None:
 
     if last_tool in read_only_tools:
         if last_tool in ("read_file", "fs.read"):
+            # P3-A: Skip read-then-modify heuristic for NANO/SMALL.
+            # On small models this causes loops: NANO reads → heuristic fires →
+            # NANO reads the same file again → infinite loop.  Trust the model
+            # to issue a write call on its own; don't force a perception round-trip.
+            _skip_rtm = _is_nano_or_small(state)
             _task_lower = (state.get("task") or "").lower()
             _mod_kws = (
                 "add ",
@@ -1280,12 +1672,17 @@ def _check_no_plan_fast_path(state: Mapping[str, Any]) -> str | None:
                 "inside ",
                 "contents of ",
             )
-            if any(kw in _task_lower for kw in _mod_kws):
+            if not _skip_rtm and any(kw in _task_lower for kw in _mod_kws):
                 logger.info(
                     "route_execution: read_file done, task implies modification "
                     "— routing to perception for write step"
                 )
                 return "perception"
+            elif _skip_rtm and any(kw in _task_lower for kw in _mod_kws):
+                logger.debug(
+                    "route_execution: P3-A skipping read-then-modify heuristic "
+                    "for constrained tier"
+                )
 
         if last_tool in _query_tools:
             # Query tool returned results — route to perception so the model can

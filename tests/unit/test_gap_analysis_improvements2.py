@@ -74,14 +74,18 @@ class TestSmall3ParallelToolsFlag:
                     f"Local provider '{p['name']}' should have provider_supports_parallel_tools=False"
                 )
 
-    def test_local_providers_have_disable_thinking_true(self):
+    def test_local_providers_have_disable_thinking_field(self):
+        # disable_thinking is a valid config field but its value depends on the model.
+        # Gemma 4 and other thinking-capable local models should have disable_thinking=False
+        # so that thinking tokens are budget-controlled rather than suppressed.
+        # This test only checks the field is present (not its value).
         import json
         path = Path(__file__).parents[2] / "src" / "config" / "providers.json"
         providers = json.loads(path.read_text())
         for p in providers:
             if p.get("type") in {"lm_studio", "ollama"}:
-                assert p.get("disable_thinking") is True, (
-                    f"Local provider '{p['name']}' should have disable_thinking=True"
+                assert "disable_thinking" in p, (
+                    f"Local provider '{p['name']}' must declare disable_thinking"
                 )
 
 
