@@ -397,9 +397,127 @@ Nodes check for native tool_calls first, then fall back to YAML parsing:
 if "tool_calls" in message_obj:
     tool_call = {"name": name, "arguments": args}
 
-# 2. Fallback to YAML parsing (Local Models)
-else:
-    tool_call = parse_tool_block(content)
+    # 2. Fallback to YAML parsing (Local Models)
+    else:
+        tool_call = parse_tool_block(content)
+
+---
+
+## Model-Specific Orchestration Flows
+
+The runtime behaviour changes slightly depending on whether the active provider/model returns native function calls (frontier models) or only text (local models that rely on YAML tool blocks). The diagrams below show the high-level orchestration flow for each common case and the fallbacks we use.
+
+Local Models (Text / YAML tool blocks)
+
+```
+User input
+   |
+   v
+Perception Node (parse intent, extract pre-tool hints)
+   |
+   v
+ContextBuilder -> ProviderManager -> Adapter (lm_studio/ollama)
+   |
+   v
+Model returns assistant text containing a YAML tool block
+   |
+   v
+ToolParser.parse_tool_block()  --(valid tool block)--> tool_call
+   |
+   v
+Orchestrator.execute_tool(tool_call) -> Tool execution (file_tools, bash, etc.)
+   |
+   v
+Result published to EventBus -> Execution/Verification nodes update state
+```
+
+Notes:
+- Local models require robust YAML parsing and strict format examples injected by ContextBuilder.
+- Timeouts and streaming behaviour are managed by Adapter wrappers; local models often need larger local-memory/time budgets.
+
+Frontier Models (Native Function Calling)
+
+```
+User input
+   |
+   v
+Perception Node
+   |
+   v
+ContextBuilder -> ProviderManager -> Adapter (OpenAI-compatible / OpenRouter / Anthropic)
+   |
+   v
+Model returns native tool_call JSON (provider-level function call)
+   |
+   v
+Adapter extracts `tool_calls` from provider response -> normalized tool_call dict
+   |
+   v
+Orchestrator.execute_tool(tool_call) -> Tool execution
+   |
+   v
+Result published to EventBus -> Execution/Verification nodes update state
+```
+
+Notes:
+- Native tool calls are extracted by the Adapter layer; ToolParser is bypassed for function-calls, reducing ambiguity and parsing errors.
+- Provider-level errors (tool not defined in local registry) are surfaced as `provider_error` events and routed to `replan` or `ask_user` depending on policy.
+
+Hybrid / Fallback Flow
+
+```
+If Adapter indicates support for native tool_calls:
+   1) prefer native tool_calls when present
+   2) else fall back to parsing assistant text for YAML tool blocks
+
+If neither path yields a tool_call (malformed output):
+   -> planning_node/request_clarification or re-run perception with stricter prompt
+```
+
+Code pointers:
+- Adapter: `src/core/inference/adapters/*` (OpenAICompatibleAdapter, LmStudioAdapter, OpenRouterAdapter)
+- Tool parsing: `src/core/orchestration/tool_parser.py`
+- Perception/Execution: `src/core/orchestration/graph/nodes/perception_node.py`, `execution_node.py`
+
+---
+
+## Claw Parity — Summary & Additional Items
+
+The existing gap analysis (`docs/archive/gap-analysis-claw-code-v2-source_2026-04-05.md`) is comprehensive. Below is a focused summary of the highest-priority parity gaps still marked as missing (❌) or subpar (⚠️), plus a few additional items I found while reviewing the code and docs.
+
+Top Missing / High Priority (action recommended)
+
+- T-1 Plugin / Builtin Name Conflict Detection (❌): build_registry() can silently overwrite earlier registrations. Risk: a plugin can shadow core tools like `read_file`. Suggested fix: detect duplicate tool names at registry build time and fail-fast or namespace plugin tools.
+- P-1 / P-2 Permission Prompter & Policy Enforcement (❌): `PROMPT` permission level exists but is not wired to a per-tool prompt flow; `execute_tool()` does not consistently check the active PermissionMode against `TOOL_PERMISSIONS`. Suggested fix: wire `approval_gate`/`permission_policy` into pre_execute and ensure CLI/GUI can set active permission mode.
+- S-1 / S-2 Session Versioning and Resume (❌): sessions lack a `version` field and `--resume-session <path>` CLI support. Suggested fix: add `version` to persisted session format and a CLI command to resume arbitrary session files.
+- A-1 / A-2 OAuth & CLI auth (❌): no PKCE OAuth flow and no `login` CLI command; Copilot adapter has device flow code but OAuth-wide support and CLI tooling are missing. Suggested fix: implement PKCE helper and CLI `login/logout` wrappers for each provider that needs OAuth.
+- M-1 Outbound MCP Client / Multi-transport support (❌): CodingAgent only provides an inbound stdio MCP server. Suggested fix: plan for an outbound MCP client and plugin transports (SSE/HTTP/WebSocket) in a follow-up sprint.
+
+High-Impact Subpar Items (⚠️)
+
+- C-1 / C-4 Compaction triggers and continuation signal: compaction should be token-count driven and the model must receive a compact-continuation prompt after a compaction pass.
+- T-3 Alias resolution + T-2 Tool permission co-location: resolve aliases at registry build time so listings and permission checks are consistent; store required_permission on ToolSpec objects.
+- H-1 Hooks are synchronous: convert shell hooks or external hooks to an async runner so TUI/event-loop is not blocked.
+- SB-2 Sandbox network isolation flag: bwrap invocation should expose a network-isolation option.
+
+Additional items discovered during review
+
+- Explicit re-export stubs for dynamic modules: dynamic re-exports cause occasional pyright/LSP confusion. We fixed several pyright errors by adding TYPE_CHECKING guards and explicit imports; consider adding small `__all__` re-export stubs in wrapper modules to stabilise static analysis.
+- TUI dev-mode loader coverage: ensure all TUI modules that previously imported src.core at import time now use the `_core_paths_loader` or defer imports — a quick grep for direct imports of `src.core.paths` from `tui/src/ui` will verify coverage.
+- Structured patch hunks and glob result metadata (T-5/T-6): generate unified diff hunks before writes and return `truncated/total_found` on large glob results so the model can make informed decisions.
+- Approval gate concurrency audit: `approval_gate` uses AsyncGate and shared sets; perform a short concurrency review to ensure no race conditions or unprotected mutations across threads.
+
+Next recommended actions (ordered)
+
+1. Implement plugin name conflict detection in `src/tools/_registry.py` (single small change; fast win).  (P0)
+2. Wire PermissionPolicy → pre_execute approval gate and add CLI/Settings for active permission mode (P-1/P-2). (P0)
+3. Add session `version` to session persistence and a `--resume-session` CLI flag. (P1)
+4. Convert shell hooks to an async executor (non-blocking) and pass structured JSON to hook stdin. (P1/P2)
+5. Add unified-diff hunk generation to `patch_tools.generate_patch()` and return the hunk in `file.diff.preview` events. (P2)
+6. Add `truncated` + `total_found` metadata to `glob` and large-listing tools. (P2)
+7. Plan for outbound MCP client + transport adapters in a future sprint (M-1). (P1)
+
+If you want, I can implement the small, low-risk items now (1, 5, 6): they are limited-scope changes with straightforward tests. Tell me which to start with, or I can open a follow-up tracking ticket list and create PR branches for each.
 ```
 
 ---
