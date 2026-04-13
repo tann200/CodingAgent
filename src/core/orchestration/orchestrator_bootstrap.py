@@ -30,7 +30,7 @@ import os
 import threading as _threading
 import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, TYPE_CHECKING, cast
 
 from src.core.logger import logger as guilogger
 from src.core.orchestration.approval_gate import (
@@ -186,9 +186,17 @@ def _init_infrastructure(orch: Any, message_max_tokens: Optional[int]) -> None:
     # ARCH-1: Instantiate SessionManager
     from src.core.orchestration.session_manager import SessionManager as _SM
 
+    if TYPE_CHECKING:
+        # Import only for type-checkers to recognise the SessionStore type; avoid a
+        # runtime import cycle by keeping this inside TYPE_CHECKING.
+        from src.core.memory.session_store import SessionStore  # pragma: no cover
+
+    # orch.session_store may be either JsonlSessionStore or SessionStore. For
+    # type-checkers this is a Union; cast to the expected SessionStore to
+    # silence pyright while preserving runtime behaviour.
     orch.session_mgr = _SM(
         working_dir=orch.working_dir,
-        session_store=orch.session_store,
+        session_store=cast("SessionStore", orch.session_store),
         lifecycle_manager=orch.lifecycle_manager,
         event_bus=orch.event_bus,
     )

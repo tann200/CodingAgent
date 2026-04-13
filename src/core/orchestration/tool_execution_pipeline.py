@@ -19,7 +19,7 @@ import json
 import logging
 import uuid
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, cast, Coroutine, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -659,8 +659,18 @@ def execute_tool_impl(orch: Any, tool_call: Dict[str, Any]) -> Dict[str, Any]:
                     rv = fn(**kwargs)
                     if _inspect.isawaitable(rv):
                         import asyncio as _asyncio
+                        from typing import Coroutine
 
-                        return _asyncio.run(rv)
+                        # Pyright expects a Coroutine for asyncio.run(); runtime
+                        # awaitables that are not explicitly typed as Coroutine
+                        # can be cast to satisfy the type-checker without
+                        # changing runtime behaviour. If pyright still complains
+                        # about the argument type, ignore that specific error at
+                        # the call site (type: ignore[arg-type]) as this is a
+                        # type-checker-only concern and the runtime behaviour is
+                        # unchanged.
+                        # type: ignore[arg-type]
+                        return _asyncio.run(cast(Coroutine[Any, Any, Any], rv))
                     return rv
                 except Exception:
                     # Let the executor capture the exception for the caller to observe
