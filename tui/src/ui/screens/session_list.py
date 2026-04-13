@@ -1,6 +1,7 @@
 """SessionListScreen — browse, resume, and delete saved sessions.
 
-Sessions live in ~/.coding_agent/sessions/session_*.json.
+Sessions live in the sessions directory returned by ``src.core.paths.get_sessions_dir()``.
+For historical/dev-mode compatibility a legacy per-user fallback (``~/.coding_agent/sessions``) is honoured when the core helpers are unavailable.
 No src.core imports — communicates only via self.app methods.
 """
 
@@ -106,8 +107,7 @@ class SessionListScreen(ModalScreen[None]):
             # GAP-FOOTER-3: pre-filter to subagent sessions only when requested
             if self._filter_subagents:
                 self._all_sessions = [
-                    (p, d) for p, d in self._all_sessions
-                    if d.get("parent_session_id")
+                    (p, d) for p, d in self._all_sessions if d.get("parent_session_id")
                 ]
             self._filtered = list(self._all_sessions)
         except Exception:
@@ -188,6 +188,7 @@ class SessionListScreen(ModalScreen[None]):
         if data.get("parent_session_id"):
             # Child session — open detail view
             from .subagent_detail import SubagentDetailScreen
+
             sessions_dir = getattr(self.app, "_get_sessions_dir", lambda: None)()
             self.app.push_screen(
                 SubagentDetailScreen(

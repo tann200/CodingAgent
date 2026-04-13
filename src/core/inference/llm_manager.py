@@ -14,7 +14,7 @@ import functools
 import os
 import tempfile
 import time
-from typing import Any, Callable, Dict, List, Optional, Tuple, Awaitable
+from typing import Any, Callable, Dict, List, Optional, Tuple, Awaitable, TypeVar
 from pathlib import Path
 import json
 import inspect
@@ -57,9 +57,11 @@ try:
     from src.core.orchestration.event_bus import run_with_correlation
 except Exception:
     # Fallback: simple shim that calls loop.run_in_executor when event_bus isn't importable
+    T = TypeVar("T")
+
     def run_with_correlation(
-        loop: Any, executor: Any, fn: Callable[..., Any], *args: Any
-    ) -> Awaitable[Any]:
+        loop: Any, executor: Any, fn: Callable[..., T], *args: Any
+    ) -> Awaitable[T]:
         """Fallback run_with_correlation that safely copies the current Context
         and runs the callable inside that context in the executor. This avoids
         circular import with event_bus while still propagating ContextVars.
@@ -70,13 +72,39 @@ except Exception:
         try:
             import contextvars as _contextvars
             import functools as _functools
+            import inspect as _inspect
+            import asyncio as _asyncio
 
             ctx = _contextvars.copy_context()
-            fn_partial = _functools.partial(ctx.run, fn, *args)
-            return loop.run_in_executor(executor, fn_partial)
+
+            def _worker() -> T:
+                rv = fn(*args)
+                if _inspect.isawaitable(rv):
+                    return _asyncio.run(rv)  # type: ignore[return-value]
+                return rv  # type: ignore[return-value]
+
+            sel_executor = executor
+            if sel_executor is None:
+                # Lazily obtain the shared executor from event_bus to avoid a
+                # hard import that can create circular imports at module import
+                # time. Import locally.
+                try:
+                    from src.core.orchestration.event_bus import _get_shared_executor
+
+                    sel_executor = _get_shared_executor()
+                except Exception:
+                    sel_executor = None
+
+            fn_partial = _functools.partial(ctx.run, _worker)
+            return loop.run_in_executor(sel_executor, fn_partial)
         except Exception:
             # Last-resort fallback: direct run_in_executor without context copy
-            return loop.run_in_executor(executor, fn, *args)
+            try:
+                return loop.run_in_executor(executor, fn, *args)
+            except Exception:
+                # If even that fails, raise so callers see the problem instead of
+                # silently returning an unresolved awaitable.
+                raise
 
 
 # Simple in-memory caches (protected by RLock for thread safety - C8 fix)
@@ -515,6 +543,50 @@ class ProviderManager:
         if not key:
             return []
         return list(self._models_cache.get(key.lower().replace(" ", "_")) or [])
+
+    def get_active_adapter(self) -> Optional[Any]:
+        """Return the adapter instance for the currently active provider, or None.
+
+        This is a convenience wrapper used by orchestration code/tests that
+        previously expected ProviderManager to expose a simple accessor.
+        """
+        try:
+            active = self.get_active_provider_name()
+            if not active:
+                return None
+            return self.get_provider(active)
+        except Exception:
+            return None
+
+    def get_active_models(self) -> List[str]:
+        """Return the list of models for the currently active provider.
+
+        Preference order:
+        - cached models from ProviderManager._models_cache
+        - adapter.models attribute
+        - adapter.default_model as single-entry list
+        - empty list when none found
+        """
+        try:
+            active = self.get_active_provider_name()
+            if not active:
+                return []
+            models = self.get_cached_models(active)
+            if models:
+                return models
+            adapter = self.get_provider(active)
+            if not adapter:
+                return []
+            if hasattr(adapter, "models") and getattr(adapter, "models"):
+                try:
+                    return list(getattr(adapter, "models"))
+                except Exception:
+                    pass
+            if hasattr(adapter, "default_model") and getattr(adapter, "default_model"):
+                return [str(getattr(adapter, "default_model"))]
+            return []
+        except Exception:
+            return []
 
     def get_active_provider_name(self) -> Optional[str]:
         """Return the canonical key of the first provider marked active:true in providers.json.

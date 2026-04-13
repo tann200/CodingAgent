@@ -6,7 +6,7 @@ from typing import Any, Dict, Literal, Mapping
 
 from langgraph.graph import StateGraph, END
 from langchain_core.runnables import RunnableConfig
-from src.core.orchestration.graph.state import AgentState
+from src.core.orchestration.graph.state import AgentState, StateLike
 from src.core.orchestration.graph.nodes.perception_node import perception_node
 from src.core.orchestration.graph.nodes.analysis_node import analysis_node
 from src.core.orchestration.graph.nodes.planning_node import planning_node
@@ -992,46 +992,46 @@ def compile_agent_graph():
     workflow = StateGraph(AgentState)
 
     # 1. Add Nodes
-    async def _perception(state: AgentState, config: RunnableConfig):
+    async def _perception(state: StateLike, config: RunnableConfig):
         return await perception_node(state, config)
 
-    async def _analysis(state: AgentState, config: RunnableConfig):
+    async def _analysis(state: StateLike, config: RunnableConfig):
         return await analysis_node(state, config)
 
-    async def _planning(state: AgentState, config: RunnableConfig):
+    async def _planning(state: StateLike, config: RunnableConfig):
         return await planning_node(state, config)
 
-    async def _execution(state: AgentState, config: RunnableConfig):
+    async def _execution(state: StateLike, config: RunnableConfig):
         return await execution_node(state, config)
 
-    async def _step_controller(state: AgentState, config: RunnableConfig):
+    async def _step_controller(state: StateLike, config: RunnableConfig):
         return await step_controller_node(state, config)
 
-    async def _verification(state: AgentState, config: RunnableConfig):
+    async def _verification(state: StateLike, config: RunnableConfig):
         return await verification_node(state, config)
 
-    async def _debug(state: AgentState, config: RunnableConfig):
+    async def _debug(state: StateLike, config: RunnableConfig):
         return await debug_node(state, config)
 
-    async def _memory_sync(state: AgentState, config: RunnableConfig):
+    async def _memory_sync(state: StateLike, config: RunnableConfig):
         return await memory_update_node(state, config)
 
-    async def _replan(state: AgentState, config: RunnableConfig):
+    async def _replan(state: StateLike, config: RunnableConfig):
         return await replan_node(state, config)
 
-    async def _evaluation(state: AgentState, config: RunnableConfig):
+    async def _evaluation(state: StateLike, config: RunnableConfig):
         return await evaluation_node(state, config)
 
-    async def _plan_validator(state: AgentState, config: RunnableConfig):
+    async def _plan_validator(state: StateLike, config: RunnableConfig):
         return await plan_validator_node(state, config)
 
-    async def _delegation(state: AgentState, config: RunnableConfig):
+    async def _delegation(state: StateLike, config: RunnableConfig):
         return await delegation_node(state, config)
 
-    async def _analyst_delegation(state: AgentState, config: RunnableConfig):
+    async def _analyst_delegation(state: StateLike, config: RunnableConfig):
         return await analyst_delegation_node(state, config)
 
-    async def _wait_for_user(state: AgentState, config: RunnableConfig):
+    async def _wait_for_user(state: StateLike, config: RunnableConfig):
         from src.core.orchestration.graph.nodes.wait_for_user_node import (
             wait_for_user_node,
         )
@@ -1314,31 +1314,32 @@ def _compile_frontier_graph():
 
     workflow = StateGraph(AgentState)
 
-    async def _perception(state: AgentState, config: RunnableConfig):
+    async def _perception(state: StateLike, config: RunnableConfig):
         return await perception_node(state, config)
 
-    async def _frontier_loop(state: AgentState, config: RunnableConfig):
+    async def _frontier_loop(state: StateLike, config: RunnableConfig):
         return await frontier_loop_node(state, config)
 
-    async def _verification(state: AgentState, config: RunnableConfig):
+    async def _verification(state: StateLike, config: RunnableConfig):
         return await verification_node(state, config)
 
-    async def _evaluation(state: AgentState, config: RunnableConfig):
+    async def _evaluation(state: StateLike, config: RunnableConfig):
         return await evaluation_node(state, config)
 
-    async def _debug(state: AgentState, config: RunnableConfig):
+    async def _debug(state: StateLike, config: RunnableConfig):
         return await debug_node(state, config)
 
-    async def _memory_sync(state: AgentState, config: RunnableConfig):
+    async def _memory_sync(state: StateLike, config: RunnableConfig):
         return await memory_update_node(state, config)
 
-    async def _delegation(state: AgentState, config: RunnableConfig):
+    async def _delegation(state: StateLike, config: RunnableConfig):
         return await delegation_node(state, config)
 
-    async def _wait_for_user(state: AgentState, config: RunnableConfig):
+    async def _wait_for_user(state: StateLike, config: RunnableConfig):
         from src.core.orchestration.graph.nodes.wait_for_user_node import (
             wait_for_user_node,
         )
+
         return await wait_for_user_node(state, config)
 
     workflow.add_node("perception", _perception)

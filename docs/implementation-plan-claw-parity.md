@@ -14,14 +14,14 @@ duplicated.
 | Phase | Plan description | Actual status | Key files |
 |---|---|---|---|
 | 1 — Instruction Discovery | `discover_instruction_files()` ancestor walk | **DONE** | `src/core/context/instruction_files.py` wired in `context_builder.py:741` |
-| 2 — Permission System (engine) | `PermissionPolicy` allow/deny/ask | **DONE** (different shape) | `permission_policy.py`, `permission_gateway.py`, `project_settings.py` |
-| 2 — Permission System (`permission_kind` on tools) | `@tool(permission_kind=...)` | **NOT DONE** | Tools still use `side_effects: list[str]` |
-| 2 — Permission System (preflight wiring) | `PermissionPolicy.evaluate()` in preflight | **NOT DONE** | `tool_preflight.py` has no PermissionPolicy call |
+| 2 — Permission System (engine) | `PermissionPolicy` allow/deny/ask | **DONE** | `permission_policy.py`, `permission_gateway.py`, `project_settings.py` |
+| 2 — Permission System (`permission_kind` on tools) | `@tool(permission_kind=...)` | **DONE** | `src/tools/_tool.py` has `PermissionKind` enum + decorator param |
+| 2 — Permission System (preflight wiring) | `PermissionPolicy.evaluate()` in preflight | **DONE** | `permission_gateway.py` has Gate 2b (`_gate2b_policy_rules`) |
 | 3 — Hook System | `PreToolUse`/`PostToolUse` shell hooks | **DONE** | `shell_hooks.py` + `tool_hooks.py` wired in `tool_execution_service.py:26` |
-| 4 — JSONL Session Store | Append-only `.jsonl` store with fork/revert | **NOT DONE** | `session_store.py` is SQLite-only |
-| 5.1 — Core Protocols | `ApiClientProtocol`, `ToolExecutorProtocol` | **NOT DONE** | No `interfaces.py` |
-| 5.2 — Multi-Transport MCP | SSE + WebSocket MCP transports | **NOT DONE** | `mcp_client.py` is stdio-only (comment: "deferred to S3-A-http") |
-| 6 — Frontier Fast Loop | Single mega-node for LARGE/FRONTIER | **NOT DONE** | No `frontier_loop_node.py` |
+| 4 — JSONL Session Store | Append-only `.jsonl` store with fork/revert | **DONE** | `src/core/memory/jsonl_session_store.py` implements `SessionStoreProtocol` |
+| 5.1 — Core Protocols | `ApiClientProtocol`, `ToolExecutorProtocol` | **DONE** | `src/core/interfaces.py` defines all three protocols |
+| 5.2 — Multi-Transport MCP | SSE + WebSocket MCP transports | **DONE** | `mcp_sse_client.py`, `mcp_ws_client.py` exist; `mcp_client.py` factory dispatches |
+| 6 — Frontier Fast Loop | Single mega-node for LARGE/FRONTIER | **DONE** | `frontier_loop_node.py` + `builder.py:build_tier_graph()` |
 
 ### Phase 1 — Detail
 
@@ -29,36 +29,35 @@ duplicated.
 
 - Walks `cwd → /` (root-first, same order as claw code)
 - Checks `AGENTS.md`, `AGENTS.local.md`, `.agent/AGENTS.md`, `.agent/instructions.md`
+- **Also checks `CLAUDE.md`, `CLAUDE.local.md`, `.claude/CLAUDE.md`, `.claw/CLAUDE.md`, `.claw/instructions.md`** (TASK-1 complete)
 - SHA-256 dedup, 4 000 chars per file / 12 000 total (matches claw code constants)
 - Integrated into `context_builder.py` dynamic section (lines 741–749)
 
-**Minor gap:** The candidate file names use `AGENTS.md` rather than `CLAUDE.md` /
-`CLAUDE.local.md`. Projects using the `CLAUDE.md` convention (which many developers
-already have) are not discovered. This needs a single-line addition to `_CANDIDATE_NAMES`.
+**TASK-1 done:** `_CANDIDATE_NAMES` extended to include Claude Code / claw-code conventions.
 
 ### Phase 2 — Detail
 
 Three separate permission layers already exist:
 
 1. **`permission_policy.py`** — `PermissionPolicy` / `PermissionRule` / `Behavior(ALLOW|DENY|ASK)`.
-   Pattern-based, last-rule-wins. Loaded from `~/.coding_agent/permissions.json`.
-   Singleton via `get_permission_policy()`. **Not wired into the hot path.**
+   Pattern-based, last-rule-wins. Loaded from the per-user permissions file (see ``src.core.paths.get_permissions_path()``).
+   Singleton via `get_permission_policy()`. **Wired into PermissionGateway Gate 2b.**
 
 2. **`permission_gateway.py`** — `PermissionGateway` with 5 sequential gates:
-   plan-mode write gate → explore-mode guard → PermissionLevel gate →
-   active-mode enforcement → user-approval gate.
-   Called from `tool_execution_service.py`.
+   plan-mode write gate → explore-mode guard → **Gate 2b (PermissionPolicy)** →
+   PermissionLevel gate → user-approval gate.
+   Called from `tool_execution_service.py`. **Gate 2b implemented (TASK-4).**
 
 3. **`project_settings.py`** — `PermissionMode` string enum (`ReadOnly`, `WorkspaceWrite`,
    `DangerFullAccess`) loaded from `.agent-context/config.json#permissionMode`.
    Applied via `set_active_permission_mode()` in `tools_config.py`.
 
-The plan's goal is already 80% met. The remaining gaps:
+**TASK-3 done:** `@tool` decorator now accepts `permission_kind: PermissionKind` parameter.
+The decorator infers `permission_kind` from `side_effects` when not explicitly set, so all
+60+ existing tools are automatically annotated without requiring individual edits.
 
-- `PermissionPolicy` (pattern rules) is not consulted by `PermissionGateway` (Gate 3 reads
-  `tools_config.get_tool_permission()` — a static per-tool level, not a dynamic rule set).
-- `@tool` decorator has no `permission_kind` parameter; tools declare `side_effects=["write"]`
-  which maps to `PermissionLevel` via `tools_config.py`, not to `PermissionKind`.
+**TASK-4 done:** `_gate2b_policy_rules()` evaluates `PermissionPolicy` rules between Gate 2
+(explore-mode guard) and Gate 3 (PermissionLevel). Supports DENY/ASK/ALLOW behaviors.
 
 ### Phase 3 — Detail
 
@@ -74,20 +73,25 @@ No outstanding work here unless the plan requires matcher-based per-tool hook co
 
 ## Revised Execution Order
 
-Based on the gap analysis, the actual remaining work is:
+All tasks completed as of 2026-04-13:
 
-| Priority | Phase | Task | Effort |
-|---|---|---|---|
-| 1 | 1 | Add `CLAUDE.md` / `CLAUDE.local.md` to `_CANDIDATE_NAMES` | XS |
-| 2 | 5.1 | Define `interfaces.py` (Protocol classes) | S |
-| 3 | 2 | Add `permission_kind` to `@tool` decorator | M |
-| 4 | 2 | Wire `PermissionPolicy` into `PermissionGateway` Gate 3 | S |
-| 5 | 6 | Implement `frontier_loop_node.py` | L |
-| 6 | 6 | Tier-based graph routing in `builder.py` | M |
-| 7 | 4 | Implement `jsonl_session_store.py` | L |
-| 8 | 4 | Config toggle for storage backend | S |
-| 9 | 5.2 | MCP SSE transport | M |
-| 10 | 5.2 | MCP WebSocket transport | M |
+| Priority | Phase | Task | Effort | Status |
+|---|---|---|---|---|
+| 1 | 1 | Add `CLAUDE.md` / `CLAUDE.local.md` to `_CANDIDATE_NAMES` | XS | **DONE** |
+| 2 | 5.1 | Define `interfaces.py` (Protocol classes) | S | **DONE** |
+| 3 | 2 | Add `permission_kind` to `@tool` decorator | M | **DONE** |
+| 4 | 2 | Wire `PermissionPolicy` into `PermissionGateway` Gate 3 | S | **DONE** |
+| 5 | 6 | Implement `frontier_loop_node.py` | L | **DONE** |
+| 6 | 6 | Tier-based graph routing in `builder.py` | M | **DONE** |
+| 7 | 4 | Implement `jsonl_session_store.py` | L | **DONE** |
+| 8 | 4 | Config toggle for storage backend | S | **PENDING** (TASK-8) |
+| 9 | 5.2 | MCP SSE transport | M | **DONE** |
+| 10 | 5.2 | MCP WebSocket transport | M | **DONE** |
+| 11 | 3 | ShellHookRunner matcher field | S | **DONE** |
+
+### Remaining work
+
+- **TASK-8:** Storage backend toggle — add env var / config file support to `orchestrator_bootstrap.py`
 
 ---
 
@@ -321,7 +325,7 @@ def get_permission_kind(tool_name: str) -> Optional[PermissionKind]:
 **Effort:** S (~2 h)
 
 **Background:**
-`PermissionPolicy` (pattern/behavior rules loaded from `~/.coding_agent/permissions.json`)
+`PermissionPolicy` (pattern/behavior rules loaded from the per-user permissions file returned by ``src.core.paths.get_permissions_path()``)
 exists but is not consulted by `PermissionGateway`. Gate 3 currently calls
 `tools_config.get_tool_permission()` which returns a static `PermissionLevel` — it does
 not support dynamic user-defined allow/deny/ask rules.
@@ -372,7 +376,7 @@ Wire it into `PermissionGateway.check()` between gates 2 and 3.
 ```
 
 **Project-level policies** — also load from `.agent-context/permissions.json` (project)
-and merge with user-level `~/.coding_agent/permissions.json` (user).
+and merge with user-level permissions (see ``src.core.paths.get_permissions_path()``).
 
 **Tests:**
 - `tests/unit/test_permission_gateway_policy.py` — mock `get_permission_policy()` to

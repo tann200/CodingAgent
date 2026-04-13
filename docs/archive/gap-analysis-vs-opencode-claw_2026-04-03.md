@@ -445,7 +445,7 @@ CodingAgent has a strong architectural skeleton — a LangGraph state machine, a
 - Dual stores: SQLite WAL (messages, tool_calls, errors, plans, decisions) + JSON snapshots
 - `StoredSession` with `version`, `session_id`, `task_name`, `working_dir`
 - Plan persistence: `last_plan.json`; `plan_resumed` flag
-- TUI history persistence: `~/.coding_agent/tui_conversation_history.json`
+- TUI history persistence: TUI history file under the user's data directory (see ``src.core.paths.get_data_dir()``)
 - `session_registry.py`, `session_watcher.py`, `cross_session_bus.py`, `agent_session_manager.py`
 - **No session fork / revert / rewind**
 - **Dual stores are redundant** (no clear authority for resumption)

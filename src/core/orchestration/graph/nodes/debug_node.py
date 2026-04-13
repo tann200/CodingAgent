@@ -1,8 +1,8 @@
 import asyncio
 import logging
-from typing import Mapping, Dict, Any
+from typing import Dict, Any
 
-from src.core.orchestration.graph.state import AgentState
+from src.core.orchestration.graph.state import StateLike
 from src.core.context.context_builder import ContextBuilder
 from src.core.inference.llm_manager import call_model
 from src.core.orchestration.tool_parser import parse_tool_block
@@ -37,7 +37,7 @@ TYPE_GUIDANCE = {
 }
 
 
-async def debug_node(state: Mapping[str, Any], config: Any) -> Dict[str, Any]:
+async def debug_node(state: StateLike, config: Any) -> Dict[str, Any]:
     """
     Debug Node: Analyzes verification failures and attempts to fix issues.
     Uses the 'debugger' role from ContextBuilder (loaded from agent-brain).

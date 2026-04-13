@@ -44,7 +44,11 @@ def _safe_resolve_workdir(workdir: str) -> str:
         raise ValueError(f"Invalid workdir: {workdir!r}")
 
 
-@tool(side_effects=["execute"], tags=["coding"], permission_kind=PermissionKind.EXECUTE_BASH)
+@tool(
+    side_effects=["execute"],
+    tags=["coding"],
+    permission_kind=PermissionKind.EXECUTE_BASH,
+)
 def run_tests(
     workdir: str,
     test_files: Optional[List[str]] = None,
@@ -269,7 +273,11 @@ def _extract_tracebacks(output: str) -> List[str]:
     return tracebacks
 
 
-@tool(side_effects=["execute"], tags=["coding"], permission_kind=PermissionKind.EXECUTE_BASH)
+@tool(
+    side_effects=["execute"],
+    tags=["coding"],
+    permission_kind=PermissionKind.EXECUTE_BASH,
+)
 def run_linter(
     workdir: str, fix: bool = False, paths: Optional[List[str]] = None
 ) -> Dict[str, Any]:
@@ -624,7 +632,7 @@ def syntax_check(workdir: str, timeout_secs: float = 30.0) -> Dict[str, Any]:
                 elif ext == ".go":
                     try:
                         result = subprocess.run(
-                            ["go", "build", "-o", "/dev/null", path],
+                            ["go", "build", "-o", os.devnull, path],
                             capture_output=True,
                             text=True,
                             timeout=15,
@@ -658,7 +666,7 @@ def syntax_check(workdir: str, timeout_secs: float = 30.0) -> Dict[str, Any]:
                                 "--emit=metadata",
                                 path,
                                 "-o",
-                                "/dev/null",
+                                os.devnull,
                             ],
                             capture_output=True,
                             text=True,

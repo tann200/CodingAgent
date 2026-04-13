@@ -20,7 +20,6 @@ Usage::
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
 import stat as _stat
@@ -143,7 +142,8 @@ async def run_deferred_init(
 
             _dir = Path(plugin_dir)
             if _dir.is_dir():
-                import importlib.util, sys
+                import importlib.util
+                import sys
 
                 # Security: refuse to load plugins from world-writable directories.
                 # Check both the symlink entry itself (lstat) and its target (stat)

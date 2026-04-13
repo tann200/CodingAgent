@@ -248,7 +248,7 @@ Merge results into `analysis_result` before handing off to `planning_node`.
 
 **CodingAgent:** VectorStore persists episodic memory, but no writable instruction file that the model itself controls. `inject_prior_session_memories()` injects memories but the model cannot add to them.
 
-**Recommendation:** Add a `memory://self` tool (or extend `manage_todo`) that allows the model to append entries to `~/.coding_agent/memory.md`. `perception_node` reads this file and injects it as a `<memory>` block in the system prompt. This gives frontier models the same self-curating memory loop as opencode.
+**Recommendation:** Add a `memory://self` tool (or extend `manage_todo`) that allows the model to append entries to the per-user memory file (see ``src.core.paths.get_memory_path()``). `perception_node` reads this file and injects it as a `<memory>` block in the system prompt. This gives frontier models the same self-curating memory loop as opencode.
 
 ---
 

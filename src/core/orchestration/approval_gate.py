@@ -109,7 +109,6 @@ class AsyncGate:
             import asyncio as _asyncio
 
             loop = _asyncio.get_running_loop()
-            import concurrent.futures as _cf
 
             ev = self._sync_event
             if ev is None:

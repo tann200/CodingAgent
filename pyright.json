@@ -1,6 +1,6 @@
 {
     "version": "1.1.408",
-    "time": "1776013595541",
+    "time": "1776019061054",
     "generalDiagnostics": [
         {
             "file": "/Users/tann200/PycharmProjects/CodingAgent/scripts/lmstudio_diagnostic.py",
@@ -49,22 +49,6 @@
                 }
             },
             "rule": "reportReturnType"
-        },
-        {
-            "file": "/Users/tann200/PycharmProjects/CodingAgent/src/core/mcp/mcp_ws_client.py",
-            "severity": "error",
-            "message": "\"ws_connect\" is not a known attribute of \"None\"",
-            "range": {
-                "start": {
-                    "line": 107,
-                    "character": 43
-                },
-                "end": {
-                    "line": 107,
-                    "character": 53
-                }
-            },
-            "rule": "reportOptionalMemberAccess"
         },
         {
             "file": "/Users/tann200/PycharmProjects/CodingAgent/src/core/orchestration/graph/nodes/execution_node.py",
@@ -289,22 +273,6 @@
                 }
             },
             "rule": "reportCallIssue"
-        },
-        {
-            "file": "/Users/tann200/PycharmProjects/CodingAgent/src/core/orchestration/tool_execution_pipeline.py",
-            "severity": "error",
-            "message": "Argument of type \"Awaitable[Any]\" cannot be assigned to parameter \"main\" of type \"Coroutine[Any, Any, _T@run]\" in function \"run\"\n  \"Awaitable[Any]\" is not assignable to \"Coroutine[Any, Any, _T@run]\"",
-            "range": {
-                "start": {
-                    "line": 662,
-                    "character": 44
-                },
-                "end": {
-                    "line": 662,
-                    "character": 46
-                }
-            },
-            "rule": "reportArgumentType"
         },
         {
             "file": "/Users/tann200/PycharmProjects/CodingAgent/src/tools/_file_io.py",
@@ -1029,10 +997,10 @@
     ],
     "summary": {
         "filesAnalyzed": 497,
-        "errorCount": 63,
+        "errorCount": 61,
         "warningCount": 1,
         "informationCount": 0,
-        "timeInSec": 10.391
+        "timeInSec": 9.938
     }
 }
 

@@ -7,6 +7,8 @@ import threading
 from collections import OrderedDict
 from pathlib import Path
 
+from src.core.paths import get_memory_path
+
 # Gap 3: Plugin hooks — lazy import so the registry is not required at import time.
 try:
     from src.core.plugin.hook_registry import (
@@ -414,7 +416,7 @@ class ContextBuilder:
 
         # 2. GAP-NEW-4: memory.md — notes the model saved with memory_save()
         try:
-            _mem_file = Path.home() / ".coding_agent" / "memory.md"
+            _mem_file = get_memory_path()
             if _mem_file.exists():
                 _mem_text = _mem_file.read_text(encoding="utf-8", errors="replace")
                 if _mem_text.strip():
@@ -709,7 +711,10 @@ class ContextBuilder:
         # don't try to use tools / format features they don't have.
         if tier_str in ("nano", "small"):
             try:
-                from src.core.inference.model_tiers import ModelTier, get_plan_step_limit
+                from src.core.inference.model_tiers import (
+                    ModelTier,
+                    get_plan_step_limit,
+                )
 
                 _p1e_tier_enum = ModelTier(tier_str) if tier_str else None
                 _p1e_step_limit = (

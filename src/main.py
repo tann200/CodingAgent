@@ -611,7 +611,6 @@ def main(argv: Optional[list] = None) -> int:
         # We temporarily redirect sys.modules['src'] to tui/src/ for the import,
         # then restore it so the rest of the project keeps working.
         import importlib.util as _ilu
-        import types as _types
 
         _tui_root = str(_Path(__file__).parent.parent / "tui")
         _proj_root = str(_Path(__file__).parent.parent)

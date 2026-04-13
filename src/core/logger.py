@@ -95,9 +95,29 @@ class GUILogger:
             except Exception:
                 return str(message)
 
-    def log(self, message: str, level: str = "INFO") -> None:
+    def log(self, message: Any, level: str = "INFO", *args: Any) -> None:
+        """Log a message.
+
+        Accepts stdlib-like varargs so callers can use format-string + args
+        (e.g. guilogger.info("msg %s", value)). If args are provided and
+        message is a string, we apply %-formatting. Otherwise extra args are
+        appended.
+        """
         timestamp = datetime.now().strftime("%H:%M:%S")
-        safe_msg = self._format(message)
+        # Support format-string style usage when args are provided.
+        if args and isinstance(message, str):
+            try:
+                safe_msg = message % args
+            except Exception:
+                safe_msg = message + " " + " ".join(map(str, args))
+        elif args:
+            # message is not a str but extra args are present — coerce everything
+            try:
+                safe_msg = self._format(message) + " " + " ".join(map(str, args))
+            except Exception:
+                safe_msg = self._format(message)
+        else:
+            safe_msg = self._format(message)
         entry = {"timestamp": timestamp, "level": level.upper(), "message": safe_msg}
 
         # Print to stdout for console visibility (important messages)
@@ -184,27 +204,43 @@ class GUILogger:
         with self._lock:
             self._logs = []
 
-    def info(self, message: Any) -> None:
-        self.log(message, "INFO")
+    def info(self, message: Any, *args: Any) -> None:
+        self.log(message, "INFO", *args)
 
-    def error(self, message: Any) -> None:
-        self.log(message, "ERROR")
+    def error(self, message: Any, *args: Any) -> None:
+        self.log(message, "ERROR", *args)
 
-    def warning(self, message: Any) -> None:
-        self.log(message, "WARNING")
+    def warning(self, message: Any, *args: Any) -> None:
+        self.log(message, "WARNING", *args)
 
-    def debug(self, message: Any) -> None:
-        self.log(message, "DEBUG")
+    def debug(self, message: Any, *args: Any) -> None:
+        self.log(message, "DEBUG", *args)
 
-    def exception(self, message: Any) -> None:
+    def exception(self, message: Any, *args: Any) -> None:
         """Log an exception with traceback at ERROR level.
 
         This mirrors the common logging.exception API so callers can use
         guilogger.exception("msg") inside except blocks.
         """
         tb = traceback.format_exc()
+        # Support format-string style args similar to logging.exception
+        if args and isinstance(message, str):
+            try:
+                message_fmt = message % args
+            except Exception:
+                message_fmt = message + " " + " ".join(map(str, args))
+        elif args:
+            try:
+                message_fmt = self._format(message) + " " + " ".join(map(str, args))
+            except Exception:
+                message_fmt = self._format(message)
+        else:
+            message_fmt = message
+
         full_msg = (
-            f"{message}\n{tb}" if tb and tb.strip() != "NoneType: None" else message
+            f"{message_fmt}\n{tb}"
+            if tb and tb.strip() != "NoneType: None"
+            else message_fmt
         )
         self.log(full_msg, "ERROR")
 

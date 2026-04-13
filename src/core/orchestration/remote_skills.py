@@ -18,7 +18,8 @@ cache dir.  ``name`` becomes the skill key in ``AgentBrainManager``.
 
 Cache layout
 ------------
-~/.cache/codingagent/skills/<hash-of-base-url>/<name>.md
+Cached skills are stored under the CodingAgent cache directory (get_skills_cache_dir()),
+in the layout: <skills_cache_dir>/<hash-of-base-url>/<name>.md
 
 Where <hash-of-base-url> is the first 8 chars of the MD5 of the base URL so
 skills from different sources don't collide.
@@ -37,12 +38,13 @@ import json
 import logging
 import time
 from pathlib import Path
+from src.core.paths import get_skills_cache_dir
 from typing import Any, Dict, List, Optional
 from urllib.parse import urljoin
 
 logger = logging.getLogger(__name__)
 
-_CACHE_BASE = Path.home() / ".cache" / "codingagent" / "skills"
+_CACHE_BASE = get_skills_cache_dir()
 _DEFAULT_TTL = 3600  # seconds
 _FETCH_TIMEOUT = 10  # seconds per HTTP request
 

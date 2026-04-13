@@ -1,7 +1,7 @@
 import logging
-from typing import Mapping, Dict, Any, List, Optional, Set
+from typing import Dict, Any, List, Optional, Set
 
-from src.core.orchestration.graph.state import AgentState
+from src.core.orchestration.graph.state import StateLike
 from src.core.orchestration.graph.nodes.node_utils import _resolve_orchestrator
 
 logger = logging.getLogger(__name__)
@@ -198,7 +198,7 @@ def validate_plan(
     }
 
 
-async def plan_validator_node(state: Mapping[str, Any], config: Any) -> Dict[str, Any]:
+async def plan_validator_node(state: StateLike, config: Any) -> Dict[str, Any]:
     """
     Plan Validator Node: Validates plans before execution.
 

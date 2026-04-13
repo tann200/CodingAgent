@@ -1059,7 +1059,7 @@ tui/
     ├── bus.py                  # 40+ typed backend→UI message events
     ├── events.py               # UI→backend message events
     ├── logging.py              # InMemoryHandler ring buffer (RuntimeError guards)
-    ├── settings.py             # SettingsStore — persists to ~/.agent_tui/settings.json
+    ├── settings.py             # SettingsStore — persists to TUI config in the user data dir (see ``src.core.paths.get_config_dir()``). A legacy per-user fallback (``~/.agent_tui/settings.json``) is retained for dev-mode compatibility.
     ├── mock_engine.py          # Mock backend for development/demo
     ├── components/
     │   ├── stream_view.py      # Token-streaming text widget

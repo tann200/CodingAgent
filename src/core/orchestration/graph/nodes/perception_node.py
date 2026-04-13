@@ -5,13 +5,13 @@ import re
 from pathlib import Path
 from typing import Mapping, Dict, Any
 
-from src.core.orchestration.graph.state import AgentState, validate_state
+from src.core.orchestration.graph.state import StateLike, validate_state
 from src.core.context.context_builder import ContextBuilder
 from src.core.inference.llm_manager import call_model
+from src.core.inference.llm_helpers import call_model_with_timeout
 from src.core.orchestration.tool_parser import parse_tool_block
 from src.core.orchestration.graph.nodes.node_utils import (
     _resolve_orchestrator,
-    _notify_provider_limit,
 )
 from src.core.orchestration.event_bus import run_with_correlation
 
@@ -244,128 +244,209 @@ def _select_corrective_prompt(
     return prompts[idx]
 
 
-async def perception_node(state: Mapping[str, Any], config: Any) -> Dict[str, Any]:
+# Delegate LLM waiting/call helpers to shared implementation in llm_helpers.
+# The original implementations below are preserved for fallback if llm_helpers
+# is unavailable. This avoids code divergence while maintaining test compatibility.
+try:
+    from src.core.inference import llm_helpers as _llm_helpers
+except Exception:
+    _llm_helpers = None
+
+
+if _llm_helpers is not None:
+    _await_llm_task = _llm_helpers._await_llm_task  # type: ignore[assignment]
+
+
+def _extract_message_obj(resp: Any) -> dict:
+    """Return the normalized message object from an adapter response.
+
+    Safe wrapper: returns empty dict on unexpected shapes.
     """
-    Perception Layer: Responsible for generating the next action or thought.
-    Uses the 'operational' role from ContextBuilder (loaded from agent-brain).
-    Dynamic skill injection: If task involves debugging/searching, injects 'context_hygiene' skill.
+    try:
+        if isinstance(resp, dict):
+            return resp.get("choices", [{}])[0].get("message", {})
+    except Exception:
+        pass
+    return {}
+
+
+def _parse_native_tool_call_from_resp(resp: Any) -> dict | None:
+    """Parse native tool_calls from provider response (Frontier models).
+
+    Returns a dict like {"name": str, "arguments": dict} or None.
     """
-    logger.info("=== perception_node START ===")
-    with _span_node("perception", {"round": state.get("rounds", 0)}):
-        result = await _perception_node_impl(state, config)
-    # Gap 3: fire HOOK_ROUND_END after every perception round.
-    if _HAS_HOOKS and _hook_registry is not None:
+    try:
+        message_obj = _extract_message_obj(resp)
+        native_tool_calls = message_obj.get("tool_calls")
+        if (
+            native_tool_calls
+            and isinstance(native_tool_calls, list)
+            and len(native_tool_calls) > 0
+        ):
+            tc = native_tool_calls[0]
+            if isinstance(tc, dict):
+                func = tc.get("function")
+                if func:
+                    name = func.get("name")
+                    args = func.get("arguments")
+                    if isinstance(args, str):
+                        try:
+                            args = json.loads(args)
+                        except Exception:
+                            args = {}
+                    if name:
+                        logger.info(f"perception_node: native function call: {name}")
+                        return {"name": name, "arguments": args or {}}
+    except Exception:
+        pass
+    return None
+
+
+def _parse_yaml_tool_call_from_content(content: str) -> dict | None:
+    """Attempt to parse a YAML tool block from content.
+
+    Tries thinking-stripped content first, then falls back to raw content.
+    """
+    if not content:
+        return None
+    try:
         try:
-            _hook_registry.call(
-                _HOOK_ROUND_END,
-                {
-                    "round": result.get("rounds", 0),
-                    "next_action": result.get("next_action"),
-                },
-            )
+            from src.core.inference.thinking_utils import strip_thinking as _st
+
+            _stripped_for_parse = _st(content)
+            if _stripped_for_parse:
+                parsed = parse_tool_block(_stripped_for_parse)
+                if parsed:
+                    return parsed
         except Exception:
             pass
-    return result
+        return parse_tool_block(content)
+    except Exception:
+        return None
 
 
-async def _perception_node_impl(
-    state: Mapping[str, Any], config: Any
-) -> Dict[str, Any]:  # noqa: C901
-    # Validate state invariants at node entry (D-02: non-fatal, logs on issues)
-    validate_state(state)
+def _detect_prompt_injection(tool_call: dict | None, state: Mapping[str, Any]) -> bool:
+    """Detect if a parsed tool_call mirrors a prior user message (prompt injection).
 
-    # Resolve orchestrator first (needed for dynamic cancel_event lookup)
-    orchestrator = _resolve_orchestrator(state, config)
-    if orchestrator is None:
-        logger.error("perception_node: orchestrator is None in config")
+    Returns True when an injection is detected and the tool call should be rejected.
+    """
+    if not tool_call:
+        return False
+    tool_name_extracted = tool_call.get("name", "")
+    if not tool_name_extracted:
+        return False
+    user_messages = [
+        m.get("content", "")
+        for m in (state.get("history") or [])
+        if m.get("role") == "user"
+    ]
+    _name_pattern = f"name: {tool_name_extracted}"
+    _tool_args = tool_call.get("arguments") or {}
+    _arg_keys = list(_tool_args.keys())[:3]
+    for um in user_messages:
+        if not um or _name_pattern not in um:
+            continue
+        if _arg_keys:
+            if any(f"{k}:" in um for k in _arg_keys):
+                return True
+        else:
+            if "arguments:" in um:
+                return True
+    return False
+
+
+def _handle_no_tool_or_empty_response(
+    content: str,
+    content_stripped: str,
+    thinking_only: bool,
+    _is_truncated_yaml: bool,
+    state: Mapping[str, Any],
+    orchestrator: Any,
+    _model_tier_str: str | None,
+) -> dict | None:
+    """Encapsulate the corrective-prompt retry logic when no tool was parsed.
+
+    Returns an early-exit result dict when corrective attempts are exhausted or
+    when a corrective prompt should be issued. Returns None to indicate
+    perception_node should continue normal execution.
+    """
+    if not (content_stripped or thinking_only or _is_truncated_yaml):
+        return None
+
+    empty_response_count = int(state.get("empty_response_count") or 0) + 1
+    logger.info(
+        f"perception_node: No tool call extracted (count: {empty_response_count})"
+    )
+
+    tier = (_model_tier_str or "").lower()
+    if tier == "nano":
+        _max_corrective_2 = 1
+    elif tier == "small":
+        _max_corrective_2 = 2
+    else:
+        _max_corrective_2 = 3
+
+    if empty_response_count >= _max_corrective_2:
+        logger.error(
+            f"perception_node: {_max_corrective_2} consecutive failed tool extractions (tier={tier}) - breaking loop"
+        )
         return {
-            "history": [],
+            "history": [{"role": "assistant", "content": content or ""}],
             "next_action": None,
-            "rounds": (state.get("rounds") or 0) + 1,
-            "errors": ["orchestrator not found in config"],
-        }
-
-    # Check for cancellation - dynamically resolve from orchestrator if not in state
-    cancel_event = state.get("cancel_event")
-    if not cancel_event:
-        cancel_event = getattr(orchestrator, "cancel_event", None)
-    if cancel_event and hasattr(cancel_event, "is_set") and cancel_event.is_set():
-        logger.info("perception_node: Task canceled by user")
-        return {
-            "history": state.get("history", []),
-            "next_action": None,
-            "rounds": (state.get("rounds") or 0) + 1,
-            "last_result": {"ok": False, "error": "Task canceled by user"},
-            "errors": ["canceled"],
+            "rounds": state.get("rounds", 0) + 1,
+            "last_result": {
+                "ok": False,
+                "error": f"Infinite loop detected: model failed to generate valid tool calls {_max_corrective_2} times",
+            },
+            "errors": ["infinite_loop_no_tool"],
             "empty_response_count": 0,
         }
 
-    # Increment turn counter and enforce max_turns limit
-    turn_count = (state.get("turn_count") or 0) + 1
-    # CP-13: fall back to project-level maxTurns before the hard default of 50
-    _project_max_turns: int | None = None
+    corrective_prompt = _select_corrective_prompt(
+        attempt=empty_response_count,
+        model_tier=_model_tier_str,
+        truncated_yaml=bool(_is_truncated_yaml),
+    )
+    new_messages = [
+        {"role": "assistant", "content": content or ""},
+        {
+            "role": "user",
+            "content": corrective_prompt + "\n\nProvide a valid YAML tool call now.",
+        },
+    ]
     try:
-        if _gas is not None:
-            _ps = _gas()
-            if _ps is not None and _ps.max_turns is not None:
-                _project_max_turns = _ps.max_turns
+        if orchestrator and hasattr(orchestrator, "event_bus"):
+            evt = {
+                "session_id": state.get("session_id"),
+                "attempt": empty_response_count,
+                "reason": "truncated_yaml" if _is_truncated_yaml else "no_tool",
+                "truncated_yaml": bool(_is_truncated_yaml),
+                "model_tier": _model_tier_str,
+            }
+            try:
+                orchestrator.event_bus.publish("perception.corrective_prompt", evt)
+            except Exception:
+                pub = getattr(orchestrator.event_bus, "publish", None)
+                if callable(pub):
+                    pub("perception.corrective_prompt", evt)
     except Exception:
         pass
-    max_turns = state.get("max_turns") or _project_max_turns or 50
-    if turn_count > max_turns:
-        logger.warning(
-            "perception_node: turn_count=%d >= max_turns=%d — routing to END",
-            turn_count,
-            max_turns,
-        )
-        try:
-            orchestrator.event_bus.publish(
-                "task.turn_limit",
-                {"turn_count": turn_count, "max_turns": max_turns},
-            )
-        except Exception:
-            pass
-        return {
-            "history": state.get("history", []),
-            "next_action": None,
-            "rounds": (state.get("rounds") or 0) + 1,
-            "turn_count": turn_count,
-            "last_result": {
-                "ok": False,
-                "error": f"Turn limit reached ({max_turns} turns). Task stopped.",
-            },
-            "errors": ["turn_limit_reached"],
-        }
+    return {
+        "history": new_messages,
+        "next_action": None,
+        "rounds": state.get("rounds", 0) + 1,
+        "empty_response_count": empty_response_count,
+    }
 
-    # Validate call_model is available
-    if not callable(call_model):
-        logger.error(f"perception_node: call_model is not callable: {call_model}")
-        return {
-            "history": [],
-            "next_action": None,
-            "rounds": (state.get("rounds") or 0) + 1,
-            "turn_count": turn_count,
-            "errors": ["call_model not available"],
-        }
 
-    try:
-        adapter = orchestrator.adapter
-        if adapter is None:
-            logger.warning("perception_node: orchestrator.adapter is None")
-    except Exception as e:
-        logger.error(f"perception_node: failed to get adapter: {e}")
-        return {
-            "history": [],
-            "next_action": None,
-            "rounds": (state.get("rounds") or 0) + 1,
-            "errors": [f"adapter error: {e}"],
-        }
+async def _retrieve_context(state: Mapping[str, Any], orchestrator: Any) -> list:
+    """Module-level extraction of the pre-retrieval logic.
 
-    # Pre-retrieval: consult repo intelligence tools if available (search_code, find_symbol, find_references)
-    # F9: Skip pre-retrieval on rounds > 0 — context was already gathered in round 0.
-    # PB-3 fix: run all retrieval tasks concurrently with asyncio.gather so the total
-    # latency is max(individual latencies) rather than sum(individual latencies).
-    retrieved_snippets = []
+    This was previously nested inside _perception_node_impl. Extracting it to
+    top-level reduces cyclomatic complexity and makes the retrieval behavior
+    unit-testable.
+    """
+    retrieved_snippets: list = []
     try:
         if (
             state.get("rounds", 0) == 0
@@ -405,13 +486,10 @@ async def _perception_node_impl(
             _workdir = state.get("working_dir")
 
             async def _fetch_search_code():
-                # RA-2 fix: issue parallel search_code calls for all extracted
-                # symbols (up to 3) instead of only the first one.  Concurrent
-                # requests share the same asyncio.gather below.
                 _queries = symbol_queries[:3] if symbol_queries else [query]
                 results = await asyncio.gather(
                     *[
-                        run_with_correlation(  # D-07: propagate correlation ID
+                        run_with_correlation(
                             loop,
                             None,
                             lambda _q=_q: _safe_call(
@@ -435,7 +513,7 @@ async def _perception_node_impl(
             async def _fetch_symbols():
                 results = []
                 for _sq in symbol_queries[:3]:
-                    r = await run_with_correlation(  # D-07
+                    r = await run_with_correlation(
                         loop,
                         None,
                         lambda sq=_sq: _safe_call(
@@ -446,14 +524,12 @@ async def _perception_node_impl(
                 return results
 
             async def _fetch_references():
-                return await run_with_correlation(  # D-07
+                return await run_with_correlation(
                     loop,
                     None,
                     lambda: _safe_call("find_references", name=query, workdir=_workdir),
                 )
 
-            # P3-2: Pre-retrieve test files for the queried symbols so test context
-            # is available from round 0 without waiting for analysis_node.
             async def _fetch_test_files():
                 results = []
                 try:
@@ -461,7 +537,7 @@ async def _perception_node_impl(
                         return results
                     sg = _SymbolGraph(_workdir)
                     for _sq in symbol_queries[:2]:
-                        tests = await run_with_correlation(  # D-07
+                        tests = await run_with_correlation(
                             loop, None, lambda sq=_sq: sg.find_tests_for_module(sq)
                         )
                         if tests and isinstance(tests, list):
@@ -470,7 +546,12 @@ async def _perception_node_impl(
                     pass
                 return results
 
-            sc_result, sym_results, fr_result, test_file_results = await asyncio.gather(
+            (
+                sc_result,
+                sym_results,
+                fr_result,
+                test_file_results,
+            ) = await asyncio.gather(
                 _fetch_search_code(),
                 _fetch_symbols(),
                 _fetch_references(),
@@ -548,6 +629,592 @@ async def _perception_node_impl(
             _retrieval_exc,
         )
         retrieved_snippets = []
+    return retrieved_snippets
+
+
+def _process_post_call_tokens(
+    resp: Any, state: Mapping[str, Any], orchestrator: Any, adapter: Any
+) -> tuple[dict | None, dict, float]:
+    """Process post-LLM token usage and context-overflow handling.
+
+    Returns a tuple: (early_result_or_None, overflow_compaction_dict, session_cost_delta)
+
+    The helper mirrors the inline logic previously present in _perception_node_impl
+    and is intentionally synchronous so it is easy to unit-test.
+    """
+    _overflow_compaction: dict = {}
+    _session_cost_delta: float = 0.0
+
+    # REACT-OVF: Reactive overflow signalled by the adapter in the response
+    if isinstance(resp, dict) and resp.get("context_overflow"):
+        logger.warning(
+            "perception_node: context overflow error from provider — "
+            "triggering reactive compaction"
+        )
+        _overflow_compaction = {"_budget_compaction": True, "_should_distill": True}
+        try:
+            if orchestrator and hasattr(orchestrator, "event_bus"):
+                orchestrator.event_bus.publish(
+                    "context.overflow",
+                    {
+                        "prompt_tokens": 0,
+                        "budget": 0,
+                        "reserved": 0,
+                        "session_id": state.get("session_id"),
+                        "source": "api_error",
+                    },
+                )
+        except Exception:
+            pass
+
+        # Early-exit path mirrors the original behaviour: truncate history and
+        # instruct the caller to persist the compacted snapshot.
+        _OVERFLOW_HISTORY_KEEP = 6
+        _raw_history = list(state.get("history") or [])
+        _truncated = (
+            _raw_history[-_OVERFLOW_HISTORY_KEEP:]
+            if len(_raw_history) > _OVERFLOW_HISTORY_KEEP
+            else _raw_history
+        )
+        logger.warning(
+            "perception_node: context overflow early-exit — "
+            f"truncating history {len(_raw_history)} → {len(_truncated)} messages; "
+            "errors=['context_overflow'] will route to memory_sync"
+        )
+        return (
+            {
+                "history": [],
+                "_compacted_history": _truncated,
+                "next_action": None,
+                "rounds": state.get("rounds", 0) + 1,
+                "errors": ["context_overflow"],
+                "_budget_compaction": True,
+                "_should_distill": True,
+                "empty_response_count": 0,
+                "last_result": {
+                    "ok": False,
+                    "error": "Context window overflow — history truncated, compaction triggered",
+                },
+            },
+            _overflow_compaction,
+            _session_cost_delta,
+        )
+
+    if isinstance(resp, dict):
+        # Read token counts from the normalized response shape
+        _resp_prompt_tokens: int = int(resp.get("prompt_tokens") or 0)
+        _resp_completion_tokens: int = int(resp.get("completion_tokens") or 0)
+        _resp_total_tokens: int = int(
+            resp.get("total_tokens") or _resp_prompt_tokens + _resp_completion_tokens
+        )
+        # Anthropic cache tokens (may be zero)
+        _cache_creation_tokens: int = int(resp.get("cache_creation_input_tokens") or 0)
+        _cache_read_tokens: int = int(resp.get("cache_read_input_tokens") or 0)
+
+        _has_usage = (_resp_prompt_tokens + _resp_completion_tokens) > 0
+        if _has_usage and orchestrator:
+            try:
+                token_monitor = getattr(orchestrator, "token_monitor", None)
+                if token_monitor:
+                    token_monitor.record_usage(
+                        session_id=state.get("session_id", "default"),
+                        prompt_tokens=_resp_prompt_tokens,
+                        completion_tokens=_resp_completion_tokens,
+                        total_tokens=_resp_total_tokens,
+                    )
+                    # Accumulate session cost when pricing helper is available
+                    try:
+                        if _estimate_cost_usd is not None:
+                            _active_model = resp.get("model") or (
+                                adapter.default_model
+                                if adapter and hasattr(adapter, "default_model")
+                                else ""
+                            )
+                            _session_cost_delta = _estimate_cost_usd(
+                                _resp_prompt_tokens,
+                                _resp_completion_tokens,
+                                _active_model or "",
+                            )
+                    except Exception:
+                        pass
+            except Exception as e:
+                logger.debug(f"Token tracking error: {e}")
+
+        # Post-call overflow detection using the provider's actual context window
+        try:
+            from src.core.inference.provider_context import get_actual_context_window
+
+            _prompt_tokens = _resp_prompt_tokens
+            _RESERVED_OUTPUT_BUFFER = 4096
+            _budget = get_actual_context_window()
+            _available = _budget - _RESERVED_OUTPUT_BUFFER
+            if _prompt_tokens > 0 and _prompt_tokens >= _available:
+                logger.warning(
+                    f"perception_node: context overflow detected — "
+                    f"prompt_tokens={_prompt_tokens} >= available={_available} "
+                    f"(budget={_budget}, reserved={_RESERVED_OUTPUT_BUFFER}); "
+                    "triggering compaction"
+                )
+                _overflow_compaction = {
+                    "_budget_compaction": True,
+                    "_should_distill": True,
+                }
+                try:
+                    if orchestrator and hasattr(orchestrator, "event_bus"):
+                        orchestrator.event_bus.publish(
+                            "context.overflow",
+                            {
+                                "prompt_tokens": _prompt_tokens,
+                                "context_window": _budget,
+                                "reserved": _RESERVED_OUTPUT_BUFFER,
+                                "session_id": state.get("session_id"),
+                            },
+                        )
+                except Exception:
+                    pass
+        except Exception as _ov_err:
+            logger.debug(f"context overflow check error (non-fatal): {_ov_err}")
+
+    return None, _overflow_compaction, _session_cost_delta
+
+
+def _run_auto_compaction(
+    history_for_prompt: list, adapter: Any, orchestrator: Any, state: Mapping[str, Any]
+) -> tuple[list, list | None]:
+    """Run the CP-6 deterministic auto-compaction logic.
+
+    Returns (possibly_modified_history_for_prompt, new_compacted_history_or_None).
+    The helper is non-fatal: any exceptions are caught and the original history
+    is returned unchanged.
+    """
+    _new_compacted_history = None
+    try:
+        if (
+            _AutoCompactConfig is None
+            or _should_compact is None
+            or _compact_messages is None
+            or _cfg_get is None
+        ):
+            raise RuntimeError("auto_compactor unavailable")
+        # Determine a context window to size the compaction threshold
+        _ctx_window: int = 0
+        try:
+            if adapter and hasattr(adapter, "context_window"):
+                _ctx_window = int(adapter.context_window or 0)
+            if not _ctx_window and _get_context_budget is not None:
+                _ctx_window = _get_context_budget()
+        except Exception:
+            pass
+
+        _config_default_max = int(_cfg_get("auto_compact_max_tokens", 10_000) or 10_000)
+        _ac_max_tokens: int = (
+            int(_ctx_window * 0.85) if _ctx_window > 0 else _config_default_max
+        )
+        _ac_preserve: int = int(_cfg_get("auto_compact_preserve_recent", 4) or 4)
+        _ac_config = _AutoCompactConfig(
+            preserve_recent=_ac_preserve,
+            max_tokens=_ac_max_tokens,
+        )
+
+        _compaction_last_round = state.get("_compaction_last_round")
+        _current_rounds = int(state.get("rounds") or 0)
+        _COMPACTION_MIN_GAP = 3
+        _compaction_last_round_int = (
+            int(_compaction_last_round) if _compaction_last_round is not None else None
+        )
+        gap: int | None = None
+        if _compaction_last_round_int is not None:
+            gap = _current_rounds - _compaction_last_round_int
+            _compaction_on_cooldown = gap < _COMPACTION_MIN_GAP
+        else:
+            _compaction_on_cooldown = False
+
+        if _compaction_on_cooldown:
+            # cooldown active; skip compaction
+            logger.debug(
+                f"perception_node CP-6: skipping compaction — cooldown active (last={_compaction_last_round_int}, current={_current_rounds}, gap={gap} < {_COMPACTION_MIN_GAP})"
+            )
+        elif _should_compact(history_for_prompt, _ac_config):
+            _compact_result = _compact_messages(history_for_prompt, _ac_config)
+            if _compact_result.removed_message_count > 0:
+                history_for_prompt = _compact_result.compacted_messages
+                _new_compacted_history = _compact_result.compacted_messages
+                logger.info(
+                    "perception_node CP-6: auto-compacted history — removed=%d, new_len=%d",
+                    _compact_result.removed_message_count,
+                    len(history_for_prompt),
+                )
+                try:
+                    if orchestrator and hasattr(orchestrator, "event_bus"):
+                        orchestrator.event_bus.publish(
+                            "context.auto_compacted",
+                            {
+                                "removed_message_count": _compact_result.removed_message_count,
+                                "new_message_count": len(history_for_prompt),
+                                "session_id": state.get("session_id"),
+                            },
+                        )
+                except Exception:
+                    pass
+    except Exception as _ac_err:
+        logger.debug(
+            "perception_node CP-6: auto-compaction skipped (non-fatal): %s", _ac_err
+        )
+    return history_for_prompt, _new_compacted_history
+
+
+def _parse_tool_call_and_flags(
+    resp: Any, content: str, state: Mapping[str, Any]
+) -> tuple[dict | None, str, bool, bool, str]:
+    """Parse tool call from response/content and compute helper flags.
+
+    Returns (tool_call, content_stripped, thinking_only, is_truncated_yaml, content_no_thinking)
+    """
+    # Normalize content
+    content_stripped = content.strip() if content else ""
+
+    # Compute thinking-stripped content
+    try:
+        from src.core.inference.thinking_utils import strip_thinking as _st
+
+        content_no_thinking = _st(content_stripped)
+    except Exception:
+        content_no_thinking = content_stripped
+
+    thinking_only = not content_no_thinking
+
+    # Log if last history message was a tool result (non-fatal)
+    try:
+        prior_history = state.get("history") or []
+        if isinstance(prior_history, list) and prior_history:
+            last_msg = prior_history[-1]
+            if last_msg.get("role") == "tool":
+                logger.info("perception_node: last message was a tool result")
+    except Exception:
+        pass
+
+    tool_call = None
+    try:
+        # Prefer native provider tool_calls first
+        tool_call = _parse_native_tool_call_from_resp(resp)
+
+        # Fallback to YAML parsing when appropriate
+        if (
+            not tool_call
+            and content
+            and "tool_execution_result" not in content
+            and '"tool_execution_result"' not in content
+        ):
+            tool_call = _parse_yaml_tool_call_from_content(content)
+        elif not tool_call:
+            logger.info(
+                "perception_node: skipping parse_tool_block because content contains tool_execution_result"
+            )
+
+        # Prompt injection guard
+        if tool_call is not None and _detect_prompt_injection(tool_call, state):
+            tool_name_extracted = tool_call.get("name", "")
+            logger.warning(
+                f"perception_node: F8 injection guard — tool call '{tool_name_extracted}' "
+                "matches a user-role message (name + args); rejecting to prevent prompt injection"
+            )
+            tool_call = None
+    except Exception:
+        tool_call = None
+
+    # Detect truncated YAML: model started a ```yaml block but couldn't complete it.
+    _is_truncated_yaml = bool(
+        tool_call is None
+        and content_stripped
+        and not thinking_only
+        and "```yaml" in content_stripped
+        and not any(
+            sig in content_stripped.lower()
+            for sig in ("status: complete", "task is complete", "result:")
+        )
+    )
+
+    return (
+        tool_call,
+        content_stripped,
+        thinking_only,
+        _is_truncated_yaml,
+        content_no_thinking,
+    )
+
+
+def _build_perception_messages(
+    builder: Any,
+    state: Mapping[str, Any],
+    orchestrator: Any,
+    adapter: Any,
+    retrieved_snippets: list,
+    active_skills: list,
+    tools_list: list,
+    history_for_prompt: list,
+    perception_role: str,
+    active_model_name: str | None,
+) -> list:
+    """Wrap ContextBuilder.build_prompt and the in-place message injections.
+
+    Preserves the exact behaviour previously inline in _perception_node_impl so
+    callers can be switched to this helper without behavioural changes.
+    """
+    # Build the base messages via ContextBuilder
+    try:
+        max_tokens = _get_context_budget() if _get_context_budget is not None else 6000
+    except Exception:
+        max_tokens = 6000
+
+    provider_capabilities = {}
+    try:
+        if orchestrator and hasattr(orchestrator, "get_provider_capabilities"):
+            provider_capabilities = orchestrator.get_provider_capabilities()
+    except Exception:
+        provider_capabilities = {}
+
+    messages = builder.build_prompt(
+        role_name=perception_role,
+        active_skills=active_skills,
+        task_description=state["task"],
+        tools=tools_list,
+        conversation=history_for_prompt,
+        retrieved_snippets=retrieved_snippets,
+        max_tokens=max_tokens,
+        provider_capabilities=provider_capabilities,
+        model_tier=state.get("model_tier"),
+        model_name=active_model_name or "",
+    )
+
+    # S9-A: Inject prior-session memories into the system message (round 0 only).
+    try:
+        _prior_context_block = ""
+        if (state.get("rounds") or 0) == 0:
+            try:
+                _prior_context_block = builder.inject_prior_session_memories(
+                    task=state.get("task", ""), limit=3
+                )
+            except Exception:
+                _prior_context_block = ""
+        if _prior_context_block and messages and messages[0].get("role") == "system":
+            messages[0] = {
+                **messages[0],
+                "content": _prior_context_block + "\n\n" + messages[0]["content"],
+            }
+    except Exception:
+        pass
+
+    # MEM-2: Inject recent cross-session decisions on round 0 (non-critical).
+    try:
+        if (
+            (state.get("rounds") or 0) == 0
+            and messages
+            and messages[0].get("role") == "system"
+        ):
+            _ss = getattr(orchestrator, "session_store", None) if orchestrator else None
+            if _ss and hasattr(_ss, "read_recent_decisions"):
+                _recent = _ss.read_recent_decisions(max_entries=5)
+                if _recent:
+                    _dec_lines = "\n".join(
+                        f"- {d.get('decision', '')} ({d.get('created_at', '')})"
+                        for d in _recent
+                    )
+                    messages[0] = {
+                        **messages[0],
+                        "content": (
+                            f"## Recent task decisions (cross-session memory)\n{_dec_lines}\n\n"
+                            + messages[0]["content"]
+                        ),
+                    }
+    except Exception:
+        pass
+
+    # ORCH-W1: Inject max_steps.txt warning into the system message when near the turn limit.
+    try:
+        _turn_count_now = int((state.get("turn_count") or 0))
+        _project_max_turns: int | None = None
+        try:
+            if _gas is not None:
+                _ps = _gas()
+                if _ps is not None and _ps.max_turns is not None:
+                    _project_max_turns = _ps.max_turns
+        except Exception:
+            pass
+        _max_turns_now = int(state.get("max_turns") or _project_max_turns or 50)
+        _near_limit = _turn_count_now >= (_max_turns_now - 2)
+        if _near_limit and messages and messages[0].get("role") == "system":
+            try:
+                _tpl_path = (
+                    Path(__file__).parent.parent.parent.parent
+                    / "prompts"
+                    / "templates"
+                    / "max_steps.txt"
+                )
+                if _tpl_path.exists():
+                    _max_steps_text = _tpl_path.read_text(encoding="utf-8").strip()
+                    if _max_steps_text:
+                        messages[0] = {
+                            **messages[0],
+                            "content": messages[0]["content"]
+                            + f"\n\n{_max_steps_text}",
+                        }
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    # MID-INJ: On rounds > 0, drain any mid-run user messages buffered by the
+    # TUI bridge and inject them as <system-reminder> blocks appended to the
+    # messages list.
+    try:
+        _current_round = state.get("rounds") or 0
+        if _current_round > 0:
+            _inj_source = state.get("_pending_injections_source")
+            if _inj_source is not None and callable(
+                getattr(_inj_source, "pop_pending_injections", None)
+            ):
+                _injected_msgs = _inj_source.pop_pending_injections()
+                for _inj_text in _injected_msgs:
+                    _reminder = (
+                        "<system-reminder>\n"
+                        "The user sent the following message:\n"
+                        f"{_inj_text}\n\n"
+                        "Please address this message and continue with your tasks.\n"
+                        "</system-reminder>"
+                    )
+                    messages.append({"role": "user", "content": _reminder})
+    except Exception:
+        pass
+
+    return messages
+
+
+async def perception_node(state: StateLike, config: Any) -> Dict[str, Any]:
+    """
+    Perception Layer: Responsible for generating the next action or thought.
+    Uses the 'operational' role from ContextBuilder (loaded from agent-brain).
+    Dynamic skill injection: If task involves debugging/searching, injects 'context_hygiene' skill.
+    """
+    logger.info("=== perception_node START ===")
+    with _span_node("perception", {"round": state.get("rounds", 0)}):
+        result = await _perception_node_impl(state, config)
+    # Gap 3: fire HOOK_ROUND_END after every perception round.
+    if _HAS_HOOKS and _hook_registry is not None:
+        try:
+            _hook_registry.call(
+                _HOOK_ROUND_END,
+                {
+                    "round": result.get("rounds", 0),
+                    "next_action": result.get("next_action"),
+                },
+            )
+        except Exception:
+            pass
+    return result
+
+
+async def _perception_node_impl(
+    state: Mapping[str, Any], config: Any
+) -> Dict[str, Any]:  # noqa: C901  # type: ignore[reportGeneralTypeIssues]
+    # Validate state invariants at node entry (D-02: non-fatal, logs on issues)
+    validate_state(state)
+
+    # Resolve orchestrator first (needed for dynamic cancel_event lookup)
+    orchestrator = _resolve_orchestrator(state, config)
+    if orchestrator is None:
+        logger.error("perception_node: orchestrator is None in config")
+        return {
+            "history": [],
+            "next_action": None,
+            "rounds": (state.get("rounds") or 0) + 1,
+            "errors": ["orchestrator not found in config"],
+        }
+
+    # Check for cancellation - dynamically resolve from orchestrator if not in state
+    cancel_event = state.get("cancel_event")
+    if not cancel_event:
+        cancel_event = getattr(orchestrator, "cancel_event", None)
+    if cancel_event and hasattr(cancel_event, "is_set") and cancel_event.is_set():
+        logger.info("perception_node: Task canceled by user")
+        return {
+            "history": state.get("history", []),
+            "next_action": None,
+            "rounds": (state.get("rounds") or 0) + 1,
+            "last_result": {"ok": False, "error": "Task canceled by user"},
+            "errors": ["canceled"],
+            "empty_response_count": 0,
+        }
+
+    # Increment turn counter and enforce max_turns limit
+    turn_count = (state.get("turn_count") or 0) + 1
+    # CP-13: fall back to project-level maxTurns before the hard default of 50
+    _project_max_turns: int | None = None
+    try:
+        if _gas is not None:
+            _ps = _gas()
+            if _ps is not None and _ps.max_turns is not None:
+                _project_max_turns = _ps.max_turns
+    except Exception:
+        pass
+    max_turns = int(state.get("max_turns") or _project_max_turns or 50)
+    if turn_count > max_turns:
+        logger.warning(
+            "perception_node: turn_count=%d >= max_turns=%d — routing to END",
+            turn_count,
+            max_turns,
+        )
+        try:
+            orchestrator.event_bus.publish(
+                "task.turn_limit",
+                {"turn_count": turn_count, "max_turns": max_turns},
+            )
+        except Exception:
+            pass
+        return {
+            "history": state.get("history", []),
+            "next_action": None,
+            "rounds": (state.get("rounds") or 0) + 1,
+            "turn_count": turn_count,
+            "last_result": {
+                "ok": False,
+                "error": f"Turn limit reached ({max_turns} turns). Task stopped.",
+            },
+            "errors": ["turn_limit_reached"],
+        }
+
+    # Validate call_model is available
+    if not callable(call_model):
+        logger.error(f"perception_node: call_model is not callable: {call_model}")
+        return {
+            "history": [],
+            "next_action": None,
+            "rounds": (state.get("rounds") or 0) + 1,
+            "turn_count": turn_count,
+            "errors": ["call_model not available"],
+        }
+
+    try:
+        adapter = orchestrator.adapter
+        if adapter is None:
+            logger.warning("perception_node: orchestrator.adapter is None")
+    except Exception as e:
+        logger.error(f"perception_node: failed to get adapter: {e}")
+        return {
+            "history": [],
+            "next_action": None,
+            "rounds": (state.get("rounds") or 0) + 1,
+            "errors": [f"adapter error: {e}"],
+        }
+
+    # Pre-retrieval: consult repo intelligence tools if available (search_code, find_symbol, find_references)
+    # F9: Skip pre-retrieval on rounds > 0 — context was already gathered in round 0.
+    # PB-3 fix: run all retrieval tasks concurrently with asyncio.gather so the total
+    # latency is max(individual latencies) rather than sum(individual latencies).
+    # Use module-level _retrieve_context helper (extracted above) instead of the
+    # nested duplicate.  This reduces cognitive complexity and allows unit
+    # testing of retrieval behavior.
+
+    retrieved_snippets = await _retrieve_context(state, orchestrator)
 
     # Setup prompt
     builder = ContextBuilder(working_dir=state.get("working_dir"))
@@ -560,9 +1227,10 @@ async def _perception_node_impl(
     # stops attempting new edits and focuses on summarisation/verification only.
     # PN-4: Use the already-incremented `turn_count` local (computed at top of function)
     # rather than re-reading the stale pre-increment value from state.
-    _turn_count_now = turn_count
-    _max_turns_now = max_turns
-    _near_limit = _turn_count_now >= _max_turns_now - 2
+    # Normalize to plain ints so static analyzers don't infer Optional[int]
+    _turn_count_now = int(turn_count)
+    _max_turns_now = int(max_turns)
+    _near_limit = _turn_count_now >= (_max_turns_now - 2)
     if _near_limit:
         try:
             if _MODIFYING_TOOLS:
@@ -618,84 +1286,16 @@ async def _perception_node_impl(
     else:
         _history_for_prompt = list(state.get("history") or [])
 
-    _new_compacted_history = None  # written back to AgentState if CP-6 fires
+    # Run the extracted auto-compaction helper to keep _perception_node_impl
+    # focused and easily testable.
+    _new_compacted_history = None
     try:
-        if (
-            _AutoCompactConfig is None
-            or _should_compact is None
-            or _compact_messages is None
-            or _cfg_get is None
-        ):
-            raise RuntimeError("auto_compactor unavailable")
-        # GAP-NEW-3: Use 85% of the actual context window as the compaction
-        # threshold rather than a fixed 10k-token default.  A single large file
-        # read can push context over the limit in just 3 messages; conversely,
-        # 50 short messages may still be well under budget.  The percentage-based
-        # threshold fires at the right time regardless of provider context size.
-        _ctx_window: int = 0
-        try:
-            if adapter and hasattr(adapter, "context_window"):
-                _ctx_window = int(adapter.context_window or 0)
-            if not _ctx_window and _get_context_budget is not None:
-                _ctx_window = _get_context_budget()
-        except Exception:
-            pass
-        _config_default_max = int(_cfg_get("auto_compact_max_tokens", 10_000) or 10_000)
-        _ac_max_tokens: int = (
-            int(_ctx_window * 0.85) if _ctx_window > 0 else _config_default_max
+        _history_for_prompt, _new_compacted_history = _run_auto_compaction(
+            _history_for_prompt, adapter, orchestrator, state
         )
-        _ac_preserve: int = int(_cfg_get("auto_compact_preserve_recent", 4) or 4)
-        _ac_config = _AutoCompactConfig(
-            preserve_recent=_ac_preserve,
-            max_tokens=_ac_max_tokens,
-        )
-        # P2-C: Min-gap guard — skip compaction for 3 rounds after the last
-        # compaction to prevent it from re-triggering every turn once the
-        # threshold is crossed.  New messages in the 3-turn gap are still
-        # appended to _compacted_history above (delta-append path).
-        _compaction_last_round = state.get("_compaction_last_round")
-        _current_rounds = int(state.get("rounds") or 0)
-        _COMPACTION_MIN_GAP = 3
-        _compaction_on_cooldown = (
-            _compaction_last_round is not None
-            and (_current_rounds - int(_compaction_last_round)) < _COMPACTION_MIN_GAP
-        )
-        if _compaction_on_cooldown:
-            logger.debug(
-                "perception_node CP-6: skipping compaction — cooldown active "
-                "(last=%d, current=%d, gap=%d < %d)",
-                _compaction_last_round,
-                _current_rounds,
-                _current_rounds - int(_compaction_last_round),
-                _COMPACTION_MIN_GAP,
-            )
-        elif _should_compact(_history_for_prompt, _ac_config):
-            _compact_result = _compact_messages(_history_for_prompt, _ac_config)
-            if _compact_result.removed_message_count > 0:
-                _history_for_prompt = _compact_result.compacted_messages
-                _new_compacted_history = _compact_result.compacted_messages
-                logger.info(
-                    "perception_node CP-6: auto-compacted history — "
-                    "removed=%d, new_len=%d",
-                    _compact_result.removed_message_count,
-                    len(_history_for_prompt),
-                )
-                try:
-                    if orchestrator and hasattr(orchestrator, "event_bus"):
-                        orchestrator.event_bus.publish(
-                            "context.auto_compacted",
-                            {
-                                "removed_message_count": _compact_result.removed_message_count,
-                                "new_message_count": len(_history_for_prompt),
-                                "session_id": state.get("session_id"),
-                            },
-                        )
-                except Exception:
-                    pass
-    except Exception as _ac_err:
-        logger.debug(
-            "perception_node CP-6: auto-compaction skipped (non-fatal): %s", _ac_err
-        )
+    except Exception:
+        # The helper already swallows non-fatal errors, but guard here as well.
+        _new_compacted_history = None
 
     # PRUNE: Zero out old tool-result content beyond the token boundary so
     # that large file-read outputs from earlier turns don't crowd out recent
@@ -750,108 +1350,18 @@ async def _perception_node_impl(
     except Exception:
         pass
 
-    messages = builder.build_prompt(
-        role_name=_perception_role,
-        active_skills=active_skills,
-        task_description=state["task"],
-        tools=tools_list,
-        conversation=_history_for_prompt,
+    messages = _build_perception_messages(
+        builder=builder,
+        state=state,
+        orchestrator=orchestrator,
+        adapter=adapter,
         retrieved_snippets=retrieved_snippets,
-        # PERC-01: Use dynamic context budget so prompt fitting adapts to the
-        # active provider's actual context window instead of a hard-coded 6 000.
-        # Falls back to 6 000 when _get_context_budget is unavailable.
-        max_tokens=(_get_context_budget() if _get_context_budget is not None else 6000),
-        provider_capabilities=provider_capabilities,
-        model_tier=state.get(
-            "model_tier"
-        ),  # S1-B/S1-C: pass tier for partial + pruning
-        model_name=_active_model_name,  # OP-1: per-provider prompt selection
+        active_skills=active_skills,
+        tools_list=tools_list,
+        history_for_prompt=_history_for_prompt,
+        perception_role=_perception_role,
+        active_model_name=_active_model_name,
     )
-
-    # S9-A: Inject prior-session memories into the system message (round 0 only).
-    if _prior_context_block and messages and messages[0].get("role") == "system":
-        # MED-18 fix: copy the dict rather than mutating it in-place so callers
-        # that retained a reference to the original list entry are not surprised.
-        messages[0] = {
-            **messages[0],
-            "content": _prior_context_block + "\n\n" + messages[0]["content"],
-        }
-
-    # MEM-2: Inject recent cross-session decisions on round 0 (non-critical).
-    if (
-        (state.get("rounds") or 0) == 0
-        and messages
-        and messages[0].get("role") == "system"
-    ):
-        try:
-            _ss = getattr(orchestrator, "session_store", None) if orchestrator else None
-            if _ss and hasattr(_ss, "read_recent_decisions"):
-                _recent = _ss.read_recent_decisions(max_entries=5)
-                if _recent:
-                    _dec_lines = "\n".join(
-                        f"- {d.get('decision', '')} ({d.get('created_at', '')})"
-                        for d in _recent
-                    )
-                    # MED-18 fix: copy instead of mutating in-place.
-                    messages[0] = {
-                        **messages[0],
-                        "content": (
-                            f"## Recent task decisions (cross-session memory)\n{_dec_lines}\n\n"
-                            + messages[0]["content"]
-                        ),
-                    }
-        except Exception:
-            pass  # MEM-2 injection must never block perception
-
-    # ORCH-W1: Inject max_steps.txt warning into the system message when near the turn limit.
-    if _near_limit and messages and messages[0].get("role") == "system":
-        try:
-            # Template lives at src/core/prompts/templates/max_steps.txt
-            _tpl_path = (
-                Path(__file__).parent.parent.parent.parent
-                / "prompts"
-                / "templates"
-                / "max_steps.txt"
-            )
-            if _tpl_path.exists():
-                _max_steps_text = _tpl_path.read_text(encoding="utf-8").strip()
-                if _max_steps_text:
-                    # MED-18 fix: copy instead of in-place mutation (ORCH-W1 path)
-                    messages[0] = {
-                        **messages[0],
-                        "content": messages[0]["content"] + f"\n\n{_max_steps_text}",
-                    }
-        except Exception:
-            pass
-
-    # MID-INJ: On rounds > 0, drain any mid-run user messages buffered by the
-    # TUI bridge and inject them as <system-reminder> blocks appended to the
-    # messages list (OpenCode pattern: prompt.ts:1487–1503).
-    _current_round = state.get("rounds") or 0
-    if _current_round > 0:
-        try:
-            _inj_source = state.get("_pending_injections_source")
-            if _inj_source is not None and callable(
-                getattr(_inj_source, "pop_pending_injections", None)
-            ):
-                _injected_msgs = _inj_source.pop_pending_injections()
-                for _inj_text in _injected_msgs:
-                    _reminder = (
-                        "<system-reminder>\n"
-                        "The user sent the following message:\n"
-                        f"{_inj_text}\n\n"
-                        "Please address this message and continue with your tasks.\n"
-                        "</system-reminder>"
-                    )
-                    messages.append({"role": "user", "content": _reminder})
-                    logger.info(
-                        "MID-INJ: injected mid-run user message as system-reminder "
-                        "(round=%d, len=%d)",
-                        _current_round,
-                        len(_inj_text),
-                    )
-        except Exception as _inj_err:
-            logger.debug("MID-INJ: injection skipped (non-fatal): %s", _inj_err)
 
     # Determine model/provider
     provider = None
@@ -1025,101 +1535,31 @@ async def _perception_node_impl(
     if not cancel_event and orchestrator:
         cancel_event = getattr(orchestrator, "cancel_event", None)
 
-    try:
-        # F14: call_model is always async; use create_task directly.
-        llm_task = asyncio.create_task(
-            call_model(
-                messages,
-                provider=provider,
-                model=model,
-                stream=False,
-                format_json=False,
-                tools=None,
-                session_id=state.get("session_id"),
-                **llm_kwargs,
-            )
-        )
-        # WF-5: read configurable LLM timeout from project settings.
-        _perc_llm_timeout: int | None = 120
-        try:
-            from src.core.orchestration.project_settings import (
-                get_active_settings as _gas_perc,
-            )
-
-            _ps_perc = _gas_perc()
-            if _ps_perc is not None:
-                _perc_llm_timeout = _ps_perc.max_llm_wait_seconds or None
-        except Exception:
-            pass
-        _perc_deadline = (
-            asyncio.get_running_loop().time() + _perc_llm_timeout
-            if _perc_llm_timeout
-            else None
-        )
-        # Interrupt Polling: Check cancel_event every 0.2s during LLM generation
-        while not llm_task.done():
-            if (
-                cancel_event
-                and hasattr(cancel_event, "is_set")
-                and cancel_event.is_set()
-            ):
-                llm_task.cancel()
-                logger.info("perception_node: Task canceled mid-generation")
-                return {
-                    "history": state.get("history", []),
-                    "next_action": None,
-                    "rounds": state.get("rounds", 0) + 1,
-                    "errors": ["canceled"],
-                }
-            # WF-5: hard deadline guard
-            if (
-                _perc_deadline is not None
-                and asyncio.get_running_loop().time() >= _perc_deadline
-            ):
-                llm_task.cancel()
-                logger.warning(
-                    f"perception_node: LLM call timed out after {_perc_llm_timeout}s — "
-                    "routing to wait_for_user"
-                )
-                return {
-                    "history": state.get("history", []),
-                    "next_action": "wait_for_user",
-                    "rounds": state.get("rounds", 0) + 1,
-                    "errors": [f"llm_timeout:{_perc_llm_timeout}s"],
-                }
-            await asyncio.sleep(0.2)
-        resp = await llm_task
-    except asyncio.CancelledError:
-        logger.info("perception_node: Task cancelled")
-        return {
-            "history": state.get("history", []),
-            "next_action": None,
-            "rounds": state.get("rounds", 0) + 1,
-            "errors": ["canceled"],
-        }
-    except Exception as e:
-        logger.error(f"call_model failed: {e}")
-        resp = {"ok": False, "error": str(e)}
-        _notify_provider_limit(str(e))
+    # Use shared helper to call model with timeout/cancel handling. Pass the
+    # local `call_model` so tests that patch perception_node.call_model continue
+    # to work.
+    early_resp, resp = await call_model_with_timeout(
+        messages,
+        provider,
+        model,
+        state,
+        orchestrator,
+        llm_kwargs,
+        call_model_fn=call_model,
+    )
+    if early_resp is not None:
+        return early_resp
 
     # Phase 4: Track token usage for budget management
-    _overflow_compaction = {}
-    _session_cost_delta: float = 0.0
-
-    # REACT-OVF: If the adapter detected a context-overflow error in the HTTP
-    # response body, trigger compaction immediately without waiting for the
-    # post-call token-count check.  This covers the case where the prompt was
-    # already too large before we could measure it (e.g. first turn after a
-    # very long tool result inflated the history).
+    # REACT-OVF-EARLY-EXIT: Skip the corrective-prompt retry loop entirely.
+    # If the adapter signalled context_overflow in the response body, we must
+    # truncate and route to memory_sync immediately rather than attempting a
+    # corrective prompt which would simply be rejected by the provider.
     if isinstance(resp, dict) and resp.get("context_overflow"):
         logger.warning(
             "perception_node: context overflow error from provider — "
             "triggering reactive compaction"
         )
-        _overflow_compaction = {
-            "_budget_compaction": True,
-            "_should_distill": True,
-        }
         try:
             if orchestrator and hasattr(orchestrator, "event_bus"):
                 orchestrator.event_bus.publish(
@@ -1135,10 +1575,7 @@ async def _perception_node_impl(
         except Exception:
             pass
 
-        # REACT-OVF-EARLY-EXIT: Skip the corrective-prompt retry loop entirely.
-        # Sending more requests with an oversized context only spams the provider.
-        # Hard-truncate to the last few messages via _compacted_history so the
-        # NEXT turn starts with a manageable context, then route to memory_sync.
+        # REACT-OVF-EARLY-EXIT
         _OVERFLOW_HISTORY_KEEP = 6
         _raw_history = list(state.get("history") or [])
         _truncated = (
@@ -1166,94 +1603,12 @@ async def _perception_node_impl(
             },
         }
 
-    if isinstance(resp, dict):
-        # CP-9: token counts are at the top-level of the normalized response
-        # dict produced by generate() in the adapter, NOT nested under "usage".
-        # The usage = resp.get("usage", {}) pattern was a pre-existing bug — it
-        # always yielded an empty dict so this block never executed.  Read from
-        # the canonical top-level keys instead.
-        _resp_prompt_tokens: int = int(resp.get("prompt_tokens") or 0)
-        _resp_completion_tokens: int = int(resp.get("completion_tokens") or 0)
-        _resp_total_tokens: int = int(
-            resp.get("total_tokens") or _resp_prompt_tokens + _resp_completion_tokens
-        )
-        # CP-9: Anthropic cache token counts (zero for non-Anthropic providers).
-        _cache_creation_tokens: int = int(resp.get("cache_creation_input_tokens") or 0)
-        _cache_read_tokens: int = int(resp.get("cache_read_input_tokens") or 0)
-
-        _has_usage = (_resp_prompt_tokens + _resp_completion_tokens) > 0
-        if _has_usage and orchestrator:
-            try:
-                token_monitor = getattr(orchestrator, "token_monitor", None)
-                if token_monitor:
-                    token_monitor.record_usage(
-                        session_id=state.get("session_id", "default"),
-                        prompt_tokens=_resp_prompt_tokens,
-                        completion_tokens=_resp_completion_tokens,
-                        total_tokens=_resp_total_tokens,
-                    )
-                    # S6-A: Accumulate session cost using pricing table.
-                    try:
-                        if _estimate_cost_usd is not None:
-                            _active_model = resp.get("model") or (
-                                adapter.default_model
-                                if adapter and hasattr(adapter, "default_model")
-                                else ""
-                            )
-                            _session_cost_delta = _estimate_cost_usd(
-                                _resp_prompt_tokens,
-                                _resp_completion_tokens,
-                                _active_model or "",
-                            )
-                    except Exception:
-                        pass
-            except Exception as e:
-                logger.debug(f"Token tracking error: {e}")
-
-        # Context overflow detection with reserved buffer (mirrors opencode's 20k reserve).
-        # If the prompt already consumed more than (context_window - RESERVED_OUTPUT_BUFFER)
-        # tokens, the next round will almost certainly exceed the model's context window.
-        # Trigger compaction now rather than waiting for a truncation error.
-        #
-        # OP-4: Use get_actual_context_window() instead of get_context_budget() so
-        # the overflow threshold reflects the real hard limit (e.g. 200K for Gemma 4)
-        # rather than the 0.65×window budget capped at 131K.  A 200K model would never
-        # trigger overflow detection under the old cap even when the prompt was at 180K.
-        try:
-            from src.core.inference.provider_context import get_actual_context_window
-
-            _prompt_tokens = _resp_prompt_tokens
-            _RESERVED_OUTPUT_BUFFER = (
-                4096  # tokens reserved for model to generate output
-            )
-            _budget = get_actual_context_window()
-            _available = _budget - _RESERVED_OUTPUT_BUFFER
-            if _prompt_tokens > 0 and _prompt_tokens >= _available:
-                logger.warning(
-                    f"perception_node: context overflow detected — "
-                    f"prompt_tokens={_prompt_tokens} >= available={_available} "
-                    f"(budget={_budget}, reserved={_RESERVED_OUTPUT_BUFFER}); "
-                    "triggering compaction"
-                )
-                _overflow_compaction = {
-                    "_budget_compaction": True,
-                    "_should_distill": True,
-                }
-                try:
-                    if orchestrator and hasattr(orchestrator, "event_bus"):
-                        orchestrator.event_bus.publish(
-                            "context.overflow",
-                            {
-                                "prompt_tokens": _prompt_tokens,
-                                "context_window": _budget,
-                                "reserved": _RESERVED_OUTPUT_BUFFER,
-                                "session_id": state.get("session_id"),
-                            },
-                        )
-                except Exception:
-                    pass
-        except Exception as _ov_err:
-            logger.debug(f"context overflow check error (non-fatal): {_ov_err}")
+    # Delegate detailed token handling to helper (cost accounting + post-call overflow)
+    early_result, _overflow_compaction, _session_cost_delta = _process_post_call_tokens(
+        resp, state, orchestrator, adapter
+    )
+    if early_result is not None:
+        return early_result
 
     # Debug: log raw response for troubleshooting
     try:
@@ -1295,366 +1650,33 @@ async def _perception_node_impl(
     except Exception:
         pass
 
-    # Infinite Loop Prevention: Detect empty/stripped responses
-    empty_response_count = int(state.get("empty_response_count") or 0)
-    content_stripped = content.strip() if content else ""
+    # Parse the content and compute flags with the extracted helper
+    (
+        tool_call,
+        content_stripped,
+        thinking_only,
+        _is_truncated_yaml,
+        _content_no_thinking,
+    ) = _parse_tool_call_and_flags(resp, content, state)
 
-    # P1-C fix: Use strip_thinking() (re.sub DOTALL) to correctly remove the full
-    # <think>...</think> block including its content.  The old .replace("<think>","")
-    # approach only removed the tag markers, leaving the reasoning text behind — so a
-    # thinking-only response like "<think>plan here</think>" was NOT detected as empty.
-    try:
-        from src.core.inference.thinking_utils import strip_thinking as _strip_thinking
-
-        _content_no_thinking = _strip_thinking(content_stripped)
-    except Exception:
-        _content_no_thinking = content_stripped
-
-    # Check if content is empty or just contains thinking blocks
-    is_empty_response = not content_stripped or not _content_no_thinking
-
-    if is_empty_response:
-        empty_response_count += 1
-        # Use info instead of warning to avoid log spam
-        logger.info(
-            f"perception_node: Empty/stripped response (count: {empty_response_count})"
-        )
-
-        # P1-D: Tier-aware corrective attempt cap.
-        # Smaller models don't recover from repeated empty responses — fail faster
-        # so the user sees an error instead of wasting N extra LLM calls.
-        # NANO→1, SMALL→2, MEDIUM→3, LARGE/FRONTIER→3 (larger models can be coaxed)
-        _tier_str_lower = (_model_tier_str or "").lower()
-        if _tier_str_lower == "nano":
-            _max_corrective = 1
-        elif _tier_str_lower == "small":
-            _max_corrective = 2
-        else:
-            _max_corrective = 3
-
-        if empty_response_count >= _max_corrective:
-            logger.error(
-                f"perception_node: {_max_corrective} consecutive empty responses "
-                f"(tier={_tier_str_lower}) - breaking loop"
-            )
-            return {
-                "history": state.get("history", []),
-                "next_action": None,
-                "rounds": state.get("rounds", 0) + 1,
-                "last_result": {
-                    "ok": False,
-                    "error": (
-                        f"Model produced {_max_corrective} consecutive empty responses "
-                        f"(tier={_tier_str_lower or 'unknown'}). Task aborted."
-                    ),
-                },
-                "errors": ["infinite_loop_empty_response"],
-                "empty_response_count": 0,
-            }
-
-        # Inject corrective prompt for empty responses (graduated based on attempts)
-        corrective_prompt = _select_corrective_prompt(
-            attempt=empty_response_count,
-            model_tier=_model_tier_str,
-            truncated_yaml=False,
-        )
-        # FIX: Return only NEW messages for LangGraph to append, not the full history
-        new_messages = [
-            {"role": "assistant", "content": content},
-            {
-                "role": "user",
-                "content": corrective_prompt
-                + "\n\nPlease provide a valid YAML tool call for your next action.",
-            },
-        ]
-        # Emit telemetry/event for corrective prompt issuance
+    # Only run the corrective/no-tool helper when no tool_call was extracted
+    # (matches the original inline behaviour).
+    if tool_call is None:
         try:
-            if orchestrator and hasattr(orchestrator, "event_bus"):
-                evt = {
-                    "session_id": state.get("session_id"),
-                    "attempt": empty_response_count,
-                    "reason": "empty_response",
-                    "truncated_yaml": False,
-                    "model_tier": _model_tier_str,
-                }
-                try:
-                    orchestrator.event_bus.publish("perception.corrective_prompt", evt)
-                except Exception:
-                    # Some test harnesses use MagicMock without publish; tolerate both
-                    pub = getattr(orchestrator.event_bus, "publish", None)
-                    if callable(pub):
-                        pub("perception.corrective_prompt", evt)
+            _no_tool_result = _handle_no_tool_or_empty_response(
+                content,
+                content_stripped,
+                thinking_only,
+                _is_truncated_yaml,
+                state,
+                orchestrator,
+                _model_tier_str,
+            )
+            if _no_tool_result is not None:
+                return _no_tool_result
         except Exception:
+            # Non-fatal: continue normal flow when helper fails
             pass
-
-        return {
-            "history": new_messages,
-            "next_action": None,
-            "rounds": state.get("rounds", 0) + 1,
-            "empty_response_count": empty_response_count,
-        }
-
-    # Reset empty response counter on successful content
-    empty_response_count = 0
-
-    # Parse tools
-    # If the assistant content already contains a tool_execution_result (i.e. a previous
-    # tool run result), we should not parse it as a new tool block. Parsing and
-    # executing could cause immediate repetition of the same tool call.
-    tool_call = None
-    try:
-        # Check if we should skip parsing based on prior history.
-        # We should skip ONLY if:
-        # 1. The current content itself contains tool_execution_result (we're re-parsing the same thing)
-        # 2. NOT because the last message was a tool result (we need to parse new responses!)
-        prior_history = state.get("history") or []
-        try:
-            if isinstance(prior_history, list) and prior_history:
-                last_msg = prior_history[-1]
-                if last_msg.get("role") == "tool":
-                    logger.info("perception_node: last message was a tool result")
-        except Exception:
-            pass
-
-        # Parse if: content exists AND content doesn't contain tool_execution_result
-        # We should ALWAYS try to parse, even after tool results - we need new tool calls!
-        # Phase 7: Check for native JSON tool_calls first, then fall back to YAML parsing
-        tool_call = None
-        message_obj = (
-            resp.get("choices", [{}])[0].get("message", {})
-            if isinstance(resp, dict)
-            else {}
-        )
-
-        # 1. Check for Native JSON Tool Calls (Frontier Models)
-        native_tool_calls = message_obj.get("tool_calls")
-        if (
-            native_tool_calls
-            and isinstance(native_tool_calls, list)
-            and len(native_tool_calls) > 0
-        ):
-            tc = native_tool_calls[0]
-            if isinstance(tc, dict):
-                func = tc.get("function")
-                if func:
-                    name = func.get("name")
-                    args = func.get("arguments")
-                    if isinstance(args, str):
-                        try:
-                            args = json.loads(args)
-                        except Exception:
-                            args = {}
-                    if name:
-                        tool_call = {"name": name, "arguments": args or {}}
-                        logger.info(f"perception_node: native function call: {name}")
-
-        # 2. Fallback to YAML parsing (Local Models)
-        if (
-            not tool_call
-            and content
-            and "tool_execution_result" not in content
-            and '"tool_execution_result"' not in content
-        ):
-            # P1-C fix: Try parsing on thinking-stripped content first so that a
-            # response of "<think>reasoning</think>\n```yaml\n..." succeeds on the
-            # first attempt instead of requiring a corrective-prompt round-trip.
-            try:
-                from src.core.inference.thinking_utils import strip_thinking as _st
-
-                _stripped_for_parse = _st(content)
-                if _stripped_for_parse:
-                    tool_call = parse_tool_block(_stripped_for_parse)
-            except Exception:
-                _stripped_for_parse = content
-            if not tool_call:
-                tool_call = parse_tool_block(content)
-        elif not tool_call:
-            logger.info(
-                "perception_node: skipping parse_tool_block because content contains tool_execution_result"
-            )
-
-        # F8: Prompt injection guard — reject tool calls that are verbatim copies of
-        # user-role history messages. A user submitting YAML-tool-looking text could
-        # trick the LLM into reflecting it back, causing unintended tool execution.
-        # HR-1 fix: require both tool name AND ≥1 argument key to match so that
-        # casual mentions of a tool name ("edit_file the config") don't false-positive.
-        if tool_call is not None:
-            tool_name_extracted = tool_call.get("name", "")
-            user_messages = [
-                m.get("content", "")
-                for m in (state.get("history") or [])
-                if m.get("role") == "user"
-            ]
-            _name_pattern = f"name: {tool_name_extracted}"
-            _tool_args = tool_call.get("arguments") or {}
-            _arg_keys = list(_tool_args.keys())[:3]
-            _inj_detected = False
-            for um in user_messages:
-                if not um or _name_pattern not in um:
-                    continue
-                # Name matched — require at least one argument key also present
-                # to distinguish YAML injection from a normal mention of the tool.
-                if _arg_keys:
-                    if any(f"{k}:" in um for k in _arg_keys):
-                        _inj_detected = True
-                        break
-                else:
-                    # No-argument tool — only flag if "arguments:" block is also present
-                    if "arguments:" in um:
-                        _inj_detected = True
-                        break
-            if _inj_detected:
-                logger.warning(
-                    f"perception_node: F8 injection guard — tool call '{tool_name_extracted}' "
-                    "matches a user-role message (name + args); rejecting to prevent prompt injection"
-                )
-                tool_call = None
-
-    except Exception:
-        tool_call = None
-    try:
-        logger.info(f"perception_node: parsed tool_call: {repr(tool_call)}")
-    except Exception:
-        pass
-
-    # ULTIMATE FALLBACK: If tool_call is None and content was supposed to have YAML,
-    # treat as empty to trigger loop breaker
-    content_stripped = content.strip() if content else ""
-    # P1-C fix: use the already-computed _content_no_thinking (strip_thinking result)
-    # so thinking-only responses are correctly flagged here too.
-    try:
-        _no_think_post = _content_no_thinking  # set earlier in this function
-    except NameError:
-        try:
-            from src.core.inference.thinking_utils import strip_thinking as _st2
-
-            _no_think_post = _st2(content_stripped)
-        except Exception:
-            _no_think_post = content_stripped
-    thinking_only = not _no_think_post
-
-    # Completion detection: if the model output looks like a task-completion summary
-    # (RESULT/STATUS format, or "task is complete" phrasing) rather than a tool call,
-    # treat it as terminal — break the loop instead of forcing more tool calls.
-    if tool_call is None and content_stripped and not thinking_only:
-        _lower = content_stripped.lower()
-        _completion_signals = (
-            "status: complete",
-            "status:done",
-            "task is complete",
-            "task complete",
-            "task is done",
-            "task finished",
-            "no further action",
-            "no further tool",
-            "no more action",
-            "result:",
-            "files_changed:",
-        )
-        if any(sig in _lower for sig in _completion_signals):
-            logger.info(
-                "perception_node: detected completion-format text "
-                f"(no tool call, content starts with: {content_stripped[:80]!r}) "
-                "— breaking loop"
-            )
-            return {
-                "history": [{"role": "assistant", "content": content_stripped}],
-                "next_action": None,
-                "rounds": (state.get("rounds") or 0) + 1,
-                "empty_response_count": 0,
-            }
-
-    # Detect truncated YAML: model started a ```yaml block but couldn't complete it.
-    # This happens when the context window is full and the response is cut off mid-YAML.
-    # The content is non-empty so the thinking_only/empty checks below would miss it,
-    # causing an infinite loop. Route through the empty_response_count guard instead.
-    _is_truncated_yaml = (
-        tool_call is None
-        and content_stripped
-        and not thinking_only
-        and "```yaml" in content_stripped
-        and not any(
-            sig in content_stripped.lower()
-            for sig in ("status: complete", "task is complete", "result:")
-        )
-    )
-
-    if tool_call is None and (
-        not content_stripped or thinking_only or _is_truncated_yaml
-    ):
-        # No valid tool found: content is empty, thinking-only, or a truncated YAML block.
-        empty_response_count = int(state.get("empty_response_count") or 0) + 1
-        # Use info instead of warning to avoid log spam
-        logger.info(
-            f"perception_node: No tool call extracted (count: {empty_response_count})"
-        )
-
-        # P1-D: Tier-aware corrective attempt cap (mirrors the cap in the REACT-OVF
-        # path above).  NANO→1, SMALL→2, MEDIUM+→3.
-        _tier_str_lower_2 = (_model_tier_str or "").lower()
-        if _tier_str_lower_2 == "nano":
-            _max_corrective_2 = 1
-        elif _tier_str_lower_2 == "small":
-            _max_corrective_2 = 2
-        else:
-            _max_corrective_2 = 3
-
-        if empty_response_count >= _max_corrective_2:
-            logger.error(
-                f"perception_node: {_max_corrective_2} consecutive failed tool extractions "
-                f"(tier={_tier_str_lower_2}) - breaking loop"
-            )
-            return {
-                "history": [{"role": "assistant", "content": content or ""}],
-                "next_action": None,
-                "rounds": state.get("rounds", 0) + 1,
-                "last_result": {
-                    "ok": False,
-                    "error": f"Infinite loop detected: model failed to generate valid tool calls {_max_corrective_2} times",
-                },
-                "errors": ["infinite_loop_no_tool"],
-                "empty_response_count": 0,
-            }
-
-        # Inject corrective prompt — context-window-aware when YAML was truncated
-        # Use a graduated corrective prompt (truncated YAML path is a special case)
-        corrective_prompt = _select_corrective_prompt(
-            attempt=empty_response_count,
-            model_tier=_model_tier_str,
-            truncated_yaml=bool(_is_truncated_yaml),
-        )
-        new_messages = [
-            {"role": "assistant", "content": content or ""},
-            {
-                "role": "user",
-                "content": corrective_prompt
-                + "\n\nProvide a valid YAML tool call now.",
-            },
-        ]
-        # Emit telemetry/event for corrective prompt issuance (truncated YAML or no-tool)
-        try:
-            if orchestrator and hasattr(orchestrator, "event_bus"):
-                evt = {
-                    "session_id": state.get("session_id"),
-                    "attempt": empty_response_count,
-                    "reason": "truncated_yaml" if _is_truncated_yaml else "no_tool",
-                    "truncated_yaml": bool(_is_truncated_yaml),
-                    "model_tier": _model_tier_str,
-                }
-                try:
-                    orchestrator.event_bus.publish("perception.corrective_prompt", evt)
-                except Exception:
-                    pub = getattr(orchestrator.event_bus, "publish", None)
-                    if callable(pub):
-                        pub("perception.corrective_prompt", evt)
-        except Exception:
-            pass
-        return {
-            "history": new_messages,
-            "next_action": None,
-            "rounds": state.get("rounds", 0) + 1,
-            "empty_response_count": empty_response_count,
-        }
 
     # Preserve plan state if already exists
     current_plan = state.get("current_plan")
@@ -1671,6 +1693,9 @@ async def _perception_node_impl(
     else:
         # Skip adding empty content to history - it causes confusion
         new_messages = []
+
+    # Ensure empty_response_count is always defined for the result shape.
+    empty_response_count = int(state.get("empty_response_count") or 0)
 
     result = {
         "history": new_messages,

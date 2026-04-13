@@ -26,7 +26,6 @@ These tools are registered in ``toolsets/coding.yaml`` and
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from pathlib import Path
 from typing import Any, Dict, Optional

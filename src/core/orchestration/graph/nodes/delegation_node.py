@@ -2,7 +2,7 @@ import asyncio
 import logging
 from typing import Mapping, Dict, Any, Optional, Tuple
 
-from src.core.orchestration.graph.state import AgentState
+from src.core.orchestration.graph.state import StateLike
 from src.core.orchestration.graph.nodes.node_utils import _resolve_orchestrator
 from src.tools.subagent_tools import delegate_task_async
 
@@ -77,7 +77,7 @@ async def _execute_delegation_with_locks(
 
         # Publish to EventBus for P2P
         if event_bus:
-            from src.core.orchestration.prsw_topics import AgentTopics, PRSWTopics
+            from src.core.orchestration.prsw_topics import AgentTopics
 
             if role == "scout":
                 event_bus.publish(
@@ -125,7 +125,7 @@ async def _execute_delegation_with_locks(
             lock_manager.reset_cancel()
 
 
-async def delegation_node(state: Mapping[str, Any], config: Any) -> Dict[str, Any]:
+async def delegation_node(state: StateLike, config: Any) -> Dict[str, Any]:
     """
     Delegation Layer: Spawns subagents for independent tasks that can run in parallel.
 

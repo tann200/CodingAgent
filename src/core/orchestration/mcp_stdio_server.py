@@ -240,7 +240,6 @@ class MCPStdioServer:
             resources = []
             try:
                 from pathlib import Path as _Path
-                import fnmatch
 
                 _workdir = None
                 if self._orchestrator is not None:

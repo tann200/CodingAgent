@@ -25,7 +25,14 @@ import tempfile
 from pathlib import Path
 from typing import Optional
 
-from src.ui.logging import get_logger
+try:
+    from src.ui.logging import get_logger
+except ImportError:
+    import logging
+
+    def get_logger(name: str) -> logging.Logger:
+        return logging.getLogger(name)
+
 
 logger = get_logger("config_writer")
 

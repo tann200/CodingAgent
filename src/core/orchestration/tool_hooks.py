@@ -1,7 +1,8 @@
 """Pre/post tool call hooks.
 
-Users can create ``.agent/hooks.json`` (or ``~/.coding_agent/hooks.json`` for
-global defaults) to configure shell commands that run before and after tool
+Users can create ``.agent/hooks.json`` (or the global hooks file returned by
+``src.core.paths.get_hooks_path()`` for global defaults) to configure shell
+commands that run before and after tool
 calls.
 
 Configuration format::
@@ -47,13 +48,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from src.core.paths import get_hooks_path
+
 logger = logging.getLogger(__name__)
 
 _PRE_HOOK_TIMEOUT = 10  # seconds; longer because guard scripts may need I/O
 _POST_HOOK_TIMEOUT = 5
 _STDERR_CAP = 500  # chars from hook stderr reported back to caller
 
-_GLOBAL_HOOKS_PATH = Path.home() / ".coding_agent" / "hooks.json"
+_GLOBAL_HOOKS_PATH = get_hooks_path()
 
 
 @dataclass
@@ -251,9 +254,13 @@ class ToolHookRunner:
             cmd = entry.get("cmd", "")
             if not cmd or not _matches(pattern, tool_name):
                 continue
+            # Use cross-platform shell detection (sh on Unix, cmd on Windows)
+            import os
+
+            shell = "/bin/sh" if os.name != "nt" else "cmd"
             try:
                 proc = await asyncio.create_subprocess_exec(
-                    "/bin/sh",
+                    shell,
                     "-c",
                     cmd,
                     env=env,

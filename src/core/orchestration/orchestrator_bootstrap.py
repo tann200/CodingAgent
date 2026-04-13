@@ -26,8 +26,10 @@ helpers in order.
 from __future__ import annotations
 
 import concurrent.futures as _cf
+import os
 import threading as _threading
 import time
+from pathlib import Path
 from typing import Any, Optional
 
 from src.core.logger import logger as guilogger
@@ -35,7 +37,6 @@ from src.core.orchestration.approval_gate import (
     resolve_bash_gate,
     resolve_tool_gate,
 )
-from src.core.orchestration.event_bus import EventBus
 from src.core.orchestration.message_manager import MessageManager
 from src.core.inference.llm_manager import (
     get_provider_manager,
@@ -73,7 +74,6 @@ def _init_infrastructure(orch: Any, message_max_tokens: Optional[int]) -> None:
     )
 
     # Default working directory logic
-    from pathlib import Path
 
     repo_root = Path(__file__).parents[3]
     default_out = repo_root / "output"
@@ -127,10 +127,34 @@ def _init_infrastructure(orch: Any, message_max_tokens: Optional[int]) -> None:
         enabled=True,
     )
 
-    # Initialize SessionStore for tool call and plan persistence
-    from src.core.memory.session_store import SessionStore
+    # TASK-8: Resolve storage backend (env var > config file > default)
+    def _resolve_storage_backend(working_dir: Any) -> str:
+        """Return 'sqlite' or 'jsonl' based on env var or config."""
+        env_val = os.getenv("CODING_AGENT_STORAGE_BACKEND", "").lower()
+        if env_val in ("sqlite", "jsonl"):
+            return env_val
+        try:
+            from src.core.config_loader import load_project_config
 
-    orch.session_store = SessionStore(str(orch.working_dir))
+            cfg = load_project_config(str(working_dir) if working_dir else "")
+            cfg_val = str(cfg.get("storage_backend", "")).lower()
+            if cfg_val in ("sqlite", "jsonl"):
+                return cfg_val
+        except Exception:
+            pass
+        return "sqlite"  # default until JSONL is proven in production
+
+    _storage_backend = _resolve_storage_backend(orch.working_dir)
+
+    # Initialize SessionStore for tool call and plan persistence
+    if _storage_backend == "jsonl":
+        from src.core.memory.jsonl_session_store import JsonlSessionStore
+
+        orch.session_store = JsonlSessionStore(str(orch.working_dir))
+    else:
+        from src.core.memory.session_store import SessionStore
+
+        orch.session_store = SessionStore(str(orch.working_dir))
 
     # Initialize SessionLifecycleManager for graceful shutdown and snapshots
     from src.core.orchestration.session_lifecycle import get_session_lifecycle_manager
@@ -371,9 +395,29 @@ def _init_event_subscriptions(orch: Any) -> None:
             orch._permission_granted = False
             gate.set()
 
+    # GAP-PERM-2: route denial feedback to the agent so it knows why it was denied
+    def _on_denial_feedback(payload: Any) -> None:
+        if not isinstance(payload, dict):
+            return
+        feedback = payload.get("feedback", "")
+        tool_id = payload.get("tool_id", "")
+        if feedback and tool_id:
+            # Append feedback as a system message so the agent sees why it was denied
+            try:
+                if hasattr(orch, "state") and "history" in orch.state:
+                    orch.state["history"].append(
+                        ("system", f"Tool permission denied. Feedback: {feedback}")
+                    )
+                guilogger.info(
+                    f"denial_feedback: added to agent context (tool_id={tool_id})"
+                )
+            except Exception as e:
+                guilogger.warning(f"denial_feedback: failed to add to context: {e}")
+
     try:
         orch.event_bus.subscribe("tool.permission_granted", _on_tool_permission_granted)
         orch.event_bus.subscribe("tool.permission_denied", _on_tool_permission_denied)
+        orch.event_bus.subscribe("tool.denial_feedback", _on_denial_feedback)
     except Exception:
         pass
 

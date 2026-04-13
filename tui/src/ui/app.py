@@ -5,7 +5,6 @@ Wires exclusively through AgentBridge → EventBus; never imports src.core direc
 
 from __future__ import annotations
 
-import asyncio
 import os
 import re
 import time
@@ -78,7 +77,6 @@ from .bus import (
     UsageTurnSummaryEvent,
     DoomLoopEvent,
     # GitHub Copilot OAuth device flow
-    DeviceFlowStartEvent,
     DeviceFlowCompleteEvent,
     DeviceFlowErrorEvent,
     # Subagent visibility (SUBAGENT-VIS-2)
@@ -723,12 +721,17 @@ class AgentApp(App[None]):
     # ── Session snapshot ──────────────────────────────────────────────────
 
     def _get_sessions_dir(self) -> Path:
-        d = Path.home() / ".coding_agent" / "sessions"
+        # Cross-platform sessions directory — prefer core.paths.get_sessions_dir()
+        from ._core_paths_loader import get_sessions_dir as _get_sessions_dir_helper
+
+        d = _get_sessions_dir_helper()
         d.mkdir(parents=True, exist_ok=True)
         return d
 
     def _save_session_snapshot(self) -> None:
-        """Snapshot current session to ~/.coding_agent/sessions/{session_id}.json.
+        """Snapshot current session to the sessions directory returned by
+        ``src.core.paths.get_sessions_dir()`` (fallback to ~/.coding_agent/sessions
+        in TUI dev mode).
 
         TASK-05: enriched payload includes version, session_id, turn_count,
         input_tokens, output_tokens for SessionListScreen + resumption.
@@ -1034,27 +1037,8 @@ class AgentApp(App[None]):
         except Exception:
             pass
 
-        # GAP-MSG-2: flush queued message when agent becomes idle
-        if not event.running and self._queued_message:
-            msg = self._queued_message
-            self._queued_message = None
-            # Update QUEUED badge to normal style
-            if self._queued_widget is not None:
-                display_val = (
-                    msg if len(msg) <= 200 else msg[:200] + f"… ({len(msg)} chars)"
-                )
-                self.call_later(
-                    lambda w=self._queued_widget, d=display_val: w.update(
-                        f"[bold #3b82f6]You:[/] {d}"
-                    )
-                )
-                self._queued_widget = None
-            val = self._expand_at_tokens(msg)
-            self._bridge.update_prompt_history(msg)
-            self._last_task_text = val
-            sent = self._bridge.send_prompt(val)
-            if not sent:
-                self.notify("Could not send queued message", severity="warning")
+        # MID-INJ: mid-run messages are now buffered by the bridge and injected
+        # as system-reminders during the running execution — no post-idle flush needed.
 
     @on(ModelRoutingEvent)
     def handle_model_routing(self, event: ModelRoutingEvent) -> None:
@@ -1445,6 +1429,7 @@ class AgentApp(App[None]):
     async def handle_subagent_clicked(self, event: SubagentProgress.Clicked) -> None:
         """Open the child session detail screen when user clicks a finished subagent."""
         from .screens.subagent_detail import SubagentDetailScreen
+
         self.push_screen(
             SubagentDetailScreen(
                 child_session_id=event.child_session_id,
@@ -1629,6 +1614,7 @@ class AgentApp(App[None]):
         # GAP-FOOTER-3: subagent footer chip — open SessionListScreen filtered to subagents
         if btn_id == "subagent_footer_chip":
             from .screens.session_list import SessionListScreen
+
             self.push_screen(SessionListScreen(filter_subagents=True))
             return
 
@@ -1727,8 +1713,11 @@ class AgentApp(App[None]):
             # GAP-PERM-2: offer a feedback input so the agent knows why it was denied
             fb_row = Horizontal(id=f"tool_deny_fb_{tool_id}", classes="approval_row")
             await self._mount_chat_widget(
-                Static("[bold #ff5555]✗ Tool denied[/]  [dim]Reason (optional):[/]",
-                       classes="retry_msg", markup=True)
+                Static(
+                    "[bold #ff5555]✗ Tool denied[/]  [dim]Reason (optional):[/]",
+                    classes="retry_msg",
+                    markup=True,
+                )
             )
             await self._mount_chat_widget(fb_row)
             fb_input = Input(
@@ -1749,7 +1738,9 @@ class AgentApp(App[None]):
             tool_id = btn_id[len("btn_deny_fb_send_") :]
             feedback = ""
             try:
-                feedback = self.query_one(f"#inp_deny_fb_{tool_id}", Input).value.strip()
+                feedback = self.query_one(
+                    f"#inp_deny_fb_{tool_id}", Input
+                ).value.strip()
                 self.query_one(f"#tool_deny_fb_{tool_id}").remove()
             except Exception:
                 pass
@@ -1772,7 +1763,7 @@ class AgentApp(App[None]):
             except Exception:
                 pass
 
-        # GAP-PERM-3: Allow Always — approve now + register tool for auto-approval
+        # GAP-PERM-3: Allow Always — approve now + register tool for auto-approval + persist
         elif btn_id.startswith("btn_tool_perm_always_"):
             tool_id = btn_id[len("btn_tool_perm_always_") :]
             self._update_perm_badge(-1)
@@ -1783,6 +1774,23 @@ class AgentApp(App[None]):
                 _perm_names = getattr(self, "_perm_tool_names", {})
                 tool_name = _perm_names.get(tool_id, tool_id)
                 self._allow_always_tools.add(tool_name)
+                # GAP-PERM-3: persist the "allow always" rule to PermissionPolicy
+                try:
+                    from src.core.orchestration.permission_policy import (
+                        PermissionRule,
+                        Behavior,
+                        get_permission_policy,
+                    )
+
+                    policy = get_permission_policy()
+                    # Add a rule that allows this tool always (priority: append to end)
+                    policy.add_rule(
+                        PermissionRule(pattern=tool_name, behavior=Behavior.ALLOW)
+                    )
+                    policy.save()  # Persist to user permissions file (see src.core.paths.get_permissions_path())
+                    logger.info(f"Allow always persisted for: {tool_name}")
+                except Exception as e:
+                    logger.warning(f"Failed to persist allow-always rule: {e}")
                 perm_row.remove()
             except Exception:
                 pass
@@ -2105,21 +2113,23 @@ class AgentApp(App[None]):
             self.post_message(SlashCommand(command=cmd, args=args))
             return
 
-        # GAP-MSG-2: queue message if agent is currently running
+        # MID-INJ: if agent is running, send_prompt() returns False because the
+        # message was buffered in _pending_injections for mid-run injection.
+        # Show it in the chat with an [INJECTING] badge so the user has feedback.
         if self.agent_running:
-            self._queued_message = raw_val
             display_val_q = (
                 raw_val
                 if len(raw_val) <= 200
                 else raw_val[:200] + f"… ({len(raw_val)} chars)"
             )
             q_widget = Static(
-                f"[bold #3b82f6]You:[/] {display_val_q}  [bold #facc15 reverse] QUEUED [/]",
+                f"[bold #3b82f6]You:[/] {display_val_q}  [bold #a78bfa reverse] INJECTING [/]",
                 classes="user_msg",
                 markup=True,
             )
-            self._queued_widget = q_widget
             self.call_later(self._mount_chat_widget, q_widget)
+            # Buffer the message in the bridge for mid-run system-reminder injection
+            self._bridge.send_prompt(raw_val)
             return
 
         # Expand @path tokens to inline file content
@@ -2265,17 +2275,17 @@ class AgentApp(App[None]):
                     severity="warning",
                 )
             else:
-                with self._bridge._history_lock:
-                    hist = self._bridge.history
-                    # Remove trailing assistant entry (if any) then the user entry.
-                    while hist and hist[-1][0] != "user":
-                        hist.pop()
-                    removed = hist.pop() if hist and hist[-1][0] == "user" else None
+                # Use the dedicated undo method from core_bridge
+                removed = self._bridge.undo_last_user_message()
                 if removed:
+                    # Also remove any trailing assistant messages that came after
+                    with self._bridge._history_lock:
+                        hist = self._bridge.history
+                        while hist and hist[-1][0] != "user":
+                            hist.pop()
                     self._bridge._save_history()
-                    preview = str(removed[1])[:60].replace("\n", " ")
                     w = Static(
-                        f'[dim]↩ Undone: "{preview}{"…" if len(str(removed[1])) > 60 else ""}"[/]',
+                        "[dim]↩ Undone: last user message removed[/]",
                         classes="system_msg",
                         markup=True,
                     )
@@ -2285,7 +2295,7 @@ class AgentApp(App[None]):
                     self.notify("Nothing to undo", severity="warning")
 
         elif cmd == "interrupt":
-            self._bridge.interrupt()
+            self._bridge.force_interrupt()
             self.notify("Interrupt signal sent")
 
         elif cmd == "status":
@@ -2707,7 +2717,7 @@ class AgentApp(App[None]):
 
         history = list(self._bridge.history)
         lines: list[str] = [
-            f"# Conversation Export",
+            "# Conversation Export",
             f"_Exported: {_dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}_",
             "",
         ]
@@ -2720,8 +2730,10 @@ class AgentApp(App[None]):
                 content = msg.get("content", "")
                 if isinstance(content, list):
                     content = " ".join(
-                        (p.get("text") or p.get("content") or "") if isinstance(p, dict) else str(p)
-                        for p in content
+                        (p.get("text") or p.get("content") or "")
+                        if isinstance(p, dict)
+                        else str(p)
+                        for p in content  # type: ignore[union-attr]
                     )
             else:
                 role, content = "unknown", str(msg)
@@ -2733,6 +2745,7 @@ class AgentApp(App[None]):
         copied = False
         try:
             import pyperclip  # type: ignore[import]
+
             pyperclip.copy(md_text)
             copied = True
         except Exception:
@@ -2746,7 +2759,12 @@ class AgentApp(App[None]):
                 markup=True,
             )
         else:
-            export_path = Path.home() / ".coding_agent" / f"export_{_dt.datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
+            from ._core_paths_loader import get_data_dir as _get_data_dir_helper
+
+            export_path = (
+                _get_data_dir_helper()
+                / f"export_{_dt.datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
+            )
             try:
                 export_path.parent.mkdir(parents=True, exist_ok=True)
                 export_path.write_text(md_text, encoding="utf-8")
@@ -2809,6 +2827,7 @@ class AgentApp(App[None]):
     async def _slash_worktree(self, args: str) -> None:
         """GAP-WORKTREE-1: manage git worktree isolation for tasks."""
         from pathlib import Path as _Path
+
         try:
             from src.core.orchestration.git_worktree_manager import GitWorktreeManager  # type: ignore[import]
         except ImportError:
@@ -2834,8 +2853,12 @@ class AgentApp(App[None]):
                 for entry in registered:
                     path = entry.get("worktree", "?")
                     head = entry.get("HEAD", "?")[:8]
-                    branch = entry.get("branch") or ("detached" if entry.get("detached") else "?")
-                    marker = " [agent]" if path in (str(v) for v in active.values()) else ""
+                    branch = entry.get("branch") or (
+                        "detached" if entry.get("detached") else "?"
+                    )
+                    marker = (
+                        " [agent]" if path in (str(v) for v in active.values()) else ""
+                    )
                     lines.append(f"  {path}  {head}  [{branch}]{marker}")
                 w = Static(
                     "[bold]Worktrees:[/]\n" + "\n".join(lines),
@@ -2847,7 +2870,8 @@ class AgentApp(App[None]):
         elif sub == "create":
             task_id = sub_args.strip() or (
                 getattr(orch, "_current_task_id", None) or "manual"
-                if orch else "manual"
+                if orch
+                else "manual"
             )
             try:
                 wt_path = await self._worktree_mgr.create(task_id)
@@ -2877,7 +2901,9 @@ class AgentApp(App[None]):
                 if removed
                 else f"[dim]No worktree found for task_id: {task_id}[/]"
             )
-            await self._mount_chat_widget(Static(msg, classes="system_msg", markup=True))
+            await self._mount_chat_widget(
+                Static(msg, classes="system_msg", markup=True)
+            )
 
         else:
             w = Static(
@@ -2935,7 +2961,9 @@ class AgentApp(App[None]):
             pm = get_provider_manager()
 
             # Step 1: single atomic write — flip exactly one entry to active:true.
-            import json as _json, os as _os, tempfile as _tf
+            import json as _json
+            import os as _os
+            import tempfile as _tf
 
             cfg_path = resolve_config_path(None)
             with _providers_json_lock:

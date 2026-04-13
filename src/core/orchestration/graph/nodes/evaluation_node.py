@@ -1,14 +1,14 @@
 import asyncio
 import json
 import logging
-from typing import Mapping, Dict, Any
+from typing import Dict, Any
 
-from src.core.orchestration.graph.state import AgentState
+from src.core.orchestration.graph.state import StateLike
 
 logger = logging.getLogger(__name__)
 
 
-async def evaluation_node(state: Mapping[str, Any], config: Any) -> Dict[str, Any]:
+async def evaluation_node(state: StateLike, config: Any) -> Dict[str, Any]:
     """
     Evaluation Node: Post-verification review to decide if task goal is fully met.
     Reviews overall state including verification results, plan completion, and errors.

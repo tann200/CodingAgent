@@ -429,7 +429,6 @@ def run_agent_once_impl(
         # MED-5 fix: reuse the instance-level _graph_executor instead of
         # creating (and destroying) a new OS thread pool per run_agent_once() call.
         # The executor is created in __init__ and shut down in close().
-        import concurrent.futures as _cf_pool
 
         _graph_executor = orch._graph_executor
 

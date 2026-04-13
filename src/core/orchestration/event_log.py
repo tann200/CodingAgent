@@ -33,9 +33,11 @@ Schema::
 
 Usage::
 
+    from pathlib import Path
     from src.core.orchestration.event_log import EventLog, EventKind
+    from src.core.paths import get_events_db_path
 
-    log = EventLog(db_path=Path("~/.coding_agent/events.db"))
+    log = EventLog(db_path=get_events_db_path())
     log.append(session_id="s1", kind=EventKind.TOOL_CALL,
                data={"tool": "read_file", "args": {"path": "foo.py"}})
     events = log.get_events(session_id="s1")
@@ -49,7 +51,7 @@ import logging
 import sqlite3
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional

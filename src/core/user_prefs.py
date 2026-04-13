@@ -2,10 +2,9 @@ import json
 from pathlib import Path
 from typing import Any, Dict, Optional
 import os
+from src.core.paths import get_prefs_path
 
-DEFAULT_FILENAME = os.getenv("CODINGAGENT_PREFS") or str(
-    Path.home() / ".config" / "codingagent" / "prefs.json"
-)
+DEFAULT_FILENAME = os.getenv("CODINGAGENT_PREFS") or str(get_prefs_path())
 
 
 class UserPrefs:

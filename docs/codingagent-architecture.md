@@ -34,6 +34,7 @@
 CodingAgent/
 ├── src/                               # Main source package
 │   ├── core/                          # Orchestration, inference, memory, context, indexing
+│   │   ├── paths.py                   # OS-agnostic path utilities (localappdata vs per-user CodingAgent data dir — use src.core.paths.get_data_dir())
 │   │   ├── orchestration/             # LangGraph pipeline + orchestrator + services
 │   │   ├── inference/                 # LLM adapters, model tiers, tokenizer
 │   │   ├── context/                   # ContextBuilder, ContextController
@@ -476,12 +477,16 @@ Workspace-level skill overrides: `.agent/skills/*.md`, `.claude/skills/*.md` (wo
 
 ### Instruction file discovery (CP-11 + OP-5)
 
-Unlike claw code's ancestor-walk, CodingAgent uses explicit config paths:
+CodingAgent uses a robust discovery system that mirrors claw code's ancestor-walk:
 
-1. `src/config/agent-brain/` — bundled roles + skills (loaded at init)
-2. `.agent/skills/` in working_dir — per-workspace skill overrides
-3. `.agent-context/config.json#instructions` — per-project instruction strings (OP-5)
-4. `TODO.md` / `PLAN.md` in `.agent-context/` — injected as `<task_progress>`
+1. **Ancestor walk (CP-11):** Walks from the current working directory up to the filesystem root, looking for `AGENTS.md` and `.agent/AGENTS.md` in each directory.
+2. **Deduplication (CP-3):** Uses SHA-256 content hashing to ensure that the same instruction content is not injected multiple times (common when symlinks or repeated files exist).
+3. **Budgeting:** Enforces a per-file character cap (4,000) and a total character cap (12,000) to prevent context bloat.
+4. **Project context:** `.agent-context/config.json#instructions` — per-project instruction strings (OP-5).
+5. **Progress tracking:** `TODO.md` / `PLAN.md` in `.agent-context/` — injected as `<task_progress>`.
+6. **Bundled brain:** `src/config/agent-brain/` — bundled roles + skills.
+
+Discovered files are rendered with scope labels (e.g., `AGENTS.md (scope: /path/to/dir)`) so the model understands the hierarchy.
 
 ---
 
@@ -597,6 +602,13 @@ def preflight_check_impl(orch, tool_call) -> {"ok": bool, "error": str | None}:
 
 ## 5. Context Management & Compaction
 
+### Compaction strategies
+
+CodingAgent employs two distinct compaction strategies:
+
+1. **LLM-based prose compaction (OP-2):** Manual or threshold-triggered. Uses an LLM turn to distill long history into a structured prose summary with Discoveries, Accomplished, Relevant Files, and Current State sections.
+2. **Deterministic auto-compaction (CP-6):** Token-count triggered. Fires automatically when a threshold (default: 10,000 tokens) is reached. Unlike OP-2, this is deterministic and synchronous, mirroring claw code's `compact.rs`. It identifies the compactable portion of history (excluding recent messages and system prompt) and applies rule-based pruning or distillation without requiring an LLM call.
+
 ### Distiller (`src/core/memory/distiller.py`)
 
 Context compaction for long-running tasks:
@@ -704,6 +716,12 @@ def get_context_budget(fraction=0.65, min_tokens=6000, max_tokens=131072,
 ---
 
 ## 6. Session & Memory Management
+
+### Message Manager (`src/core/orchestration/message_manager.py`)
+
+Handles conversation history, token counting, and persistence.
+- **Session versioning (CP-14):** Includes a `version` field (currently 1) in saved session JSON to enable future migration paths.
+- **Migration hooks:** `from_dict()` includes hooks for applying v1→v2 migration logic.
 
 ### Session store (`src/core/memory/session_store.py`)
 
@@ -830,26 +848,34 @@ JSON array (P1-7 atomic write via `tempfile.mkstemp` + `os.replace`):
 ]
 ```
 
-### Per-project config (OP-5)
+### Per-project settings (CP-13)
 
-`.agent-context/config.json` — mtime-cached, loaded by `load_project_config()`:
+`.agent/settings.json` — loaded by `src/core/orchestration/project_settings.py`. This mirrors claw code's 5-layer config but adapted for CodingAgent's Python runtime.
 
-```json
-{
-  "instructions": ["Always use type hints", "Prefer async/await"],
-  "tool_overrides": {"bash": false},
-  "deny_write_patterns": ["*.lock", "venv/**"],
-  "model_override": "gpt-4o"
-}
-```
+Supported locations (merged in order):
+1. `{workdir}/.agent/settings.json` — project settings (committable)
+2. `{workdir}/.agent/settings.local.json` — local overrides (gitignored)
 
-Accessor functions in `config_loader.py`:
-```python
-def get_project_instructions(working_dir)    -> List[str]
-def get_project_tool_overrides(working_dir)  -> Dict[str, bool]
-def get_project_deny_write_patterns(working_dir) -> List[str]
-def get_project_model_override(working_dir)  -> Optional[str]
-```
+Recognized keys:
+- `model`: Model override for the project.
+- `permissionMode`: CP-8 unified permission mode.
+- `hooks`: Shell hooks configuration (CP-7).
+- `maxTurns`, `budgetCeiling`, `maxLlmWaitSeconds`.
+
+### Shell Hooks (CP-7)
+
+Located in `src/core/orchestration/shell_hooks.py`. Allows executing arbitrary shell commands before and after tool usage.
+
+- **PreToolUse:** Can block/deny tool calls if the hook exits with code `2`.
+- **PostToolUse:** Can modify tool results or mark them as errors.
+- **Environment:** Hooks receive `HOOK_TOOL_NAME`, `HOOK_TOOL_INPUT`, `HOOK_TOOL_OUTPUT`, etc.
+- **JSON Stdin:** Full tool context is piped as JSON to the hook's stdin.
+
+### Project-context legacy (OP-5)
+
+`.agent-context/config.json` — mtime-cached, loaded by `load_project_config()`. This was the original project-level config mechanism before CP-13 implementation. It is still used for:
+- `instructions` (merged with CP-11 walk).
+- `deny_write_patterns` (used by guardrails.py).
 
 ### Config watcher (S6-C)
 
@@ -943,7 +969,19 @@ _DANGEROUS_PATTERNS = [
 normalisation via `re.sub(r"\s+", " ")`) as a defence-in-depth layer before bash_security's
 AST analysis.
 
+### Permission Mode System (CP-8)
+
+Unified permission levels enforced at tool execution time:
+- `read_only`: Only read-only tools allowed.
+- `workspace_write`: Default. Allows modifying files in the workspace.
+- `danger`: Allows dangerous operations (sudo, network, delete).
+- `prompt`: Ask user for every tool call.
+- `allow`: Full bypass (autonomous mode).
+
+Enforcement occurs in `PermissionGateway` and `ToolExecutionService`, which check the tool's `required_permission` against the active `permission_mode` loaded from CLI flags or project settings.
+
 ### Guardrails (`src/tools/guardrails.py`)
+
 
 - **Read-before-write guard:** Tracks `_session_read_files`; blocks write to a file that
   was never read (prevents blind overwrites).
@@ -1255,33 +1293,30 @@ guardrails, approval gate, plan mode blocking) vs claw code's single permission 
 `deny_write_patterns` (per-project) and read-before-write guard have no claw code
 equivalent.
 
-### Plugin system — unique to claw code
+### Implemented Patterns (Parity Achieved)
 
-Claw code's `PluginMetadata` / `HookRunner` / `PluginManager` has no CodingAgent
-equivalent (only `approval_gate.py` as a partial pre-tool hook).
+CodingAgent has achieved functional parity with claw code for all major features:
 
-### MCP first-class — advantage claw code
+| Feature | CodingAgent Implementation | Claw Code Parity |
+|---|---|---|
+| Auto-compaction | `auto_compactor.py` (CP-6) | `compact.rs` |
+| Shell hooks | `shell_hooks.py` (CP-7) | `hooks.rs` |
+| Permission policy | `PermissionMode` system (CP-8) | `permissions.rs` |
+| Instruction discovery | Ancestor walk + SHA-256 dedup (CP-11) | `prompt.rs` |
+| Project settings | `.agent/settings.json` (CP-13) | `config.rs` |
+| Caching boundary | `__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__` | Boundary sentinel |
+| Cache token tracking | `cache_creation_input_tokens` in adapters | Tracked in `usage.rs` |
+| LSP injection | `get_lsp_diagnostics_block` in system prompt | `with_lsp_context` |
+| Mid-turn messaging | `send_user_message` tool (CP-15) | `SendUserMessage` |
+| Session versioning | `SCHEMA_VERSION` in MessageManager (CP-14) | `Session { version }` |
 
-Claw code implements both MCP client and server natively, supports 6 transport types,
-and handles plugin-supplied tools. CodingAgent's MCP is functional but less rich
-(stdio-only client, basic server).
+### Key remaining distinctions
 
-### Sub-agents
-
-Both support sub-agents but via different primitives:
-- CodingAgent: `delegation_node` + `delegate_task` tool → spawns new Orchestrator session
-- Claw code: `WorkerCreate` / `WorkerSendPrompt` tools → spawns worker subprocess
-
-### Key patterns to import from claw code (for CodingAgent)
-
-| Claw Code Pattern | CodingAgent Gap |
-|---|---|
-| `PermissionPolicy` allow/deny/ask rules | `approval_gate.py` is simpler allowlist |
-| `discover_instruction_files()` ancestor walk | No ancestor walk for CLAUDE.md |
-| Plugin lifecycle hooks (pre/post tool) | No hook system |
-| Multi-transport MCP (WS, HTTP, SSE) | Stdio-only |
-| `unsafe_code = "forbid"` compile-time safety | Python linting only |
-| Worker sub-agents (parallel, observable) | Sequential delegation only |
+1. **Language:** Python (CodingAgent) vs Rust (Claw Code).
+2. **Framework:** LangGraph DAG (CodingAgent) vs Custom turn loop (Claw Code).
+3. **Complexity:** CodingAgent encodes domain knowledge (Verification/Debug nodes) in the graph structure.
+4. **Security:** CodingAgent uses AST-based bash analysis + 5 layers of defense-in-depth.
+5. **Tier adaptation:** CodingAgent adapts its entire toolset and prompt format to the model tier (NANO → FRONTIER).
 
 ---
 

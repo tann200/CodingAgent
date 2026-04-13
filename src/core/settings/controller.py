@@ -111,7 +111,8 @@ class SettingsPanelController:
                             changed = True
                     if changed:
                         # P1-7: Atomic write via tmp-file + rename to prevent corruption
-                        import tempfile, os
+                        import tempfile
+                        import os
 
                         new_content = json.dumps(raw, indent=2)
                         tmp_fd, tmp_path = tempfile.mkstemp(

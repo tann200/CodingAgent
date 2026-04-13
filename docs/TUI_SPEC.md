@@ -1787,7 +1787,7 @@ A TUI implementation is **not** responsible for:
 - [ ] Test output shows: passed count, failed count, failed test names, traceback excerpt
 
 ### Lifecycle
-- [ ] History loaded from `~/.coding_agent/tui_conversation_history.json` on startup
+ - [ ] History loaded from the TUI history file under the user data directory (see ``src.core.paths.get_data_dir()``) on startup
 - [ ] History saved atomically (tempfile + `os.replace`) after every agent result
 - [ ] `session.request_state` published on startup
 - [ ] `app.shutdown()` called during teardown

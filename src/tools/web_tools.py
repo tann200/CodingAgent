@@ -9,8 +9,7 @@ import logging
 import re
 import socket
 import ipaddress
-from typing import Any, Dict, List, Optional
-from pathlib import Path
+from typing import Any, Dict, List
 
 from src.tools._tool import tool, PermissionKind
 

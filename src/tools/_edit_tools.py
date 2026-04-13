@@ -18,7 +18,7 @@ from typing import Dict, Any, Optional
 _logger = logging.getLogger(__name__)
 
 from src.tools._path_utils import safe_resolve as _safe_resolve_impl
-from src.tools._tool import tool, PermissionKind
+from src.tools._tool import tool
 from src.tools._diff_gate import (
     _publish_diff_preview,
     register_preview_gate,
@@ -44,8 +44,13 @@ except ImportError:
     pass
 
 
-def _safe_resolve(path: str, workdir: Path) -> Path:
-    """Thin wrapper around _path_utils.safe_resolve for use within this module."""
+def _safe_resolve(path: str, workdir: Path | None) -> Path:
+    """Thin wrapper around _path_utils.safe_resolve for use within this module.
+
+    Accept None for workdir (tests may pass None); fall back to Path.cwd().
+    """
+    if workdir is None:
+        workdir = Path.cwd()
     return _safe_resolve_impl(path, workdir)
 
 
@@ -111,7 +116,7 @@ def _fuzzy_find(content: str, target: str) -> Optional[str]:
 def edit_file(
     path: str,
     patch: str,
-    workdir: Path = None,  # type: ignore[assignment]
+    workdir: Path | None = None,
     user_approved: bool = False,
 ) -> Dict[str, Any]:
     """Edit a file using a unified diff patch. Returns diff in result for TUI display."""
@@ -220,7 +225,7 @@ def edit_by_line_range(
     start_line: int,
     end_line: int,
     new_content: str,
-    workdir: Path = None,  # type: ignore[assignment]
+    workdir: Path | None = None,
     user_approved: bool = False,
 ) -> Dict[str, Any]:
     """
@@ -232,7 +237,6 @@ def edit_by_line_range(
     """
     if workdir is None:
         workdir = Path.cwd()
-    import difflib
 
     guard = WorkspaceGuard()
     guard_result = guard.guard_operation("edit_by_line_range", path, user_approved)
@@ -340,7 +344,7 @@ def edit_file_atomic(
     path: str,
     old_string: str,
     new_string: str,
-    workdir: Path = None,  # type: ignore[assignment]
+    workdir: Path | None = None,
     user_approved: bool = False,
 ) -> Dict[str, Any]:
     """
@@ -355,7 +359,6 @@ def edit_file_atomic(
     """
     if workdir is None:
         workdir = Path.cwd()
-    import difflib
 
     guard = WorkspaceGuard()
     guard_result = guard.guard_operation("edit_file_atomic", path, user_approved)

@@ -1,13 +1,16 @@
 """SubagentDetailScreen — view the conversation and metadata of a child session.
 
 Opened when the user clicks a finished SubagentProgress widget or navigates to
-a child session from SessionListScreen.  Reads the persisted session JSON from
-~/.coding_agent/sessions/session_{child_session_id}.json.
+a child session from SessionListScreen. Reads the persisted session JSON from
+the sessions directory returned by ``src.core.paths.get_sessions_dir()``. For
+dev-mode compatibility a legacy per-user fallback (``~/.coding_agent/sessions``)
+is honoured when the core helpers are unavailable.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -81,7 +84,11 @@ class SubagentDetailScreen(ModalScreen[None]):
         self._child_session_id = child_session_id
         self._role = role
         self._task = task
-        self._sessions_dir = sessions_dir or (Path.home() / ".coding_agent" / "sessions")
+        # Cross-platform sessions directory — prefer core.paths.get_sessions_dir()
+        from .._core_paths_loader import get_sessions_dir as _get_sessions_dir_helper
+
+        default_sessions = _get_sessions_dir_helper()
+        self._sessions_dir = sessions_dir or default_sessions
         self._session_data: Optional[Dict[str, Any]] = None
 
     def _load_session(self) -> Optional[Dict[str, Any]]:
@@ -98,9 +105,15 @@ class SubagentDetailScreen(ModalScreen[None]):
             # Meta line
             if self._session_data:
                 ts = self._session_data.get("timestamp", 0)
-                date_str = time.strftime("%Y-%m-%d %H:%M", time.localtime(ts)) if ts else "?"
+                date_str = (
+                    time.strftime("%Y-%m-%d %H:%M", time.localtime(ts)) if ts else "?"
+                )
                 ok = self._session_data.get("ok", True)
-                status = "[bold #22c55e]✓ completed[/]" if ok else "[bold #ff5555]✗ failed[/]"
+                status = (
+                    "[bold #22c55e]✓ completed[/]"
+                    if ok
+                    else "[bold #ff5555]✗ failed[/]"
+                )
                 n_msgs = self._session_data.get("message_count", 0)
                 meta = (
                     f"{date_str}  ·  {status}  ·  {n_msgs} messages\n"

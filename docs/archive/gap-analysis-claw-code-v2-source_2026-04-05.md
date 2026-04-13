@@ -172,7 +172,7 @@ structured allow/deny.
 
 ### CodingAgent
 `tool_hooks.py` — `ToolHookRunner` (added this session). Reads `.agent/hooks.json` +
-`~/.coding_agent/hooks.json`. `run_pre()` returns `HookResult(allowed, reason)`. `run_post()`.
+global hooks file (see ``src.core.paths.get_hooks_path()``). `run_pre()` returns `HookResult(allowed, reason)`. `run_post()`.
 fnmatch pattern matching per tool name.
 
 ### Gaps

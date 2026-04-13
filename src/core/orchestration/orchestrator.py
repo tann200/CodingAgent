@@ -12,19 +12,9 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from src.core.inference.llm_manager import (  # noqa: E402
-    _ensure_provider_manager_initialized_sync,
-)
 from src.core.orchestration.event_bus import EventBus  # noqa: E402
-from src.core.logger import logger as guilogger  # noqa: E402 — re-exported for tests
 
 # Phase A: constants — re-exported for backward compatibility.
-from src.core.orchestration.tool_constants import (  # noqa: E402
-    WRITE_TOOLS_REQUIRING_READ,
-    DRY_RUN_BLOCKED_TOOLS,
-    PERMISSION_REQUIRED_TOOLS,
-    _write_permission_audit,
-)
 
 # tool_contracts — kept here so tests can patch orchestrator.get_tool_contract.
 try:
@@ -46,27 +36,33 @@ logger = logging.getLogger(__name__)
 
 # Phase G1: re-exported for backward compatibility (tests import _generate_work_summary
 # from orchestrator).
-from src.core.orchestration.work_summary import _generate_work_summary  # noqa: E402
 
 
 # Tool result formatting — re-exported here for backward compatibility.
-from src.core.orchestration.tool_result_formatter import (  # noqa: E402
-    TOOL_RESULT_FORMATTERS,
-    format_tool_result as _format_tool_result,
-)
+
+from src.core.orchestration.tool_result_formatter import TOOL_RESULT_FORMATTERS  # noqa: E402
+
+# Permission and tool classification constants — re-exported for backward compatibility
+from src.core.orchestration.tool_constants import (
+    PERMISSION_REQUIRED_TOOLS,
+    DRY_RUN_BLOCKED_TOOLS,
+    WRITE_TOOLS_REQUIRING_READ,
+    _write_permission_audit,
+)  # noqa: E402
+
+# Provider manager sync helper expected by tests to be reachable from orchestrator
+from src.core.inference.llm_manager import _ensure_provider_manager_initialized_sync  # noqa: E402
 
 # ── TUI-03/TUI-04: approval gate registries — moved to approval_gate.py ──────
 # Re-exported here for backward compatibility (file_tools.py imports
 # register_bash_gate and _bash_denied from this module).
-from src.core.orchestration.approval_gate import (  # noqa: E402
-    _bash_denied,
-    register_bash_gate,
-)
 
 # Phase B: ToolRegistry and example_registry live in their own modules.
 # Re-exported here so existing callers (tests, main.py) continue to work.
 from src.core.orchestration.tool_registry import ToolRegistry  # noqa: E402
 from src.core.orchestration.registry_builder import example_registry  # noqa: E402
+from src.core.orchestration.tool_constants import WRITE_TOOLS_REQUIRING_READ  # noqa: E402
+from src.core.orchestration.work_summary import _generate_work_summary  # noqa: E402
 
 
 class Orchestrator:
@@ -96,6 +92,9 @@ class Orchestrator:
     _permission_gate: Any
     _permission_granted: bool
     preview_coordinator: Any
+    # Plan mode controller (set during bootstrap)
+    plan_mode: Any
+    _plan_mode_approved: Any
     mcp_manager: Any
     _http_server_thread: Any
     lifecycle_manager: Any
@@ -263,13 +262,19 @@ class Orchestrator:
 
         return _get_tool_timeout_impl(self, tool_name)
 
-    def _normalize_tool_result(self, res: Any) -> Dict[str, Any]:
-        """Ensure tool results conform to a minimal contract."""
+    def _normalize_tool_result(self, r: Any) -> Dict[str, Any]:
+        """Ensure tool results conform to a minimal contract.
+
+        Parameter name intentionally short (``r``) to match common test
+        monkeypatch callables that use ``lambda r: ...``. This avoids a
+        pyright false-positive about parameter-name mismatches when tests
+        assign to this attribute.
+        """
         from src.core.orchestration.orchestrator_helpers import (
             _normalize_tool_result_impl,
         )
 
-        return _normalize_tool_result_impl(self, res)
+        return _normalize_tool_result_impl(self, r)
 
     def execute_tool(self, tool_call: Dict[str, Any]) -> Dict[str, Any]:
         # Phase C: delegate to module-level function in tool_execution_pipeline.py

@@ -1,10 +1,23 @@
 import json
+import logging
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 
-CONFIG_DIR = Path.home() / ".agent_tui"
-CONFIG_FILE = CONFIG_DIR / "settings.json"
+logger = logging.getLogger("settings")
+
+
+# Cross-platform config directory — prefer core.paths.get_config_dir() when available
+def _get_config_dir() -> Path:
+    # Use the centralized loader which resolves src/core/paths when available
+    from ._core_paths_loader import get_config_dir as _get_config_dir_helper
+
+    return _get_config_dir_helper()
+
+
+CONFIG_DIR = None  # type: ignore[assignment]
+CONFIG_FILE = None  # type: ignore[assignment]
 
 AGENTS = [
     {"id": "lead_architect", "label": "Lead Architect"},
@@ -13,11 +26,26 @@ AGENTS = [
 ]
 
 TEXTUAL_THEMES = [
-    "textual-dark", "textual-light", "nord", "gruvbox", "catppuccin-mocha",
-    "dracula", "tokyo-night", "monokai", "flexoki", "solarized-dark",
-    "solarized-light", "rose-pine", "rose-pine-moon", "atom-one-dark",
-    "atom-one-light", "catppuccin-latte", "catppuccin-frappe",
-    "catppuccin-macchiato", "rose-pine-dawn", "textual-ansi",
+    "textual-dark",
+    "textual-light",
+    "nord",
+    "gruvbox",
+    "catppuccin-mocha",
+    "dracula",
+    "tokyo-night",
+    "monokai",
+    "flexoki",
+    "solarized-dark",
+    "solarized-light",
+    "rose-pine",
+    "rose-pine-moon",
+    "atom-one-dark",
+    "atom-one-light",
+    "catppuccin-latte",
+    "catppuccin-frappe",
+    "catppuccin-macchiato",
+    "rose-pine-dawn",
+    "textual-ansi",
 ]
 
 DEFAULTS: Dict[str, Any] = {
@@ -45,7 +73,18 @@ DEFAULTS: Dict[str, Any] = {
 
 class SettingsStore:
     def __init__(self, path: Optional[Path] = None):
-        self._path = path or CONFIG_FILE
+        # Compute config file lazily via the TUI loader to avoid import-time
+        # package-relative imports when conftest aliases tui modules to src.ui.
+        if path:
+            self._path = path
+        else:
+            try:
+                cfg_dir = _get_config_dir()
+            except Exception:
+                # Fall back to legacy location
+                cfg_dir = Path.home() / ".agent_tui"
+            cfg_dir.mkdir(parents=True, exist_ok=True)
+            self._path = Path(cfg_dir) / "settings.json"
         self._data: Dict[str, Any] = {}
         self._available_providers: List[Dict[str, Any]] = []
         self.load()
@@ -56,16 +95,31 @@ class SettingsStore:
             try:
                 with open(self._path, "r", encoding="utf-8") as f:
                     saved = json.load(f)
-                self._data.update(saved)
-            except (json.JSONDecodeError, OSError):
-                pass
+                if isinstance(saved, dict):
+                    self._data.update(saved)
+                else:
+                    logger.warning(
+                        "settings.json: expected dict, got %s — ignoring",
+                        type(saved).__name__,
+                    )
+            except json.JSONDecodeError as e:
+                logger.warning("settings.json: invalid JSON — ignoring: %s", e)
+            except OSError as e:
+                logger.warning("settings.json: read error — ignoring: %s", e)
 
     def save(self) -> None:
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        with open(self._path, "w", encoding="utf-8") as f:
-            json.dump(self._data, f, indent=2)
+        try:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            with open(self._path, "w", encoding="utf-8") as f:
+                json.dump(self._data, f, indent=2)
+        except OSError as e:
+            logger.error("Failed to save settings to %s: %s", self._path, e)
+        except TypeError as e:
+            logger.error("Failed to serialize settings (invalid type): %s", e)
 
-    def apply_system_settings(self, settings_dict: Dict[str, Any], providers: List[Dict[str, Any]]) -> None:
+    def apply_system_settings(
+        self, settings_dict: Dict[str, Any], providers: List[Dict[str, Any]]
+    ) -> None:
         for k, v in settings_dict.items():
             if k not in self._data or self._data[k] == DEFAULTS.get(k):
                 self._data[k] = v
@@ -85,7 +139,9 @@ class SettingsStore:
         self._data.update(updates)
 
     def get_agent_provider(self, agent_id: str) -> str:
-        return self._data.get(f"{agent_id}_provider", self._data.get("default_provider", "none"))
+        return self._data.get(
+            f"{agent_id}_provider", self._data.get("default_provider", "none")
+        )
 
     def get_agent_model(self, agent_id: str) -> str:
         return self._data.get(f"{agent_id}_model", self._data.get("default_model", ""))
@@ -99,7 +155,10 @@ class SettingsStore:
 
     def get_models_for_provider(self, provider_name: str) -> List[str]:
         for p in self._available_providers:
-            if p["name"].lower() == provider_name.lower() or p["name"].lower().replace(" ", "_") == provider_name:
+            if (
+                p["name"].lower() == provider_name.lower()
+                or p["name"].lower().replace(" ", "_") == provider_name
+            ):
                 return p.get("models", [])
         return []
 
@@ -107,6 +166,7 @@ class SettingsStore:
         """Return stored API key for provider_id from providers.json, or empty string."""
         try:
             from src.ui.config_writer import load_provider_credentials
+
             return load_provider_credentials(provider_id).get("api_key", "")
         except Exception:
             return self._data.get(f"{provider_id}_api_key", "")

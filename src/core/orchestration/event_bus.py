@@ -23,7 +23,8 @@ import logging
 import threading
 import uuid
 from contextvars import ContextVar
-from typing import Any, Callable, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Optional, Set, TypeVar, Awaitable
+import asyncio
 
 _logger = logging.getLogger(__name__)
 from dataclasses import dataclass, field
@@ -55,7 +56,15 @@ def new_correlation_id() -> str:
     return cid
 
 
-def run_with_correlation(loop, executor, fn, *args):
+T = TypeVar("T")
+
+
+def run_with_correlation(
+    loop: "asyncio.AbstractEventLoop",
+    executor: Optional[Any],
+    fn: Callable[..., T],
+    *args: Any,
+) -> Awaitable[T]:
     """D-07: Run *fn* in *executor* with the current correlation ID propagated.
 
     ``loop.run_in_executor(None, fn, *args)`` does NOT propagate ContextVar
@@ -69,13 +78,39 @@ def run_with_correlation(loop, executor, fn, *args):
 
         result = await run_with_correlation(loop, None, my_sync_fn, arg1, arg2)
     """
+    # Local imports to avoid import-time cycles and keep the function test-friendly.
     import contextvars
     import functools
+    import inspect
+    import asyncio
 
     ctx = contextvars.copy_context()
+
+    # Wrap the user's callable so that if it returns an awaitable (a coroutine
+    # or other awaitable), we execute it to completion inside the worker thread
+    # using asyncio.run. This prevents coroutine objects from leaking back to
+    # the caller's event loop.
+    def _worker() -> T:  # zero-arg callable for run_in_executor
+        rv = fn(*args)
+        try:
+            if inspect.isawaitable(rv):
+                # Run awaitable to completion inside this worker thread.
+                return asyncio.run(rv)  # type: ignore[return-value]
+        except Exception:
+            # If anything goes wrong executing the awaitable, propagate the
+            # exception to the caller via the Future returned by run_in_executor.
+            raise
+        return rv  # type: ignore[return-value]
+
+    # Use a shared long-lived executor when the caller didn't provide one. This
+    # reduces thread creation overhead and makes shutdown explicit via atexit.
+    sel_executor = executor if executor is not None else _get_shared_executor()
+
     # Use functools.partial so a single callable is passed to run_in_executor.
-    fn_partial = functools.partial(ctx.run, fn, *args)
-    return loop.run_in_executor(executor, fn_partial)
+    fn_partial = functools.partial(ctx.run, _worker)
+    # loop.run_in_executor returns an awaitable. Typing uses a TypeVar T so callers
+    # receive a properly-parameterised Awaitable[T] when they pass a typed fn.
+    return loop.run_in_executor(sel_executor, fn_partial)
 
 
 class MessagePriority(IntEnum):
@@ -259,6 +294,27 @@ class EventBus:
 
 _default_bus: EventBus | None = None
 _bus_lock = threading.Lock()
+
+# Shared executor for worker threads. Lazily created to avoid import-time side-effects.
+_shared_executor = None  # type: ignore[assignment]
+
+
+def _get_shared_executor():
+    """Return a long-lived ThreadPoolExecutor for run_in_executor calls.
+
+    Lazily creates the executor and registers an atexit shutdown handler so
+    worker threads are cleaned up on process exit.
+    """
+    global _shared_executor
+    if _shared_executor is not None:
+        return _shared_executor
+    # Local imports to avoid import-time cycles in tests.
+    from concurrent.futures import ThreadPoolExecutor
+    import atexit
+
+    _shared_executor = ThreadPoolExecutor(thread_name_prefix="coding_agent_worker")
+    atexit.register(_shared_executor.shutdown, wait=True)
+    return _shared_executor
 
 
 def get_event_bus() -> EventBus:
