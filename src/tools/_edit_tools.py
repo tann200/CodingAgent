@@ -200,6 +200,7 @@ def edit_file(
         result: Dict[str, Any] = {
             "path": str(p),
             "status": "ok",
+            "diff": diff,
             "lines_added": lines_added,
             "lines_removed": lines_removed,
         }
@@ -315,6 +316,7 @@ def edit_by_line_range(
     result: Dict[str, Any] = {
         "path": str(p),
         "status": "ok",
+        "diff": diff,
         "lines_added": len([ln for ln in diff_lines if ln.startswith("+")]),
         "lines_removed": len([ln for ln in diff_lines if ln.startswith("-")]),
     }

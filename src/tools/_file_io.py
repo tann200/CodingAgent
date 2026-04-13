@@ -154,6 +154,7 @@ def write_file(
         return {
             "path": str(p),
             "status": "no_change",
+            "diff": "",
             "lines_added": 0,
             "lines_removed": 0,
             "is_new_file": False,
@@ -261,6 +262,7 @@ def write_file(
         "lines_added": lines_added,
         "lines_removed": lines_removed,
         "is_new_file": not bool(original_content),
+        "diff": diff,
     }
     # S2-C: Auto-formatter — run after write; failures are warnings only.
     try:
