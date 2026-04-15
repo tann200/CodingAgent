@@ -14,6 +14,7 @@ tools:
   # Writing (limited — debug can edit to fix)
   - edit_file_atomic
   - multiedit
+  - edit_code_block
   # Verification
   - run_tests
   - run_linter
@@ -37,5 +38,9 @@ tools:
   - batch
   # Memory
   - memory_search
+  - read_file_bytes
+  - tail_log_file
+  - list_snapshots
+  - revert_last_tool
   # Interaction
   - ask_user

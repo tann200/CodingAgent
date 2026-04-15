@@ -216,7 +216,8 @@ def start_new_task_impl(orch) -> str:
                     try:
                         orch.tool_registry.deregister(_tool_name)
                         guilogger.info(
-                            "start_new_task: disabled tool '%s' (project config)", _tool_name
+                            "start_new_task: disabled tool '%s' (project config)",
+                            _tool_name,
                         )
                     except Exception:
                         pass
@@ -361,19 +362,36 @@ def get_tools_for_role_impl(orch, role: str) -> List[Dict[str, Any]]:
         # → filtered to debug toolset: bash, read_file, edit_file, run_tests …
     """
     try:
+        # Import the toolset loader module (prefer src.tools.toolsets.loader,
+        # fall back to src.config.toolsets.loader). We import the module so we
+        # can use model-aware loading when available (load_toolset_for_model).
         try:
-            from src.tools.toolsets.loader import (
-                get_toolset_for_role,
-                get_tools_for_toolset,
-            )
-        except ImportError:
-            from src.config.toolsets.loader import (
-                get_toolset_for_role,
-                get_tools_for_toolset,
-            )
+            import importlib
 
-        toolset_name = get_toolset_for_role(role)
-        toolset_tool_names = get_tools_for_toolset(toolset_name)
+            ts_loader = importlib.import_module("src.tools.toolsets.loader")
+        except Exception:
+            import importlib
+
+            ts_loader = importlib.import_module("src.config.toolsets.loader")
+
+        toolset_name = ts_loader.get_toolset_for_role(role)
+
+        # If the loader exposes a model-aware loader, prefer it so the
+        # file-format selection can be model-dependent. Fall back to the
+        # traditional get_tools_for_toolset when the helper is missing or
+        # returns nothing useful.
+        model = getattr(orch, "_model", None)
+        toolset_tool_names = []
+        if hasattr(ts_loader, "load_toolset_for_model"):
+            try:
+                ts = ts_loader.load_toolset_for_model(toolset_name, model)
+                if ts and "tools" in ts:
+                    toolset_tool_names = list(ts["tools"])
+            except Exception:
+                toolset_tool_names = []
+
+        if not toolset_tool_names:
+            toolset_tool_names = ts_loader.get_tools_for_toolset(toolset_name)
         if not toolset_tool_names:
             # Unknown toolset — fall back to full registry
             raise ValueError(f"empty toolset for role={role!r}")

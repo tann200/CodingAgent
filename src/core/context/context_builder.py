@@ -8,6 +8,7 @@ from collections import OrderedDict
 from pathlib import Path
 
 from src.core.paths import get_memory_path
+from src.core.memory.frozen_snapshot import load_memory_snapshot, get_memory_for_prompt
 
 # Gap 3: Plugin hooks — lazy import so the registry is not required at import time.
 try:
@@ -414,22 +415,12 @@ class ContextBuilder:
         except Exception:
             pass
 
-        # 2. GAP-NEW-4: memory.md — notes the model saved with memory_save()
-        try:
-            _mem_file = get_memory_path()
-            if _mem_file.exists():
-                _mem_text = _mem_file.read_text(encoding="utf-8", errors="replace")
-                if _mem_text.strip():
-                    # Include at most the last 20 entries to avoid flooding the prompt
-                    _entries = [
-                        ln
-                        for ln in _mem_text.splitlines()
-                        if ln.strip().startswith("- [")
-                    ]
-                    for entry in _entries[-20:]:
-                        lines.append(entry[:250])
-        except Exception:
-            pass
+        # 2. GAP-NEW-4: memory.md — notes saved with memory_save()
+        # Use frozen snapshot for system prompt stability (prompt caching)
+        _mem_snapshot = get_memory_for_prompt()
+        if _mem_snapshot:
+            lines.append("")
+            lines.append(_mem_snapshot)
 
         if not lines:
             return ""

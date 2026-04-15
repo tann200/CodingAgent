@@ -129,6 +129,41 @@ class AgentMessage:
     timestamp: float = field(default_factory=lambda: __import__("time").time())
 
 
+@dataclass
+class DispatchEvent:
+    """Event for subagent dispatch (similar to OpenClaw's DispatchEvent)."""
+
+    session_id: str
+    agent_id: str
+    task: str
+    parent_session_id: Optional[str] = None
+    context: str = ""
+    correlation_id: Optional[str] = None
+    timestamp: float = field(default_factory=lambda: __import__("time").time())
+
+
+@dataclass
+class DispatchResultEvent:
+    """Event for subagent dispatch result (similar to OpenClaw's DispatchResultEvent)."""
+
+    session_id: str
+    content: str = ""
+    parent_session_id: Optional[str] = None
+    error: Optional[str] = None
+    correlation_id: Optional[str] = None
+    timestamp: float = field(default_factory=lambda: __import__("time").time())
+
+
+# Event names for dispatch (matching OpenClaw patterns)
+class DispatchEvents:
+    SUBAGENT_DISPATCH = "subagent.dispatch"
+    SUBAGENT_RESULT = "subagent.result"
+    SUBAGENT_TIMEOUT = "subagent.timeout"
+    SUBAGENT_FAILED = "subagent.failed"
+    SUBAGENT_SPAWN = "subagent.spawn"
+    SUBAGENT_COMPLETE = "subagent.complete"
+
+
 class EventBus:
     def __init__(self) -> None:
         self._lock = threading.RLock()
@@ -251,6 +286,47 @@ class EventBus:
                 cb(msg)
             except Exception:
                 continue
+
+    # ---------------------------------------------------------------------------
+    # Subagent dispatch helpers (matching OpenClaw patterns)
+    # ---------------------------------------------------------------------------
+
+    def publish_dispatch(self, event: DispatchEvent) -> None:
+        """Publish a subagent dispatch event."""
+        self.publish(
+            DispatchEvents.SUBAGENT_DISPATCH,
+            {
+                "session_id": event.session_id,
+                "parent_session_id": event.parent_session_id,
+                "agent_id": event.agent_id,
+                "task": event.task,
+                "context": event.context,
+            },
+            correlation_id=event.correlation_id,
+        )
+
+    def publish_dispatch_result(self, event: DispatchResultEvent) -> None:
+        """Publish a subagent dispatch result event."""
+        self.publish(
+            DispatchEvents.SUBAGENT_RESULT,
+            {
+                "session_id": event.session_id,
+                "parent_session_id": event.parent_session_id,
+                "content": event.content,
+                "error": event.error,
+            },
+            correlation_id=event.correlation_id,
+        )
+
+    def subscribe_dispatch(self, callback: Callable[[DispatchEvent], None]) -> None:
+        """Subscribe to subagent dispatch events."""
+        self.subscribe(DispatchEvents.SUBAGENT_DISPATCH, callback)
+
+    def subscribe_dispatch_result(
+        self, callback: Callable[[DispatchResultEvent], None]
+    ) -> None:
+        """Subscribe to subagent dispatch result events."""
+        self.subscribe(DispatchEvents.SUBAGENT_RESULT, callback)
 
     def list_registered_agents(self) -> List[str]:
         with self._lock:

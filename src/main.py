@@ -174,6 +174,16 @@ def _parse_args(argv: list) -> argparse.Namespace:
             "destructive tools.  Read-only tools still run normally."
         ),
     )
+    # CP-14: --resume-session — resume from a previous session snapshot
+    parser.add_argument(
+        "--resume-session",
+        metavar="SESSION_ID",
+        default=None,
+        help=(
+            "Resume from a previous session by its session_id or path to session file. "
+            "Loads the persisted message history and continues the task."
+        ),
+    )
     # Allow unknown flags so future args don't break older wrappers
     known, _ = parser.parse_known_args(argv)
     return known
@@ -406,6 +416,7 @@ def _run_headless(
     output_format: str,
     workdir: Optional[str],
     dry_run: bool = False,
+    resume_session: Optional[str] = None,
 ) -> int:
     """Run a single task without the TUI and print the result.
 
@@ -421,8 +432,53 @@ def _run_headless(
         When ``True`` the orchestrator is started in dry-run mode: write and
         destructive tool calls are intercepted and logged as previews instead
         of being executed.
+    resume_session:
+        Optional session_id or path to session file to resume from.
     """
     import json as _json
+
+    _messages = None
+    if resume_session:
+        try:
+            from pathlib import Path as _Path
+            from src.core.orchestration.session_store import load_session, StoredSession
+
+            # Check if it's a file path
+            _session_path = _Path(resume_session)
+            if _session_path.exists() and _session_path.suffix == ".json":
+                _data = _json.loads(_session_path.read_text(encoding="utf-8"))
+                _stored = StoredSession(
+                    version=int(_data.get("version", 1)),
+                    session_id=str(_data.get("session_id") or ""),
+                    task_name=str(_data.get("task_name", "")),
+                    working_dir=str(_data.get("working_dir", "")),
+                    messages=list(_data.get("messages", [])),
+                    message_count=int(_data.get("message_count", 0)),
+                    turn_count=int(_data.get("turn_count", 0)),
+                    input_tokens=int(_data.get("input_tokens", 0)),
+                    output_tokens=int(_data.get("output_tokens", 0)),
+                    created_at=str(_data.get("created_at", "")),
+                )
+                _messages = _stored.messages
+                print(
+                    f"[SESSION] Resumed session {_stored.session_id}", file=sys.stderr
+                )
+            else:
+                # Try loading by session_id
+                _stored = load_session(resume_session)
+                if _stored:
+                    _messages = _stored.messages
+                    print(
+                        f"[SESSION] Resumed session {_stored.session_id}",
+                        file=sys.stderr,
+                    )
+                else:
+                    print(
+                        f"[SESSION] Session '{resume_session}' not found",
+                        file=sys.stderr,
+                    )
+        except Exception as _sess_err:
+            print(f"[SESSION] Failed to load session: {_sess_err}", file=sys.stderr)
 
     try:
         from src.core.orchestration.orchestrator import Orchestrator
@@ -430,7 +486,7 @@ def _run_headless(
         orch = Orchestrator(working_dir=workdir, dry_run=dry_run)
         result = orch.run_agent_once(
             system_prompt_name="operational",
-            messages=[{"role": "user", "content": task}],
+            messages=_messages if _messages else [{"role": "user", "content": task}],
             tools={},
         )
 
@@ -594,6 +650,7 @@ def main(argv: Optional[list] = None) -> int:
             args.output_format,
             args.workdir,
             dry_run=getattr(args, "dry_run", False),
+            resume_session=getattr(args, "resume_session", None),
         )
 
     try:

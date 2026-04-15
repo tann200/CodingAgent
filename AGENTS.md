@@ -1,7 +1,64 @@
 # AGENTS.md - Agent Instructions
 
 ## Overview
+
 This file provides instructions for AI coding agents working in this project.
+
+## Agent Definitions
+
+### Available Agents
+
+| Agent | Description |
+|-------|-------------|
+| coding | Default agent for coding tasks, file operations, and general development |
+| analyst | Deep-dive code analysis, patterns, and architecture review |
+| planning | Task breakdown, strategy, and planning |
+| review | Code review, verification, and quality checks |
+| debugging | Error investigation and fix suggestions |
+
+### Agent Dispatch
+
+Use `delegate_task` to delegate tasks to specialized subagents.
+
+#### Syntax
+
+```python
+delegate_task(
+    role="analyst",
+    subtask_description="Analyze the authentication flow for security issues",
+    working_dir="/path/to/project"
+)
+```
+
+#### When to Dispatch
+
+- **analyst**: Deep code analysis, pattern detection, architecture review
+- **planning**: Complex task breakdown, strategy formulation
+- **review**: Code review, test verification, quality checks
+- **debugging**: Error investigation, bug hunting
+- **operational**: File operations, refactoring, migrations
+
+#### Example Patterns
+
+```python
+# Delegate code analysis
+delegate_task(
+    role="analyst",
+    subtask_description="Find all uses of deprecated APIs in the codebase"
+)
+
+# Delegate code review
+delegate_task(
+    role="review", 
+    subtask_description="Review the authentication module for security issues"
+)
+
+# Delegate debugging
+delegate_task(
+    role="debugging",
+    subtask_description="Investigate why login fails with valid credentials"
+)
+```
 
 ## Tool Call Format
 

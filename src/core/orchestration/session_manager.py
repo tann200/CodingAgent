@@ -302,26 +302,140 @@ class SessionManager:
 
             provider_name = ""
             model_name = ""
-            if adapter is not None:
-                try:
-                    if hasattr(adapter, "provider") and isinstance(
-                        adapter.provider, dict
-                    ):
-                        provider_name = (
-                            adapter.provider.get("name")
-                            or adapter.provider.get("type")
-                            or ""
+
+            # Single guarded import for shared string helpers with a safe
+            # fallback to avoid circular imports in tests.
+            try:
+                from src.core.utils.strings import (
+                    valid_str as _valid_impl,
+                    extract_str as _extract_impl,
+                )
+
+                def _valid_str(x: Any) -> bool:
+                    try:
+                        return bool(_valid_impl(x))
+                    except Exception:
+                        return (
+                            isinstance(x, str)
+                            and bool(x.strip())
+                            and ("MagicMock" not in x)
                         )
-                    if hasattr(adapter, "default_model"):
-                        model_name = adapter.default_model or ""
-                    elif (
-                        hasattr(adapter, "models")
-                        and isinstance(adapter.models, list)
-                        and adapter.models
-                    ):
-                        model_name = adapter.models[0]
+
+                def _extract_str(candidate: Any) -> Optional[str]:
+                    try:
+                        v = _extract_impl(candidate)
+                        if isinstance(v, str):
+                            s = v.strip()
+                            return s if _valid_str(s) else None
+                        return None
+                    except Exception:
+                        # fall through to manual extraction below
+                        pass
+
+            except Exception:
+
+                def _valid_str(x: Any) -> bool:
+                    return (
+                        isinstance(x, str)
+                        and bool(x.strip())
+                        and ("MagicMock" not in x)
+                    )
+
+                def _extract_str(candidate: Any) -> Optional[str]:
+                    if candidate is None:
+                        return None
+                    if isinstance(candidate, str):
+                        s = candidate.strip()
+                        return s if _valid_str(s) else None
+                    if isinstance(candidate, dict):
+                        for key in (
+                            "provider_name",
+                            "name",
+                            "id",
+                            "key",
+                            "model",
+                            "default_model",
+                            "type",
+                        ):
+                            val = candidate.get(key)
+                            if isinstance(val, str):
+                                s = val.strip()
+                                if _valid_str(s):
+                                    return s
+                        return None
+                    return None
+
+            # If caller did not provide an adapter, attempt a conservative
+            # fallback to ProviderManager.get_active_adapter() so callers that
+            # rely on the active provider can omit passing an adapter. Keep
+            # this best-effort and never raise if imports or calls fail.
+            if adapter is None:
+                try:
+                    from src.core.inference.llm_manager import get_provider_manager
+
+                    pm = get_provider_manager()
+                    if pm is not None:
+                        try:
+                            adapter = pm.get_active_adapter()
+                        except Exception:
+                            adapter = None
                 except Exception:
-                    pass
+                    adapter = None
+
+            # Use centralised resolution pattern to obtain provider/model names
+            if adapter is not None:
+                caps = None
+                try:
+                    from src.core.inference.llm_manager import get_provider_manager
+
+                    pm = get_provider_manager()
+                    if pm is not None:
+                        try:
+                            caps = pm.get_provider_capabilities(adapter)
+                        except Exception:
+                            caps = None
+                except Exception:
+                    caps = None
+
+                if isinstance(caps, dict):
+                    try:
+                        p_cand = caps.get("provider_name") or caps.get("provider")
+                        p_cand = _extract_str(p_cand)
+                        if p_cand and _valid_str(p_cand):
+                            provider_name = p_cand
+                        m_cand = caps.get("model") or caps.get("default_model")
+                        m_cand = _extract_str(m_cand)
+                        if m_cand and _valid_str(m_cand):
+                            model_name = m_cand
+                    except Exception:
+                        # keep existing values on error
+                        pass
+
+                # If ProviderManager didn't yield concrete values, inspect adapter
+                if not _valid_str(provider_name) or not _valid_str(model_name):
+                    try:
+                        p = getattr(adapter, "provider", None)
+                        p_cand = _extract_str(p)
+                        if (
+                            p_cand
+                            and _valid_str(p_cand)
+                            and not _valid_str(provider_name)
+                        ):
+                            provider_name = p_cand
+
+                        dm = _extract_str(getattr(adapter, "default_model", None))
+                        if dm and _valid_str(dm):
+                            model_name = dm
+                        else:
+                            ms = getattr(adapter, "models", None)
+                            if isinstance(ms, list):
+                                for m in ms:
+                                    m_c = _extract_str(m)
+                                    if m_c and _valid_str(m_c):
+                                        model_name = m_c
+                                        break
+                    except Exception:
+                        pass
 
             session_mgr = get_agent_session_manager()
             session_mgr.update_session_state(

@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from src.core.paths import get_memory_path
+from src.core.memory.security import scan_memory_content
 from src.tools.tools_config import agent_context_path
 from src.tools._tool import tool, PermissionKind
 
@@ -195,6 +196,11 @@ def memory_save(
             "status": "error",
             "error": f"content too long ({len(content)} chars, max 1000). Be concise.",
         }
+
+    # Security check: scan for injection/exfiltration patterns
+    scan_error = scan_memory_content(content)
+    if scan_error:
+        return {"status": "error", "error": scan_error}
 
     cat = (category or "note").strip().lower()
     ts = time.strftime("%Y-%m-%d %H:%M")

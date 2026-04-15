@@ -39,7 +39,7 @@ class SessionStore:
 
     # SES-W1: current SQLite schema version.  Increment when making breaking
     # schema changes so old databases can be detected and migrated.
-    _SCHEMA_VERSION = 1
+    _SCHEMA_VERSION = 2
 
     def _ensure_tables(self):
         """Create tables if they don't exist, reusing the thread-local connection."""
@@ -127,6 +127,9 @@ class SessionStore:
         except Exception as e:
             logger.error(f"SessionStore: failed to create tables: {e}")
 
+        # Run any pending migrations
+        self.run_migrations()
+
     def get_schema_version(self) -> int:
         """Return the stored schema version, or 0 for pre-versioned databases."""
         with self._lock:
@@ -138,6 +141,54 @@ class SessionStore:
                 return int(row[0]) if row else 0
             except Exception:
                 return 0
+
+    def run_migrations(self) -> None:
+        """Run schema migrations from current version to latest.
+
+        This method checks the current schema version and applies any needed
+        migrations. Add new migration methods as _migrate_v{N} and increment
+        _SCHEMA_VERSION.
+        """
+        current = self.get_schema_version()
+        target = self._SCHEMA_VERSION
+
+        if current >= target:
+            logger.debug("SessionStore: schema is up to date (v%d)", current)
+            return
+
+        logger.info("SessionStore: migrating schema from v%d to v%d", current, target)
+
+        with self._lock:
+            conn = self._get_connection()
+            try:
+                if current < 2:
+                    self._migrate_v2(conn)
+
+                # Mark schema as up to date
+                conn.execute(
+                    "INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('schema_version', ?)",
+                    (str(target),),
+                )
+                conn.commit()
+                logger.info("SessionStore: migration complete (v%d)", target)
+            except Exception as e:
+                conn.rollback()
+                logger.error("SessionStore: migration failed: %e", e)
+                raise
+
+    def _migrate_v2(self, conn) -> None:
+        """Migration from v1 to v2: add session_snapshots table if not exists."""
+        # v2 adds session_snapshots table for TASK-ID-1
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS session_snapshots (
+                session_id TEXT PRIMARY KEY,
+                state_json TEXT NOT NULL,
+                role TEXT,
+                task TEXT,
+                saved_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        logger.debug("SessionStore: v2 migration added session_snapshots table")
 
     def add_message(self, session_id: str, role: str, content: str):
         with self._lock:

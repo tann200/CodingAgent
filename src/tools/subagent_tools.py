@@ -12,12 +12,24 @@ system prompt via the `tools_config.configure()` mechanism.
 import asyncio
 import logging
 import os
+import uuid
 from contextvars import ContextVar
 from typing import Dict, Any, List, Optional, cast
 from pathlib import Path
 
 from src.core.paths import get_sessions_dir
 from src.tools._tool import tool, PermissionKind
+
+try:
+    from src.core.orchestration.event_bus import (
+        DispatchEvent,
+        DispatchResultEvent,
+        DispatchEvents,
+    )
+except ImportError:
+    DispatchEvent = None
+    DispatchResultEvent = None
+    DispatchEvents = None
 
 # SPAWN-W1: ContextVar that carries the parent orchestrator reference into tool calls.
 # Set by Orchestrator.execute_tool() before dispatching; cleared automatically on exit.
@@ -518,6 +530,7 @@ def delegate_task(
             _manifest_path = None
 
         # SUBAGENT-VIS-1: Notify TUI that a subagent is starting
+        # Also publish DispatchEvent for subagent dispatch tracking
         try:
             if parent_orchestrator is not None:
                 _pbus = getattr(parent_orchestrator, "event_bus", None)
@@ -531,6 +544,15 @@ def delegate_task(
                             "task": subtask_description[:120],
                         },
                     )
+                    # Publish DispatchEvent if available (matching OpenClaw pattern)
+                    if DispatchEvent is not None and hasattr(_pbus, "publish_dispatch"):
+                        _dispatch_event = DispatchEvent(
+                            session_id=child_session_id,
+                            agent_id=canonical_role,
+                            task=subtask_description,
+                            parent_session_id=parent_session_id,
+                        )
+                        _pbus.publish_dispatch(_dispatch_event)
         except Exception:
             pass
 
@@ -635,6 +657,40 @@ def delegate_task(
                                 "cost_usd": _child_cost,
                             },
                         )
+                        # Publish DispatchResultEvent if available (matching OpenClaw pattern)
+                        if DispatchResultEvent is not None and hasattr(
+                            _pbus, "publish_dispatch_result"
+                        ):
+                            # Ensure we summarise the final_state consistently; fall
+                            # back to the derived `summary` variable computed below
+                            # when _summary isn't defined (older code paths).
+                            _content = None
+                            try:
+                                _content = final_state.get("work_summary")
+                            except Exception:
+                                _content = None
+                            if not _content:
+                                # Try the last assistant message or last_result
+                                _content = None
+                                try:
+                                    hs = final_state.get("history") or []
+                                    for m in reversed(hs):
+                                        if (
+                                            isinstance(m, dict)
+                                            and m.get("role") == "assistant"
+                                        ):
+                                            _content = m.get("content")
+                                            break
+                                except Exception:
+                                    _content = None
+                            if not _content:
+                                _content = ""
+                            _result_event = DispatchResultEvent(
+                                session_id=child_session_id,
+                                content=_content,
+                                parent_session_id=parent_session_id,
+                            )
+                            _pbus.publish_dispatch_result(_result_event)
                         # Roll up child cost into parent state via usage.subagent_cost event
                         if _child_cost > 0:
                             _pbus.publish(

@@ -590,6 +590,106 @@ def _init_services(orch: Any) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Config reload helper
+# ---------------------------------------------------------------------------
+
+
+def register_config_reload_handlers(orch: Any) -> None:
+    """Register a callback with the ConfigReloader to refresh runtime state.
+
+    This function is intentionally safe to call in tests and avoids heavy
+    imports until the callback actually runs.
+    """
+    try:
+        from src.core.config_hot_reload import get_config_reloader
+
+        def _on_config_reloaded(changed_paths: Optional[set]) -> None:
+            guilogger.info("Orchestrator: config reloader callback invoked")
+            # 1) Reload AgentBrainManager caches
+            try:
+                from src.core.orchestration.agent_brain import get_agent_brain_manager
+
+                try:
+                    get_agent_brain_manager().reload()
+                except Exception:
+                    guilogger.warning(
+                        "AgentBrainManager.reload failed during config reload"
+                    )
+            except Exception:
+                guilogger.debug("AgentBrainManager not available to reload")
+
+            # 2) Clear toolset loader cache so updated YAMLs are re-read
+            try:
+                from src.config.toolsets import loader as _ts_loader
+
+                try:
+                    _ts_loader.clear_cache()
+                except Exception:
+                    guilogger.warning(
+                        "toolsets.loader.clear_cache failed during config reload"
+                    )
+            except Exception:
+                guilogger.debug("toolsets.loader not available to clear cache")
+
+            # 3) Rebuild the tool registry and replace orch.tool_registry
+            try:
+                from src.core.orchestration.registry_builder import example_registry
+
+                try:
+                    new_reg = example_registry()
+                    if new_reg:
+                        orch.tool_registry = new_reg
+                        guilogger.info(
+                            "Orchestrator: tool registry rebuilt from config reload"
+                        )
+                except Exception:
+                    guilogger.warning(
+                        "Failed to rebuild tool registry during config reload"
+                    )
+            except Exception:
+                guilogger.debug("registry_builder.example_registry not available")
+
+            # 4) Reinitialize providers so provider changes (providers.json) take effect
+            try:
+                pm = None
+                from src.core.inference.llm_manager import (
+                    get_provider_manager,
+                    _ensure_provider_manager_initialized_sync,
+                )
+
+                try:
+                    pm = get_provider_manager()
+                    if pm:
+                        if getattr(pm, "_event_bus", None) is None:
+                            pm.set_event_bus(orch.event_bus)
+                        _ensure_provider_manager_initialized_sync()
+                except Exception:
+                    guilogger.warning(
+                        "ProviderManager reinitialization failed during config reload"
+                    )
+            except Exception:
+                guilogger.debug("llm_manager ProviderManager not available for reload")
+
+            # 5) Publish a top-level event so UIs or other subsystems can react.
+            try:
+                orch.event_bus.publish(
+                    "config.reloaded", {"changed_paths": list(changed_paths or [])}
+                )
+            except Exception:
+                guilogger.debug(
+                    "Failed to publish orchestrator-level config.reloaded event"
+                )
+
+        try:
+            get_config_reloader(initial_load=False).add_callback(_on_config_reloaded)
+        except Exception:
+            guilogger.debug("Failed to register config reloader callback")
+    except Exception:
+        # No config reloader available; skip registration silently
+        pass
+
+
+# ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
 
@@ -612,6 +712,16 @@ def bootstrap_orchestrator(orch: Any, message_max_tokens: Optional[int]) -> None
     _init_providers(orch)
     _init_event_subscriptions(orch)
     _init_services(orch)
+
+    # Register configuration hot-reload callback helper. We already expose a
+    # module-level register_config_reload_handlers() above; attach that helper
+    # to the orchestrator instance and invoke it. Keeping the heavy logic at
+    # module scope keeps bootstrap_orchestrator short (ARCH-VOL21-2 requirement)
+    orch.register_config_reload_handlers = register_config_reload_handlers
+    try:
+        register_config_reload_handlers(orch)
+    except Exception:
+        guilogger.debug("Failed to register config reload handlers at bootstrap")
 
     # Gap 8: Bridge EventBus topics to OTel span events (no-op when OTel is disabled).
     try:

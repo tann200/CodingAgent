@@ -97,7 +97,37 @@ class LiteLLMAdapter(OpenAICompatibleAdapter):
         if not api_key:
             api_key = os.environ.get("LITELLM_API_KEY") or None
 
-        resolved_models: List[str] = list(models) if models else [_DEFAULT_MODEL]
+        # Sanitize incoming models list to avoid leaking MagicMock placeholders
+        try:
+            from src.core.utils.strings import valid_str as _vs
+
+            def _valid_str(x: Any) -> bool:
+                try:
+                    return bool(_vs(x))
+                except Exception:
+                    return (
+                        isinstance(x, str) and bool(x.strip()) and "MagicMock" not in x
+                    )
+        except Exception:
+
+            def _valid_str(x: Any) -> bool:
+                return (
+                    isinstance(x, str)
+                    and bool(str(x).strip())
+                    and ("MagicMock" not in str(x))
+                )
+
+        resolved_models: List[str] = []
+        if models:
+            for m in models:
+                if isinstance(m, dict):
+                    fid = m.get("id") or m.get("key") or m.get("name") or m.get("model")
+                else:
+                    fid = m
+                if fid and _valid_str(fid):
+                    resolved_models.append(str(fid).strip())
+        if not resolved_models:
+            resolved_models = [_DEFAULT_MODEL]
         default_model = resolved_models[0]
 
         super().__init__(

@@ -23,6 +23,16 @@ tools:
   # Delegation
   - delegate_task
   - list_subagent_roles
+  # State / checkpoints
+  - create_state_checkpoint
+  - list_checkpoints
+  - restore_state_checkpoint
+  - submit_plan_for_review
+  - plan_enter
+  - plan_exit
+  - fingerprint_tech_stack
+  - memory_save
+  - send_user_message
   # Task management
   - manage_todo
   - ask_user

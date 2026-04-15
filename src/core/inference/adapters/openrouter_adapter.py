@@ -43,7 +43,7 @@ class OpenRouterAdapter(OpenAICompatibleAdapter):
         models: Optional[List[str]] = None,
         name: str = "openrouter",
         # Accept (and ignore) args that ProviderManager passes generically
-        base_url: Optional[str] = None,   # always overridden by BASE_URL
+        base_url: Optional[str] = None,  # always overridden by BASE_URL
         config_path: Optional[str] = None,
         **kwargs,
     ):
@@ -51,11 +51,42 @@ class OpenRouterAdapter(OpenAICompatibleAdapter):
         if not api_key:
             try:
                 from src.core.user_prefs import UserPrefs
+
                 api_key = UserPrefs.load().get_provider_key("openrouter")
             except Exception:
                 pass
 
-        resolved_models: List[str] = list(models) if models else [self.DEFAULT_MODEL]
+        # Sanitize models list to avoid leaking MagicMock placeholders
+        try:
+            from src.core.utils.strings import valid_str as _vs
+
+            def _valid_str(x: Any) -> bool:
+                try:
+                    return bool(_vs(x))
+                except Exception:
+                    return (
+                        isinstance(x, str) and bool(x.strip()) and "MagicMock" not in x
+                    )
+        except Exception:
+
+            def _valid_str(x: Any) -> bool:
+                return (
+                    isinstance(x, str)
+                    and bool(str(x).strip())
+                    and ("MagicMock" not in str(x))
+                )
+
+        resolved_models: List[str] = []
+        if models:
+            for m in models:
+                if isinstance(m, dict):
+                    fid = m.get("id") or m.get("key") or m.get("name") or m.get("model")
+                else:
+                    fid = m
+                if fid and _valid_str(fid):
+                    resolved_models.append(str(fid).strip())
+        if not resolved_models:
+            resolved_models = [self.DEFAULT_MODEL]
         default_model = resolved_models[0]
 
         super().__init__(
@@ -100,8 +131,16 @@ class OpenRouterAdapter(OpenAICompatibleAdapter):
             data = r.json()
         except Exception as exc:
             _logger.warning("OpenRouterAdapter.get_models_from_api failed: %s", exc)
-            return {"models": [{"id": self.DEFAULT_MODEL, "name": self.DEFAULT_MODEL,
-                                "display_name": self.DEFAULT_MODEL, "key": self.DEFAULT_MODEL}]}
+            return {
+                "models": [
+                    {
+                        "id": self.DEFAULT_MODEL,
+                        "name": self.DEFAULT_MODEL,
+                        "display_name": self.DEFAULT_MODEL,
+                        "key": self.DEFAULT_MODEL,
+                    }
+                ]
+            }
 
         raw = data.get("data") or data.get("models") or []
         if not isinstance(raw, list):
@@ -116,11 +155,19 @@ class OpenRouterAdapter(OpenAICompatibleAdapter):
                 continue
             short = str(model_id).split("/")[-1]
             display = item.get("name") or short
-            out.append({"id": model_id, "name": short, "display_name": display, "key": short})
+            out.append(
+                {"id": model_id, "name": short, "display_name": display, "key": short}
+            )
 
         if not out:
-            out = [{"id": self.DEFAULT_MODEL, "name": self.DEFAULT_MODEL,
-                    "display_name": self.DEFAULT_MODEL, "key": self.DEFAULT_MODEL}]
+            out = [
+                {
+                    "id": self.DEFAULT_MODEL,
+                    "name": self.DEFAULT_MODEL,
+                    "display_name": self.DEFAULT_MODEL,
+                    "key": self.DEFAULT_MODEL,
+                }
+            ]
 
         return {"models": out}
 

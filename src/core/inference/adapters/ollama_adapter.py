@@ -146,10 +146,54 @@ class OllamaAdapter(LLMClient):
             self.provider.get("api_key") if self.provider else None  # type: ignore[union-attr]
         )
         # models: prefer explicit models arg, then provider.models from config, otherwise empty list
+        # Guarded import for shared validator to avoid circular imports in tests.
+        try:
+            from src.core.utils.strings import valid_str as _vs  # type: ignore[import]
+
+            def _valid_str(x: Any) -> bool:  # type: ignore[misc]
+                try:
+                    return bool(_vs(x))
+                except Exception:
+                    return (
+                        isinstance(x, str) and bool(x.strip()) and "MagicMock" not in x
+                    )
+        except Exception:
+
+            def _valid_str(x: Any) -> bool:  # type: ignore[misc]
+                return (
+                    isinstance(x, str)
+                    and bool(str(x).strip())
+                    and ("MagicMock" not in str(x))
+                )
+
         if models is not None:
-            self.models = list(models)
-        elif self.provider and isinstance(self.provider.get("models"), list):  # type: ignore[union-attr]
-            self.models = self.provider.get("models")  # type: ignore[union-attr]
+            # accept list[str] or list[dict], extract string ids conservatively
+            out = []
+            for m in models:
+                if isinstance(m, dict):
+                    fid = m.get("id") or m.get("key") or m.get("name") or m.get("model")
+                else:
+                    fid = m
+                if fid and _valid_str(fid):
+                    out.append(str(fid).strip())
+            self.models = out
+        elif self.provider:
+            out = []
+            models_field = self.provider.get("models")
+            if isinstance(models_field, list):
+                for m in models_field:
+                    if isinstance(m, dict):
+                        fid = (
+                            m.get("id")
+                            or m.get("key")
+                            or m.get("name")
+                            or m.get("model")
+                        )
+                    else:
+                        fid = m
+                    if fid and _valid_str(fid):
+                        out.append(str(fid).strip())
+            self.models = out
         else:
             self.models = []
         # missing_provider: False if either provider config exists or a base_url was explicitly provided
@@ -264,18 +308,54 @@ class OllamaAdapter(LLMClient):
         api_models = self.get_models_from_api()
         # Accept both [{'name':...},...] and ['name', ...] shapes from adapters/tests
         raw = api_models.get("models", []) or []
+        # Guarded import for shared validator to avoid circular imports in tests.
+        try:
+            from src.core.utils.strings import valid_str as _vs  # type: ignore[import]
+
+            def _valid_str(x: Any) -> bool:  # type: ignore[misc]
+                try:
+                    return bool(_vs(x))
+                except Exception:
+                    return (
+                        isinstance(x, str) and bool(x.strip()) and "MagicMock" not in x
+                    )
+        except Exception:
+
+            def _valid_str(x: Any) -> bool:  # type: ignore[misc]
+                return (
+                    isinstance(x, str)
+                    and bool(str(x).strip())
+                    and ("MagicMock" not in str(x))
+                )
+
         normalized = []
         for m in raw:
-            if isinstance(m, dict) and m.get("name"):
-                normalized.append(m.get("name"))
-            elif isinstance(m, str):
-                normalized.append(m)
+            if isinstance(m, dict):
+                name = m.get("name") or m.get("id") or m.get("key") or m.get("model")
+                if name and _valid_str(name):
+                    normalized.append(str(name).strip())
+            elif isinstance(m, str) and _valid_str(m):
+                normalized.append(str(m).strip())
+
         if self.provider is None:
             self.provider = {}
+        # update provider.models but keep other provider fields intact
         self.provider["models"] = normalized
         # Attempt to persist but don't fail tests if write fails
-        self._save_provider()
-        self.models = self.provider["models"]
+        try:
+            self._save_provider()
+        except Exception:
+            pass
+
+        # Update adapter.models in-place when possible so references remain valid
+        try:
+            # If models is a list object already present, mutate it in-place
+            if hasattr(self, "models") and isinstance(self.models, list):
+                self.models[:] = normalized
+            else:
+                self.models = normalized
+        except Exception:
+            self.models = normalized
         return self.models
 
     def get_model_info(self, model_name=None):

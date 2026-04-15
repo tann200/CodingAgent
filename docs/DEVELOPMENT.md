@@ -1,143 +1,341 @@
 # Development Guide
 
-> **Current model:** `gemma-4-e4b-it` via LM Studio (`http://localhost:1234/v1`)
-> **Test baseline:** 3229+ unit tests passing. All prior audit cycles (vol1–vol27 + scan-2 + CODEBASE_FINDINGS pass) closed.
-> **Open bugs:** See `docs/CODEBASE_FINDINGS.md` §8 (CONC-1, LOGIC-4, LOGIC-6, QUAL-3, QUAL-4, TEST-1 NEW-7/8/9/10/12/16).
-> **Gap analysis:** See `docs/gap-analysis-opencode-vs-codingagent-v2.md` for open TUI/permission/UX items.
+> **Test Baseline:** 3844 unit tests passing  
+> **Audit Status:** 0 Critical, 0 High issues  
+> **Last Updated:** 2026-04-14
 
-## Read-Before-Write Enforcement
+## Getting Started
 
-All write tools enforce that any existing file must have been read in the current session before it can be modified. New files (not yet on disk) are always allowed.
+### Prerequisites
+- Python 3.11+
+- LM Studio, Ollama, or cloud API keys for LLM inference
 
-**Implementation** (`src/tools/guardrails.py`): Dual-tracking for correctness across all threading models:
-- `ContextVar` — propagates through async chains (same-context) and Python 3.12+ executor threads
-- Global `threading.Lock`-protected set — visible from any executor thread including Python 3.11 `run_in_executor`
+### Setup
 
-Both are reset by `Orchestrator.start_new_task()` between tasks.
+```bash
+# Clone and install
+git clone https://github.com/<user>/CodingAgent.git
+cd CodingAgent
+python3.11 -m venv .venv
+source .venv/bin/activate
+pip install -e .
 
-**Enforcement points:**
-- `read_file`, `read_file_chunk` → call `mark_file_read(path)` on success
-- `ast_rename` → calls `mark_file_read()` after reading, `check_read_before_write()` before writing
-- All other write tools (`write_file`, `edit_file`, `edit_file_atomic`, `edit_by_line_range`, `apply_patch`, `manage_todo`) → call `check_read_before_write()` before modifying
+# Configure provider
+# Edit src/config/providers.json with your provider settings
 
-`check_read_before_write()` returns `{}` if OK or `{"error": "...", "requires_read_first": True}` on violation. The AgentState also maintains a `files_read` O(1) dict and `verified_reads` list as supplementary tracking used by execution_node.
+# Run
+python -m src.main
+```
 
-## Subagent Delegation
+---
 
-The `delegate_task` tool spawns isolated subagents for specialized tasks (planning, code review, etc.). Subagents run in isolated graph contexts with `{"configurable": {"orchestrator": None}}` to enable subagent mode.
+## Project Structure
 
-PRSW roles: `scout`, `researcher`, `reviewer` (read-only, parallel) and `coder`, `tester` (write, sequential).
+```
+src/
+├── main.py                    # CLI entry point
+├── core/
+│   ├── orchestration/         # Agent orchestration
+│   │   ├── orchestrator.py   # Main class
+│   │   ├── graph/            # LangGraph nodes
+│   │   └── *.py              # Managers, services
+│   ├── context/              # Prompt building
+│   ├── memory/               # Session/vector stores
+│   ├── indexing/             # Repo intelligence
+│   └── inference/            # LLM adapters
+└── tools/                    # Tool definitions
+    ├── _tool.py              # @tool decorator
+    ├── _registry.py          # Auto-discovery
+    └── *.py                  # Tool modules
+```
 
-## Session Management
+---
 
-Each session has a unique ID (8-character UUID) that tracks all operations:
+## Core Concepts
 
-- **Task ID**: Generated on `start_new_task()`, tracked in `orch._current_task_id`
-- **Message history**: Stored in `SessionStore` (SQLite) with session_id
-- **Tool calls**: Logged with session_id for audit trail
-- **TUI conversation history**: Persisted to the TUI history file under the user data directory (see ``src.core.paths.get_data_dir()``) (atomic write)
+### 1. Tool System
 
-### On Quit/Reset
+Tools are defined with the `@tool` decorator:
 
-When quitting or starting a new session:
-1. Plans → SessionStore (SQLite); task state → SessionStore; session summary → VectorDB
-2. TODO.md, TASK_STATE.md, last_plan.json, execution_trace.json, usage.json are cleared
+```python
+from src.tools import tool
 
-## Provider Configuration
+@tool(
+    side_effects=["write"],           # Permission category
+    tags=["coding"],                   # Toolset tags
+    permission_kind=PermissionKind.WRITE_FILE
+)
+def my_tool(param: str) -> dict:
+    """Tool description for LLM."""
+    return {"ok": True}
+```
 
-`src/config/providers.json` is the authoritative source. Must be an array `[{...}]`.
+**Permission Kinds:**
+- `READ_FILE` — read operations
+- `WRITE_FILE` — write/edit operations
+- `EXECUTE_BASH` — shell commands
+- `NETWORK` — web requests
+- `GIT_READ` / `GIT_WRITE` — git operations
+- `DELEGATE` — subagent spawning
+- `LSP_READ` / `LSP_WRITE` — LSP operations
+- `PLAN` — plan mode
+
+### 2. Graph Nodes
+
+The 16-node LangGraph pipeline:
+
+| Node | Purpose |
+|------|---------|
+| `perception_node` | Parse task → generate tool call |
+| `analysis_node` | Repository intelligence |
+| `planning_node` | Generate execution plan |
+| `plan_validator_node` | Validate plan structure |
+| `execution_node` | Execute tool calls |
+| `step_controller_node` | Gate step progression |
+| `verification_node` | Run tests/linters |
+| `evaluation_node` | Evaluate success/failure |
+| `debug_node` | Debug failed steps |
+| `replan_node` | Split oversized patches |
+| `delegation_node` | Spawn subagents |
+| `analyst_delegation_node` | Spawn analyst subagents |
+| `memory_update_node` | Sync memory |
+| `frontier_loop_node` | Tight loop (LARGE/FRONTIER) |
+| `wait_for_user_node` | Wait for input |
+| `node_utils` | Shared utilities |
+
+### 3. Model Tiers
+
+Classify models to optimize behavior:
+
+```python
+from src.core.inference.model_tiers import classify_model, ModelTier
+
+tier = classify_model("gpt-4o")  # → ModelTier.FRONTIER
+```
+
+| Tier | Tools | Behavior |
+|------|-------|----------|
+| NANO | 8 | YAML tools, simple_mode |
+| SMALL | 20 | Full pipeline, minimal prompts |
+| MEDIUM | 35 | JSON tools, standard |
+| LARGE | 50 | Skip validation |
+| FRONTIER | 60 | frontier_loop_node |
+
+### 4. Session Management
+
+```python
+# Fork session for experimental changes
+session_id = orchestrator.fork_session()
+
+# Revert to prior state
+orchestrator.revert_session(snapshot_id)
+
+# Resume from previous session
+orchestrator.load_session(session_id)
+```
+
+---
+
+## Adding Components
+
+### Adding a Tool
+
+1. Create or edit tool module in `src/tools/`
+2. Use `@tool` decorator
+3. Register in `src/tools/_registry.py` `_BUILTIN_MODULES` (if new module)
+
+```python
+# src/tools/my_tools.py
+from src.tools import tool
+from typing import Dict
+
+@tool(tags=["custom"])
+def custom_tool(arg: str) -> Dict:
+    """Tool description."""
+    return {"ok": True, "arg": arg}
+```
+
+### Adding a Graph Node
+
+1. Create node function in `src/core/orchestration/graph/nodes/`
+2. Add to graph in `src/core/orchestration/graph/builder.py`
+
+```python
+async def my_node(state: StateLike, config: RunnableConfig):
+    # Process state
+    return {"key": "value"}
+```
+
+### Adding a Provider Adapter
+
+1. Create adapter in `src/core/inference/adapters/`
+2. Inherit from `OpenAICompatibleAdapter` or base class
+3. Register in `src/core/inference/llm_manager.py`
+
+---
+
+## Testing
+
+### Running Tests
+
+```bash
+# Unit tests (no LLM)
+pytest tests/unit -q
+
+# Specific file
+pytest tests/unit/test_tools_file_io.py -v
+
+# Integration (requires provider)
+RUN_INTEGRATION=1 pytest tests/integration -q
+
+# Benchmarks
+pytest tests/benchmarks -v
+```
+
+### Writing Tests
+
+```python
+# tests/unit/test_example.py
+import pytest
+
+def test_example():
+    assert True
+```
+
+### Test Fixtures
+
+```python
+@pytest.fixture
+def temp_workdir(tmp_path):
+    """Create temporary working directory."""
+    return tmp_path
+```
+
+---
+
+## Code Quality
+
+### Type Checking
+
+```bash
+pyright src/
+```
+
+### Linting
+
+```bash
+ruff check src/
+```
+
+### Pre-commit
+
+```bash
+pip install pre-commit
+pre-commit install
+```
+
+---
+
+## Debugging
+
+### Enable Logging
+
+```bash
+# Via environment
+CODINGAGENT_LOG_LEVEL=DEBUG python -m src.main
+```
+
+### Event Bus
+
+Subscribe to events:
+
+```python
+event_bus.subscribe("tool.execute.start", lambda data: print(data))
+```
+
+### Execution Trace
+
+```python
+trace = orchestrator._read_execution_trace()
+```
+
+---
+
+## Common Tasks
+
+### Configure New Provider
+
+Edit `src/config/providers.json`:
 
 ```json
-[
-  {
-    "name": "lm_studio_local",
-    "type": "lm_studio",
-    "base_url": "http://localhost:1234/v1",
-    "models": ["qwen/qwen3.5-9b"]
-  },
-  {
-    "name": "openrouter",
-    "type": "openrouter",
-    "models": ["anthropic/claude-3.5-sonnet"]
-  }
-]
+{
+  "name": "my_provider",
+  "type": "openai_compat",
+  "base_url": "http://localhost:11434/v1",
+  "models": ["my-model"],
+  "active": true
+}
 ```
 
-Provider types: `lm_studio`, `ollama`, `openrouter`, `openai`, `anthropic`, `github_copilot`, `groq`, `litellm`. API keys for cloud providers are stored in `~/.config/codingagent/prefs.json` via the TUI settings panel. GitHub Copilot uses OAuth device flow — click **Login with GitHub** in the TUI settings screen.
+### Add Custom Role
 
-## Tool Registry and Auto-Discovery
+1. Create `config/agent-brain/roles/custom-role.md`
+2. Use in code via `role_name="custom-role"`
 
-Tools are registered via the `@tool` decorator in `src/tools/_tool.py`. `build_registry()` in `src/tools/_registry.py` auto-discovers all 60 built-in tools across 16 modules:
+### Modify Tool Permissions
 
-```python
-from src.tools import build_registry
+Edit `src/tools/tools_config.py` - `TOOL_PERMISSIONS` dict
 
-# Standard setup
-registry = build_registry(working_dir="/path/to/project")
+---
 
-# Add project-specific tools
-registry = build_registry(extra_modules=[my_tool_module])
+## Architecture References
 
-# Filter by role
-coding_tools = registry.filter_by_tags("coding")
-```
+| Document | Description |
+|----------|-------------|
+| `docs/ARCHITECTURE.md` | Full system architecture |
+| `docs/audit/` | Audit reports |
+| `docs/CODEBASE_FINDINGS.md` | Known issues |
 
-**Adding a new tool:**
-```python
-from src.tools._tool import tool
+---
 
-@tool(side_effects=["write"], tags=["coding"])
-def my_tool(path: str, content: str) -> Dict[str, Any]:
-    """Description shown in system prompt."""
-    return {"status": "ok"}
-```
+## Troubleshooting
 
-Then add the module path to `_BUILTIN_MODULES` in `src/tools/_registry.py`.
+### Import Errors
+- Ensure `pip install -e .` was run
+- Check Python version (3.11+)
 
-**Schema generation:** Parameter types are inferred from annotations (`str→string`, `int→integer`, `bool→boolean`, `list→array`, `dict→object`). `*args`, `**kwargs`, `self`, `cls`, and `workdir` are excluded from the JSON schema.
+### LLM Not Responding
+- Verify provider is running
+- Check `src/config/providers.json` configuration
+- Check API key in `~/.config/codingagent/prefs.json`
 
-## Running Tests
+### Test Failures
+- Check test output for specific failures
+- Run with `-v` flag for details
+- Verify no network required for unit tests
 
-Set `CODINGAGENT_TRUSTED=1` to enable MCP server, hooks, and plugins in automated environments.
+### Type Errors
+- Run `pyright` to identify issues
+- Check imports are correct
+- Verify type annotations
 
-```bash
-# All unit tests (no live LLM required) — recommended
-.venv/bin/pytest tests/unit -q -p no:logging
+---
 
-# Specific test file
-.venv/bin/pytest tests/unit/test_audit_vol9.py -q -p no:logging
+## Contributing
 
-# Integration tests (requires local provider running)
-RUN_INTEGRATION=1 .venv/bin/pytest tests/integration -q
-```
+1. Run tests: `pytest tests/unit -q`
+2. Type check: `pyright src/`
+3. Add tests for new features
+4. Update documentation
+5. Open PR
 
-The `-p no:logging` flag suppresses TUI log noise. Tests run on Python 3.11 (`pyproject.toml` pins `>=3.11,<3.12`).
+---
 
-## Regenerating the System Map
+## Key Constants
 
-```bash
-.venv/bin/python scripts/generate_system_map.py
-```
-
-Outputs `docs/system_map.md` (ASCII tree) and `scripts/tree.json`.
-
-## Running Scenarios Headless
-
-```bash
-.venv/bin/python scripts/test_agent_stability.py --scenario fix_syntax --working-dir /tmp/agent_run
-```
-
-## TUI Diff Formatting
-
-File changes are displayed with Rich markup:
-- New files: `[bold cyan]🆕 New file:[/bold cyan]`
-- Edits: `[bold cyan]✏️  Edit:[/bold cyan]`
-- Added lines (`+`): `[green]`; removed (`-`): `[red]`; context: `[dim]`; hunk headers: `[cyan]`
-
-The `file.diff.preview` EventBus event fires *before* the write so the TUI shows the proposed diff first.
-
-## Session Search
-
-Sessions can be retrieved via:
-- **VectorDB**: Semantic search for session summaries (LanceDB)
-- **SessionStore**: Direct queries by session_id (SQLite at `.agent-context/session.db`)
+| Constant | File | Purpose |
+|----------|------|---------|
+| `DOOM_LOOP_THRESHOLD` | `loop_guards.py` | Max identical tool calls |
+| `COOLDOWN_GAP` | `loop_guards.py` | Tool cooldown |
+| `_AUTONOMOUS_MAX_TOOL_CALLS` | `builder.py` | Max tool calls |
+| `_TOOL_LIMITS` | `model_tiers.py` | Tools per tier |

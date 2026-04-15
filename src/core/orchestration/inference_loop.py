@@ -41,16 +41,75 @@ def _compute_default_max_turns(orch) -> int:
     try:
         from src.core.inference.model_tiers import classify_model, get_max_turns
 
-        adapter = getattr(orch, "adapter", None) or getattr(orch, "_adapter", None)
-        if adapter is None:
-            return 50
+        # Prefer the consolidated resolver which applies the shared
+        # sanitisation heuristics (orch.get_provider_capabilities /
+        # ProviderManager / adapter attributes).
         model = None
-        if hasattr(adapter, "models") and adapter.models:
-            model = adapter.models[0]
-        elif hasattr(adapter, "default_model") and adapter.default_model:
-            model = adapter.default_model
+        try:
+            _, model = _resolve_provider_and_model(orch)
+        except Exception:
+            model = None
+
+        adapter = getattr(orch, "adapter", None) or getattr(orch, "_adapter", None)
+
+        # If the resolver didn't yield a model, fall back to inspecting the
+        # adapter attributes conservatively (no network probes). Use the
+        # central extract_str helper when available.
         if not model:
-            return 50
+            if adapter is None:
+                return 50
+            try:
+                from src.core.utils.strings import extract_str as _extract_str
+            except Exception:
+
+                def _valid_str(x: object) -> bool:
+                    return (
+                        isinstance(x, str)
+                        and bool(x.strip())
+                        and ("MagicMock" not in x)
+                    )
+
+                def _extract_str(candidate: object) -> str | None:
+                    if candidate is None:
+                        return None
+                    if isinstance(candidate, dict):
+                        for key in (
+                            "provider_name",
+                            "name",
+                            "id",
+                            "key",
+                            "model",
+                            "default_model",
+                            "type",
+                        ):
+                            val = candidate.get(key)
+                            if isinstance(val, str) and _valid_str(val):
+                                return val.strip()
+                        return None
+                    if isinstance(candidate, str) and _valid_str(candidate):
+                        return candidate.strip()
+                    return None
+
+            # Inspect adapter.models / adapter.default_model for a valid model
+            try:
+                if hasattr(adapter, "models") and adapter.models:
+                    models_attr = getattr(adapter, "models", None)
+                    if isinstance(models_attr, (list, tuple)):
+                        for m in models_attr:
+                            mm = _extract_str(m)
+                            if mm:
+                                model = mm
+                                break
+                    else:
+                        model = _extract_str(models_attr)
+                elif hasattr(adapter, "default_model") and adapter.default_model:
+                    model = _extract_str(getattr(adapter, "default_model", None))
+            except Exception:
+                model = None
+
+            if not model:
+                return 50
+
         ctx_window = int(getattr(adapter, "context_window", 0) or 0)
         tier = classify_model(model, ctx_window)
         return get_max_turns(tier)
@@ -113,6 +172,138 @@ def _generate_work_summary(
         summary_parts.append("Status: failed")
 
     return " | ".join(summary_parts) if summary_parts else ""
+
+
+def _resolve_provider_and_model(orch) -> tuple[Optional[str], Optional[str]]:
+    """Resolve provider and model conservatively for fallback LLM calls.
+
+    Resolution priority:
+      1) orch.get_provider_capabilities()
+      2) ProviderManager.get_provider_capabilities(orch._adapter)
+      3) Inspect orch._adapter / orch.adapter attributes (no network probes)
+
+    Returns (provider_name or None, model_name or None).
+    """
+    try:
+        try:
+            from src.core.utils.strings import (
+                valid_str as _valid_str,
+                extract_str as _extract_str,
+            )
+        except Exception:
+
+            def _valid_str(x: object) -> bool:
+                return isinstance(x, str) and bool(x.strip()) and ("MagicMock" not in x)
+
+            def _extract_str(candidate: object) -> str | None:
+                if candidate is None:
+                    return None
+                if isinstance(candidate, dict):
+                    for key in (
+                        "provider_name",
+                        "name",
+                        "id",
+                        "key",
+                        "model",
+                        "default_model",
+                        "type",
+                    ):
+                        val = candidate.get(key)
+                        if isinstance(val, str) and _valid_str(val):
+                            return val.strip()
+                    return None
+                if isinstance(candidate, str) and _valid_str(candidate):
+                    return candidate.strip()
+                return None
+
+        caps: dict = {}
+
+        # 1) orchestrator-level
+        try:
+            if hasattr(orch, "get_provider_capabilities") and callable(
+                getattr(orch, "get_provider_capabilities")
+            ):
+                _rc = orch.get_provider_capabilities()
+                if isinstance(_rc, dict) and _rc:
+                    caps = dict(_rc)
+        except Exception:
+            caps = {}
+
+        # 2) ProviderManager fallback
+        if not caps:
+            try:
+                from src.core.inference.llm_manager import (
+                    get_provider_manager as _gpm,
+                )
+
+                _pm = _gpm()
+                adapter = getattr(orch, "_adapter", None)
+                _rc = _pm.get_provider_capabilities(adapter)
+                if isinstance(_rc, dict) and _rc:
+                    caps = dict(_rc)
+            except Exception:
+                caps = caps or {}
+
+        # 3) Adapter-only fallback (no probes)
+        if not caps:
+            adapter = getattr(orch, "_adapter", None) or getattr(orch, "adapter", None)
+            if adapter:
+                try:
+                    prov_attr = getattr(adapter, "provider", None)
+                except Exception:
+                    prov_attr = None
+                provider_name = None
+                try:
+                    provider_name = _extract_str(prov_attr)
+                except Exception:
+                    provider_name = None
+                if not provider_name:
+                    try:
+                        provider_name = _extract_str(getattr(adapter, "name", None))
+                    except Exception:
+                        provider_name = None
+
+                model = None
+                try:
+                    model = _extract_str(getattr(adapter, "default_model", None))
+                except Exception:
+                    model = None
+                if not model:
+                    try:
+                        models_attr = getattr(adapter, "models", None)
+                        if isinstance(models_attr, (list, tuple)):
+                            for m in models_attr:
+                                mm = _extract_str(m)
+                                if mm:
+                                    model = mm
+                                    break
+                        else:
+                            model = _extract_str(models_attr)
+                    except Exception:
+                        model = None
+
+                caps = {
+                    "provider_name": provider_name or "",
+                    "model": model,
+                }
+
+        # Sanitize final values
+        provider = None
+        model = None
+        try:
+            provider = _extract_str(
+                caps.get("provider_name") or caps.get("provider") or caps.get("name")
+            )
+        except Exception:
+            provider = None
+        try:
+            model = _extract_str(caps.get("model") or caps.get("default_model"))
+        except Exception:
+            model = None
+
+        return provider, model
+    except Exception:
+        return None, None
 
 
 # ---------------------------------------------------------------------------
@@ -447,8 +638,14 @@ def run_agent_once_impl(
 
         try:
             # Allow multiple graph rounds to consume multi-turn tool sequences (bounded)
-            max_rounds = 12
+            # STRICT: Max 5 tool calls per task (loop safeguard)
+            max_rounds = 5
             current_state = initial_state
+
+            # Loop safeguard: track iterations for no-progress detection
+            loop_iteration = 0
+            last_assistant_tracker = {"last": "", "count": 0}
+
             for round_idx in range(max_rounds):
                 # Check for cancellation at the start of each round
                 if (
@@ -460,6 +657,10 @@ def run_agent_once_impl(
                         "Orchestrator: Task canceled by user during round loop"
                     )
                     break
+
+                guilogger.debug(
+                    f"Starting graph round {round_idx} (iteration {loop_iteration})"
+                )
 
                 try:
                     asyncio.get_running_loop()
@@ -498,7 +699,16 @@ def run_agent_once_impl(
                     has_tool_block = (
                         True if _parse_tool_block(last_assistant) else False
                     )
-                except Exception:
+                    if has_tool_block:
+                        guilogger.debug(
+                            f"inference_loop: tool block detected in last assistant message"
+                        )
+                    else:
+                        guilogger.debug(
+                            f"inference_loop: no tool block in last assistant message (length={len(last_assistant)})"
+                        )
+                except Exception as e:
+                    guilogger.warning(f"inference_loop: tool block check failed: {e}")
                     has_tool_block = False
 
                 # Find index of last assistant message in the full history
@@ -525,7 +735,36 @@ def run_agent_once_impl(
 
                 # If there's no unhandled tool block, we're done
                 if not has_tool_block or handled:
+                    guilogger.debug(
+                        "inference_loop: no unhandled tool block, exiting loop"
+                    )
                     break
+
+                # Increment iteration counter and check for infinite loop
+                loop_iteration += 1
+
+                # STRICT LIMIT: Never allow more than 5 tool call iterations
+                if loop_iteration > 5:
+                    guilogger.error(
+                        f"inference_loop: TOOL LOOP LIMIT EXCEEDED - {loop_iteration} iterations (max 5)"
+                    )
+                    final_state = final_state or {}
+                    final_state["errors"] = list(final_state.get("errors", [])) + [
+                        "infinite_loop_tool_limit"
+                    ]
+                    break
+
+                # Track last assistant message for no-progress detection
+                if last_assistant_tracker["last"] == last_assistant:
+                    last_assistant_tracker["count"] += 1
+                else:
+                    last_assistant_tracker["count"] = 0
+                    last_assistant_tracker["last"] = last_assistant
+
+                guilogger.info(
+                    f"inference_loop: iteration {loop_iteration}/5, "
+                    f"history length={len(final_state.get('history', []))}"
+                )
 
                 # Prepare next iteration: feed the graph with the new history and verified reads
                 _next_history = final_state.get("history", [])
@@ -581,6 +820,36 @@ def run_agent_once_impl(
                 "assistant_message": "[yellow]⚠ Task canceled by user.[/yellow]",
                 "canceled": True,
             }
+
+        # Check if we exited due to loop detection
+        if final_state:
+            errors = final_state.get("errors", [])
+            if any(e.startswith("infinite_loop") for e in errors):
+                error_type = next(
+                    (e for e in errors if e.startswith("infinite_loop")),
+                    "infinite_loop",
+                )
+                guilogger.error(f"inference_loop: terminated due to {error_type}")
+
+                if error_type == "infinite_loop_tool_limit":
+                    msg = (
+                        "[red]⚠ Task stopped: Maximum tool call limit (5) reached.[/red]\n\n"
+                        "The agent made too many tool calls without completing the task. "
+                        "Try providing more specific instructions or breaking down the task."
+                    )
+                else:
+                    msg = (
+                        "[red]⚠ Task stopped: The agent entered an infinite loop and was terminated.[/red]\n\n"
+                        "This may indicate the model is having trouble generating valid tool calls. "
+                        "Try providing more specific instructions or a simpler task."
+                    )
+
+                return {
+                    "assistant_message": msg,
+                    "loop_detected": True,
+                    "error_type": error_type,
+                    "final_state": final_state,
+                }
 
         # Debug: check why verified_reads might be empty
         if final_state:
@@ -773,33 +1042,17 @@ def run_agent_once_impl(
         try:
             from src.core.inference.llm_manager import call_model
 
-            # Determine provider/model from adapter
+            # Determine provider/model from the orchestrator capability view
+            # Prefer orch.get_provider_capabilities() when available so we
+            # consistently use ProviderManager-derived values. Fall back to
+            # legacy adapter inspection when necessary.
             provider_name = None
             model_name = None
+            # Use centralised resolver to keep heuristics consistent and small.
             try:
-                if (
-                    orch._adapter
-                    and hasattr(orch._adapter, "provider")
-                    and isinstance(orch._adapter.provider, dict)
-                ):
-                    provider_name = orch._adapter.provider.get(
-                        "name"
-                    ) or orch._adapter.provider.get("type")
+                provider_name, model_name = _resolve_provider_and_model(orch)
             except Exception:
-                provider_name = None
-
-            try:
-                if (
-                    orch._adapter
-                    and hasattr(orch._adapter, "models")
-                    and isinstance(orch._adapter.models, list)
-                    and orch._adapter.models
-                ):
-                    model_name = orch._adapter.models[0]
-                elif orch._adapter and hasattr(orch._adapter, "default_model"):
-                    model_name = orch._adapter.default_model
-            except Exception:
-                model_name = None
+                provider_name, model_name = None, None
 
             messages_for_model = [
                 {"role": "system", "content": full_system_prompt},

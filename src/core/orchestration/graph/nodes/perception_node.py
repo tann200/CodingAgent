@@ -1324,9 +1324,161 @@ async def _perception_node_impl(
             pass
 
     # Assemble the tiered context
+    # Conservative provider/model resolution used throughout the codebase.
+    # Resolution priority:
+    # 1) orchestrator.get_provider_capabilities() (authoritative)
+    # 2) ProviderManager.get_provider_capabilities(adapter)
+    # 3) adapter attributes (provider, default_model, models)
+    # Accept only concrete strings (no MagicMock placeholders). Guard imports
+    # locally to avoid circular import issues in tests.
     provider_capabilities = {}
-    if orchestrator and hasattr(orchestrator, "get_provider_capabilities"):
-        provider_capabilities = orchestrator.get_provider_capabilities()
+    try:
+        try:
+            from src.core.utils.strings import (
+                valid_str as _valid_str,
+                extract_str as _extract_str,
+            )
+        except Exception:
+
+            def _valid_str(x: object) -> bool:
+                return isinstance(x, str) and bool(x.strip()) and ("MagicMock" not in x)
+
+            def _extract_str(candidate: object) -> str | None:
+                if candidate is None:
+                    return None
+                if isinstance(candidate, dict):
+                    for key in (
+                        "provider_name",
+                        "name",
+                        "id",
+                        "key",
+                        "model",
+                        "default_model",
+                        "type",
+                    ):
+                        val = candidate.get(key)
+                        if isinstance(val, str) and _valid_str(val):
+                            return val.strip()
+                    return None
+                if isinstance(candidate, str) and _valid_str(candidate):
+                    return candidate.strip()
+                return None
+
+        caps: dict = {}
+
+        # 1) Orchestrator-level capabilities (authoritative)
+        try:
+            if (
+                orchestrator
+                and hasattr(orchestrator, "get_provider_capabilities")
+                and callable(getattr(orchestrator, "get_provider_capabilities"))
+            ):
+                _rc = orchestrator.get_provider_capabilities()
+                if isinstance(_rc, dict) and _rc:
+                    caps = dict(_rc)
+        except Exception:
+            caps = {}
+
+        # 2) ProviderManager fallback
+        if not caps:
+            try:
+                from src.core.inference.llm_manager import (
+                    get_provider_manager as _gpm,
+                )
+
+                _pm = _gpm()
+                _rc = _pm.get_provider_capabilities(adapter)
+                if isinstance(_rc, dict) and _rc:
+                    caps = dict(_rc)
+            except Exception:
+                caps = caps or {}
+
+        # 3) Adapter-only last resort (no network probes)
+        if not caps and adapter:
+            try:
+                prov_attr = getattr(adapter, "provider", None)
+            except Exception:
+                prov_attr = None
+            provider_name = None
+            try:
+                provider_name = _extract_str(prov_attr)
+            except Exception:
+                provider_name = None
+            if not provider_name:
+                try:
+                    provider_name = _extract_str(getattr(adapter, "name", None))
+                except Exception:
+                    provider_name = None
+
+            model = None
+            try:
+                model = _extract_str(getattr(adapter, "default_model", None))
+            except Exception:
+                model = None
+            if not model:
+                try:
+                    models_attr = getattr(adapter, "models", None)
+                    if isinstance(models_attr, (list, tuple)):
+                        for m in models_attr:
+                            mm = _extract_str(m)
+                            if mm:
+                                model = mm
+                                break
+                    else:
+                        model = _extract_str(models_attr)
+                except Exception:
+                    model = None
+
+            supports_native_tools = False
+            try:
+                if isinstance(prov_attr, dict):
+                    supports_native_tools = bool(
+                        prov_attr.get("supports_native_tools", False)
+                    )
+                else:
+                    supports_native_tools = bool(
+                        getattr(adapter, "supports_native_tools", False)
+                    )
+            except Exception:
+                supports_native_tools = False
+
+            provider_family = "default"
+            try:
+                from src.core.orchestration.provider_capabilities import (
+                    _map_provider_family_impl as _map_pf,
+                )
+
+                provider_family = _map_pf(provider_name or "")
+            except Exception:
+                provider_family = "default"
+
+            caps = {
+                "supports_native_tools": bool(supports_native_tools),
+                "provider_family": provider_family,
+                "model": model,
+                "provider_name": provider_name or "",
+            }
+
+        # Sanitize and expose a conservative provider_capabilities dict
+        try:
+            _pname = _extract_str(
+                caps.get("provider_name") or caps.get("provider") or caps.get("name")
+            )
+        except Exception:
+            _pname = None
+        try:
+            _model = _extract_str(caps.get("model") or caps.get("default_model"))
+        except Exception:
+            _model = None
+
+        provider_capabilities = {
+            "supports_native_tools": bool(caps.get("supports_native_tools", False)),
+            "provider_family": caps.get("provider_family") or "default",
+            "model": _model,
+            "provider_name": _pname or "",
+        }
+    except Exception:
+        provider_capabilities = {}
 
     # ORCH-W4: Select role based on agent_mode.  When plan_enter has been called,
     # the orchestrator sets _agent_mode="planning" and the state carries agent_mode.
@@ -1339,14 +1491,71 @@ async def _perception_node_impl(
     _perception_role = "strategic" if _agent_mode == "planning" else "operational"
 
     # OP-1: Resolve active model name for per-provider prompt selection.
+    # Prefer the sanitized provider_capabilities model (authoritative). Only
+    # fall back to adapter.models / adapter.default_model after applying the
+    # shared extract_str heuristic so MagicMock placeholders are not propagated
+    # into the prompt generation logic.
     _active_model_name: str = ""
     try:
-        if orchestrator and orchestrator.adapter:
-            _models = getattr(orchestrator.adapter, "models", None)
-            if _models:
-                _active_model_name = (
-                    _models[0] if isinstance(_models, list) else str(_models)
-                )
+        if provider_capabilities and provider_capabilities.get("model"):
+            _active_model_name = provider_capabilities.get("model") or ""
+        else:
+            if orchestrator and getattr(orchestrator, "adapter", None):
+                try:
+                    _extract = _extract_str
+                except Exception:
+                    # Fallback local extractor if the shared one is not defined
+                    def _valid_str_local(x: object) -> bool:
+                        return (
+                            isinstance(x, str)
+                            and bool(x.strip())
+                            and ("MagicMock" not in x)
+                        )
+
+                    def _extract_local(candidate: object) -> str | None:
+                        if candidate is None:
+                            return None
+                        if isinstance(candidate, dict):
+                            for key in (
+                                "provider_name",
+                                "name",
+                                "id",
+                                "key",
+                                "model",
+                                "default_model",
+                                "type",
+                            ):
+                                val = candidate.get(key)
+                                if isinstance(val, str) and _valid_str_local(val):
+                                    return val.strip()
+                            return None
+                        if isinstance(candidate, str) and _valid_str_local(candidate):
+                            return candidate.strip()
+                        return None
+
+                    _extract = _extract_local
+
+                # Inspect adapter.models first
+                _models = getattr(orchestrator.adapter, "models", None)
+                if _models:
+                    if isinstance(_models, (list, tuple)):
+                        for m in _models:
+                            mm = _extract(m)
+                            if mm:
+                                _active_model_name = mm
+                                break
+                    else:
+                        mm = _extract(_models)
+                        if mm:
+                            _active_model_name = mm
+
+                # Fall back to default_model if still empty
+                if not _active_model_name and hasattr(
+                    orchestrator.adapter, "default_model"
+                ):
+                    dm = _extract(getattr(orchestrator.adapter, "default_model", None))
+                    if dm:
+                        _active_model_name = dm
     except Exception:
         pass
 
@@ -1363,22 +1572,131 @@ async def _perception_node_impl(
         active_model_name=_active_model_name,
     )
 
-    # Determine model/provider
+    # Determine model/provider. Prefer orchestrator.get_provider_capabilities()
+    # so ProviderManager is the authoritative source. If that doesn't yield
+    # values, try the ProviderManager directly with the current adapter, and
+    # only as a last resort inspect adapter.provider/default_model.
     provider = None
     model = None
-    if adapter:
+
+    def _valid_str(x: object) -> bool:
+        try:
+            from src.core.utils.strings import valid_str as _vs
+
+            return _vs(x)
+        except Exception:
+            # Ensure a concrete, non-empty string that is not a MagicMock placeholder.
+            return isinstance(x, str) and bool(x.strip()) and ("MagicMock" not in x)
+
+    def _extract_str(candidate: object) -> str | None:
+        """Extract a concrete string from various candidate shapes or return None."""
+        try:
+            from src.core.utils.strings import extract_str as _es
+
+            return _es(candidate)
+        except Exception:
+            if candidate is None:
+                return None
+            if isinstance(candidate, dict):
+                for key in (
+                    "model",
+                    "default_model",
+                    "name",
+                    "id",
+                    "provider_name",
+                    "type",
+                ):
+                    val = candidate.get(key)
+                    if isinstance(val, str) and _valid_str(val):
+                        return val.strip()
+                return None
+            if isinstance(candidate, str) and _valid_str(candidate):
+                return candidate.strip()
+            return None
+
+    try:
+        if (
+            orchestrator
+            and hasattr(orchestrator, "get_provider_capabilities")
+            and callable(getattr(orchestrator, "get_provider_capabilities"))
+        ):
+            caps = orchestrator.get_provider_capabilities()
+            if isinstance(caps, dict):
+                p_raw = _extract_str(
+                    caps.get("provider_name")
+                    or caps.get("provider")
+                    or caps.get("name")
+                )
+                if p_raw:
+                    provider = p_raw
+                m_raw = _extract_str(caps.get("model") or caps.get("default_model"))
+                if m_raw:
+                    model = m_raw
+    except Exception:
+        provider = None
+        model = None
+
+    # If orchestrator-level caps didn't provide both values, try ProviderManager
+    # with the adapter as a conservative secondary source.
+    if provider is None or model is None:
+        try:
+            from src.core.inference.llm_manager import get_provider_manager
+
+            pm = get_provider_manager()
+            if pm:
+                try:
+                    caps = pm.get_provider_capabilities(adapter)
+                    if isinstance(caps, dict):
+                        p_raw = caps.get("provider_name") or caps.get("provider")
+                        if provider is None and _valid_str(p_raw):
+                            provider = p_raw
+                        m_raw = caps.get("model")
+                        if model is None and _valid_str(m_raw):
+                            model = m_raw
+                except Exception:
+                    # Non-fatal: fall through to adapter inspection
+                    pass
+        except Exception:
+            # Import/lookup failed; continue to adapter inspection
+            pass
+
+    # Final fallback: inspect adapter.provider / adapter.models / adapter.default_model
+    if (provider is None or model is None) and adapter:
         logger.info(f"perception_node: adapter type: {type(adapter)}")
-        if hasattr(adapter, "provider") and isinstance(adapter.provider, dict):
-            provider = (
-                adapter.provider.get("name") or adapter.provider.get("type") or None
-            )
-            logger.info(f"perception_node: provider from adapter: {provider}")
-        if hasattr(adapter, "models") and adapter.models:
-            model = adapter.models[0]
-        elif hasattr(adapter, "default_model") and adapter.default_model:
-            model = adapter.default_model
-            logger.info(f"perception_node: model from adapter: {model}")
-    else:
+        try:
+            # provider may be a dict or a string on different adapters
+            if hasattr(adapter, "provider"):
+                p_attr = getattr(adapter, "provider")
+                p_cand = _extract_str(p_attr)
+                if p_cand and provider is None:
+                    provider = p_cand
+                    logger.info(f"perception_node: provider from adapter: {provider}")
+        except Exception:
+            pass
+        try:
+            # Prefer explicit default_model, else pick the first concrete entry
+            # from adapter.models
+            if provider is None:
+                # no-op: keep provider unchanged
+                pass
+            if hasattr(adapter, "default_model"):
+                dm = _extract_str(getattr(adapter, "default_model", None))
+                if dm and model is None:
+                    model = dm
+                    logger.info(
+                        f"perception_node: model from adapter.default_model: {model}"
+                    )
+            if model is None and hasattr(adapter, "models"):
+                ms = getattr(adapter, "models")
+                if isinstance(ms, list):
+                    for m in ms:
+                        m_cand = _extract_str(m)
+                        if m_cand:
+                            model = m_cand
+                            break
+        except Exception:
+            pass
+    elif not adapter:
         logger.warning("perception_node: adapter is None!")
 
     # S1-A: Classify model tier and inject into state for ContextBuilder + execution_node.

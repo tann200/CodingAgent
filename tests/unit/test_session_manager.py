@@ -239,6 +239,119 @@ class TestSyncAgentSessionState:
             sm.sync_agent_session_state()
             fake_asm.update_session_state.assert_called_once()
 
+    def test_sm10_falls_back_to_provider_manager_when_adapter_none(self, tmp_path):
+        """When adapter is None, SessionManager should try ProviderManager.get_active_adapter()."""
+        sm, *_ = _make_sm(tmp_path)
+        sm._task_id = "t-fallback"
+
+        # Fake adapter returned by ProviderManager (use SimpleNamespace for typing)
+        from types import SimpleNamespace
+
+        fake_adapter = SimpleNamespace(
+            provider={"name": "acme_provider", "type": "acme"},
+            default_model="acme-model-1",
+        )
+
+        # Fake ProviderManager with get_active_adapter
+        fake_pm = MagicMock()
+        fake_pm.get_active_adapter.return_value = fake_adapter
+        fake_pm.get_provider_capabilities.return_value = {
+            "provider_name": "acme_provider",
+            "model": "acme-model-1",
+        }
+
+        fake_asm = MagicMock()
+
+        with (
+            patch(
+                "src.core.orchestration.agent_session_manager.get_agent_session_manager",
+                return_value=fake_asm,
+            ),
+            patch(
+                "src.core.inference.llm_manager.get_provider_manager",
+                return_value=fake_pm,
+            ),
+        ):
+            sm.sync_agent_session_state(
+                adapter=None, task="do fallback", current_plan=["p1"], current_step=1
+            )
+
+            # Ensure ProviderManager.get_active_adapter was queried
+            fake_pm.get_active_adapter.assert_called()
+
+            # And AgentSessionManager received provider/model derived from fake adapter
+            fake_asm.update_session_state.assert_called_once()
+            kwargs = fake_asm.update_session_state.call_args[1]
+            assert kwargs["provider"] == "acme_provider"
+            assert kwargs["model"] == "acme-model-1"
+
+    def test_sm10_forwards_provider_model_and_files(self, tmp_path):
+        """Ensure provider/model, message history, and file sets are forwarded."""
+        sm, *_ = _make_sm(tmp_path)
+        sm._task_id = "t-forward"
+        sm._read_files = {"/a/read.py"}
+        sm._modified_files = {"/b/changed.py"}
+
+        from types import SimpleNamespace
+
+        adapter = SimpleNamespace(
+            provider={"name": "provX", "type": "provx"},
+            default_model="provx-1",
+        )
+
+        fake_asm = MagicMock()
+        with patch(
+            "src.core.orchestration.agent_session_manager.get_agent_session_manager",
+            return_value=fake_asm,
+        ):
+            sm.sync_agent_session_state(
+                adapter=adapter, task="do work", current_plan=["p"], current_step=0
+            )
+
+            fake_asm.update_session_state.assert_called_once()
+            kwargs = fake_asm.update_session_state.call_args[1]
+            assert kwargs["provider"] == "provX"
+            assert kwargs["model"] == "provx-1"
+            assert set(kwargs["files_read"]) == {"/a/read.py"}
+            assert set(kwargs["files_modified"]) == {"/b/changed.py"}
+
+    def test_sm10_handles_adapter_attribute_error(self, tmp_path):
+        """If adapter attribute access raises, sync must still call update_session_state."""
+        sm, *_ = _make_sm(tmp_path)
+        sm._task_id = "t-error"
+
+        class BadAdapter:
+            @property
+            def provider(self):
+                raise RuntimeError("boom")
+
+            @property
+            def default_model(self):
+                raise RuntimeError("boom2")
+
+        bad = BadAdapter()
+        fake_asm = MagicMock()
+        with patch(
+            "src.core.orchestration.agent_session_manager.get_agent_session_manager",
+            return_value=fake_asm,
+        ):
+            # must not raise
+            sm.sync_agent_session_state(adapter=bad, task="error case")
+            fake_asm.update_session_state.assert_called_once()
+
+    def test_sm10_uses_default_session_id_when_none(self, tmp_path):
+        sm, *_ = _make_sm(tmp_path)
+        sm._task_id = None
+        fake_asm = MagicMock()
+        with patch(
+            "src.core.orchestration.agent_session_manager.get_agent_session_manager",
+            return_value=fake_asm,
+        ):
+            sm.sync_agent_session_state(adapter=None, task="no task id")
+            fake_asm.update_session_state.assert_called_once()
+            kwargs = fake_asm.update_session_state.call_args[1]
+            assert kwargs["session_id"] == "default"
+
 
 # ---------------------------------------------------------------------------
 # SM-11 / SM-12  Orchestrator property shims

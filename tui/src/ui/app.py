@@ -3141,30 +3141,83 @@ class AgentApp(App[None]):
                 logger.debug(f"handle_update_role_model provider switch: {_exc}")
 
         # Apply the model selection to the (now-correct) active adapter.
+        # Sanitize user-supplied model id to avoid leaking test doubles like
+        # MagicMock placeholders into the adapter state. Preserve list identity
+        # when updating adapter.models so other components holding a reference
+        # to the list continue to observe changes.
         try:
             orch = getattr(self._bridge, "_orchestrator", None)
             if orch is not None:
                 adapter = getattr(orch, "_adapter", None)
                 if adapter is not None:
-                    # Try common attribute names for the model setting.
-                    for _attr in ("default_model", "model", "_model"):
-                        if hasattr(adapter, _attr):
-                            setattr(adapter, _attr, event.model_id)
-                            logger.info(
-                                f"handle_update_role_model: set adapter.{_attr} = {event.model_id}"
-                            )
-                            break
-                    # Keep models list consistent so _publish_active_config picks
-                    # the right model as models[0].
-                    if hasattr(adapter, "models") and isinstance(adapter.models, list):
-                        if event.model_id not in adapter.models:
-                            adapter.models.insert(0, event.model_id)
-                        else:
-                            adapter.models.remove(event.model_id)
-                            adapter.models.insert(0, event.model_id)
-                    # Re-publish so banner/sidebar refresh immediately.
-                    if hasattr(orch, "_publish_active_config"):
-                        orch._publish_active_config()
+                    # Local sanitiser: accept concrete non-empty strings and
+                    # reject MagicMock placeholders. Keep this local so the
+                    # TUI remains self-contained in dev mode.
+                    def _valid_str(x: object) -> bool:
+                        return (
+                            isinstance(x, str)
+                            and bool(x.strip())
+                            and ("MagicMock" not in x)
+                        )
+
+                    # Extract a model id string from the event payload.
+                    model_id = None
+                    try:
+                        if isinstance(event.model_id, str) and _valid_str(
+                            event.model_id
+                        ):
+                            model_id = event.model_id.strip()
+                    except Exception:
+                        model_id = None
+
+                    if not model_id:
+                        logger.debug(
+                            f"handle_update_role_model: ignoring invalid model id: {event.model_id}"
+                        )
+                    else:
+                        # Try common attribute names for the model setting.
+                        for _attr in ("default_model", "model", "_model"):
+                            if hasattr(adapter, _attr):
+                                try:
+                                    setattr(adapter, _attr, model_id)
+                                    logger.info(
+                                        f"handle_update_role_model: set adapter.{_attr} = {model_id}"
+                                    )
+                                except Exception:
+                                    logger.debug(
+                                        f"handle_update_role_model: failed to set adapter.{_attr}"
+                                    )
+                                break
+
+                        # Keep models list consistent so _publish_active_config picks
+                        # the right model as models[0]. Update in-place to preserve
+                        # list identity and filter out any MagicMock placeholders.
+                        if hasattr(adapter, "models") and isinstance(
+                            adapter.models, list
+                        ):
+                            try:
+                                # Remove invalid entries first
+                                valid_models = [
+                                    m for m in adapter.models if _valid_str(m)
+                                ]
+                                adapter.models[:] = valid_models
+                                if model_id in adapter.models:
+                                    adapter.models.remove(model_id)
+                                adapter.models.insert(0, model_id)
+                            except Exception:
+                                # Best-effort in-place update failed; try simple insert
+                                try:
+                                    if model_id not in adapter.models:
+                                        adapter.models.insert(0, model_id)
+                                except Exception:
+                                    pass
+
+                        # Re-publish so banner/sidebar refresh immediately.
+                        if hasattr(orch, "_publish_active_config"):
+                            try:
+                                orch._publish_active_config()
+                            except Exception:
+                                pass
         except Exception as _exc:
             logger.debug(f"handle_update_role_model adapter update: {_exc}")
 

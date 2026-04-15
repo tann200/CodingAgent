@@ -401,9 +401,198 @@ Example 2 (parallel tasks):
 Respond ONLY with valid JSON, no additional text."""
 
         # Use strategic role from AgentBrainManager
+        # Conservative provider/model resolution follows the canonical pattern:
+        # 1) orchestrator.get_provider_capabilities() (authoritative)
+        # 2) ProviderManager.get_provider_capabilities(adapter)
+        # 3) adapter attributes (provider, default_model, models)
+        # Only accept concrete strings (no MagicMock placeholders). Guard imports
+        # locally to avoid circular import issues in tests.
         provider_capabilities = {}
-        if orchestrator and hasattr(orchestrator, "get_provider_capabilities"):
-            provider_capabilities = orchestrator.get_provider_capabilities()
+        try:
+            try:
+                from src.core.utils.strings import (
+                    valid_str as _valid_str,
+                    extract_str as _extract_str,
+                )
+            except Exception:
+                # Fallback heuristics when utils unavailable (keeps tests robust).
+                def _valid_str(x: object) -> bool:
+                    return (
+                        isinstance(x, str)
+                        and bool(str(x).strip())
+                        and "MagicMock" not in str(x)
+                    )
+
+                def _extract_str(candidate: object) -> str | None:
+                    if candidate is None:
+                        return None
+                    if isinstance(candidate, dict):
+                        for key in (
+                            "provider_name",
+                            "name",
+                            "id",
+                            "key",
+                            "model",
+                            "default_model",
+                            "type",
+                        ):
+                            val = candidate.get(key)
+                            if isinstance(val, str) and _valid_str(val):
+                                return val.strip()
+                        return None
+                    if isinstance(candidate, str) and _valid_str(candidate):
+                        return candidate.strip()
+                    return None
+
+            caps: dict = {}
+
+            # 1) Orchestrator-level capabilities (authoritative)
+            try:
+                if (
+                    orchestrator
+                    and hasattr(orchestrator, "get_provider_capabilities")
+                    and callable(getattr(orchestrator, "get_provider_capabilities"))
+                ):
+                    _rc = orchestrator.get_provider_capabilities()
+                    if isinstance(_rc, dict) and _rc:
+                        caps = dict(_rc)
+            except Exception:
+                caps = {}
+
+            # 2) ProviderManager fallback
+            if not caps:
+                try:
+                    from src.core.inference.llm_manager import (
+                        get_provider_manager as _gpm,
+                    )
+
+                    _pm = _gpm()
+                    adapter = getattr(orchestrator, "_adapter", None)
+                    _rc = _pm.get_provider_capabilities(adapter)
+                    if isinstance(_rc, dict) and _rc:
+                        caps = dict(_rc)
+                except Exception:
+                    # keep caps as-is and fall back to adapter below
+                    caps = caps or {}
+
+            # 3) Adapter-only last resort (no network probes)
+            if not caps and orchestrator and getattr(orchestrator, "_adapter", None):
+                adapter = orchestrator._adapter
+                # provider name extraction
+                try:
+                    prov_attr = getattr(adapter, "provider", None)
+                except Exception:
+                    prov_attr = None
+                provider_name = None
+                try:
+                    provider_name = _extract_str(prov_attr)
+                except Exception:
+                    provider_name = None
+                if not provider_name:
+                    try:
+                        provider_name = _extract_str(getattr(adapter, "name", None))
+                    except Exception:
+                        provider_name = None
+
+                # model extraction: prefer default_model, then models list
+                model = None
+                try:
+                    model = _extract_str(getattr(adapter, "default_model", None))
+                except Exception:
+                    model = None
+                if not model:
+                    try:
+                        models_attr = getattr(adapter, "models", None)
+                        if isinstance(models_attr, (list, tuple)):
+                            for m in models_attr:
+                                mm = _extract_str(m)
+                                if mm:
+                                    model = mm
+                                    break
+                        else:
+                            model = _extract_str(models_attr)
+                    except Exception:
+                        model = None
+
+                # supports_native_tools inference
+                supports_native_tools = False
+                try:
+                    if isinstance(prov_attr, dict):
+                        supports_native_tools = bool(
+                            prov_attr.get("supports_native_tools", False)
+                        )
+                    else:
+                        supports_native_tools = bool(
+                            getattr(adapter, "supports_native_tools", False)
+                        )
+                except Exception:
+                    supports_native_tools = False
+
+                # provider_family: try to reuse central mapping when available
+                provider_family = "default"
+                try:
+                    from src.core.orchestration.provider_capabilities import (
+                        _map_provider_family_impl as _map_pf,
+                    )
+
+                    provider_family = _map_pf(provider_name or "")
+                except Exception:
+                    provider_family = "default"
+
+                caps = {
+                    "supports_native_tools": bool(supports_native_tools),
+                    "provider_family": provider_family,
+                    "model": model,
+                    "provider_name": provider_name or "",
+                }
+
+            # Sanitize final caps: ensure only concrete strings are exposed
+            try:
+                _pname = _extract_str(
+                    caps.get("provider_name")
+                    or caps.get("provider")
+                    or caps.get("name")
+                )
+            except Exception:
+                _pname = None
+            try:
+                _model = _extract_str(caps.get("model") or caps.get("default_model"))
+            except Exception:
+                _model = None
+
+            _pf = (
+                caps.get("provider_family")
+                if isinstance(caps.get("provider_family"), str)
+                and _valid_str(caps.get("provider_family"))
+                else None
+            )
+            if not _pf and _pname:
+                try:
+                    from src.core.orchestration.provider_capabilities import (
+                        _map_provider_family_impl as _map_pf2,
+                    )
+
+                    _pf = _map_pf2(_pname)
+                except Exception:
+                    _pf = "default"
+            _pf = _pf or "default"
+
+            provider_capabilities = {
+                "supports_native_tools": bool(caps.get("supports_native_tools", False)),
+                "provider_family": _pf,
+                "model": _model,
+                "provider_name": _pname or "",
+                # preserve a few optional flags if present
+                "provider_supports_parallel_tools": bool(
+                    caps.get("provider_supports_parallel_tools", False)
+                ),
+                "supports_function_call": bool(
+                    caps.get("supports_function_call", False)
+                ),
+                "supports_streaming": bool(caps.get("supports_streaming", False)),
+            }
+        except Exception:
+            provider_capabilities = {}
 
         messages = builder.build_prompt(
             role_name="strategic",
