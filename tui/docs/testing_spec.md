@@ -478,7 +478,7 @@ Expected: `ProviderConfigScreen` opens, ready for API key entry.
 
 **Test:** Change the theme to `nord`. Press Save.
 Expected: Theme applied immediately without restart. Setting persisted to
-`~/.agent_tui/settings.json`.
+TUI settings file under the user data directory (see ``src.core.paths.get_config_dir()``). Legacy `~/.agent_tui/settings.json` is used as a fallback in some TUI dev workflows.
 
 ---
 
@@ -505,9 +505,9 @@ with `ctrl+q`.
 
 **Test:** Restart the mock engine.
 Expected:
-- `~/.coding_agent/tui_conversation_history.json` is loaded on startup.
-- Previous conversation entries are rendered in the chat panel before the new simulation
-  begins.
+ - The conversation history file from the user data directory (see ``src.core.paths.get_data_dir()``) is loaded on startup. A legacy path (``~/.coding_agent/tui_conversation_history.json``) is honoured for compatibility.
+ - Previous conversation entries are rendered in the chat panel before the new simulation
+   begins.
 
 **Corruption test:** Manually corrupt the JSON file (truncate it). Restart.
 Expected: The bridge silently discards the corrupt file and starts fresh (no crash, no
@@ -549,8 +549,7 @@ chat panel streaming.
 **Expected:**
 1. `_cancel_event` is set (any running agent interrupted).
 2. Agent thread joined (max 5 s).
-3. Conversation history atomically saved to
-   `~/.coding_agent/tui_conversation_history.json`.
+3. Conversation history atomically saved to the user data directory (see ``src.core.paths.get_data_dir()``). Historically this lived at ``~/.coding_agent/tui_conversation_history.json``; that legacy path is still recognised for compatibility.
 4. All 31 EventBus subscriptions unsubscribed (`cleanup()` called).
 5. Process exits cleanly (exit code 0).
 

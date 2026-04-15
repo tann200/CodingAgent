@@ -34,12 +34,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     # aiohttp is an optional runtime dependency; import only for type checking
-    import aiohttp  # type: ignore
+    pass  # type: ignore
 
 from src.core.mcp.mcp_client import McpToolDefinition, McpToolResult
 

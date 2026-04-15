@@ -3,10 +3,10 @@ import atexit
 import logging
 import re
 from pathlib import Path
-from typing import Mapping, Dict, Any, List
+from typing import Dict, Any, List
 from concurrent.futures import ThreadPoolExecutor
 
-from src.core.orchestration.graph.state import AgentState
+from src.core.orchestration.graph.state import StateLike
 
 # Hoisted to module level so tests can patch
 # src.core.orchestration.graph.nodes.memory_update_node.distill_context
@@ -43,7 +43,7 @@ _executor = ThreadPoolExecutor(max_workers=4)
 atexit.register(_executor.shutdown, wait=True)
 
 
-async def memory_update_node(state: Mapping[str, Any], config: Any) -> Dict[str, Any]:
+async def memory_update_node(state: StateLike, config: Any) -> Dict[str, Any]:
     """
     Memory Update Layer: Persists distilled context and triggers advanced memory features.
     Memory operations are parallelized for performance.
@@ -126,8 +126,9 @@ async def memory_update_node(state: Mapping[str, Any], config: Any) -> Dict[str,
                 # history to state so the context window is actually reduced when the
                 # 50-message threshold triggers inside distill_context.
                 if distill_context is not None:
+                    # Use .get to avoid TypedDict non-required key access errors
                     distilled = distill_context(
-                        state["history"], working_dir=workdir_path
+                        state.get("history", []), working_dir=workdir_path
                     )
                 else:
                     distilled = None

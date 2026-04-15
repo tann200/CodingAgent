@@ -1,9 +1,9 @@
 import asyncio
 import hashlib
 import logging
-from typing import Mapping, Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List
 
-from src.core.orchestration.graph.state import AgentState
+from src.core.orchestration.graph.state import StateLike
 from src.core.context.context_builder import ContextBuilder
 from src.core.inference.llm_manager import call_model
 from src.core.orchestration.graph.nodes.node_utils import _resolve_orchestrator
@@ -11,7 +11,7 @@ from src.core.orchestration.graph.nodes.node_utils import _resolve_orchestrator
 logger = logging.getLogger(__name__)
 
 
-async def replan_node(state: Mapping[str, Any], config: Any) -> Dict[str, Any]:
+async def replan_node(state: StateLike, config: Any) -> Dict[str, Any]:
     """
     Replan Node: Handles patch size violations by splitting oversized steps.
     When a patch exceeds 200 lines, this node prompts the LLM to rewrite

@@ -26,14 +26,16 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from src.core.paths import get_user_config_path
+
 logger = logging.getLogger(__name__)
 
 # Path to the bundled defaults (relative to this file's package root)
 _REPO_ROOT = Path(__file__).parents[2]
 _BUNDLED_DEFAULTS = _REPO_ROOT / "src" / "config" / "providers.json"
 
-# User-level config (~/.config/codingagent/config.json)
-_USER_CONFIG = Path.home() / ".config" / "codingagent" / "config.json"
+# User-level config
+_USER_CONFIG = get_user_config_path()
 
 
 def _deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
@@ -133,7 +135,7 @@ def load_merged_config(working_dir: Optional[Path] = None) -> Dict[str, Any]:
         # Each URL's index.json should be a list of objects with at minimum:
         #   {"name": "skill_name", "file": "skill_name.md"}
         # Individual skill files are fetched from <url>/<file> and cached in
-        # ~/.cache/codingagent/skills/.
+        # the CodingAgent cache directory (see src.core.paths.get_skills_cache_dir()).
         #
         # Example .agent/config.json:
         #   {

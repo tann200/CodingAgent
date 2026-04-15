@@ -30,7 +30,6 @@ Usage::
 
 from __future__ import annotations
 
-import time
 from typing import Any, Callable, Dict, Iterator, List, Optional, Union
 
 ResponseEntry = Union[str, Callable[[List[Dict[str, Any]]], str]]

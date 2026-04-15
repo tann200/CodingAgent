@@ -40,7 +40,12 @@ class LLMClient(ABC):
                 run_with_corr = None
 
         if run_with_corr:
-            return await run_with_corr(loop, None, self.generate, *args, **kwargs)
+            from typing import cast as _cast
+
+            return _cast(
+                Dict[str, Any],
+                await run_with_corr(loop, None, self.generate, *args, **kwargs),
+            )
 
         # Best-effort fallback: try to preserve ContextVars by copying the
         # current context and running ctx.run in the thread executor. If that

@@ -28,10 +28,12 @@ import tempfile
 from pathlib import Path
 from typing import Optional
 
+from src.core.paths import get_prefs_path
+
 logger = logging.getLogger(__name__)
 
 _KEYRING_SERVICE = "codingagent"
-_PREFS_PATH = Path.home() / ".coding_agent" / "prefs.json"
+_PREFS_PATH = get_prefs_path()
 
 
 # ---------------------------------------------------------------------------

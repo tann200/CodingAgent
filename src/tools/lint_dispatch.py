@@ -9,6 +9,7 @@ Timeout: 10 seconds per check. Never raises — returns None on failure.
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -43,7 +44,6 @@ def quick_lint(path: str, workdir: Path) -> Optional[Dict[str, Any]]:
 def _lint_python(path: str, timeout: int) -> Dict[str, Any]:
     """py_compile — zero dependencies, instant."""
     import py_compile
-    import tempfile
 
     try:
         py_compile.compile(path, doraise=True)
@@ -79,12 +79,17 @@ def _lint_ts(path: str, timeout: int) -> Dict[str, Any]:
     try:
         result = subprocess.run(
             [
-                "npx", "--no-install", "tsc",
+                "npx",
+                "--no-install",
+                "tsc",
                 "--noEmit",
                 "--allowJs",
-                "--module", "commonjs",
-                "--target", "es2020",
-                "--lib", "es2020",
+                "--module",
+                "commonjs",
+                "--target",
+                "es2020",
+                "--lib",
+                "es2020",
                 path,
             ],
             capture_output=True,
@@ -109,7 +114,7 @@ def _lint_go(path: str, workdir: Path, timeout: int) -> Dict[str, Any]:
     file_dir = str(Path(path).parent)
     try:
         result = subprocess.run(
-            ["go", "build", "-o", "/dev/null", "."],
+            ["go", "build", "-o", os.devnull, "."],
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -127,7 +132,7 @@ def _lint_rust(path: str, timeout: int) -> Dict[str, Any]:
     """rustc --edition=2021 --emit=metadata <file>"""
     try:
         result = subprocess.run(
-            ["rustc", "--edition=2021", "--emit=metadata", path, "-o", "/dev/null"],
+            ["rustc", "--edition=2021", "--emit=metadata", path, "-o", os.devnull],
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -158,7 +163,7 @@ def _parse_node_check(stderr: str, path: str) -> List[Dict[str, Any]]:
         if path in line and ":" in line:
             try:
                 # Extract line number: last colon-separated numeric token after the path
-                after_path = line[line.index(path) + len(path):]
+                after_path = line[line.index(path) + len(path) :]
                 ln_str = after_path.lstrip(":").split(":")[0].split()[0]
                 ln = int(ln_str)
                 # Grab next line as the error message if it contains SyntaxError
@@ -169,7 +174,9 @@ def _parse_node_check(stderr: str, path: str) -> List[Dict[str, Any]]:
             except (ValueError, IndexError):
                 pass
         if "SyntaxError" in line and not errors:
-            errors.append({"line": None, "message": line.strip(), "code": "SyntaxError"})
+            errors.append(
+                {"line": None, "message": line.strip(), "code": "SyntaxError"}
+            )
         i += 1
     return errors
 

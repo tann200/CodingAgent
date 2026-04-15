@@ -1,7 +1,7 @@
 from typing import Any, Optional
 from langgraph.graph import StateGraph, END
 from langchain_core.runnables import RunnableConfig
-from src.core.orchestration.graph.state import AgentState
+from src.core.orchestration.graph.state import AgentState, StateLike
 from src.core.orchestration.graph.nodes.perception_node import perception_node
 from src.core.orchestration.graph.nodes.execution_node import execution_node
 from src.core.orchestration.graph.nodes.memory_update_node import memory_update_node
@@ -14,7 +14,7 @@ from src.core.orchestration.role_config import (
 )
 
 
-def should_after_planning(state: AgentState) -> str:
+def should_after_planning(state: StateLike) -> str:
     # BUG-VOL23-3: use .get() to avoid KeyError when state is a partial dict
     if state.get("rounds", 0) >= 15:
         return "end"
@@ -29,7 +29,7 @@ def should_after_planning(state: AgentState) -> str:
 
 
 def _create_wrapper(node_func):
-    async def wrapper(state: AgentState, config: RunnableConfig):
+    async def wrapper(state: StateLike, config: RunnableConfig):
         return await node_func(state, config)
 
     return wrapper
@@ -118,6 +118,7 @@ class GraphFactory:
             return None
         try:
             from src.core.orchestration.graph.builder import _get_compiled_graph
+
             return _get_compiled_graph()
         except Exception:
             # Fallback to the role-specific subgraph so subagents can still

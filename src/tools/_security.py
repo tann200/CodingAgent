@@ -35,7 +35,7 @@ _BASE_DANGEROUS_PATTERNS: tuple[str, ...] = (
     "rm -rf",
     "rm -r",
     "rm -f",
-    # Absolute-path rm variants (bypass the basename check)
+    # Absolute-path rm variants (bypass the basename check) - Unix
     "/bin/rm",
     "/usr/bin/rm",
     "\\rm",
@@ -44,13 +44,27 @@ _BASE_DANGEROUS_PATTERNS: tuple[str, ...] = (
     "rm -v -f",
     "rm --recursive",
     "rm --force",
+    # Windows dangerous commands
     "del ",
+    "rmdir ",
     "format ",
+    " attrib ",
+    # Cross-platform shutdown
     "shutdown",
     "reboot",
     "halt",
     "poweroff",
     "git push",
+    # Windows PowerShell dangerous commands
+    "remove-item",
+    "clear-content",
+    "stop-process",
+    "stop-computer",
+    # Linux-specific paths that could be dangerous if executed
+    "etc/passwd",
+    "etc/shadow",
+    "/dev/sda",
+    "/dev/nvme",
 )
 
 # Mutable extension list — populated by add_dangerous_pattern() at startup or

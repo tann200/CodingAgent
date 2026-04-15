@@ -2,7 +2,7 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, Mapping
 
-from src.core.orchestration.graph.state import AgentState
+from src.core.orchestration.graph.state import StateLike
 from src.core.orchestration.graph.nodes.node_utils import _resolve_orchestrator
 from src.tools import verification_tools
 
@@ -49,7 +49,7 @@ _WRITE_TOOLS_ALWAYS_VERIFY = {
 }
 
 
-async def verification_node(state: Mapping[str, Any], config: Any) -> Dict[str, Any]:
+async def verification_node(state: StateLike, config: Any) -> Dict[str, Any]:
     """
     Verification Layer: Run tests / linters / syntax checks on proposed edits.
     Also validates file deletions to ensure files are actually deleted.

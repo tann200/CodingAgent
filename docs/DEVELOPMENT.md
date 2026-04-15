@@ -35,7 +35,7 @@ Each session has a unique ID (8-character UUID) that tracks all operations:
 - **Task ID**: Generated on `start_new_task()`, tracked in `orch._current_task_id`
 - **Message history**: Stored in `SessionStore` (SQLite) with session_id
 - **Tool calls**: Logged with session_id for audit trail
-- **TUI conversation history**: Persisted to `~/.coding_agent/tui_conversation_history.json` (atomic write)
+- **TUI conversation history**: Persisted to the TUI history file under the user data directory (see ``src.core.paths.get_data_dir()``) (atomic write)
 
 ### On Quit/Reset
 

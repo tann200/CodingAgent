@@ -4,8 +4,9 @@ Memory tools for the coding agent.
 Provides:
   - memory_search: searches VectorStore, TASK_STATE.md, compaction checkpoints,
     and execution traces for relevant context.
-  - memory_save: persists a note to ~/.coding_agent/memory.md so it is available
-    in future sessions (GAP-NEW-4 / GAP-FRONTIER-4).
+    - memory_save: persists a note to the memory file returned by
+      ``src.core.paths.get_memory_path()`` so it is available in future
+      sessions (GAP-NEW-4 / GAP-FRONTIER-4).
 """
 
 import json
@@ -17,6 +18,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from src.core.paths import get_memory_path
 from src.tools.tools_config import agent_context_path
 from src.tools._tool import tool, PermissionKind
 
@@ -82,7 +84,9 @@ def _search_file(path: Path, query: str, source_name: str) -> List[Dict[str, Any
     return results[:5]
 
 
-@tool(tags=["coding", "debug", "planning", "review"], permission_kind=PermissionKind.NONE)
+@tool(
+    tags=["coding", "debug", "planning", "review"], permission_kind=PermissionKind.NONE
+)
 def memory_search(
     query: str,
     workdir: Optional[str] = None,
@@ -157,7 +161,7 @@ def memory_search(
 # memory_save — GAP-NEW-4 / GAP-FRONTIER-4
 # ---------------------------------------------------------------------------
 
-_MEMORY_FILE = Path.home() / ".coding_agent" / "memory.md"
+_MEMORY_FILE = get_memory_path()
 _MEMORY_MAX_BYTES = 50_000  # ~50 KB; trim oldest entries when exceeded
 
 
@@ -170,7 +174,8 @@ def memory_save(
 
     Use this to record learned preferences, project conventions, recurring
     patterns, or any insight that should survive beyond the current session.
-    Notes are stored in ~/.coding_agent/memory.md and injected into future
+    Notes are stored in the file returned by ``src.core.paths.get_memory_path()``
+    and injected into future
     sessions automatically.
 
     Args:
@@ -215,9 +220,7 @@ def memory_save(
             new_content = "".join(lines)
 
         # Atomic write
-        fd, tmp_path = tempfile.mkstemp(
-            dir=str(_MEMORY_FILE.parent), suffix=".tmp"
-        )
+        fd, tmp_path = tempfile.mkstemp(dir=str(_MEMORY_FILE.parent), suffix=".tmp")
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(new_content)
         os.replace(tmp_path, str(_MEMORY_FILE))

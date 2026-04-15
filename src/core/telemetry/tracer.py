@@ -39,7 +39,6 @@ Supported exporters (auto-selected from endpoint scheme):
 
 from __future__ import annotations
 
-import contextlib
 import logging
 import os
 from contextlib import contextmanager

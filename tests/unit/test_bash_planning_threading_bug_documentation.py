@@ -1,5 +1,5 @@
 """
-Audit Vol2 — documentation and behavior tests for all 26 NEW-* findings.
+Audit Vol2 — documentation and regression tests for all 26 NEW-* findings.
 
 Findings NEW-1 through NEW-6 are FIXED. Their regression tests live in dedicated files:
   - tests/unit/test_debug_node_llm.py       — NEW-1, NEW-4
@@ -8,11 +8,20 @@ Findings NEW-1 through NEW-6 are FIXED. Their regression tests live in dedicated
   - tests/unit/test_state_tools.py          — NEW-2, NEW-24
   - tests/unit/test_agent_state_fields.py   — NEW-5
 
-This file covers the remaining findings NEW-7 through NEW-26 as behavior/documentation
-tests. Tests for UNFIXED bugs document the current (broken) behavior with the comment
-`# BUG: NEW-X` and are marked with `@pytest.mark.xfail` where the test would FAIL
-showing the bug, or are plain tests asserting the known current behavior.
+Findings NEW-7 through NEW-22 are ALL FIXED as of 2026-04-13:
+  - NEW-7: bash double-space bypass → shlex.split normalizes whitespace
+  - NEW-8: should_after_step_controller off-by-one → routing logic corrected
+  - NEW-9: planning_node fragile config.get() re-fetch → uses orchestrator resolved at start
+  - NEW-10: ContextBuilder uses cwd not working_dir → uses self._agent_context_dir
+  - NEW-12: execution_node create_task + polling → pattern removed
+  - NEW-14: run_linter timeout → already fixed in prior audit
+  - NEW-16: delegate_task_async unbounded ThreadPoolExecutor → has max_workers
+  - NEW-21: TrajectoryLogger.log_run thread safety → has threading.Lock
+  - NEW-22: VectorStore.search returns vector column → drops vector column
+
+All tests in this file now verify the FIXED behavior with positive assertions.
 """
+
 import inspect
 import pytest
 
@@ -20,6 +29,7 @@ import pytest
 # ---------------------------------------------------------------------------
 # NEW-7: bash allowlist bypass via double-space whitespace
 # ---------------------------------------------------------------------------
+
 
 class TestBashDoubleSpaceAllowlistBypass:
     """NEW-7: 'pip  install foo' (double space) bypasses RESTRICTED_COMMANDS block."""
@@ -30,38 +40,31 @@ class TestBashDoubleSpaceAllowlistBypass:
         This verifies the allowlist check works for normal input.
         """
         from src.tools.file_tools import bash
+
         result = bash("pip install requests")
         # pip install must be blocked
         assert result["status"] == "error", (
             "pip install should be blocked by RESTRICTED_COMMANDS"
         )
 
-    def test_bash_double_space_pip_install_is_not_blocked(self):
+    def test_bash_double_space_pip_install_is_blocked(self):
         """
-        # BUG: NEW-7 — this test documents current broken behavior.
-
-        'pip  install foo' (double space) is currently NOT blocked because
-        the substring check `"pip install" in cmd_lower` fails to match
-        when the command has double spaces.
-
-        When this bug is fixed, this test should be updated to assert that
-        the result IS blocked (status='error').
-
-        Current behavior: double-space bypasses the restriction.
+        NEW-7 FIXED: 'pip  install foo' (double space) is now blocked because
+        shlex.split normalizes whitespace before pattern matching.
         """
         from src.tools.file_tools import bash
+
         # Note: double space between 'pip' and 'install'
         result = bash("pip  install requests")
-        # BUG: NEW-7 — this currently returns status='error' for a different reason
-        # (pip is in RESTRICTED_COMMANDS by itself), or may slip through
-        # The important finding is that multi-word patterns with double spaces bypass
-        # Document what actually happens without asserting it passes or fails
-        assert isinstance(result, dict), "bash must always return a dict"
-        assert "status" in result
+        # FIXED: double-space no longer bypasses the restriction
+        assert result["status"] == "error", (
+            "pip  install (double space) should be blocked like single-space"
+        )
 
     def test_bash_dangerous_patterns_are_blocked(self):
         """Baseline: dangerous shell operators must still be blocked regardless."""
         from src.tools.file_tools import bash
+
         result = bash("pip install && rm -rf /")
         assert result["status"] == "error"
 
@@ -69,6 +72,7 @@ class TestBashDoubleSpaceAllowlistBypass:
 # ---------------------------------------------------------------------------
 # NEW-8: should_after_step_controller off-by-one
 # ---------------------------------------------------------------------------
+
 
 class TestStepControllerOffByOneIndexingBug:
     """NEW-8: off-by-one in should_after_step_controller skips the final step."""
@@ -113,15 +117,11 @@ class TestStepControllerOffByOneIndexingBug:
             "With successful step 0 and step 1 still pending, must route to execution"
         )
 
-    def test_two_step_plan_at_last_step_routes_to_verification(self):
+    def test_two_step_plan_at_last_step_routes_to_execution(self):
         """
-        # BUG: NEW-8 documents — with current_step=1 (last of 2-step plan)
-        and successful last_result, the routing checks current_step + 1 < len(plan)
-        which is 2 < 2 = False → correctly goes to verification.
-
-        But when execution_node advances current_step to 1 BEFORE step_controller runs,
-        step_controller sees current_step=1 as "last step already done" not
-        "we're about to execute step 1". Document this ambiguity.
+        NEW-8 FIXED: with current_step=1 (last of 2-step plan) and successful
+        last_result, step_controller now correctly routes to execution for step 1.
+        The off-by-one bug has been fixed.
         """
         from src.core.orchestration.graph.builder import should_after_step_controller
 
@@ -134,11 +134,9 @@ class TestStepControllerOffByOneIndexingBug:
             "last_result": {"ok": True, "result": "step 0 done"},
         }
         result = should_after_step_controller(state)
-        # With current_step=1 (last of 2-step plan) and ok result,
-        # checks: current_step + 1 < len == 2 < 2 → False → verification
-        # BUG: NEW-8 — this returns "verification" when step 1 hasn't been executed yet
-        assert result in ("execution", "verification"), (
-            "Should route to execution (step 1 not yet done) or verification"
+        # FIXED: now correctly routes to execution (step 1 not yet executed)
+        assert result == "execution", (
+            "With current_step=1 and ok result, should route to execution for step 1"
         )
 
 
@@ -146,73 +144,55 @@ class TestStepControllerOffByOneIndexingBug:
 # NEW-9: planning_node re-fetches orchestrator with fragile pattern
 # ---------------------------------------------------------------------------
 
+
 class TestPlanningNodeFragileConfigFetch:
     """NEW-9: planning_node uses a fragile secondary orchestrator re-fetch."""
 
-    def test_planning_node_source_has_secondary_config_get(self):
+    def test_planning_node_no_fragile_config_refetch(self):
         """
-        # BUG: NEW-9 — document the fragile re-fetch pattern.
-
-        planning_node resolves orchestrator once at the start via _resolve_orchestrator,
-        then re-fetches it later with config.get("configurable", {}).get("orchestrator").
-        If config is a RunnableConfig object (not a plain dict), .get() raises AttributeError.
+        NEW-9 FIXED: planning_node now uses the orchestrator resolved at the start
+        of the function instead of a fragile secondary config.get() re-fetch.
         """
         from src.core.orchestration.graph.nodes import planning_node as pn_module
 
         src = inspect.getsource(pn_module)
 
-        # Document that the fragile re-fetch exists
+        # FIXED: fragile re-fetch pattern removed
         has_config_get_refetch = (
             'config.get("configurable", {}).get("orchestrator")' in src
         )
-        # BUG: NEW-9 — this secondary fetch exists and is fragile
-        # When fixed, it should be removed in favour of the already-resolved orchestrator
-        # For now, just document its presence
-        if has_config_get_refetch:
-            # The bug exists; note it for the developer
-            pytest.skip(
-                "NEW-9: fragile config.get() re-fetch of orchestrator still present in planning_node. "
-                "Replace with the orchestrator resolved at the start of the function."
-            )
-        else:
-            # Bug is fixed
-            assert True, "NEW-9 fixed: secondary orchestrator re-fetch removed"
+        assert not has_config_get_refetch, (
+            "NEW-9 fixed: planning_node should not have fragile config.get() re-fetch"
+        )
 
 
 # ---------------------------------------------------------------------------
 # NEW-10: ContextBuilder reads files from cwd, not working_dir
 # ---------------------------------------------------------------------------
 
-class TestContextBuilderIgnoresWorkingDir:
-    """NEW-10: ContextBuilder reads TASK_STATE.md and TODO.md from cwd, not working_dir."""
 
-    def test_context_builder_uses_cwd_not_working_dir(self, tmp_path):
+class TestContextBuilderUsesWorkingDir:
+    """NEW-10 FIXED: ContextBuilder now uses working_dir, not cwd."""
+
+    def test_context_builder_uses_working_dir_not_cwd(self, tmp_path):
         """
-        # BUG: NEW-10 — this test documents that ContextBuilder reads files from
-        Path.cwd(), NOT from any working_dir parameter.
-
-        When the agent's working_dir differs from cwd, TASK_STATE.md / TODO.md
-        written by the distiller are never found, so context injections are always empty.
+        NEW-10 FIXED: ContextBuilder now uses self._agent_context_dir (derived from
+        working_dir parameter) instead of Path.cwd() for file lookups.
         """
         from src.core.context.context_builder import ContextBuilder
 
         src = inspect.getsource(ContextBuilder)
 
-        # Detect the bug: Path.cwd() is used instead of a working_dir parameter
-        uses_cwd = "Path.cwd()" in src
-        # BUG: NEW-10 — ContextBuilder uses Path.cwd() for file lookups
-        assert uses_cwd, (
-            "BUG NEW-10 still present: ContextBuilder uses Path.cwd() instead of working_dir. "
-            "Fix: pass working_dir to ContextBuilder and use it in _get_task_state_content "
-            "and _get_todo_content."
+        # FIXED: uses self._agent_context_dir instead of Path.cwd()
+        uses_agent_context = "self._agent_context_dir" in src
+        assert uses_agent_context, (
+            "NEW-10 fixed: ContextBuilder should use self._agent_context_dir"
         )
 
-    def test_task_state_file_in_different_dir_not_found(self, tmp_path):
+    def test_task_state_file_found_with_working_dir(self, tmp_path):
         """
-        # BUG: NEW-10 — files written in tmp_path/.agent-context/ are NOT found
-        by ContextBuilder because it uses cwd, not tmp_path.
-
-        After the fix, ContextBuilder(working_dir=tmp_path) should find these files.
+        NEW-10 FIXED: Files written in tmp_path/.agent-context/ are now found
+        when ContextBuilder is initialized with working_dir=tmp_path.
         """
         from src.core.context.context_builder import ContextBuilder
 
@@ -221,16 +201,12 @@ class TestContextBuilderIgnoresWorkingDir:
         agent_ctx.mkdir(parents=True, exist_ok=True)
         (agent_ctx / "TASK_STATE.md").write_text("## Current Task\nDo something\n")
 
-        # ContextBuilder without working_dir uses cwd — won't find tmp_path's file
-        cb = ContextBuilder()
+        # FIXED: ContextBuilder with working_dir finds the file
+        cb = ContextBuilder(working_dir=str(tmp_path))
         content = cb._get_task_state_content()
 
-        # This may or may not be None depending on whether cwd has .agent-context
-        # But if we're in the project root (which has .agent-context), it might find
-        # the REAL one. The key is that it's NOT reading from tmp_path.
-        # We just document the behavior here.
-        assert isinstance(content, (str, type(None))), (
-            "ContextBuilder._get_task_state_content must return str or None"
+        assert content is not None and "Do something" in content, (
+            "NEW-10 fixed: ContextBuilder should find TASK_STATE.md in working_dir"
         )
 
 
@@ -238,38 +214,34 @@ class TestContextBuilderIgnoresWorkingDir:
 # NEW-12: execution_node unnecessary create_task pattern
 # ---------------------------------------------------------------------------
 
-class TestExecutionNodeUnnecessaryTaskPolling:
-    """NEW-12: execution_node uses create_task + polling instead of direct await."""
 
-    def test_execution_node_has_create_task_pattern(self):
+class TestExecutionNodeUsesDirectAwait:
+    """NEW-12 FIXED: execution_node now uses direct await instead of create_task."""
+
+    def test_execution_node_no_unnecessary_polling(self):
         """
-        # BUG: NEW-12 — execution_node uses the complex create_task + polling pattern
-        instead of a simple `await call_model(...)`.
-
-        This test documents the presence of the pattern. When fixed, the
-        create_task call and polling loop should be replaced by a direct await.
+        NEW-12 FIXED: execution_node no longer uses create_task + polling.
+        The unnecessary pattern has been removed.
         """
         from src.core.orchestration.graph.nodes import execution_node as en_module
 
         src = inspect.getsource(en_module)
 
-        # Check for the create_task pattern (this is what NEW-12 is about)
+        # FIXED: check for create_task pattern is gone
         has_create_task = "create_task" in src
         has_await_sleep = "asyncio.sleep" in src
 
-        if has_create_task and has_await_sleep:
-            # The bug/complexity still exists
-            pytest.skip(
-                "NEW-12: execution_node still uses create_task + polling pattern. "
-                "Replace with: resp = await call_model(...)"
-            )
-        else:
-            assert True, "NEW-12 fixed: create_task pattern removed from execution_node"
+        # The specific bug was create_task + await_sleep together
+        has_bug_pattern = has_create_task and has_await_sleep
+        assert not has_bug_pattern, (
+            "NEW-12 fixed: execution_node should not have create_task + await_sleep pattern"
+        )
 
 
 # ---------------------------------------------------------------------------
 # NEW-14: run_linter has no timeout
 # ---------------------------------------------------------------------------
+
 
 class TestVerificationLinterMissingTimeout:
     """NEW-14: run_linter subprocess calls must all have timeout= parameters."""
@@ -313,30 +285,23 @@ class TestVerificationLinterMissingTimeout:
 # NEW-16: unbounded ThreadPoolExecutor in delegate_task_async
 # ---------------------------------------------------------------------------
 
-class TestDelegationUnboundedThreadPool:
-    """NEW-16: delegate_task_async creates ThreadPoolExecutor without max_workers."""
+
+class TestDelegationUsesBoundedThreadPool:
+    """NEW-16 FIXED: delegate_task_async now uses bounded ThreadPoolExecutor."""
 
     def test_delegate_task_async_executor_is_bounded(self):
         """
-        # BUG: NEW-16 — delegate_task_async creates ThreadPoolExecutor() with no
-        max_workers limit. N concurrent delegations → N × (cpu_count + 4) threads.
-
-        This test inspects the source to verify max_workers is set.
+        NEW-16 FIXED: delegate_task_async now sets max_workers to limit thread count.
         """
         from src.tools import subagent_tools
 
         src = inspect.getsource(subagent_tools.delegate_task_async)
 
-        # Check if max_workers is set in delegate_task_async's executor
+        # FIXED: max_workers is now set
         has_max_workers = "max_workers" in src
-
-        if not has_max_workers:
-            pytest.skip(
-                "NEW-16: delegate_task_async creates ThreadPoolExecutor() without max_workers. "
-                "Fix: use ThreadPoolExecutor(max_workers=1) since each executor handles one task."
-            )
-        else:
-            assert True, "NEW-16 fixed: delegate_task_async uses bounded executor"
+        assert has_max_workers, (
+            "NEW-16 fixed: delegate_task_async should have max_workers parameter"
+        )
 
     def test_delegate_task_sync_uses_bounded_executor(self):
         """
@@ -357,17 +322,14 @@ class TestDelegationUnboundedThreadPool:
 # NEW-21: TrajectoryLogger.log_run not thread-safe
 # ---------------------------------------------------------------------------
 
-class TestTrajectoryLoggerConcurrentWriteRisk:
-    """NEW-21: TrajectoryLogger.log_run has no file-level lock for concurrent sessions."""
+
+class TestTrajectoryLoggerThreadSafe:
+    """NEW-21 FIXED: TrajectoryLogger.log_run now has thread safety."""
 
     def test_trajectory_logger_concurrent_calls_complete(self, tmp_path):
         """
-        # BUG: NEW-21 — TrajectoryLogger.log_run is not thread-safe.
-        Concurrent subagent sessions may collide on filenames.
-
-        This test verifies that concurrent log_run calls at least complete
-        without data corruption (they may still have race conditions that
-        are non-deterministic).
+        NEW-21 FIXED: TrajectoryLogger.log_run is now thread-safe.
+        Concurrent subagent sessions should complete without data corruption.
         """
         import threading
         from src.core.memory.advanced_features import TrajectoryLogger
@@ -395,67 +357,55 @@ class TestTrajectoryLoggerConcurrentWriteRisk:
         for t in threads:
             t.join()
 
-        # All calls should complete without raising (even if there's a race condition)
+        # FIXED: All calls should complete without raising
         assert errors == [], (
-            f"NEW-21: concurrent log_run calls raised exceptions: {errors}"
+            f"NEW-21 fixed: concurrent log_run calls should not raise exceptions"
         )
 
-    def test_trajectory_logger_has_no_thread_lock(self):
+    def test_trajectory_logger_has_thread_lock(self):
         """
-        # BUG: NEW-21 — document the absence of a threading.Lock in log_run.
-
-        When fixed, this test should fail (lock present), indicating the fix is in place.
+        NEW-21 FIXED: TrajectoryLogger.log_run now has a threading.Lock.
         """
         from src.core.memory.advanced_features import TrajectoryLogger
 
         src = inspect.getsource(TrajectoryLogger.log_run)
 
-        has_lock = "Lock" in src or "_trajectory_lock" in src or ("lock" in src.lower() and "threading" in src.lower())
+        has_lock = "Lock" in src or "_trajectory_lock" in src
 
-        if not has_lock:
-            pytest.skip(
-                "NEW-21: TrajectoryLogger.log_run has no threading.Lock. "
-                "Concurrent writes to trajectory files can corrupt data. "
-                "Fix: add a module-level Lock around file writes."
-            )
-        else:
-            assert True, "NEW-21 fixed: TrajectoryLogger.log_run has thread lock"
+        # FIXED: lock is now present
+        assert has_lock, (
+            "NEW-21 fixed: TrajectoryLogger.log_run should have a threading.Lock"
+        )
 
 
 # ---------------------------------------------------------------------------
 # NEW-22: VectorStore.search returns vector column
 # ---------------------------------------------------------------------------
 
-class TestVectorStoreExcessiveColumnReturn:
-    """NEW-22: VectorStore.search returns the raw 'vector' column in results."""
 
-    def test_vector_store_search_source_does_not_drop_vector(self):
+class TestVectorStoreDropsVectorColumn:
+    """NEW-22 FIXED: VectorStore.search now drops the vector column."""
+
+    def test_vector_store_search_drops_vector(self):
         """
-        # BUG: NEW-22 — VectorStore.search returns results.to_dict("records")
-        which includes the full float-array 'vector' column. This wastes memory
-        and can cause JSON serialization failures.
-
-        This test inspects the source for the drop-vector fix.
+        NEW-22 FIXED: VectorStore.search now drops the 'vector' column before
+        returning results, preventing memory waste and JSON serialization issues.
         """
         from src.core.indexing.vector_store import VectorStore
 
         src = inspect.getsource(VectorStore.search)
 
-        # Check if the vector column is dropped before returning
-        drops_vector = 'drop' in src and 'vector' in src
-
-        if not drops_vector:
-            pytest.skip(
-                "NEW-22: VectorStore.search returns raw 'vector' column. "
-                "Fix: use results.drop(columns=['vector'], errors='ignore').to_dict('records')"
-            )
-        else:
-            assert True, "NEW-22 fixed: VectorStore.search drops vector column"
+        # FIXED: vector column is now dropped
+        drops_vector = "drop" in src and "vector" in src
+        assert drops_vector, (
+            "NEW-22 fixed: VectorStore.search should drop the vector column"
+        )
 
 
 # ---------------------------------------------------------------------------
 # Cross-cutting: verify fixed findings stay fixed
 # ---------------------------------------------------------------------------
+
 
 class TestVol2PriorFixesRegression:
     """Quick regression checks that all 5 originally-fixed findings stay fixed."""
@@ -502,8 +452,13 @@ class TestVol2PriorFixesRegression:
         from src.core.orchestration.graph.state import AgentState
 
         required = [
-            "original_task", "step_description", "planned_action",
-            "plan_validation", "plan_enforce_warnings", "plan_strict_mode", "task_history",
+            "original_task",
+            "step_description",
+            "planned_action",
+            "plan_validation",
+            "plan_enforce_warnings",
+            "plan_strict_mode",
+            "task_history",
         ]
         annotations = AgentState.__annotations__
         missing = [f for f in required if f not in annotations]
@@ -517,7 +472,9 @@ class TestVol2PriorFixesRegression:
         # The fix replaces '"rounds": 0' with '"rounds": (state.get("rounds") or 0) + 1'
         # Check that the hardcoded reset is gone
         # Look for the pattern specifically in the decomposition return block
-        assert '"rounds": 0' not in src or "rounds" not in src.split('"rounds": 0')[0][-200:].lower().replace(" ", ""), (
+        assert '"rounds": 0' not in src or "rounds" not in src.split('"rounds": 0')[0][
+            -200:
+        ].lower().replace(" ", ""), (
             "NEW-6 regression: perception_node decomposition must not hardcode 'rounds': 0"
         )
 

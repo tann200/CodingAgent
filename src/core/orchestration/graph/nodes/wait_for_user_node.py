@@ -11,16 +11,14 @@ Two suspension modes:
 
 import asyncio
 import logging
-from typing import Mapping, Any, Dict, Union
+from typing import Any, Dict
 
-from src.core.orchestration.graph.state import AgentState
+from src.core.orchestration.graph.state import StateLike
 
 logger = logging.getLogger(__name__)
 
 
-async def wait_for_user_node(
-    state: Union[AgentState, Dict[str, Any]], config: Any
-) -> Dict[str, Any]:
+async def wait_for_user_node(state: StateLike, config: Any) -> Dict[str, Any]:
     """
     Suspend graph execution until user confirms or rejects preview / approves plan.
 

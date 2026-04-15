@@ -27,7 +27,7 @@ from src.tools._security import (
     GIT_SAFE_SUBCOMMANDS,
     SED_WRITE_FLAGS,
 )
-from src.tools._tool import tool, PermissionKind
+from src.tools._tool import tool
 
 # Sentinel for workdir default — resolved lazily to Path.cwd() at call time
 # so the module can be imported without a fixed working directory.
@@ -299,7 +299,13 @@ def bash(
     try:
         from src.tools._approval import is_tier3
         from src.tools.tools_config import is_autonomous
-        from src.core.orchestration.orchestrator import register_bash_gate, _bash_denied
+
+        # register_bash_gate and _bash_denied are defined in approval_gate.py.
+        # Import them directly so static checkers (pyright) can resolve the symbols.
+        from src.core.orchestration.approval_gate import (
+            register_bash_gate,
+            _bash_denied,
+        )
         from src.core.orchestration.event_bus import get_event_bus
 
         _gate_setup_ok = True

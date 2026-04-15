@@ -89,7 +89,7 @@ def example_registry() -> ToolRegistry:
     # Core file operations
     reg.register(
         "list_files",
-        file_tools.list_dir,
+        file_tools.list_files,
         description="list_files(path) -> List files in a directory",
     )
     reg.register(
@@ -164,7 +164,9 @@ def example_registry() -> ToolRegistry:
     )
     # alias: fs.list
     try:
-        reg.register("fs.list", file_tools.list_dir, description="alias for list_files")
+        reg.register(
+            "fs.list", file_tools.list_files, description="alias for list_files"
+        )
     except Exception:
         pass
 

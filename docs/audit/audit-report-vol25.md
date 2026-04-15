@@ -89,7 +89,7 @@
 **Fix:**
 - `/share` added to `SLASH_HELP` and `handle_slash_command()`.
 - `_slash_share()` formats `self._bridge.history` as a markdown document (role headers, content, separators).
-- Tries `pyperclip.copy()` first (clipboard); falls back to writing `~/.coding_agent/export_YYYYMMDD_HHMMSS.md`.
+- Tries `pyperclip.copy()` first (clipboard); falls back to writing an export file under the user's data directory (see ``src.core.paths.get_data_dir()``) such as `export_YYYYMMDD_HHMMSS.md`.
 - Displays confirmation with message count.
 
 ---

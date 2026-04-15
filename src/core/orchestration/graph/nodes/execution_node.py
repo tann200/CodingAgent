@@ -5,7 +5,7 @@ import re
 from pathlib import Path
 from typing import Mapping, Dict, Any
 
-from src.core.orchestration.graph.state import AgentState, validate_state
+from src.core.orchestration.graph.state import StateLike, validate_state
 from src.core.context.context_builder import ContextBuilder
 from src.core.inference.llm_manager import call_model
 from src.core.orchestration.tool_parser import parse_tool_block
@@ -212,7 +212,7 @@ async def _execute_tool_with_locks(
             lock_manager.reset_cancel()
 
 
-async def execution_node(state: Mapping[str, Any], config: Any) -> Dict[str, Any]:
+async def execution_node(state: StateLike, config: Any) -> Dict[str, Any]:
     """
     Execution Layer: Programmatically enforces Operational Workflows.
     Uses the 'operational' role from ContextBuilder (loaded from agent-brain).

@@ -43,9 +43,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import Any, Dict, Mapping, cast
+from typing import Any, Dict, cast
 
-from src.core.orchestration.graph.state import AgentState
+from src.core.orchestration.graph.state import StateLike
 from src.core.orchestration.graph.nodes.node_utils import (
     _resolve_orchestrator,
     _notify_provider_limit,
@@ -168,7 +168,7 @@ def _plan_mode_blocks(orchestrator: Any, tool_name: str) -> bool:
 
 
 async def frontier_loop_node(
-    state: AgentState,
+    state: StateLike,
     config: Any,
 ) -> Dict[str, Any]:
     """Tight LLM+tool loop for LARGE/FRONTIER models.

@@ -8,8 +8,9 @@ Python / LangGraph architecture.
 
 Design principles:
 - AgentDefinition is a plain dataclass — no LangGraph coupling.
-- Built-in agents are module-level singletons; custom agents can be loaded
-  from ~/.coding_agent/agents.json or passed in at runtime.
+    - Built-in agents are module-level singletons; custom agents can be loaded
+    from the path returned by ``src.core.paths.get_agents_path()`` (user-level
+    agents.json) or passed in at runtime.
 - The registry supports get(), list(), register(), and is the single source
   of truth for "what is this agent allowed to do?".
 - AgentDefinition integrates with:
@@ -26,6 +27,8 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Set
+
+from src.core.paths import get_agents_path
 
 logger = logging.getLogger(__name__)
 
@@ -412,7 +415,8 @@ class AgentRegistry:
     """Thread-safe registry of AgentDefinition instances.
 
     The registry is pre-populated with built-in agents and can be extended
-    with custom agents loaded from ~/.coding_agent/agents.json or passed
+    with custom agents loaded from the user data directory (see
+    ``src.core.paths.get_agents_path()``) or passed
     programmatically.
     """
 
@@ -488,7 +492,7 @@ class AgentRegistry:
         Returns the number of agents loaded.
         """
         if path is None:
-            path = Path.home() / ".coding_agent" / "agents.json"
+            path = get_agents_path()
         if not path.exists():
             return 0
         try:
@@ -518,7 +522,7 @@ class AgentRegistry:
     def save_custom_agents(self, path: Optional[Path] = None) -> None:
         """Persist non-built-in agents to *path* as JSON."""
         if path is None:
-            path = Path.home() / ".coding_agent" / "agents.json"
+            path = get_agents_path()
         builtin_ids = {a.id for a in self._BUILTIN_AGENTS}
         custom = [a.to_dict() for a in self._agents.values() if a.id not in builtin_ids]
         path.parent.mkdir(parents=True, exist_ok=True)

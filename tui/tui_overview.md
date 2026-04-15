@@ -39,7 +39,7 @@ Three optimizations eliminate flicker during high-frequency updates:
 
 ### Settings Persistence
 
-Settings are stored in `~/.agent_tui/settings.json` as a local UI cache. The `SettingsStore`:
+Settings are stored in the TUI config file under the user data directory (see ``src.core.paths.get_config_dir()``). The `SettingsStore` historically used a local per-user TUI cache (legacy: ``~/.agent_tui/settings.json``) as a fallback in dev-mode; callers should prefer the canonical helper above.
 
 - Provides default values for all fields
 - Is populated by backend via `SystemSettingsLoaded` event
@@ -51,7 +51,7 @@ Settings are stored in `~/.agent_tui/settings.json` as a local UI cache. The `Se
 
 All components use a centralized logging system that writes to both:
 
-- **File**: `~/.agent_tui/logs/agent.log` (persistent, all levels)
+- **File**: TUI log file under the user data directory (see ``src.core.paths.get_log_dir()``). A legacy fallback path (``~/.agent_tui/logs/agent.log``) exists for dev-mode compatibility, but code should use the helper above.
 - **In-memory buffer**: A ring buffer (500 lines) with callback support, feeding the live console panel
 
 ---
@@ -226,14 +226,14 @@ Simulation sequence:
 - **Available providers**: Stored from backend, accessible via `self.available_providers`
 - **Per-agent config**: `get_agent_provider(role_id)` / `get_agent_model(role_id)`
 - **Provider lookup**: `get_provider_by_id(provider_id)` searches available providers
-- **Load/save**: Reads from `~/.agent_tui/settings.json`, merges with defaults
+- **Load/save**: Reads from the TUI config file under the user data directory and merges with defaults. A legacy per-user fallback (``~/.agent_tui/settings.json``) is retained for dev-mode compatibility; prefer ``src.core.paths.get_config_dir()`` at runtime.
 - **No src/core imports**: All configuration comes through bus events
 
 #### `logging.py` - Centralized Logging
 
 Sets up a single `agent_tui` logger with two handlers:
 
-- **FileHandler**: Writes all log levels to `~/.agent_tui/logs/agent.log`
+- **FileHandler**: Writes all log levels to the TUI log directory (see ``src.core.paths.get_log_dir()``). Legacy behaviour wrote to ``~/.agent_tui/logs/agent.log``; that path is only used as a dev-mode fallback.
 - **InMemoryHandler**: Ring buffer (500 lines) with callback registration for live display
 
 The `InMemoryHandler` supports:

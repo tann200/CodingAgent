@@ -49,7 +49,7 @@ import platform
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, Sequence, Union
 
 logger = logging.getLogger(__name__)
 
@@ -99,7 +99,9 @@ def _normalise_hook_entry(entry: Any) -> dict[str, str] | None:
     if isinstance(entry, dict):
         cmd = str(entry.get("command", "")).strip()
         if not cmd:
-            logger.debug("shell_hooks: hook entry missing 'command'; skipping: %r", entry)
+            logger.debug(
+                "shell_hooks: hook entry missing 'command'; skipping: %r", entry
+            )
             return None
         matcher = str(entry.get("matcher", "*")).strip() or "*"
         return {"matcher": matcher, "command": cmd}
@@ -108,7 +110,9 @@ def _normalise_hook_entry(entry: Any) -> dict[str, str] | None:
 
 
 # TASK-8c: config now stores normalised dicts; key "matcher" filters by tool name.
-def _load_hooks_config(workdir: str | Path | None = None) -> dict[str, list[dict[str, str]]]:
+def _load_hooks_config(
+    workdir: str | Path | None = None,
+) -> dict[str, list[Union[str, dict[str, str]]]]:
     """Load the hooks section from ``.agent/settings.json``.
 
     Returns a dict with keys ``"PreToolUse"`` and ``"PostToolUse"``.  Each
@@ -130,7 +134,10 @@ def _load_hooks_config(workdir: str | Path | None = None) -> dict[str, list[dict
           }
         }
     """
-    empty: dict[str, list[dict[str, str]]] = {"PreToolUse": [], "PostToolUse": []}
+    empty: dict[str, list[Union[str, dict[str, str]]]] = {
+        "PreToolUse": [],
+        "PostToolUse": [],
+    }
     try:
         base = Path(workdir) if workdir else Path.cwd()
         settings_path = base / _SETTINGS_FILE
@@ -140,7 +147,10 @@ def _load_hooks_config(workdir: str | Path | None = None) -> dict[str, list[dict
         hooks = data.get("hooks", {})
         if not isinstance(hooks, dict):
             return empty
-        result: dict[str, list[dict[str, str]]] = {"PreToolUse": [], "PostToolUse": []}
+        result: dict[str, list[Union[str, dict[str, str]]]] = {
+            "PreToolUse": [],
+            "PostToolUse": [],
+        }
         for event_key in ("PreToolUse", "PostToolUse"):
             for raw in hooks.get(event_key, []):
                 normalised = _normalise_hook_entry(raw)
@@ -153,14 +163,32 @@ def _load_hooks_config(workdir: str | Path | None = None) -> dict[str, list[dict
 
 
 def _matching_commands(
-    entries: list[dict[str, str]], tool_name: str
+    entries: Sequence[Optional[Union[str, dict[str, str]]]], tool_name: str
 ) -> list[str]:
-    """Return the commands from *entries* whose matcher pattern matches *tool_name*."""
-    return [
-        e["command"]
-        for e in entries
-        if fnmatch.fnmatch(tool_name.lower(), e["matcher"].lower())
-    ]
+    """Return the commands from *entries* whose matcher pattern matches *tool_name*.
+
+    Accept both a legacy list[str] (each string is a command that applies to all
+    tools) and the newer list[dict] form where each dict contains "matcher" and
+    "command" keys. This keeps the loader and tests interoperable.
+    """
+    commands: list[str] = []
+    lname = tool_name.lower()
+    for e in entries:
+        # Tests (and some legacy configs) may include None entries — skip them.
+        if e is None:
+            continue
+        if isinstance(e, str):
+            cmd = e.strip()
+            if cmd:
+                commands.append(cmd)
+        elif isinstance(e, dict):
+            matcher = str(e.get("matcher", "*")).lower()
+            cmd = e.get("command")
+            if not isinstance(cmd, str):
+                continue
+            if fnmatch.fnmatch(lname, matcher):
+                commands.append(cmd)
+    return commands
 
 
 # ---------------------------------------------------------------------------
@@ -312,13 +340,18 @@ class ShellHookRunner:
     ) -> None:
         self._workdir = Path(workdir) if workdir else None
         self._event_bus = event_bus
-        self._config: dict[str, list[str]] | None = None  # lazy-loaded
+        # _config stores the normalised hook entries. Historically callers
+        # sometimes passed plain list[str] values; accept both list[str]
+        # and list[dict[str,str]] forms to remain backward-compatible.
+        self._config: dict[str, list[Union[str, dict[str, str]]]] | None = (
+            None  # lazy-loaded
+        )
 
     # ------------------------------------------------------------------
     # Configuration
     # ------------------------------------------------------------------
 
-    def _get_config(self) -> dict[str, list[str]]:
+    def _get_config(self) -> dict[str, list[Union[str, dict[str, str]]]]:
         if self._config is None:
             self._config = _load_hooks_config(self._workdir)
         return self._config

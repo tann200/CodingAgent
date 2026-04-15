@@ -19,7 +19,8 @@ Three guards are provided:
    Returns a non-None error dict when the last DOOM_LOOP_THRESHOLD tool calls
    all share the same (name, args) fingerprint.  Consults
    PermissionPolicy.check_doom_loop() (PERM-02) so the user can override the
-   default DENY behaviour via ~/.coding_agent/permissions.json.
+   default DENY behaviour via the permissions file returned by
+   ``src.core.paths.get_permissions_path()`` (user-level permissions.json).
 
 All three guards are pure functions — they never mutate state or produce side
 effects other than logging.  The execution node is responsible for updating

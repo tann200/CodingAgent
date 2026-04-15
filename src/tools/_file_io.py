@@ -47,8 +47,14 @@ except ImportError:
     pass
 
 
-def _safe_resolve(path: str, workdir: Path) -> Path:
-    """Thin wrapper around _path_utils.safe_resolve for use within this module."""
+def _safe_resolve(path: str, workdir: Path | None) -> Path:
+    """Thin wrapper around _path_utils.safe_resolve for use within this module.
+
+    Accepts None for workdir (tests may pass None). When workdir is None we
+    fall back to Path.cwd().
+    """
+    if workdir is None:
+        workdir = Path.cwd()
     return _safe_resolve_impl(path, workdir)
 
 
@@ -98,11 +104,13 @@ _OS_JUNK = frozenset(
 )
 
 
-@tool(side_effects=["write"], tags=["coding"], permission_kind=PermissionKind.WRITE_FILE)
+@tool(
+    side_effects=["write"], tags=["coding"], permission_kind=PermissionKind.WRITE_FILE
+)
 def write_file(
     path: str,
     content: str,
-    workdir: Path = None,  # type: ignore[assignment]
+    workdir: Path | None = None,
     user_approved: bool = False,
 ) -> Dict[str, Any]:
     """Write content to a file. Returns diff in result for TUI display."""
@@ -146,6 +154,7 @@ def write_file(
         return {
             "path": str(p),
             "status": "no_change",
+            "diff": "",
             "lines_added": 0,
             "lines_removed": 0,
             "is_new_file": False,
@@ -253,6 +262,7 @@ def write_file(
         "lines_added": lines_added,
         "lines_removed": lines_removed,
         "is_new_file": not bool(original_content),
+        "diff": diff,
     }
     # S2-C: Auto-formatter — run after write; failures are warnings only.
     try:
@@ -284,11 +294,14 @@ def write_file(
     return result
 
 
-@tool(tags=["coding", "planning", "debug", "review"], permission_kind=PermissionKind.READ_FILE)
+@tool(
+    tags=["coding", "planning", "debug", "review"],
+    permission_kind=PermissionKind.READ_FILE,
+)
 def read_file(
     path: str,
     summarize: bool = False,
-    workdir: Path = None,  # type: ignore[assignment]
+    workdir: Path | None = None,
 ) -> Dict[str, Any]:
     if workdir is None:
         workdir = Path.cwd()
@@ -363,8 +376,12 @@ def read_file(
     return result
 
 
-@tool(name="list_files", tags=["coding", "planning", "debug", "review"], permission_kind=PermissionKind.READ_FILE)
-def list_dir(path: str = ".", workdir: Path = None) -> Dict[str, Any]:  # type: ignore[assignment]
+@tool(
+    name="list_files",
+    tags=["coding", "planning", "debug", "review"],
+    permission_kind=PermissionKind.READ_FILE,
+)
+def list_dir(path: str = ".", workdir: Path | None = None) -> Dict[str, Any]:
     if workdir is None:
         workdir = Path.cwd()
     p = _safe_resolve(path, workdir)
@@ -376,10 +393,12 @@ def list_dir(path: str = ".", workdir: Path = None) -> Dict[str, Any]:  # type: 
     return {"path": str(p), "status": "ok", "items": items}
 
 
-@tool(side_effects=["write"], tags=["coding"], permission_kind=PermissionKind.WRITE_FILE)
+@tool(
+    side_effects=["write"], tags=["coding"], permission_kind=PermissionKind.WRITE_FILE
+)
 def delete_file(
     path: str,
-    workdir: Path = None,
+    workdir: Path | None = None,
     user_approved: bool = False,  # type: ignore[assignment]
 ) -> Dict[str, Any]:
     if workdir is None:
@@ -444,11 +463,13 @@ def delete_file(
         return {"status": "error", "error": str(e)}
 
 
-@tool(side_effects=["write"], tags=["coding"], permission_kind=PermissionKind.WRITE_FILE)
+@tool(
+    side_effects=["write"], tags=["coding"], permission_kind=PermissionKind.WRITE_FILE
+)
 def rename_file(
     path: str = "",
     new_path: str = "",
-    workdir: Path = None,  # type: ignore[assignment]
+    workdir: Path | None = None,
     # common aliases accepted so the LLM doesn't need to guess
     src_path: str = "",
     dst_path: str = "",
@@ -509,7 +530,7 @@ def rename_file(
         return {"status": "error", "error": str(e)}
 
 
-def sandbox_info(workdir: Path = None) -> Dict[str, Any]:  # type: ignore[assignment]
+def sandbox_info(workdir: Path | None = None) -> Dict[str, Any]:
     if workdir is None:
         workdir = Path.cwd()
     return {"workdir": str(workdir.resolve())}
@@ -520,7 +541,7 @@ def read_file_chunk(
     path: str,
     offset: int = 0,
     limit: int = -1,
-    workdir: Path = None,  # type: ignore[assignment]
+    workdir: Path | None = None,
 ) -> Dict[str, Any]:
     if workdir is None:
         workdir = Path.cwd()
@@ -548,7 +569,7 @@ def read_file_chunk(
 
 
 @tool(tags=["coding"], permission_kind=PermissionKind.READ_FILE)
-def glob(pattern: str, workdir: Path = None) -> Dict[str, Any]:  # type: ignore[assignment]
+def glob(pattern: str, workdir: Path | None = None) -> Dict[str, Any]:
     """Find files matching a glob pattern. Supports ** for recursive matching."""
     if workdir is None:
         workdir = Path.cwd()
@@ -605,7 +626,7 @@ def glob(pattern: str, workdir: Path = None) -> Dict[str, Any]:  # type: ignore[
 def tail_log_file(
     path: str,
     lines: int = 50,
-    workdir: Path = None,  # type: ignore[assignment]
+    workdir: Path | None = None,
 ) -> Dict[str, Any]:
     """Read the last N lines of a file. Useful for inspecting log files."""
     if workdir is None:
@@ -629,8 +650,10 @@ def tail_log_file(
     }
 
 
-@tool(side_effects=["write"], tags=["coding"], permission_kind=PermissionKind.WRITE_FILE)
-def create_directory(path: str, workdir: Path = None) -> Dict[str, Any]:  # type: ignore[assignment]
+@tool(
+    side_effects=["write"], tags=["coding"], permission_kind=PermissionKind.WRITE_FILE
+)
+def create_directory(path: str, workdir: Path | None = None) -> Dict[str, Any]:
     """Create a directory and all necessary parents."""
     if workdir is None:
         workdir = Path.cwd()
@@ -649,7 +672,7 @@ def create_directory(path: str, workdir: Path = None) -> Dict[str, Any]:  # type
 def read_file_bytes(
     path: str,
     max_bytes: int = 1048576,
-    workdir: Path = None,  # type: ignore[assignment]
+    workdir: Path | None = None,
 ) -> Dict[str, Any]:
     """Read a file as base64-encoded bytes. Useful for binary files, images, or compiled artifacts.
 

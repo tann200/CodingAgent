@@ -1,12 +1,27 @@
 import logging
+import os
 from collections import deque
 from pathlib import Path
 from typing import Callable, Optional
 
 
-LOG_DIR = Path.home() / ".agent_tui" / "logs"
-LOG_DIR.mkdir(parents=True, exist_ok=True)
-LOG_FILE = LOG_DIR / "agent.log"
+# Cross-platform log directory — prefer core.paths.get_data_dir() when available
+def _get_log_dir() -> Path:
+    # Prefer the TUI core-paths loader which handles the src shadowing.
+    # Import locally so importing this module does not perform package-relative
+    # imports at module-import time (conftest aliases may register this module
+    # under a different name before packages exist).  The setup_logging() code
+    # below calls this lazily.
+    from ._core_paths_loader import get_log_dir as _get_log_dir_helper
+
+    return _get_log_dir_helper()
+
+
+# NOTE: do not call _get_log_dir() at import time. LOG_DIR/LOG_FILE are set
+# lazily by setup_logging() to avoid import-time side effects when tests
+# alias tui modules as src.ui.* in conftest.
+LOG_DIR: Optional[Path] = None
+LOG_FILE: Optional[Path] = None
 
 MAX_BUFFER_LINES = 500
 
@@ -58,6 +73,7 @@ def _level_style(levelname: str) -> str:
 
 def setup_logging(level: int = logging.DEBUG) -> logging.Logger:
     global _memory_handler, _logger
+    global LOG_DIR, LOG_FILE, _memory_handler, _logger
 
     if _logger is not None:
         return _logger
@@ -70,6 +86,16 @@ def setup_logging(level: int = logging.DEBUG) -> logging.Logger:
         "%(asctime)s [%(levelname)-7s] %(name)s: %(message)s",
         datefmt="%H:%M:%S",
     )
+
+    # Ensure the log directory exists; compute lazily.
+    try:
+        log_dir = _get_log_dir()
+    except Exception:
+        # Fall back to legacy TUI location if the loader cannot be used.
+        log_dir = Path.home() / ".agent_tui"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    LOG_DIR = log_dir
+    LOG_FILE = LOG_DIR / "agent.log"
 
     file_handler = logging.FileHandler(LOG_FILE, mode="a", encoding="utf-8")
     file_handler.setLevel(logging.DEBUG)

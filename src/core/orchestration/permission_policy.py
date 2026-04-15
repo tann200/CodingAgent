@@ -41,7 +41,7 @@ Usage
         PermissionPolicy, PermissionRule, Behavior, get_permission_policy
     )
 
-    policy = get_permission_policy()          # singleton, loads ~/.coding_agent/permissions.json
+    policy = get_permission_policy()          # singleton, loads get_permissions_path() (user-level permissions.json)
     decision = policy.check("write_file")     # Behavior.ALLOW / .DENY / .ASK
     if decision == Behavior.DENY:
         raise ToolDeniedError(...)
@@ -52,10 +52,12 @@ from __future__ import annotations
 import fnmatch
 import json
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Dict, Iterator, List, Optional, Sequence, Tuple
+
+from src.core.paths import get_permissions_path
 
 logger = logging.getLogger(__name__)
 
@@ -316,7 +318,7 @@ class PermissionPolicy:
         If the file does not exist, an empty (permissive) policy is returned.
         """
         if path is None:
-            path = Path.home() / ".coding_agent" / "permissions.json"
+            path = get_permissions_path()
         if not path.exists():
             logger.debug(
                 "PermissionPolicy.load: %s not found; using empty policy", path
@@ -362,7 +364,7 @@ class PermissionPolicy:
     def save(self, path: Optional[Path] = None) -> None:
         """Persist this policy to *path* as JSON."""
         if path is None:
-            path = Path.home() / ".coding_agent" / "permissions.json"
+            path = get_permissions_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(self.to_dict(), indent=2), encoding="utf-8")
         logger.info("PermissionPolicy: saved %d rule(s) to %s", len(self._rules), path)
@@ -379,7 +381,8 @@ def make_default_policy() -> PermissionPolicy:
     This is a sensible baseline: most tools are allowed; write/delete/exec
     tools prompt for confirmation; doom_loop is hard-denied.
 
-    Users can override by providing ~/.coding_agent/permissions.json.
+    Users can override by providing a permissions.json file at get_permissions_path()
+    (typically under the CodingAgent data directory returned by src.core.paths.get_data_dir()).
     """
     rules = [
         # Hard-deny the doom-loop guard token (Sprint B integration).
@@ -416,8 +419,10 @@ _POLICY: Optional[PermissionPolicy] = None
 def get_permission_policy() -> PermissionPolicy:
     """Return the global PermissionPolicy singleton.
 
-    On first call, attempts to load from ``~/.coding_agent/permissions.json``.
-    Falls back to ``make_default_policy()`` if the file is absent or malformed.
+    On first call, attempts to load from the user permissions file returned by
+    ``src.core.paths.get_permissions_path()`` (typically under the CodingAgent
+    data directory). Falls back to ``make_default_policy()`` if the file is
+    absent or malformed.
     """
     global _POLICY
     if _POLICY is None:

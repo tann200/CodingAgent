@@ -1,13 +1,13 @@
 import logging
 from pathlib import Path
-from typing import Mapping, Dict, Any, List
+from typing import Dict, Any, List
 
-from src.core.orchestration.graph.state import AgentState
+from src.core.orchestration.graph.state import StateLike
 
 logger = logging.getLogger(__name__)
 
 
-async def step_controller_node(state: Mapping[str, Any], config: Any) -> Dict[str, Any]:
+async def step_controller_node(state: StateLike, config: Any) -> Dict[str, Any]:
     """
     Step Controller: Enforces single-step execution from the plan.
     Validates that the current step matches the planned action.
@@ -62,7 +62,12 @@ async def step_controller_node(state: Mapping[str, Any], config: Any) -> Dict[st
     _tier_for_lint = (state.get("model_tier") or "").lower()
     _skip_lint = _tier_for_lint in ("large", "frontier")
     step_lint_warnings: List[str] = []
-    if not _skip_lint and last_result and isinstance(last_result, dict) and not step_failed:
+    if (
+        not _skip_lint
+        and last_result
+        and isinstance(last_result, dict)
+        and not step_failed
+    ):
         _written_path = last_result.get("path") or last_result.get("file")
         if _written_path and str(_written_path).endswith(".py"):
             try:

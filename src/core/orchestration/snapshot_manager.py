@@ -6,7 +6,8 @@ and our async subprocess pattern.
 Design
 ------
 Snapshots are stored in a **shadow git repository** whose ``--git-dir`` lives
-under the CodingAgent data directory (``~/.coding_agent/snapshots/<project_id>/``).
+under the CodingAgent data directory (use ``src.core.paths.get_snapshots_dir()``,
+e.g. get_data_dir()/snapshots/<project_id>/).
 The ``--work-tree`` is the actual workspace root.  This means:
 
 - The user's own .git repo is never touched.
@@ -47,6 +48,8 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
+
+from src.core.paths import get_snapshots_dir
 
 logger = logging.getLogger(__name__)
 
@@ -110,9 +113,9 @@ class GitSnapshotManager:
         Absolute path to the workspace root (the ``--work-tree``).
     project_id:
         Stable identifier for this project — used to namespace the shadow
-        repo under ``~/.coding_agent/snapshots/<project_id>/``.
-    data_dir:
-        Override for the base data directory (default: ``~/.coding_agent``).
+    repo under ``get_data_dir()/snapshots/<project_id>/``.
+        data_dir:
+        Override for the base data directory (default: ``get_data_dir()``).
         Useful in tests.
     enabled:
         Set to ``False`` to make all operations no-ops (useful for testing
@@ -134,7 +137,7 @@ class GitSnapshotManager:
             safe_id = "default"
         self.project_id = safe_id
         self._enabled = enabled
-        base = (data_dir or Path.home() / ".coding_agent").resolve()
+        base = (data_dir or get_snapshots_dir()).resolve()
         # Shadow git repo lives outside the workspace
         self._gitdir: Path = base / "snapshots" / self.project_id
         self._lock: asyncio.Lock = asyncio.Lock()

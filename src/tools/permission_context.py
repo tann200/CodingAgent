@@ -83,3 +83,22 @@ class ToolPermissionContext:
 # launching the orchestrator so that ``Orchestrator.__init__`` can filter
 # the tool registry without needing extra constructor params.
 _ACTIVE_CONTEXT: Optional[ToolPermissionContext] = None
+
+
+def get_permission_context() -> Optional[ToolPermissionContext]:
+    """Return the currently active ToolPermissionContext, if any.
+
+    This simple accessor is provided so callers (and tests) can query the
+    active permission context without importing internal module variables.
+    """
+    return _ACTIVE_CONTEXT
+
+
+def set_permission_context(ctx: Optional[ToolPermissionContext]) -> None:
+    """Set the module-level active permission context.
+
+    Exposed mainly for tests and bootstrap code to configure the active
+    permission filtering used by PermissionGateway.
+    """
+    global _ACTIVE_CONTEXT
+    _ACTIVE_CONTEXT = ctx

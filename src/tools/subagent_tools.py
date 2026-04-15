@@ -16,6 +16,7 @@ from contextvars import ContextVar
 from typing import Dict, Any, List, Optional, cast
 from pathlib import Path
 
+from src.core.paths import get_sessions_dir
 from src.tools._tool import tool, PermissionKind
 
 # SPAWN-W1: ContextVar that carries the parent orchestrator reference into tool calls.
@@ -187,7 +188,9 @@ class SubagentOrchestrator:
         return list(set(base_denied) | self._denied_tools)
 
 
-@tool(side_effects=["execute"], tags=["planning"], permission_kind=PermissionKind.DELEGATE)
+@tool(
+    side_effects=["execute"], tags=["planning"], permission_kind=PermissionKind.DELEGATE
+)
 def delegate_task(
     role: str,
     subtask_description: str,
@@ -258,7 +261,6 @@ def delegate_task(
     # be forged by subprocesses, unlike os.environ.  Also read the env var as a
     # belt-and-suspenders fallback so that tests and subprocess launches that set
     # CODINGAGENT_DELEGATION_DEPTH are honoured even when the ContextVar is 0.
-    import os
 
     depth = _DELEGATION_DEPTH_VAR.get()
     _env_depth_str = os.environ.get("CODINGAGENT_DELEGATION_DEPTH", "")
@@ -560,10 +562,10 @@ def delegate_task(
                 except Exception:
                     pass
 
-            # SUBAGENT-VIS-2: Persist child session to ~/.coding_agent/sessions/
+            # SUBAGENT-VIS-2: Persist child session to sessions directory
             # so the TUI SessionListScreen can display it with parent_session_id.
             try:
-                _sessions_dir = Path.home() / ".coding_agent" / "sessions"
+                _sessions_dir = get_sessions_dir()
                 _sessions_dir.mkdir(parents=True, exist_ok=True)
                 _child_msgs: list = []
                 try:
@@ -665,7 +667,7 @@ def delegate_task(
             # SUBAGENT-VIS-2: Persist failed child session skeleton so it still
             # appears in SessionListScreen with an error annotation.
             try:
-                _sessions_dir = Path.home() / ".coding_agent" / "sessions"
+                _sessions_dir = get_sessions_dir()
                 _sessions_dir.mkdir(parents=True, exist_ok=True)
                 _session_payload = {
                     "version": 1,

@@ -115,13 +115,25 @@ def _auth_json_path() -> Path:
     test_prefs = os.environ.get("CODINGAGENT_PREFS")
     if test_prefs:
         return Path(test_prefs).parent / "auth.json"
-    xdg_data = os.environ.get("XDG_DATA_HOME") or os.path.join(
-        os.path.expanduser("~"), ".local", "share"
-    )
-    new_path = Path(xdg_data) / "codingagent" / "auth.json"
-    if not new_path.exists():
-        old_path = Path(xdg_data) / "opencode" / "auth.json"
-        if old_path.exists():
+
+    xdg_data = os.environ.get("XDG_DATA_HOME")
+    if xdg_data:
+        new_path = Path(xdg_data) / "codingagent" / "auth.json"
+    else:
+        # Prefer the canonical data dir from src.core.paths when available.
+        try:
+            from src.core.paths import get_data_dir  # type: ignore[import]
+
+            new_path = get_data_dir() / "auth.json"
+        except Exception:
+            # Fall back to the traditional XDG default (~/.local/share)
+            new_path = Path.home() / ".local" / "share" / "codingagent" / "auth.json"
+
+    # Migrate from the old opencode location if present
+    try:
+        old_base = Path(xdg_data) if xdg_data else (Path.home() / ".local" / "share")
+        old_path = old_base / "opencode" / "auth.json"
+        if not new_path.exists() and old_path.exists():
             try:
                 new_path.parent.mkdir(parents=True, exist_ok=True)
                 import shutil
@@ -131,6 +143,10 @@ def _auth_json_path() -> Path:
                 _logger.info("Migrated auth.json from %s to %s", old_path, new_path)
             except Exception as exc:  # pragma: no cover
                 _logger.warning("Could not migrate auth.json: %s", exc)
+    except Exception:
+        # Ignore migration errors; caller will handle missing file cases
+        pass
+
     return new_path
 
 

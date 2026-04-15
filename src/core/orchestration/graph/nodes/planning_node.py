@@ -5,11 +5,10 @@ import re
 from pathlib import Path
 from typing import Mapping, Dict, Any, Optional
 
-from src.core.orchestration.graph.state import AgentState
+from src.core.orchestration.graph.state import StateLike
 from src.core.context.context_builder import ContextBuilder
 from src.core.inference.llm_manager import call_model
 from src.core.orchestration.graph.nodes.node_utils import _resolve_orchestrator
-from src.core.orchestration.agent_brain import get_agent_brain_manager
 
 # Gap 8: OTel tracing — no-op when opentelemetry-sdk is not installed.
 try:
@@ -71,7 +70,7 @@ def _save_last_plan(workdir: str, plan: list, task: str, step: int = 0) -> None:
         logger.warning(f"planning_node: failed to save last plan: {e}")
 
 
-async def planning_node(state: Mapping[str, Any], config: Any) -> Dict[str, Any]:
+async def planning_node(state: StateLike, config: Any) -> Dict[str, Any]:
     """
     Planning Layer: Converts perception outputs into a structured plan.
     Uses the 'strategic' role from ContextBuilder (loaded from agent-brain).
@@ -449,54 +448,39 @@ Respond ONLY with valid JSON, no additional text."""
                 _planning_model_override = _gmfr("strategic")
             except Exception:
                 pass
-        llm_task = asyncio.create_task(
-            call_model(
-                messages,
-                stream=False,
-                format_json=False,
-                temperature=0.3,
-                session_id=state.get("session_id"),
-                model=_planning_model_override,
-            )
-        )
-        _deadline = (
-            asyncio.get_running_loop().time() + _llm_timeout if _llm_timeout else None
-        )
-        while not llm_task.done():
-            if (
-                cancel_event
-                and hasattr(cancel_event, "is_set")
-                and cancel_event.is_set()
-            ):
-                llm_task.cancel()
-                logger.info("planning_node: Task canceled mid-generation")
-                return {
-                    "current_plan": current_plan,
-                    "current_step": current_step,
-                    "plan_attempts": plan_attempts,
-                    "plan_mode_approved": None,
-                    "errors": ["canceled"],
-                }
-            # WF-5: hard timeout check
-            if _deadline is not None and asyncio.get_running_loop().time() >= _deadline:
-                llm_task.cancel()
-                logger.warning(
-                    f"planning_node: LLM call timed out after {_llm_timeout}s — "
-                    "routing to wait_for_user"
-                )
-                return {
-                    "current_plan": current_plan,
-                    "current_step": current_step,
-                    "plan_attempts": plan_attempts,
-                    "plan_mode_approved": None,
-                    "errors": [f"llm_timeout:{_llm_timeout}s"],
-                    "next_action": "wait_for_user",
-                }
-            await asyncio.sleep(0.2)
+        from src.core.inference.llm_helpers import call_model_with_timeout
+
+        llm_kwargs = {"temperature": 0.3}
         try:
-            resp = await llm_task
+            # Pass the local call_model so tests that patch planning_node.call_model
+            # continue to work. Model override is passed as the `model` parameter
+            # to avoid duplicate-key kwargs.
+            early_resp, resp = await call_model_with_timeout(
+                messages,
+                None,
+                _planning_model_override,
+                state,
+                orchestrator,
+                llm_kwargs,
+                call_model_fn=call_model,
+            )
         except asyncio.CancelledError:
-            raise  # propagate — node itself was cancelled; do not swallow
+            # Preserve cancellation propagation semantics for callers/tests.
+            raise
+        if early_resp is not None:
+            # Propagate the early response shape into planning_node's return.
+            return {
+                "current_plan": current_plan,
+                "current_step": current_step,
+                "plan_attempts": plan_attempts,
+                "plan_mode_approved": None,
+                "errors": early_resp.get("errors") or [],
+                **(
+                    {"next_action": early_resp.get("next_action")}
+                    if early_resp.get("next_action")
+                    else {}
+                ),
+            }
 
         content = ""
         if isinstance(resp, dict):
@@ -551,7 +535,6 @@ Respond ONLY with valid JSON, no additional text."""
             # causing a mid-execution rejection that forces an unnecessary replan.
             try:
                 from src.tools._security import RESTRICTED_COMMANDS
-                import re as _re_pf
 
                 _restricted_keywords = sorted(
                     RESTRICTED_COMMANDS, key=len, reverse=True
@@ -716,7 +699,6 @@ def _parse_plan_content(content: str) -> list:
         return []
 
     # Strategy 1: Try JSON array extraction
-    import re
     import json
 
     # Look for JSON array in content

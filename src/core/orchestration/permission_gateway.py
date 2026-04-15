@@ -87,7 +87,9 @@ except Exception:
     _Behavior = None  # type: ignore[assignment]
 
 try:
-    from src.tools.permission_context import get_permission_context as _get_permission_context
+    from src.tools.permission_context import (
+        get_permission_context as _get_permission_context,
+    )
 except Exception:
     _get_permission_context = None  # type: ignore[assignment]
 
@@ -275,7 +277,8 @@ class PermissionGateway:
     def _gate2b_policy_rules(self, name: str, args: Dict[str, Any]) -> PermissionResult:
         """Gate 2b: Evaluate user/project PermissionPolicy rules (TASK-4).
 
-        Loads the user-level singleton policy (``~/.coding_agent/permissions.json``)
+        Loads the user-level singleton policy (uses ``src.core.paths.get_permissions_path()``
+        to locate the user-level permissions.json)
         and, when a project working directory is set, merges it with the project-level
         policy (``.agent-context/permissions.json``).  Project rules are appended
         last so they win under last-matching-wins semantics.
@@ -298,6 +301,7 @@ class PermissionGateway:
             if _wd is not None and _PermissionPolicy is not None:
                 try:
                     from pathlib import Path as _Path
+
                     _proj_path = _Path(_wd) / ".agent-context" / "permissions.json"
                     if _proj_path.exists():
                         _proj_policy = _PermissionPolicy.load(_proj_path)
@@ -330,7 +334,7 @@ class PermissionGateway:
                         "ok": False,
                         "error": (
                             f"Tool '{name}' is blocked by a permission policy rule. "
-                            "Edit ~/.coding_agent/permissions.json or "
+                            "Edit the permissions file at src.core.paths.get_permissions_path() or "
                             ".agent-context/permissions.json to change this."
                         ),
                     },

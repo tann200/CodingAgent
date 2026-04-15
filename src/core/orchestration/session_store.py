@@ -5,7 +5,9 @@ Thin port of the claw-code-main session_store pattern for headless/CLI use.
 The TUI's ``_save_session_snapshot()`` in ``tui/src/ui/app.py`` writes these
 files; ``SessionListScreen`` reads them via ``list_sessions()`` / ``load_session()``.
 
-Write path: ``~/.coding_agent/sessions/session_{session_id}.json``
+Write path: ``get_sessions_dir()/session_{session_id}.json`` (use
+``src.core.paths.get_sessions_dir()`` to locate user session snapshots).
+(Windows: %LOCALAPPDATA%/CodingAgent/sessions/)
 """
 
 from __future__ import annotations
@@ -17,9 +19,10 @@ import time
 import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Optional
 
-_SESSIONS_DIR = Path.home() / ".coding_agent" / "sessions"
+from src.core.paths import get_sessions_dir
+
+_SESSIONS_DIR = get_sessions_dir()
 _SCHEMA_VERSION = 1
 
 

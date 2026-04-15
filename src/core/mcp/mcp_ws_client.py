@@ -71,8 +71,12 @@ class McpWsClient:
         self._request_id: int = 0
         self._pending: Dict[int, asyncio.Future] = {}
         self._connected: bool = False
-        self._ws: Optional[Any] = None  # aiohttp.ClientWebSocketResponse
-        self._session: Optional[Any] = None  # aiohttp.ClientSession
+        # Use TYPE_CHECKING-only aiohttp names in annotations so static type
+        # checkers understand the expected types without importing aiohttp at
+        # runtime (aiohttp is optional). Use string forward-references to avoid
+        # runtime NameError when aiohttp is not installed.
+        self._ws: Optional["aiohttp.ClientWebSocketResponse"] = None
+        self._session: Optional["aiohttp.ClientSession"] = None
         self._reader_task: Optional[asyncio.Task] = None
         self._notification_handlers: List[
             Callable[[str, Dict[str, Any]], Optional[Awaitable[None]]]
@@ -103,9 +107,14 @@ class McpWsClient:
                 "McpWsClient requires 'aiohttp'. Install it with: pip install aiohttp"
             ) from exc
 
-        self._session = aiohttp.ClientSession(headers=self._extra_headers)
+        # Annotate as Any so static analyzers don't attempt to resolve aiohttp
+        # symbols when aiohttp is not installed in the analysis environment.
+        session: Any = aiohttp.ClientSession(headers=self._extra_headers)
+        self._session = session
         try:
-            self._ws = await self._session.ws_connect(self.url)
+            # Use the local `session` variable to help static analyzers infer the
+            # non-Optional ClientSession type before calling ws_connect.
+            self._ws = await session.ws_connect(self.url)
         except Exception as exc:
             await self._cleanup()
             raise RuntimeError(

@@ -16,9 +16,9 @@ Their results are merged into a single analyst_findings block.
 from __future__ import annotations
 import asyncio
 import logging
-from typing import Mapping, Dict, Any, List, Optional
+from typing import Dict, Any, List
 
-from src.core.orchestration.graph.state import AgentState
+from src.core.orchestration.graph.state import StateLike
 from src.tools.subagent_tools import delegate_task_async
 
 logger = logging.getLogger(__name__)
@@ -27,24 +27,29 @@ logger = logging.getLogger(__name__)
 _PARALLEL_ANALYST_TIERS = {"frontier", "large"}
 
 
-def _build_parallel_subtasks(task: str, files_hint: str, analysis_summary: str) -> List[str]:
+def _build_parallel_subtasks(
+    task: str, files_hint: str, analysis_summary: str
+) -> List[str]:
     """Return three focused analyst subtasks for parallel execution."""
     base = f"Task: {task}\n\nRelevant files: {files_hint}\nAnalysis summary: {analysis_summary}\n\n"
     return [
-        base + (
+        base
+        + (
             "FOCUS: File structure and entry points.\n"
             "Map the relevant files, identify module boundaries, entry points, "
             "and public APIs that this task will touch. "
             "Output a <findings> block listing each file with its purpose and relevant exports."
         ),
-        base + (
+        base
+        + (
             "FOCUS: Symbol graph and dependencies.\n"
             "Identify the key classes, functions, and data structures involved. "
             "Map call-graph relationships — who calls what, shared state, "
             "and which changes will have cascading effects. "
             "Output a <findings> block listing dependencies and risk areas."
         ),
-        base + (
+        base
+        + (
             "FOCUS: Test coverage and existing patterns.\n"
             "Find existing tests for the relevant code. Identify test patterns used "
             "in this project (pytest fixtures, mocks, helpers). "
@@ -60,13 +65,13 @@ def _merge_findings(results: List[str]) -> str:
     merged_parts = []
     for i, (section, result) in enumerate(zip(sections, results)):
         if result and result.strip():
-            merged_parts.append(f"<analyst_{section}>\n{result.strip()}\n</analyst_{section}>")
+            merged_parts.append(
+                f"<analyst_{section}>\n{result.strip()}\n</analyst_{section}>"
+            )
     return "\n\n".join(merged_parts) if merged_parts else ""
 
 
-async def analyst_delegation_node(
-    state: Mapping[str, Any], config: Any
-) -> Dict[str, Any]:
+async def analyst_delegation_node(state: StateLike, config: Any) -> Dict[str, Any]:
     """
     #56 + GAP-FRONTIER-3: Early delegation phase — spawns analyst subagent(s) before planning.
 
@@ -129,7 +134,9 @@ async def analyst_delegation_node(
             str_results: List[str] = []
             for r in raw_results:
                 if isinstance(r, Exception):
-                    logger.warning("analyst_delegation_node: parallel analyst failed: %s", r)
+                    logger.warning(
+                        "analyst_delegation_node: parallel analyst failed: %s", r
+                    )
                     str_results.append("")
                 else:
                     str_results.append(r if isinstance(r, str) else str(r))
@@ -140,7 +147,8 @@ async def analyst_delegation_node(
             )
         except asyncio.TimeoutError:
             logger.warning(
-                "analyst_delegation_node: parallel analysts timed out after %ds", _analyst_timeout
+                "analyst_delegation_node: parallel analysts timed out after %ds",
+                _analyst_timeout,
             )
         except Exception as e:
             logger.warning("analyst_delegation_node: parallel delegation failed: %s", e)

@@ -9,7 +9,7 @@ Implements the full threading contract from §9 of the spec:
   _agent_lock, _cancel_event, _history_lock, send_prompt(), interrupt(),
   force_interrupt(), _run_agent(), _schedule_callback().
 
-History persistence: §15 — atomic JSON at ~/.coding_agent/tui_conversation_history.json
+    History persistence: §15 — atomic JSON at get_data_dir()/tui_conversation_history.json
 """
 
 from __future__ import annotations
@@ -30,7 +30,14 @@ from src.ui.logging import get_logger
 
 logger = get_logger("bridge")
 
-HISTORY_PATH = Path.home() / ".coding_agent" / "tui_conversation_history.json"
+
+# Cross-platform config directory — prefer core.paths.get_data_dir() when available
+from ._core_paths_loader import get_data_dir
+
+
+_AGENT_DIR = get_data_dir()
+
+HISTORY_PATH = _AGENT_DIR / "tui_conversation_history.json"
 
 TIER3_PREFIXES = (
     "pip ",
@@ -182,6 +189,9 @@ class AgentBridge:
         self._cancel_event = threading.Event()
         self._history_lock = threading.Lock()
         self.history: list[tuple[str, str]] = []
+        # MID-INJ: Buffer for messages sent while the agent is running.
+        # Consumed by perception_node via pop_pending_injections().
+        self._pending_injections: list[str] = []
 
         # TUI-01: Use real Orchestrator wired to the real EventBus.
         # Try the app's orchestrator attribute first (legacy path), then
@@ -196,6 +206,25 @@ class AgentBridge:
 
         # AUTO-03: track active TUI role for system-prompt routing
         self._active_role: str = "lead_architect"
+        self._deferred_init_done: bool = False
+
+    def _ensure_deferred_init(self) -> None:
+        """Run trusted-gated deferred init once per bridge lifetime."""
+        if self._deferred_init_done:
+            return
+        if self._orchestrator is None:
+            self._deferred_init_done = True
+            return
+        try:
+            from src.core.orchestration.deferred_init import (  # type: ignore[import]
+                run_deferred_init,
+            )
+
+            asyncio.run(run_deferred_init(self._orchestrator))
+        except Exception as exc:
+            logger.debug(f"deferred_init skipped/failed: {exc}")
+        finally:
+            self._deferred_init_done = True
 
     # ── Scheduling UI updates from any thread ─────────────────────────────
 
@@ -371,7 +400,7 @@ class AgentBridge:
         the orchestrator or config are unavailable (dev / mock mode).
         """
         try:
-            from src.core.config_loader import load_merged_config
+            from src.core.config_loader import load_merged_config  # type: ignore[import]
 
             cfg = load_merged_config(
                 Path(self._working_dir) if self._working_dir else None
@@ -464,7 +493,7 @@ class AgentBridge:
         self._schedule_callback(self.app.post_message, msg)
 
     def _on_orchestrator_startup(self, payload: dict) -> None:
-        from src.ui.bus import OrchestratorReadyEvent, SessionHealthEvent
+        from src.ui.bus import OrchestratorReadyEvent
 
         wd = payload.get("working_dir", "")
         self._working_dir = wd
@@ -488,7 +517,8 @@ class AgentBridge:
         """
         try:
             from src.ui.bus import ProviderStatusChangeEvent
-            import json, pathlib
+            import json
+            import pathlib
 
             providers_path = (
                 pathlib.Path(__file__).parents[3] / "src" / "config" / "providers.json"
@@ -576,7 +606,8 @@ class AgentBridge:
         """
         try:
             from src.ui.bus import SessionHealthEvent, NotificationEvent
-            import json, pathlib
+            import json
+            import pathlib
 
             # Determine the active provider from providers.json
             providers_path = (
@@ -917,9 +948,9 @@ class AgentBridge:
             # get_context_budget() (and perception_node) use the real value
             # fetched from the models endpoint rather than the static file value.
             try:
-                from src.core.inference.provider_context import (
+                from src.core.inference.provider_context import (  # type: ignore[import]
                     set_active_context_length,
-                )  # type: ignore[import]
+                )
 
                 set_active_context_length(int(ctx))
             except Exception:
@@ -1204,7 +1235,7 @@ class AgentBridge:
         dict with a ``model`` key when found; empty dict otherwise.
         """
         try:
-            from src.core.config_loader import load_merged_config
+            from src.core.config_loader import load_merged_config  # type: ignore[import]
 
             cfg = load_merged_config()
             nano_model = (cfg.get("model_routing") or {}).get("nano_model")
@@ -1235,16 +1266,35 @@ class AgentBridge:
             return self._agent_running
 
     def send_prompt(self, text: str) -> bool:
-        """Thread-safe prompt submission. Returns False if already running."""
+        """Thread-safe prompt submission.
+
+        If the agent is currently running, the message is appended to the
+        mid-run injection buffer so perception_node can pick it up on the
+        next LLM round (OpenCode-style system-reminder injection).  Returns
+        False in that case so the caller knows the message was buffered, not
+        immediately dispatched.
+        """
         with self._agent_lock:
             if self._agent_running:
+                # MID-INJ: buffer for mid-run injection
+                self._pending_injections.append(text)
                 return False
             self._agent_running = True
         self._cancel_event.clear()
+        # MID-INJ: clear any stale injections from a previous run
+        with self._agent_lock:
+            self._pending_injections.clear()
         with self._history_lock:
             self.history.append(("user", text))
         threading.Thread(target=self._run_agent, args=(text,), daemon=True).start()
         return True
+
+    def pop_pending_injections(self) -> list[str]:
+        """Return and clear all buffered mid-run messages (thread-safe)."""
+        with self._agent_lock:
+            msgs = list(self._pending_injections)
+            self._pending_injections.clear()
+        return msgs
 
     def interrupt(self) -> None:
         """Single Escape — set cancel event (§9.4)."""
@@ -1269,20 +1319,21 @@ class AgentBridge:
         try:
             self._post(AgentRunningEvent(running=True))
             if self._orchestrator:
+                self._ensure_deferred_init()
                 # NOTE: start_new_task() is intentionally NOT called here — it
                 # clears msg_mgr.messages, which would wipe conversation history
                 # on every follow-up message.  start_new_task() is called only
                 # from start_new_session() (triggered by /new).
                 # AUTO-02: apply per-role autonomy settings before each run
                 try:
-                    from src.core.config_loader import (
+                    from src.core.config_loader import (  # type: ignore[import]
                         get_role_config,
                         load_merged_config,
                     )
-                    from src.tools.tools_config import (
+                    from src.tools.tools_config import (  # type: ignore[import]
                         set_autonomous,
                         set_require_preview_confirmation,
-                    )  # type: ignore[import]
+                    )
 
                     _wdir = Path(self._working_dir) if self._working_dir else None
                     role_cfg = get_role_config(self._active_role, working_dir=_wdir)
@@ -1316,6 +1367,9 @@ class AgentBridge:
                 else:
                     messages = [{"role": "user", "content": text}]
                 tools = self._orchestrator.get_tools_for_role("operational")
+                # MID-INJ: Attach self so inference_loop can expose
+                # pop_pending_injections() to the graph via initial_state.
+                self._orchestrator._injection_source = self
                 result = self._orchestrator.run_agent_once(
                     system_prompt_name=prompt_name,
                     messages=messages,
@@ -1562,11 +1616,28 @@ class AgentBridge:
             self.history.clear()
         self._save_history()
 
+    def undo_last_user_message(self) -> bool:
+        """Remove the last user message from history (GAP-CMD-1).
+
+        Returns True if a user message was removed, False if no user messages exist.
+        """
+        with self._history_lock:
+            # Find the last user message (working backwards)
+            for i in range(len(self.history) - 1, -1, -1):
+                if self.history[i][0] == "user":
+                    removed = self.history.pop(i)
+                    self._save_history()
+                    logger.info(f"Undo: removed user message '{removed[1][:50]}...'")
+                    return True
+            return False
+
     # ── Frecency-scored prompt history (§H6) ─────────────────────────────
 
     @staticmethod
     def _get_prompt_history_path() -> Path:
-        hist_dir = Path.home() / ".coding_agent"
+        # Use the agent data dir (prefers src.core.paths.get_data_dir() when
+        # available; falls back to Path.home() based legacy dir)
+        hist_dir = _AGENT_DIR
         hist_dir.mkdir(parents=True, exist_ok=True)
         return hist_dir / "tui_prompt_history.json"
 

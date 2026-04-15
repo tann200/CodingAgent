@@ -1,9 +1,9 @@
 import logging
 import os
 import threading
-from typing import Mapping, Dict, Any
+from typing import Dict, Any
 
-from src.core.orchestration.graph.state import AgentState
+from src.core.orchestration.graph.state import StateLike
 from src.core.orchestration.graph.nodes.node_utils import _resolve_orchestrator
 from src.tools.repo_summary import generate_repo_summary
 
@@ -191,7 +191,7 @@ def clear_repo_summary_cache(working_dir: str | None = None) -> None:
                 )
 
 
-async def analysis_node(state: Mapping[str, Any], config: Any) -> Dict[str, Any]:
+async def analysis_node(state: StateLike, config: Any) -> Dict[str, Any]:
     """
     Analysis Layer: Explores the repository to gather relevant context before planning.
     Uses repository intelligence tools to find relevant files, symbols, and dependencies.
