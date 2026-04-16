@@ -4,6 +4,8 @@ import pytest
 from src.server.app import app, register_event_bus
 from src.core.orchestration.event_bus import get_event_bus
 from src.core.scheduler import worker as sched
+import threading
+import queue as _queue
 
 
 def setup_function(_):
@@ -114,7 +116,7 @@ def test_websocket_session_endpoint_auth_and_events(monkeypatch):
             assert isinstance(msg.get("data"), dict)
 
 
-def test_websocket_control_subscribe_and_initial_query(monkeypatch):
+def test_websocket_control_subscribe_and_initial_query(monkeypatch, recv_json_ws):
     monkeypatch.setenv("CODING_AGENT_ADMIN_TOKEN", "ws-token-2")
     with TestClient(app) as client:
         register_event_bus(get_event_bus())
@@ -126,7 +128,7 @@ def test_websocket_control_subscribe_and_initial_query(monkeypatch):
             # Send subscribe control message
             ws.send_text(json.dumps({"type": "subscribe", "event": "session.created"}))
             # server will acknowledge via _control subscribed envelope
-            ack = ws.receive_json()
+            ack = recv_json_ws(ws)
             assert ack.get("event") == "_control"
             assert ack.get("data", {}).get("type") == "subscribed"
 
@@ -134,7 +136,7 @@ def test_websocket_control_subscribe_and_initial_query(monkeypatch):
             get_event_bus().publish(
                 "session.created", {"session_id": "testsession", "foo": "baz"}
             )
-            msg = ws.receive_json()
+            msg = recv_json_ws(ws)
             # Ensure we got the event envelope at some point
             assert (
                 msg.get("event") == "session.created" or msg.get("event") == "_control"
@@ -147,7 +149,7 @@ def test_websocket_control_subscribe_and_initial_query(monkeypatch):
             get_event_bus().publish(
                 "session.created", {"session_id": "testsession", "foo": "qux"}
             )
-            msg = ws.receive_json()
+            msg = recv_json_ws(ws)
             assert msg.get("event") == "session.created"
             assert isinstance(msg.get("data"), dict)
 
@@ -241,7 +243,7 @@ def test_admin_auth_counters_increment(monkeypatch):
         assert after["successes"] >= before["successes"] + 1
 
 
-def test_websocket_control_list_and_ping(monkeypatch):
+def test_websocket_control_list_and_ping(monkeypatch, recv_json_ws):
     monkeypatch.setenv("CODING_AGENT_ADMIN_TOKEN", "ws-token-3")
     with TestClient(app) as client:
         register_event_bus(get_event_bus())
@@ -250,13 +252,13 @@ def test_websocket_control_list_and_ping(monkeypatch):
         ) as ws:
             # list should return empty subscriptions initially
             ws.send_text(json.dumps({"type": "list"}))
-            msg = ws.receive_json()
+            msg = recv_json_ws(ws)
             assert msg.get("event") == "_control"
             assert msg.get("data", {}).get("type") == "subscriptions"
 
             # ping -> pong
             ws.send_text(json.dumps({"type": "ping"}))
-            msg = ws.receive_json()
+            msg = recv_json_ws(ws)
             assert msg.get("event") == "_control"
             # server pong may be represented as {type: 'pong'} or minimal control
             assert msg.get("data", {}).get("type") in ("pong", None)
