@@ -98,10 +98,10 @@ Follow-up 1: Audit and add tests enforcing CP-1 (prevent unbounded subagent recu
 
 Step 12 - Scheduled tasks / Cron & heartbeat
 Description: Periodic cron-like tasks and heartbeat checks to trigger maintenance jobs (compaction, distillation) or scheduled skills.
-Files: (none obvious: grep uncovered only crontab references in tools/bash_security.py)
-Status: Missing
-Evidence: No scheduler/cron worker module found; only crontab appears in a security matcher.
-Follow-up 1: Design and implement a scheduler/heartbeat worker that posts events to EventBus (Priority: P1, Est: 2-3 days).
+Files: src/core/scheduler/worker.py; src/core/orchestration/orchestrator_bootstrap.py
+Status: Implemented (lightweight)
+Evidence: src/core/scheduler/worker.py provides a minimal scheduler/heartbeat worker. Orchestrator bootstrap wires it via _init_scheduler and registers a periodic scheduler.distill_request job. Environment knobs: CODING_AGENT_SCHEDULER_HEARTBEAT (heartbeat seconds), CODING_AGENT_DISTILL_INTERVAL (distillation request interval seconds).
+Follow-up 1: Add per-job enable/disable config and expose job listing/clear API for runtime control (Priority: P2, Est: 1 day).
 
 Step 13 - Multi-layer prompts & SystemPromptBuilder
 Description: Two-part system prompt assembly (static prefix + dynamic contextual prefix) and model-adaptive prompt composition.
@@ -134,9 +134,9 @@ Follow-up 1: Add stress tests and ensure executor sizing is configurable (Priori
 Step 17 - Memory management, distillation & retrieval
 Description: Long-term memory distillation, retrieval, and integration with compaction to build summaries.
 Files: src/core/memory/distiller.py; src/core/memory/auto_compactor.py; src/core/memory/session_store.py
-Status: Partial
-Evidence: tests/unit/test_distiller.py; auto_compactor exists; distiller not yet fully wired to periodic jobs or compaction callbacks everywhere.
-Follow-up 1: Wire memory distiller into MessageManager compaction and scheduler/cron jobs; add tests for summary quality and eviction heuristics (Priority: P1, Est: 2-3 days).
+Status: Partial (wired to scheduler events)
+Evidence: distiller (src/core/memory/distiller.py) is wired to the scheduler via the scheduler.distill_request event; orchestrator subscribes and runs distill_context in a background thread and publishes scheduler.distill_completed / scheduler.distill_failed. Tests added: tests/unit/test_scheduler_distill_handler.py, tests/unit/test_distiller_small_model_injection.py.
+Follow-up 1: Wire distillation results into MessageManager compaction (replace history with _compacted_history on success) and add tests for integration and LLM stubbing (Priority: P1, Est: 2-3 days).
 
 Top-priority Backlog (summary)
 1. Canonical toolset model-aware loading policy: pick A/B/C and implement. Ensure both loaders expose load_toolset_for_model or make orchestrator import src.config.toolsets.loader explicitly (Priority: P0, Est: 1-2 days).

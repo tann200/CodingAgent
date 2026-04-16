@@ -377,7 +377,12 @@ Generate a YAML tool call to fix the issue. Use edit_file, write_file, or bash a
             model = None
 
         # Secondary: ProviderManager with the adapter
-        if provider is None or model is None:
+        # Only consult ProviderManager if an adapter instance is present. When
+        # there is no adapter (e.g., in some headless/test contexts) we must not
+        # infer a model from a global provider manager — prefer explicit None.
+        if (provider is None or model is None) and getattr(
+            orchestrator, "adapter", None
+        ) is not None:
             try:
                 from src.core.inference.llm_manager import get_provider_manager
 

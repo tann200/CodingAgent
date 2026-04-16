@@ -6,7 +6,7 @@ import pytest
 
 def test_legacy_loader_delegates_to_config_loader(monkeypatch, tmp_path):
     # Make a fake canonical loader module with predictable behaviour
-    fake_loader = types.SimpleNamespace()
+    fake_loader = types.ModuleType("src.config.toolsets.loader")
 
     def fake_load_toolset(name: str):
         return {"name": name, "tools": ["x"]}
@@ -16,7 +16,7 @@ def test_legacy_loader_delegates_to_config_loader(monkeypatch, tmp_path):
     # Insert the fake module into sys.modules under the canonical path
     import sys
 
-    sys.modules["src.config.toolsets.loader"] = fake_loader
+    monkeypatch.setitem(sys.modules, "src.config.toolsets.loader", fake_loader)
 
     # Now import the legacy loader and call load_toolset
     from src.tools.toolsets import loader as legacy_loader
