@@ -802,7 +802,7 @@ Parameters:
 Returns:
   str  — prose summary of what the subagent did and its results
 
-Depth limit: 3 (enforced via CODINGAGENT_DELEGATION_DEPTH env var; deeper calls error)
+Depth limit: 3 (enforced via in-process ContextVar _DELEGATION_DEPTH_VAR and per-agent AgentState['delegation_depth']; environment variables are no longer used for this guard)
 ```
 
 #### `list_subagent_roles`

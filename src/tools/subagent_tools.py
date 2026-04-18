@@ -270,14 +270,9 @@ def delegate_task(
 
     # HR-5 fix: Check delegation depth to prevent unbounded recursive spawning.
     # Use the process-local ContextVar as the authoritative source — it cannot
-    # be forged by subprocesses, unlike os.environ.  Also read the env var as a
-    # belt-and-suspenders fallback so that tests and subprocess launches that set
-    # CODINGAGENT_DELEGATION_DEPTH are honoured even when the ContextVar is 0.
-
+    # be forged by subprocesses. AgentState["delegation_depth"] is used for
+    # cross-session propagation; the ContextVar tracks in-process nesting.
     depth = _DELEGATION_DEPTH_VAR.get()
-    _env_depth_str = os.environ.get("CODINGAGENT_DELEGATION_DEPTH", "")
-    if _env_depth_str.isdigit():
-        depth = max(depth, int(_env_depth_str))
     if depth >= _MAX_DELEGATION_DEPTH:
         return (
             f"Error: Maximum delegation depth ({_MAX_DELEGATION_DEPTH}) exceeded. "

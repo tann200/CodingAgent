@@ -203,39 +203,53 @@ class TestDelegateTaskCP1Wiring:
 
 class TestDelegateTaskDepthGuard:
     def test_depth_guard_refuses_at_depth_3(self, tmp_path: Path) -> None:
-        with patch.dict(os.environ, {"CODINGAGENT_DELEGATION_DEPTH": "3"}):
-            from src.tools.subagent_tools import delegate_task
+        # Set the in-process delegation depth via the ContextVar instead of
+        # using an environment variable which is process-global and forgeable.
+        from src.tools.subagent_tools import delegate_task, _DELEGATION_DEPTH_VAR
 
+        token = _DELEGATION_DEPTH_VAR.set(3)
+        try:
             result = delegate_task(
                 role="analyst",
                 subtask_description="should be refused",
                 working_dir=str(tmp_path),
             )
+        finally:
+            _DELEGATION_DEPTH_VAR.reset(token)
         assert "Maximum delegation depth" in result
         assert "Error" in result
 
     def test_depth_guard_allows_at_depth_2(self, tmp_path: Path) -> None:
         """Depth 2 is still allowed (limit is >= 3)."""
         graph_mock = _make_minimal_graph_mock()
-        with (
-            patch.dict(os.environ, {"CODINGAGENT_DELEGATION_DEPTH": "2"}),
-            patch("src.tools.subagent_tools.GraphFactory") as mock_gf,
-            patch("src.tools.subagent_tools.get_agent_brain_manager") as mock_brain_mgr,
-            patch("src.tools.subagent_tools._PARENT_ORCHESTRATOR_VAR") as mock_ctxvar,
-        ):
-            mock_gf.get_graph.return_value = graph_mock
-            mock_brain = MagicMock()
-            mock_brain.compile_system_prompt.return_value = "sys"
-            mock_brain_mgr.return_value = mock_brain
-            mock_ctxvar.get.return_value = None
+        from src.tools.subagent_tools import _DELEGATION_DEPTH_VAR
 
-            from src.tools.subagent_tools import delegate_task
+        token = _DELEGATION_DEPTH_VAR.set(2)
+        try:
+            with (
+                patch("src.tools.subagent_tools.GraphFactory") as mock_gf,
+                patch(
+                    "src.tools.subagent_tools.get_agent_brain_manager"
+                ) as mock_brain_mgr,
+                patch(
+                    "src.tools.subagent_tools._PARENT_ORCHESTRATOR_VAR"
+                ) as mock_ctxvar,
+            ):
+                mock_gf.get_graph.return_value = graph_mock
+                mock_brain = MagicMock()
+                mock_brain.compile_system_prompt.return_value = "sys"
+                mock_brain_mgr.return_value = mock_brain
+                mock_ctxvar.get.return_value = None
 
-            result = delegate_task(
-                role="analyst",
-                subtask_description="allowed task",
-                working_dir=str(tmp_path),
-            )
+                from src.tools.subagent_tools import delegate_task
+
+                result = delegate_task(
+                    role="analyst",
+                    subtask_description="allowed task",
+                    working_dir=str(tmp_path),
+                )
+        finally:
+            _DELEGATION_DEPTH_VAR.reset(token)
         # Should NOT be a depth-guard refusal
         assert "Maximum delegation depth" not in result
 

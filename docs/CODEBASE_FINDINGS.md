@@ -777,7 +777,7 @@ The bwrap invocation uses flag strings like `"--dev /dev --proc /proc"` as a sin
 **Severity:** High
 **Category:** Security
 
-`depth = int(os.environ.get("CODINGAGENT_DELEGATION_DEPTH", "0"))` is readable and writeable by any child process, allowing a compromised subprocess to reset the depth counter and bypass the recursion limit.
+`depth = int(os.environ.get("CODINGAGENT_DELEGATION_DEPTH", "0"))` was previously readable and writeable by any child process, allowing a compromised subprocess to reset the depth counter and bypass the recursion limit. This mechanism has been removed: delegation depth is now tracked using an in-process ContextVar (`_DELEGATION_DEPTH_VAR`) and propagated between agent graphs via `AgentState["delegation_depth"]`.
 
 **Fix:** Track delegation depth in `AgentState` (graph state dict) or via a signed process-internal counter, not an environment variable.
 
@@ -851,7 +851,7 @@ The existing `f"/{pattern}" in path_str` fallback at the same line does catch em
 **Severity:** High
 **Category:** Concurrency
 
-`os.environ["CODINGAGENT_DELEGATION_DEPTH"] = str(current_depth + 1)` is set inside an async function. Under concurrent delegation from multiple sessions, all sessions share the same environment variable and corrupt each other's depth counters.
+`os.environ["CODINGAGENT_DELEGATION_DEPTH"] = str(current_depth + 1)` was previously set inside an async function. Under concurrent delegation from multiple sessions, all sessions would share the same environment variable and corrupt each other's depth counters. This write has been removed; the graph now uses `AgentState["delegation_depth"]` for cross-graph propagation and a ContextVar for in-process nesting.
 
 **Fix:** Store depth in `AgentState["delegation_depth"]` and pass it through the graph state rather than `os.environ`.
 

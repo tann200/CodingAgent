@@ -48,10 +48,9 @@ async def _execute_delegation_with_locks(
                 acquired.append(f)
 
         # HR-5 fix: enforce delegation depth limit to prevent recursive DoS.
-        # Read depth from state only — subagent_tools.py is responsible for writing
-        # os.environ["CODINGAGENT_DELEGATION_DEPTH"] just before spawning so child
-        # *subprocesses* inherit the counter.  Writing it here would permanently mutate
-        # the global process environment for all concurrent async tasks.
+        # Read depth from state only — in-process delegation depth is tracked via
+        # ContextVar in src.tools.subagent_tools and the per-graph AgentState
+        # field "delegation_depth" is used for cross-session propagation.
         current_depth = int(state.get("delegation_depth") or 0)
         _MAX_DELEGATION_DEPTH = 3
         if current_depth >= _MAX_DELEGATION_DEPTH:

@@ -238,7 +238,11 @@ def _run_one_command(
     ``"deny"``, or ``"warn"``; *message* is captured stdout / warning text
     or None.
     """
+    # Copy environment for hook subprocesses but remove delegation depth keys
+    # to avoid leaking process-global counters to child hook scripts.
     env = dict(os.environ)
+    env.pop("CODINGAGENT_DELEGATION_DEPTH", None)
+    env.pop("AGENT_DELEGATION_DEPTH", None)
     env["HOOK_EVENT"] = event
     env["HOOK_TOOL_NAME"] = tool_name
     env["HOOK_TOOL_INPUT"] = json.dumps(tool_input)

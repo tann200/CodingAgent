@@ -128,7 +128,13 @@ def _matches(pattern: str, tool_name: str) -> bool:
 
 
 def _build_env(tool_name: str, args: Dict[str, Any], result: Any = None) -> dict:
+    # Copy the current process environment for subprocess execution but scrub
+    # any delegation-related keys so a child process cannot observe or forge
+    # the in-process delegation depth.
     env = os.environ.copy()
+    # Remove any delegation depth env vars if present
+    env.pop("CODINGAGENT_DELEGATION_DEPTH", None)
+    env.pop("AGENT_DELEGATION_DEPTH", None)
     env["TOOL_NAME"] = tool_name
     try:
         env["TOOL_ARGS_JSON"] = json.dumps(args)
