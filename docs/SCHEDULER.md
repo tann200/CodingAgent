@@ -22,6 +22,7 @@ Environment knobs
 - `CODING_AGENT_SCHEDULER_HEARTBEAT`: Scheduler heartbeat loop interval in seconds (default used if unset).
 - `CODING_AGENT_DISTILL_INTERVAL`: Default distill interval in seconds used by the periodic distill job when not configured explicitly.
 - `CODING_AGENT_ADMIN_TOKEN`: Optional admin token. When set, admin HTTP endpoints require this token. Accepts Bearer `Authorization` header or `X-CodingAgent-Token` header.
+ - `CODING_AGENT_ADMIN_TOKEN`: Optional admin token. When set, admin HTTP endpoints require this token. Accepts Bearer `Authorization` header or `X-CodingAgent-Token` header.
 
 HTTP Admin endpoints
 
@@ -101,9 +102,12 @@ WebSocket Session Endpoint
 The server exposes a WebSocket endpoint to receive EventBus events in real-time:
 
 - URL: `/ws/session/{session_id}`
-- Authentication: mirrors the admin endpoints. If `CODING_AGENT_ADMIN_TOKEN` is set,
-  the client must provide either a Bearer token in the `Authorization` header, the
-  `X-CodingAgent-Token` header, or include `?token=<token>` as a query param (convenience only).
+  - Authentication: mirrors the admin endpoints. If `CODING_AGENT_ADMIN_TOKEN` is set,
+    the client must provide either a Bearer token in the `Authorization` header or the
+    `X-CodingAgent-Token` header. Tokens passed via the query string are not accepted.
+    Note: The browser WebSocket API does not allow custom headers, so if the server
+    is protected by `CODING_AGENT_ADMIN_TOKEN` you must use a server-side WebSocket
+    client (or a proxy) that can set the Authorization header.
 
 Query parameters
 
@@ -167,19 +171,23 @@ Dropped events are recorded in in-process metrics exposed on `/metrics`.
 WebSocket client example (browser JavaScript)
 
 ```javascript
-const token = "YOUR_ADMIN_TOKEN"; // or omit if server is not protected
-const ws = new WebSocket(`ws://localhost:8000/ws/session/s1?events=session.created&token=${token}`);
+// Node.js example using the 'ws' package which allows custom headers
+const WebSocket = require('ws');
+const token = 'YOUR_ADMIN_TOKEN';
+const ws = new WebSocket('ws://localhost:8000/ws/session/s1?events=session.created', {
+  headers: { Authorization: `Bearer ${token}` },
+});
 
-ws.addEventListener('open', () => {
+ws.on('open', () => {
   console.log('ws open');
 });
 
-ws.addEventListener('message', (evt) => {
+ws.on('message', (data) => {
   try {
-    const msg = JSON.parse(evt.data);
+    const msg = JSON.parse(data.toString());
     console.log('received', msg.event, msg.data);
   } catch (e) {
-    console.warn('non-json message', evt.data);
+    console.warn('non-json message', data.toString());
   }
 });
 
@@ -193,4 +201,4 @@ ws.send(JSON.stringify({type: 'unsubscribe', event: 'agent.start'}));
 ws.send(JSON.stringify({type: 'list'}));
 ```
 
-Security note: passing tokens in query parameters is convenient for browsers or tools that cannot set headers, but is less secure; prefer `Authorization: Bearer <token>` in production.
+Security note: tokens passed in URLs are not accepted by the WebSocket endpoint. Prefer header-based Authorization for authenticated access. If you need browser clients to connect and the server is protected by `CODING_AGENT_ADMIN_TOKEN`, consider an authenticated proxy or relax the admin token for that use-case.

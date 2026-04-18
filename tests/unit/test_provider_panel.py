@@ -9,8 +9,34 @@ import pytest
 from unittest.mock import MagicMock
 import threading
 
-from tui.src.ui.mock_eventbus import get_mock_event_bus, reset_mock_event_bus
-from tui.src.ui.core_bridge import AgentBridge
+import importlib.util as _ilu
+import sys as _sys
+from pathlib import Path as _Path
+
+# Shadow tui/src as `src` during import of tui modules so `from src.ui.*` works inside tui
+_tui_root = str(_Path(__file__).parents[2] / "tui")
+_tui_src_init = _Path(_tui_root) / "src" / "__init__.py"
+_tui_src_spec = _ilu.spec_from_file_location(
+    "src",
+    str(_tui_src_init),
+    submodule_search_locations=[str(_Path(_tui_root) / "src")],
+)
+if _tui_src_spec is None or _tui_src_spec.loader is None:
+    raise ImportError(f"Cannot load TUI src spec from {_tui_src_init}")
+_tui_src_mod = _ilu.module_from_spec(_tui_src_spec)
+_tui_src_spec.loader.exec_module(_tui_src_mod)  # type: ignore[union-attr]
+
+_saved_src = _sys.modules.get("src")
+_sys.modules["src"] = _tui_src_mod
+try:
+    from tui.src.ui.mock_eventbus import get_mock_event_bus, reset_mock_event_bus
+    from tui.src.ui.core_bridge import AgentBridge
+finally:
+    if _saved_src is not None:
+        _sys.modules["src"] = _saved_src
+    else:
+        _sys.modules.pop("src", None)
+
 from src.core.inference.llm_manager import _provider_manager
 
 

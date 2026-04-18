@@ -41,8 +41,32 @@ _BWRAP_PATH: Optional[str] = shutil.which("bwrap")
 _DEFAULT_LEVEL: str = os.environ.get("CODINGAGENT_SANDBOX_LEVEL", "workspace")
 
 
+def _probe_bwrap(path: Optional[str]) -> bool:
+    """Run a quick `bwrap --version` probe to ensure bwrap is callable.
+
+    Returns True when the binary exists and responds successfully, False otherwise.
+    """
+    if not path:
+        return False
+    try:
+        # Use a short timeout to avoid blocking import
+        res = subprocess.run(
+            [path, "--version"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=3,
+        )
+        return res.returncode == 0
+    except Exception:
+        return False
+
+
+# Final availability flag (probe the binary if present)
+_BWRAP_AVAILABLE: bool = _probe_bwrap(_BWRAP_PATH)
+
+
 def _bwrap_available() -> bool:
-    return _BWRAP_PATH is not None
+    return _BWRAP_AVAILABLE
 
 
 def _build_bwrap_args(
@@ -53,14 +77,23 @@ def _build_bwrap_args(
     """Build the bwrap command prefix for the given *level*."""
     args: List[str] = [_BWRAP_PATH or "bwrap"]
 
-    # Read-only bind of the entire host root filesystem
-    args += ["--ro-bind", "/", "/"]
+    # Ensure the helper dies with the parent so we don't leave orphaned processes
+    args += ["--die-with-parent"]
+
+    # Bind common read-only system directories individually (safer than ro-binding /)
+    for d in ("/usr", "/lib", "/lib64", "/bin", "/sbin"):
+        if Path(d).exists():
+            args += ["--ro-bind", d, d]
+
+    # Minimal proc and dev setup
+    if Path("/proc").exists():
+        args += ["--proc", "/proc"]
+    if Path("/dev").exists():
+        args += ["--dev", "/dev"]
 
     # Writable mount for /tmp (many programs require it)
-    args += ["--bind", "/tmp", "/tmp"]
-
-    # Writable mount for /dev and /proc
-    args += ["--dev-bind", "/dev", "/dev", "--proc", "/proc"]
+    if Path("/tmp").exists():
+        args += ["--bind", "/tmp", "/tmp"]
 
     # Make the working directory writable
     cwd_str = str(cwd.resolve())
@@ -119,8 +152,24 @@ def run_sandboxed(
     if level == "off" or not _bwrap_available():
         if level != "off":
             logger.debug(
-                "sandbox: bwrap not found — falling back to unsandboxed execution"
+                "sandbox: bwrap not found or unavailable — falling back to unsandboxed execution"
             )
+            try:
+                # Emit a system.warning event so operator tooling can surface it
+                from src.core.orchestration.event_bus import get_event_bus
+
+                eb = get_event_bus()
+                try:
+                    eb.publish(
+                        "system.warning",
+                        {"message": "bwrap not available; sandbox disabled"},
+                    )
+                except Exception:
+                    # best-effort
+                    pass
+            except Exception:
+                # Avoid import cycles or issues during early startup
+                pass
         return subprocess.run(cmd, cwd=str(cwd), timeout=timeout, **kwargs)
 
     try:

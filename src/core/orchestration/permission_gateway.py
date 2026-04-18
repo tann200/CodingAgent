@@ -95,6 +95,62 @@ except Exception:
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Tool-kind and primary-argument helpers (used by _gate2c_permission_table)
+# ---------------------------------------------------------------------------
+
+#: Maps tool name → PermissionKind string for PermissionTable lookups.
+_TOOL_KIND_MAP: dict[str, str] = {
+    # Writes
+    "write_file":        "write",
+    "edit_file":         "edit",
+    "edit_by_line_range": "edit",
+    "apply_patch":       "edit",
+    "delete_file":       "write",
+    "rename_file":       "write",
+    # Reads
+    "read_file":         "read",
+    "list_dir":          "read",
+    "glob_tool":         "glob",
+    "grep_tool":         "grep",
+    # Shell
+    "bash":              "bash",
+    "run_tests":         "bash",
+    "run_bash":          "bash",
+    # Network
+    "webfetch":          "webfetch",
+    "websearch":         "websearch",
+    # Delegation
+    "delegate_task":     "delegate_task",
+}
+
+
+def _tool_kind_for_name(tool_name: str) -> str:
+    """Return the PermissionKind string for *tool_name* (fallback: tool_name)."""
+    return _TOOL_KIND_MAP.get(tool_name, tool_name)
+
+
+#: Keys to try when extracting the primary argument, in priority order.
+_PRIMARY_ARG_KEYS: list[str] = [
+    "path", "file_path", "src_path", "target", "filename",
+    "url", "uri",
+    "command", "cmd", "bash_command",
+    "query", "search_query",
+    "subtask_description", "description",
+    "pattern", "glob",
+]
+
+
+def _primary_arg_for_tool(tool_name: str, args: dict) -> str:
+    """Return the primary string argument of the tool call for pattern matching."""
+    for key in _PRIMARY_ARG_KEYS:
+        val = args.get(key)
+        if val is not None:
+            s = str(val)
+            return s[:256]  # cap length for pattern matching
+    return ""
+
+
 # Ordering of permission levels from least to most permissive.
 # Used by _gate4_permission_mode to compare tool vs. active-mode ranks.
 _PERM_ORDER: dict[str, int] = {
@@ -210,7 +266,12 @@ class PermissionGateway:
         if result.blocked:
             return result
 
+        # TASK-PERM-3: Gate 2c — SQLite PermissionTable "allow always" / "deny always" rules.
+        # Runs before gate5 so persisted "allow always" rules skip the interactive prompt.
         if needs_gate:
+            table_result = self._gate2c_permission_table(name, args)
+            if table_result is not None:
+                return table_result
             result = self._gate5_user_approval(name, args)
             if result.blocked:
                 return result
@@ -406,6 +467,56 @@ class PermissionGateway:
         except Exception:
             pass
         return PermissionResult(allowed=True)
+
+    def _gate2c_permission_table(
+        self, name: str, args: Dict[str, Any]
+    ) -> Optional[PermissionResult]:
+        """TASK-PERM-3: Check SQLite PermissionTable for stored "allow/deny always" rules.
+
+        Returns:
+          - ``PermissionResult(allowed=True)`` when a matching "allow" rule is found.
+          - ``PermissionResult(allowed=False, ...)`` when a matching "deny" rule is found.
+          - ``None`` when no rule matches (gate5 user-approval should proceed as normal).
+
+        The primary argument is extracted from *args* using common key names
+        (``path``, ``url``, ``command``, etc.) for pattern matching.
+        """
+        try:
+            from src.core.orchestration.permission_table import get_permission_table
+            from src.tools._tool import PermissionKind
+
+            # Map tool name to PermissionKind string for the lookup key
+            kind_str = _tool_kind_for_name(name)
+            primary_arg = _primary_arg_for_tool(name, args)
+            tbl = get_permission_table()
+            action = tbl.check(kind_str, primary_arg)
+
+            if action == "allow":
+                logger.debug(
+                    "permission_table: pre-approved %s %r via allow rule", name, primary_arg
+                )
+                return PermissionResult(allowed=True)
+
+            if action == "deny":
+                logger.debug(
+                    "permission_table: blocked %s %r via deny rule", name, primary_arg
+                )
+                return PermissionResult(
+                    allowed=False,
+                    gate=3,
+                    reason="permission_table deny rule",
+                    rejection={
+                        "ok": False,
+                        "error": (
+                            f"Tool '{name}' is blocked by a stored permission rule. "
+                            "Remove the rule from .agent-context/permission_rules.db to allow it."
+                        ),
+                    },
+                )
+        except Exception:
+            pass  # table failures must never block tool execution
+
+        return None  # no matching rule — proceed to gate5
 
     def _gate5_user_approval(self, name: str, args: Dict[str, Any]) -> PermissionResult:
         """Gate 5: Interactive user-approval prompt (skipped in autonomous mode)."""

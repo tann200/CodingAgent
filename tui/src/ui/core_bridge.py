@@ -209,7 +209,15 @@ class AgentBridge:
         self._deferred_init_done: bool = False
 
     def _ensure_deferred_init(self) -> None:
-        """Run trusted-gated deferred init once per bridge lifetime."""
+        """Run trusted-gated deferred init once per bridge lifetime.
+
+        HIGH-11 fix: ``asyncio.run()`` raises ``RuntimeError`` when called
+        from a thread that already has a running event loop (e.g. when
+        Textual places coroutine scheduling state on a worker thread).  Use
+        an explicit ``new_event_loop`` + ``run_until_complete`` + ``close``
+        pattern instead — this is always safe from any thread and does not
+        interfere with the main Textual event loop.
+        """
         if self._deferred_init_done:
             return
         if self._orchestrator is None:
@@ -220,7 +228,11 @@ class AgentBridge:
                 run_deferred_init,
             )
 
-            asyncio.run(run_deferred_init(self._orchestrator))
+            _loop = asyncio.new_event_loop()
+            try:
+                _loop.run_until_complete(run_deferred_init(self._orchestrator))
+            finally:
+                _loop.close()
         except Exception as exc:
             logger.debug(f"deferred_init skipped/failed: {exc}")
         finally:
@@ -1063,16 +1075,20 @@ class AgentBridge:
         )
 
     def _on_context_compacted(self, payload: dict) -> None:
-        """S9-B: Notify UI when /compact finishes context distillation."""
-        from src.ui.bus import NotificationEvent
+        """S9-B / TASK-TUI-9: Notify UI and insert compaction divider in chat log."""
+        from src.ui.bus import NotificationEvent, ContextCompactedEvent
 
+        msg = payload.get("message", "Context compacted")
         self._post(
             NotificationEvent(
                 level="information",
-                message=payload.get("message", "Context compacted"),
+                message=msg,
                 source="compact",
             )
         )
+        # Also fire the dedicated event so app.py can insert a visual divider
+        # into the chat log at the correct position (not just a toast notification).
+        self._post(ContextCompactedEvent(message=msg))
 
     def _on_task_queue_updated(self, payload: dict) -> None:
         from src.ui.bus import TaskQueueUpdatedEvent

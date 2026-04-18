@@ -82,6 +82,8 @@ from .bus import (
     # Subagent visibility (SUBAGENT-VIS-2)
     SubagentStartEvent,
     SubagentFinishEvent,
+    # TASK-TUI-9: compaction divider
+    ContextCompactedEvent,
 )
 from .events import (
     PaletteCommand,
@@ -462,9 +464,14 @@ class AgentApp(App[None]):
         self._pending_perm_count: int = 0
         # GAP-PERM-3: tool names that have been "allow always"ed this session
         self._allow_always_tools: set[str] = set()
-        # GAP-MSG-2: queued message (submitted while agent is running)
-        self._queued_message: Optional[str] = None
+        # TASK-TUI-9 / GAP-MSG-2: message queue for submissions during agent run.
+        # Upgraded from single-slot to a proper deque so multiple quick submissions
+        # are all delivered in order when the agent becomes idle.
+        import collections as _collections
+        self._message_queue: _collections.deque[str] = _collections.deque()
         self._queued_widget: Optional[Static] = None
+        # Legacy alias kept for any code that still references _queued_message
+        self._queued_message: Optional[str] = None
         # Sidebar counters
         self._tool_call_count: int = 0
         self._session_input_tokens: int = 0
@@ -1037,8 +1044,19 @@ class AgentApp(App[None]):
         except Exception:
             pass
 
+        # TASK-TUI-9: drain the message queue when the agent becomes idle
+        if not event.running and self._message_queue:
+            self.call_later(self._drain_message_queue)
+
         # MID-INJ: mid-run messages are now buffered by the bridge and injected
         # as system-reminders during the running execution — no post-idle flush needed.
+
+    def _drain_message_queue(self) -> None:
+        """TASK-TUI-9: Send queued messages in order now that agent is idle."""
+        while self._message_queue and not self.agent_running:
+            msg = self._message_queue.popleft()
+            logger.info(f"Draining queued message: {msg[:60]}")
+            self._bridge.send_prompt(msg)
 
     @on(ModelRoutingEvent)
     def handle_model_routing(self, event: ModelRoutingEvent) -> None:
@@ -2035,6 +2053,16 @@ class AgentApp(App[None]):
             markup=True,
         )
         await self._mount_chat_widget(widget)
+
+    @on(ContextCompactedEvent)
+    async def handle_context_compacted(self, event: ContextCompactedEvent) -> None:
+        """TASK-TUI-9: Insert a visual compaction divider on auto-compaction."""
+        divider = Static(
+            "[dim]══════════════ Context Compacted ══════════════[/]",
+            classes="system_msg compaction_divider",
+            markup=True,
+        )
+        await self._mount_chat_widget(divider)
 
     @on(ContextDegradedEvent)
     async def handle_context_degraded(self, event: ContextDegradedEvent) -> None:

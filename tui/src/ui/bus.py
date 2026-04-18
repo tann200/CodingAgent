@@ -528,3 +528,15 @@ class DeviceFlowErrorEvent(Message):
     def __init__(self, reason: str = "") -> None:
         self.reason = reason
         super().__init__()
+
+
+class ContextCompactedEvent(Message):
+    """Fired when the agent context is automatically compacted (TASK-TUI-9).
+
+    Triggers a visual compaction divider in the chat log so the user can see
+    where long-term memory was summarised.
+    """
+
+    def __init__(self, message: str = "Context compacted") -> None:
+        self.message = message
+        super().__init__()

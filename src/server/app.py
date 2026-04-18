@@ -676,8 +676,7 @@ async def websocket_session_events(session_id: str, websocket: WebSocket):
 
     Authentication mirrors the HTTP admin endpoints: if CODING_AGENT_ADMIN_TOKEN is set,
     the client must provide either a Bearer token in the Authorization header or
-    X-CodingAgent-Token header. As a convenience, a `token` query param is accepted
-    for clients that cannot set headers.
+    X-CodingAgent-Token header. Tokens passed via the query string are not accepted.
     """
     # Basic admin-token check using WebSocket headers (no Request object available)
     admin_token = os.getenv("CODING_AGENT_ADMIN_TOKEN")
@@ -709,9 +708,7 @@ async def websocket_session_events(session_id: str, websocket: WebSocket):
             token = auth.split(" ", 1)[1]
         if not token:
             token = websocket.headers.get("x-codingagent-token")
-        # allow token as query param for convenience (not recommended for prod)
-        if not token:
-            token = qp.get("token")
+        # Do not accept token via query string; require header-based auth for WebSocket.
         if not token or token != admin_token:
             try:
                 await websocket.close(code=1008)
@@ -920,6 +917,22 @@ async def websocket_session_events(session_id: str, websocket: WebSocket):
                         try:
                             q.put_nowait(
                                 ("_control", {"type": "unsubscribed", "event": ev})
+                            )
+                        except Exception:
+                            pass
+                    else:
+                        # Unknown/unregistered event: still acknowledge the request
+                        # to keep client control flow simple (idempotent).
+                        try:
+                            q.put_nowait(
+                                (
+                                    "_control",
+                                    {
+                                        "type": "unsubscribed",
+                                        "event": ev,
+                                        "was_subscribed": False,
+                                    },
+                                )
                             )
                         except Exception:
                             pass

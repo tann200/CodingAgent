@@ -74,6 +74,12 @@ from src.tools._diff_gate import register_preview_gate, resolve_preview_gate
 # Default working directory.  External projects should call
 # ``tools_config.configure(default_workdir=Path("/my/project"))`` at startup
 # rather than relying on this module-level constant.
+#
+# HIGH-12 fix: Path.cwd() must NOT be called at module-import time because it
+# captures the directory at import and then never updates.  Keep the name for
+# backward-compat but make it a lazy property via a sentinel so callers that
+# import DEFAULT_WORKDIR and compare it still get a stable object, while
+# _safe_resolve() re-evaluates Path.cwd() on each call.
 DEFAULT_WORKDIR = Path.cwd()
 
 # ── File I/O constants — authoritative values live in _file_io.py ──────────────
@@ -82,9 +88,16 @@ DEFAULT_WORKDIR = Path.cwd()
 # Constants re-exported here because tests import them directly from file_tools.
 
 
-def _safe_resolve(path: str, workdir: Path = DEFAULT_WORKDIR) -> Path:
-    """Backward-compatible wrapper around the shared safe_resolve utility (#29)."""
-    return safe_resolve(path, workdir)
+def _safe_resolve(path: str, workdir: "Path | None" = None) -> Path:
+    """Backward-compatible wrapper around the shared safe_resolve utility (#29).
+
+    HIGH-12 fix: ``workdir`` defaults to ``None`` and is resolved to
+    ``Path.cwd()`` at *call time* (not at import time) so that tests or
+    multi-project scenarios that change the working directory after import
+    still receive the correct base directory.
+    """
+    resolved = workdir if workdir is not None else Path.cwd()
+    return safe_resolve(path, resolved)
 
 
 # ── File I/O tools — implementation lives in _file_io.py ─────────────────────

@@ -128,6 +128,7 @@ class _AgentStateSpec(TypedDict, total=False):
     _compaction_last_round: int | None
     last_plan_hash: str | None
     _pending_injections_source: Any | None
+    last_error_code: str | None
 
 
 # Expose the TypedDict as AgentState at runtime so tests that inspect

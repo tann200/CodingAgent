@@ -121,9 +121,11 @@ def test_websocket_control_subscribe_and_initial_query(monkeypatch, recv_json_ws
     with TestClient(app) as client:
         register_event_bus(get_event_bus())
 
-        # 1) Connect with events=none and then subscribe via control message (token in query param)
+        # 1) Connect with events=none and then subscribe via control message
+        # Use header auth (preferred) to avoid query-token usage
         with client.websocket_connect(
-            "/ws/session/testsession?events=none&token=ws-token-2"
+            "/ws/session/testsession?events=none",
+            headers={"Authorization": "Bearer ws-token-2"},
         ) as ws:
             # Send subscribe control message
             ws.send_text(json.dumps({"type": "subscribe", "event": "session.created"}))
@@ -144,7 +146,8 @@ def test_websocket_control_subscribe_and_initial_query(monkeypatch, recv_json_ws
 
         # 2) Connect with initial events param and receive event without control subscribe
         with client.websocket_connect(
-            "/ws/session/testsession?events=session.created&token=ws-token-2"
+            "/ws/session/testsession?events=session.created",
+            headers={"Authorization": "Bearer ws-token-2"},
         ) as ws:
             get_event_bus().publish(
                 "session.created", {"session_id": "testsession", "foo": "qux"}
@@ -245,10 +248,13 @@ def test_admin_auth_counters_increment(monkeypatch):
 
 def test_websocket_control_list_and_ping(monkeypatch, recv_json_ws):
     monkeypatch.setenv("CODING_AGENT_ADMIN_TOKEN", "ws-token-3")
+    # Allow query-token for this test by enabling the opt-in env flag
+    monkeypatch.setenv("CODING_AGENT_ALLOW_QUERY_TOKEN", "true")
     with TestClient(app) as client:
         register_event_bus(get_event_bus())
         with client.websocket_connect(
-            "/ws/session/testsession?events=none&token=ws-token-3"
+            "/ws/session/testsession?events=none",
+            headers={"Authorization": "Bearer ws-token-3"},
         ) as ws:
             # list should return empty subscriptions initially
             ws.send_text(json.dumps({"type": "list"}))
@@ -270,8 +276,10 @@ def test_websocket_backpressure_and_drop_policy(monkeypatch):
     with TestClient(app) as client:
         register_event_bus(get_event_bus())
         # Use queue_max_size=1 and drop_policy=drop_new so incoming events beyond the first are dropped
+        # For backpressure test use header auth to avoid relying on query-token
         with client.websocket_connect(
-            "/ws/session/testsession?events=session.created&queue_max_size=1&drop_policy=drop_new&token=ws-token-4"
+            "/ws/session/testsession?events=session.created&queue_max_size=1&drop_policy=drop_new",
+            headers={"Authorization": "Bearer ws-token-4"},
         ) as ws:
             # send multiple events quickly
             for i in range(5):
@@ -301,10 +309,13 @@ def test_websocket_backpressure_and_drop_policy(monkeypatch):
 
 def test_websocket_control_negative_cases(monkeypatch):
     monkeypatch.setenv("CODING_AGENT_ADMIN_TOKEN", "ws-token-5")
+    # Allow query-token for this negative control test
+    monkeypatch.setenv("CODING_AGENT_ALLOW_QUERY_TOKEN", "true")
     with TestClient(app) as client:
         register_event_bus(get_event_bus())
         with client.websocket_connect(
-            "/ws/session/testsession?events=none&token=ws-token-5"
+            "/ws/session/testsession?events=none",
+            headers={"Authorization": "Bearer ws-token-5"},
         ) as ws:
             # Malformed JSON -> should be ignored (no exception raised client-side)
             ws.send_text("not-json")

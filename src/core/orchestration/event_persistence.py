@@ -1,177 +1,307 @@
-"""Event persistence for crash recovery - prevents message loss.
+"""event_persistence.py — On-disk persistence for delivery-critical events.
 
-This module adds event persistence to the EventBus so that outbound events
-are written to disk before dispatch and removed only after acknowledgment.
-Similar to OpenClaw's event persistence approach.
+TASK-REL-3: Implements the file-based ACK pattern so events that have been
+published but not yet delivered to a client survive a server crash.
+
+Design
+------
+* ``persist_event(event_name, payload)`` writes the event to a JSON file under
+  the pending directory using an atomic ``tempfile + os.replace`` so partial
+  writes never appear.  Returns the path to the file.
+* ``ack_event(path)`` deletes the file after confirmed delivery (idempotent).
+* ``recover_pending()`` scans the directory on startup and returns all
+  unACKed events tagged with ``_recovered=True`` and ``_recovery_path``.
+
+Only event types in ``PERSISTENT_EVENT_TYPES`` are persisted by the
+``PersistentEventBus`` subclass.  Callers can also call ``persist_event``
+directly for other event types they deem critical.
+
+Backward compatibility
+----------------------
+The original ``PersistentEventBus`` class interface is preserved so existing
+code that imports it continues to work.
 """
+
+from __future__ import annotations
 
 import json
 import logging
 import os
-import shutil
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Dict, List, Optional
 
 from src.core.orchestration.event_bus import EventBus
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+
+#: Event types that must survive a server crash.
+PERSISTENT_EVENT_TYPES: frozenset[str] = frozenset(
+    {
+        "agent.response",
+        "agent.error",
+        "tool.result",
+        "agent.final_response",
+        "agent.stream_chunk",
+    }
+)
+
+#: Maximum age (seconds) of pending files before they are pruned on recovery.
+DEFAULT_MAX_AGE_SECONDS: float = 86_400.0  # 24 hours
+
+# Allow tests to override without affecting cwd.
+_pending_dir_override: Optional[Path] = None
+
 
 def _get_pending_dir() -> Path:
-    """Get the pending events directory."""
-    # Try to get from paths, fallback to temp
+    if _pending_dir_override is not None:
+        return _pending_dir_override
     try:
-        from src.core.paths import get_agent_context_dir
+        from src.core.paths import get_agent_context_dir  # type: ignore[import]
 
         return get_agent_context_dir() / "event_pending"
     except Exception:
-        return Path(tempfile.gettempdir()) / "codingagent_events_pending"
+        return Path(".agent-context") / "events" / "pending"
+
+
+def set_pending_dir(path: Path) -> None:
+    """Override the pending directory (for tests)."""
+    global _pending_dir_override
+    _pending_dir_override = path
+
+
+# ---------------------------------------------------------------------------
+# Standalone helpers (can be used without PersistentEventBus)
+# ---------------------------------------------------------------------------
+
+
+def persist_event(event_name: str, payload: Dict[str, Any]) -> Path:
+    """Write an event to the pending directory and return its path.
+
+    The write is atomic (temp-file + ``os.replace``).
+
+    Parameters
+    ----------
+    event_name:
+        EventBus topic string.
+    payload:
+        Event payload dict.  Keys starting with ``_`` are stripped before
+        writing to avoid embedding stale metadata.
+
+    Returns
+    -------
+    Path
+        Path of the newly created pending file.
+    """
+    pending_dir = _get_pending_dir()
+    pending_dir.mkdir(parents=True, exist_ok=True)
+
+    ts_ms = int(time.time() * 1000)
+    corr = str(payload.get("correlation_id", ""))[:16] or "evt"
+    # Sanitize for filename safety
+    corr = "".join(c if c.isalnum() or c in "-_" else "_" for c in corr)
+    dest = pending_dir / f"{ts_ms}_{corr}.json"
+
+    # Strip transient metadata keys before persisting.
+    clean_payload = {k: v for k, v in payload.items() if not k.startswith("_")}
+    data = {
+        "event_name": event_name,
+        "payload": clean_payload,
+        "timestamp": time.time(),
+    }
+
+    fd, tmp_path = tempfile.mkstemp(dir=str(pending_dir), suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, default=str)
+        os.replace(tmp_path, str(dest))
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+    logger.debug("event_persistence: persisted %s → %s", event_name, dest.name)
+    return dest
+
+
+def ack_event(path: Path) -> None:
+    """Acknowledge delivery by deleting the pending file (idempotent).
+
+    Parameters
+    ----------
+    path:
+        Path returned by ``persist_event``, or the string value of
+        ``payload["_recovery_path"]`` cast back to ``Path``.
+    """
+    try:
+        path.unlink(missing_ok=True)
+        logger.debug("event_persistence: acked %s", path.name)
+    except Exception as exc:
+        logger.warning("event_persistence: failed to ack %s: %s", path, exc)
+
+
+def recover_pending(
+    max_age_seconds: float = DEFAULT_MAX_AGE_SECONDS,
+) -> List[Dict[str, Any]]:
+    """Return unACKed events from the pending directory, oldest first.
+
+    Each returned dict is the original payload with two extra keys:
+
+    * ``_recovered`` — always ``True``
+    * ``_recovery_path`` — string path; pass ``Path(x["_recovery_path"])``
+      to ``ack_event`` after successful redelivery.
+
+    Stale files (older than *max_age_seconds*) are silently pruned.
+    Corrupt files are discarded with a warning.
+    """
+    pending_dir = _get_pending_dir()
+    if not pending_dir.exists():
+        return []
+
+    recovered: List[Dict[str, Any]] = []
+    now = time.time()
+
+    for p in sorted(pending_dir.glob("*.json")):
+        try:
+            age = now - p.stat().st_mtime
+        except OSError:
+            continue
+
+        if age > max_age_seconds:
+            logger.debug(
+                "event_persistence: pruning stale %s (age %.0fs)", p.name, age
+            )
+            try:
+                p.unlink(missing_ok=True)
+            except OSError:
+                pass
+            continue
+
+        try:
+            raw = json.loads(p.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError) as exc:
+            logger.warning(
+                "event_persistence: corrupt pending file %s (%s) — discarding",
+                p.name,
+                exc,
+            )
+            try:
+                p.unlink(missing_ok=True)
+            except OSError:
+                pass
+            continue
+
+        # Flatten into a single dict matching what publish() receives.
+        event_payload = raw.get("payload", raw)
+        event_payload["_recovered"] = True
+        event_payload["_recovery_path"] = str(p)
+        event_payload.setdefault("event", raw.get("event_name", "unknown"))
+        recovered.append(event_payload)
+
+    if recovered:
+        logger.info(
+            "event_persistence: recovered %d unACKed event(s)", len(recovered)
+        )
+    return recovered
+
+
+# ---------------------------------------------------------------------------
+# PersistentEventBus subclass (backward-compatible class interface)
+# ---------------------------------------------------------------------------
 
 
 class PersistentEventBus(EventBus):
-    """EventBus with persistence for crash recovery.
+    """EventBus subclass that persists delivery-critical events to disk.
 
-    Events are written to a pending directory before dispatch,
-    and removed only after ack() is called. On startup,
-    any pending events are replayed.
+    On startup, call ``initialize()`` to replay any events that were not
+    acknowledged before the previous shutdown.
+
+    TASK-REL-3 improvements over the original implementation:
+    * Atomic writes via ``os.replace`` (was ``shutil.move``).
+    * ``PERSISTENT_EVENT_TYPES`` filter — only agent/tool response events
+      are persisted; high-frequency events (heartbeats, logs) are not.
+    * Path-based ACK — no fragile timestamp/session_id glob search.
+    * Stale file pruning (default 24 h).
+    * ``_recovered=True`` tag on replayed events for dedup guards.
     """
 
     def __init__(self, pending_dir: Optional[Path] = None) -> None:
         super().__init__()
-        self._pending_dir = pending_dir or _get_pending_dir()
+        if pending_dir is not None:
+            set_pending_dir(pending_dir)
         self._initialized = False
 
-    def _ensure_pending_dir(self) -> None:
-        """Ensure the pending directory exists."""
-        if not self._pending_dir.exists():
-            self._pending_dir.mkdir(parents=True, exist_ok=True)
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
 
     def _persist_event(self, event_name: str, payload: Any) -> Optional[Path]:
-        """Persist event to disk before dispatch.
-
-        Writes to a temp file, then renames for atomicity.
-        Returns the path to the persisted file, or None on failure.
-        """
+        """Persist *event_name* + *payload* if it is in PERSISTENT_EVENT_TYPES."""
+        if event_name not in PERSISTENT_EVENT_TYPES:
+            return None
         if not isinstance(payload, dict):
             return None
-
         try:
-            self._ensure_pending_dir()
-
-            timestamp = time.time()
-            session_id = payload.get("session_id", "unknown")
-            filename = f"{timestamp:.6f}_{session_id}.json"
-            temp_path = self._pending_dir / f".{filename}"
-            final_path = self._pending_dir / filename
-
-            data = {
-                "event_name": event_name,
-                "payload": payload,
-                "timestamp": timestamp,
-            }
-
-            with open(temp_path, "w", encoding="utf-8") as f:
-                json.dump(data, f)
-
-            shutil.move(str(temp_path), str(final_path))
-            logger.debug(f"Persisted event: {event_name} to {final_path.name}")
-            return final_path
-
-        except Exception as e:
-            logger.warning(f"Failed to persist event: {e}")
+            return persist_event(event_name, payload)
+        except Exception as exc:
+            logger.warning("PersistentEventBus: failed to persist %s: %s", event_name, exc)
             return None
 
     def _ack_event(self, payload: Any) -> bool:
-        """Remove persisted event after successful processing.
-
-        Called by subscribers after successfully handling an event.
-        """
+        """Remove the persisted file for *payload* (path-based)."""
         if not isinstance(payload, dict):
             return False
+        path_str = payload.get("_persistence_path") or payload.get("_recovery_path")
+        if not path_str:
+            return False
+        ack_event(Path(path_str))
+        return True
 
-        try:
-            session_id = payload.get("session_id", "unknown")
-            timestamp = payload.get("timestamp", 0)
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
 
-            # Find matching file
-            if self._pending_dir.exists():
-                prefix = f"{timestamp:.6f}_" if timestamp else None
-                if prefix:
-                    for f in self._pending_dir.glob(f"{prefix}{session_id}.json"):
-                        f.unlink()
-                        logger.debug(f"Acked and removed: {f.name}")
-                        return True
-
-            # Also try to find by session_id if timestamp not available
-            for f in self._pending_dir.glob(f"*_{session_id}.json"):
-                f.unlink()
-                return True
-
-        except Exception as e:
-            logger.warning(f"Failed to ack event: {e}")
-
-        return False
-
-    def recover_pending(self) -> int:
-        """Recover pending events on startup.
-
-        Scans the pending directory and replays any events
-        that weren't acknowledged before shutdown.
-
-        Returns the number of events recovered.
-        """
-        if not self._pending_dir.exists():
-            return 0
-
-        recovered = 0
-        try:
-            for f in sorted(self._pending_dir.glob("*.json")):
-                try:
-                    with open(f, "r", encoding="utf-8") as fp:
-                        data = json.load(fp)
-
-                    event_name = data.get("event_name")
-                    payload = data.get("payload")
-
-                    if event_name and payload:
-                        logger.info(f"Recovering event: {event_name} from {f.name}")
-                        # Re-dispatch
-                        super().publish(event_name, payload)
-                        recovered += 1
-
-                    # Remove after recovery
-                    f.unlink()
-
-                except Exception as e:
-                    logger.warning(f"Failed to recover {f.name}: {e}")
-
-        except Exception as e:
-            logger.error(f"Error during event recovery: {e}")
-
-        if recovered > 0:
-            logger.info(f"Recovered {recovered} pending events")
-
-        return recovered
+    def recover_pending(
+        self, max_age_seconds: float = DEFAULT_MAX_AGE_SECONDS
+    ) -> int:
+        """Replay unACKed events and return the count."""
+        events = recover_pending(max_age_seconds=max_age_seconds)
+        for ev in events:
+            event_name = ev.get("event", "unknown")
+            try:
+                super().publish(event_name, ev)
+            except Exception as exc:
+                logger.warning(
+                    "PersistentEventBus: failed to re-publish %s: %s", event_name, exc
+                )
+        return len(events)
 
     def initialize(self) -> int:
-        """Initialize the persistent event bus and recover pending events."""
+        """Initialize and recover pending events.  Call once at startup."""
         if self._initialized:
             return 0
-
-        self._ensure_pending_dir()
+        _get_pending_dir().mkdir(parents=True, exist_ok=True)
         recovered = self.recover_pending()
         self._initialized = True
         return recovered
 
 
-# Module-level singleton
+# ---------------------------------------------------------------------------
+# Module-level singleton (backward compat)
+# ---------------------------------------------------------------------------
+
 _persistent_bus: Optional[PersistentEventBus] = None
 
 
 def get_persistent_event_bus() -> PersistentEventBus:
-    """Get the persistent event bus singleton."""
+    """Return (creating if needed) the module-level PersistentEventBus singleton."""
     global _persistent_bus
     if _persistent_bus is None:
         _persistent_bus = PersistentEventBus()

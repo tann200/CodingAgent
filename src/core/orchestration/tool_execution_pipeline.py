@@ -1061,4 +1061,13 @@ def execute_tool_impl(orch: Any, tool_call: Dict[str, Any]) -> Dict[str, Any]:
         except Exception:
             pass
 
-        return {"ok": False, "error": str(e)}
+        # TASK-REL-1: classify the exception and include the typed error code in
+        # the result so callers / nodes can set state["last_error_code"] without
+        # having to re-parse the string.
+        try:
+            from src.core.errors import classify_exception as _classify
+            _error_code = _classify(e).value
+        except Exception:
+            _error_code = "system.unknown"
+
+        return {"ok": False, "error": str(e), "error_code": _error_code}
