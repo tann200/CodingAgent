@@ -51,3 +51,34 @@ import pytest
 @pytest.fixture
 def recv_json_ws():
     return recv_json_ws_factory()
+
+
+@pytest.fixture
+def sync_threads(monkeypatch):
+    """Monkeypatch threading.Thread so .start() runs the target synchronously.
+
+    Use in tests that need background workers to execute inline for determinism:
+
+        def test_x(sync_threads):
+            ...
+
+    The patched Thread supports (target, args=(), kwargs=None, daemon=None).
+    """
+    import threading as _threading
+
+    class _SyncThread:
+        def __init__(self, target=None, args=(), kwargs=None, daemon=None):
+            self._target = target
+            self._args = args or ()
+            self._kwargs = kwargs or {}
+
+        def start(self):
+            if self._target:
+                self._target(*self._args, **self._kwargs)
+
+        # Provide join() for tests that may call it
+        def join(self, timeout=None):
+            return None
+
+    monkeypatch.setattr(_threading, "Thread", _SyncThread)
+    yield
