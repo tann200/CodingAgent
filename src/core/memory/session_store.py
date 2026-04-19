@@ -1,6 +1,7 @@
 from __future__ import annotations
 import os
 import sqlite3
+import time
 import json
 import logging
 import tempfile
@@ -176,6 +177,56 @@ class SessionStore:
                 logger.error("SessionStore: migration failed: %e", e)
                 raise
 
+    def _write_with_retry(
+        self,
+        conn: sqlite3.Connection,
+        sql: str,
+        params: tuple,
+        session_id: Optional[str] = None,
+        attempts: int = 3,
+        base_backoff: float = 0.01,
+    ):
+        """Execute a write statement with a small retry/backoff on SQLITE_BUSY.
+
+        Returns True on success, False on non-retryable error or exhausted attempts.
+        """
+        for attempt in range(attempts):
+            try:
+                cur = conn.execute(sql, params)
+                conn.commit()
+                return True
+            except sqlite3.OperationalError as e:
+                msg = str(e).lower()
+                if "locked" in msg or "busy" in msg:
+                    backoff = base_backoff * (2**attempt)
+                    logger.debug(
+                        "SessionStore: DB locked on write (session=%s), retrying in %.3fs (attempt=%d)",
+                        session_id,
+                        backoff,
+                        attempt,
+                    )
+                    time.sleep(backoff)
+                    continue
+                # Non-retryable OperationalError
+                logger.error(
+                    "SessionStore: write OperationalError for session %s: %s",
+                    session_id,
+                    e,
+                )
+                return False
+            except Exception as e:
+                logger.error(
+                    "SessionStore: write failed for session %s: %s", session_id, e
+                )
+                return False
+
+        logger.error(
+            "SessionStore: exhausted write retries for session %s after %d attempts",
+            session_id,
+            attempts,
+        )
+        return False
+
     def _migrate_v2(self, conn) -> None:
         """Migration from v1 to v2: add session_snapshots table if not exists."""
         # v2 adds session_snapshots table for TASK-ID-1
@@ -194,11 +245,13 @@ class SessionStore:
         with self._lock:
             try:
                 conn = self._get_connection()
-                conn.execute(
-                    "INSERT INTO messages (session_id, role, content) VALUES (?, ?, ?)",
-                    (session_id, role, content),
+                sql = (
+                    "INSERT INTO messages (session_id, role, content) VALUES (?, ?, ?)"
                 )
-                conn.commit()
+                if not self._write_with_retry(
+                    conn, sql, (session_id, role, content), session_id=session_id
+                ):
+                    raise RuntimeError("add_message: DB write failed after retries")
             except Exception as e:
                 logger.error(
                     f"SessionStore: failed to add message for session {session_id}: {e}"
@@ -238,8 +291,10 @@ class SessionStore:
         with self._lock:
             try:
                 conn = self._get_connection()
-                conn.execute(
-                    "INSERT INTO tool_calls (session_id, tool_name, args, result, success) VALUES (?, ?, ?, ?, ?)",
+                sql = "INSERT INTO tool_calls (session_id, tool_name, args, result, success) VALUES (?, ?, ?, ?, ?)"
+                if not self._write_with_retry(
+                    conn,
+                    sql,
                     (
                         session_id,
                         tool_name,
@@ -247,8 +302,9 @@ class SessionStore:
                         json.dumps(result) if result else None,
                         1 if success else 0,
                     ),
-                )
-                conn.commit()
+                    session_id=session_id,
+                ):
+                    raise RuntimeError("add_tool_call: DB write failed after retries")
             except Exception as e:
                 logger.error(
                     f"SessionStore: failed to add tool_call for session {session_id}: {e}"
@@ -289,16 +345,19 @@ class SessionStore:
         with self._lock:
             try:
                 conn = self._get_connection()
-                conn.execute(
-                    "INSERT INTO errors (session_id, error_type, error_message, context) VALUES (?, ?, ?, ?)",
+                sql = "INSERT INTO errors (session_id, error_type, error_message, context) VALUES (?, ?, ?, ?)"
+                if not self._write_with_retry(
+                    conn,
+                    sql,
                     (
                         session_id,
                         error_type,
                         error_message,
                         json.dumps(context) if context else None,
                     ),
-                )
-                conn.commit()
+                    session_id=session_id,
+                ):
+                    raise RuntimeError("add_error: DB write failed after retries")
             except Exception as e:
                 logger.error(
                     f"SessionStore: failed to add error for session {session_id}: {e}"
@@ -332,11 +391,11 @@ class SessionStore:
         with self._lock:
             try:
                 conn = self._get_connection()
-                conn.execute(
-                    "INSERT INTO plans (session_id, plan, status) VALUES (?, ?, ?)",
-                    (session_id, plan, status),
-                )
-                conn.commit()
+                sql = "INSERT INTO plans (session_id, plan, status) VALUES (?, ?, ?)"
+                if not self._write_with_retry(
+                    conn, sql, (session_id, plan, status), session_id=session_id
+                ):
+                    raise RuntimeError("add_plan: DB write failed after retries")
             except Exception as e:
                 logger.error(
                     f"SessionStore: failed to add plan for session {session_id}: {e}"
@@ -371,11 +430,11 @@ class SessionStore:
         with self._lock:
             try:
                 conn = self._get_connection()
-                conn.execute(
-                    "INSERT INTO decisions (session_id, decision, rationale) VALUES (?, ?, ?)",
-                    (session_id, decision, rationale),
-                )
-                conn.commit()
+                sql = "INSERT INTO decisions (session_id, decision, rationale) VALUES (?, ?, ?)"
+                if not self._write_with_retry(
+                    conn, sql, (session_id, decision, rationale), session_id=session_id
+                ):
+                    raise RuntimeError("add_decision: DB write failed after retries")
             except Exception as e:
                 logger.error(
                     f"SessionStore: failed to add decision for session {session_id}: {e}"
@@ -503,17 +562,24 @@ class SessionStore:
         with self._lock:
             try:
                 conn = self._get_connection()
-                conn.execute(
+                sql = (
                     "INSERT OR IGNORE INTO session_children "
-                    "(parent_session_id, child_session_id, role, task) VALUES (?, ?, ?, ?)",
+                    "(parent_session_id, child_session_id, role, task) VALUES (?, ?, ?, ?)"
+                )
+                if not self._write_with_retry(
+                    conn,
+                    sql,
                     (
                         parent_session_id,
                         child_session_id,
                         role,
                         task[:500] if task else "",
                     ),
-                )
-                conn.commit()
+                    session_id=parent_session_id,
+                ):
+                    raise RuntimeError(
+                        "register_child_session: DB write failed after retries"
+                    )
             except Exception as e:
                 logger.error(
                     "SessionStore: failed to register child session %s → %s: %s",
@@ -844,13 +910,20 @@ class SessionStore:
         with self._lock:
             try:
                 conn = self._get_connection()
-                conn.execute(
+                sql = (
                     "INSERT OR REPLACE INTO session_snapshots "
                     "(session_id, state_json, role, task, saved_at) "
-                    "VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)",
-                    (session_id, state_json, role, task[:500] if task else ""),
+                    "VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)"
                 )
-                conn.commit()
+                if not self._write_with_retry(
+                    conn,
+                    sql,
+                    (session_id, state_json, role, task[:500] if task else ""),
+                    session_id=session_id,
+                ):
+                    raise RuntimeError(
+                        "save_session_state: DB write failed after retries"
+                    )
                 logger.debug(
                     "save_session_state: saved session %s (%d bytes)",
                     session_id,

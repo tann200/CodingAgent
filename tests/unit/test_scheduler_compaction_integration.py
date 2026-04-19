@@ -1,10 +1,10 @@
 import time
+import pytest
 from src.core.orchestration.event_bus import get_event_bus
 
 
-def test_scheduler_compaction_integration_end_to_end(
-    monkeypatch, tmp_path, sync_threads
-):
+@pytest.mark.sync_threads
+def test_scheduler_compaction_integration_end_to_end(monkeypatch, tmp_path):
     """Integration-style test: ensure distillation compacts long histories,
     applies the compacted history into MessageManager, and publishes token
     metrics in the compaction event payload.
