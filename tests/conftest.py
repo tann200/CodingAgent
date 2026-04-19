@@ -11,7 +11,16 @@ if _ROOT not in sys.path:
 
 
 def pytest_configure(config):
-    # Placeholder to ensure conftest is imported early
+    # Register custom markers to avoid PyTestUnknownMarkWarning and ensure
+    # test authors can mark tests that need threads synchronised.
+    try:
+        config.addinivalue_line(
+            "markers",
+            "sync_threads: run threading.Thread targets synchronously for deterministic tests",
+        )
+    except Exception:
+        # Best-effort; not fatal in constrained test environments
+        pass
     return
 
 

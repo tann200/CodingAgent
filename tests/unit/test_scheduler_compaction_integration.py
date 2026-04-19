@@ -2,7 +2,9 @@ import time
 from src.core.orchestration.event_bus import get_event_bus
 
 
-def test_scheduler_compaction_integration_end_to_end(monkeypatch, tmp_path):
+def test_scheduler_compaction_integration_end_to_end(
+    monkeypatch, tmp_path, sync_threads
+):
     """Integration-style test: ensure distillation compacts long histories,
     applies the compacted history into MessageManager, and publishes token
     metrics in the compaction event payload.
@@ -57,21 +59,9 @@ def test_scheduler_compaction_integration_end_to_end(monkeypatch, tmp_path):
     ob._init_event_subscriptions(fo)
 
     orig_count = len(original_msgs)
-    # The handler runs the compaction worker in a background thread. To keep
-    # this unit test deterministic without touching production code we patch
-    # Thread so the worker runs synchronously in the current thread.
-    import threading as _threading
-
-    class _SyncThread:
-        def __init__(self, target=None, daemon=None):
-            self._target = target
-
-        def start(self):
-            if self._target:
-                self._target()
-
-    monkeypatch.setattr(_threading, "Thread", _SyncThread)
-
+    # The handler runs the compaction worker in a background thread; using
+    # the sync_threads fixture above causes the worker to run synchronously
+    # for deterministic unit testing, so we can publish normally.
     bus.publish("scheduler.distill_request", {})
 
     # Wait for background worker to complete (poll up to 5s)
