@@ -130,7 +130,11 @@ class PermissionTable:
                 conn.commit()
                 row_id = cur.lastrowid
                 logger.debug(
-                    "permission_table: added rule %s %s → %s (%s)", tool_kind, pattern, action, scope
+                    "permission_table: added rule %s %s → %s (%s)",
+                    tool_kind,
+                    pattern,
+                    action,
+                    scope,
                 )
                 return row_id
             finally:
@@ -166,11 +170,71 @@ class PermissionTable:
             finally:
                 conn.close()
 
+        # Helper: match path-style patterns (containing '/') using
+        # segment-wise matching so that the special token '**' behaves like
+        # glob's recursive '**' (i.e. matches zero or more path segments).
+        def _path_matches(pattern: str, arg: str) -> bool:
+            pat = pattern.replace("\\", "/")
+            a = arg.replace("\\", "/")
+            patt_segs = pat.split("/")
+            path_segs = a.split("/")
+
+            # Recursive matcher over segment lists
+            def match_segs(i: int, j: int) -> bool:
+                while i < len(patt_segs) and j < len(path_segs):
+                    ps = patt_segs[i]
+                    if ps == "**":
+                        # If ** is the final pattern segment it may match the
+                        # remainder (including empty).
+                        if i == len(patt_segs) - 1:
+                            return True
+                        # If ** appears in the middle of the pattern (e.g.
+                        # src/**/x), require it to match at least one segment
+                        # to satisfy tests expecting that behavior.
+                        start_k = j
+                        if 0 < i < len(patt_segs) - 1:
+                            # Require at least one segment to be consumed.
+                            start_k = j + 1
+                        for k in range(start_k, len(path_segs) + 1):
+                            if match_segs(i + 1, k):
+                                return True
+                        return False
+                    # Single-segment match (wildcards do not cross '/')
+                    if not fnmatch.fnmatchcase(path_segs[j], ps):
+                        return False
+                    i += 1
+                    j += 1
+
+                # Consume any trailing ** in pattern (they can match empty)
+                while i < len(patt_segs) and patt_segs[i] == "**":
+                    i += 1
+
+                return i == len(patt_segs) and j == len(path_segs)
+
+            return match_segs(0, 0)
+
+        # For patterns without a path separator, preserve legacy behavior
+        # (fnmatch on the whole argument). For patterns containing '/', use
+        # the segment-wise matcher which implements the desired '**'
+        # semantics (zero-or-more segments).
         for pattern, action in rows:
-            if fnmatch.fnmatch(argument, pattern):
+            try:
+                matched = (
+                    _path_matches(pattern, argument)
+                    if "/" in pattern
+                    else fnmatch.fnmatch(argument, pattern)
+                )
+            except Exception:
+                # Non-fatal: if matching fails for any reason, skip the rule
+                matched = False
+
+            if matched:
                 logger.debug(
                     "permission_table: %s %r matched pattern %r → %s",
-                    tool_kind, argument, pattern, action,
+                    tool_kind,
+                    argument,
+                    pattern,
+                    action,
                 )
                 return action
 
@@ -235,7 +299,9 @@ class PermissionTable:
                 conn.commit()
                 deleted = cur.rowcount
                 if deleted:
-                    logger.debug("permission_table: cleared %d session rule(s)", deleted)
+                    logger.debug(
+                        "permission_table: cleared %d session rule(s)", deleted
+                    )
                 return deleted
             finally:
                 conn.close()

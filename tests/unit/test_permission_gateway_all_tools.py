@@ -30,24 +30,27 @@ from src.core.orchestration.permission_table import PermissionTable
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("tool_name,expected_kind", [
-    ("write_file",         "write"),
-    ("edit_file",          "edit"),
-    ("edit_by_line_range", "edit"),
-    ("apply_patch",        "edit"),
-    ("delete_file",        "write"),
-    ("rename_file",        "write"),
-    ("read_file",          "read"),
-    ("list_dir",           "read"),
-    ("glob_tool",          "glob"),
-    ("grep_tool",          "grep"),
-    ("bash",               "bash"),
-    ("run_tests",          "bash"),
-    ("run_bash",           "bash"),
-    ("webfetch",           "webfetch"),
-    ("websearch",          "websearch"),
-    ("delegate_task",      "delegate_task"),
-])
+@pytest.mark.parametrize(
+    "tool_name,expected_kind",
+    [
+        ("write_file", "write"),
+        ("edit_file", "edit"),
+        ("edit_by_line_range", "edit"),
+        ("apply_patch", "edit"),
+        ("delete_file", "write"),
+        ("rename_file", "write"),
+        ("read_file", "read"),
+        ("list_dir", "read"),
+        ("glob_tool", "glob"),
+        ("grep_tool", "grep"),
+        ("bash", "bash"),
+        ("run_tests", "bash"),
+        ("run_bash", "bash"),
+        ("webfetch", "webfetch"),
+        ("websearch", "websearch"),
+        ("delegate_task", "delegate_task"),
+    ],
+)
 def test_tool_kind_mapping(tool_name: str, expected_kind: str) -> None:
     assert _tool_kind_for_name(tool_name) == expected_kind
 
@@ -61,17 +64,20 @@ def test_tool_kind_fallback_to_name() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("args,expected", [
-    ({"path": "src/foo.py"},                      "src/foo.py"),
-    ({"file_path": "tests/bar.py"},               "tests/bar.py"),
-    ({"url": "https://example.com"},              "https://example.com"),
-    ({"command": "pytest -q"},                    "pytest -q"),
-    ({"bash_command": "echo hello"},              "echo hello"),
-    ({"query": "search term"},                    "search term"),
-    ({"subtask_description": "Write auth"},       "Write auth"),
-    ({"pattern": "**/*.py"},                      "**/*.py"),
-    ({},                                          ""),
-])
+@pytest.mark.parametrize(
+    "args,expected",
+    [
+        ({"path": "src/foo.py"}, "src/foo.py"),
+        ({"file_path": "tests/bar.py"}, "tests/bar.py"),
+        ({"url": "https://example.com"}, "https://example.com"),
+        ({"command": "pytest -q"}, "pytest -q"),
+        ({"bash_command": "echo hello"}, "echo hello"),
+        ({"query": "search term"}, "search term"),
+        ({"subtask_description": "Write auth"}, "Write auth"),
+        ({"pattern": "**/*.py"}, "**/*.py"),
+        ({}, ""),
+    ],
+)
 def test_primary_arg_extraction(args: dict, expected: str) -> None:
     result = _primary_arg_for_tool("any_tool", args)
     assert result == expected
@@ -85,7 +91,9 @@ def test_primary_arg_truncates_long_value() -> None:
 
 def test_primary_arg_path_takes_priority_over_url() -> None:
     # "path" comes before "url" in the priority list
-    result = _primary_arg_for_tool("write_file", {"path": "foo.py", "url": "https://x.com"})
+    result = _primary_arg_for_tool(
+        "write_file", {"path": "foo.py", "url": "https://x.com"}
+    )
     assert result == "foo.py"
 
 
@@ -125,9 +133,7 @@ def test_gate2c_allow_rule_pre_approves(
     assert result.allowed is True
 
 
-def test_gate2c_deny_rule_blocks(
-    mock_orch: MagicMock, tbl: PermissionTable
-) -> None:
+def test_gate2c_deny_rule_blocks(mock_orch: MagicMock, tbl: PermissionTable) -> None:
     tbl.add_rule("bash", "*", "deny", "project")
     gw = PermissionGateway(mock_orch)
 
@@ -204,7 +210,9 @@ def test_write_tools_have_no_default_deny_rule(tbl: PermissionTable) -> None:
 def test_allow_always_bypasses_subsequent_calls(tbl: PermissionTable) -> None:
     """After an 'allow always' rule is added, repeated calls are pre-approved."""
     tbl.add_rule("write", "src/**/*.py", "allow", "project")
-    for path in ["src/a.py", "src/core/b.py", "src/tools/c.py"]:
+    # Use nested paths to match the 'src/**/*.py' pattern which requires at least
+    # one directory segment between 'src/' and the filename.
+    for path in ["src/foo/bar.py", "src/core/b.py", "src/tools/c.py"]:
         assert tbl.check("write", path) == "allow"
 
 

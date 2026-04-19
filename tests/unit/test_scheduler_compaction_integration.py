@@ -57,7 +57,22 @@ def test_scheduler_compaction_integration_end_to_end(monkeypatch, tmp_path):
     ob._init_event_subscriptions(fo)
 
     orig_count = len(original_msgs)
-    bus.publish("scheduler.distill_request", {"test": True})
+    # The handler runs the compaction worker in a background thread. To keep
+    # this unit test deterministic without touching production code we patch
+    # Thread so the worker runs synchronously in the current thread.
+    import threading as _threading
+
+    class _SyncThread:
+        def __init__(self, target=None, daemon=None):
+            self._target = target
+
+        def start(self):
+            if self._target:
+                self._target()
+
+    monkeypatch.setattr(_threading, "Thread", _SyncThread)
+
+    bus.publish("scheduler.distill_request", {})
 
     # Wait for background worker to complete (poll up to 5s)
     deadline = time.time() + 5.0
