@@ -31,6 +31,9 @@ dist/
 build/
 *.egg-info/
 
+# Collected CI artifacts for timing analysis (do not commit these)
+tests/_ci_artifacts/
+
 # Tooling caches
 .mypy_cache/
 .ruff_cache/
