@@ -1,0 +1,16 @@
+/Users/tann200/PycharmProjects/CodingAgent/tests/unit/test_subagent_spawn.py
+/Users/tann200/PycharmProjects/CodingAgent/tests/unit/test_tui_fixes.py
+/Users/tann200/PycharmProjects/CodingAgent/tests/unit/test_diff_verification_bash_tui_rollback.py
+/Users/tann200/PycharmProjects/CodingAgent/tests/integration/test_system_prompts_json_mode.py
+/Users/tann200/PycharmProjects/CodingAgent/tests/integration/test_system_prompts_against_lmstudio.py
+/Users/tann200/PycharmProjects/CodingAgent/tests/integration/test_orchestrator_lmstudio_e2e.py
+/Users/tann200/PycharmProjects/CodingAgent/tests/integration/test_lmstudio_end_to_end.py
+/Users/tann200/PycharmProjects/CodingAgent/tests/integration/test_lm_studio_live_pipeline.py
+/Users/tann200/PycharmProjects/CodingAgent/tests/unit/test_audit_vol23.py
+/Users/tann200/PycharmProjects/CodingAgent/tests/unit/test_remote_skills.py
+/Users/tann200/PycharmProjects/CodingAgent/tests/integration/test_crud_live.py
+/Users/tann200/PycharmProjects/CodingAgent/tests/unit/test_symbol_graph.py
+/Users/tann200/PycharmProjects/CodingAgent/tests/unit/test_session_lifecycle.py
+/Users/tann200/PycharmProjects/CodingAgent/tests/integration/test_validate_ollama.py
+/Users/tann200/PycharmProjects/CodingAgent/tests/integration/test_system_prompts_against_ollama.py
+/Users/tann200/PycharmProjects/CodingAgent/tests/integration/test_ollama_integration.py

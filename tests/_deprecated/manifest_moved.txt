@@ -1,0 +1,85 @@
+{
+  "moved": [
+    {
+      "path": "tests/_deprecated/test_audit_vol23.py",
+      "size": 12056,
+      "mtime": 1775854224
+    },
+    {
+      "path": "tests/_deprecated/test_diff_verification_bash_tui_rollback.py",
+      "size": 47307,
+      "mtime": 1775857857
+    },
+    {
+      "path": "tests/_deprecated/test_subagent_spawn.py",
+      "size": 15257,
+      "mtime": 1776532516
+    },
+    {
+      "path": "tests/_deprecated/test_tui_fixes.py",
+      "size": 22425,
+      "mtime": 1775862138
+    },
+    {
+      "path": "tests/_deprecated/test_system_prompts_json_mode.py",
+      "size": 8749,
+      "mtime": 1775857857
+    },
+    {
+      "path": "tests/_deprecated/test_system_prompts_against_lmstudio.py",
+      "size": 5052,
+      "mtime": 1775857857
+    },
+    {
+      "path": "tests/_deprecated/test_orchestrator_lmstudio_e2e.py",
+      "size": 3125,
+      "mtime": 1775857857
+    },
+    {
+      "path": "tests/_deprecated/test_lmstudio_end_to_end.py",
+      "size": 2431,
+      "mtime": 1775857857
+    },
+    {
+      "path": "tests/_deprecated/test_lm_studio_live_pipeline.py",
+      "size": 16412,
+      "mtime": 1775857857
+    },
+    {
+      "path": "tests/_deprecated/test_remote_skills.py",
+      "size": 13380,
+      "mtime": 1775609675
+    },
+    {
+      "path": "tests/_deprecated/test_crud_live.py",
+      "size": 19701,
+      "mtime": 1774825600
+    },
+    {
+      "path": "tests/_deprecated/test_symbol_graph.py",
+      "size": 19446,
+      "mtime": 1774623660
+    },
+    {
+      "path": "tests/_deprecated/test_session_lifecycle.py",
+      "size": 8322,
+      "mtime": 1774339598
+    },
+    {
+      "path": "tests/_deprecated/test_validate_ollama.py",
+      "size": 1451,
+      "mtime": 1773791500
+    },
+    {
+      "path": "tests/_deprecated/test_system_prompts_against_ollama.py",
+      "size": 2355,
+      "mtime": 1775468562
+    },
+    {
+      "path": "tests/_deprecated/test_ollama_integration.py",
+      "size": 1707,
+      "mtime": 1774573129
+    }
+  ],
+  "ts": 1776620378
+}
