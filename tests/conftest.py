@@ -91,3 +91,35 @@ def sync_threads(monkeypatch):
 
     monkeypatch.setattr(_threading, "Thread", _SyncThread)
     yield
+
+
+@pytest.fixture(autouse=True)
+def _apply_sync_threads_marker(request, monkeypatch):
+    """Autouse helper: if a test is marked with @pytest.mark.sync_threads
+    apply the same threading.Thread patch as the sync_threads fixture.
+
+    This lets tests opt-in via marker instead of requesting the fixture.
+    """
+    marker = request.node.get_closest_marker("sync_threads")
+    if not marker:
+        # Nothing to do for unmarked tests
+        yield
+        return
+
+    import threading as _threading
+
+    class _SyncThread:
+        def __init__(self, target=None, args=(), kwargs=None, daemon=None):
+            self._target = target
+            self._args = args or ()
+            self._kwargs = kwargs or {}
+
+        def start(self):
+            if self._target:
+                self._target(*self._args, **self._kwargs)
+
+        def join(self, timeout=None):
+            return None
+
+    monkeypatch.setattr(_threading, "Thread", _SyncThread)
+    yield
