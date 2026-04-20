@@ -232,9 +232,7 @@ def memory_save(
             # Write atomically: write to a sibling temp file, then os.replace.
             # We still hold the OS lock during the replace so no other process
             # can read a partial state.
-            fd, tmp_path = tempfile.mkstemp(
-                dir=str(_MEMORY_FILE.parent), suffix=".tmp"
-            )
+            fd, tmp_path = tempfile.mkstemp(dir=str(_MEMORY_FILE.parent), suffix=".tmp")
             with os.fdopen(fd, "w", encoding="utf-8") as tmp_fh:
                 tmp_fh.write(new_content)
             os.replace(tmp_path, str(_MEMORY_FILE))

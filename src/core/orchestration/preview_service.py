@@ -111,7 +111,9 @@ class PreviewService:
             return False
         # CF-4: guard against missing event (should not happen after generate_preview fix)
         if preview.confirmed_event is None:
-            logger.warning(f"PreviewService: preview {preview_id} has no event — auto-confirming")
+            logger.warning(
+                f"PreviewService: preview {preview_id} has no event — auto-confirming"
+            )
             return True
 
         await preview.confirmed_event.wait()

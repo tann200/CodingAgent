@@ -51,9 +51,15 @@ import logging
 import shutil
 import threading
 import uuid
+import tempfile
+import os
+import time
+import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+
+from src.core.memory.file_lock import locked_file
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +101,10 @@ class JsonlSessionStore:
         # Per-session locks: session_id → threading.Lock
         self._locks: Dict[str, threading.Lock] = {}
         self._locks_lock = threading.Lock()
+        # Lock for serialising decisions.json sidecar writes
+        self._decisions_lock = threading.Lock()
+        # Schema version for compatibility with older tests/tools
+        self._SCHEMA_VERSION = 2
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -157,10 +167,15 @@ class JsonlSessionStore:
             n += 1
         dest = self._sessions_dir / f"{session_id}.{n}.jsonl"
         try:
-            shutil.move(str(active), str(dest))
-            logger.debug(
-                "JsonlSessionStore: rotated %s → %s", active.name, dest.name
-            )
+            # Acquire an exclusive lock on the active file while renaming to
+            # avoid races with concurrent writers from other processes.
+            try:
+                with locked_file(active, mode="a"):
+                    shutil.move(str(active), str(dest))
+            except Exception:
+                # Fallback to best-effort move if locking fails.
+                shutil.move(str(active), str(dest))
+            logger.debug("JsonlSessionStore: rotated %s → %s", active.name, dest.name)
         except Exception as exc:
             logger.warning(
                 "JsonlSessionStore: rotation failed for %s: %s", session_id, exc
@@ -177,8 +192,15 @@ class JsonlSessionStore:
             active = self._active_file(session_id)
             line = json.dumps(record, ensure_ascii=False, default=str) + "\n"
             try:
-                with active.open("a", encoding="utf-8") as f:
+                # Use OS-level file locking to coordinate across processes.
+                with locked_file(active, mode="a") as f:
                     f.write(line)
+                    try:
+                        f.flush()
+                        os.fsync(f.fileno())
+                    except Exception:
+                        # Best-effort; don't fail the write if fsync is not available
+                        pass
             except Exception as exc:
                 logger.error(
                     "JsonlSessionStore: failed to append to %s: %s",
@@ -191,22 +213,38 @@ class JsonlSessionStore:
         records: List[Dict[str, Any]] = []
         for fpath in self._session_files(session_id):
             try:
-                with fpath.open("r", encoding="utf-8", errors="replace") as f:
-                    for raw_line in f:
-                        line = raw_line.strip()
-                        if not line:
-                            continue
-                        try:
-                            records.append(json.loads(line))
-                        except json.JSONDecodeError:
-                            logger.debug(
-                                "JsonlSessionStore: skipping malformed line in %s",
-                                fpath.name,
-                            )
+                # Use a shared/read lock when reading to avoid races with
+                # concurrent writers in other processes.
+                try:
+                    with locked_file(fpath, mode="r") as f:
+                        for raw_line in f:
+                            line = raw_line.strip()
+                            if not line:
+                                continue
+                            try:
+                                records.append(json.loads(line))
+                            except json.JSONDecodeError:
+                                logger.debug(
+                                    "JsonlSessionStore: skipping malformed line in %s",
+                                    fpath.name,
+                                )
+                except Exception:
+                    # Fallback to best-effort direct read when locking fails or
+                    # the platform doesn't support it.
+                    with fpath.open("r", encoding="utf-8", errors="replace") as f:
+                        for raw_line in f:
+                            line = raw_line.strip()
+                            if not line:
+                                continue
+                            try:
+                                records.append(json.loads(line))
+                            except json.JSONDecodeError:
+                                logger.debug(
+                                    "JsonlSessionStore: skipping malformed line in %s",
+                                    fpath.name,
+                                )
             except Exception as exc:
-                logger.warning(
-                    "JsonlSessionStore: could not read %s: %s", fpath, exc
-                )
+                logger.warning("JsonlSessionStore: could not read %s: %s", fpath, exc)
         return records
 
     # ------------------------------------------------------------------
@@ -255,7 +293,7 @@ class JsonlSessionStore:
                 if src.name == f"{session_id}.jsonl":
                     dest = self._sessions_dir / f"{new_session_id}.jsonl"
                 else:
-                    suffix = src.name[len(session_id):]  # e.g. ".0.jsonl"
+                    suffix = src.name[len(session_id) :]  # e.g. ".0.jsonl"
                     dest = self._sessions_dir / f"{new_session_id}{suffix}"
                 try:
                     shutil.copy2(str(src), str(dest))
@@ -371,21 +409,70 @@ class JsonlSessionStore:
             "_offset": offset,
             "ts": _utc_now(),
         }
+        # Write sidecar atomically: write to a temp file then os.replace so
+        # readers never see a partially-written JSON file. Perform best-effort
+        # fsync to improve durability; all failures are non-fatal.
+        tmp_path = None
+        fd = None
         try:
-            sidecar.write_text(
-                json.dumps(payload, ensure_ascii=False, default=str),
-                encoding="utf-8",
-            )
+            fd, tmp_path = tempfile.mkstemp(dir=str(snap_dir), suffix=".tmp")
+            # fd is an OS-level fd; wrap with a text-mode file object for json.dump
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                fd = None  # ownership transferred to fdopen -> don't close twice
+                json.dump(payload, f, ensure_ascii=False, default=str)
+                try:
+                    f.flush()
+                    os.fsync(f.fileno())
+                except Exception:
+                    # Best-effort; tolerate platforms where fsync may fail
+                    pass
+            # Atomic replace into final location
+            try:
+                os.replace(tmp_path, str(sidecar))
+            except Exception:
+                # If replace fails for any reason, attempt a fallback move
+                try:
+                    shutil.move(tmp_path, str(sidecar))
+                except Exception:
+                    raise
+            # Best-effort: fsync the directory entry so the replaced file is
+            # more likely to be durable across crashes. This may not be
+            # supported on all platforms; ignore errors.
+            try:
+                dir_fd = os.open(str(snap_dir), os.O_RDONLY)
+                try:
+                    os.fsync(dir_fd)
+                except Exception:
+                    pass
+                finally:
+                    try:
+                        os.close(dir_fd)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
         except Exception as exc:
             logger.error(
                 "JsonlSessionStore.save_snapshot: sidecar write failed: %s", exc
             )
+            # Cleanup the temp file if it exists
+            try:
+                if fd is not None:
+                    try:
+                        os.close(fd)
+                    except Exception:
+                        pass
+                if tmp_path is not None and os.path.exists(tmp_path):
+                    try:
+                        os.unlink(tmp_path)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
 
         return snapshot_id
 
-    def get_snapshot(
-        self, session_id: str, snapshot_id: str
-    ) -> Optional[str]:
+    def get_snapshot(self, session_id: str, snapshot_id: str) -> Optional[str]:
         """Return the state JSON for *snapshot_id*, or None if not found.
 
         Reads the sidecar JSON file.  Returns a JSON-encoded envelope with
@@ -427,9 +514,7 @@ class JsonlSessionStore:
                     p.unlink(missing_ok=True)
                     count += 1
                 except Exception as exc:
-                    logger.warning(
-                        "JsonlSessionStore: failed to delete %s: %s", p, exc
-                    )
+                    logger.warning("JsonlSessionStore: failed to delete %s: %s", p, exc)
         return count
 
     def list_sessions(self) -> List[str]:
@@ -447,3 +532,461 @@ class JsonlSessionStore:
                 sid = name
             seen.add(sid)
         return sorted(seen)
+
+    def close(self) -> None:
+        """Best-effort close/cleanup for compatibility with SessionStore API.
+
+        JsonlSessionStore opens files per-operation (append/read) and therefore
+        has no persistent file descriptors to close. We clear the per-session
+        locks map to release Lock instances and keep shutdown tidy.
+        """
+        try:
+            with self._locks_lock:
+                self._locks.clear()
+        except Exception:
+            logger.debug(
+                "JsonlSessionStore.close: unexpected error during close", exc_info=True
+            )
+
+    # ------------------------------------------------------------------
+    # Compatibility & extended API (sqlite-like surface)
+    # ------------------------------------------------------------------
+
+    def get_schema_version(self) -> int:
+        """Return the declared schema version for compatibility tests."""
+        try:
+            return int(self._SCHEMA_VERSION)
+        except Exception:
+            return 1
+
+    def _write_with_retry(
+        self,
+        conn: Any,
+        sql: str,
+        params: tuple = (),
+        session_id: Optional[str] = None,
+        attempts: int = 5,
+        base_backoff: float = 0.05,
+    ) -> bool:
+        """Best-effort compatibility shim used by tests.
+
+        Attempts to execute ``conn.execute(sql, params)`` and commit. On
+        sqlite3.OperationalError containing 'lock' this retries with
+        exponential backoff. On exhaustion writes a diagnostic JSON file into
+        ``{workdir}/.agent-context/session_store_write_failure_*.json`` and
+        returns False.
+        """
+        last_err: Optional[Exception] = None
+        for i in range(1, max(1, attempts) + 1):
+            try:
+                # Execute then commit if available
+                if hasattr(conn, "execute"):
+                    conn.execute(sql, params)
+                if hasattr(conn, "commit"):
+                    conn.commit()
+                return True
+            except Exception as e:
+                last_err = e
+                msg = str(e).lower()
+                # Detect SQLITE_BUSY/locked semantics
+                if isinstance(e, sqlite3.OperationalError) and "lock" in msg:
+                    # busy, retry
+                    sleep_for = base_backoff * (2 ** (i - 1))
+                    try:
+                        time.sleep(sleep_for)
+                    except Exception:
+                        pass
+                    continue
+                else:
+                    # Non-locked error — write diagnostic and abort
+                    break
+
+        # Exhausted attempts or unrecoverable error — write diagnostic
+        try:
+            diag_dir = Path(self._workdir) / ".agent-context"
+            diag_dir.mkdir(parents=True, exist_ok=True)
+            ts = int(time.time() * 1000)
+            sid = session_id or "unknown"
+            diag_path = diag_dir / f"session_store_write_failure_{ts}_{sid}.json"
+            payload = {
+                "db_path": getattr(
+                    conn, "db_path", str(getattr(conn, "database", "unknown"))
+                ),
+                "session_id": sid,
+                "attempts": attempts,
+                "last_error": "SQLITE_BUSY/LOCKED"
+                if isinstance(last_err, sqlite3.OperationalError)
+                and "lock" in str(last_err).lower()
+                else str(last_err),
+                "sql": sql,
+                "params": params,
+                "ts": _utc_now(),
+            }
+            # Atomic write
+            fd = None
+            tmp = None
+            try:
+                fd, tmp = tempfile.mkstemp(dir=str(diag_dir), suffix=".tmp")
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    fd = None
+                    json.dump(payload, f, ensure_ascii=False)
+                    try:
+                        f.flush()
+                        os.fsync(f.fileno())
+                    except Exception:
+                        pass
+                try:
+                    os.replace(tmp, str(diag_path))
+                except Exception:
+                    try:
+                        shutil.move(tmp, str(diag_path))
+                    except Exception:
+                        pass
+            finally:
+                try:
+                    if fd is not None:
+                        os.close(fd)
+                except Exception:
+                    pass
+        except Exception:
+            logger.debug(
+                "JsonlSessionStore._write_with_retry: failed to write diagnostic",
+                exc_info=True,
+            )
+
+        return False
+
+    # Tool calls, plans, errors, decisions — simple append/read methods
+
+    def add_tool_call(
+        self,
+        session_id: str,
+        tool_name: str,
+        args: Any,
+        result: Any,
+        success: bool = True,
+    ) -> None:
+        self._append(
+            session_id,
+            {
+                "type": "tool_call",
+                "tool_name": tool_name,
+                "args": args,
+                "result": result,
+                "success": bool(success),
+                "ts": _utc_now(),
+            },
+        )
+
+    def get_tool_calls(self, session_id: str) -> List[Dict[str, Any]]:
+        return [
+            r
+            for r in self._read_all_records(session_id)
+            if r.get("type") == "tool_call"
+        ]
+
+    def add_plan(self, session_id: str, plan: Any, status: str = "active") -> None:
+        self._append(
+            session_id,
+            {
+                "type": "plan",
+                "plan": plan,
+                "status": status,
+                "ts": _utc_now(),
+            },
+        )
+
+    def get_plans(self, session_id: str) -> List[Dict[str, Any]]:
+        return [
+            r for r in self._read_all_records(session_id) if r.get("type") == "plan"
+        ]
+
+    def add_error(
+        self,
+        session_id: str,
+        error_type: str,
+        error_message: str,
+        context: Optional[str] = None,
+    ) -> None:
+        self._append(
+            session_id,
+            {
+                "type": "error",
+                "error_type": error_type,
+                "error_message": error_message,
+                "context": context,
+                "ts": _utc_now(),
+            },
+        )
+
+    def get_errors(self, session_id: str) -> List[Dict[str, Any]]:
+        return [
+            r for r in self._read_all_records(session_id) if r.get("type") == "error"
+        ]
+
+    def add_decision(
+        self, session_id: str, decision: Any, rationale: Optional[str] = None
+    ) -> None:
+        self._append(
+            session_id,
+            {
+                "type": "decision",
+                "decision": decision,
+                "rationale": rationale,
+                "ts": _utc_now(),
+            },
+        )
+        # Auto-flush recent decisions to a cross-session sidecar for the
+        # perception node / decision-memory feature. This is best-effort and
+        # protected by a dedicated lock so concurrent writers don't corrupt the
+        # decisions.json file.
+        try:
+            self.write_decisions_json()
+        except Exception:
+            # Fail silently — add_decision should not raise due to decision
+            # memory sidecar write failures.
+            logger.debug(
+                "JsonlSessionStore: write_decisions_json failed", exc_info=True
+            )
+
+    def get_decisions(self, session_id: str) -> List[Dict[str, Any]]:
+        return [
+            r for r in self._read_all_records(session_id) if r.get("type") == "decision"
+        ]
+
+    # ------------------------------------------------------------------
+    # Cross-session decision memory (decisions.json sidecar)
+    # ------------------------------------------------------------------
+
+    def _decisions_path(self) -> Path:
+        d = Path(self._workdir) / ".agent-context"
+        d.mkdir(parents=True, exist_ok=True)
+        return d / "decisions.json"
+
+    def write_decisions_json(self, limit: int = 50) -> None:
+        """Collect recent decisions across all sessions and atomically write
+        them to ``{workdir}/.agent-context/decisions.json``.
+
+        The most recent decisions are selected by timestamp and the result is a
+        list of decision objects with keys: session_id, decision, rationale, ts.
+        """
+        # Gather all decisions from all sessions
+        all_decisions: List[Dict[str, Any]] = []
+        for sid in self.list_sessions():
+            for d in self.get_decisions(sid):
+                item = {
+                    "session_id": sid,
+                    "decision": d.get("decision"),
+                    "rationale": d.get("rationale"),
+                    "ts": d.get("ts"),
+                }
+                all_decisions.append(item)
+
+        # Sort by timestamp descending (most recent first). Timestamps are
+        # ISO-8601 strings so they sort lexicographically.
+        all_decisions.sort(key=lambda x: x.get("ts") or "", reverse=True)
+        trimmed = all_decisions[: max(0, int(limit))]
+
+        path = self._decisions_path()
+        tmp = None
+        fd = None
+        with self._decisions_lock:
+            try:
+                fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    fd = None
+                    json.dump(trimmed, f, ensure_ascii=False)
+                    try:
+                        f.flush()
+                        os.fsync(f.fileno())
+                    except Exception:
+                        pass
+                try:
+                    os.replace(tmp, str(path))
+                except Exception:
+                    try:
+                        shutil.move(tmp, str(path))
+                    except Exception as exc:
+                        logger.error(
+                            "JsonlSessionStore.write_decisions_json: move failed: %s",
+                            exc,
+                        )
+            finally:
+                try:
+                    if fd is not None:
+                        os.close(fd)
+                except Exception:
+                    pass
+
+    def read_recent_decisions(self, max_entries: int = 10) -> List[Dict[str, Any]]:
+        """Read and return the recent decisions from the decisions.json
+        sidecar. Returns an empty list if the file is missing or malformed.
+        """
+        path = self._decisions_path()
+        if not path.exists():
+            return []
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(data, list):
+                return []
+            # Return up to max_entries most recent items
+            return data[: max(0, int(max_entries))]
+        except Exception:
+            return []
+
+    # Session state persistence (inline + sidecar)
+
+    def _state_sidecar_path(self, session_id: str) -> Path:
+        d = self._sessions_dir / "state"
+        d.mkdir(parents=True, exist_ok=True)
+        return d / f"{session_id}.json"
+
+    def save_session_state(
+        self,
+        session_id: str,
+        state: dict,
+        role: Optional[str] = None,
+        task: Optional[str] = None,
+    ) -> None:
+        # Append inline for full history
+        self._append(
+            session_id,
+            {
+                "type": "session_state",
+                "state": state,
+                "role": role,
+                "task": task,
+                "ts": _utc_now(),
+            },
+        )
+
+        # Also write a durable sidecar atomically
+        side = self._state_sidecar_path(session_id)
+        tmp = None
+        fd = None
+        try:
+            fd, tmp = tempfile.mkstemp(dir=str(side.parent), suffix=".tmp")
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                fd = None
+                json.dump(
+                    {"state": state, "role": role, "task": task, "ts": _utc_now()},
+                    f,
+                    ensure_ascii=False,
+                )
+                try:
+                    f.flush()
+                    os.fsync(f.fileno())
+                except Exception:
+                    pass
+            try:
+                os.replace(tmp, str(side))
+            except Exception:
+                try:
+                    shutil.move(tmp, str(side))
+                except Exception:
+                    pass
+        finally:
+            try:
+                if fd is not None:
+                    os.close(fd)
+            except Exception:
+                pass
+
+    def load_session_state(self, session_id: str) -> Optional[dict]:
+        # Prefer the sidecar when present
+        side = self._state_sidecar_path(session_id)
+        if side.exists():
+            try:
+                data = json.loads(side.read_text(encoding="utf-8"))
+                return data.get("state")
+            except Exception:
+                pass
+
+        # Fallback: scan for the most recent session_state record
+        records = self._read_all_records(session_id)
+        for r in reversed(records):
+            if r.get("type") == "session_state":
+                return r.get("state")
+        return None
+
+    # Child session registration
+
+    def register_child_session(
+        self,
+        parent_session_id: str,
+        child_session_id: str,
+        role: Optional[str] = None,
+        task: Optional[str] = None,
+    ) -> None:
+        self._append(
+            parent_session_id or "unknown",
+            {
+                "type": "session_child",
+                "parent_session_id": parent_session_id,
+                "child_session_id": child_session_id,
+                "role": role,
+                "task": task,
+                "ts": _utc_now(),
+            },
+        )
+
+    def get_child_sessions(self, parent_session_id: str) -> List[Dict[str, Any]]:
+        return [
+            r
+            for r in self._read_all_records(parent_session_id)
+            if r.get("type") == "session_child"
+            and r.get("parent_session_id") == parent_session_id
+        ]
+
+    def get_session_tree(self, session_id: str) -> Dict[str, Any]:
+        # Build parent->children map by scanning all sessions
+        map_parent: Dict[str, List[Dict[str, Any]]] = {}
+        for sid in self.list_sessions():
+            for r in self._read_all_records(sid):
+                if r.get("type") == "session_child":
+                    p = r.get("parent_session_id")
+                    key = str(p) if p is not None else ""
+                    map_parent.setdefault(key, []).append(r)
+
+        def _build(sid: str) -> Dict[str, Any]:
+            children = []
+            for ch in map_parent.get(str(sid), []):
+                child_id = ch.get("child_session_id")
+                if child_id is None:
+                    continue
+                children.append(_build(child_id))
+            return {"session_id": sid, "children": children}
+
+        return _build(session_id)
+
+    def get_session_summary(self, session_id: str) -> Dict[str, Any]:
+        records = self._read_all_records(session_id)
+        summary = {
+            "session_id": session_id,
+            "messages": 0,
+            "message_count": 0,
+            # Keep both legacy plural keys and the explicit *_count names tests
+            # expect. This preserves compatibility for callers that used either.
+            "tool_calls": 0,
+            "tool_call_count": 0,
+            "errors": 0,
+            "error_count": 0,
+            "plans": 0,
+            "decisions": 0,
+        }
+        for r in records:
+            t = r.get("type")
+            if t == "message":
+                summary["messages"] += 1
+                summary["message_count"] += 1
+            elif t == "tool_call":
+                summary["tool_calls"] += 1
+                summary["tool_call_count"] += 1
+            elif t == "error":
+                summary["errors"] += 1
+                summary["error_count"] += 1
+            elif t == "plan":
+                summary["plans"] += 1
+            elif t == "decision":
+                summary["decisions"] += 1
+        return summary

@@ -122,8 +122,20 @@ async def evaluation_node(state: StateLike, config: Any) -> Dict[str, Any]:
 
             _orch = _resolve_orchestrator(state, config)
             if _orch and hasattr(_orch, "session_store") and _orch.session_store:
-                _session_id = state.get("session_id") or "unknown"
+                import threading as _thr
+
+                # Prefer explicit session_id from state; fall back to None so
+                # SessionStore normalises to 'unknown' for file/DB naming but
+                # preserves the original value in diagnostics.
+                _session_id = state.get("session_id") or None
                 _task_desc = (state.get("task") or "")[:200]
+                _thread_name = getattr(_thr.current_thread(), "name", "unknown")
+                logger.debug(
+                    "session_store: write (session=%r, thread=%s, site=%s)",
+                    _session_id,
+                    _thread_name,
+                    "evaluation_node:add_decision",
+                )
                 _orch.session_store.add_decision(
                     session_id=_session_id,
                     decision=f"complete: {_task_desc}",

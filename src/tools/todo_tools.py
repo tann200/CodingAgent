@@ -38,8 +38,6 @@ def _load_todo_json(workdir: str) -> List[Dict[str, Any]]:
 
 
 def _save_todo(workdir: str, steps: List[Dict[str, Any]]) -> None:
-    base = agent_context_path(Path(workdir))
-
     # Save machine-readable JSON
     _todo_json_path(workdir).write_text(json.dumps(steps, indent=2))
 

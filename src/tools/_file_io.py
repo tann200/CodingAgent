@@ -15,8 +15,6 @@ import logging
 from pathlib import Path
 from typing import Dict, Any
 
-_logger = logging.getLogger(__name__)
-
 from src.tools._path_utils import safe_resolve as _safe_resolve_impl
 from src.tools._tool import tool, PermissionKind
 from src.tools._diff_gate import (
@@ -25,6 +23,8 @@ from src.tools._diff_gate import (
     _preview_gate_lock,
     _preview_rejected,
 )
+
+_logger = logging.getLogger(__name__)
 
 # Write-size constants (authoritative values — re-exported from file_tools)
 _READ_FILE_MAX_CHARS = 50_000
@@ -603,9 +603,9 @@ def glob(pattern: str, workdir: Path | None = None) -> Dict[str, Any]:
         # Sort by modification time descending (most recently modified first),
         # matching claw-code-main Rust glob_search behaviour.
         matches.sort(
-            key=lambda rel_path: (base / rel_path).stat().st_mtime
-            if (base / rel_path).exists()
-            else 0.0,
+            key=lambda rel_path: (
+                (base / rel_path).stat().st_mtime if (base / rel_path).exists() else 0.0
+            ),
             reverse=True,
         )
         matches = matches[:LIMIT]

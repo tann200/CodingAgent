@@ -7,8 +7,7 @@ import threading
 from collections import OrderedDict
 from pathlib import Path
 
-from src.core.paths import get_memory_path
-from src.core.memory.frozen_snapshot import load_memory_snapshot, get_memory_for_prompt
+from src.core.memory.frozen_snapshot import get_memory_for_prompt
 
 # Gap 3: Plugin hooks — lazy import so the registry is not required at import time.
 try:

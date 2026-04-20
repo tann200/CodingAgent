@@ -173,8 +173,18 @@ class SessionManager:
             ``True`` for successful calls, ``False`` for failures.
         """
         try:
+            import threading as _thr
+
+            _sid = self._task_id or "unknown"
+            _thread_name = getattr(_thr.current_thread(), "name", "unknown")
+            guilogger.debug(
+                "session_store: write (session=%r, thread=%s, site=%s)",
+                _sid,
+                _thread_name,
+                "SessionManager:log_tool_call",
+            )
             self.session_store.add_tool_call(
-                session_id=self._task_id or "unknown",
+                session_id=_sid,
                 tool_name=tool_name,
                 args=tool_args,
                 result=result,
@@ -186,8 +196,18 @@ class SessionManager:
     def log_message(self, role: str, content: str) -> None:
         """Persist a conversation message to the ``SessionStore`` transcript."""
         try:
+            import threading as _thr
+
+            _sid = self._task_id or "unknown"
+            _thread_name = getattr(_thr.current_thread(), "name", "unknown")
+            guilogger.debug(
+                "session_store: write (session=%r, thread=%s, site=%s)",
+                _sid,
+                _thread_name,
+                "SessionManager:log_message",
+            )
             self.session_store.add_message(
-                session_id=self._task_id or "unknown",
+                session_id=_sid,
                 role=role,
                 content=content,
             )

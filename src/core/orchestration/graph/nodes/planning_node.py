@@ -129,7 +129,6 @@ async def _planning_node_impl(state: Mapping[str, Any], config: Any) -> Dict[str
         last_plan_data = _load_last_plan(working_dir)
         if last_plan_data and last_plan_data.get("plan"):
             loaded_plan = last_plan_data["plan"]
-            loaded_task = last_plan_data.get("task", "")
             loaded_step = last_plan_data.get("current_step", 0)
 
             # P2-B fix: Replace 80% Jaccard word-overlap with TTL + exact match.
@@ -750,12 +749,21 @@ Respond ONLY with valid JSON, no additional text."""
             # Persist plan to session store
             try:
                 import json as _json
+                import threading as _thr
 
                 # Use the orchestrator already resolved at the top of the function (NEW-9).
                 # The previous re-fetch via config.get() failed on RunnableConfig objects.
                 if orchestrator and hasattr(orchestrator, "session_store"):
+                    _sid = getattr(orchestrator, "_current_task_id", None)
+                    _thread_name = getattr(_thr.current_thread(), "name", "unknown")
+                    logger.debug(
+                        "session_store: write (session=%r, thread=%s, site=%s)",
+                        _sid,
+                        _thread_name,
+                        "planning_node:add_plan",
+                    )
                     orchestrator.session_store.add_plan(
-                        session_id=getattr(orchestrator, "_current_task_id", "unknown"),
+                        session_id=_sid,
                         plan=_json.dumps(steps),
                         status="created",
                     )

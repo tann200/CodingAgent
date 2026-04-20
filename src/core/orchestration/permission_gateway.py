@@ -27,7 +27,10 @@ from __future__ import annotations
 import logging
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 # CODE_QUALITY_AUDIT #7 fix: promote all deferred imports (previously inside
 # individual _gate* methods) to module level.  These were on the hot path for
@@ -102,26 +105,26 @@ logger = logging.getLogger(__name__)
 #: Maps tool name → PermissionKind string for PermissionTable lookups.
 _TOOL_KIND_MAP: dict[str, str] = {
     # Writes
-    "write_file":        "write",
-    "edit_file":         "edit",
+    "write_file": "write",
+    "edit_file": "edit",
     "edit_by_line_range": "edit",
-    "apply_patch":       "edit",
-    "delete_file":       "write",
-    "rename_file":       "write",
+    "apply_patch": "edit",
+    "delete_file": "write",
+    "rename_file": "write",
     # Reads
-    "read_file":         "read",
-    "list_dir":          "read",
-    "glob_tool":         "glob",
-    "grep_tool":         "grep",
+    "read_file": "read",
+    "list_dir": "read",
+    "glob_tool": "glob",
+    "grep_tool": "grep",
     # Shell
-    "bash":              "bash",
-    "run_tests":         "bash",
-    "run_bash":          "bash",
+    "bash": "bash",
+    "run_tests": "bash",
+    "run_bash": "bash",
     # Network
-    "webfetch":          "webfetch",
-    "websearch":         "websearch",
+    "webfetch": "webfetch",
+    "websearch": "websearch",
     # Delegation
-    "delegate_task":     "delegate_task",
+    "delegate_task": "delegate_task",
 }
 
 
@@ -132,12 +135,22 @@ def _tool_kind_for_name(tool_name: str) -> str:
 
 #: Keys to try when extracting the primary argument, in priority order.
 _PRIMARY_ARG_KEYS: list[str] = [
-    "path", "file_path", "src_path", "target", "filename",
-    "url", "uri",
-    "command", "cmd", "bash_command",
-    "query", "search_query",
-    "subtask_description", "description",
-    "pattern", "glob",
+    "path",
+    "file_path",
+    "src_path",
+    "target",
+    "filename",
+    "url",
+    "uri",
+    "command",
+    "cmd",
+    "bash_command",
+    "query",
+    "search_query",
+    "subtask_description",
+    "description",
+    "pattern",
+    "glob",
 ]
 
 
@@ -483,7 +496,6 @@ class PermissionGateway:
         """
         try:
             from src.core.orchestration.permission_table import get_permission_table
-            from src.tools._tool import PermissionKind
 
             # Map tool name to PermissionKind string for the lookup key
             kind_str = _tool_kind_for_name(name)
@@ -493,7 +505,9 @@ class PermissionGateway:
 
             if action == "allow":
                 logger.debug(
-                    "permission_table: pre-approved %s %r via allow rule", name, primary_arg
+                    "permission_table: pre-approved %s %r via allow rule",
+                    name,
+                    primary_arg,
                 )
                 return PermissionResult(allowed=True)
 

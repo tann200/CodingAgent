@@ -12,12 +12,11 @@ Features:
 """
 
 from __future__ import annotations
-import json
+
 import logging
 import threading
 import time
-from dataclasses import dataclass
-from typing import Any, Dict, Callable, Optional, Iterable
+from typing import Any, Dict, Callable, Optional
 from pathlib import Path
 
 # Avoid importing project path helpers at module import time to prevent
@@ -172,8 +171,8 @@ class ConfigReloader:
             try:
                 from src.core.config_loader import load_merged_config
 
-                config = load_merged_config()
                 # Optionally store the loaded config somewhere if needed
+                load_merged_config()
                 logging.debug("Configuration reloaded successfully")
                 # On a watcher-driven reload we call callbacks with the path
                 # set that triggered this reload (if we have one stored).

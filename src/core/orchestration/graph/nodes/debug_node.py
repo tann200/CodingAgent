@@ -52,7 +52,6 @@ async def debug_node(state: StateLike, config: Any) -> Dict[str, Any]:
     current_attempt: int = int(state.get("debug_attempts") or 0)
     max_attempts: int = int(state.get("max_debug_attempts") or 3)
     total_debug_attempts: int = int(state.get("total_debug_attempts") or 0)
-    last_error_type: str = state.get("last_debug_error_type") or ""
     last_result = state.get("last_result") or {}
     verification_result = state.get("verification_result") or {}
     # DOOM-LOOP FIX: Use original_task as the authoritative task string.
@@ -124,11 +123,21 @@ async def debug_node(state: StateLike, config: Any) -> Dict[str, Any]:
     # before the MAX_TOTAL_DEBUG hard cap (9) stopped it.  The error type is now
     # used only for routing (TYPE_GUIDANCE), not for resetting retry budgets.
 
-    # Persist error to session store
+    # Persist error to session store (lightweight caller instrumentation)
     try:
+        import threading as _thr
+
         if orchestrator and hasattr(orchestrator, "session_store"):
+            _sid = getattr(orchestrator, "_current_task_id", None)
+            _thread_name = getattr(_thr.current_thread(), "name", "unknown")
+            logger.debug(
+                "session_store: write (session=%r, thread=%s, site=%s)",
+                _sid,
+                _thread_name,
+                "debug_node:add_error",
+            )
             orchestrator.session_store.add_error(
-                session_id=getattr(orchestrator, "_current_task_id", "unknown"),
+                session_id=_sid,
                 error_type=error_type,
                 error_message=error_summary[:500],
                 context={"attempt": current_attempt + 1},

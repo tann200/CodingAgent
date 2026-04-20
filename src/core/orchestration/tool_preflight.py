@@ -51,6 +51,7 @@ def preflight_check_impl(orch: Any, tool_call: Dict[str, Any]) -> Dict[str, Any]
                     _corrected_tool = orch.tool_registry.get(_corrected_name)
                     if _corrected_tool:
                         import logging as _log
+
                         _log.getLogger(__name__).warning(
                             "preflight: P3-D auto-corrected tool '%s' → '%s'",
                             name,

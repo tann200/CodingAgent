@@ -13,6 +13,7 @@ import json
 import logging
 import re
 import subprocess
+import time
 from typing import Any, Dict
 
 from src.core.logger import logger as guilogger
@@ -180,13 +181,16 @@ def _publish_active_config_impl(orch: Any) -> None:
                     try:
                         from src.core.utils.strings import valid_str as _vs2
 
-                        _valid_str2 = lambda x: _vs2(x)
+                        def _valid_str2(x: Any) -> bool:
+                            return _vs2(x)
                     except Exception:
-                        _valid_str2 = (
-                            lambda x: isinstance(x, str)
-                            and bool(x.strip())
-                            and ("MagicMock" not in x)
-                        )
+
+                        def _valid_str2(x: Any) -> bool:
+                            return (
+                                isinstance(x, str)
+                                and bool(x.strip())
+                                and ("MagicMock" not in x)
+                            )
 
                     available_models = [str(m).strip() for m in ms if _valid_str2(m)]
                 else:
@@ -298,6 +302,38 @@ def begin_step_transaction_impl(orch: Any) -> str:
     step_id = "step_" + datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     orch._step_snapshot_id = step_id
     guilogger.debug(f"begin_step_transaction: started {step_id}")
+    # Record timing of begin_step_transaction (very fast, but useful overall)
+    try:
+        start_ts = time.time()
+        if getattr(orch, "working_dir", None):
+            agent_context_dir = orch.working_dir / ".agent-context"
+            agent_context_dir.mkdir(parents=True, exist_ok=True)
+            timings_path = agent_context_dir / "timings.json"
+            entry = {
+                "phase": "begin_step_transaction",
+                "elapsed": 0.0,
+                "ts": int(start_ts),
+                "step_id": step_id,
+            }
+            if timings_path.exists():
+                try:
+                    data = json.loads(timings_path.read_text(encoding="utf-8"))
+                    if isinstance(data, list):
+                        data.append(entry)
+                    else:
+                        data = [data, entry]
+                except Exception:
+                    data = [entry]
+            else:
+                data = [entry]
+            try:
+                timings_path.write_text(
+                    json.dumps(data, ensure_ascii=False), encoding="utf-8"
+                )
+            except Exception:
+                pass
+    except Exception:
+        pass
     return step_id
 
 
@@ -410,6 +446,7 @@ def _create_session_snapshot_impl(orch: Any) -> None:
 
 def _ensure_working_dir_impl(orch: Any) -> None:
     """Ensure the working directory and .agent-context scaffold exist."""
+    start_ts = time.time()
     try:
         orch.working_dir.mkdir(parents=True, exist_ok=True)
 
@@ -450,6 +487,37 @@ def _ensure_working_dir_impl(orch: Any) -> None:
                 )
         except Exception:
             pass
+    finally:
+        # Best-effort timing/logging for diagnostics
+        try:
+            elapsed = time.time() - start_ts
+            agent_context_dir = orch.working_dir / ".agent-context"
+            agent_context_dir.mkdir(parents=True, exist_ok=True)
+            timings_path = agent_context_dir / "timings.json"
+            entry = {
+                "phase": "ensure_working_dir",
+                "elapsed": elapsed,
+                "ts": int(start_ts),
+            }
+            if timings_path.exists():
+                try:
+                    data = json.loads(timings_path.read_text(encoding="utf-8"))
+                    if isinstance(data, list):
+                        data.append(entry)
+                    else:
+                        data = [data, entry]
+                except Exception:
+                    data = [entry]
+            else:
+                data = [entry]
+            try:
+                timings_path.write_text(
+                    json.dumps(data, ensure_ascii=False), encoding="utf-8"
+                )
+            except Exception:
+                pass
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -459,6 +527,7 @@ def _ensure_working_dir_impl(orch: Any) -> None:
 
 def _background_model_check_impl(orch: Any) -> None:
     """Check for available models in the background (non-blocking)."""
+    start_ts = time.time()
     # Guarded import to avoid circular imports during tests or when the
     # provider manager module is unavailable in isolated environments.
     try:
@@ -505,6 +574,38 @@ def _background_model_check_impl(orch: Any) -> None:
                 pass
     except Exception:
         pass
+    finally:
+        # Record timing for provider/model check
+        try:
+            elapsed = time.time() - start_ts
+            if getattr(orch, "working_dir", None):
+                agent_context_dir = orch.working_dir / ".agent-context"
+                agent_context_dir.mkdir(parents=True, exist_ok=True)
+                timings_path = agent_context_dir / "timings.json"
+                entry = {
+                    "phase": "background_model_check",
+                    "elapsed": elapsed,
+                    "ts": int(start_ts),
+                }
+                if timings_path.exists():
+                    try:
+                        data = json.loads(timings_path.read_text(encoding="utf-8"))
+                        if isinstance(data, list):
+                            data.append(entry)
+                        else:
+                            data = [data, entry]
+                    except Exception:
+                        data = [entry]
+                else:
+                    data = [entry]
+                try:
+                    timings_path.write_text(
+                        json.dumps(data, ensure_ascii=False), encoding="utf-8"
+                    )
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------

@@ -13,7 +13,6 @@ The frozen snapshot pattern:
 """
 
 import threading
-from pathlib import Path
 from typing import Dict, List, Optional
 
 from src.core.paths import get_memory_path

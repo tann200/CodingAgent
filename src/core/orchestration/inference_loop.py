@@ -158,7 +158,7 @@ def _generate_work_summary(
         summary_parts.append(f"Rounds: {rounds}")
     if current_plan:
         completed = min(current_step, len(current_plan))
-        summary_parts.append(f"Plan: {completed}/{len(current_plan)} steps")
+        summary_parts.append(f"Steps completed: {completed}/{len(current_plan)}")
     if verified_reads:
         summary_parts.append(f"Files read: {len(verified_reads)}")
     if tool_counts:
@@ -350,8 +350,21 @@ def run_agent_once_impl(
     # SES-W2: Persist user prompt to SessionStore transcript.
     if prompt:
         try:
+            _sid = getattr(orch, "_current_task_id", None)
+            try:
+                import threading as _thr
+
+                _tname = _thr.current_thread().name
+            except Exception:
+                _tname = "unknown"
+            guilogger.debug(
+                "inference_loop: add_message (session=%r, role=%s, thread=%s)",
+                _sid,
+                "user",
+                _tname,
+            )
             orch.session_store.add_message(
-                session_id=getattr(orch, "_current_task_id", "unknown"),
+                session_id=_sid,
                 role="user",
                 content=prompt,
             )
@@ -701,7 +714,7 @@ def run_agent_once_impl(
                     )
                     if has_tool_block:
                         guilogger.debug(
-                            f"inference_loop: tool block detected in last assistant message"
+                            "inference_loop: tool block detected in last assistant message"
                         )
                     else:
                         guilogger.debug(
@@ -1003,8 +1016,21 @@ def run_agent_once_impl(
         # SES-W2: Persist assistant response to SessionStore transcript.
         if assistant_message:
             try:
+                _sid = getattr(orch, "_current_task_id", None)
+                try:
+                    import threading as _thr
+
+                    _tname = _thr.current_thread().name
+                except Exception:
+                    _tname = "unknown"
+                guilogger.debug(
+                    "inference_loop: add_message (session=%r, role=%s, thread=%s)",
+                    _sid,
+                    "assistant",
+                    _tname,
+                )
                 orch.session_store.add_message(
-                    session_id=getattr(orch, "_current_task_id", "unknown"),
+                    session_id=_sid,
                     role="assistant",
                     content=assistant_message.strip(),
                 )

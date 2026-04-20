@@ -1,6 +1,7 @@
 from typing import List, Dict, Any, Callable, Optional
 import re
 import logging
+import json
 
 logger = logging.getLogger(__name__)
 
@@ -219,6 +220,56 @@ class MessageManager:
                 f"MessageManager.truncate: dropped_count={dropped_count} "
                 f"dropped_tokens={dropped_tokens} tokens_after={after_total}"
             )
+        except Exception:
+            pass
+
+        # Record timing for truncation operations for diagnostics (best-effort)
+        try:
+            import time as _time
+            from pathlib import Path as _Path
+
+            elapsed = (
+                _time.time()
+            )  # stamp only (caller already measures coarse runtime)
+            # Attempt to find a working_dir on event_bus payloads (best-effort)
+            working_dir = None
+            try:
+                if getattr(self, "event_bus", None) and hasattr(
+                    self.event_bus, "working_dir"
+                ):
+                    working_dir = getattr(self.event_bus, "working_dir")
+            except Exception:
+                working_dir = None
+            if working_dir:
+                try:
+                    agent_context_dir = _Path(working_dir) / ".agent-context"
+                    agent_context_dir.mkdir(parents=True, exist_ok=True)
+                    timings_path = agent_context_dir / "timings.json"
+                    entry = {
+                        "phase": "message_truncation",
+                        "elapsed": 0.0,
+                        "ts": int(elapsed),
+                        "dropped_count": dropped_count,
+                    }
+                    if timings_path.exists():
+                        try:
+                            data = json.loads(timings_path.read_text(encoding="utf-8"))
+                            if isinstance(data, list):
+                                data.append(entry)
+                            else:
+                                data = [data, entry]
+                        except Exception:
+                            data = [entry]
+                    else:
+                        data = [entry]
+                    try:
+                        timings_path.write_text(
+                            json.dumps(data, ensure_ascii=False), encoding="utf-8"
+                        )
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
         except Exception:
             pass
 

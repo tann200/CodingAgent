@@ -12,7 +12,23 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from src.core.orchestration.event_bus import EventBus  # noqa: E402
+from src.core.orchestration.event_bus import EventBus  # noqa: F401
+from src.core.orchestration.work_summary import _generate_work_summary  # noqa: F401
+from src.core.orchestration.tool_result_formatter import TOOL_RESULT_FORMATTERS  # noqa: F401
+from src.core.orchestration.tool_constants import (
+    WRITE_TOOLS_REQUIRING_READ,  # noqa: F401
+    PERMISSION_REQUIRED_TOOLS,
+    DRY_RUN_BLOCKED_TOOLS,
+)
+
+# Backwards-compatible utility re-exports
+from src.core.orchestration.tool_constants import (
+    _write_permission_audit as _write_permission_audit,
+)
+
+# Backwards-compatible re-exports (tests patch these on the orchestrator module)
+PERMISSION_REQUIRED_TOOLS = PERMISSION_REQUIRED_TOOLS
+DRY_RUN_BLOCKED_TOOLS = DRY_RUN_BLOCKED_TOOLS
 
 # Phase A: constants — re-exported for backward compatibility.
 
@@ -33,25 +49,7 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-
-# Phase G1: re-exported for backward compatibility (tests import _generate_work_summary
-# from orchestrator).
-
-
-# Tool result formatting — re-exported here for backward compatibility.
-
-from src.core.orchestration.tool_result_formatter import TOOL_RESULT_FORMATTERS  # noqa: E402
-
-# Permission and tool classification constants — re-exported for backward compatibility
-from src.core.orchestration.tool_constants import (
-    PERMISSION_REQUIRED_TOOLS,
-    DRY_RUN_BLOCKED_TOOLS,
-    WRITE_TOOLS_REQUIRING_READ,
-    _write_permission_audit,
-)  # noqa: E402
-
 # Provider manager sync helper expected by tests to be reachable from orchestrator
-from src.core.inference.llm_manager import _ensure_provider_manager_initialized_sync  # noqa: E402
 
 # ── TUI-03/TUI-04: approval gate registries — moved to approval_gate.py ──────
 # Re-exported here for backward compatibility (file_tools.py imports
@@ -61,8 +59,16 @@ from src.core.inference.llm_manager import _ensure_provider_manager_initialized_
 # Re-exported here so existing callers (tests, main.py) continue to work.
 from src.core.orchestration.tool_registry import ToolRegistry  # noqa: E402
 from src.core.orchestration.registry_builder import example_registry  # noqa: E402
-from src.core.orchestration.tool_constants import WRITE_TOOLS_REQUIRING_READ  # noqa: E402
-from src.core.orchestration.work_summary import _generate_work_summary  # noqa: E402
+
+try:
+    from src.core.inference.llm_manager import (
+        _ensure_provider_manager_initialized_sync,
+    )
+except Exception:
+    # Expose a benign fallback so tests can monkeypatch the symbol on the
+    # orchestrator module without importing the full llm_manager.
+    def _ensure_provider_manager_initialized_sync() -> None:  # type: ignore[misc]
+        return None
 
 
 class Orchestrator:

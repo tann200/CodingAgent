@@ -1,6 +1,7 @@
 import hashlib
 import json
 import logging
+import re as _re
 import threading
 from typing import Any, Dict, Literal, Mapping
 
@@ -173,8 +174,6 @@ def should_use_prsw(state: Mapping[str, Any]) -> bool:
 
     return has_read and has_write
 
-
-import re as _re
 
 # HR-7 fix: exact multi-word phrases are safe to match as substrings; single
 # ambiguous words ("add", "edit", etc.) are matched with word-boundary regex

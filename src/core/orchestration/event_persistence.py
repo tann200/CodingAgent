@@ -175,9 +175,7 @@ def recover_pending(
             continue
 
         if age > max_age_seconds:
-            logger.debug(
-                "event_persistence: pruning stale %s (age %.0fs)", p.name, age
-            )
+            logger.debug("event_persistence: pruning stale %s (age %.0fs)", p.name, age)
             try:
                 p.unlink(missing_ok=True)
             except OSError:
@@ -206,9 +204,7 @@ def recover_pending(
         recovered.append(event_payload)
 
     if recovered:
-        logger.info(
-            "event_persistence: recovered %d unACKed event(s)", len(recovered)
-        )
+        logger.info("event_persistence: recovered %d unACKed event(s)", len(recovered))
     return recovered
 
 
@@ -251,7 +247,9 @@ class PersistentEventBus(EventBus):
         try:
             return persist_event(event_name, payload)
         except Exception as exc:
-            logger.warning("PersistentEventBus: failed to persist %s: %s", event_name, exc)
+            logger.warning(
+                "PersistentEventBus: failed to persist %s: %s", event_name, exc
+            )
             return None
 
     def _ack_event(self, payload: Any) -> bool:
@@ -268,9 +266,7 @@ class PersistentEventBus(EventBus):
     # Public API
     # ------------------------------------------------------------------
 
-    def recover_pending(
-        self, max_age_seconds: float = DEFAULT_MAX_AGE_SECONDS
-    ) -> int:
+    def recover_pending(self, max_age_seconds: float = DEFAULT_MAX_AGE_SECONDS) -> int:
         """Replay unACKed events and return the count."""
         events = recover_pending(max_age_seconds=max_age_seconds)
         for ev in events:

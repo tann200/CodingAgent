@@ -57,6 +57,77 @@ def recv_json_ws_factory():
 import pytest
 
 
+# Minimal synchronous Thread and ThreadPoolExecutor replacements used by
+# the sync_threads fixture. These run submitted callables inline so tests
+# that opt in via the fixture/marker become deterministic even when code
+# under test uses ThreadPoolExecutor.
+class _SyncThread:
+    def __init__(self, target=None, args=(), kwargs=None, daemon=None):
+        self._target = target
+        self._args = args or ()
+        self._kwargs = kwargs or {}
+
+    def start(self):
+        if self._target:
+            self._target(*self._args, **self._kwargs)
+
+    def join(self, timeout=None):
+        return None
+
+
+class _SyncFuture:
+    def __init__(self, fn, *args, **kwargs):
+        try:
+            self._result = fn(*args, **kwargs)
+            self._exception = None
+        except Exception as e:
+            self._result = None
+            self._exception = e
+
+    def result(self, timeout=None):
+        if self._exception:
+            raise self._exception
+        return self._result
+
+    def add_done_callback(self, cb):
+        try:
+            cb(self)
+        except Exception:
+            # Callbacks must not raise inside tests
+            pass
+
+    def cancel(self):
+        return False
+
+    def cancelled(self):
+        return False
+
+    def done(self):
+        return True
+
+
+class _SyncThreadPoolExecutor:
+    def __init__(self, max_workers=None, thread_name_prefix=""):
+        # Parameters ignored; synchronous executor runs tasks inline
+        pass
+
+    def submit(self, fn, *args, **kwargs):
+        return _SyncFuture(fn, *args, **kwargs)
+
+    def map(self, fn, *iterables, timeout=None, chunksize=1):
+        for args in zip(*iterables):
+            yield fn(*args)
+
+    def shutdown(self, wait=True, cancel_futures=False):
+        return None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.shutdown()
+
+
 @pytest.fixture
 def recv_json_ws():
     return recv_json_ws_factory()
@@ -74,22 +145,11 @@ def sync_threads(monkeypatch):
     The patched Thread supports (target, args=(), kwargs=None, daemon=None).
     """
     import threading as _threading
-
-    class _SyncThread:
-        def __init__(self, target=None, args=(), kwargs=None, daemon=None):
-            self._target = target
-            self._args = args or ()
-            self._kwargs = kwargs or {}
-
-        def start(self):
-            if self._target:
-                self._target(*self._args, **self._kwargs)
-
-        # Provide join() for tests that may call it
-        def join(self, timeout=None):
-            return None
+    import concurrent.futures as _futures
 
     monkeypatch.setattr(_threading, "Thread", _SyncThread)
+    # Replace ThreadPoolExecutor so executor.submit(...) executes inline
+    monkeypatch.setattr(_futures, "ThreadPoolExecutor", _SyncThreadPoolExecutor)
     yield
 
 
@@ -107,19 +167,8 @@ def _apply_sync_threads_marker(request, monkeypatch):
         return
 
     import threading as _threading
-
-    class _SyncThread:
-        def __init__(self, target=None, args=(), kwargs=None, daemon=None):
-            self._target = target
-            self._args = args or ()
-            self._kwargs = kwargs or {}
-
-        def start(self):
-            if self._target:
-                self._target(*self._args, **self._kwargs)
-
-        def join(self, timeout=None):
-            return None
+    import concurrent.futures as _futures
 
     monkeypatch.setattr(_threading, "Thread", _SyncThread)
+    monkeypatch.setattr(_futures, "ThreadPoolExecutor", _SyncThreadPoolExecutor)
     yield

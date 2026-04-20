@@ -26,9 +26,10 @@ from contextvars import ContextVar
 from typing import Any, Callable, Dict, List, Optional, Set, TypeVar, Awaitable
 import asyncio
 
-_logger = logging.getLogger(__name__)
 from dataclasses import dataclass, field
 from enum import IntEnum
+
+_logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Correlation-ID context variable — set this at the start of each agent turn

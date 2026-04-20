@@ -9,14 +9,25 @@ from __future__ import annotations
 
 # Commands whose first token requires explicit user approval (TUI-03).
 # Uses exact first-token matching to prevent bypass via names like "curl-tool".
-TIER3_COMMANDS: frozenset[str] = frozenset({
-    "pip", "pip3",
-    "curl", "wget",
-    "apt", "apt-get", "yum", "dnf", "brew",
-    "sudo", "su",
-    "chmod", "chown",
-    "rm", "del",
-})
+TIER3_COMMANDS: frozenset[str] = frozenset(
+    {
+        "pip",
+        "pip3",
+        "curl",
+        "wget",
+        "apt",
+        "apt-get",
+        "yum",
+        "dnf",
+        "brew",
+        "sudo",
+        "su",
+        "chmod",
+        "chown",
+        "rm",
+        "del",
+    }
+)
 
 # Multi-token subcommands that also require approval.
 TIER3_SUBCOMMANDS: tuple[str, ...] = (
@@ -32,9 +43,9 @@ TIER3_SUBCOMMANDS: tuple[str, ...] = (
 
 # Keep TIER3_PREFIXES as an alias for backwards compatibility with any code
 # that imports it directly.
-TIER3_PREFIXES: tuple[str, ...] = tuple(
-    t + " " for t in TIER3_COMMANDS
-) + TIER3_SUBCOMMANDS
+TIER3_PREFIXES: tuple[str, ...] = (
+    tuple(t + " " for t in TIER3_COMMANDS) + TIER3_SUBCOMMANDS
+)
 
 
 def is_tier3(command: str) -> bool:
@@ -45,6 +56,7 @@ def is_tier3(command: str) -> bool:
     multi-token subcommands (e.g. ``npm install``).
     """
     import shlex as _shlex
+
     stripped = command.lstrip()
     try:
         tokens = _shlex.split(stripped)

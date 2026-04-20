@@ -15,8 +15,6 @@ import logging
 from pathlib import Path
 from typing import Dict, Any, Optional
 
-_logger = logging.getLogger(__name__)
-
 from src.tools._path_utils import safe_resolve as _safe_resolve_impl
 from src.tools._tool import tool
 from src.tools._diff_gate import (
@@ -25,6 +23,8 @@ from src.tools._diff_gate import (
     _preview_gate_lock,
     _preview_rejected,
 )
+
+_logger = logging.getLogger(__name__)
 
 # Net-change warning threshold (authoritative value — re-exported from file_tools)
 _EDIT_NET_CHANGE_WARN = 200  # edit_file warns on large net-line changes
@@ -87,8 +87,10 @@ def _fuzzy_find(content: str, target: str) -> Optional[str]:
 
     def _strip_indent(s: str) -> str:
         ls = s.splitlines()
-        min_ind = min((len(l) - len(l.lstrip()) for l in ls if l.strip()), default=0)
-        return "\n".join(l[min_ind:] if len(l) > min_ind else l for l in ls)
+        min_ind = min(
+            (len(line) - len(line.lstrip()) for line in ls if line.strip()), default=0
+        )
+        return "\n".join(line[min_ind:] if len(line) > min_ind else line for line in ls)
 
     stripped_target = _rstrip_join(target)
     norm_target = _norm(target)

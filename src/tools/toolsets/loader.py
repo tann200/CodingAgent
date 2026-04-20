@@ -11,7 +11,6 @@ the canonical loader so existing imports continue to work.
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
-import importlib
 
 
 def _get_canonical_loader():
@@ -24,7 +23,7 @@ def _get_canonical_loader():
         import importlib
 
         return importlib.import_module("src.config.toolsets.loader")
-    except Exception as e:  # pragma: no cover - import errors are covered by tests
+    except Exception:  # pragma: no cover - import errors are covered by tests
         raise
 
 

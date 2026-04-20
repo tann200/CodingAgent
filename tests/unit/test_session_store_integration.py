@@ -3,7 +3,7 @@ Integration tests for SessionStore wiring in Orchestrator, planning_node, and de
 """
 
 import json
-from src.core.memory.session_store import SessionStore
+from src.core.memory.sqlite_session_store import SqliteSessionStore as SessionStore
 from src.core.orchestration.orchestrator import Orchestrator
 
 
@@ -84,10 +84,12 @@ class TestSessionStoreOrchestratorWiring:
         orch._current_task_id = "fail_session"
 
         # read_file on a missing path returns a failed result (no exception raised)
-        orch.execute_tool({
-            "name": "read_file",
-            "arguments": {"path": "does_not_exist.txt"},
-        })
+        orch.execute_tool(
+            {
+                "name": "read_file",
+                "arguments": {"path": "does_not_exist.txt"},
+            }
+        )
 
         summary = orch.session_store.get_session_summary("fail_session")
         # Logged regardless of success flag
@@ -98,12 +100,14 @@ class TestSessionStoreOrchestratorWiring:
 # #32: Concurrent write safety — thread-local connections + WAL mode
 # ---------------------------------------------------------------------------
 
+
 class TestSessionStoreConcurrency:
     """#32: Verify SessionStore is safe under concurrent multi-thread writes."""
 
     def test_concurrent_writes_no_corruption(self, tmp_path):
         """Multiple threads writing simultaneously must not corrupt the DB."""
         import threading
+
         store = SessionStore(workdir=str(tmp_path))
         errors = []
 

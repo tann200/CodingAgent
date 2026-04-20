@@ -11,8 +11,6 @@ system prompt via the `tools_config.configure()` mechanism.
 
 import asyncio
 import logging
-import os
-import uuid
 from contextvars import ContextVar
 from typing import Dict, Any, List, Optional, cast
 from pathlib import Path
@@ -775,8 +773,19 @@ def delegate_task(
         if parent_session_id is not None:
             try:
                 from src.core.memory.session_store import SessionStore
+                import threading as _thr
 
                 _store = SessionStore(workdir=str(workdir_path))
+                # Caller-side instrumentation: log thread and session so diagnostics
+                # can correlate which thread attempted the DB write.
+                _caller_sid = parent_session_id
+                _tname = getattr(_thr.current_thread(), "name", "unknown")
+                logger.debug(
+                    "session_store: write (session=%r, thread=%s, site=%s)",
+                    _caller_sid,
+                    _tname,
+                    "delegate_task:register_child_session",
+                )
                 _store.register_child_session(
                     parent_session_id=parent_session_id,
                     child_session_id=child_session_id,
@@ -792,8 +801,18 @@ def delegate_task(
         if isinstance(final_state, dict):
             try:
                 from src.core.memory.session_store import SessionStore as _SS2
+                import threading as _thr
 
                 _ss2 = _SS2(workdir=str(workdir_path))
+                # Instrument the caller context for diagnostics
+                _caller_sid = child_session_id
+                _tname = getattr(_thr.current_thread(), "name", "unknown")
+                logger.debug(
+                    "session_store: write (session=%r, thread=%s, site=%s)",
+                    _caller_sid,
+                    _tname,
+                    "delegate_task:save_session_state",
+                )
                 _ss2.save_session_state(
                     session_id=child_session_id,
                     state=final_state,

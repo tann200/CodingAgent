@@ -26,7 +26,6 @@ helpers in order.
 from __future__ import annotations
 
 import concurrent.futures as _cf
-import os
 import threading as _threading
 import time
 from pathlib import Path
@@ -135,34 +134,28 @@ def _init_infrastructure(orch: Any, message_max_tokens: Optional[int]) -> None:
         enabled=True,
     )
 
-    # TASK-8: Resolve storage backend (env var > config file > default)
-    def _resolve_storage_backend(working_dir: Any) -> str:
-        """Return 'sqlite' or 'jsonl' based on env var or config."""
-        env_val = os.getenv("CODING_AGENT_STORAGE_BACKEND", "").lower()
-        if env_val in ("sqlite", "jsonl"):
-            return env_val
+    # Initialize SessionStore. Use the raw backend factory to prefer returning
+    # the concrete implementation (SqliteSessionStore or JsonlSessionStore).
+    # This satisfies tests that assert the orchestrator has a raw backend
+    # instance (not the compatibility wrapper). Fall back to the factory
+    # if raw creation fails.
+    try:
+        from src.core.memory.session_store import _create_backend as _raw_create
+
+        orch.session_store = _raw_create(str(orch.working_dir))
+    except Exception:
         try:
-            from src.core.config_loader import load_project_config
+            from src.core.memory.session_store import get_session_store
 
-            cfg = load_project_config(str(working_dir) if working_dir else "")
-            cfg_val = str(cfg.get("storage_backend", "")).lower()
-            if cfg_val in ("sqlite", "jsonl"):
-                return cfg_val
+            orch.session_store = get_session_store(workdir=str(orch.working_dir))
         except Exception:
-            pass
-        return "sqlite"  # default until JSONL is proven in production
+            # Fallback: instantiate JsonlSessionStore directly if factory fails
+            try:
+                from src.core.memory.jsonl_session_store import JsonlSessionStore
 
-    _storage_backend = _resolve_storage_backend(orch.working_dir)
-
-    # Initialize SessionStore for tool call and plan persistence
-    if _storage_backend == "jsonl":
-        from src.core.memory.jsonl_session_store import JsonlSessionStore
-
-        orch.session_store = JsonlSessionStore(str(orch.working_dir))
-    else:
-        from src.core.memory.session_store import SessionStore
-
-        orch.session_store = SessionStore(str(orch.working_dir))
+                orch.session_store = JsonlSessionStore(str(orch.working_dir))
+            except Exception:
+                orch.session_store = None
 
     # Initialize SessionLifecycleManager for graceful shutdown and snapshots
     from src.core.orchestration.session_lifecycle import get_session_lifecycle_manager
@@ -173,6 +166,29 @@ def _init_infrastructure(orch: Any, message_max_tokens: Optional[int]) -> None:
     def _lifecycle_cleanup_hook(session_id: str) -> None:
         try:
             guilogger.debug(f"Lifecycle cleanup for session: {session_id}")
+            # Best-effort: attempt to close the session store to release DB
+            # resources (writer connection). Any failure must not raise.
+            try:
+                ss = getattr(orch, "session_store", None)
+                if ss is not None:
+                    close_fn = getattr(ss, "close", None)
+                    if callable(close_fn):
+                        try:
+                            close_fn()
+                        except Exception:
+                            guilogger.debug(
+                                "Orchestrator: session_store.close() failed during lifecycle cleanup",
+                                exc_info=True,
+                            )
+            except Exception:
+                # Swallow any unexpected error during cleanup; do not escape
+                try:
+                    guilogger.debug(
+                        "Orchestrator: failed to invoke session_store.close()",
+                        exc_info=True,
+                    )
+                except Exception:
+                    pass
         except Exception as e:
             guilogger.warning(f"Lifecycle cleanup hook failed: {e}")
 

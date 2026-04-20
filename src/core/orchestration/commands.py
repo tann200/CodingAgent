@@ -5,6 +5,7 @@ slash commands like /help, /skills, /session, /history, etc.
 """
 
 import re
+import logging
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 

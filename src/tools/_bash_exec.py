@@ -11,8 +11,6 @@ import logging
 from pathlib import Path
 from typing import Dict, Any, Optional
 
-_logger = logging.getLogger(__name__)
-
 # Import security constants
 from src.tools._security import (
     DANGEROUS_PATTERNS,
@@ -28,6 +26,8 @@ from src.tools._security import (
     SED_WRITE_FLAGS,
 )
 from src.tools._tool import tool
+
+_logger = logging.getLogger(__name__)
 
 # Sentinel for workdir default — resolved lazily to Path.cwd() at call time
 # so the module can be imported without a fixed working directory.

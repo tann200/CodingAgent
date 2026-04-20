@@ -172,11 +172,11 @@ def get_actual_context_window() -> int:
 # NANO models need to reserve more for their short output (4K ctx → output needs ~50%).
 # Frontier models with 200K+ context can allocate 80% to the prompt safely.
 _TIER_CONTEXT_FRACTION: dict[str, float] = {
-    "nano":     0.50,   # ≤7B / ≤8K ctx — output needs half the window
-    "small":    0.60,   # 7–14B / 8–32K ctx
-    "medium":   0.70,   # 14–70B / 32–128K ctx
-    "large":    0.75,   # 70B+ / 128K+ ctx
-    "frontier": 0.80,   # cloud / 31B+ / 256K ctx
+    "nano": 0.50,  # ≤7B / ≤8K ctx — output needs half the window
+    "small": 0.60,  # 7–14B / 8–32K ctx
+    "medium": 0.70,  # 14–70B / 32–128K ctx
+    "large": 0.75,  # 70B+ / 128K+ ctx
+    "frontier": 0.80,  # cloud / 31B+ / 256K ctx
 }
 
 

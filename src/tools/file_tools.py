@@ -1,13 +1,63 @@
 from __future__ import annotations
 
+"""Compatibility re-exports for file and shell tools.
+
+This module provides the public API surface that external code and tests
+import from ``src.tools.file_tools``. Implementations were extracted into
+``src.tools._file_io``, ``src.tools._edit_tools``, and ``src.tools._bash_exec``;
+this file re-exports the canonical symbols so callers don't need to follow the
+refactor.
+"""
+
+# ruff: noqa: E402
 import logging
-from pathlib import Path
+from pathlib import Path  # noqa: F401
 from typing import Dict
 
-_logger = logging.getLogger(__name__)
+from src.tools._path_utils import safe_resolve  # noqa: F401
 
-# Provide a no-op fallback so pyright sees a concrete class even when
-# src.core is unavailable.  The real import shadows it at runtime.
+# Implementation modules (authoritative implementations live here)
+from src.tools._file_io import (
+    write_file as _write_file,
+    read_file as _read_file,
+    read_file_chunk as _read_file_chunk,
+    delete_file as _delete_file,
+    rename_file as _rename_file,
+    glob as _glob,
+    list_dir as _list_dir,
+)
+from src.tools._edit_tools import (
+    edit_file as _edit_file,
+    edit_file_atomic as _edit_file_atomic,
+    edit_by_line_range as _edit_by_line_range,
+    multiedit as _multiedit,
+)
+from src.tools._diff_gate import (
+    register_preview_gate as _register_preview_gate,
+    resolve_preview_gate as _resolve_preview_gate,
+)
+from src.tools._bash_exec import (
+    bash as _bash,
+    bash_readonly as _bash_readonly,
+    check_background_task as _check_background_task,
+    _BASH_STDOUT_MAX as _BASH_STDOUT_MAX,
+    _BASH_STDERR_MAX as _BASH_STDERR_MAX,
+    _BASH_STDOUT_MAX_TOKENS as _BASH_STDOUT_MAX_TOKENS,
+    _BASH_STDERR_MAX_TOKENS as _BASH_STDERR_MAX_TOKENS,
+)
+
+
+def _safe_resolve(path: str, workdir: "Path | None" = None) -> Path:
+    """Backward-compatible wrapper around the shared safe_resolve utility.
+
+    Resolve *path* against *workdir*; when *workdir* is None the current
+    working directory is resolved at call time.
+    """
+    resolved = workdir if workdir is not None else Path.cwd()
+    return safe_resolve(path, resolved)
+
+
+_logger = logging.getLogger(__name__)
 
 
 class WorkspaceGuard:
@@ -18,88 +68,37 @@ class WorkspaceGuard:
 
 
 try:
-    from src.core.orchestration.workspace_guard import WorkspaceGuard  # type: ignore[assignment]
+    from src.core.orchestration.workspace_guard import WorkspaceGuard  # type: ignore[assignment]  # noqa: F401
 except ImportError:
-    pass  # fallback class above is used
+    pass
 
 
-from src.tools._path_utils import safe_resolve
+# Public re-exports (kept as simple bindings so tests can import them from
+# src.tools.file_tools without depending on the original implementation file).
+write_file = _write_file
+read_file = _read_file
+read_file_chunk = _read_file_chunk
+delete_file = _delete_file
+rename_file = _rename_file
+glob = _glob
+list_files = _list_dir
 
-# Re-export selected implementations for backward compatibility
-from src.tools._file_io import (
-    write_file,
-    read_file,
-    list_dir as list_files,
-    delete_file,
-    rename_file,
-    glob,
-)
-from src.tools._file_io import (
-    read_file_chunk,
-    tail_log_file,
-    read_file_bytes,
-    sandbox_info,
-    create_directory,
-)
-from src.tools._edit_tools import (
-    edit_file,
-    edit_by_line_range,
-    edit_file_atomic,
-    multiedit,
-)
+edit_file = _edit_file
+edit_file_atomic = _edit_file_atomic
+edit_by_line_range = _edit_by_line_range
+multiedit = _multiedit
 
-# Re-export bash execution API (moved to _bash_exec.py) for backward compatibility
-from src.tools._bash_exec import (
-    bash,
-    bash_readonly,
-    check_background_task,
-    _BASH_STDOUT_MAX,
-    _BASH_STDERR_MAX,
-    _BASH_STDOUT_MAX_TOKENS,
-    _BASH_STDERR_MAX_TOKENS,
-)
+# Bash execution re-exports (moved to _bash_exec.py)
+bash = _bash
+bash_readonly = _bash_readonly
+check_background_task = _check_background_task
 
-# Re-export diff preview gate helpers so tests and preview_coordinator can
-# patch/ import resolve_preview_gate / register_preview_gate via
-# src.tools.file_tools.resolve_preview_gate
-from src.tools._diff_gate import register_preview_gate, resolve_preview_gate
+# Diff preview gate re-exports (kept for backward compatibility)
+register_preview_gate = _register_preview_gate
+resolve_preview_gate = _resolve_preview_gate
 
-
-# ── Diff preview gate — implementation lives in _diff_gate.py ─────────────────
-# Re-exported here so that:
-#   • patch("src.tools.file_tools.resolve_preview_gate") still works (tests + preview_coordinator)
-#   • from src.tools.file_tools import resolve_preview_gate still works (preview_coordinator)
-
-
-# Default working directory.  External projects should call
-# ``tools_config.configure(default_workdir=Path("/my/project"))`` at startup
-# rather than relying on this module-level constant.
-#
-# HIGH-12 fix: Path.cwd() must NOT be called at module-import time because it
-# captures the directory at import and then never updates.  Keep the name for
-# backward-compat but make it a lazy property via a sentinel so callers that
-# import DEFAULT_WORKDIR and compare it still get a stable object, while
-# _safe_resolve() re-evaluates Path.cwd() on each call.
-DEFAULT_WORKDIR = Path.cwd()
-
-# ── File I/O constants — authoritative values live in _file_io.py ──────────────
-
-# ── Bash execution — implementation lives in _bash_exec.py ────────────────────
-# Constants re-exported here because tests import them directly from file_tools.
-
-
-def _safe_resolve(path: str, workdir: "Path | None" = None) -> Path:
-    """Backward-compatible wrapper around the shared safe_resolve utility (#29).
-
-    HIGH-12 fix: ``workdir`` defaults to ``None`` and is resolved to
-    ``Path.cwd()`` at *call time* (not at import time) so that tests or
-    multi-project scenarios that change the working directory after import
-    still receive the correct base directory.
-    """
-    resolved = workdir if workdir is not None else Path.cwd()
-    return safe_resolve(path, resolved)
-
-
-# ── File I/O tools — implementation lives in _file_io.py ─────────────────────
-
-# ── Edit tools — implementation lives in _edit_tools.py ───────────────────────
+# Expose authoritative truncation constants used by tests
+_BASH_STDOUT_MAX = _BASH_STDOUT_MAX
+_BASH_STDERR_MAX = _BASH_STDERR_MAX
+_BASH_STDOUT_MAX_TOKENS = _BASH_STDOUT_MAX_TOKENS
+_BASH_STDERR_MAX_TOKENS = _BASH_STDERR_MAX_TOKENS

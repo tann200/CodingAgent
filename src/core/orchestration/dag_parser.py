@@ -237,9 +237,6 @@ class PlanDAG:
         return True
 
 
-
-
-
 def _parse_dag_content(content: str) -> Optional[PlanDAG]:
     """Parse LLM output into PlanDAG."""
     json_match = re.search(r"\{[\s\S]*\}", content)

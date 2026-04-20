@@ -19,12 +19,12 @@ class TelemetryMetrics:
         self.event_bus = event_bus
         if event_bus is not None:
             try:
-                event_bus.subscribe('message.truncation', self._on_message_truncation)
-                event_bus.subscribe('model.routing', self._on_model_routing)
-                event_bus.subscribe('tool.execute.start', self._on_tool_execute_start)
-                event_bus.subscribe('tool.execute.finish', self._on_tool_execute_finish)
-                event_bus.subscribe('tool.execute.error', self._on_tool_execute_error)
-                event_bus.subscribe('tool.preflight', self._on_tool_preflight)
+                event_bus.subscribe("message.truncation", self._on_message_truncation)
+                event_bus.subscribe("model.routing", self._on_model_routing)
+                event_bus.subscribe("tool.execute.start", self._on_tool_execute_start)
+                event_bus.subscribe("tool.execute.finish", self._on_tool_execute_finish)
+                event_bus.subscribe("tool.execute.error", self._on_tool_execute_error)
+                event_bus.subscribe("tool.preflight", self._on_tool_preflight)
             except Exception:
                 pass
 
@@ -42,48 +42,54 @@ class TelemetryMetrics:
 
     # Event handlers
     def _on_message_truncation(self, payload: Any) -> None:
-        dropped = int(payload.get('dropped_count', 0)) if isinstance(payload, dict) else 0
-        dropped_tokens = int(payload.get('dropped_tokens', 0)) if isinstance(payload, dict) else 0
-        tokens_after = float(payload.get('tokens_after', 0)) if isinstance(payload, dict) else 0
-        self._inc('message_truncation_total', dropped if dropped > 0 else 1)
-        self._observe('message_truncation_dropped_tokens', dropped_tokens)
-        self._set_gauge('message_truncation_tokens_after', tokens_after)
+        dropped = (
+            int(payload.get("dropped_count", 0)) if isinstance(payload, dict) else 0
+        )
+        dropped_tokens = (
+            int(payload.get("dropped_tokens", 0)) if isinstance(payload, dict) else 0
+        )
+        tokens_after = (
+            float(payload.get("tokens_after", 0)) if isinstance(payload, dict) else 0
+        )
+        self._inc("message_truncation_total", dropped if dropped > 0 else 1)
+        self._observe("message_truncation_dropped_tokens", dropped_tokens)
+        self._set_gauge("message_truncation_tokens_after", tokens_after)
 
     def _on_model_routing(self, payload: Any) -> None:
         # payload expected to contain 'provider' and 'selected'
-        self._inc('model_routing_total', 1)
+        self._inc("model_routing_total", 1)
         selected = None
         try:
             if isinstance(payload, dict):
-                selected = payload.get('selected')
+                selected = payload.get("selected")
         except Exception:
             selected = None
         if selected:
-            self._inc(f'model_routing_selected_{self._sanitize(selected)}', 1)
+            self._inc(f"model_routing_selected_{self._sanitize(selected)}", 1)
 
     def _on_tool_execute_start(self, payload: Any) -> None:
-        self._inc('tool_execute_start_total', 1)
+        self._inc("tool_execute_start_total", 1)
 
     def _on_tool_execute_finish(self, payload: Any) -> None:
-        self._inc('tool_execute_finish_total', 1)
+        self._inc("tool_execute_finish_total", 1)
 
     def _on_tool_execute_error(self, payload: Any) -> None:
-        self._inc('tool_execute_error_total', 1)
+        self._inc("tool_execute_error_total", 1)
 
     def _on_tool_preflight(self, payload: Any) -> None:
         # payload contains preflight details; count failures vs total
         ok = True
         try:
             if isinstance(payload, dict):
-                ok = payload.get('details', {}).get('validated_args', True)
+                ok = payload.get("details", {}).get("validated_args", True)
         except Exception:
             ok = True
-        self._inc('tool_preflight_total', 1)
+        self._inc("tool_preflight_total", 1)
         if not ok:
-            self._inc('tool_preflight_fail_total', 1)
+            self._inc("tool_preflight_fail_total", 1)
 
     def _sanitize(self, s: str) -> str:
-        return ''.join([c if c.isalnum() or c in ('_', '-') else '_' for c in str(s)])
+        return "".join([c if c.isalnum() or c in ("_", "-") else "_" for c in str(s)])
 
     def export_text(self) -> str:
         """Export metrics in a simple Prometheus text exposition format."""
@@ -119,4 +125,3 @@ class TelemetryMetrics:
     def get_histogram(self, name: str) -> list:
         with self._lock:
             return list(self.histograms.get(name, []))
-

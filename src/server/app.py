@@ -14,7 +14,6 @@ from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconn
 from fastapi.responses import StreamingResponse, Response
 from contextlib import asynccontextmanager
 from pydantic import BaseModel
-from fastapi import status
 
 from src.core.orchestration.event_bus import EventBus
 

@@ -481,7 +481,6 @@ class MCPStdioServer:
 
         elif method == "logging/setLevel":
             # Set logging level
-            level = params.get("level", "info")
             return self._build_response(request, {"status": "ok"})
 
         else:
