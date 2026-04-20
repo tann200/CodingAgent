@@ -18,6 +18,8 @@ Covers:
   15. sentinel removed from output text (not present in block text)
 """
 
+
+# ruff: noqa: E501
 from __future__ import annotations
 
 import pytest

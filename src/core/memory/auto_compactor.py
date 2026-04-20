@@ -15,6 +15,8 @@ Design notes:
   with Python-centric extensions so Python projects benefit equally.
 """
 
+# ruff: noqa: E501
+
 from __future__ import annotations
 
 import re

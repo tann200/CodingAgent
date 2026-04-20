@@ -5,6 +5,8 @@ Tests for analysis_node fixes:
 - Bug: .suffix == ".py" guard on SymbolGraph update blocked non-Python files
 """
 
+# ruff: noqa: E501
+
 import pytest
 from unittest.mock import patch, MagicMock
 

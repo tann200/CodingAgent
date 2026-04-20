@@ -11,6 +11,8 @@ Bug 2 (perception_node GAP-SMALL-4): "summarize the project readme" was
 """
 
 import pytest
+
+# ruff: noqa: E501
 from unittest.mock import AsyncMock, MagicMock, patch
 
 

@@ -13,6 +13,8 @@ Covers:
   TUI-BRIDGE    usage.subagent_cost wired into core_bridge
 """
 
+
+# ruff: noqa: E501
 from __future__ import annotations
 
 import json

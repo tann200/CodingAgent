@@ -4,6 +4,8 @@ Integration tests for SessionStore wiring in Orchestrator, planning_node, and de
 
 import json
 from src.core.memory.sqlite_session_store import SqliteSessionStore as SessionStore
+
+# ruff: noqa: E501
 from src.core.orchestration.orchestrator import Orchestrator
 
 

@@ -3,6 +3,8 @@ Tests for debug node with LLM-enhanced analysis.
 """
 
 import pytest
+
+# ruff: noqa: E501
 from unittest.mock import MagicMock
 
 

@@ -1,5 +1,7 @@
 import pytest
 import json
+
+# ruff: noqa: E501
 from src.core.orchestration.graph.nodes.execution_node import execution_node
 
 

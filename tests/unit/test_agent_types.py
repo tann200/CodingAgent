@@ -2,6 +2,8 @@
 tests/unit/test_agent_types.py — Unit tests for Sprint A-1/A-2: AgentDefinition + AgentRegistry.
 """
 
+
+# ruff: noqa: E501
 from __future__ import annotations
 
 import json

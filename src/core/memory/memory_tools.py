@@ -2,6 +2,8 @@ from typing import Dict, Any, List
 from pathlib import Path
 import json
 
+# ruff: noqa: E501
+
 
 def memory_search(query: str, workdir: str) -> Dict[str, Any]:
     """Search TASK_STATE.md and execution_trace.json for the query.

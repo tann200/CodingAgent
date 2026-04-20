@@ -19,6 +19,8 @@ Covers:
   SG-15 ask_user expansion only fires when affected_files is non-None in state.
 """
 
+
+# ruff: noqa: E501
 from __future__ import annotations
 
 import asyncio

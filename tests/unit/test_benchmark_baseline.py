@@ -9,6 +9,8 @@ Covers:
   ET3-6  check_regression() does not flag a result within threshold
 """
 
+
+# ruff: noqa: E501
 from __future__ import annotations
 
 import json

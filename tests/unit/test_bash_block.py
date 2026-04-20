@@ -5,6 +5,8 @@ Tests use the public Python API (output_lines, is_truncated, collapsed)
 without launching a Textual app.
 """
 
+
+# ruff: noqa: E501
 from __future__ import annotations
 
 import pytest

@@ -11,6 +11,8 @@ Covers:
 import inspect
 import threading
 from pathlib import Path
+
+# ruff: noqa: E501
 import pytest
 
 

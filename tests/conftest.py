@@ -4,6 +4,8 @@ import threading
 import queue as _queue
 import json
 
+# ruff: noqa: E501
+
 # Ensure the repository root is on sys.path so `import src.*` works during pytest
 _ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if _ROOT not in sys.path:

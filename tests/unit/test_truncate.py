@@ -11,6 +11,8 @@ Covers:
 - Constants exported at expected values.
 """
 
+
+# ruff: noqa: E501
 from __future__ import annotations
 
 import pytest

@@ -9,6 +9,8 @@ Covers:
   RA-1  route_after_perception return type includes memory_sync for clarification
 """
 
+
+# ruff: noqa: E501
 from __future__ import annotations
 
 from pathlib import Path

@@ -23,6 +23,8 @@ All tests in this file now verify the FIXED behavior with positive assertions.
 """
 
 import inspect
+
+# ruff: noqa: E501
 import pytest
 
 

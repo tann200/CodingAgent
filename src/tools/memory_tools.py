@@ -128,7 +128,12 @@ def memory_search(
     todo_path = ac / "todo.json"
     if todo_path.exists():
         try:
-            todos = json.loads(todo_path.read_text())
+            try:
+                from src.tools.todo_tools import _load_todo_json
+
+                todos = _load_todo_json(str(ac.parent))
+            except Exception:
+                todos = json.loads(todo_path.read_text())
             for t in todos:
                 desc = t.get("description", "")
                 if query.lower() in desc.lower():

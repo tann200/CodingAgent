@@ -17,6 +17,8 @@ Test cases:
   GAP10-7  No exception when adapter lacks context_window attribute
 """
 
+
+# ruff: noqa: E501
 from __future__ import annotations
 
 from typing import Any, Dict

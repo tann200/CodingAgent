@@ -1,6 +1,8 @@
 import asyncio
 from unittest.mock import MagicMock, patch
 from src.core.orchestration.graph.nodes.perception_node import perception_node
+
+# ruff: noqa: E501
 from src.core.orchestration.orchestrator import ToolRegistry
 
 

@@ -2,6 +2,8 @@
 and S9-B (compact_context on Orchestrator).
 """
 
+
+# ruff: noqa: E501
 from __future__ import annotations
 
 import pytest

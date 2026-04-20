@@ -121,14 +121,36 @@ def start_new_task_impl(orch) -> str:
     # planning_node recreates TODO.md as soon as it produces a new plan, so
     # deleting it here only removes the window where stale content is visible.
     try:
-        _agent_ctx = Path(orch.working_dir) / ".agent-context"
-        for _stale_file in ("TODO.md", "TASK_STATE.md"):
-            _p = _agent_ctx / _stale_file
+        # Prefer using manage_todo to clear TODO files so RBW/session state and
+        # ContextBuilder caches are updated consistently. Falling back to direct
+        # unlink if manage_todo is unavailable.
+        try:
+            from src.tools.todo_tools import manage_todo
+
+            manage_todo(action="clear", workdir=str(orch.working_dir))
+            guilogger.info("start_new_task: cleared TODO via manage_todo")
+        except Exception:
+            _agent_ctx = Path(orch.working_dir) / ".agent-context"
+            _p = _agent_ctx / "TODO.md"
             if _p.exists():
-                _p.unlink()
+                try:
+                    _p.unlink()
+                    guilogger.info(
+                        "start_new_task: deleted stale TODO.md to prevent cross-session prompt contamination"
+                    )
+                except Exception:
+                    pass
+        # TASK_STATE.md still needs explicit deletion
+        try:
+            _agent_ctx = Path(orch.working_dir) / ".agent-context"
+            _ts = _agent_ctx / "TASK_STATE.md"
+            if _ts.exists():
+                _ts.unlink()
                 guilogger.info(
-                    f"start_new_task: deleted stale {_stale_file} to prevent cross-session prompt contamination"
+                    "start_new_task: deleted stale TASK_STATE.md to prevent cross-session prompt contamination"
                 )
+        except Exception:
+            pass
     except Exception:
         pass
 

@@ -8,6 +8,8 @@ AgentBridge + MockEventBus so there is no dependency on src.ui.
 from unittest.mock import MagicMock
 import importlib.util as _ilu
 import sys as _sys
+
+# ruff: noqa: E501
 from pathlib import Path as _Path
 
 # Shadow tui/src as `src` during import of tui modules so `from src.ui.*` works inside tui

@@ -11,6 +11,8 @@ import copy
 import os
 import time
 from typing import List, Tuple
+
+# ruff: noqa: E501
 import requests
 
 TRANSIENT_STATUS = {429, 502, 503, 504, 425}

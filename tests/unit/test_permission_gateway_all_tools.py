@@ -10,6 +10,8 @@ Tests for src.core.orchestration.permission_gateway:
   - Helper function coverage
 """
 
+
+# ruff: noqa: E501
 from __future__ import annotations
 
 from pathlib import Path

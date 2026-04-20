@@ -22,6 +22,8 @@ Covers:
 import threading
 import unittest
 from unittest.mock import MagicMock, patch, AsyncMock
+
+# ruff: noqa: E501
 import asyncio
 
 

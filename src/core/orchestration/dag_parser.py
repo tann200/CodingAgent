@@ -71,13 +71,21 @@ class PlanDAG:
     def from_todo_json(cls, todo_json_path: str) -> Optional["PlanDAG"]:
         """Load DAG from existing todo.json file."""
         from pathlib import Path
+        import os
+        import time
 
         path = Path(todo_json_path)
         if not path.exists():
             return None
 
         try:
-            todo_data = json.loads(path.read_text())
+            # Prefer lock-aware loader from todo_tools to avoid races with writers
+            try:
+                from src.tools.todo_tools import _load_todo_json
+
+                todo_data = _load_todo_json(str(path.parent.parent))
+            except Exception:
+                todo_data = json.loads(path.read_text())
 
             steps = [
                 StepNode(
@@ -111,7 +119,16 @@ class PlanDAG:
             return cls.from_todo_json(str(todo_json))
 
         try:
-            content = todo_md.read_text()
+            # Read under the same lock when possible to avoid races
+            try:
+                from src.tools.todo_tools import _lock_path, _FileLock
+
+                lockp = _lock_path(str(todo_md.parent.parent))
+                with _FileLock(lockp, timeout=1.0):
+                    content = todo_md.read_text()
+            except Exception:
+                content = todo_md.read_text()
+
             steps = cls._parse_todo_markdown(content)
 
             if not steps:
@@ -210,17 +227,40 @@ class PlanDAG:
         """Bidirectional sync: writes both TODO.md and todo.json."""
         from pathlib import Path
 
-        todo_md = Path(todo_path)
-        todo_json = Path(todo_json_path)
+        # Delegate to the centralized todo_tools persistence logic which
+        # provides atomic replace, backups, restore-on-failure and RBW
+        # notifications. Keep a best-effort fallback to the previous
+        # simple-write behaviour for environments where todo_tools isn't
+        # importable (tests, partial runtimes).
+        try:
+            from src.tools.todo_tools import _save_todo
 
-        todo_md.parent.mkdir(parents=True, exist_ok=True)
+            todo_md = Path(todo_path)
+            todo_json = Path(todo_json_path)
+            todo_md.parent.mkdir(parents=True, exist_ok=True)
 
-        todo_md.write_text(self.to_todo_markdown())
+            # Build the structured todo data expected by _save_todo
+            todo_data = self.to_todo_format()
 
-        todo_data = self.to_todo_format()
-        todo_json.write_text(json.dumps(todo_data, indent=2))
+            # Derive workdir from the agent-context parent directory
+            agent_ctx = todo_md.parent
+            workdir = str(agent_ctx.parent)
 
-        logger.info(f"PlanDAG: synced to {todo_path} and {todo_json_path}")
+            # _save_todo writes both TODO.md and todo.json and performs
+            # RBW notifications; it raises on failure so callers can react.
+            _save_todo(workdir, todo_data)
+            logger.info(f"PlanDAG: synced to {todo_path} and {todo_json_path}")
+        except Exception:
+            # Best-effort fallback to the simple write behaviour
+            todo_md = Path(todo_path)
+            todo_json = Path(todo_json_path)
+            todo_md.parent.mkdir(parents=True, exist_ok=True)
+            todo_md.write_text(self.to_todo_markdown())
+            todo_data = self.to_todo_format()
+            todo_json.write_text(json.dumps(todo_data, indent=2))
+            logger.info(
+                f"PlanDAG: synced to {todo_path} and {todo_json_path} (fallback)"
+            )
 
     def apply_user_edit(self, markdown_content: str) -> bool:
         """Apply user edits from TODO.md and validate."""

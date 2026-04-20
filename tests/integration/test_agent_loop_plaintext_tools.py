@@ -1,6 +1,8 @@
 import pytest
 import json
 from src.core.orchestration.orchestrator import Orchestrator
+
+# ruff: noqa: E501
 from tests.integration.mocks.deterministic_adapter import DeterministicAdapter
 
 pytestmark = pytest.mark.integration

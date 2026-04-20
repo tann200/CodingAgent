@@ -2,6 +2,8 @@
 Unit tests for dag_parser.py - Phase A: Dependency DAGs
 """
 
+# ruff: noqa: E501
+
 from src.core.orchestration.dag_parser import (
     PlanDAG,
     StepNode,

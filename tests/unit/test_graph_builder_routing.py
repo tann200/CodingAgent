@@ -14,6 +14,9 @@ from src.core.orchestration.graph.builder import (
     _is_large_or_frontier,
     _is_nano_or_small,
 )
+
+# ruff: noqa: E501
+
 from src.core.orchestration.graph.state import AgentState
 
 
@@ -1117,6 +1120,7 @@ class TestRouteExecutionCompletionDetected:
 # P3b: LARGE/FRONTIER pipeline simplification tests
 # ---------------------------------------------------------------------------
 
+
 class TestIsLargeOrFrontier:
     """Unit tests for the _is_large_or_frontier() helper."""
 
@@ -1348,6 +1352,7 @@ class TestP3bBShouldAfterPlanValidator:
 # ---------------------------------------------------------------------------
 # P3-A: NANO/SMALL tier routing tests
 # ---------------------------------------------------------------------------
+
 
 class TestIsNanoOrSmall:
     """Unit tests for the _is_nano_or_small() helper."""

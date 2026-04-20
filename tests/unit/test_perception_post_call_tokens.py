@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from typing import Any
+
+# ruff: noqa: E501
 from unittest.mock import MagicMock, patch
 
 import pytest

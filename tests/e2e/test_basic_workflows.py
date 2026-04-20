@@ -3,6 +3,8 @@ P3-3: Basic E2E workflow and behaviour tests using a mock LLM.
 
 These tests exercise the core agent pipeline without a live provider.
 """
+
+# ruff: noqa: E501
 from __future__ import annotations
 
 import json

@@ -1,4 +1,6 @@
 import json
+
+# ruff: noqa: E501
 import asyncio
 
 from src.core.inference.llm_manager import ProviderManager

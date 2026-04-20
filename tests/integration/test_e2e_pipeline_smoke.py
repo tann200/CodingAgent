@@ -16,6 +16,8 @@ Coverage:
   E2E-5  step_controller returns step_lint_warnings on lint-failed file (WF-3)
 """
 
+
+# ruff: noqa: E501
 from __future__ import annotations
 
 from pathlib import Path

@@ -1,5 +1,7 @@
 from src.core.context.context_builder import ContextBuilder
 
+# ruff: noqa: E501
+
 
 def test_build_prompt_basic_structure():
     builder = ContextBuilder()

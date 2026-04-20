@@ -7,6 +7,8 @@ Covers:
 - event_bus.run_with_correlation (D-07)
 """
 
+
+# ruff: noqa: E501
 from __future__ import annotations
 
 import asyncio

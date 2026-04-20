@@ -1,4 +1,6 @@
 from unittest.mock import patch
+
+# ruff: noqa: E501
 import asyncio
 
 from src.core.inference.adapters.lm_studio_adapter import LmStudioAdapter

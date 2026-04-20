@@ -6,6 +6,8 @@ Rewritten to use AgentBridge + MockEventBus so there is no dependency on src.ui.
 
 from __future__ import annotations
 import threading
+
+# ruff: noqa: E501
 from unittest.mock import MagicMock
 
 import pytest

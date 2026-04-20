@@ -1,5 +1,7 @@
 """Tests for src/tools/repo_analysis_tools.py — AST-based repo analysis."""
 
+# ruff: noqa: E501
+
 import json
 
 from src.tools.repo_analysis_tools import analyze_repository, _analyze_file

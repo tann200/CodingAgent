@@ -7,6 +7,8 @@ through AgentBridge using MockEventBus — no src.ui dependency.
 
 import pytest
 from unittest.mock import MagicMock
+
+# ruff: noqa: E501
 import threading
 
 import importlib.util as _ilu

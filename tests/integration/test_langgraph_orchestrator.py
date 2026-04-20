@@ -1,6 +1,8 @@
 import pytest
 from src.core.orchestration.orchestrator import Orchestrator
 from unittest.mock import patch
+
+# ruff: noqa: E501
 import itertools
 
 pytestmark = pytest.mark.integration

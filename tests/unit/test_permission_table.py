@@ -5,6 +5,8 @@ Verifies: add rule, check match, no-match, glob patterns, session vs project
 scope, clear_session_rules, and thread-safety basics.
 """
 
+
+# ruff: noqa: E501
 from __future__ import annotations
 
 import threading

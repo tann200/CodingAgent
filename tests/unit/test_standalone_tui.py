@@ -8,6 +8,8 @@ Tests are written in the project's established pattern:
   - pytest.skip guards where Textual runtime is required
 """
 
+
+# ruff: noqa: E501
 from __future__ import annotations
 
 import inspect

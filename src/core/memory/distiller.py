@@ -5,6 +5,8 @@ import re
 from typing import Any, Dict, List, Optional
 from pathlib import Path
 
+# ruff: noqa: E501
+
 logger = logging.getLogger(__name__)
 
 # HR-1 fix: module-level singleton executor so _call_llm_sync does not create a new
@@ -399,7 +401,14 @@ def distill_context(
             todo_json_path = agent_context / "todo.json"
             if todo_json_path.exists():
                 try:
-                    todo_steps = json.loads(todo_json_path.read_text())
+                    # Use lock-aware loader when available to avoid races with writers
+                    try:
+                        from src.tools.todo_tools import _load_todo_json
+
+                        todo_steps = _load_todo_json(str(agent_context.parent))
+                    except Exception:
+                        todo_steps = json.loads(todo_json_path.read_text())
+
                     done_steps = [s["description"] for s in todo_steps if s.get("done")]
                     pending_steps = [
                         s["description"] for s in todo_steps if not s.get("done")

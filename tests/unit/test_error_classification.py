@@ -5,6 +5,8 @@ Verifies that every major error category maps to the correct code and that
 legacy aliases still resolve without breaking existing callers.
 """
 
+
+# ruff: noqa: E501
 from __future__ import annotations
 
 import pytest

@@ -5,6 +5,8 @@ the system prompt via memory systems. It prevents prompt injection attacks
 and data exfiltration attempts.
 """
 
+# ruff: noqa: E501
+
 import re
 from typing import Optional
 

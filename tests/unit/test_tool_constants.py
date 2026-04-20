@@ -1,5 +1,7 @@
 """Phase A tests: tool_constants.py — shared tool-classification sets and audit helper."""
 
+# ruff: noqa: E501
+
 from __future__ import annotations
 
 import json

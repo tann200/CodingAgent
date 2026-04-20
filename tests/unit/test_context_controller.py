@@ -2,6 +2,8 @@
 Tests for ContextController — token budget enforcement for file context.
 """
 
+
+# ruff: noqa: E501
 from src.core.context.context_controller import ContextController, create_context_controller
 
 

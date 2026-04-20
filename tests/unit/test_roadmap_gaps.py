@@ -30,6 +30,8 @@ Covers:
   VC-4   _run_validate_config exits 1 on invalid JSON
 """
 
+
+# ruff: noqa: E501
 from __future__ import annotations
 
 import json

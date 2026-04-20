@@ -1396,6 +1396,7 @@ Generate the appropriate tool call to complete this step. Respond with ONLY a to
                     workdir=str(state.get("working_dir", ".")),
                     step_id=current_step,
                 )
+                # manage_todo performs RBW/session notifications itself; no-op here
             except Exception:
                 pass
 

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+
+# ruff: noqa: E501
 from unittest.mock import MagicMock, patch
 
 

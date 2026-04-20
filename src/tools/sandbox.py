@@ -69,6 +69,35 @@ def _bwrap_available() -> bool:
     return _BWRAP_AVAILABLE
 
 
+# Emit a startup warning event when the environment requests sandboxing but bwrap
+# is not available. This helps operator tooling surface the misconfiguration at
+# process startup instead of silently falling back later. Import-time emission is
+# best-effort and must not raise on import (avoid cycles).
+if not _BWRAP_AVAILABLE and _DEFAULT_LEVEL != "off":
+    try:
+        # Local import to avoid import-time cycles; failure is non-fatal.
+        from src.core.orchestration.event_bus import get_event_bus
+
+        try:
+            eb = get_event_bus()
+            try:
+                eb.publish(
+                    "system.warning",
+                    {"message": "bwrap not available; sandbox disabled"},
+                )
+            except Exception:
+                # best-effort publish only
+                pass
+        except Exception:
+            # best-effort
+            pass
+    except Exception:
+        # Avoid raising during import due to missing modules or cycles
+        logger.debug(
+            "sandbox: could not publish startup warning (event bus unavailable)"
+        )
+
+
 def _build_bwrap_args(
     cwd: Path,
     level: str,

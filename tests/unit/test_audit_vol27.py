@@ -6,6 +6,8 @@ UP-1: planning_node LLM success path sets task_decomposed=True
 UP-2: start_new_task_impl calls clear_repo_summary_cache
 """
 
+# ruff: noqa: E501
+
 from __future__ import annotations
 
 import asyncio
@@ -57,21 +59,32 @@ class TestCF1DebugNodeModelString:
 
         async def fake_call_model(messages, **kwargs):
             captured_model.append(kwargs.get("model"))
-            return {"choices": [{"message": {"content": "name: bash\narguments:\n  cmd: echo hi"}}]}
+            return {
+                "choices": [
+                    {"message": {"content": "name: bash\narguments:\n  cmd: echo hi"}}
+                ]
+            }
 
-        with patch(
-            "src.core.orchestration.graph.nodes.debug_node._resolve_orchestrator",
-            return_value=mock_orch,
-        ), patch(
-            "src.core.orchestration.graph.nodes.debug_node.call_model",
-            side_effect=fake_call_model,
-        ), patch(
-            "src.core.orchestration.graph.nodes.debug_node.ContextBuilder"
-        ) as mock_cb:
-            mock_cb.return_value.build_prompt.return_value = [{"role": "user", "content": "fix"}]
+        with (
+            patch(
+                "src.core.orchestration.graph.nodes.debug_node._resolve_orchestrator",
+                return_value=mock_orch,
+            ),
+            patch(
+                "src.core.orchestration.graph.nodes.debug_node.call_model",
+                side_effect=fake_call_model,
+            ),
+            patch(
+                "src.core.orchestration.graph.nodes.debug_node.ContextBuilder"
+            ) as mock_cb,
+        ):
+            mock_cb.return_value.build_prompt.return_value = [
+                {"role": "user", "content": "fix"}
+            ]
             asyncio.run(
                 __import__(
-                    "src.core.orchestration.graph.nodes.debug_node", fromlist=["debug_node"]
+                    "src.core.orchestration.graph.nodes.debug_node",
+                    fromlist=["debug_node"],
                 ).debug_node(state, config)
             )
 
@@ -99,21 +112,32 @@ class TestCF1DebugNodeModelString:
 
         async def fake_call_model(messages, **kwargs):
             captured_model.append(kwargs.get("model"))
-            return {"choices": [{"message": {"content": "name: bash\narguments:\n  cmd: echo hi"}}]}
+            return {
+                "choices": [
+                    {"message": {"content": "name: bash\narguments:\n  cmd: echo hi"}}
+                ]
+            }
 
-        with patch(
-            "src.core.orchestration.graph.nodes.debug_node._resolve_orchestrator",
-            return_value=mock_orch,
-        ), patch(
-            "src.core.orchestration.graph.nodes.debug_node.call_model",
-            side_effect=fake_call_model,
-        ), patch(
-            "src.core.orchestration.graph.nodes.debug_node.ContextBuilder"
-        ) as mock_cb:
-            mock_cb.return_value.build_prompt.return_value = [{"role": "user", "content": "fix"}]
+        with (
+            patch(
+                "src.core.orchestration.graph.nodes.debug_node._resolve_orchestrator",
+                return_value=mock_orch,
+            ),
+            patch(
+                "src.core.orchestration.graph.nodes.debug_node.call_model",
+                side_effect=fake_call_model,
+            ),
+            patch(
+                "src.core.orchestration.graph.nodes.debug_node.ContextBuilder"
+            ) as mock_cb,
+        ):
+            mock_cb.return_value.build_prompt.return_value = [
+                {"role": "user", "content": "fix"}
+            ]
             asyncio.run(
                 __import__(
-                    "src.core.orchestration.graph.nodes.debug_node", fromlist=["debug_node"]
+                    "src.core.orchestration.graph.nodes.debug_node",
+                    fromlist=["debug_node"],
                 ).debug_node(state, config)
             )
 
@@ -134,13 +158,16 @@ class TestCF1DebugNodeModelString:
         ):
             result = asyncio.run(
                 __import__(
-                    "src.core.orchestration.graph.nodes.debug_node", fromlist=["debug_node"]
+                    "src.core.orchestration.graph.nodes.debug_node",
+                    fromlist=["debug_node"],
                 ).debug_node(state, config)
             )
 
         assert result.get("next_action") is None
-        assert "max debug attempts" in " ".join(result.get("errors", [])).lower() or \
-               result.get("next_action") is None
+        assert (
+            "max debug attempts" in " ".join(result.get("errors", [])).lower()
+            or result.get("next_action") is None
+        )
 
     def test_debug_node_no_adapter_returns_gracefully(self):
         """CF-1: When adapter is None, debug_node should still attempt model call with None."""
@@ -157,21 +184,32 @@ class TestCF1DebugNodeModelString:
 
         async def fake_call_model(messages, **kwargs):
             captured_model.append(kwargs.get("model"))
-            return {"choices": [{"message": {"content": "name: read_file\narguments:\n  path: x"}}]}
+            return {
+                "choices": [
+                    {"message": {"content": "name: read_file\narguments:\n  path: x"}}
+                ]
+            }
 
-        with patch(
-            "src.core.orchestration.graph.nodes.debug_node._resolve_orchestrator",
-            return_value=mock_orch,
-        ), patch(
-            "src.core.orchestration.graph.nodes.debug_node.call_model",
-            side_effect=fake_call_model,
-        ), patch(
-            "src.core.orchestration.graph.nodes.debug_node.ContextBuilder"
-        ) as mock_cb:
-            mock_cb.return_value.build_prompt.return_value = [{"role": "user", "content": "fix"}]
+        with (
+            patch(
+                "src.core.orchestration.graph.nodes.debug_node._resolve_orchestrator",
+                return_value=mock_orch,
+            ),
+            patch(
+                "src.core.orchestration.graph.nodes.debug_node.call_model",
+                side_effect=fake_call_model,
+            ),
+            patch(
+                "src.core.orchestration.graph.nodes.debug_node.ContextBuilder"
+            ) as mock_cb,
+        ):
+            mock_cb.return_value.build_prompt.return_value = [
+                {"role": "user", "content": "fix"}
+            ]
             asyncio.run(
                 __import__(
-                    "src.core.orchestration.graph.nodes.debug_node", fromlist=["debug_node"]
+                    "src.core.orchestration.graph.nodes.debug_node",
+                    fromlist=["debug_node"],
                 ).debug_node(state, config)
             )
 
@@ -189,9 +227,7 @@ class TestCF2DeletionVerificationPassed:
 
     def _make_state_delete_failed(self, path: str = "src/foo.py") -> dict:
         return {
-            "last_result": {
-                "result": {"status": "ok", "deleted": True, "path": path}
-            },
+            "last_result": {"result": {"status": "ok", "deleted": True, "path": path}},
             "last_tool_name": "delete_file",
             "working_dir": "/tmp/testwd",
             "current_plan": [],
@@ -338,34 +374,42 @@ class TestUP1TaskDecomposedFlag:
         mock_orch.cancel_event = None  # prevent spurious cancellation
 
         llm_response = {
-            "choices": [{
-                "message": {
-                    "content": (
-                        '```json\n'
-                        '{"root_task":"implement X","steps":['
-                        '{"step_id":"step_0","description":"Read existing code",'
-                        '"files":["src/foo.py"],"depends_on":[]},'
-                        '{"step_id":"step_1","description":"Add feature",'
-                        '"files":["src/foo.py"],"depends_on":["step_0"]}'
-                        ']}\n```'
-                    )
+            "choices": [
+                {
+                    "message": {
+                        "content": (
+                            "```json\n"
+                            '{"root_task":"implement X","steps":['
+                            '{"step_id":"step_0","description":"Read existing code",'
+                            '"files":["src/foo.py"],"depends_on":[]},'
+                            '{"step_id":"step_1","description":"Add feature",'
+                            '"files":["src/foo.py"],"depends_on":["step_0"]}'
+                            "]}\n```"
+                        )
+                    }
                 }
-            }]
+            ]
         }
 
         async def fake_call_model(*args, **kwargs):
             return llm_response
 
-        with patch(
-            "src.core.orchestration.graph.nodes.planning_node._resolve_orchestrator",
-            return_value=mock_orch,
-        ), patch(
-            "src.core.orchestration.graph.nodes.planning_node.call_model",
-            side_effect=fake_call_model,
-        ), patch(
-            "src.core.orchestration.graph.nodes.planning_node.ContextBuilder"
-        ) as mock_cb:
-            mock_cb.return_value.build_prompt.return_value = [{"role": "user", "content": "plan"}]
+        with (
+            patch(
+                "src.core.orchestration.graph.nodes.planning_node._resolve_orchestrator",
+                return_value=mock_orch,
+            ),
+            patch(
+                "src.core.orchestration.graph.nodes.planning_node.call_model",
+                side_effect=fake_call_model,
+            ),
+            patch(
+                "src.core.orchestration.graph.nodes.planning_node.ContextBuilder"
+            ) as mock_cb,
+        ):
+            mock_cb.return_value.build_prompt.return_value = [
+                {"role": "user", "content": "plan"}
+            ]
             result = asyncio.run(
                 __import__(
                     "src.core.orchestration.graph.nodes.planning_node",
@@ -393,16 +437,22 @@ class TestUP1TaskDecomposedFlag:
         async def fake_call_model(*args, **kwargs):
             return {"choices": [{"message": {"content": "nope"}}]}
 
-        with patch(
-            "src.core.orchestration.graph.nodes.planning_node._resolve_orchestrator",
-            return_value=mock_orch,
-        ), patch(
-            "src.core.orchestration.graph.nodes.planning_node.call_model",
-            side_effect=fake_call_model,
-        ), patch(
-            "src.core.orchestration.graph.nodes.planning_node.ContextBuilder"
-        ) as mock_cb:
-            mock_cb.return_value.build_prompt.return_value = [{"role": "user", "content": "plan"}]
+        with (
+            patch(
+                "src.core.orchestration.graph.nodes.planning_node._resolve_orchestrator",
+                return_value=mock_orch,
+            ),
+            patch(
+                "src.core.orchestration.graph.nodes.planning_node.call_model",
+                side_effect=fake_call_model,
+            ),
+            patch(
+                "src.core.orchestration.graph.nodes.planning_node.ContextBuilder"
+            ) as mock_cb,
+        ):
+            mock_cb.return_value.build_prompt.return_value = [
+                {"role": "user", "content": "plan"}
+            ]
             result = asyncio.run(
                 __import__(
                     "src.core.orchestration.graph.nodes.planning_node",
@@ -472,12 +522,15 @@ class TestUP1TaskDecomposedFlag:
             call_model_called.append(1)
             return {"choices": [{"message": {"content": ""}}]}
 
-        with patch(
-            "src.core.orchestration.graph.nodes.planning_node._resolve_orchestrator",
-            return_value=mock_orch,
-        ), patch(
-            "src.core.orchestration.graph.nodes.planning_node.call_model",
-            side_effect=fake_call_model,
+        with (
+            patch(
+                "src.core.orchestration.graph.nodes.planning_node._resolve_orchestrator",
+                return_value=mock_orch,
+            ),
+            patch(
+                "src.core.orchestration.graph.nodes.planning_node.call_model",
+                side_effect=fake_call_model,
+            ),
         ):
             result = asyncio.run(
                 __import__(
@@ -581,7 +634,9 @@ class TestUP2RepoCacheClear:
 
         with _REPO_SUMMARY_CACHE_LOCK:
             assert resolved not in _REPO_SUMMARY_CACHE, "Cache entry was not evicted"
-            assert "/other/path" in _REPO_SUMMARY_CACHE, "Unrelated entry was incorrectly evicted"
+            assert "/other/path" in _REPO_SUMMARY_CACHE, (
+                "Unrelated entry was incorrectly evicted"
+            )
             # Cleanup
             _REPO_SUMMARY_CACHE.pop("/other/path", None)
 

@@ -11,6 +11,8 @@ Audit Vol5 (batch 2) — regression tests for the second wave of fixes.
   C4             — delegation_node injects results into history (not write-only)
 """
 
+
+# ruff: noqa: E501
 from __future__ import annotations
 
 from unittest.mock import MagicMock, patch

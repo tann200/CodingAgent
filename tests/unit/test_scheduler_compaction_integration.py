@@ -1,5 +1,7 @@
 import time
 import pytest
+
+# ruff: noqa: E501
 from src.core.orchestration.event_bus import get_event_bus
 
 

@@ -1,5 +1,7 @@
 import json
 from pathlib import Path
+
+# ruff: noqa: E501
 import asyncio
 
 from src.core.inference.llm_manager import call_model

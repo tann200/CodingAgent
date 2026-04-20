@@ -5,6 +5,8 @@ These tests focus on the static-section logic and template routing, avoiding
 heavy I/O (git, AGENT.md discovery) which is exercised in integration tests.
 """
 
+
+# ruff: noqa: E501
 from __future__ import annotations
 
 from pathlib import Path

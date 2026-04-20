@@ -15,6 +15,8 @@ Tests cover:
 - start() after stop() re-starts the thread
 """
 
+
+# ruff: noqa: E501
 from __future__ import annotations
 
 import threading

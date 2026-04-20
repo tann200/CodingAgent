@@ -6,6 +6,8 @@ server. They cover initialisation, model selection, get_models_from_api, and the
 generate/chat path.
 """
 
+
+# ruff: noqa: E501
 from __future__ import annotations
 
 import warnings

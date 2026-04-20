@@ -6,6 +6,8 @@ These tests exercise the full LangGraph pipeline:
 
 The LLM is mocked so tests run in CI without a running local provider.
 """
+
+# ruff: noqa: E501
 from __future__ import annotations
 
 import asyncio

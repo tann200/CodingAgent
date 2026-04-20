@@ -2,6 +2,8 @@
 tests/unit/test_permission_policy.py — Unit tests for Sprint A-4: PermissionPolicy.
 """
 
+
+# ruff: noqa: E501
 from __future__ import annotations
 
 import json

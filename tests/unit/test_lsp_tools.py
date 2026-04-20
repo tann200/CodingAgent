@@ -3,6 +3,8 @@
 All tests use ``_DummyLSPClient`` — no live language server required.
 """
 
+
+# ruff: noqa: E501
 from __future__ import annotations
 
 import asyncio

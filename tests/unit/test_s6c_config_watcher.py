@@ -5,6 +5,8 @@ all tests that exercise the watch loop use mocking. Tests also verify the
 graceful no-op path when watchfiles is absent.
 """
 
+
+# ruff: noqa: E501
 from __future__ import annotations
 
 import threading

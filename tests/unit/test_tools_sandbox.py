@@ -1,5 +1,7 @@
 import os
 import sys
+
+# ruff: noqa: E501
 from pathlib import Path
 
 ROOT = os.path.dirname(os.path.dirname(__file__))

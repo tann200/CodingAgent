@@ -6,6 +6,8 @@ These tests verify the async behavior of LangGraph nodes.
 
 import pytest
 from unittest.mock import MagicMock, AsyncMock, patch
+
+# ruff: noqa: E501
 from typing import Any
 
 from src.core.orchestration.graph.state import AgentState

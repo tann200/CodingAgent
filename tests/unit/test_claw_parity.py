@@ -4,6 +4,8 @@ Covers acceptance criteria from docs/implementation-plan-claw-parity.md.
 All tests are unit-level (no LLM calls, no live network).
 """
 
+
+# ruff: noqa: E501
 from __future__ import annotations
 
 import json

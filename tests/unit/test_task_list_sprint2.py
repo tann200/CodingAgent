@@ -13,6 +13,8 @@ Covers:
   ORCH-W4 — plan_enter / plan_exit tool calls
 """
 
+
+# ruff: noqa: E501
 from __future__ import annotations
 
 import json

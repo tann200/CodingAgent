@@ -1,5 +1,7 @@
 import json
 import requests
+
+# ruff: noqa: E501
 import pytest
 
 from src.core.inference.adapters.ollama_adapter import OllamaAdapter

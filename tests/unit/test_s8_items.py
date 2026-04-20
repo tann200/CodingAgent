@@ -4,6 +4,8 @@ S8-A: ContextBuilder renders short tool descriptions for NANO/SMALL tiers.
 S8-B: NANO tier forces YAML-only output format (simple_mode), no native tools.
 """
 
+
+# ruff: noqa: E501
 from __future__ import annotations
 
 import pytest

@@ -8,6 +8,8 @@ from src.tools.state_tools import (
     multi_file_summary,
 )
 
+# ruff: noqa: E501
+
 
 @pytest.fixture
 def tmp_workdir(tmp_path):
@@ -163,6 +165,7 @@ def test_multi_file_summary_nonexistent(tmp_workdir):
 # H12: Path boundary enforcement in batched_file_read
 # ---------------------------------------------------------------------------
 
+
 def test_batched_file_read_traversal_rejected(tmp_workdir):
     """H12: ../traversal paths must be rejected, not read."""
     result = batched_file_read(
@@ -194,17 +197,24 @@ def test_batched_file_read_absolute_outside_rejected(tmp_workdir, tmp_path):
 # H11: find_references path boundary enforcement
 # ---------------------------------------------------------------------------
 
+
 def test_find_references_traversal_path_ignored(tmp_workdir):
     """H11: repo_index.json paths containing traversal sequences must be silently skipped."""
     import json
+
     ctx = tmp_workdir / ".agent-context"
     ctx.mkdir(exist_ok=True)
     # Inject a malicious path into the index
-    (ctx / "repo_index.json").write_text(json.dumps({
-        "files": [{"path": "../../etc/passwd"}],
-        "symbols": [],
-    }))
+    (ctx / "repo_index.json").write_text(
+        json.dumps(
+            {
+                "files": [{"path": "../../etc/passwd"}],
+                "symbols": [],
+            }
+        )
+    )
     from src.tools.repo_tools import find_references
+
     result = find_references("root", str(tmp_workdir))
     assert result["status"] == "ok"
     # No results from outside-workdir traversal
@@ -215,14 +225,20 @@ def test_find_references_traversal_path_ignored(tmp_workdir):
 def test_find_references_normal_file(tmp_workdir):
     """H11: find_references works correctly for files inside workdir."""
     import json
+
     ctx = tmp_workdir / ".agent-context"
     ctx.mkdir(exist_ok=True)
     (tmp_workdir / "foo.py").write_text("def hello(): pass")
-    (ctx / "repo_index.json").write_text(json.dumps({
-        "files": [{"path": "foo.py"}],
-        "symbols": [],
-    }))
+    (ctx / "repo_index.json").write_text(
+        json.dumps(
+            {
+                "files": [{"path": "foo.py"}],
+                "symbols": [],
+            }
+        )
+    )
     from src.tools.repo_tools import find_references
+
     result = find_references("hello", str(tmp_workdir))
     assert result["status"] == "ok"
     assert any("foo.py" in r["file"] for r in result["results"])
@@ -231,6 +247,7 @@ def test_find_references_normal_file(tmp_workdir):
 # ---------------------------------------------------------------------------
 # NEW-2: Path boundary enforcement in multi_file_summary
 # ---------------------------------------------------------------------------
+
 
 def test_multi_file_summary_traversal_rejected(tmp_workdir):
     """
@@ -269,9 +286,7 @@ def test_multi_file_summary_absolute_outside_rejected(tmp_workdir, tmp_path):
     )
     assert result["status"] == "ok"
     entry = result["summaries"].get(str(outside), {})
-    assert "error" in entry, (
-        "Absolute path outside workdir must produce an error entry"
-    )
+    assert "error" in entry, "Absolute path outside workdir must produce an error entry"
 
 
 def test_multi_file_summary_normal_file_returns_metadata(tmp_workdir):

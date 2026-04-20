@@ -1,5 +1,7 @@
 from src.tools import file_tools, system_tools
 
+# ruff: noqa: E501
+
 
 def test_read_file_chunk(tmp_path):
     # create a large file in the tmp workdir

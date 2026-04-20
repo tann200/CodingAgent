@@ -15,6 +15,8 @@ Covers:
   SM-12  Property shims fall back gracefully when session_mgr absent (object.__new__)
 """
 
+
+# ruff: noqa: E501
 from __future__ import annotations
 
 from pathlib import Path

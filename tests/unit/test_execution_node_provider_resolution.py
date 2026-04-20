@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+
+# ruff: noqa: E501
 import pytest
 
 from src.core.orchestration.graph.nodes import execution_node as exe_mod

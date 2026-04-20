@@ -7,6 +7,8 @@ Tests:
   - config_loader: MCP config schema (S3-B)
 """
 
+
+# ruff: noqa: E501
 from __future__ import annotations
 
 import json

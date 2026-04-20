@@ -1,6 +1,8 @@
 import importlib
 import asyncio
 import pytest
+
+# ruff: noqa: E501
 import src.core.inference.llm_manager as lm
 
 

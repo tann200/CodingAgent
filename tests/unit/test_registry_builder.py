@@ -1,5 +1,7 @@
 """Phase B tests: ToolRegistry and example_registry extracted to dedicated modules."""
 
+# ruff: noqa: E501
+
 from __future__ import annotations
 
 

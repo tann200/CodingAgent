@@ -1,6 +1,8 @@
 import pytest
 
 from src.core.inference.adapters.ollama_adapter import OllamaAdapter
+
+# ruff: noqa: E501
 from src.core.inference.adapters.openai_compat_adapter import OpenAICompatibleAdapter
 
 

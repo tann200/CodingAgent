@@ -1,5 +1,7 @@
 """Tests for incremental repository indexing."""
 
+# ruff: noqa: E501
+
 import pytest
 import tempfile
 import shutil

@@ -13,6 +13,8 @@ import pytest
 import os
 import sys
 from pathlib import Path
+
+# ruff: noqa: E501
 from unittest.mock import MagicMock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))

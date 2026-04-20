@@ -1,5 +1,7 @@
 import pytest
 from src.core.orchestration.graph.nodes.perception_node import perception_node
+
+# ruff: noqa: E501
 from src.core.context.context_builder import ContextBuilder
 
 

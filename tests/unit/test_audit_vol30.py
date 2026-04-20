@@ -8,6 +8,8 @@ Covers:
   P2-A  Global recovery cap (total_recovery_attempts) in debug_node, replan_node, and routing
 """
 
+# ruff: noqa: E501
+
 import inspect
 
 
@@ -68,6 +70,7 @@ class TestP1BPruneToolsCalledInBuildPrompt:
         )
         # Count how many "name: tool_" entries appear in <available_tools>
         import re
+
         tool_entries = re.findall(r"name: tool_\d+", system_msg)
         assert len(tool_entries) <= 8, (
             f"P1-B: NANO tier must have ≤8 tools in prompt, got {len(tool_entries)}"
@@ -100,6 +103,7 @@ class TestP1BPruneToolsCalledInBuildPrompt:
             (m["content"] for m in messages if m.get("role") == "system"), ""
         )
         import re
+
         tool_entries = re.findall(r"name: tool_\d+", system_msg)
         assert len(tool_entries) <= 20, (
             f"P1-B: SMALL tier must have ≤20 tools in prompt, got {len(tool_entries)}"
@@ -132,6 +136,7 @@ class TestP1BPruneToolsCalledInBuildPrompt:
             (m["content"] for m in messages if m.get("role") == "system"), ""
         )
         import re
+
         tool_entries = re.findall(r"name: tool_\d+", system_msg)
         # MEDIUM gets 35 tools — none should be pruned when input is exactly 35
         assert len(tool_entries) == 35, (
@@ -217,6 +222,7 @@ class TestP1CThinkingBlockDetection:
         )
         # New approach: removes everything
         from src.core.inference.thinking_utils import strip_thinking
+
         new_result = strip_thinking(content)
         assert new_result == "", (
             "P1-C: new strip_thinking approach correctly removes the full block"
@@ -245,7 +251,10 @@ class TestP2AGlobalRecoveryCap:
         import src.core.orchestration.inference_loop as il
 
         src_text = inspect.getsource(il)
-        assert '"total_recovery_attempts": 0' in src_text or "'total_recovery_attempts': 0" in src_text, (
+        assert (
+            '"total_recovery_attempts": 0' in src_text
+            or "'total_recovery_attempts': 0" in src_text
+        ), (
             "P2-A: inference_loop must initialise total_recovery_attempts=0 in initial_state"
         )
 
@@ -350,6 +359,9 @@ class TestP2AGlobalRecoveryCap:
 
         src_text = inspect.getsource(bld)
         # The conditional edges dict for the replan node must include memory_sync
-        assert '"memory_sync": "memory_sync"' in src_text or "'memory_sync': 'memory_sync'" in src_text, (
+        assert (
+            '"memory_sync": "memory_sync"' in src_text
+            or "'memory_sync': 'memory_sync'" in src_text
+        ), (
             "P2-A: graph wiring for should_after_replan must include 'memory_sync' destination"
         )

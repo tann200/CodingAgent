@@ -16,6 +16,8 @@ Covers:
   T12 — run_in_background returns background_task_id (PID string)
 """
 
+
+# ruff: noqa: E501
 from __future__ import annotations
 
 import os

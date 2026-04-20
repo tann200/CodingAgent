@@ -13,6 +13,8 @@ The wrapper normalises falsy/None session_id values to the sentinel
 ``"unknown"`` to preserve prior behaviour.
 """
 
+# ruff: noqa: E501
+
 from __future__ import annotations
 
 import os

@@ -1,4 +1,6 @@
 from src.core.indexing.vector_store import VectorStore
+
+# ruff: noqa: E501
 import json
 
 

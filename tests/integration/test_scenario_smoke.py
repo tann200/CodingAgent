@@ -4,6 +4,8 @@ Smoke tests for ScenarioEvaluator that always run in CI without a live LLM.
 These tests exercise setup, verification, and framework internals only.
 """
 
+
+# ruff: noqa: E501
 from __future__ import annotations
 
 import pytest

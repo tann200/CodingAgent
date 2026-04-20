@@ -14,6 +14,8 @@ Covers:
   - subagent_tools.py saves failed session skeleton
 """
 
+
+# ruff: noqa: E501
 from __future__ import annotations
 
 import json

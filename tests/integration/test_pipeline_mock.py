@@ -13,6 +13,8 @@ Coverage:
   PM-6  fix_syntax: three-step sequence — read_file → edit_file → run_tests
 """
 
+
+# ruff: noqa: E501
 from __future__ import annotations
 
 import json

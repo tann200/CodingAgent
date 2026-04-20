@@ -5,6 +5,8 @@ Covers: atomic persist, idempotent ACK, crash-recovery, stale pruning,
 corrupt-file discard, PersistentEventBus.initialize() replay count.
 """
 
+
+# ruff: noqa: E501
 from __future__ import annotations
 
 import json

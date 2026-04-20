@@ -2,6 +2,8 @@
 Tests for analyst_delegation_node (#56 — early delegation before planning).
 """
 import pytest
+
+# ruff: noqa: E501
 from unittest.mock import patch, AsyncMock
 
 from src.core.orchestration.graph.nodes.analyst_delegation_node import (

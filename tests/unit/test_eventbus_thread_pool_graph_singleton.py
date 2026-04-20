@@ -15,6 +15,8 @@ Covers every fix applied in the vol5 session:
   F15 — _INDEXED_DIRS keyed by (path, mtime_ns); stale cache avoided
 """
 
+
+# ruff: noqa: E501
 from __future__ import annotations
 
 import ast

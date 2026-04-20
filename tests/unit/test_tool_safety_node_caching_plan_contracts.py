@@ -25,6 +25,8 @@ PB-3:  SymbolGraph singleton reused per working_dir in analysis_node
 ET-4:  evaluation_node → debug routing is bounded by debug_attempts
 """
 
+# ruff: noqa: E501
+
 from __future__ import annotations
 
 import asyncio
