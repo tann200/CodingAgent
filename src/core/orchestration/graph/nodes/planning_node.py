@@ -783,20 +783,7 @@ Respond ONLY with valid JSON, no additional text."""
                 manage_todo(
                     action="create", workdir=working_dir, steps=step_descriptions
                 )
-                # Ensure the orchestrator's _session_read_files is updated so the
-                # read-before-write guard does not mistakenly block subsequent
-                # operations on TODO.md. We add the absolute resolved path as a
-                # reliable in-process update in case manage_todo's ContextVar-based
-                # best-effort notification cannot locate the orchestrator.
-                try:
-                    if orchestrator and hasattr(orchestrator, "_session_read_files"):
-                        todo_path = str(
-                            (Path(working_dir) / ".agent-context" / "TODO.md").resolve()
-                        )
-                        orchestrator._session_read_files.add(todo_path)
-                except Exception:
-                    # Best-effort; do not fail planning on session-tracking errors
-                    pass
+                # manage_todo performs best-effort RBW/session updates itself.
                 logger.info(f"planning_node: wrote TODO.md with {len(steps)} steps")
             except Exception as _te:
                 logger.warning(f"planning_node: failed to write TODO.md: {_te}")

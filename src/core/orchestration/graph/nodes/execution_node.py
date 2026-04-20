@@ -1332,10 +1332,9 @@ Generate the appropriate tool call to complete this step. Respond with ONLY a to
             except Exception as e:
                 logger.error(f"execution_node: read-then-write enforcement error: {e}")
 
-        # Sync session state immediately to ensure the next turn in THIS graph run sees it
-        if verified_update:
-            for path in verified_update:
-                orchestrator._session_read_files.add(path)
+        # Verified reads are tracked by execute_tool and other lower-level
+        # components; avoid duplicating the add here. This keeps RBW updates
+        # consolidated and reduces redundant work.
 
     # FIX: Return ONLY the new message as "user" role so ContextBuilder doesn't filter it out.
     # The ContextBuilder filters out non-user/assistant roles, so tool results need to be "user".

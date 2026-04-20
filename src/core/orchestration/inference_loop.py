@@ -880,10 +880,9 @@ def run_agent_once_impl(
                 for turn in new_turns:
                     orch.msg_mgr.append(turn["role"], turn["content"])
 
-        # Update session tracking
-        if final_state:
-            for path in final_state.get("verified_reads", []):
-                orch._session_read_files.add(path)
+        # Session tracking: verified_reads are already propagated by lower-level
+        # components (execute_tool/manage_todo). Avoid duplicate adds here to
+        # reduce redundant RBW notifications.
 
         # Construct final response
         assistant_msgs = []
