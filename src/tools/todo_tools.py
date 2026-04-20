@@ -331,6 +331,56 @@ def _notify_rbw_after_write(workdir: str) -> None:
         logger.exception("_notify_rbw_after_write failed")
 
 
+def notify_rbw(workdir: str, orchestrator: Optional[Any] = None) -> None:
+    """Centralized, best-effort notification for RBW/session state.
+
+    If an orchestrator instance is provided, update its _session_read_files
+    directly (in-process safety-net). Otherwise fall back to the ContextVar
+    lookup used by _notify_rbw_after_write.
+
+    This helper never raises; failures are logged only.
+    """
+    try:
+        todo_md = _todo_path(workdir)
+        todo_json = _todo_json_path(workdir)
+        abs_md = str(todo_md.resolve())
+        abs_json = str(todo_json.resolve())
+
+        if orchestrator is not None:
+            try:
+                if hasattr(orchestrator, "_session_read_files"):
+                    orchestrator._session_read_files.add(abs_md)
+                    orchestrator._session_read_files.add(abs_json)
+            except Exception:
+                logger.exception(
+                    "notify_rbw: failed to update orchestrator._session_read_files"
+                )
+
+            # Invalidate ContextBuilder caches for these paths if available
+            try:
+                from src.core.context.context_builder import ContextBuilder
+
+                try:
+                    ContextBuilder.invalidate_path(abs_md)
+                except Exception:
+                    try:
+                        ContextBuilder.clear_cache()
+                    except Exception:
+                        pass
+            except Exception:
+                # ContextBuilder not available — ignore
+                pass
+            return
+
+        # No explicit orchestrator provided — fall back to ContextVar-based notifier
+        try:
+            _notify_rbw_after_write(workdir)
+        except Exception:
+            logger.exception("notify_rbw: fallback _notify_rbw_after_write failed")
+    except Exception:
+        logger.exception("notify_rbw failed")
+
+
 @tool(side_effects=["write"], tags=["planning"])
 def manage_todo(
     action: str,

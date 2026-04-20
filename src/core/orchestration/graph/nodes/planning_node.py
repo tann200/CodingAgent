@@ -775,7 +775,7 @@ Respond ONLY with valid JSON, no additional text."""
 
             # Write human-readable TODO.md so user can see the plan
             try:
-                from src.tools.todo_tools import manage_todo
+                from src.tools.todo_tools import manage_todo, notify_rbw
 
                 step_descriptions = [
                     s.get("description", f"Step {i + 1}") for i, s in enumerate(steps)
@@ -783,7 +783,12 @@ Respond ONLY with valid JSON, no additional text."""
                 manage_todo(
                     action="create", workdir=working_dir, steps=step_descriptions
                 )
-                # manage_todo performs best-effort RBW/session updates itself.
+                # Best-effort in-process safety-net: request centralized notifier to
+                # update orchestrator._session_read_files and invalidate caches.
+                try:
+                    notify_rbw(working_dir, orchestrator=orchestrator)
+                except Exception:
+                    pass
                 logger.info(f"planning_node: wrote TODO.md with {len(steps)} steps")
             except Exception as _te:
                 logger.warning(f"planning_node: failed to write TODO.md: {_te}")
