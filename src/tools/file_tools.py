@@ -9,42 +9,43 @@ this file re-exports the canonical symbols so callers don't need to follow the
 refactor.
 """
 
-# ruff: noqa: E402
-import logging
-from pathlib import Path  # noqa: F401
-from typing import Dict
+import logging  # noqa: E402
+from pathlib import Path  # noqa: F401, E402
+from typing import Dict  # noqa: E402
 
-from src.tools._path_utils import safe_resolve  # noqa: F401
+from src.tools._path_utils import safe_resolve  # noqa: F401, E402
 
-# Implementation modules (authoritative implementations live here)
-from src.tools._file_io import (
-    write_file as _write_file,
-    read_file as _read_file,
-    read_file_chunk as _read_file_chunk,
-    delete_file as _delete_file,
-    rename_file as _rename_file,
-    glob as _glob,
-    list_dir as _list_dir,
-)
-from src.tools._edit_tools import (
-    edit_file as _edit_file,
-    edit_file_atomic as _edit_file_atomic,
-    edit_by_line_range as _edit_by_line_range,
-    multiedit as _multiedit,
-)
-from src.tools._diff_gate import (
-    register_preview_gate as _register_preview_gate,
-    resolve_preview_gate as _resolve_preview_gate,
-)
-from src.tools._bash_exec import (
-    bash as _bash,
-    bash_readonly as _bash_readonly,
-    check_background_task as _check_background_task,
-    _BASH_STDOUT_MAX as _BASH_STDOUT_MAX,
-    _BASH_STDERR_MAX as _BASH_STDERR_MAX,
-    _BASH_STDOUT_MAX_TOKENS as _BASH_STDOUT_MAX_TOKENS,
-    _BASH_STDERR_MAX_TOKENS as _BASH_STDERR_MAX_TOKENS,
-)
+
+# Lazy import map for re-exports. We intentionally avoid importing the
+# authoritative implementation modules at import time to prevent import-time
+# side-effects and cycles; attributes are imported on first access via
+# module-level __getattr__ below.
+_IMPORT_MAP = {
+    # file I/O
+    "write_file": ("src.tools._file_io", "write_file"),
+    "read_file": ("src.tools._file_io", "read_file"),
+    "read_file_chunk": ("src.tools._file_io", "read_file_chunk"),
+    "delete_file": ("src.tools._file_io", "delete_file"),
+    "rename_file": ("src.tools._file_io", "rename_file"),
+    "glob": ("src.tools._file_io", "glob"),
+    "list_files": ("src.tools._file_io", "list_dir"),
+    # edit tools
+    "edit_file": ("src.tools._edit_tools", "edit_file"),
+    "edit_file_atomic": ("src.tools._edit_tools", "edit_file_atomic"),
+    "edit_by_line_range": ("src.tools._edit_tools", "edit_by_line_range"),
+    "multiedit": ("src.tools._edit_tools", "multiedit"),
+    # diff preview gate
+    "register_preview_gate": ("src.tools._diff_gate", "register_preview_gate"),
+    "resolve_preview_gate": ("src.tools._diff_gate", "resolve_preview_gate"),
+    # bash exec helpers and constants
+    "bash": ("src.tools._bash_exec", "bash"),
+    "bash_readonly": ("src.tools._bash_exec", "bash_readonly"),
+    "check_background_task": ("src.tools._bash_exec", "check_background_task"),
+    "_BASH_STDOUT_MAX": ("src.tools._bash_exec", "_BASH_STDOUT_MAX"),
+    "_BASH_STDERR_MAX": ("src.tools._bash_exec", "_BASH_STDERR_MAX"),
+    "_BASH_STDOUT_MAX_TOKENS": ("src.tools._bash_exec", "_BASH_STDOUT_MAX_TOKENS"),
+    "_BASH_STDERR_MAX_TOKENS": ("src.tools._bash_exec", "_BASH_STDERR_MAX_TOKENS"),
+}
 
 
 def _safe_resolve(path: str, workdir: "Path | None" = None) -> Path:
@@ -73,32 +74,28 @@ except ImportError:
     pass
 
 
-# Public re-exports (kept as simple bindings so tests can import them from
-# src.tools.file_tools without depending on the original implementation file).
-write_file = _write_file
-read_file = _read_file
-read_file_chunk = _read_file_chunk
-delete_file = _delete_file
-rename_file = _rename_file
-glob = _glob
-list_files = _list_dir
+# Public re-exports are provided lazily via module-level __getattr__ below.
+__all__ = list(_IMPORT_MAP.keys()) + ["_safe_resolve", "WorkspaceGuard"]
 
-edit_file = _edit_file
-edit_file_atomic = _edit_file_atomic
-edit_by_line_range = _edit_by_line_range
-multiedit = _multiedit
 
-# Bash execution re-exports (moved to _bash_exec.py)
-bash = _bash
-bash_readonly = _bash_readonly
-check_background_task = _check_background_task
+def __getattr__(name: str):
+    """Lazily import and return re-exported attributes on first access.
 
-# Diff preview gate re-exports (kept for backward compatibility)
-register_preview_gate = _register_preview_gate
-resolve_preview_gate = _resolve_preview_gate
+    This avoids importing implementation modules at module import time, which
+    can create import cycles or expensive side effects. Once imported the
+    attribute is cached in the module globals for subsequent access.
+    """
+    if name in _IMPORT_MAP:
+        mod_name, attr_name = _IMPORT_MAP[name]
+        try:
+            mod = __import__(mod_name, fromlist=[attr_name])
+            val = getattr(mod, attr_name)
+        except Exception as exc:  # re-raise as AttributeError for import-time lookup
+            raise AttributeError(f"failed to import {name} from {mod_name}: {exc!r}")
+        globals()[name] = val
+        return val
+    raise AttributeError(name)
 
-# Expose authoritative truncation constants used by tests
-_BASH_STDOUT_MAX = _BASH_STDOUT_MAX
-_BASH_STDERR_MAX = _BASH_STDERR_MAX
-_BASH_STDOUT_MAX_TOKENS = _BASH_STDOUT_MAX_TOKENS
-_BASH_STDERR_MAX_TOKENS = _BASH_STDERR_MAX_TOKENS
+
+def __dir__() -> list[str]:
+    return sorted(list(globals().keys()) + list(_IMPORT_MAP.keys()))
