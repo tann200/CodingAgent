@@ -127,6 +127,12 @@
 - **TODO.md handling:** Many files reference TODO.md read/write/clear operations. Edge case flagged: `manage_todo` bypasses read-before-write (RBW) guard (docs/agent-loop-improvement-analysis.md).
 - **TODO injection in perception:** docs/tiered-model-redesign-plan.md mentions injecting TODO state into perception_node so LLM sees progress.
 
+### NFS / Network Filesystem Note (todo_tools)
+
+- The TODO persistence and locking code now includes conservative logic to avoid reclaiming stale lockfiles on network filesystems (NFS, CIFS, SMB, SSHFS, Ceph, etc.) by default. This reduces the risk of unsafe cross-host deletions when the lockfile resides on shared storage.
+- If an operator understands their environment and explicitly wants reclaim behavior on network filesystems, set the environment variable `TODO_ALLOW_STALE_RECLAIM_ON_NFS=1` (accepted values: `1`, `true`, `yes`). Use with caution.
+- The detection is best-effort and uses `/proc/mounts` (Linux) or `mount` output (macOS). Unknown platforms default to local (no NFS detection).
+
 ---
 
 ## Execution Order (Recommended)

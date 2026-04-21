@@ -171,6 +171,84 @@ def _lock_path(workdir: str) -> Path:
     return agent_context_path(Path(workdir)) / ".todo.lock"
 
 
+def _is_network_filesystem(path: Path) -> bool:
+    """Best-effort detection whether the given path lives on a network filesystem.
+
+    We try platform-specific strategies: on Linux parse /proc/mounts, on macOS
+    parse the output of `mount`. If detection fails, conservatively return
+    False (treat as local filesystem).
+    """
+    try:
+        import sys
+        import subprocess
+        import re
+
+        p = Path(path).resolve()
+        path_str = str(p)
+
+        mounts = []
+        if sys.platform.startswith("linux"):
+            try:
+                with open("/proc/mounts", "r", encoding="utf-8") as f:
+                    for line in f:
+                        parts = line.split()
+                        if len(parts) >= 3:
+                            mnt = parts[1]
+                            fstype = parts[2]
+                            mounts.append((mnt, fstype))
+            except Exception:
+                return False
+        elif sys.platform == "darwin":
+            try:
+                out = subprocess.check_output(
+                    ["mount"], stderr=subprocess.DEVNULL, text=True
+                )
+                for line in out.splitlines():
+                    m = re.search(r" on (\S+) \(([^,]+)", line)
+                    if m:
+                        mounts.append((m.group(1), m.group(2)))
+            except Exception:
+                return False
+        else:
+            # Unknown platform: don't assume network FS
+            return False
+
+        # Find the most specific mountpoint that is a prefix of the path
+        best = None
+        best_len = -1
+        for mnt, fstype in mounts:
+            if path_str.startswith(mnt.rstrip("/")) and len(mnt) > best_len:
+                best = (mnt, fstype.lower())
+                best_len = len(mnt)
+
+        if not best:
+            return False
+
+        fstype = best[1]
+        network_types = (
+            "nfs",
+            "nfs4",
+            "cifs",
+            "smbfs",
+            "smb",
+            "sshfs",
+            "fuse.sshfs",
+            "9p",
+            "afs",
+            "coda",
+            "ceph",
+        )
+        for nt in network_types:
+            if nt == fstype or nt in fstype:
+                logger.debug(
+                    "Filesystem for %s appears to be network type %s", path, fstype
+                )
+                return True
+        return False
+    except Exception:
+        return False
+
+
 class _FileLock:
     """Cross-platform advisory lock for a given lock path.
 
@@ -324,27 +402,54 @@ class _FileLock:
                                                     # PID not present — if same host reclaim immediately,
                                                     # otherwise reclaim only if too_old
                                                     if same_host or too_old:
+                                                        # Do not attempt to reclaim locks on network
+                                                        # filesystems unless explicitly allowed via env var.
                                                         try:
-                                                            os.unlink(
-                                                                str(self.lock_path)
+                                                            is_nfs = (
+                                                                _is_network_filesystem(
+                                                                    self.lock_path
+                                                                )
                                                             )
-                                                            _inc_lock_metric(
-                                                                "stale_reclaims"
-                                                            )
+                                                        except Exception:
+                                                            is_nfs = False
+                                                        allow_nfs = os.environ.get(
+                                                            "TODO_ALLOW_STALE_RECLAIM_ON_NFS",
+                                                            "",
+                                                        ).lower() in (
+                                                            "1",
+                                                            "true",
+                                                            "yes",
+                                                        )
+                                                        if is_nfs and not allow_nfs:
                                                             logger.warning(
-                                                                "Removed stale lockfile %s (pid %s not running)",
+                                                                "Refusing to reclaim stale lockfile %s on network filesystem (pid %s). Set TODO_ALLOW_STALE_RECLAIM_ON_NFS=1 to override",
                                                                 self.lock_path,
                                                                 existing_pid,
                                                             )
-                                                            continue
-                                                        except Exception:
-                                                            _inc_lock_metric(
-                                                                "stale_reclaim_failures"
-                                                            )
-                                                            logger.exception(
-                                                                "Failed to remove stale lockfile %s",
-                                                                self.lock_path,
-                                                            )
+                                                            # Treat as active; allow caller to retry until timeout
+                                                            pass
+                                                        else:
+                                                            try:
+                                                                os.unlink(
+                                                                    str(self.lock_path)
+                                                                )
+                                                                _inc_lock_metric(
+                                                                    "stale_reclaims"
+                                                                )
+                                                                logger.warning(
+                                                                    "Removed stale lockfile %s (pid %s not running)",
+                                                                    self.lock_path,
+                                                                    existing_pid,
+                                                                )
+                                                                continue
+                                                            except Exception:
+                                                                _inc_lock_metric(
+                                                                    "stale_reclaim_failures"
+                                                                )
+                                                                logger.exception(
+                                                                    "Failed to remove stale lockfile %s",
+                                                                    self.lock_path,
+                                                                )
                                                 elif (
                                                     getattr(e, "errno", None)
                                                     == errno.EPERM
@@ -361,13 +466,31 @@ class _FileLock:
                                         # No pid parsed; if timestamp too old, attempt reclaim
                                         if existing_ts is not None and too_old:
                                             try:
-                                                os.unlink(str(self.lock_path))
-                                                _inc_lock_metric("stale_reclaims")
-                                                logger.warning(
-                                                    "Removed stale lockfile %s (no pid, too old)",
-                                                    self.lock_path,
-                                                )
-                                                continue
+                                                # As above, be conservative on network filesystems
+                                                try:
+                                                    is_nfs = _is_network_filesystem(
+                                                        self.lock_path
+                                                    )
+                                                except Exception:
+                                                    is_nfs = False
+                                                allow_nfs = os.environ.get(
+                                                    "TODO_ALLOW_STALE_RECLAIM_ON_NFS",
+                                                    "",
+                                                ).lower() in ("1", "true", "yes")
+                                                if is_nfs and not allow_nfs:
+                                                    logger.warning(
+                                                        "Refusing to reclaim stale lockfile %s on network filesystem (no pid). Set TODO_ALLOW_STALE_RECLAIM_ON_NFS=1 to override",
+                                                        self.lock_path,
+                                                    )
+                                                    pass
+                                                else:
+                                                    os.unlink(str(self.lock_path))
+                                                    _inc_lock_metric("stale_reclaims")
+                                                    logger.warning(
+                                                        "Removed stale lockfile %s (no pid, too old)",
+                                                        self.lock_path,
+                                                    )
+                                                    continue
                                             except Exception:
                                                 _inc_lock_metric(
                                                     "stale_reclaim_failures"
