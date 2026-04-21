@@ -50,6 +50,30 @@ class MetricsHandler(BaseHTTPRequestHandler):
             self.end_headers()
             return
         ensure_repo_on_path()
+        # If Prometheus integration is enabled and prometheus_client is
+        # available, serve the metrics in Prometheus text format. Otherwise
+        # fall back to a JSON dump of the in-process counters.
+        try:
+            from src.tools.todo_metrics import enabled as prometheus_enabled
+
+            if prometheus_enabled():
+                try:
+                    from prometheus_client import generate_latest  # type: ignore
+
+                    body = generate_latest()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/plain; version=0.0.4")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
+                except Exception:
+                    # Fall through to JSON fallback
+                    pass
+        except Exception:
+            # Prometheus wrapper not available — fall back
+            pass
+
         from src.tools.todo_tools import get_lock_metrics, get_rbw_metrics
 
         out = {"lock_metrics": get_lock_metrics(), "rbw_metrics": get_rbw_metrics()}
