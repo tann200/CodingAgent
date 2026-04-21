@@ -12,6 +12,7 @@ import tempfile
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+import threading
 
 from src.tools._tool import tool
 from src.tools.tools_config import agent_context_path
@@ -20,6 +21,141 @@ logger = logging.getLogger(__name__)
 
 _TODO_FILENAME = "TODO.md"
 _TODO_JSON_FILENAME = "todo.json"
+
+# TTL (seconds) after which a lockfile from another host may be considered stale
+# and eligible for reclaim. Can be overridden via environment variable
+# TODO_LOCK_STALE_TTL (seconds).
+_STALE_LOCK_TTL = int(os.environ.get("TODO_LOCK_STALE_TTL", "300"))
+
+# Simple in-process metrics to surface lock fallback behavior. These are
+# intentionally lightweight (in-memory) and used for diagnostics / tests.
+_lock_metrics_lock = threading.Lock()
+_lock_metrics: Dict[str, int] = {
+    "stale_reclaims": 0,
+    "stale_reclaim_failures": 0,
+    "fallback_acquisitions": 0,
+    "fallback_acquire_timeouts": 0,
+    "fallback_releases": 0,
+}
+
+
+def _inc_lock_metric(key: str) -> None:
+    try:
+        with _lock_metrics_lock:
+            if key in _lock_metrics:
+                _lock_metrics[key] += 1
+        # Best-effort: update Prometheus gauges if enabled
+        try:
+            if _prometheus_enabled:
+                _sync_prometheus_metrics()
+        except Exception:
+            # Never let metrics syncing interfere with normal flow
+            logger.debug("prometheus sync failed", exc_info=True)
+    except Exception:
+        # Metrics must never interfere with normal operation
+        logger.debug("Failed to increment lock metric %s", key, exc_info=True)
+
+
+def get_lock_metrics() -> Dict[str, int]:
+    with _lock_metrics_lock:
+        return dict(_lock_metrics)
+
+
+def reset_lock_metrics() -> None:
+    with _lock_metrics_lock:
+        for k in _lock_metrics:
+            _lock_metrics[k] = 0
+
+
+# Read-Before-Write (RBW) / notifier metrics
+_rbw_metrics_lock = threading.Lock()
+_rbw_metrics: Dict[str, int] = {
+    "rbw_notify_attempts": 0,
+    "rbw_missing_orch": 0,
+    "rbw_notify_failures": 0,
+    "rbw_invalidate_failures": 0,
+}
+
+
+def _inc_rbw_metric(key: str) -> None:
+    try:
+        with _rbw_metrics_lock:
+            if key in _rbw_metrics:
+                _rbw_metrics[key] += 1
+        try:
+            if _prometheus_enabled:
+                _sync_prometheus_metrics()
+        except Exception:
+            logger.debug("prometheus sync failed", exc_info=True)
+    except Exception:
+        logger.debug("Failed to increment rbw metric %s", key, exc_info=True)
+
+
+def get_rbw_metrics() -> Dict[str, int]:
+    with _rbw_metrics_lock:
+        return dict(_rbw_metrics)
+
+
+def reset_rbw_metrics() -> None:
+    with _rbw_metrics_lock:
+        for k in _rbw_metrics:
+            _rbw_metrics[k] = 0
+
+
+# Optional Prometheus export (best-effort). If prometheus_client is available
+# we create Gauges and keep them in sync with the in-memory metrics.
+_prometheus_enabled = False
+_prom_lock = threading.Lock()
+_prom_gauges: Dict[str, Any] = {}
+
+
+def _init_prometheus():
+    global _prometheus_enabled, _prom_gauges
+    try:
+        # prometheus_client is optional; silence static import errors with type ignore
+        from prometheus_client import Gauge  # type: ignore
+
+        with _prom_lock:
+            # Lock metrics
+            _prom_gauges.update(
+                {k: Gauge(f"codagent_lock_{k}", k) for k in _lock_metrics}
+            )
+            # RBW metrics
+            _prom_gauges.update(
+                {k: Gauge(f"codagent_rbw_{k}", k) for k in _rbw_metrics}
+            )
+        _prometheus_enabled = True
+    except Exception:
+        _prometheus_enabled = False
+
+
+def _sync_prometheus_metrics() -> None:
+    if not _prometheus_enabled:
+        return
+    with _prom_lock:
+        # Sync lock metrics
+        for k, v in get_lock_metrics().items():
+            gauge = _prom_gauges.get(k)
+            try:
+                if gauge is not None:
+                    gauge.set(v)
+            except Exception:
+                logger.debug("Failed to set prometheus gauge for %s", k, exc_info=True)
+        # Sync RBW metrics
+        for k, v in get_rbw_metrics().items():
+            gauge = _prom_gauges.get(k)
+            try:
+                if gauge is not None:
+                    gauge.set(v)
+            except Exception:
+                logger.debug("Failed to set prometheus gauge for %s", k, exc_info=True)
+
+
+# Try to initialize prometheus gauges lazily
+try:
+    _init_prometheus()
+except Exception:
+    _prometheus_enabled = False
 
 
 def _todo_path(workdir: str) -> Path:
@@ -51,8 +187,10 @@ class _FileLock:
     def __init__(self, lock_path: Path, timeout: float = 5.0) -> None:
         self.lock_path = Path(lock_path)
         self.timeout = float(timeout)
-        self._fp = None
-        self._fd = None
+        # _fp/_fd are used only for platform-specific locking; use Any to
+        # avoid static type complaints in editors.
+        self._fp: Any = None
+        self._fd: Any = None
         try:
             import fcntl
 
@@ -69,7 +207,11 @@ class _FileLock:
             self._fp = open(self.lock_path, "a+")
             while True:
                 try:
-                    self._fcntl.flock(self._fp, self._fcntl.LOCK_EX)
+                    # Use fileno() to satisfy static type checkers which expect
+                    # an integer file descriptor for fcntl.flock.
+                    if self._fp is None:
+                        raise TimeoutError("Invalid file handle for flock")
+                    self._fcntl.flock(self._fp.fileno(), self._fcntl.LOCK_EX)
                     break
                 except InterruptedError:
                     if time.time() - start >= self.timeout:
@@ -83,24 +225,190 @@ class _FileLock:
             try:
                 # Will raise FileExistsError if another holder exists
                 self._fd = os.open(str(self.lock_path), flags)
-                # Write pid for diagnostics
+                # Write diagnostic info into the lockfile: PID and timestamp
                 try:
-                    os.write(self._fd, str(os.getpid()).encode("utf-8"))
+                    import socket
+
+                    hostname = socket.gethostname()
+                    info = f"pid={os.getpid()} ts={int(time.time() * 1000)} host={hostname}\n"
+                    # Include a small stack fragment for debugging; don't import traceback at module import time
+                    try:
+                        import traceback
+
+                        stack = traceback.format_stack(limit=5)
+                        info += "".join(stack)
+                    except Exception:
+                        pass
+                    os.write(self._fd, info.encode("utf-8"))
                 except Exception:
+                    # Diagnostics are best-effort
                     pass
+                _inc_lock_metric("fallback_acquisitions")
+                logger.debug(
+                    "Acquired fallback lockfile %s (pid=%s)",
+                    self.lock_path,
+                    os.getpid(),
+                )
                 return self
             except FileExistsError:
+                # Read lockfile contents for diagnostics and attempt to reclaim
+                # stale lockfiles when the owning PID is not running.
+                try:
+                    if self.lock_path.exists():
+                        try:
+                            data = self.lock_path.read_text(encoding="utf-8")
+                            logger.debug(
+                                "Lockfile %s exists, contents:\n%s",
+                                self.lock_path,
+                                data,
+                            )
+                            # Parse pid if present and check whether the process exists
+                            try:
+                                import re
+
+                                m = re.search(r"pid=\s*(\d+)", data)
+                                hostm = re.search(r"host=([\w\-\.]+)", data)
+                                tsm = re.search(r"ts=(\d+)", data)
+                                existing_pid = int(m.group(1)) if m else None
+                                existing_host = hostm.group(1) if hostm else None
+                                existing_ts = int(tsm.group(1)) if tsm else None
+                                try:
+                                    # If the lock was written by a different host, only
+                                    # consider reclaiming it if it is older than TTL.
+                                    # Evaluate TTL at runtime so tests can adjust via env var
+                                    stale_ttl = int(
+                                        os.environ.get("TODO_LOCK_STALE_TTL", "300")
+                                    )
+                                    # socket may not have been imported earlier in this
+                                    # code path (we import it when creating lockfiles),
+                                    # so import locally here.
+                                    try:
+                                        import socket
+                                    except Exception:
+                                        socket = None
+
+                                    same_host = (
+                                        existing_host == socket.gethostname()
+                                        if socket is not None
+                                        else False
+                                    )
+                                    too_old = (
+                                        existing_ts is not None
+                                        and (int(time.time() * 1000) - existing_ts)
+                                        / 1000.0
+                                        > stale_ttl
+                                    )
+                                    logger.debug(
+                                        "Parsed lockfile: pid=%s host=%s ts=%s same_host=%s too_old=%s",
+                                        existing_pid,
+                                        existing_host,
+                                        existing_ts,
+                                        same_host,
+                                        too_old,
+                                    )
+
+                                    if existing_pid is not None:
+                                        try:
+                                            os.kill(existing_pid, 0)
+                                            # Process exists; do not reclaim
+                                            pass
+                                        except OSError as e:
+                                            # errno.ESRCH -> no such process, errno.EPERM -> no permission
+                                            try:
+                                                import errno
+
+                                                if (
+                                                    getattr(e, "errno", None)
+                                                    == errno.ESRCH
+                                                ):
+                                                    # PID not present — if same host reclaim immediately,
+                                                    # otherwise reclaim only if too_old
+                                                    if same_host or too_old:
+                                                        try:
+                                                            os.unlink(
+                                                                str(self.lock_path)
+                                                            )
+                                                            _inc_lock_metric(
+                                                                "stale_reclaims"
+                                                            )
+                                                            logger.warning(
+                                                                "Removed stale lockfile %s (pid %s not running)",
+                                                                self.lock_path,
+                                                                existing_pid,
+                                                            )
+                                                            continue
+                                                        except Exception:
+                                                            _inc_lock_metric(
+                                                                "stale_reclaim_failures"
+                                                            )
+                                                            logger.exception(
+                                                                "Failed to remove stale lockfile %s",
+                                                                self.lock_path,
+                                                            )
+                                                elif (
+                                                    getattr(e, "errno", None)
+                                                    == errno.EPERM
+                                                ):
+                                                    # Process exists but we cannot signal it; treat as active
+                                                    pass
+                                                else:
+                                                    # Unknown OSError: be conservative and treat as active
+                                                    pass
+                                            except Exception:
+                                                # If errno handling fails, fallback to conservative behavior
+                                                pass
+                                    else:
+                                        # No pid parsed; if timestamp too old, attempt reclaim
+                                        if existing_ts is not None and too_old:
+                                            try:
+                                                os.unlink(str(self.lock_path))
+                                                _inc_lock_metric("stale_reclaims")
+                                                logger.warning(
+                                                    "Removed stale lockfile %s (no pid, too old)",
+                                                    self.lock_path,
+                                                )
+                                                continue
+                                            except Exception:
+                                                _inc_lock_metric(
+                                                    "stale_reclaim_failures"
+                                                )
+                                                logger.exception(
+                                                    "Failed to remove stale lockfile %s",
+                                                    self.lock_path,
+                                                )
+                                except PermissionError:
+                                    # PID exists but cannot be signalled; treat as active
+                                    pass
+                            except Exception:
+                                # Parsing diagnostics must not fail the lock acquisition
+                                pass
+                        except Exception:
+                            logger.debug(
+                                "Lockfile %s exists but could not be read",
+                                self.lock_path,
+                            )
+                except Exception:
+                    pass
+
                 if time.time() - start >= self.timeout:
+                    _inc_lock_metric("fallback_acquire_timeouts")
                     raise TimeoutError(f"Timeout acquiring lock {self.lock_path}")
                 time.sleep(0.05)
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         if self._fcntl is not None:
             try:
-                self._fcntl.flock(self._fp, self._fcntl.LOCK_UN)
+                # Only attempt to unlock if we have a valid file handle
+                if self._fp is not None:
+                    try:
+                        self._fcntl.flock(self._fp.fileno(), self._fcntl.LOCK_UN)
+                    except Exception:
+                        # Best-effort: don't let unlocking fail the exit path
+                        pass
             finally:
                 try:
-                    self._fp.close()
+                    if self._fp is not None:
+                        self._fp.close()
                 except Exception:
                     pass
             return False
@@ -109,10 +417,17 @@ class _FileLock:
         try:
             if self._fd is not None:
                 os.close(self._fd)
+                _inc_lock_metric("fallback_releases")
+                logger.debug(
+                    "Closed fallback lock fd for %s (pid=%s)",
+                    self.lock_path,
+                    os.getpid(),
+                )
         except Exception:
             pass
         try:
             os.unlink(str(self.lock_path))
+            logger.debug("Unlinked fallback lockfile %s", self.lock_path)
         except FileNotFoundError:
             pass
         return False
@@ -299,6 +614,7 @@ def _notify_rbw_after_write(workdir: str) -> None:
     This function should never raise; failures are non-critical and logged.
     """
     try:
+        _inc_rbw_metric("rbw_notify_attempts")
         orch = _get_orchestrator()
         todo_md = _todo_path(workdir)
         todo_json = _todo_json_path(workdir)
@@ -310,6 +626,7 @@ def _notify_rbw_after_write(workdir: str) -> None:
                     orch._session_read_files.add(abs_md)
                     orch._session_read_files.add(abs_json)
             except Exception:
+                _inc_rbw_metric("rbw_notify_failures")
                 logger.exception("Failed to update orchestrator._session_read_files")
 
         # Invalidate ContextBuilder caches for these paths if available
@@ -323,11 +640,14 @@ def _notify_rbw_after_write(workdir: str) -> None:
                 try:
                     ContextBuilder.clear_cache()
                 except Exception:
-                    pass
+                    _inc_rbw_metric("rbw_invalidate_failures")
+                    logger.exception("ContextBuilder.clear_cache() failed")
         except Exception:
-            # ContextBuilder not available — ignore
-            pass
+            # ContextBuilder not available — ignore but count as missing orchestrator path
+            _inc_rbw_metric("rbw_missing_orch")
+            logger.debug("ContextBuilder not available for RBW invalidation")
     except Exception:
+        _inc_rbw_metric("rbw_notify_failures")
         logger.exception("_notify_rbw_after_write failed")
 
 
@@ -348,10 +668,12 @@ def notify_rbw(workdir: str, orchestrator: Optional[Any] = None) -> None:
 
         if orchestrator is not None:
             try:
+                _inc_rbw_metric("rbw_notify_attempts")
                 if hasattr(orchestrator, "_session_read_files"):
                     orchestrator._session_read_files.add(abs_md)
                     orchestrator._session_read_files.add(abs_json)
             except Exception:
+                _inc_rbw_metric("rbw_notify_failures")
                 logger.exception(
                     "notify_rbw: failed to update orchestrator._session_read_files"
                 )
@@ -366,10 +688,11 @@ def notify_rbw(workdir: str, orchestrator: Optional[Any] = None) -> None:
                     try:
                         ContextBuilder.clear_cache()
                     except Exception:
-                        pass
+                        _inc_rbw_metric("rbw_invalidate_failures")
+                        logger.exception("ContextBuilder.clear_cache() failed")
             except Exception:
-                # ContextBuilder not available — ignore
-                pass
+                _inc_rbw_metric("rbw_missing_orch")
+                logger.debug("ContextBuilder not available for RBW invalidation")
             return
 
         # No explicit orchestrator provided — fall back to ContextVar-based notifier
