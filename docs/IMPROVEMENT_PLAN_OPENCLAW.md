@@ -1573,7 +1573,10 @@ latency, per-tool error rates, and memory compaction stats are not tracked.
 - New: `src/core/observability/metrics.py`
 - `src/core/orchestration/graph/nodes/*.py` — apply `@timed_metric`
 - `src/core/orchestration/tool_execution_pipeline.py`
-- `src/server/app.py` — extend `/metrics` payload; add `/metrics/prometheus`
+- `src/server/app.py` — extend `/metrics` payload. Prometheus scraping/export is
+  intentionally out-of-scope for the shipped repository; teams requiring scraping
+  should implement a small external adapter that maps the in-process metrics to
+  their Prometheus client and exposes a scrapeable `/metrics` text endpoint.
 
 **Implementation steps:**
 1. Create `MetricsStore` (in-process, thread-safe):
@@ -1583,7 +1586,7 @@ latency, per-tool error rates, and memory compaction stats are not tracked.
        def increment_counter(self, name: str, labels: dict = {}) -> None: ...
        def set_gauge(self, name: str, value: float) -> None: ...
        def snapshot(self) -> dict: ...  # for /metrics JSON
-       def prometheus_text(self) -> str: ...  # for /metrics/prometheus
+       def prometheus_text(self) -> str: ...  # optional helper for external adapters
    ```
    Uses `collections.deque` per histogram (rolling 1000 samples); lock on all writes.
 2. Define `@timed_metric(name)` decorator:
@@ -1615,17 +1618,25 @@ latency, per-tool error rates, and memory compaction stats are not tracked.
    session.active_count         (gauge)
    scheduler.job.{id}.last_duration_ms
    ```
-5. Extend `GET /metrics` JSON response with the new fields.
-6. Add `GET /metrics/prometheus` returning Prometheus text format (for scraping).
+5. Extend `GET /metrics` JSON response with the new fields. Prometheus scraping/export
+   is considered out-of-scope for the shipped repository; keep the core metrics
+   in-process and expose them via the `/metrics` JSON payload. Teams that need
+   Prometheus scraping can implement a small external adapter that maps the
+   in-process counters to their Prometheus client and serves a `/metrics` text
+   endpoint suitable for scraping.
 
 **Acceptance criteria:**
 - `GET /metrics` includes `p50`/`p95`/`p99` for planning and tool durations
-- `GET /metrics/prometheus` is valid Prometheus text format (parseable by `prometheus_client`)
+- Prometheus text format scraping is supported by using an external adaptor that
+  reads the `/metrics` JSON and exposes a Prometheus-compatible `/metrics` text
+  endpoint. The shipped code intentionally does not include a Prometheus runtime
+  dependency.
 - Metrics are thread-safe under concurrent requests
 - `@timed_metric` adds < 0.1ms overhead per invocation
 
 **Tests:** `tests/unit/test_metrics_store.py` — histogram percentiles accuracy;
-counter/gauge operations; prometheus text format validity; thread-safety (20 concurrent writers).
+counter/gauge operations; prometheus text format validity (via external adapter);
+thread-safety (20 concurrent writers).
 
 ---
 

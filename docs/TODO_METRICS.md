@@ -1,71 +1,106 @@
-TODO Metrics (Prometheus)
+TODO Metrics (in-process)
 =========================
 
 Overview
 --------
 This project exposes lightweight in-process metrics for TODO locking and RBW
-operations. Prometheus integration is optional and disabled by default.
+operations. Metrics are kept in-memory and are intended for local diagnostics
+and unit tests; there is no built-in Prometheus export in this repository.
 
-Enabling Prometheus
--------------------
-- Set the environment variable `TODO_PROMETHEUS_ENABLED=1` (or `true`/`yes`) to
-  enable Prometheus counters. The code will attempt to import
-  `prometheus_client` and create per-metric Counters. If the package is not
-  available, metrics stay disabled and the application continues to work.
+Metrics available
+-----------------
+The code exposes two small metric groups (plain integers):
 
-Metrics exposed
----------------
-The wrapper maps internal metric keys to Prometheus Counters. Important
-examples:
+- Lock metrics: `stale_reclaims`, `stale_reclaim_failures`,
+  `fallback_acquisitions`, `fallback_acquire_timeouts`, `fallback_releases`.
+- RBW metrics: `rbw_notify_attempts`, `rbw_missing_orch`,
+  `rbw_notify_failures`, `rbw_invalidate_failures`.
 
-- `codagent_todo_lock_fallback_acquisitions_total` — number of fallback lock
-  acquisitions
-- `codagent_todo_lock_fallback_acquire_timeouts_total` — number of timeouts
-  while acquiring the fallback lock
-- `codagent_todo_lock_stale_reclaims_total` — number of stale lockfile
-  reclaims attempted
-- `codagent_todo_rbw_notify_failures_total` — RBW notification failures
+Accessing metrics
+-----------------
+For simple debugging you can print the in-process metrics as JSON. Example:
 
-Multiprocess considerations
---------------------------
-If the agent runs multiple processes (workers) you must choose a strategy to
-aggregate metrics:
+  python - <<PY
+  from src.tools.todo_tools import get_lock_metrics, get_rbw_metrics
+  import json
+  print(json.dumps({
+      'lock_metrics': get_lock_metrics(),
+      'rbw_metrics': get_rbw_metrics()
+  }, indent=2))
+  PY
 
-1. Prometheus client multiprocess mode
-   - Set `PROMETHEUS_MULTIPROC_DIR` to a writable directory before importing
-     `prometheus_client`.
-   - Use the `prometheus_client` multiprocess collector when exposing the
-     metrics endpoint. See the `prometheus_client` docs for details.
+This project intentionally keeps metrics local to avoid adding run-time
+dependencies and complexity for solo-developer workflows. For common
+single-developer use-cases, prefer these minimal options which require no
+third-party dependencies.
 
-2. Aggregator/sidecar
-   - Run a single process that exposes metrics and aggregates events from
-     workers (e.g., via IPC or a socket). Workers update local state and the
-     aggregator exposes the combined view.
-
-3. Pushgateway (not recommended)
-   - For short-lived jobs you can push metrics to Pushgateway, but this is
-     usually less suitable for long-running agent processes.
-
-Notes & guidance
-----------------
-- Keep label cardinality low — do not add per-workdir or per-task labels.
-- Metric updates are best-effort and non-blocking; failures to update metrics
-  will never affect core logic.
-- For testing, the code provides a small wrapper at
-  `src/tools/todo_metrics.py` that can be mocked in unit tests.
-
-Using the debug HTTP server
+CLI dump (no dependencies)
 ---------------------------
-The repository includes `scripts/todo_metrics.py` which provides a small HTTP
-endpoint useful for debugging. By default it serves a JSON dump of the
-in-process counters at `/metrics`. If Prometheus integration is enabled
-(`TODO_PROMETHEUS_ENABLED=1`) and `prometheus_client` is available, the
-endpoint will serve the standard Prometheus text exposition format instead.
+Create a small script to print metrics as JSON for quick inspection. Place
+it under `scripts/dump_metrics.py` and run when needed.
 
-Examples:
+```python
+# scripts/dump_metrics.py
+import json
+from src.tools.todo_tools import get_lock_metrics, get_rbw_metrics
 
-  # Print metrics as JSON
-  python scripts/todo_metrics.py print
+if __name__ == "__main__":
+    out = {
+        "lock_metrics": get_lock_metrics(),
+        "rbw_metrics": get_rbw_metrics(),
+    }
+    print(json.dumps(out, indent=2))
+```
 
-  # Serve on port 8000
-  python scripts/todo_metrics.py serve 8000
+Minimal JSON HTTP adapter (standard library only)
+-------------------------------------------------
+Run a tiny HTTP server when you need an HTTP endpoint. This requires no
+third-party packages and can be started only when you want it.
+
+```python
+# tools/json_metrics_server.py
+from http.server import BaseHTTPRequestHandler, HTTPServer
+import json
+from src.tools.todo_tools import get_lock_metrics, get_rbw_metrics
+
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path != "/metrics":
+            self.send_error(404)
+            return
+        payload = {
+            "lock_metrics": get_lock_metrics(),
+            "rbw_metrics": get_rbw_metrics(),
+        }
+        body = json.dumps(payload).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+if __name__ == "__main__":
+    HTTPServer(("127.0.0.1", 8001), Handler).serve_forever()
+```
+
+These scripts keep the repository dependency-free while giving you simple
+HTTP or CLI access to the in-process counters. If you later need scraping or
+long-term retention, add a separately-run adapter or a monitoring stack — do
+not bake that into the main repo.
+
+Advanced (optional)
+-------------------
+If you want richer local histograms and programmatic snapshots, this repo
+includes a lightweight metrics store at `src/core/observability/metrics.py`.
+Use the module-level `metrics` singleton for counters, gauges, and rolling
+histograms:
+
+```py
+from src.core.observability.metrics import metrics
+metrics.increment_counter("my.counter")
+metrics.record_histogram("tool.exec_ms", 12.3)
+print(metrics.snapshot())
+```
+
+The store is intentionally small and thread-safe; it is suitable for
+single-developer debugging and unit tests.

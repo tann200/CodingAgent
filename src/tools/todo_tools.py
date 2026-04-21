@@ -17,6 +17,12 @@ import threading
 from src.tools._tool import tool
 from src.tools.tools_config import agent_context_path
 
+try:
+    # Optional lightweight metrics (no-op if import fails)
+    from src.core.observability.metrics import metrics as _metrics
+except Exception:  # pragma: no cover - defensive
+    _metrics = None
+
 logger = logging.getLogger(__name__)
 
 _TODO_FILENAME = "TODO.md"
@@ -44,13 +50,6 @@ def _inc_lock_metric(key: str) -> None:
         with _lock_metrics_lock:
             if key in _lock_metrics:
                 _lock_metrics[key] += 1
-        # Best-effort: update Prometheus gauges if enabled
-        try:
-            if _prometheus_enabled:
-                _sync_prometheus_metrics()
-        except Exception:
-            # Never let metrics syncing interfere with normal flow
-            logger.debug("prometheus sync failed", exc_info=True)
     except Exception:
         # Metrics must never interfere with normal operation
         logger.debug("Failed to increment lock metric %s", key, exc_info=True)
@@ -82,11 +81,6 @@ def _inc_rbw_metric(key: str) -> None:
         with _rbw_metrics_lock:
             if key in _rbw_metrics:
                 _rbw_metrics[key] += 1
-        try:
-            if _prometheus_enabled:
-                _sync_prometheus_metrics()
-        except Exception:
-            logger.debug("prometheus sync failed", exc_info=True)
     except Exception:
         logger.debug("Failed to increment rbw metric %s", key, exc_info=True)
 
@@ -102,60 +96,7 @@ def reset_rbw_metrics() -> None:
             _rbw_metrics[k] = 0
 
 
-# Optional Prometheus export (best-effort). If prometheus_client is available
-# we create Gauges and keep them in sync with the in-memory metrics.
-_prometheus_enabled = False
-_prom_lock = threading.Lock()
-_prom_gauges: Dict[str, Any] = {}
-
-
-def _init_prometheus():
-    global _prometheus_enabled, _prom_gauges
-    try:
-        # prometheus_client is optional; silence static import errors with type ignore
-        from prometheus_client import Gauge  # type: ignore
-
-        with _prom_lock:
-            # Lock metrics
-            _prom_gauges.update(
-                {k: Gauge(f"codagent_lock_{k}", k) for k in _lock_metrics}
-            )
-            # RBW metrics
-            _prom_gauges.update(
-                {k: Gauge(f"codagent_rbw_{k}", k) for k in _rbw_metrics}
-            )
-        _prometheus_enabled = True
-    except Exception:
-        _prometheus_enabled = False
-
-
-def _sync_prometheus_metrics() -> None:
-    if not _prometheus_enabled:
-        return
-    with _prom_lock:
-        # Sync lock metrics
-        for k, v in get_lock_metrics().items():
-            gauge = _prom_gauges.get(k)
-            try:
-                if gauge is not None:
-                    gauge.set(v)
-            except Exception:
-                logger.debug("Failed to set prometheus gauge for %s", k, exc_info=True)
-        # Sync RBW metrics
-        for k, v in get_rbw_metrics().items():
-            gauge = _prom_gauges.get(k)
-            try:
-                if gauge is not None:
-                    gauge.set(v)
-            except Exception:
-                logger.debug("Failed to set prometheus gauge for %s", k, exc_info=True)
-
-
-# Try to initialize prometheus gauges lazily
-try:
-    _init_prometheus()
-except Exception:
-    _prometheus_enabled = False
+# Prometheus integration removed: metrics are kept in-process only.
 
 
 def _todo_path(workdir: str) -> Path:
@@ -299,6 +240,9 @@ class _FileLock:
 
         # Fallback: create an exclusive lockfile using O_EXCL
         flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
+        # Fallback retry loop — simple fixed sleep between attempts to avoid
+        # tight busy-wait loops. This keeps behavior close to the original
+        # implementation (time.sleep(0.05)) while allowing quick retries.
         while True:
             try:
                 # Will raise FileExistsError if another holder exists
@@ -513,6 +457,8 @@ class _FileLock:
                 except Exception:
                     pass
 
+                # If we've exceeded the timeout, raise. Otherwise sleep a
+                # short fixed duration before retrying.
                 if time.time() - start >= self.timeout:
                     _inc_lock_metric("fallback_acquire_timeouts")
                     raise TimeoutError(f"Timeout acquiring lock {self.lock_path}")
@@ -738,6 +684,13 @@ def _notify_rbw_after_write(workdir: str) -> None:
     """
     try:
         _inc_rbw_metric("rbw_notify_attempts")
+        try:
+            if _metrics is not None:
+                # Record an example sample (developer-facing diagnostic). The
+                # value is synthetic here; replace with real latency if measured.
+                _metrics.record_histogram("rbw.notify_event_ms", 1.0)
+        except Exception:
+            pass
         orch = _get_orchestrator()
         todo_md = _todo_path(workdir)
         todo_json = _todo_json_path(workdir)
