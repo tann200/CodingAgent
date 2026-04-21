@@ -13,6 +13,12 @@ def _write_worker_script(path: Path):
     path.write_text(
         """
 import sys, time, random
+
+# Ensure repo root is on sys.path so 'src' imports work in subprocesses
+from pathlib import Path
+repo_root = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(repo_root))
+
 from src.tools.todo_tools import manage_todo
 
 workdir = sys.argv[1]
@@ -44,8 +50,13 @@ def test_cross_process_todo_writes(tmp_path):
     iterations = 25
     for pidx in range(num_procs):
         cmd = [sys.executable, str(script), str(workdir), str(pidx), str(iterations)]
+        # Ensure subprocesses can import the local 'src' package
+        env = dict(**{k: v for k, v in dict(**__import__("os").environ).items()})
+        env["PYTHONPATH"] = str(Path.cwd())
         procs.append(
-            subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env
+            )
         )
 
     # Wait for processes to finish
