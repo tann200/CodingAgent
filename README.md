@@ -143,6 +143,7 @@ ruff check src/
 | `docs/ARCHITECTURE.md` | Full system architecture |
 | `docs/DEVELOPMENT.md` | Developer guide |
 | `docs/audit/` | Audit reports (vol1–vol29) |
+| `docs/TODO_METRICS.md` | How to enable and use TODO metrics (Prometheus) |
 | `docs/CODEBASE_FINDINGS.md` | Known issues |
 
 ## Model Tiers
