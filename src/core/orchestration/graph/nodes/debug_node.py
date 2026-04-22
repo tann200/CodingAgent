@@ -512,8 +512,13 @@ Generate a YAML tool call to fix the issue. Use edit_file, write_file, or bash a
 
         content = ""
         if isinstance(resp, dict):
-            if resp.get("choices"):
-                ch = resp["choices"][0].get("message")
+            _choices = resp.get("choices")
+            if _choices and len(_choices) > 0:
+                ch = (
+                    _choices[0].get("message")
+                    if isinstance(_choices[0], dict)
+                    else None
+                )
                 if isinstance(ch, dict):
                     content = ch.get("content") or ""
 

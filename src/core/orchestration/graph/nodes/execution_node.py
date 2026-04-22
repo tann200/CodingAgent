@@ -684,15 +684,22 @@ Generate the appropriate tool call to complete this step. Respond with ONLY a to
             content = ""
             tool_calls = None
             if isinstance(resp, dict):
-                if resp.get("choices"):
-                    ch = resp["choices"][0].get("message")
+                _choices = resp.get("choices")
+                if _choices and len(_choices) > 0:
+                    ch = (
+                        _choices[0].get("message")
+                        if isinstance(_choices[0], dict)
+                        else None
+                    )
                     if isinstance(ch, dict):
                         content = ch.get("content") or ""
                         # MC-1: Check for native function calls first
                         tool_calls = ch.get("tool_calls")
                 elif resp.get("message"):
-                    content = resp.get("message", {}).get("content", "")
-                    tool_calls = resp.get("message", {}).get("tool_calls")
+                    _msg = resp.get("message")
+                    if isinstance(_msg, dict):
+                        content = _msg.get("content", "")
+                        tool_calls = _msg.get("tool_calls")
 
             # Parse the tool call
             tool_call = None

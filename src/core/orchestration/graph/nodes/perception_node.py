@@ -1936,9 +1936,15 @@ async def _perception_node_impl(
 
     # Debug: log raw response for troubleshooting
     try:
-        logger.info(
-            f"perception_node: raw LLM resp content: {repr(resp.get('choices', [{}])[0].get('message', {}).get('content', '')[:100])}"
-        )
+        _choices = resp.get("choices")
+        if _choices:
+            _msg = (
+                _choices[0].get("message", {}) if isinstance(_choices[0], dict) else {}
+            )
+            _content = _msg.get("content", "") if isinstance(_msg, dict) else ""
+        else:
+            _content = ""
+        logger.info(f"perception_node: raw LLM resp content: {repr(_content)[:100]}")
     except Exception:
         pass
 
@@ -1951,8 +1957,9 @@ async def _perception_node_impl(
     # Extract response
     ch = None
     if isinstance(resp, dict):
-        if resp.get("choices"):
-            ch = resp["choices"][0].get("message")
+        _choices = resp.get("choices")
+        if _choices and len(_choices) > 0:
+            ch = _choices[0].get("message") if isinstance(_choices[0], dict) else None
         elif resp.get("message"):
             ch = resp.get("message")
 

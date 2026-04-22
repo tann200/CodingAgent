@@ -309,12 +309,19 @@ Respond ONLY with the JSON array, no other text."""
 
         content = ""
         if isinstance(resp, dict):
-            if resp.get("choices"):
-                ch = resp["choices"][0].get("message")
+            _choices = resp.get("choices")
+            if _choices and len(_choices) > 0:
+                ch = (
+                    _choices[0].get("message")
+                    if isinstance(_choices[0], dict)
+                    else None
+                )
                 if isinstance(ch, dict):
                     content = ch.get("content") or ""
             elif resp.get("message"):
-                content = resp.get("message", {}).get("content", "")
+                _msg = resp.get("message")
+                if isinstance(_msg, dict):
+                    content = _msg.get("content", "")
 
         # Parse the response to extract new steps
         import json
