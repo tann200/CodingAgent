@@ -457,8 +457,8 @@ def execute_tool_impl(orch: Any, tool_call: Dict[str, Any]) -> Dict[str, Any]:
         pass
 
     tool = orch.tool_registry.get(name)
-    if not tool:
-        return {"ok": False, "error": f"Tool '{name}' not found."}
+    if not tool or not tool.get("fn"):
+        return {"ok": False, "error": f"Tool '{name}' not found or has no callable."}
 
     try:
         import inspect

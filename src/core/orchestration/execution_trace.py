@@ -19,6 +19,9 @@ logger = logging.getLogger(__name__)
 
 def _read_execution_trace_impl(orch: Any) -> list:
     """Read execution trace from disk."""
+    # BUG-FIX: guard against None working_dir
+    if not orch.working_dir:
+        return []
     try:
         trace_path = orch.working_dir / ".agent-context" / "execution_trace.json"
         if trace_path.exists():
@@ -82,6 +85,9 @@ def _append_execution_trace_impl(orch: Any, entry: dict) -> None:
 def flush_execution_trace_impl(orch: Any) -> None:
     """Flush buffered trace entries to disk once per task (called by run_agent_once)."""
     if not hasattr(orch, "_execution_trace_buffer") or not orch._execution_trace_buffer:
+        return
+    # BUG-FIX #6: guard against None working_dir
+    if not orch.working_dir:
         return
     try:
         trace = _read_execution_trace_impl(orch)
