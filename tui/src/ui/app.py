@@ -2485,7 +2485,8 @@ class AgentApp(App[None]):
             self._settings.set(f"{role}_provider", pid)
             self._settings.set("default_provider", pid)
             self._settings.save()
-            first_model = (target.get("models") or [""])[0]
+            model_list = target.get("models") or [""]
+            first_model = model_list[0] if model_list else ""
             try:
                 self.query_one("#sb_provider", Static).update(pid)
                 banner = self.query_one("#provider_banner", Static)

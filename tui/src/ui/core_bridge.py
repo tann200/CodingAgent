@@ -1664,7 +1664,12 @@ class AgentBridge:
         with self._history_lock:
             # Find the last user message (working backwards)
             for i in range(len(self.history) - 1, -1, -1):
-                if self.history[i][0] == "user":
+                hist_entry = self.history[i]
+                if (
+                    isinstance(hist_entry, (list, tuple))
+                    and len(hist_entry) >= 2
+                    and hist_entry[0] == "user"
+                ):
                     removed = self.history.pop(i)
                     self._save_history()
                     logger.info(f"Undo: removed user message '{removed[1][:50]}...'")
