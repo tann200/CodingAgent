@@ -502,7 +502,11 @@ async def frontier_loop_node(
             if not tool_calls and content_text:
                 # Fallback: try parsing JSON/YAML tool blocks from text
                 parsed = parse_tool_block(content_text)
-                if parsed and isinstance(parsed, dict) and parsed.get("tool"):
+                if (
+                    parsed
+                    and isinstance(parsed, dict)
+                    and (parsed.get("name") or parsed.get("tool"))
+                ):
                     tool_calls = [parsed]
         except Exception as exc:
             logger.debug("frontier_loop_node: tool parse error: %s", exc)
