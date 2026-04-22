@@ -116,10 +116,15 @@ def _call_llm_sync(messages: list, format_json: bool = False, **kwargs) -> str:
 
     content = ""
     if isinstance(resp, dict):
-        if resp.get("choices") and isinstance(resp.get("choices"), list):
-            content = resp["choices"][0].get("message", {}).get("content", "") or ""
+        _choices = resp.get("choices")
+        if _choices and isinstance(_choices, list) and len(_choices) > 0:
+            _msg = (
+                _choices[0].get("message", {}) if isinstance(_choices[0], dict) else {}
+            )
+            content = _msg.get("content", "") if isinstance(_msg, dict) else ""
         elif resp.get("message"):
-            content = resp.get("message", {}).get("content", "") or ""
+            _msg = resp.get("message", {})
+            content = _msg.get("content", "") if isinstance(_msg, dict) else ""
 
     # Part A: strip <think>...</think> blocks produced by reasoning models
     # (Qwen3, DeepSeek-R1-Distill, QwQ).  Safe no-op for all other models.
