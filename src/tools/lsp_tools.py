@@ -299,7 +299,13 @@ async def lsp_rename(
         edited_files = []
         for file_uri, text_edits in edit.changes.items():
             try:
-                file_path = Path(file_uri.replace("file://", ""))
+                # BUG-FIX: use proper URI decoding instead of naive replace
+                from urllib.parse import unquote
+
+                if file_uri.startswith("file://"):
+                    file_path = Path(unquote(file_uri[7:]))
+                else:
+                    file_path = Path(unquote(file_uri))
                 if not file_path.exists():
                     continue
                 content = file_path.read_text(encoding="utf-8")

@@ -554,8 +554,10 @@ def delegate_task(
             # any further in-process delegate_task calls see the correct depth.
             import contextvars as _cv
 
+            # BUG-FIX: ContextVar.set must be called directly, not via ctx.run()
+            # Set depth in parent context before copying
+            _DELEGATION_DEPTH_VAR.set(depth + 1)
             _child_ctx = _cv.copy_context()
-            _child_ctx.run(_DELEGATION_DEPTH_VAR.set, depth + 1)
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
                 # Ensure ContextVars (delegation depth, parent orchestrator, etc.)
                 # are visible inside the worker thread by submitting ctx.run.

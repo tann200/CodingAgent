@@ -49,14 +49,16 @@ _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
 
 
 def is_reasoning_model(model_id: str) -> bool:
-    """Return True when *model_id* is known to emit <think> blocks by default."""
-    lowered = (model_id or "").lower()
+    """Return True when *model_id* is known to emit ＜think＞ blocks by default."""
+    # BUG-FIX: handle non-string input gracefully
+    lowered = str(model_id).lower() if model_id is not None else ""
     return any(pat in lowered for pat in _REASONING_MODEL_PATTERNS)
 
 
 def supports_no_think(model_id: str) -> bool:
     """Return True when *model_id* honours the /no_think prompt directive."""
-    lowered = (model_id or "").lower()
+    # BUG-FIX: handle non-string input gracefully
+    lowered = str(model_id).lower() if model_id is not None else ""
     return any(pat in lowered for pat in _NO_THINK_SUPPORTED_PATTERNS)
 
 

@@ -231,7 +231,10 @@ class SessionManager:
         if not self.lifecycle_manager or not self._task_id:
             return
         try:
-            history: List[dict] = list(self.msg_mgr.messages) if self.msg_mgr else []
+            # BUG-FIX: check messages attribute exists
+            history: List[dict] = []
+            if self.msg_mgr and hasattr(self.msg_mgr, "messages"):
+                history = list(self.msg_mgr.messages)
             tool_call_count = sum(usage_buffer.values()) if usage_buffer else 0
             state = {
                 "task": "",
