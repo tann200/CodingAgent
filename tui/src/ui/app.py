@@ -468,7 +468,10 @@ class AgentApp(App[None]):
         # Upgraded from single-slot to a proper deque so multiple quick submissions
         # are all delivered in order when the agent becomes idle.
         import collections as _collections
-        self._message_queue: _collections.deque[str] = _collections.deque()
+
+        # Use a non-conflicting name for the TUI's own queued messages so we
+        # don't shadow Textual's internal _message_queue (which is a Queue).
+        self._queued_messages: _collections.deque[str] = _collections.deque()
         self._queued_widget: Optional[Static] = None
         # Legacy alias kept for any code that still references _queued_message
         self._queued_message: Optional[str] = None
@@ -1045,7 +1048,7 @@ class AgentApp(App[None]):
             pass
 
         # TASK-TUI-9: drain the message queue when the agent becomes idle
-        if not event.running and self._message_queue:
+        if not event.running and self._queued_messages:
             self.call_later(self._drain_message_queue)
 
         # MID-INJ: mid-run messages are now buffered by the bridge and injected
@@ -1053,8 +1056,8 @@ class AgentApp(App[None]):
 
     def _drain_message_queue(self) -> None:
         """TASK-TUI-9: Send queued messages in order now that agent is idle."""
-        while self._message_queue and not self.agent_running:
-            msg = self._message_queue.popleft()
+        while self._queued_messages and not self.agent_running:
+            msg = self._queued_messages.popleft()
             logger.info(f"Draining queued message: {msg[:60]}")
             self._bridge.send_prompt(msg)
 
@@ -1384,12 +1387,9 @@ class AgentApp(App[None]):
         if event.tool_id and event.tool_id in self._tool_widgets:
             w = self._tool_widgets.pop(event.tool_id)
             self.call_later(
-                lambda widget=w,
-                ic=ok_icon,
-                col=color,
-                r=result_display,
-                lbl=label,
-                s=sep: widget.update(f"[bold {col}]{lbl}[/]{s}{r}")
+                lambda widget=w, ic=ok_icon, col=color, r=result_display, lbl=label, s=sep: (
+                    widget.update(f"[bold {col}]{lbl}[/]{s}{r}")
+                )
             )
         else:
             widget = Static(

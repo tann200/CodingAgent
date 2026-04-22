@@ -14,9 +14,7 @@ def test_register_resolve_concurrent():
     eventually set by a corresponding resolver.
     """
     # Ensure clean slate
-    with diff_gate._preview_gate_lock:
-        diff_gate._pending_previews.clear()
-        diff_gate._preview_rejected.clear()
+    diff_gate.reset_preview_gate()
 
     N = 50
     keys = [f"concurrent-test-{i}" for i in range(N)]
@@ -72,8 +70,5 @@ def test_register_resolve_concurrent():
     # After resolution, pending previews must be empty and rejected set size
     # should equal the number of rejects (odd indices)
     rejects_expected = sum(1 for i in range(N) if i % 2 == 1)
-    with diff_gate._preview_gate_lock:
-        assert not diff_gate._pending_previews, (
-            f"_pending_previews not empty: {diff_gate._pending_previews.keys()}"
-        )
-        assert len(diff_gate._preview_rejected) == rejects_expected
+    assert not diff_gate.has_pending_previews(), f"_pending_previews not empty"
+    assert diff_gate.get_preview_rejected_count() == rejects_expected

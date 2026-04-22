@@ -55,13 +55,42 @@ logger = logging.getLogger(__name__)
 
 _pending_bash: dict[str, "AsyncGate"] = {}
 _bash_denied: set[str] = set()
+_bash_result: dict[str, bool] = {}
 
 _pending_tool: dict[str, "AsyncGate"] = {}
 _tool_denied: set[str] = set()
+_tool_result: dict[str, bool] = {}
 
 # Protects all four module-level dicts/sets above against concurrent access
 # from tool executor threads and TUI / EventBus handler threads.
 _gate_lock: threading.Lock = threading.Lock()
+
+
+def reset_approval_gate() -> None:
+    """Reset all approval-gate internal state. Useful for tests.
+
+    Clears pending gates, denied sets, and any pre-resolved results under the
+    internal lock.
+    """
+    with _gate_lock:
+        _pending_bash.clear()
+        _bash_denied.clear()
+        _pending_tool.clear()
+        _tool_denied.clear()
+        _bash_result.clear()
+        _tool_result.clear()
+
+
+def is_bash_pending(tool_id: str) -> bool:
+    """Return True if a bash gate is currently pending for *tool_id*."""
+    with _gate_lock:
+        return tool_id in _pending_bash
+
+
+def is_tool_pending(tool_id: str) -> bool:
+    """Return True if a tool permission gate is currently pending for *tool_id*."""
+    with _gate_lock:
+        return tool_id in _pending_tool
 
 
 # ---------------------------------------------------------------------------
@@ -233,18 +262,30 @@ def register_bash_gate(tool_id: str) -> AsyncGate:
     """Register a pending bash approval request; return the AsyncGate to wait on."""
     gate = AsyncGate(loop=_get_running_loop())
     with _gate_lock:
-        _pending_bash[tool_id] = gate
+        # If a resolution arrived before registration, honour it immediately
+        if tool_id in _bash_result:
+            approved = _bash_result.pop(tool_id)
+            if not approved:
+                _bash_denied.add(tool_id)
+            gate.set()
+        else:
+            _pending_bash[tool_id] = gate
     return gate
 
 
 def resolve_bash_gate(tool_id: str, approved: bool) -> None:
     """Resolve a pending bash gate.  Call from EventBus handler on any thread."""
     with _gate_lock:
-        if not approved:
-            _bash_denied.add(tool_id)
         gate = _pending_bash.pop(tool_id, None)
-    if gate is not None:
-        gate.set()
+        if gate is None:
+            # No registrant yet — record the result for a future registrant
+            _bash_result[tool_id] = approved
+            if not approved:
+                _bash_denied.add(tool_id)
+        else:
+            if not approved:
+                _bash_denied.add(tool_id)
+            gate.set()
 
 
 def is_bash_denied(tool_id: str) -> bool:
@@ -262,18 +303,29 @@ def register_tool_gate(tool_id: str) -> AsyncGate:
     """Register a pending tool permission request; return the AsyncGate to wait on."""
     gate = AsyncGate(loop=_get_running_loop())
     with _gate_lock:
-        _pending_tool[tool_id] = gate
+        # Honour any prior resolution
+        if tool_id in _tool_result:
+            approved = _tool_result.pop(tool_id)
+            if not approved:
+                _tool_denied.add(tool_id)
+            gate.set()
+        else:
+            _pending_tool[tool_id] = gate
     return gate
 
 
 def resolve_tool_gate(tool_id: str, approved: bool) -> None:
     """Resolve a pending tool permission gate.  Call from EventBus handler."""
     with _gate_lock:
-        if not approved:
-            _tool_denied.add(tool_id)
         gate = _pending_tool.pop(tool_id, None)
-    if gate is not None:
-        gate.set()
+        if gate is None:
+            _tool_result[tool_id] = approved
+            if not approved:
+                _tool_denied.add(tool_id)
+        else:
+            if not approved:
+                _tool_denied.add(tool_id)
+            gate.set()
 
 
 def is_tool_denied(tool_id: str) -> bool:

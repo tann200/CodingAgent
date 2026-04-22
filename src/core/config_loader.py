@@ -85,17 +85,39 @@ def _get_workspace_config_paths() -> List[Path]:
         return []
 
 
-def load_merged_config() -> Dict[str, Any]:
-    """Load and deep-merge all configuration layers."""
+def load_merged_config(working_dir: Optional[Path] = None) -> Dict[str, Any]:
+    """Load and deep-merge all configuration layers.
+
+    If ``working_dir`` is provided, workspace layer files are resolved relative
+    to that directory (``<working_dir>/.agent/config.json`` and
+    ``config.local.json``). This mirrors test expectations which call
+    ``load_merged_config(working_dir=...)``.
+    """
     result: Dict[str, Any] = {}
+
+    # Always include bundled defaults and user config; workspace layer depends on working_dir
     paths = [_BUNDLED_DEFAULTS, _USER_CONFIG]
-    paths.extend(_get_workspace_config_paths())
+    if working_dir is None:
+        workspace_paths = _get_workspace_config_paths()
+    else:
+        agent_dir = Path(working_dir) / ".agent"
+        workspace_paths = [agent_dir / "config.json", agent_dir / "config.local.json"]
+    paths.extend(workspace_paths)
     skipped = []
 
     for path in paths:
         if path.exists():
             data = _load_config_file(path)
-            result = _deep_merge(result, data)
+            # providers.json is a list at the top-level; treat lists as the `providers`
+            # top-level key to avoid passing a list into _deep_merge (which expects dicts).
+            if isinstance(data, dict):
+                result = _deep_merge(result, data)
+            elif isinstance(data, list):
+                # Prefer later layers to override earlier ones; assign directly.
+                result["providers"] = data
+            else:
+                # Unknown payload type — skip
+                continue
         else:
             skipped.append(str(path))
 
@@ -135,6 +157,17 @@ def get_global_config() -> Dict[str, Any]:
         _cached_config = load_merged_config()
         _last_load_time = time.time()
     return _cached_config
+
+
+def get(key: str, default: Any = None, working_dir: Optional[Path] = None) -> Any:
+    """Convenience shortcut for fetching a single config value.
+
+    Example: get("max_turns", default=50, working_dir=tmpdir)
+    """
+    cfg = load_merged_config(working_dir=working_dir)
+    if not isinstance(cfg, dict):
+        return default
+    return cfg.get(key, default)
 
 
 # ---------------------------------------------------------------------------
@@ -179,6 +212,72 @@ def get_mcp_servers(working_dir: Optional[Path] = None) -> List[Dict[str, Any]]:
     if not isinstance(servers, list):
         return []
     return servers
+
+
+# Keys for per-role model overrides in providers.json / config
+_ROLE_MODEL_KEYS = {
+    "planning_model": "strategic",
+    "execution_model": "operational",
+}
+
+
+def get_model_for_role(role: str) -> Optional[str]:
+    """Return an optional model id for a given role (e.g. 'strategic').
+
+    Looks into the bundled providers.json (and later merged config via
+    load_merged_config) for a provider entry with an override for the role.
+    Returns the first matching active provider's model override, or None.
+    """
+    try:
+        cfg = load_merged_config()
+        # providers may be stored under "providers" (we normalize lists there)
+        providers = cfg.get("providers") if isinstance(cfg, dict) else None
+        if not providers:
+            return None
+        # providers is expected to be a list of dicts
+        for p in providers:
+            if not isinstance(p, dict):
+                continue
+            if not p.get("active"):
+                continue
+            # Check per-role keys
+            for key, role_name in _ROLE_MODEL_KEYS.items():
+                if role_name == role and key in p:
+                    return p.get(key)
+    except Exception:
+        return None
+    return None
+
+
+def get_small_model(working_dir: Optional[Path] = None) -> Optional[str]:
+    """Return a configured 'small_model' string.
+
+    Preference order:
+      1. workspace .agent/config.json small_model
+      2. active provider small_model entry in providers.json
+      3. None
+    """
+    # 1. workspace override
+    if working_dir is not None:
+        agent_dir = Path(working_dir) / ".agent"
+        cfg: Dict[str, Any] = {}
+        for p in (agent_dir / "config.json", agent_dir / "config.local.json"):
+            if p.exists():
+                cfg = _deep_merge(cfg, _load_config_file(p))
+        if isinstance(cfg, dict) and "small_model" in cfg:
+            return cfg.get("small_model")
+
+    # 2. active provider
+    try:
+        merged = load_merged_config(working_dir=working_dir)
+        providers = merged.get("providers") if isinstance(merged, dict) else None
+        if isinstance(providers, list):
+            for p in providers:
+                if isinstance(p, dict) and p.get("active") and "small_model" in p:
+                    return p.get("small_model")
+    except Exception:
+        return None
+    return None
 
 
 # ---------------------------------------------------------------------------

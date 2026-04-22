@@ -36,7 +36,18 @@ from src.ui.events import (
     UpdateRoleModel,
 )
 from src.ui.app import AgentApp
-from src.ui.logging import get_logger
+
+try:
+    from src.ui.logging import get_logger
+except Exception:
+    try:
+        from .logging import get_logger
+    except Exception:
+        import logging
+
+        def get_logger(name: str) -> logging.Logger:
+            return logging.getLogger(name)
+
 
 logger = get_logger("mock_engine")
 

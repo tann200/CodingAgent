@@ -27,11 +27,14 @@ from typing import Optional
 
 try:
     from src.ui.logging import get_logger
-except ImportError:
-    import logging
+except Exception:
+    try:
+        from .logging import get_logger
+    except Exception:
+        import logging
 
-    def get_logger(name: str) -> logging.Logger:
-        return logging.getLogger(name)
+        def get_logger(name: str) -> logging.Logger:
+            return logging.getLogger(name)
 
 
 logger = get_logger("config_writer")

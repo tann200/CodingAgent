@@ -7,6 +7,7 @@ from typing import List, Dict, Any, Optional
 
 import lancedb
 import pandas as pd
+import pyarrow as pa
 from lancedb.pydantic import LanceModel, Vector, pydantic_to_schema
 from pydantic import Field
 from tqdm import tqdm
@@ -70,10 +71,63 @@ class VectorStore:
         return self._model
 
     def _get_or_create_table(self, table_name: str, schema: Any):
+        """Open an existing table or create it.
+
+        If an existing table is found but the schema is incompatible in a way that
+        will cause Arrow casting errors (for example an existing scalar column where
+        the desired schema expects a list/vector column), attempt to recreate the
+        table using mode="overwrite" so we avoid crashes from mismatched schemas.
+        """
         try:
-            return self.db.open_table(table_name)
+            tbl = self.db.open_table(table_name)
         except (FileNotFoundError, ValueError):
             return self.db.create_table(table_name, schema=schema, mode="overwrite")
+
+        # If we have an explicit pyarrow schema for the desired layout, and the
+        # existing table has a conflicting scalar vs list/vector typing for the
+        # "vector" column, prefer to recreate the table. This handles cases where
+        # older runs created a table with a different vector shape.
+        try:
+            desired_schema = schema
+            if hasattr(schema, "names"):
+                desired_schema = schema
+            else:
+                # pydantic_to_schema may sometimes return a non-pa.Schema; leave it
+                # to the lower-level create_table call in that case.
+                desired_schema = None
+
+            if desired_schema is not None and "vector" in desired_schema.names:
+                existing_schema = tbl.schema
+
+                def _is_list_type(t: pa.DataType) -> bool:
+                    return (
+                        pa.types.is_list(t)
+                        or pa.types.is_fixed_size_list(t)
+                        or pa.types.is_large_list(t)
+                    )
+
+                try:
+                    existing_field = existing_schema.field("vector")
+                    desired_field = desired_schema.field("vector")
+                    existing_is_list = _is_list_type(existing_field.type)
+                    desired_is_list = _is_list_type(desired_field.type)
+                    # If one is a scalar and the other is list-like, recreate table
+                    if existing_is_list != desired_is_list:
+                        logger.warning(
+                            "Recreating LanceDB table '%s' due to incompatible 'vector' column type",
+                            table_name,
+                        )
+                        return self.db.create_table(
+                            table_name, schema=schema, mode="overwrite"
+                        )
+                except Exception:
+                    # If introspection fails, fall back to returning the opened table
+                    return tbl
+        except Exception:
+            # any unexpected error: return opened table to avoid blocking startup
+            return tbl
+
+        return tbl
 
     def index_code(self, repo_index: Dict[str, Any]):
         table_name = "code_symbols"
@@ -114,7 +168,8 @@ class VectorStore:
             start_line: int
             hash: str
 
-        tbl = self._get_or_create_table(table_name, pydantic_to_schema(CodeSymbol))
+        desired_schema = pydantic_to_schema(CodeSymbol)
+        tbl = self._get_or_create_table(table_name, desired_schema)
 
         # Check for existing hashes to avoid re-embedding
         existing_hashes = set()
@@ -141,7 +196,12 @@ class VectorStore:
             embeddings = self.model.encode(batch_df["text"].tolist())
             batch_df["vector"] = list(embeddings)
 
-            tbl.add(data=batch_df)
+            # Try adding and recreate the table if ArrowInvalid occurs.
+            new_tbl = self._add_with_recreate(table_name, tbl, desired_schema, batch_df)
+            if new_tbl is None:
+                # failed to add even after recreate; skip this batch
+                continue
+            tbl = new_tbl
 
     def search(self, query: str, limit: int = 5) -> List[Dict[str, Any]]:
         table_name = "code_symbols"
@@ -198,7 +258,8 @@ class VectorStore:
             session_id: str
 
         try:
-            tbl = self._get_or_create_table(table_name, pydantic_to_schema(MemoryEntry))
+            desired_schema = pydantic_to_schema(MemoryEntry)
+            tbl = self._get_or_create_table(table_name, desired_schema)
         except Exception:
             return
 
@@ -219,11 +280,52 @@ class VectorStore:
             }
         ]
 
+        # Try adding and recreate the table if ArrowInvalid occurs.
+        new_tbl = self._add_with_recreate(table_name, tbl, desired_schema, data)
+        if new_tbl is None:
+            logger.error("Failed to add memory after attempting to recreate the table.")
+            return
+        logger.info(f"Added memory to vector store: {metadata.get('session_id')}")
+
+    def _add_with_recreate(
+        self, table_name: str, tbl: Any, schema: Any, data
+    ) -> Optional[Any]:
+        """Attempt to tbl.add(data); on ArrowInvalid, recreate the table and retry once.
+
+        Returns the table used for the successful add, or None if the add ultimately failed.
+        """
         try:
             tbl.add(data=data)
-            logger.info(f"Added memory to vector store: {metadata.get('session_id')}")
+            return tbl
+        except pa.ArrowInvalid as e:
+            logger.warning(
+                "ArrowInvalid when adding to LanceDB table '%s': %s. Attempting to recreate the table and retry.",
+                table_name,
+                e,
+            )
+            try:
+                new_tbl = self.db.create_table(
+                    table_name, schema=schema, mode="overwrite"
+                )
+                new_tbl.add(data=data)
+                logger.info(
+                    "Recreated LanceDB table '%s' and retried add successfully.",
+                    table_name,
+                )
+                return new_tbl
+            except Exception as e2:
+                logger.error(
+                    "Failed to recreate or add to recreated LanceDB table '%s': %s",
+                    table_name,
+                    e2,
+                )
+                return None
         except Exception as e:
-            logger.error(f"Failed to add memory: {e}")
+            # Non-Arrow error — log and do not attempt risky recreation.
+            logger.error(
+                "Unexpected error when adding to LanceDB table '%s': %s", table_name, e
+            )
+            return None
 
     def search_memories(self, query: str, limit: int = 5) -> List[Dict[str, Any]]:
         """Search memories (e.g., session summaries) in the vector store."""

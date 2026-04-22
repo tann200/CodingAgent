@@ -30,10 +30,14 @@ from src.core.orchestration.approval_gate import AsyncGate
 
 def _cleanup():
     """Clear all gate state between tests."""
-    ag._pending_bash.clear()
-    ag._bash_denied.clear()
-    ag._pending_tool.clear()
-    ag._tool_denied.clear()
+    try:
+        ag.reset_approval_gate()
+    except Exception:
+        # Fallback: clear internals if helper isn't present
+        ag._pending_bash.clear()
+        ag._bash_denied.clear()
+        ag._pending_tool.clear()
+        ag._tool_denied.clear()
 
 
 @pytest.fixture(autouse=True)
@@ -158,7 +162,7 @@ class TestBashGate:
     def test_resolve_removes_from_pending(self):
         ag.register_bash_gate("id-7")
         ag.resolve_bash_gate("id-7", approved=True)
-        assert "id-7" not in ag._pending_bash
+        assert not ag.is_bash_pending("id-7")
 
     def test_resolve_unknown_id_is_noop(self):
         ag.resolve_bash_gate("nonexistent", approved=False)
@@ -232,7 +236,7 @@ class TestToolGate:
     def test_resolve_removes_from_pending(self):
         ag.register_tool_gate("t-7")
         ag.resolve_tool_gate("t-7", approved=True)
-        assert "t-7" not in ag._pending_tool
+        assert not ag.is_tool_pending("t-7")
 
     def test_resolve_unknown_id_is_noop(self):
         ag.resolve_tool_gate("nonexistent", approved=False)

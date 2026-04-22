@@ -93,12 +93,20 @@ TOOL_PERMISSIONS: Dict[str, PermissionLevel] = {
 
 def set_tool_permission(tool_name: str, level: PermissionLevel) -> None:
     """Override the permission level for a specific tool at runtime."""
-    TOOL_PERMISSIONS[tool_name] = level
+    with _config_lock:
+        TOOL_PERMISSIONS[tool_name] = level
 
 
 def get_tool_permission(tool_name: str) -> PermissionLevel:
     """Return the effective permission level for *tool_name*."""
-    return TOOL_PERMISSIONS.get(tool_name, DEFAULT_PERMISSION_LEVEL)
+    with _config_lock:
+        return TOOL_PERMISSIONS.get(tool_name, DEFAULT_PERMISSION_LEVEL)
+
+
+def get_all_tool_permissions() -> Dict[str, PermissionLevel]:
+    """Return a shallow copy of the TOOL_PERMISSIONS mapping."""
+    with _config_lock:
+        return dict(TOOL_PERMISSIONS)
 
 
 # ---------------------------------------------------------------------------
