@@ -1121,8 +1121,13 @@ def run_agent_once_impl(
 
             content = ""
             if isinstance(resp, dict):
-                if resp.get("choices"):
-                    ch = resp["choices"][0].get("message")
+                _choices = resp.get("choices")
+                if _choices and len(_choices) > 0:
+                    ch = (
+                        _choices[0].get("message")
+                        if isinstance(_choices[0], dict)
+                        else None
+                    )
                 else:
                     ch = resp.get("message")
                 if isinstance(ch, str):

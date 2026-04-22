@@ -264,7 +264,13 @@ def _extract_message_obj(resp: Any) -> dict:
     """
     try:
         if isinstance(resp, dict):
-            return resp.get("choices", [{}])[0].get("message", {})
+            _choices = resp.get("choices")
+            if _choices and len(_choices) > 0:
+                return (
+                    _choices[0].get("message", {})
+                    if isinstance(_choices[0], dict)
+                    else {}
+                )
     except Exception:
         pass
     return {}
