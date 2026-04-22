@@ -203,7 +203,12 @@ class SessionStore:
             return int(self._SCHEMA_VERSION)
 
     def __getattr__(self, name: str) -> Any:
-        attr = getattr(self._store, name)
+        # BUG-FIX: add default to prevent AttributeError propagation
+        attr = getattr(self._store, name, None)
+        if attr is None:
+            raise AttributeError(
+                f"'{type(self._store).__name__}' object has no attribute '{name}'"
+            )
         if not callable(attr):
             return attr
 
@@ -256,7 +261,11 @@ class SessionStore:
                 # Fall through to fallback implementation
                 pass
 
-        if not hasattr(self._local, "connection") or self._local.connection is None:
+        # BUG-FIX: use getattr with default to handle None properly
+        if (
+            not hasattr(self._local, "connection")
+            or getattr(self._local, "connection", None) is None
+        ):
             # Ensure parent dir
             self._db_path.parent.mkdir(parents=True, exist_ok=True)
             conn = sqlite3.connect(str(self._db_path), timeout=30.0)

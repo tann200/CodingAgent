@@ -247,7 +247,9 @@ class SessionManager:
                 "rounds": 0,
                 "session_id": self._task_id,
             }
-            first_msg = history[0].get("content", "")[:100] if history else ""
+            first_msg = (
+                history[0].get("content", "")[:100] if history and history[0] else ""
+            )
             snapshot = self.lifecycle_manager.create_snapshot(
                 session_id=self._task_id,
                 state=state,
@@ -464,7 +466,11 @@ class SessionManager:
             session_mgr.update_session_state(
                 session_id=self._task_id or "default",
                 task=task,
-                message_history=(list(self.msg_mgr.messages) if self.msg_mgr else []),
+                message_history=(
+                    list(self.msg_mgr.messages)
+                    if self.msg_mgr and hasattr(self.msg_mgr, "messages")
+                    else []
+                ),
                 current_plan=current_plan or [],
                 current_step=current_step,
                 provider=provider_name,
