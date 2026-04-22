@@ -647,8 +647,11 @@ class OpenAICompatibleAdapter(LLMClient):
                     choices.append(choice_obj)
 
             if raw_response and "usage" in raw_response:
-                prompt_tokens = raw_response["usage"].get("prompt_tokens", 0)
-                completion_tokens = raw_response["usage"].get("completion_tokens", 0)
+                usage = raw_response["usage"]
+                # BUG-FIX: check usage is dict before calling .get()
+                if isinstance(usage, dict):
+                    prompt_tokens = usage.get("prompt_tokens", 0)
+                    completion_tokens = usage.get("completion_tokens", 0)
 
             # CP-9: Extract Anthropic prompt-cache token counts when present.
             # Anthropic returns these in the usage block of both streaming and

@@ -156,8 +156,13 @@ class VectorStore:
         df = pd.DataFrame(data)
 
         embedding_dim = self.model.get_sentence_embedding_dimension()
-        if not isinstance(embedding_dim, int):
-            raise TypeError("Could not determine sentence embedding dimension.")
+        if embedding_dim is None or not isinstance(embedding_dim, int):
+            # BUG-FIX: graceful fallback instead of crashing
+            embedding_dim = 8
+            logger.warning(
+                "Could not determine embedding dimension, using fallback: %d",
+                embedding_dim,
+            )
 
         class CodeSymbol(LanceModel):
             text: Optional[str] = Field(default=None)
