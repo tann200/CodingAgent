@@ -85,6 +85,7 @@ _EVENT_MAP: dict[str, str] = {
     "task.file_modified": "file.modified",
     "delegation.start": "delegation.start",
     "delegation.finish": "delegation.finish",
+    "spawn.permission_required": "spawn.permission_required",
 }
 
 # AUTO-03: Map TUI role names to CodingAgent system prompt names.
@@ -337,6 +338,7 @@ class AgentBridge:
         self._subscribe("mcp.server.status", self._on_mcp_server_status)
         # tool permission gate
         self._subscribe("tool.permission_required", self._on_tool_permission_required)
+        self._subscribe("spawn.permission_required", self._on_spawn_permission_required)
         # per-turn token/cost summary (TUI-T6)
         self._subscribe("usage.turn_summary", self._on_usage_turn_summary)
         # GAP-NEW-7: subagent cost rollup — accumulate child cost into session total
@@ -1158,6 +1160,18 @@ class AgentBridge:
             ToolPermissionEvent(
                 tool=payload.get("tool", "unknown"),
                 args=payload.get("args", {}),
+                tool_id=payload.get("tool_id", ""),
+            )
+        )
+
+    def _on_spawn_permission_required(self, payload: dict) -> None:
+        from src.ui.bus import SpawnPermissionEvent
+
+        self._post(
+            SpawnPermissionEvent(
+                tool=payload.get("tool", "unknown"),
+                role=payload.get("role", ""),
+                task=payload.get("task", ""),
                 tool_id=payload.get("tool_id", ""),
             )
         )

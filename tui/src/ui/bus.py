@@ -458,6 +458,23 @@ class ToolPermissionEvent(Message):
         super().__init__()
 
 
+class SpawnPermissionEvent(Message):
+    """spawn.permission_required — agent needs user approval to spawn a subagent."""
+
+    def __init__(
+        self,
+        tool: str = "",
+        role: str = "",
+        task: str = "",
+        tool_id: str = "",
+    ) -> None:
+        self.tool = tool
+        self.role = role
+        self.task = task
+        self.tool_id = tool_id
+        super().__init__()
+
+
 class UsageTurnSummaryEvent(Message):
     """usage.turn_summary — per-turn token counts and estimated cost (TUI-T6)."""
 

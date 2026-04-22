@@ -640,6 +640,15 @@ class AgentApp(App[None]):
         if getattr(self, "_shutdown_done", False):
             return
         self._shutdown_done = True
+        # BUG-FIX #4: drain queued messages on shutdown to prevent lost prompts
+        if getattr(self, "_queued_messages", None):
+            while self._queued_messages:
+                try:
+                    msg = self._queued_messages.popleft()
+                    logger.warning("Draining queued message on shutdown: %s", msg[:60])
+                    self._bridge.send_prompt(msg)
+                except Exception:
+                    pass
         self._save_session_snapshot()
         self._bridge.interrupt()
         self._bridge.save_history()

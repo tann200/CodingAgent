@@ -200,6 +200,7 @@ class AsyncGate:
         if self._loop is None or self._async_event is None:
             if self._sync_event is not None:
                 return self._sync_event.wait(timeout=timeout)
+            # BUG-FIX #6: return explicit False
             return False
 
         # Case 2: loop exists — submit wait coroutine and block this thread
@@ -217,6 +218,8 @@ class AsyncGate:
         except Exception as exc:
             logger.debug("AsyncGate.wait: error: %s", exc)
             return False
+        # BUG-FIX #6: explicit return to prevent None on edge case
+        return False
 
     def set(self) -> None:
         """Signal the gate (resolves any waiting coroutine or thread).

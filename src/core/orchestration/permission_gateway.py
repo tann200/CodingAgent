@@ -26,6 +26,8 @@ from __future__ import annotations
 
 import logging
 import uuid
+
+_logger = logging.getLogger(__name__)
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional, TYPE_CHECKING
 
@@ -560,8 +562,11 @@ class PermissionGateway:
                                 "tool_id": _t5_id,
                             },
                         )
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        _logger.warning(
+                            "failed to publish spawn.permission_required, falling through: %s",
+                            e,
+                        )
                 _orch_bus = getattr(self._orch, "event_bus", None)
                 if _orch_bus:
                     _orch_bus.publish(
@@ -575,6 +580,11 @@ class PermissionGateway:
                                 if k != "content"
                             },
                         },
+                    )
+                else:
+                    _logger.warning(
+                        "orchestrator event_bus is None, cannot publish tool.permission_required for %s",
+                        name,
                     )
                 # Wait for approval — mirrors orchestrator.execute_tool gate logic exactly.
                 # AsyncGate.wait() is safe from any thread (uses run_coroutine_threadsafe
@@ -592,6 +602,19 @@ class PermissionGateway:
                             "error": f"Tool '{name}' was denied by the user.",
                         },
                     )
-        except Exception:
-            pass  # gate failures must never block tool execution
+        except Exception as e:
+            _logger.warning(
+                "gate 5 (user approval) failed, denying tool %s as safety fallback: %s",
+                name,
+                e,
+            )
+            return PermissionResult(
+                allowed=False,
+                gate=5,
+                reason=f"gate failure: {e}",
+                rejection={
+                    "ok": False,
+                    "error": f"Tool '{name}' blocked due to gate failure: {e}",
+                },
+            )
         return PermissionResult(allowed=True)
