@@ -1309,6 +1309,9 @@ _INIT_TASK: "asyncio.Task | None" = None  # held so GC cannot collect it (NEW-11
 
 def _ensure_provider_manager_initialized_sync():
     global _INIT_TASK
+    # BUG-FIX #1: check already initialized before spawning task
+    if _provider_manager._initialized:
+        return
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:

@@ -1195,8 +1195,6 @@ async def _perception_node_impl(
 
     try:
         adapter = orchestrator.adapter
-        if adapter is None:
-            logger.warning("perception_node: orchestrator.adapter is None")
     except Exception as e:
         logger.error(f"perception_node: failed to get adapter: {e}")
         return {
@@ -1204,6 +1202,14 @@ async def _perception_node_impl(
             "next_action": None,
             "rounds": (state.get("rounds") or 0) + 1,
             "errors": [f"adapter error: {e}"],
+        }
+    if adapter is None:
+        logger.warning("perception_node: orchestrator.adapter is None")
+        return {
+            "history": [],
+            "next_action": None,
+            "rounds": (state.get("rounds") or 0) + 1,
+            "errors": ["adapter is None"],
         }
 
     # Pre-retrieval: consult repo intelligence tools if available (search_code, find_symbol, find_references)
