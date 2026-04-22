@@ -128,7 +128,7 @@ def execute_tool_impl(orch: Any, tool_call: Dict[str, Any]) -> Dict[str, Any]:
     tool_call_id = f"call_{uuid.uuid4().hex[:8]}"
 
     # Hard Rule Enforcement: Read before Edit for write tools
-    path_arg = args.get("path") or args.get("file_path")
+    path_arg = args.get("path") or args.get("file_path") or args.get("src_path")
     if path_arg and name in WRITE_TOOLS_REQUIRING_READ:
         try:
             target = Path(orch.working_dir or ".") / path_arg
@@ -681,7 +681,9 @@ def execute_tool_impl(orch: Any, tool_call: Dict[str, Any]) -> Dict[str, Any]:
                 # creating a new ThreadPoolExecutor per call (~5 ms savings each).
                 _tex = getattr(orch, "_tool_executor", None)
                 if _tex is None:
-                    _tex = _cf.ThreadPoolExecutor(max_workers=2)
+                    # BUG-FIX #2: increased from 2 to 4 to prevent pool exhaustion
+                    # when multiple concurrent tool approvals are pending
+                    _tex = _cf.ThreadPoolExecutor(max_workers=4)
                     orch._tool_executor = _tex
                 # Capture current context so ContextVars (correlation id etc.) are
                 # available in the tool thread.
