@@ -424,16 +424,40 @@ def route_after_perception(
     next_action = state.get("next_action")
     if next_action:
         action_name = (_extract_next_action_name(next_action) or "").lower()
-        # First-round fast-path: honour model's chosen action immediately
+        # Determine complexity once and reuse
+        task_complex_flag = state.get("task_complexity")
+        is_complex = (task_complex_flag == "complex") or _task_is_complex(state)
+
+        # First-round handling: allow complexity/tier to override the naive fast-path
         if rounds == 0:
+            # P3-A: constrained models (NANO/SMALL) still honour the model's chosen
+            # action and execute immediately when next_action is present.
+            if _is_nano_or_small(state):
+                logger.info(
+                    "route_after_perception: NANO/SMALL tier with next_action on first round — execution"
+                )
+                return "execution"
+
+            # For complex tasks on capable tiers prefer planning (LARGE/FRONTIER),
+            # otherwise route to analysis so we gather more context before executing.
+            if is_complex:
+                if _is_large_or_frontier(state):
+                    logger.info(
+                        "route_after_perception: first-round complex task on LARGE/FRONTIER — planning"
+                    )
+                    return "planning"
+                logger.info(
+                    "route_after_perception: first-round complex task — analysis"
+                )
+                return "analysis"
+
+            # Default first-round fast-path for non-complex tasks
             logger.info(
                 "route_after_perception: next_action present on first round — execution"
             )
             return "execution"
 
         # On subsequent rounds, be more conservative for complex tasks
-        task_complex_flag = state.get("task_complexity")
-        is_complex = (task_complex_flag == "complex") or _task_is_complex(state)
         if is_complex:
             if action_name in READ_ONLY_TOOLS:
                 logger.info(
