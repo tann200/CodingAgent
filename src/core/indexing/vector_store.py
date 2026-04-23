@@ -199,7 +199,11 @@ class VectorStore:
             batch_df = df_new.iloc[i : i + batch_size].copy()
 
             embeddings = self.model.encode(batch_df["text"].tolist())
-            batch_df["vector"] = list(embeddings)
+            # Convert numpy array to proper 2D list (not list of arrays)
+            if hasattr(embeddings, "tolist"):
+                batch_df["vector"] = embeddings.tolist()
+            else:
+                batch_df["vector"] = list(embeddings)
 
             # Try adding and recreate the table if ArrowInvalid occurs.
             new_tbl = self._add_with_recreate(table_name, tbl, desired_schema, batch_df)
@@ -233,12 +237,14 @@ class VectorStore:
 
             _ctx = _cv.copy_context()
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _ex:
-                results = _ex.submit(_ctx.run, _do_search).result(timeout=10)
-        except concurrent.futures.TimeoutError:
-            logger.warning(
-                "VectorStore.search timed out after 10 s — returning empty results"
-            )
+                results = _ex.submit(lambda: _ctx.run(_do_search)).result(timeout=10)
+        except (concurrent.futures.TimeoutError, Exception):
+            logger.warning("VectorStore.search timed out — returning empty results")
             return []
+
+        if results is None or results.empty:
+            return []
+
         # Drop the raw embedding column — it's large and causes JSON serialisation failures (NEW-22)
         return results.drop(columns=["vector"], errors="ignore").to_dict("records")
 
@@ -302,9 +308,9 @@ class VectorStore:
         try:
             tbl.add(data=data)
             return tbl
-        except pa.ArrowInvalid as e:
+        except (pa.ArrowInvalid, pa.ArrowNotImplementedError) as e:
             logger.warning(
-                "ArrowInvalid when adding to LanceDB table '%s': %s. Attempting to recreate the table and retry.",
+                "Arrow error when adding to LanceDB table '%s': %s. Attempting to recreate the table and retry.",
                 table_name,
                 e,
             )
@@ -354,10 +360,15 @@ class VectorStore:
 
             _ctx = _cv.copy_context()
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _ex:
-                results = _ex.submit(_ctx.run, _do_search).result(timeout=10)
-        except concurrent.futures.TimeoutError:
+                results = _ex.submit(lambda: _ctx.run(_do_search)).result(timeout=10)
+        except (concurrent.futures.TimeoutError, Exception):
+            logger.warning("VectorStore.search timed out — returning empty results")
             return []
 
+        if results is None or results.empty:
+            return []
+
+        # Drop the raw embedding column — it's large and causes JSON serialisation failures (NEW-22)
         return results.drop(columns=["vector"], errors="ignore").to_dict("records")
 
 
