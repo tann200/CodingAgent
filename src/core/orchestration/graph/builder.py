@@ -328,7 +328,7 @@ def _is_nano_or_small(state: Mapping[str, Any]) -> bool:
 
 def route_after_perception(
     state: Mapping[str, Any],
-) -> Literal["execution", "analysis", "memory_sync", "planning"]:
+) -> Literal["execution", "analysis", "memory_sync", "planning", "perception"]:
     """
     Phase 2.1: Fast-Path Routing.
     If perception generated a valid tool call and task is simple, go to execution.
@@ -446,17 +446,37 @@ def route_after_perception(
 
     if last_result is not None and rounds > 0:
         execution_ok = last_result.get("ok") or last_result.get("status") == "ok"
-        if execution_ok:
+
+        # FIX: Verify execution actually produced meaningful output before
+        # claiming success. Check for empty results, format errors, or
+        # "not found" errors that indicate the tool didn't really run.
+        _result_content = last_result.get("content") or last_result.get("text", "")
+        _result_error = last_result.get("error", "") or ""
+        _is_meaningful_result = bool(
+            _result_content
+            and not _result_error.lower().startswith("validation_error")
+            and "format_error" not in _result_error.lower()
+        )
+
+        if execution_ok and _is_meaningful_result:
             if _task_has_more_steps(state):
                 logger.info(
                     "route_after_perception: task has more steps, continuing execution"
                 )
-                # P3-A: NANO/SMALL skip analysis even for multi-step continuation.
                 if _constrained:
                     return "planning"
                 return "analysis"
             logger.info("route_after_perception: task complete, going to memory_sync")
             return "memory_sync"
+
+        # FIX: Execution failed or produced meaningless output - route to
+        # perception for retry, not straight to memory_sync
+        if not execution_ok or not _is_meaningful_result:
+            logger.info(
+                f"route_after_perception: execution failed or meaningless "
+                f"(ok={execution_ok}, error={_result_error[:50] if _result_error else 'none'})"
+            )
+            return "perception"
 
     # P2-A: On a fresh task (no prior rounds, no prior action) with an explicit
     # "simple" classification, bypass the analysis node entirely and go directly
@@ -644,6 +664,27 @@ def should_after_execution(
     # NOTE: execution_node already increments no_plan_fail_count in state (HR-4 fix);
     # read the already-updated value directly — do NOT add 1 here again.
     no_plan_fail_count = int(state.get("no_plan_fail_count") or 0)
+
+    # FIX: Also verify meaningful output in should_after_execution
+    _result_content = (last_result or {}).get("content") or (last_result or {}).get(
+        "text", ""
+    )
+    _result_error = (last_result or {}).get("error", "") or ""
+    _is_meaningful_result = bool(
+        _result_content
+        and not _result_error.lower().startswith("validation_error")
+        and "format_error" not in _result_error.lower()
+    )
+
+    if not _is_meaningful_result:
+        # FIX: Don't count format/validation errors as failures
+        # They should retry, not increment fail count
+        logger.info(
+            f"should_after_execution: meaningless result, retrying "
+            f"(error={_result_error[:50] if _result_error else 'empty'})"
+        )
+        return "perception"
+
     if no_plan_fail_count >= 3:
         logger.warning(
             f"should_after_execution: no-plan fail count {no_plan_fail_count} >= 3, "
