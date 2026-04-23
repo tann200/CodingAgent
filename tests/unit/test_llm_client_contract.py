@@ -1,4 +1,6 @@
 from src.core.inference.llm_client import LLMClient
+
+# ruff: noqa: E501
 from src.core.inference.telemetry import with_telemetry
 
 class DummyAdapter(LLMClient):

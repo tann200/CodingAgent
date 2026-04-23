@@ -2,6 +2,8 @@
 Unit tests for token_budget.py - Phase 4: Token Auto-Compact
 """
 
+# ruff: noqa: E501
+
 from src.core.orchestration.token_budget import (
     TokenBudget,
     TokenBudgetMonitor,

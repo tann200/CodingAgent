@@ -253,13 +253,172 @@ async def frontier_loop_node(
                     pass
 
             # Provider capabilities (optional) — may help ContextBuilder pick provider-specific
-            # prompt partials.
-            provider_caps = None
+            # prompt partials. Use canonical resolution to avoid leaking MagicMock
+            # placeholders and to centralise provider/model discovery.
+            provider_caps = {}
             try:
-                if orchestrator and hasattr(orchestrator, "get_provider_capabilities"):
-                    provider_caps = orchestrator.get_provider_capabilities()
+                try:
+                    from src.core.utils.strings import (
+                        valid_str as _valid_str,
+                        extract_str as _extract_str,
+                    )
+                except Exception:
+
+                    def _valid_str(x: object) -> bool:
+                        return (
+                            isinstance(x, str)
+                            and bool(x.strip())
+                            and ("MagicMock" not in x)
+                        )
+
+                    def _extract_str(candidate: object) -> str | None:
+                        if candidate is None:
+                            return None
+                        if isinstance(candidate, dict):
+                            for key in (
+                                "provider_name",
+                                "name",
+                                "id",
+                                "key",
+                                "model",
+                                "default_model",
+                                "type",
+                            ):
+                                val = candidate.get(key)
+                                if isinstance(val, str) and _valid_str(val):
+                                    return val.strip()
+                            return None
+                        if isinstance(candidate, str) and _valid_str(candidate):
+                            return candidate.strip()
+                        return None
+
+                caps: dict = {}
+
+                # 1) Orchestrator-level capabilities
+                try:
+                    if (
+                        orchestrator
+                        and hasattr(orchestrator, "get_provider_capabilities")
+                        and callable(getattr(orchestrator, "get_provider_capabilities"))
+                    ):
+                        _rc = orchestrator.get_provider_capabilities()
+                        if isinstance(_rc, dict) and _rc:
+                            caps = dict(_rc)
+                except Exception:
+                    caps = {}
+
+                # 2) ProviderManager fallback
+                if not caps:
+                    try:
+                        from src.core.inference.llm_manager import (
+                            get_provider_manager as _gpm,
+                        )
+
+                        _pm = _gpm()
+                        adapter = getattr(orchestrator, "_adapter", None)
+                        _rc = _pm.get_provider_capabilities(adapter)
+                        if isinstance(_rc, dict) and _rc:
+                            caps = dict(_rc)
+                    except Exception:
+                        caps = caps or {}
+
+                # 3) Adapter inspection last-resort (no network probes)
+                if (
+                    not caps
+                    and orchestrator
+                    and getattr(orchestrator, "_adapter", None)
+                ):
+                    adapter = orchestrator._adapter
+                    try:
+                        prov_attr = getattr(adapter, "provider", None)
+                    except Exception:
+                        prov_attr = None
+                    provider_name = None
+                    try:
+                        provider_name = _extract_str(prov_attr)
+                    except Exception:
+                        provider_name = None
+                    if not provider_name:
+                        try:
+                            provider_name = _extract_str(getattr(adapter, "name", None))
+                        except Exception:
+                            provider_name = None
+
+                    model = None
+                    try:
+                        model = _extract_str(getattr(adapter, "default_model", None))
+                    except Exception:
+                        model = None
+                    if not model:
+                        try:
+                            models_attr = getattr(adapter, "models", None)
+                            if isinstance(models_attr, (list, tuple)):
+                                for m in models_attr:
+                                    mm = _extract_str(m)
+                                    if mm:
+                                        model = mm
+                                        break
+                            else:
+                                model = _extract_str(models_attr)
+                        except Exception:
+                            model = None
+
+                    supports_native_tools = False
+                    try:
+                        if isinstance(prov_attr, dict):
+                            supports_native_tools = bool(
+                                prov_attr.get("supports_native_tools", False)
+                            )
+                        else:
+                            supports_native_tools = bool(
+                                getattr(adapter, "supports_native_tools", False)
+                            )
+                    except Exception:
+                        supports_native_tools = False
+
+                    provider_family = "default"
+                    try:
+                        from src.core.orchestration.provider_capabilities import (
+                            _map_provider_family_impl as _map_pf,
+                        )
+
+                        provider_family = _map_pf(provider_name or "")
+                    except Exception:
+                        provider_family = "default"
+
+                    caps = {
+                        "supports_native_tools": bool(supports_native_tools),
+                        "provider_family": provider_family,
+                        "model": model,
+                        "provider_name": provider_name or "",
+                    }
+
+                # Sanitize final caps
+                try:
+                    _pname = _extract_str(
+                        caps.get("provider_name")
+                        or caps.get("provider")
+                        or caps.get("name")
+                    )
+                except Exception:
+                    _pname = None
+                try:
+                    _model = _extract_str(
+                        caps.get("model") or caps.get("default_model")
+                    )
+                except Exception:
+                    _model = None
+
+                provider_caps = {
+                    "supports_native_tools": bool(
+                        caps.get("supports_native_tools", False)
+                    ),
+                    "provider_family": caps.get("provider_family") or "default",
+                    "model": _model,
+                    "provider_name": _pname or "",
+                }
             except Exception:
-                provider_caps = None
+                provider_caps = {}
 
             # build_prompt is CPU / I/O bound; run it in an executor while propagating
             # ContextVars (correlation id) using run_with_correlation.
@@ -343,7 +502,11 @@ async def frontier_loop_node(
             if not tool_calls and content_text:
                 # Fallback: try parsing JSON/YAML tool blocks from text
                 parsed = parse_tool_block(content_text)
-                if parsed and isinstance(parsed, dict) and parsed.get("tool"):
+                if (
+                    parsed
+                    and isinstance(parsed, dict)
+                    and (parsed.get("name") or parsed.get("tool"))
+                ):
                     tool_calls = [parsed]
         except Exception as exc:
             logger.debug("frontier_loop_node: tool parse error: %s", exc)

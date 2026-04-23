@@ -4,43 +4,39 @@ A local-first autonomous coding agent built on LangGraph. Runs on local LLMs (LM
 
 ## Features
 
-- **LangGraph pipeline** — multi-node cognitive pipeline (perception → analysis → planning → execution → verification → evaluation)
-- **60+ tools** auto-discovered via `@tool` decorator across 16 modules: file ops, git, web, AST, repo search, verification, memory, subagents, and more
-- **Production TUI** — Textual-based terminal UI with flicker-free 100+ tok/s streaming, per-tool icons, diff preview, command palette, settings screen, slash commands, session timeline, subagent visibility
-- **Multi-agent delegation** — `delegate_task` spawns isolated role-specific subagents (analyst, operational, strategic, reviewer, debugger); PRSW parallel read / sequential write coordination
-- **Security hardening** — bwrap sandbox, bash allowlist (3-tier), workspace scope guard, read-before-write enforcement, SSRF protection, path traversal blocks
-- **Memory system** — SQLite session store, LanceDB vector search, context distiller, trajectory logger, skill learner
-- **Repository intelligence** — incremental SHA-256 indexing (15+ languages), symbol graph, semantic code search
-- **GitHub Copilot auth** — OAuth device flow; also supports LM Studio, Ollama, OpenRouter, OpenAI, Anthropic, Groq, LiteLLM
-- **27+ audit cycles** completed; all Critical/High/Medium findings resolved
+- **LangGraph pipeline** — 16-node cognitive pipeline (perception → analysis → planning → execution → verification → evaluation)
+- **60+ tools** — auto-discovered via `@tool` decorator: file ops, git, web, AST, repo search, verification, memory, subagents
+- **Production TUI** — Textual-based terminal UI with streaming, per-tool icons, diff preview, slash commands
+- **Multi-agent delegation** — `delegate_task` spawns role-specific subagents (analyst, operational, strategic, reviewer, debugger)
+- **Security** — bwrap sandbox, 3-tier bash allowlist, workspace scope guard, read-before-write enforcement
+- **Memory** — SQLite session store, LanceDB vector search, context distiller, auto-compactor
+- **Repository intelligence** — SHA-256 incremental indexing, symbol graph, semantic code search
+- **Model tiers** — NANO (8 tools) → FRONTIER (60 tools) based on model capability
+- **Session fork/revert** — branch sessions for experimental changes
+- **Audit history** — 29+ cycles completed, 0 Critical/High issues
 
 ## Requirements
 
-Python 3.11 (`pyproject.toml` pins `>=3.11,<3.12`).
+Python 3.11+
 
-## Setup
+## Quick Start
 
 ```bash
+# Install
 python3.11 -m venv .venv
 source .venv/bin/activate
-pip install -U pip
-pip install -r requirements.txt
-pip install -e .[dev]
-```
+pip install -e .
 
-## Running
+# Run TUI (recommended)
+python -m src.main
 
-```bash
-# Launch the Textual TUI (recommended)
-bash start_tui.sh
-
-# Headless agent run
-python scripts/run_generate.py --task "your task" --working-dir /path/to/repo
+# Headless mode
+python -m src.main --task "fix the bug" --workdir /path/to/repo
 ```
 
 ## Configuration
 
-Provider configuration lives in `src/config/providers.json`. Must be a JSON array:
+Edit `src/config/providers.json`:
 
 ```json
 [
@@ -50,110 +46,136 @@ Provider configuration lives in `src/config/providers.json`. Must be a JSON arra
     "base_url": "http://localhost:1234/v1",
     "models": ["gemma-4-e4b-it"],
     "active": true
-  },
-  {
-    "name": "github_copilot",
-    "type": "github_copilot",
-    "active": false
   }
 ]
 ```
 
-Supported provider types: `lm_studio`, `ollama`, `openrouter`, `openai`, `anthropic`, `github_copilot`, `groq`, `litellm`.
+Supported: `lm_studio`, `ollama`, `openrouter`, `openai`, `anthropic`, `github_copilot`, `groq`, `litellm`
 
-API keys for cloud providers are stored in `~/.config/codingagent/prefs.json` (permissions `0o600`) via the TUI settings panel or `SaveProviderCredentials` event. GitHub Copilot uses OAuth device flow — click **Login with GitHub** in the TUI settings screen.
-
-## LLM Adapters
-
-| Adapter | File | Notes |
-|---------|------|-------|
-| LM Studio | `src/core/inference/adapters/lm_studio_adapter.py` | Local HTTP, short-name model resolution |
-| Ollama | `src/core/inference/adapters/ollama_adapter.py` | Local HTTP |
-| OpenRouter | `src/core/inference/adapters/openrouter_adapter.py` | Cloud, `/models` discovery |
-| OpenAI-compat | `src/core/inference/adapters/openai_compat_adapter.py` | Base class for all REST adapters |
-| Anthropic | `src/core/inference/adapters/anthropic_adapter.py` | Prompt caching via `cache_control` |
-| GitHub Copilot | `src/core/inference/adapters/github_copilot_adapter.py` | OAuth device flow auth |
-| Groq | `src/core/inference/adapters/groq_adapter.py` | Cloud, OpenAI-compat |
-| LiteLLM | `src/core/inference/adapters/litellm_adapter.py` | Proxy, OpenAI-compat |
-| Mock | `src/core/inference/adapters/mock_adapter.py` | Unit tests / CI |
-
-## Tools
-
-60+ tools auto-discovered via `build_registry()`. Key modules:
-
-| Module | Tools |
-|--------|-------|
-| `file_tools` / `_file_io`, `_bash_exec`, `_edit_tools`, `_diff_gate` | `read_file`, `write_file`, `edit_file_atomic`, `bash`, `bash_readonly`, `glob`, `tail_log_file`, `create_directory`, `batched_file_read` |
-| `git_tools` | `git_status`, `git_log`, `git_diff`, `git_commit`, `git_stash`, `git_restore` |
-| `web_tools` | `web_search`, `read_web_page` (SSRF-protected) |
-| `ast_tools` | `ast_rename`, `ast_list_symbols` |
-| `interaction_tools` | `ask_user`, `submit_plan_for_review`, `send_user_message` |
-| `repo_tools` | `search_code`, `find_symbol`, `find_references` |
-| `verification_tools` | `run_tests`, `run_linter`, `syntax_check`, `run_js_tests`, `run_ts_check` |
-| `subagent_tools` | `delegate_task`, `list_subagent_roles` |
-| `memory_tools` | `memory_search` |
-| `todo_tools` | `manage_todo` |
-| `lsp_tools` | `lsp_diagnostics`, `lsp_goto_definition`, `lsp_references` |
-| `batch_tools` | `batch_tool_calls` (parallel tool dispatch) |
-| `sandbox` | `run_sandboxed` (bwrap wrapper) |
-| `rollback_tools` | `rollback_step` |
-
-**Read-before-write guardrail**: All write tools enforce that existing files must be read before modification. Dual-tracked via `ContextVar` + global lock-protected set (`src/tools/guardrails.py`).
-
-**Post-write auto-lint**: Every write triggers a fast syntax check for the modified file's language (10 s timeout, never raises) — Python via `py_compile`, JS/TS via `node --check`, Go via `go build`, Rust via `rustc`.
-
-## TUI
-
-The production TUI lives in `tui/` and is implemented with [Textual](https://github.com/Textualize/textual).
-
-**Key bindings:**
-
-| Binding | Action |
-|---------|--------|
-| `ctrl+o` | Command palette |
-| `ctrl+s` | Settings screen |
-| `ctrl+l` | Toggle console log panel |
-| `tab` | Cycle agent roles |
-| `Esc Esc` | Interrupt agent |
-| `ctrl+q` | Quit |
-
-**Slash commands:** `/help`, `/clear`, `/new`, `/compact`, `/continue`, `/interrupt`, `/status`, `/fast`, `/provider`, `/model`, `/settings`, `/sessions`, `/timeline`, `/diff`, `/fork`, `/mcp`, `/undo`, `/quit`
-
-Architecture: fully decoupled — UI communicates with backend exclusively via typed `Message` subclasses in `bus.py` (backend → UI) and `events.py` (UI → backend). The TUI never imports `src/core` directly; all data flows through `core_bridge.py`.
-
-## Multi-Agent Delegation
-
-```python
-# In agent tool calls:
-delegate_task(
-    role="analyst",           # analyst | operational | strategic | reviewer | debugger
-    subtask_description="...",
-    working_dir="/path/to/repo",
-)
-```
-
-Subagents run in isolated LangGraph graphs with role-specific tool sets. Depth is bounded at 3 via ContextVar (not forgeable by subprocesses). Manifests are written before spawning. The TUI shows a live spinner and `└ N toolcalls · duration` summary for each subagent.
-
-## Tests
+## CLI Usage
 
 ```bash
-# Unit tests (no live LLM required)
-.venv/bin/pytest tests/unit -q -p no:logging
+# Basic usage
+python -m src.main --task "your task"
 
-# Integration tests (requires local provider running)
-RUN_INTEGRATION=1 .venv/bin/pytest tests/integration -q
+# Resume session
+python -m src.main --resume-session <session_id> --task "continue"
+
+# Dry run (preview only)
+python -m src.main --dry-run --task "refactor"
+
+# Output formats
+python -m src.main --task "fix bug" --output-format json
 ```
 
-Set `CODINGAGENT_TRUSTED=1` to enable MCP server, hooks, and plugins in automated environments.
+## Architecture
+
+See `docs/ARCHITECTURE.md` for complete documentation.
+
+### Key Components
+
+| Component | File | Purpose |
+|-----------|------|---------|
+| Orchestrator | `src/core/orchestration/orchestrator.py` | Main agent class |
+| Graph Builder | `src/core/orchestration/graph/builder.py` | LangGraph compilation |
+| Tool Registry | `src/tools/_registry.py` | Tool auto-discovery |
+| Context Builder | `src/core/context/context_builder.py` | Prompt building |
+| Model Tiers | `src/core/inference/model_tiers.py` | Tier classification |
+
+### Pipeline
+
+```
+Fast-path: perception → execution → verification → evaluation → memory_sync
+Full: perception → analysis → planning → plan_validator → execution → verification → evaluation → memory_sync
+Frontier: perception → frontier_loop → verification → evaluation → memory_sync
+```
+
+## Testing
+
+```bash
+# Unit tests (no LLM required)
+pytest tests/unit -q
+
+# With specific test
+pytest tests/unit/test_tools_file_io.py -v
+
+# Benchmark tests
+pytest tests/benchmarks -v
+```
+
+## Development
+
+### Adding a Tool
+
+```python
+from src.tools import tool
+
+@tool(side_effects=["write"], tags=["coding"])
+def my_tool(param: str) -> dict:
+    """Description shown to the LLM."""
+    return {"ok": True, "result": param}
+```
+
+### Running Tests
+
+```bash
+# All unit tests
+pytest tests/unit -q
+
+# Integration tests (requires running provider)
+RUN_INTEGRATION=1 pytest tests/integration -q
+```
+
+### Code Quality
+
+```bash
+# Type checking
+pyright src/
+
+# Format check
+ruff check src/
+```
 
 ## Documentation
 
-- [Architecture](docs/ARCHITECTURE.md) — full pipeline, nodes, tools, memory, security, TUI, inference
-- [Development Guide](docs/DEVELOPMENT.md) — tool registry, provider setup, test workflows, open bugs
-- [TUI Specification](docs/TUI_SPEC.md) — complete TUI system spec
-- [Codebase Findings](docs/CODEBASE_FINDINGS.md) — post-vol18 audit findings and fix status
-- [Gap Analysis v2](docs/gap-analysis-opencode-vs-codingagent-v2.md) — OpenCode vs CodingAgent TUI/permission/UX gaps
-- [Agent Loop Analysis](docs/agent-loop-improvement-analysis.md) — loop prevention and token efficiency analysis
-- [System Map](docs/system_map.md) — generated file tree
-- [Archive](docs/archive/) — completed plans and superseded analyses
+| Document | Description |
+|----------|-------------|
+| `docs/ARCHITECTURE.md` | Full system architecture |
+| `docs/DEVELOPMENT.md` | Developer guide |
+| `docs/audit/` | Audit reports (vol1–vol29) |
+| `docs/TODO_METRICS.md` | How to enable and use TODO metrics (Prometheus) |
+| `docs/CODEBASE_FINDINGS.md` | Known issues |
 
+## Model Tiers
+
+| Tier | Params | Tools | Max Turns |
+|------|--------|-------|-----------|
+| NANO | ≤7B | 8 | 15 |
+| SMALL | 7-14B | 20 | 25 |
+| MEDIUM | 14-70B | 35 | 40 |
+| LARGE | >70B | 50 | 60 |
+| FRONTIER | Cloud | 60 | 80 |
+
+## Security
+
+5-layer security model:
+1. Pattern block (`_BASE_DANGEROUS_PATTERNS`)
+2. Restricted commands (approval required)
+3. Safe commands (auto-allowed)
+4. AST-level analysis (`bash_security.py`)
+5. Sandbox (`sandbox.py` with bubblewrap)
+
+## Environment Variables
+
+| Variable | Purpose |
+|----------|---------|
+| `CODINGAGENT_SANDBOX_LEVEL` | off/workspace/full |
+| `CODINGAGENT_TRUSTED` | Skip approval in CI |
+| `CODING_AGENT_HTTP_SERVER` | Start HTTP server |
+
+## Test Baseline
+
+- **3844** unit tests passing
+- **7** benchmark tests
+- **0** Critical issues
+- **0** High issues

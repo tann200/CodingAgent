@@ -37,29 +37,31 @@ class TelemetryConsumer:
             pass
         # Subscribe to known telemetry events
         try:
-            self.event_bus.subscribe('message.truncation', self._on_message_truncation)
+            self.event_bus.subscribe("message.truncation", self._on_message_truncation)
         except Exception:
             pass
         try:
-            self.event_bus.subscribe('model.routing', self._on_model_routing)
+            self.event_bus.subscribe("model.routing", self._on_model_routing)
         except Exception:
             pass
         # Tool lifecycle telemetry
         try:
-            self.event_bus.subscribe('tool.execute.start', self._on_tool_execute_start)
+            self.event_bus.subscribe("tool.execute.start", self._on_tool_execute_start)
         except Exception:
             pass
         try:
-            self.event_bus.subscribe('tool.execute.finish', self._on_tool_execute_finish)
+            self.event_bus.subscribe(
+                "tool.execute.finish", self._on_tool_execute_finish
+            )
         except Exception:
             pass
         try:
-            self.event_bus.subscribe('tool.execute.error', self._on_tool_execute_error)
+            self.event_bus.subscribe("tool.execute.error", self._on_tool_execute_error)
         except Exception:
             pass
         # Preflight checks
         try:
-            self.event_bus.subscribe('tool.preflight', self._on_tool_preflight)
+            self.event_bus.subscribe("tool.preflight", self._on_tool_preflight)
         except Exception:
             pass
 
@@ -83,32 +85,32 @@ class TelemetryConsumer:
 
     def _write_line(self, event_name: str, payload: Any) -> None:
         record = {
-            'ts': time.time(),
-            'event': event_name,
-            'payload': payload,
+            "ts": time.time(),
+            "event": event_name,
+            "payload": payload,
         }
         try:
             self._rotate()
-            with open(self.path, 'a', encoding='utf-8') as f:
-                f.write(json.dumps(record, ensure_ascii=False) + '\n')
+            with open(self.path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
         except Exception:
             # best-effort; don't raise
             pass
 
     def _on_message_truncation(self, payload: Any) -> None:
-        self._write_line('message.truncation', payload)
+        self._write_line("message.truncation", payload)
 
     def _on_model_routing(self, payload: Any) -> None:
-        self._write_line('model.routing', payload)
+        self._write_line("model.routing", payload)
 
     def _on_tool_execute_start(self, payload: Any) -> None:
-        self._write_line('tool.execute.start', payload)
+        self._write_line("tool.execute.start", payload)
 
     def _on_tool_execute_finish(self, payload: Any) -> None:
-        self._write_line('tool.execute.finish', payload)
+        self._write_line("tool.execute.finish", payload)
 
     def _on_tool_execute_error(self, payload: Any) -> None:
-        self._write_line('tool.execute.error', payload)
+        self._write_line("tool.execute.error", payload)
 
     def _on_tool_preflight(self, payload: Any) -> None:
-        self._write_line('tool.preflight', payload)
+        self._write_line("tool.preflight", payload)

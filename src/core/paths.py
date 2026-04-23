@@ -102,3 +102,12 @@ def get_skills_cache_dir() -> Path:
 def _legacy_coding_agent_dir() -> Path:
     """Legacy function - use get_data_dir() instead."""
     return get_data_dir()
+
+
+def get_agent_context_dir() -> Path:
+    """Return the agent context directory.
+
+    This is the directory where agent-specific state is stored.
+    Defaults to the current working directory + \".agent-context\".
+    """
+    return Path.cwd() / ".agent-context"

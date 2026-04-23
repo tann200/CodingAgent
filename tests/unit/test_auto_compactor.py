@@ -3,6 +3,8 @@
 Tests mirror the scenarios validated by compact.rs in claw-code.
 """
 
+
+# ruff: noqa: E501
 from __future__ import annotations
 
 import pytest

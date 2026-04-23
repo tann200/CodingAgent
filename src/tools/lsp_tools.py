@@ -100,8 +100,7 @@ async def lsp_diagnostics(
         for d in diags:
             lines.append(
                 f"  [{d.severity_label.upper()}] line {d.line + 1}:{d.col + 1} "
-                f"{d.message}"
-                + (f" ({d.source})" if d.source else "")
+                f"{d.message}" + (f" ({d.source})" if d.source else "")
             )
         return _ok(f"Diagnostics for {path}:\n" + "\n".join(lines))
     except Exception as exc:
@@ -178,7 +177,9 @@ async def lsp_definition(
         locs = await client.get_definition(uri, line, col)
         if not locs:
             return _ok("No definition found.")
-        lines = [f"  {loc.uri}:{loc.start_line + 1}:{loc.start_col + 1}" for loc in locs]
+        lines = [
+            f"  {loc.uri}:{loc.start_line + 1}:{loc.start_col + 1}" for loc in locs
+        ]
         return _ok("Definition:\n" + "\n".join(lines))
     except Exception as exc:
         logger.debug("lsp_definition: error: %s", exc)
@@ -298,7 +299,13 @@ async def lsp_rename(
         edited_files = []
         for file_uri, text_edits in edit.changes.items():
             try:
-                file_path = Path(file_uri.replace("file://", ""))
+                # BUG-FIX: use proper URI decoding instead of naive replace
+                from urllib.parse import unquote
+
+                if file_uri.startswith("file://"):
+                    file_path = Path(unquote(file_uri[7:]))
+                else:
+                    file_path = Path(unquote(file_uri))
                 if not file_path.exists():
                     continue
                 content = file_path.read_text(encoding="utf-8")
@@ -323,7 +330,9 @@ async def lsp_rename(
                 total_edits += len(text_edits)
                 edited_files.append(str(file_path))
             except Exception as file_exc:
-                logger.debug("lsp_rename: failed to apply edit to %s: %s", file_uri, file_exc)
+                logger.debug(
+                    "lsp_rename: failed to apply edit to %s: %s", file_uri, file_exc
+                )
 
         return _ok(
             f"Renamed to '{new_name}' in {len(edited_files)} file(s) ({total_edits} edit(s)):\n"
@@ -361,7 +370,10 @@ LSP_TOOL_SCHEMAS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "File containing the symbol."},
+                "path": {
+                    "type": "string",
+                    "description": "File containing the symbol.",
+                },
                 "line": {"type": "integer", "description": "0-based line number."},
                 "col": {"type": "integer", "description": "0-based column number."},
             },
@@ -377,7 +389,10 @@ LSP_TOOL_SCHEMAS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "File containing the symbol."},
+                "path": {
+                    "type": "string",
+                    "description": "File containing the symbol.",
+                },
                 "line": {"type": "integer", "description": "0-based line number."},
                 "col": {"type": "integer", "description": "0-based column number."},
             },
@@ -393,7 +408,10 @@ LSP_TOOL_SCHEMAS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "Path to the file to inspect."},
+                "path": {
+                    "type": "string",
+                    "description": "Path to the file to inspect.",
+                },
             },
             "required": ["path"],
         },
@@ -407,7 +425,10 @@ LSP_TOOL_SCHEMAS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "File containing the symbol."},
+                "path": {
+                    "type": "string",
+                    "description": "File containing the symbol.",
+                },
                 "line": {"type": "integer", "description": "0-based line number."},
                 "col": {"type": "integer", "description": "0-based column number."},
             },
@@ -423,10 +444,16 @@ LSP_TOOL_SCHEMAS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "File containing the symbol."},
+                "path": {
+                    "type": "string",
+                    "description": "File containing the symbol.",
+                },
                 "line": {"type": "integer", "description": "0-based line number."},
                 "col": {"type": "integer", "description": "0-based column number."},
-                "new_name": {"type": "string", "description": "New name for the symbol."},
+                "new_name": {
+                    "type": "string",
+                    "description": "New name for the symbol.",
+                },
             },
             "required": ["path", "line", "col", "new_name"],
         },
@@ -448,4 +475,6 @@ def register_lsp_tools(registry: Any) -> None:
             registry.register(name, fn, schema)
             logger.debug("lsp_tools: registered %s", name)
         except Exception as exc:
-            logger.warning("lsp_tools: failed to register %s: %s", schema.get("name"), exc)
+            logger.warning(
+                "lsp_tools: failed to register %s: %s", schema.get("name"), exc
+            )

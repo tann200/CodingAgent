@@ -1,6 +1,7 @@
 import hashlib
 import json
 import logging
+import re as _re
 import threading
 from typing import Any, Dict, Literal, Mapping
 
@@ -37,34 +38,6 @@ _MAX_ROUNDS_PLANNING = 15  # force-end after this many planning rounds
 _DEFAULT_MAX_TOOL_CALLS = 30  # default budget for standard agent graph
 _AUTONOMOUS_MAX_TOOL_CALLS = 100  # default budget for autonomous/full graph
 _LOOP_GUARD_ROUNDS = 10  # round threshold for stuck-loop detection
-
-
-def should_after_planning(
-    state: Mapping[str, Any],
-) -> Literal["execute", "memory_sync", "end"]:
-    """
-    Routing after planning node.
-
-    NOT WIRED IN compile_agent_graph() — the main graph routes planning →
-    plan_validator_node unconditionally.
-
-    P2-E audit note: function is still used by graph_factory.py (two call sites
-    at lines 56 and 73) for lightweight subgraph flavors that bypass
-    plan_validator.  Not dead code; do not remove.
-    """
-    logger.info(
-        f"should_after_planning: rounds={state.get('rounds')}, next_action={state.get('next_action')}, current_plan={state.get('current_plan')}"
-    )
-    if state.get("rounds", 0) >= _MAX_ROUNDS_PLANNING:
-        return "end"
-    if state.get("next_action"):
-        return "execute"
-    current_plan = state.get("current_plan") or []
-    if current_plan:
-        return "execute"
-    if state.get("last_result"):
-        return "memory_sync"
-    return "end"
 
 
 def should_after_plan_validator(
@@ -151,8 +124,80 @@ def should_after_plan_validator(
     return "execute"
 
 
+def should_after_planning(
+    state: Mapping[str, Any],
+) -> Literal["execute", "memory_sync", "end"]:
+    """Backward-compatible router used by GraphFactory subgraphs.
+
+    P2-E: kept as a small helper for planner subgraphs. Note: this function is
+    intentionally a thin wrapper and does not mutate state.
+    """
+    # Use a conservative, minimal policy matching historical behaviour.
+    if state.get("rounds", 0) >= _MAX_ROUNDS_PLANNING:
+        return "end"
+    if state.get("next_action"):
+        return "execute"
+    current_plan = state.get("current_plan")
+    if current_plan and len(current_plan) > 0:
+        return "execute"
+    if state.get("last_result"):
+        return "memory_sync"
+    return "end"
+
+
 _READ_ONLY_ROLES = {"scout", "researcher", "reviewer"}
 _WRITE_ROLES = {"coder", "tester"}
+
+# Canonical read-only tool set reused by multiple routers/helpers.
+# Keep this list in sync with the one used by _check_no_plan_fast_path.
+READ_ONLY_TOOLS = {
+    # canonical names
+    "read_file",
+    "grep",
+    "glob",
+    "find_symbol",
+    "search_code",
+    "list_files",
+    "fs.read",
+    "fs.list",
+    # common aliases / additional read-only tools
+    "ls",
+    "cat",
+    "read",
+    "find",
+    "find_files",
+    "rg",
+    "bash_readonly",
+    "git_status",
+    "git_diff",
+    "git_log",
+    "batched_file_read",
+    "read_file_bytes",
+    "read_file_chunk",
+    "ast_list_symbols",
+    "find_references",
+    "memory_search",
+    "web_search",
+    "fetch",
+    "browse",
+}
+
+# Tools that are considered "query" tools which usually require an
+# interpretation/perception follow-up instead of immediately ending.
+QUERY_TOOLS = {
+    "glob",
+    "find",
+    "find_files",
+    "grep",
+    "rg",
+    "search_code",
+    "find_symbol",
+    "find_references",
+    "memory_search",
+    "web_search",
+    "fetch",
+    "browse",
+}
 
 
 def should_use_prsw(state: Mapping[str, Any]) -> bool:
@@ -173,8 +218,6 @@ def should_use_prsw(state: Mapping[str, Any]) -> bool:
 
     return has_read and has_write
 
-
-import re as _re
 
 # HR-7 fix: exact multi-word phrases are safe to match as substrings; single
 # ambiguous words ("add", "edit", etc.) are matched with word-boundary regex
@@ -329,173 +372,155 @@ def _is_nano_or_small(state: Mapping[str, Any]) -> bool:
 
 def route_after_perception(
     state: Mapping[str, Any],
-) -> Literal["execution", "analysis", "memory_sync", "planning"]:
+) -> Literal[
+    "perception", "analysis", "step_controller", "execution", "memory_sync", "planning"
+]:
+    """Route after perception node.
+
+    Routing rules (high level):
+    - If a clarifying question is required, stop and memory_sync (wait for user).
+    - If context overflow occurred, memory_sync to let memory_update handle truncation.
+    - If a next_action is present, apply rounds- and complexity-aware precedence:
+        * rounds == 0 -> execution (fast-path first round)
+        * rounds > 0 and complex task -> read-only tools -> analysis, write tools -> execution
+        * otherwise -> execution
+    - If a tool just succeeded (last_result ok) and rounds > 0 -> memory_sync unless
+      the task likely has more steps (multi-step -> analysis).
+    - On first round with no next_action: a mixture of task_complexity flags and
+      tier-aware heuristics decide between planning and analysis.
     """
-    Phase 2.1: Fast-Path Routing.
-    If perception generated a valid tool call and task is simple, go to execution.
-    Complex tasks are forced through analysis.
 
-    P2-A fix: simple tasks on their first round (no prior action, no prior
-    rounds) now bypass the analysis node entirely and go directly to planning.
-    This saves one analysis LLM call (~2k-5k tokens) for tasks that are
-    clearly single-action (explanation, single-file read, single annotation,
-    etc.).  The classification uses the `task_complexity` flag already set by
-    perception_node, falling back to `_task_is_complex()`.
-
-    P3b-A: LARGE/FRONTIER models skip analysis AND analyst_delegation entirely.
-    These pipeline nodes were designed to compensate for 7–9B reasoning gaps;
-    30B+ models produce better plans without the extra overhead. Complex tasks
-    on capable models now route perception → planning directly.
-
-    CRITICAL FIX: When next_action=None after successful execution:
-    - If task appears to have more steps (multi-step detected), continue to analysis
-    - Otherwise, route to memory_sync for final distillation.
-
-    This ensures multi-step tasks like "create folder and file" continue executing
-    instead of prematurely ending after the first tool call.
-    """
-    # CF-1: needs_clarification — perception_node asked the user a question.
-    # Route to memory_sync to end the current turn; the TUI will display the
-    # assistant question and wait for the user's next message.
+    # Top-level short-circuits (must override next_action fast-path)
     if state.get("needs_clarification"):
-        logger.info("route_after_perception: needs_clarification=True — ending turn")
-        return "memory_sync"
-
-    # REACT-OVF: context overflow detected — history already truncated by perception_node.
-    # Route to memory_sync to persist what we have and let the next user turn start fresh.
-    if "context_overflow" in (state.get("errors") or []):
-        logger.warning(
-            "route_after_perception: context overflow in errors — routing to memory_sync "
-            "to end the pipeline cleanly (history has been truncated)"
+        logger.info(
+            "route_after_perception: needs_clarification=True — routing to memory_sync"
         )
         return "memory_sync"
 
-    next_action = state.get("next_action")
-    last_result = state.get("last_result")
-    rounds = state.get("rounds", 0)
-    _capable = _is_large_or_frontier(state)
-    _constrained = _is_nano_or_small(state)
-
-    logger.info(
-        f"route_after_perception: next_action={next_action is not None}, "
-        f"rounds={rounds}, capable_tier={_capable}, constrained_tier={_constrained}"
-    )
-
-    if next_action:
-        # WF-1: Prefer the pre-computed task_complexity flag from perception_node.
-        # Falls back to _task_is_complex() for state dicts that don't carry the flag
-        # (e.g. resumed sessions, tests that don't go through perception_node).
-        _tc = state.get("task_complexity")
-
-        # P3-A: NANO/SMALL already generated a tool call — trust it and execute.
-        # Analysis is an extra LLM call that exhausts the tiny context window; the
-        # model has already decided what to do.
-        if _constrained:
-            logger.info(
-                "route_after_perception: P3-A next_action on constrained tier — "
-                "executing directly (skipping analysis)"
-            )
-            return "execution"
-
-        # P3b-E: LARGE/FRONTIER + simple task + pre-computed action → direct execution.
-        # Skips both analysis AND planning for the fastest possible path.
-        if _capable and _tc == "simple":
-            logger.info(
-                "route_after_perception: P3b-E simple task on capable tier — "
-                "direct execution (skipping analysis + planning)"
-            )
-            return "execution"
-
-        if _tc == "complex":
-            if _capable:
-                # P3b-A: Skip analysis/analyst_delegation for capable models.
-                # Route complex tasks straight to planning — the model is capable
-                # enough to produce a good plan without the pre-analysis LLM call.
-                logger.info(
-                    "route_after_perception: P3b-A complex task on capable tier — "
-                    "skipping analysis, going directly to planning"
-                )
-                return "planning"
-            logger.info(
-                "route_after_perception: complex task (flag) - overriding fast-path, "
-                "going to analysis"
-            )
-            return "analysis"
-        if _tc == "simple":
-            logger.info(
-                "route_after_perception: simple task (flag) - going to execution"
-            )
-            return "execution"
-        # Flag absent — fall back to heuristic
-        if _task_is_complex(state):
-            if _capable:
-                # P3b-A: Same skip for heuristic-complex on capable models.
-                logger.info(
-                    "route_after_perception: P3b-A complex task (heuristic) on capable tier — "
-                    "skipping analysis, going directly to planning"
-                )
-                return "planning"
-            logger.info(
-                "route_after_perception: complex task - overriding fast-path, "
-                "going to analysis"
-            )
-            return "analysis"
+    if "context_overflow" in (state.get("errors") or []):
         logger.info(
-            "route_after_perception: simple task fast-path - going to execution"
+            "route_after_perception: context_overflow in errors — routing to memory_sync"
+        )
+        return "memory_sync"
+
+    # Helpers / common fields
+    last_result = state.get("last_result")
+    rounds = int(state.get("rounds") or 0)
+
+    # Robust next_action name extraction supporting multiple shapes
+    def _extract_next_action_name(act: Any) -> str | None:
+        if not act:
+            return None
+        if isinstance(act, str):
+            return act
+        if isinstance(act, dict):
+            # Common keys used across nodes/tests: "name", "tool", "tool_name"
+            for k in ("name", "tool", "tool_name"):
+                v = act.get(k)
+                if isinstance(v, str) and v:
+                    return v
+        return None
+
+    next_action = state.get("next_action")
+    if next_action:
+        action_name = (_extract_next_action_name(next_action) or "").lower()
+        # First-round fast-path: honour model's chosen action immediately
+        if rounds == 0:
+            logger.info(
+                "route_after_perception: next_action present on first round — execution"
+            )
+            return "execution"
+
+        # On subsequent rounds, be more conservative for complex tasks
+        task_complex_flag = state.get("task_complexity")
+        is_complex = (task_complex_flag == "complex") or _task_is_complex(state)
+        if is_complex:
+            if action_name in READ_ONLY_TOOLS:
+                logger.info(
+                    "route_after_perception: complex task + read-only next_action on subsequent round — analysis"
+                )
+                return "analysis"
+            else:
+                logger.info(
+                    "route_after_perception: complex task + write/unknown next_action — execution"
+                )
+                return "execution"
+
+        # Default: run the next action (non-complex subsequent round)
+        logger.info(
+            "route_after_perception: next_action present (non-complex) — execution"
         )
         return "execution"
 
-    if last_result is not None and rounds > 0:
-        execution_ok = last_result.get("ok") or last_result.get("status") == "ok"
-        if execution_ok:
-            if _task_has_more_steps(state):
-                logger.info(
-                    "route_after_perception: task has more steps, continuing execution"
-                )
-                # P3-A: NANO/SMALL skip analysis even for multi-step continuation.
-                if _constrained:
-                    return "planning"
-                return "analysis"
-            logger.info("route_after_perception: task complete, going to memory_sync")
-            return "memory_sync"
+    # If we just completed a tool successfully and have rounds > 0, either end
+    # (memory_sync) or continue with analysis when multi-step detected.
+    if last_result and rounds > 0 and _is_success(last_result):
+        if _task_has_more_steps(state):
+            logger.info(
+                "route_after_perception: successful tool but task has more steps — analysis"
+            )
+            return "analysis"
+        logger.info("route_after_perception: task complete after tool — memory_sync")
+        return "memory_sync"
 
-    # P2-A: On a fresh task (no prior rounds, no prior action) with an explicit
-    # "simple" classification, bypass the analysis node entirely and go directly
-    # to planning.  Analysis is an extra LLM call that adds nothing for tasks like
-    # "what does this function do?" or "add a docstring to function X".
-    # Only fire when rounds == 0 to avoid bypassing analysis on resumed tasks.
+    # First-round (rounds == 0) heuristics when no next_action is present
     if rounds == 0:
         _tc = state.get("task_complexity")
+        # Explicitly simple tasks go straight to planning
         if _tc == "simple":
             logger.info(
-                "route_after_perception: simple task on first round — bypassing "
-                "analysis, going directly to planning"
-            )
-            return "planning"
-        # P3b-A: LARGE/FRONTIER always skip analysis on the first round.
-        # P3-A: NANO/SMALL also skip analysis — it consumes context without benefit.
-        if _capable or _constrained:
-            logger.info(
-                "route_after_perception: P3b-A/P3-A first round on %s tier — "
-                "skipping analysis, going directly to planning",
-                "capable" if _capable else "constrained",
-            )
-            return "planning"
-        if _tc != "complex" and not _task_is_complex(state):
-            logger.info(
-                "route_after_perception: heuristic-simple task on first round — "
-                "bypassing analysis, going directly to planning"
+                "route_after_perception: explicit simple task on first round — planning"
             )
             return "planning"
 
-    logger.info("route_after_perception: no action yet, going to analysis")
+        # Tier-aware skips: NANO/SMALL and LARGE/FRONTIER prefer planning on first round
+        if _is_large_or_frontier(state) or _is_nano_or_small(state):
+            logger.info(
+                "route_after_perception: tier prefers planning on first round — planning"
+            )
+            return "planning"
+
+        # MEDIUM explicit complex -> analysis
+        if (
+            _tc == "complex"
+            and not _is_large_or_frontier(state)
+            and not _is_nano_or_small(state)
+        ):
+            logger.info(
+                "route_after_perception: MEDIUM explicit complex on first round — analysis"
+            )
+            return "analysis"
+
+        # Heuristic complexity: honour but still respect tier shortcuts
+        if _tc is None and _task_is_complex(state):
+            if _is_large_or_frontier(state) or _is_nano_or_small(state):
+                logger.info(
+                    "route_after_perception: heuristic-complex but tier prefers planning — planning"
+                )
+                return "planning"
+            logger.info(
+                "route_after_perception: heuristic-complex on MEDIUM — analysis"
+            )
+            return "analysis"
+
+        # Default first round behaviour
+        logger.info("route_after_perception: default first round -> planning")
+        return "planning"
+
+    # Otherwise, default to analysis for additional context
+    logger.info("route_after_perception: default fallback -> analysis")
     return "analysis"
+
+
+def _is_success(result):
+    """Simple result success check - did execution succeed?"""
+    return result and (result.get("ok") or result.get("status") == "ok")
 
 
 def should_after_execution(
     state: Mapping[str, Any],
 ) -> Literal[
-    "perception", "analysis", "step_controller", "verification", "memory_sync"
+    "perception", "analysis", "step_controller", "verification", "memory_sync", "replan"
 ]:
     """
     Decide routing after execution node.
@@ -507,9 +532,22 @@ def should_after_execution(
     W12: If tool_call_count >= max_tool_calls, bail to memory_sync.
 
     NOT WIRED IN compile_agent_graph() — the live router is route_execution.
-    P2-E audit note: used by should_after_execution_with_replan (which IS wired)
+    P2-E audit note: used by should_after_execution (which IS wired)
     and by GraphFactory subgraphs.  Not dead code; do not remove.
     """
+    # Check replan_required first (consolidated from should_after_execution_with_replan)
+    if state.get("replan_required"):
+        # P1-3: Guard against unbounded replan cycles.
+        replan_attempts = int(state.get("replan_attempts") or 0)
+        _replan_cap = 3 if _is_large_or_frontier(state) else 5
+        if replan_attempts >= _replan_cap:
+            logger.warning(
+                f"should_after_execution: replan_attempts={replan_attempts} >= {_replan_cap}, "
+                "giving up replan and routing to memory_sync"
+            )
+            return "memory_sync"
+        return "replan"
+
     # W12: Enforce tool call budget
     tool_call_count = int(state.get("tool_call_count") or 0)
     max_tool_calls = int(state.get("max_tool_calls") or _DEFAULT_MAX_TOOL_CALLS)
@@ -540,11 +578,7 @@ def should_after_execution(
 
     # Check if current step is completed
     if current_plan and current_step < len(current_plan):
-        execution_ok = False
-        if last_result is not None:
-            execution_ok = last_result.get("ok") or last_result.get("status") == "ok"
-
-        if execution_ok:
+        if _is_success(last_result):
             # Don't mutate state in place — LangGraph state must be updated via returned dicts
             # The execution_node already returns an updated current_plan copy; this router
             # just uses the current state to decide routing without needing to mutate.
@@ -625,7 +659,15 @@ def should_after_execution(
                 return "perception"
 
             # After execution, go to perception to decide next action.
-            # Do NOT go to memory_sync - distillation only at task completion.
+            # Read-only tasks that already have results should be able to end. Use more specific check:
+            # - If this is a read tool AND we have meaningful content AND task doesn't imply modification
+            read_tool = last_tool in ("read_file", "fs.read")
+            task_implies_modification = any(kw in task for kw in modification_keywords)
+            if read_tool and not task_implies_modification:
+                logger.info(
+                    "should_after_execution: read-only task complete, routing to memory_sync"
+                )
+                return "memory_sync"
             # Loop guard: if we've been through perception → execution multiple times
             # with successful results and no plan, the model may be generating tool
             # calls indefinitely (common with small models). Cap at 10 rounds.
@@ -645,6 +687,34 @@ def should_after_execution(
     # NOTE: execution_node already increments no_plan_fail_count in state (HR-4 fix);
     # read the already-updated value directly — do NOT add 1 here again.
     no_plan_fail_count = int(state.get("no_plan_fail_count") or 0)
+
+    # FIX: Also verify meaningful output in should_after_execution
+    _result_content = (last_result or {}).get("content") or (last_result or {}).get(
+        "text", ""
+    )
+    _result_error = (last_result or {}).get("error", "") or ""
+    _is_meaningful_result = bool(
+        _result_content
+        and not _result_error.lower().startswith("validation_error")
+        and "format_error" not in _result_error.lower()
+    )
+
+    # Empty plan + no result = first time through, go to analysis for context
+    if last_result is None:
+        logger.info(
+            "should_after_execution: no plan, no result yet - going to analysis for context"
+        )
+        return "analysis"
+
+    if not _is_meaningful_result:
+        # FIX: Don't count format/validation errors as failures
+        # They should retry, not increment fail count
+        logger.info(
+            f"should_after_execution: meaningless result, retrying "
+            f"(error={_result_error[:50] if _result_error else 'empty'})"
+        )
+        return "perception"
+
     if no_plan_fail_count >= 3:
         logger.warning(
             f"should_after_execution: no-plan fail count {no_plan_fail_count} >= 3, "
@@ -661,39 +731,45 @@ def should_after_execution(
 def should_after_execution_with_replan(
     state: Mapping[str, Any],
 ) -> Literal[
-    "perception", "analysis", "step_controller", "verification", "replan", "memory_sync"
+    "perception",
+    "analysis",
+    "step_controller",
+    "verification",
+    "memory_sync",
+    "replan",
 ]:
     """
-    Decide routing after execution node with replan support and token budget checking.
-    If replan_required is set, route to replan_node.
-    If token budget at 85%, route to memory_update for compaction.
-    Otherwise use standard execution routing.
-    W12 budget check is delegated to should_after_execution.
+    Compatibility wrapper kept for GraphFactory subgraphs and tests.
+
+    Delegates to should_after_execution logic but exists as a stable symbol
+    for code that imports this older name. This function is pure and must not
+    mutate the input state or call token_budget compaction helpers.
+
+    P2-E: retained for backward compatibility.
     """
-    # HR-10 fix: removed check_and_prepare_compaction() call from router.
-    # Token budget checking is handled entirely in memory_update_node via
-    # check_budget(state) which calls check_and_prepare_compaction() internally.
-    # Having it in both places caused double-compaction and cooldown timer issues.
+    # Pure delegator — return the same set of routing strings as should_after_execution
+    return should_after_execution(state)  # type: ignore[return-value]
 
-    replan_required = state.get("replan_required")
-    if replan_required:
-        # P1-3: Guard against unbounded replan cycles.
-        # P3b-D: Cap is lower (3) for LARGE/FRONTIER — capable models that
-        # need 3+ replans are stuck, not approaching a solution.
-        replan_attempts = int(state.get("replan_attempts") or 0)
-        _replan_cap = 3 if _is_large_or_frontier(state) else 5
-        if replan_attempts >= _replan_cap:
-            logger.warning(
-                f"should_after_execution_with_replan: replan_attempts={replan_attempts} >= {_replan_cap}, "
-                "giving up replan and routing to memory_sync"
-            )
-            return "memory_sync"
-        logger.info(
-            f"should_after_execution_with_replan: replan required - {replan_required}"
-        )
-        return "replan"
 
-    return should_after_execution(state)
+def should_after_execution_with_compaction(
+    state: Mapping[str, Any],
+) -> Literal[
+    "perception",
+    "analysis",
+    "step_controller",
+    "verification",
+    "memory_sync",
+    "replan",
+]:
+    """
+    Compatibility wrapper that historically prepared token-budget compaction
+    before routing.
+
+    Kept as a pure delegator so callers and tests can rely on the symbol. It
+    intentionally does not call the token-budget compaction helper or
+    mutate the input state — compaction is performed in memory_update_node.
+    """
+    return should_after_execution(state)  # type: ignore[return-value]
 
 
 def should_after_verification(
@@ -1584,37 +1660,8 @@ def _check_no_plan_fast_path(state: Mapping[str, Any]) -> str | None:
         return None
 
     last_tool = state.get("last_tool_name", "")
-    read_only_tools = {
-        # canonical names
-        "read_file",
-        "grep",
-        "glob",
-        "find_symbol",
-        "search_code",
-        "list_files",
-        "fs.read",
-        "fs.list",
-        # common aliases / additional read-only tools
-        "ls",
-        "cat",
-        "read",
-        "find",
-        "find_files",
-        "rg",
-        "bash_readonly",
-        "git_status",
-        "git_diff",
-        "git_log",
-        "batched_file_read",
-        "read_file_bytes",
-        "read_file_chunk",
-        "ast_list_symbols",
-        "find_references",
-        "memory_search",
-        "web_search",
-        "fetch",
-        "browse",
-    }
+    # Reuse the canonical module-level read-only and query tool sets
+    read_only_tools = READ_ONLY_TOOLS
     last_result = state.get("last_result") or {}
     execution_failed = not (
         last_result.get("ok", False) or last_result.get("status") == "ok"
@@ -1629,20 +1676,7 @@ def _check_no_plan_fast_path(state: Mapping[str, Any]) -> str | None:
     # Query tools: the model fetched data in order to answer the user's question.
     # Give the model one more perception turn so it can interpret results and
     # respond in natural language rather than silently ending with "✓ Done".
-    _query_tools = {
-        "glob",
-        "find",
-        "find_files",
-        "grep",
-        "rg",
-        "search_code",
-        "find_symbol",
-        "find_references",
-        "memory_search",
-        "web_search",
-        "fetch",
-        "browse",
-    }
+    _query_tools = QUERY_TOOLS
 
     if last_tool in read_only_tools:
         if last_tool in ("read_file", "fs.read"):
@@ -1840,41 +1874,3 @@ def route_after_wait_for_user(
 
     logger.info("route_after_wait_for_user: preview rejected, going to perception")
     return "perception"
-
-
-def should_after_execution_with_compaction(
-    state: Mapping[str, Any],
-) -> Literal[
-    "perception",
-    "analysis",
-    "step_controller",
-    "verification",
-    "replan",
-    "memory_sync",
-    "execution",
-    "wait_for_user",
-]:
-    """
-    Check token budget AND tool budget for auto-compaction.
-
-    Priority:
-    1. awaiting_user_input → wait_for_user (Preview Mode)
-    2. Tool budget exhausted → memory_sync
-    3. Token budget at threshold → memory_sync (compact via distillation)
-    4. Otherwise → normal routing
-    """
-    awaiting = state.get("awaiting_user_input", False)
-    if awaiting:
-        return "wait_for_user"
-
-    tool_call_count = int(state.get("tool_call_count") or 0)
-    max_tool_calls = int(state.get("max_tool_calls") or _AUTONOMOUS_MAX_TOOL_CALLS)
-    if tool_call_count >= max_tool_calls:
-        logger.warning(
-            f"should_after_execution_with_compaction: tool_call_count={tool_call_count} >= {max_tool_calls}, memory_sync"
-        )
-        return "memory_sync"
-
-    # HR-10 fix: removed check_and_prepare_compaction() call from router.
-    # Token budget checking is handled entirely in memory_update_node.
-    return should_after_execution_with_replan(state)

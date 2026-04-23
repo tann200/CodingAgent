@@ -6,6 +6,8 @@ RefactoringAgent, ReviewAgent, and SkillLearner.
 import pytest
 import shutil
 import json
+
+# ruff: noqa: E501
 from pathlib import Path
 
 from src.core.memory.advanced_features import (

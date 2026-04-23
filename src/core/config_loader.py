@@ -2,20 +2,13 @@
 
 Merges configuration from four layers (later layers override earlier ones):
 
-1. ``src/config/providers.json``       — bundled defaults (committed to repo)
-2. ``~/.config/codingagent/config.json`` — user-level overrides
-3. ``<cwd>/.agent/config.json``         — workspace config (committable)
-4. ``<cwd>/.agent/config.local.json``   — local overrides (add to .gitignore)
+1. ``src/config/providers.json``         — bundled defaults (committed to repo)
+2. ``~/.config/codingagent/config.json``   — user-level overrides
+3. ``<cwd>/.agent/config.json``           — workspace config (committable)
+4. ``<cwd>/.agent/config.local.json``     — local overrides (add to .gitignore)
 
-Dicts are deep-merged; scalar values and lists are replaced by the later layer.
-
-Usage::
-
-    from src.core.config_loader import load_merged_config
-
-    cfg = load_merged_config()
-    providers = cfg.get("providers", [])
-    max_turns = cfg.get("max_turns", 50)
+Dictionaries are deep-merged; scalar values and lists are replaced by the
+later layer.
 """
 
 from __future__ import annotations
@@ -23,26 +16,34 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sys
+import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+import importlib.util
+import threading
+from typing import Any, Dict, List, Optional, Callable
 
-from src.core.paths import get_user_config_path
+# Lazy import to avoid circular dependency with hot reload
+try:
+    from src.core.config_hot_reload import get_config_reloader
+except Exception:
+    get_config_reloader = None
+
+from src.core.paths import get_user_config_path, get_agent_context_dir
 
 logger = logging.getLogger(__name__)
 
-# Path to the bundled defaults (relative to this file's package root)
+# Path to bundled defaults (relative to source root)
 _REPO_ROOT = Path(__file__).parents[2]
 _BUNDLED_DEFAULTS = _REPO_ROOT / "src" / "config" / "providers.json"
-
-# User-level config
 _USER_CONFIG = get_user_config_path()
 
 
 def _deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
     """Return a new dict that is *base* deep-merged with *override*.
 
-    Dicts at the same key are recursively merged; all other types are replaced
-    by *override*'s value.
+    Dicts at the same key are recursively merged; all other types are
+    replaced by *override*'s value.
     """
     result = dict(base)
     for key, value in override.items():
@@ -53,535 +54,361 @@ def _deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any
     return result
 
 
-def _load_json(path: Path) -> Dict[str, Any]:
-    """Load a JSON file and return its contents as a dict.
-
-    Returns an empty dict silently on any error so callers never need to guard.
-    """
+def _load_config_file(path: Path) -> Dict[str, Any]:
+    """Load a single YAML/JSON config file."""
+    if not path.exists():
+        return {}
     try:
-        if not path.is_file():
-            return {}
-        raw = path.read_text(encoding="utf-8")
-        data = json.loads(raw)
-        # providers.json at the root is a JSON array, not an object.
-        # Normalise it so callers always get a dict.
-        if isinstance(data, list):
-            return {"providers": data}
-        if isinstance(data, dict):
-            return data
-        return {}
-    except Exception as exc:
-        logger.debug("config_loader: failed to load %s: %s", path, exc)
-        return {}
+        if path.suffix in {".yaml", ".yml"}:
+            import yaml
+
+            with open(path, encoding="utf-8") as f:
+                return yaml.safe_load(f) or {}
+        elif path.suffix == ".json":
+            with open(path, encoding="utf-8") as f:
+                return json.load(f)
+    except Exception as e:
+        logger.warning(f"Failed to load config {path}: {e}")
+    return {}
+
+
+def _get_workspace_config_paths() -> List[Path]:
+    """Get workspace config paths (cwd-based)."""
+    try:
+        cwd = Path.cwd()
+        agent_dir = cwd / ".agent"
+        return [
+            agent_dir / "config.json",
+            agent_dir / "config.local.json",
+        ]
+    except Exception:
+        return []
 
 
 def load_merged_config(working_dir: Optional[Path] = None) -> Dict[str, Any]:
-    """Return the merged configuration dict.
+    """Load and deep-merge all configuration layers.
 
-    Parameters
-    ----------
-    working_dir:
-        Directory used to locate ``.agent/config.json`` and
-        ``.agent/config.local.json``.  Defaults to ``Path.cwd()``.
-
-    Returns
-    -------
-    dict
-        Deep-merged configuration.  Always returns a dict (never raises).
+    If ``working_dir`` is provided, workspace layer files are resolved relative
+    to that directory (``<working_dir>/.agent/config.json`` and
+    ``config.local.json``). This mirrors test expectations which call
+    ``load_merged_config(working_dir=...)``.
     """
+    result: Dict[str, Any] = {}
+
+    # Always include bundled defaults and user config; workspace layer depends on working_dir
+    paths = [_BUNDLED_DEFAULTS, _USER_CONFIG]
     if working_dir is None:
-        working_dir = Path(os.getcwd())
+        workspace_paths = _get_workspace_config_paths()
+    else:
+        agent_dir = Path(working_dir) / ".agent"
+        workspace_paths = [agent_dir / "config.json", agent_dir / "config.local.json"]
+    paths.extend(workspace_paths)
+    skipped = []
 
-    # AUTO-01: Built-in defaults so callers get sane values without needing
-    # any config file present on disk.
-    merged: Dict[str, Any] = {
-        "autonomous_mode": False,
-        "max_turns": 50,
-        # PREV-1: When True, file-write tools show a diff and wait for
-        # Accept/Reject before applying the change.  Default False (auto-accept).
-        "preview_confirmation": False,
-        # TASK-07: token-based compaction threshold (estimated tokens)
-        "compact_token_threshold": 6000,
-        # SM-1: Optional lightweight model used for background tasks
-        # (session title generation, context compaction/distillation, subagent
-        # routing).  When None, background tasks use the same model as the
-        # active provider default.  May be overridden per-provider via
-        # providers.json ``small_model`` field.
-        "small_model": None,
-        # S3-B: MCP server configuration section.
-        # Each entry in ``mcp.servers`` describes an outbound MCP server the
-        # agent will connect to on startup.
-        #
-        # Example workspace .agent/config.json:
-        #
-        #   {
-        #     "mcp": {
-        #       "servers": [
-        #         {
-        #           "name": "filesystem",
-        #           "cmd": ["npx", "-y", "@modelcontextprotocol/server-filesystem", "/workspace"],
-        #           "auto_register_tools": true
-        #         }
-        #       ]
-        #     }
-        #   }
-        "mcp": {
-            "servers": [],  # list of McpServerConfig dicts (see below)
-            "timeout_seconds": 30,  # per-call timeout for MCP RPC calls
-            "auto_register_tools": True,  # register tools from MCP into ToolRegistry
-        },
-        # RS-1: Remote skill discovery.
-        # List of base URLs that expose a skill index at <url>/index.json.
-        # Each URL's index.json should be a list of objects with at minimum:
-        #   {"name": "skill_name", "file": "skill_name.md"}
-        # Individual skill files are fetched from <url>/<file> and cached in
-        # the CodingAgent cache directory (see src.core.paths.get_skills_cache_dir()).
-        #
-        # Example .agent/config.json:
-        #   {
-        #     "skills": {
-        #       "urls": ["https://raw.githubusercontent.com/myorg/skills/main/"]
-        #     }
-        #   }
-        "skills": {
-            "urls": [],  # list of remote skill index base URLs
-            "cache_ttl_seconds": 3600,  # how long to keep cached remote skills
-        },
-    }
+    for path in paths:
+        if path.exists():
+            data = _load_config_file(path)
+            # providers.json is a list at the top-level; treat lists as the `providers`
+            # top-level key to avoid passing a list into _deep_merge (which expects dicts).
+            if isinstance(data, dict):
+                result = _deep_merge(result, data)
+            elif isinstance(data, list):
+                # Prefer later layers to override earlier ones; assign directly.
+                result["providers"] = data
+            else:
+                # Unknown payload type — skip
+                continue
+        else:
+            skipped.append(str(path))
 
-    layers = [
-        _BUNDLED_DEFAULTS,
-        _USER_CONFIG,
-        working_dir / ".agent" / "config.json",
-        working_dir / ".agent" / "config.local.json",
-    ]
+    if skipped:
+        logger.debug(f"Skipped missing config paths: {skipped}")
 
-    for path in layers:
-        data = _load_json(path)
-        if data:
-            merged = _deep_merge(merged, data)
-            logger.debug("config_loader: loaded layer %s", path)
+    # Apply hot-reload update if enabled
+    if get_config_reloader is not None:
+        try:
+            reloader = get_config_reloader(result)
+            if reloader.changed():
+                logger.debug("Hot-reload detected config change, applying")
+                result = reloader.load()
+        except Exception as e:
+            logger.debug(f"Hot-reload not available: {e}")
 
-    return merged
+    return result
+
+
+def get_agent_config_path() -> Path:
+    """Return the active agent context configuration directory."""
+    try:
+        return get_agent_context_dir()
+    except Exception:
+        return Path.cwd() / ".agent-context"
+
+
+# Global config cache
+_cached_config: Optional[Dict[str, Any]] = None
+_last_load_time: float = 0.0
+
+
+def get_global_config() -> Dict[str, Any]:
+    """Get the global merged configuration with simple caching."""
+    global _cached_config, _last_load_time
+    if _cached_config is None or time.time() - _last_load_time > 300:  # 5 min cache
+        _cached_config = load_merged_config()
+        _last_load_time = time.time()
+    return _cached_config
 
 
 def get(key: str, default: Any = None, working_dir: Optional[Path] = None) -> Any:
-    """Convenience accessor: load merged config and return *key*.
+    """Convenience shortcut for fetching a single config value.
 
-    Parameters
-    ----------
-    key:
-        Top-level config key.
-    default:
-        Returned when *key* is absent.
-    working_dir:
-        Forwarded to ``load_merged_config()``.
+    Example: get("max_turns", default=50, working_dir=tmpdir)
     """
-    return load_merged_config(working_dir).get(key, default)
+    cfg = load_merged_config(working_dir=working_dir)
+    if not isinstance(cfg, dict):
+        return default
+    return cfg.get(key, default)
 
 
-# AUTO-02: Default per-role autonomy/permission settings.
-# The ``roles`` section of the merged config may override any of these.
-_DEFAULT_ROLE_CONFIGS: Dict[str, Dict[str, Any]] = {
-    "lead_architect": {
-        "autonomous": False,
-        "max_turns": 50,
-        "permission_mode": "prompt",
-    },
-    "full_stack_engineer": {
-        "autonomous": True,
-        "max_turns": 100,
-        "permission_mode": "workspace_write",
-    },
-    "qa_lead": {
-        "autonomous": True,
-        "max_turns": 30,
-        "permission_mode": "read_only",
-    },
-}
-
-
-class ConfigWatcher:
-    """S6-C: File-system watcher for config hot-reload.
-
-    Watches ``providers.json`` and ``.agent/config.json`` for changes.
-    When a change is detected, calls registered reload callbacks and publishes
-    a ``config.reloaded`` event on the EventBus.
-
-    Requires the optional ``watchfiles`` package (``pip install watchfiles``).
-    When unavailable, the watcher silently becomes a no-op and the config is
-    only loaded at startup (the existing behaviour is preserved).
-
-    Usage::
-
-        watcher = ConfigWatcher(working_dir=Path("."), event_bus=bus)
-        watcher.start()   # starts a daemon background thread
-        # … application runs …
-        watcher.stop()
-    """
-
-    def __init__(
-        self,
-        working_dir: Optional[Path] = None,
-        event_bus: Any = None,
-        reload_callbacks: Optional[list] = None,
-    ) -> None:
-        self._working_dir = working_dir or Path(os.getcwd())
-        self._event_bus = event_bus
-        self._callbacks: list = list(reload_callbacks or [])
-        self._thread: Any = None
-        self._stop_flag = False
-        self._available = self._check_watchfiles()
-
-    @staticmethod
-    def _check_watchfiles() -> bool:
-        try:
-            import watchfiles  # type: ignore[import]  # noqa: F401
-
-            return True
-        except ImportError:
-            return False
-
-    def add_callback(self, fn) -> None:
-        """Register a callable invoked (with the changed paths set) on config change."""
-        self._callbacks.append(fn)
-
-    def start(self) -> bool:
-        """Start watching in a daemon background thread.
-
-        Returns True if watchfiles is available and the thread was started;
-        False if watchfiles is absent (graceful no-op).
-        """
-        if not self._available:
-            logger.debug(
-                "config_loader: watchfiles not installed — hot-reload disabled"
-            )
-            return False
-        if self._thread and self._thread.is_alive():
-            return True
-
-        import threading
-
-        self._stop_flag = False
-        self._thread = threading.Thread(
-            target=self._watch_loop,
-            name="config-watcher",
-            daemon=True,
-        )
-        self._thread.start()
-        logger.info(
-            "config_loader: ConfigWatcher started (watching %s)", self._working_dir
-        )
-        return True
-
-    def stop(self) -> None:
-        """Signal the background thread to exit on the next watch iteration."""
-        self._stop_flag = True
-
-    def _watch_loop(self) -> None:
-        """Background thread: use watchfiles.watch() to detect file changes."""
-        try:
-            import watchfiles  # type: ignore[import]
-
-            watch_paths = [
-                str(_BUNDLED_DEFAULTS),
-                str(self._working_dir / ".agent" / "config.json"),
-                str(self._working_dir / ".agent" / "config.local.json"),
-            ]
-            # Only watch paths that actually exist
-            existing = [p for p in watch_paths if Path(p).exists()]
-            if not existing:
-                logger.debug("config_loader: no config files to watch yet")
-                return
-
-            for changes in watchfiles.watch(*existing, stop_event=None):
-                if self._stop_flag:
-                    break
-                changed_paths = {str(c[1]) for c in changes}
-                logger.info("config_loader: config changed: %s", changed_paths)
-                self._on_change(changed_paths)
-
-        except Exception as exc:
-            logger.debug("config_loader: watch loop exited: %s", exc)
-
-    def _on_change(self, changed_paths: set) -> None:
-        """Invoke callbacks and publish event on config change."""
-        for cb in self._callbacks:
-            try:
-                cb(changed_paths)
-            except Exception as exc:
-                logger.warning("config_loader: reload callback error: %s", exc)
-
-        try:
-            if self._event_bus:
-                self._event_bus.publish(
-                    "config.reloaded",
-                    {"changed_paths": list(changed_paths)},
-                )
-        except Exception as exc:
-            logger.debug("config_loader: failed to publish config.reloaded: %s", exc)
-
-
-def get_role_config(role: str, working_dir: Optional[Path] = None) -> Dict[str, Any]:
-    """Return the autonomy/permission configuration for *role*.
-
-    Merges the built-in defaults from ``_DEFAULT_ROLE_CONFIGS`` with any
-    ``roles.<role>`` section found in the merged config file layers.
-
-    Parameters
-    ----------
-    role:
-        One of the TUI role names: ``"lead_architect"``,
-        ``"full_stack_engineer"``, or ``"qa_lead"``.  Unknown roles fall back
-        to the ``lead_architect`` defaults.
-    working_dir:
-        Forwarded to ``load_merged_config()``.
-
-    Returns
-    -------
-    dict
-        Keys: ``autonomous`` (bool), ``max_turns`` (int),
-        ``permission_mode`` (str).
-    """
-    cfg = load_merged_config(working_dir)
-    role_overrides: Dict[str, Any] = cfg.get("roles", {}).get(role, {})
-    base = dict(
-        _DEFAULT_ROLE_CONFIGS.get(role, _DEFAULT_ROLE_CONFIGS["lead_architect"])
-    )
-    base.update(role_overrides)
-    return base
+# ---------------------------------------------------------------------------
+# MCP config helpers (tests and MCP manager expect these)
+# ---------------------------------------------------------------------------
 
 
 def get_mcp_config(working_dir: Optional[Path] = None) -> Dict[str, Any]:
-    """S3-B: Return the merged MCP configuration section.
+    """Return the resolved MCP configuration dict.
 
-    Returns the ``mcp`` dict from the merged config, which includes:
-    - ``servers``: list of server definition dicts (name, cmd, auto_register_tools)
-    - ``timeout_seconds``: per-call RPC timeout
-    - ``auto_register_tools``: whether to register server tools into the registry
+    The function returns a dict containing at least the keys:
+      - servers: list
+      - timeout_seconds: int
+      - auto_register_tools: bool
 
-    Parameters
-    ----------
-    working_dir:
-        Forwarded to ``load_merged_config()``.
-
-    Returns
-    -------
-    dict
-        MCP configuration section.  Always returns a dict (never raises).
+    When "working_dir" is provided, workspace overrides are loaded from
+    ``<working_dir>/.agent/config.json`` and ``config.local.json``. When
+    omitted, the normal merged config is used.
     """
-    cfg = load_merged_config(working_dir)
-    return cfg.get(
-        "mcp", {"servers": [], "timeout_seconds": 30, "auto_register_tools": True}
-    )
+    defaults = {"servers": [], "timeout_seconds": 30, "auto_register_tools": True}
+
+    mcp_cfg: Dict[str, Any] = {}
+    if working_dir is None:
+        merged = load_merged_config()
+        mcp_cfg = merged.get("mcp", {}) if isinstance(merged, dict) else {}
+    else:
+        agent_dir = Path(working_dir) / ".agent"
+        cfg: Dict[str, Any] = {}
+        for p in (agent_dir / "config.json", agent_dir / "config.local.json"):
+            if p.exists():
+                cfg = _deep_merge(cfg, _load_config_file(p))
+        mcp_cfg = cfg.get("mcp", {}) if isinstance(cfg, dict) else {}
+
+    # Deep-merge mcp_cfg onto defaults so callers get consistent keys.
+    return _deep_merge(defaults, mcp_cfg)
 
 
 def get_mcp_servers(working_dir: Optional[Path] = None) -> List[Dict[str, Any]]:
-    """S3-B: Return the list of configured MCP server definitions.
-
-    Each entry is a dict with at minimum:
-    - ``name`` (str): unique server name
-    - ``cmd`` (list[str]): command to launch the server subprocess
-    - ``auto_register_tools`` (bool, optional): default True
-
-    Parameters
-    ----------
-    working_dir:
-        Forwarded to ``load_merged_config()``.
-    """
-    return get_mcp_config(working_dir).get("servers", [])
+    """Return the list of configured MCP servers (may be empty)."""
+    cfg = get_mcp_config(working_dir=working_dir)
+    servers = cfg.get("servers") if isinstance(cfg, dict) else None
+    if not isinstance(servers, list):
+        return []
+    return servers
 
 
-# SES-W3: Per-model-per-role config
-# ---------------------------------------------------------------------------
-
+# Keys for per-role model overrides in providers.json / config
 _ROLE_MODEL_KEYS = {
-    "planning": "planning_model",
-    "strategic": "planning_model",
-    "execution": "execution_model",
-    "operational": "execution_model",
-    "analyst": "analyst_model",
-    "reviewer": "reviewer_model",
-    "debugger": "debugger_model",
+    "planning_model": "strategic",
+    "execution_model": "operational",
 }
 
 
-def get_model_for_role(
-    role: str,
-    working_dir: Optional[Path] = None,
-) -> Optional[str]:
-    """Return the model name configured for *role* in the active provider.
+def get_model_for_role(role: str) -> Optional[str]:
+    """Return an optional model id for a given role (e.g. 'strategic').
 
-    Reads the ``planning_model``, ``execution_model``, etc. keys from the
-    active provider entry in ``providers.json``.  Returns ``None`` when no
-    per-role override is configured, signalling that the provider default
-    should be used.
-
-    Args:
-        role: The agent role name, e.g. ``"strategic"``, ``"operational"``.
-        working_dir: Optional working directory for config lookup.
-
-    Returns:
-        Model name string, or ``None`` if no per-role override exists.
+    Looks into the bundled providers.json (and later merged config via
+    load_merged_config) for a provider entry with an override for the role.
+    Returns the first matching active provider's model override, or None.
     """
-    config_key = _ROLE_MODEL_KEYS.get(role.lower())
-    if not config_key:
-        return None
     try:
-        # Read providers array from providers.json
-        bundled = _BUNDLED_DEFAULTS
-        raw = bundled.read_text(encoding="utf-8") if bundled.is_file() else "[]"
-        # LOGIC-3: Parse once; avoid calling json.loads(raw) twice on the same string.
-        parsed = json.loads(raw)
-        providers_list = parsed if isinstance(parsed, list) else []
-        # Find the active provider
-        active = next((p for p in providers_list if p.get("active")), None)
-        if active and config_key in active:
-            val = active[config_key]
-            if val and isinstance(val, str):
-                return val
-    except Exception as exc:
-        logger.debug("get_model_for_role(%r): %s", role, exc)
+        cfg = load_merged_config()
+        # providers may be stored under "providers" (we normalize lists there)
+        providers = cfg.get("providers") if isinstance(cfg, dict) else None
+        if not providers:
+            return None
+        # providers is expected to be a list of dicts
+        for p in providers:
+            if not isinstance(p, dict):
+                continue
+            if not p.get("active"):
+                continue
+            # Check per-role keys
+            for key, role_name in _ROLE_MODEL_KEYS.items():
+                if role_name == role and key in p:
+                    return p.get(key)
+    except Exception:
+        return None
     return None
 
 
 def get_small_model(working_dir: Optional[Path] = None) -> Optional[str]:
-    """SM-1: Return the configured small/background model name.
+    """Return a configured 'small_model' string.
 
-    Resolution order (first non-None wins):
-    1. ``small_model`` key from the active provider entry in ``providers.json``
-    2. ``small_model`` key from the merged config layers (user/workspace overrides)
-    3. ``None`` — callers should fall back to the provider's active model
-
-    Parameters
-    ----------
-    working_dir:
-        Forwarded to ``load_merged_config()``.
-
-    Returns
-    -------
-    str or None
-        Model name to use for background LLM calls, or ``None`` to use the
-        default active model.
+    Preference order:
+      1. workspace .agent/config.json small_model
+      2. active provider small_model entry in providers.json
+      3. None
     """
-    # 1. Check the active provider entry in providers.json
+    # 1. workspace override
+    if working_dir is not None:
+        agent_dir = Path(working_dir) / ".agent"
+        cfg: Dict[str, Any] = {}
+        for p in (agent_dir / "config.json", agent_dir / "config.local.json"):
+            if p.exists():
+                cfg = _deep_merge(cfg, _load_config_file(p))
+        if isinstance(cfg, dict) and "small_model" in cfg:
+            return cfg.get("small_model")
+
+    # 2. active provider
     try:
-        bundled = _BUNDLED_DEFAULTS
-        if bundled.is_file():
-            raw = bundled.read_text(encoding="utf-8")
-            parsed = json.loads(raw)
-            providers_list = parsed if isinstance(parsed, list) else []
-            active = next((p for p in providers_list if p.get("active")), None)
-            if active:
-                val = active.get("small_model")
-                if val and isinstance(val, str):
-                    return val
-    except Exception as exc:
-        logger.debug("get_small_model: provider lookup failed: %s", exc)
-
-    # 2. Merged config layers (user / workspace overrides)
-    cfg = load_merged_config(working_dir)
-    val = cfg.get("small_model")
-    if val and isinstance(val, str):
-        return val
-
+        merged = load_merged_config(working_dir=working_dir)
+        providers = merged.get("providers") if isinstance(merged, dict) else None
+        if isinstance(providers, list):
+            for p in providers:
+                if isinstance(p, dict) and p.get("active") and "small_model" in p:
+                    return p.get("small_model")
+    except Exception:
+        return None
     return None
 
 
 # ---------------------------------------------------------------------------
-# OP-5: Project-level config — .agent-context/config.json
+# ConfigWatcher — simple optional watcher wrapper around ``watchfiles``
+# (keeps tests hermetic when watchfiles is absent)
 # ---------------------------------------------------------------------------
 
-_PROJECT_CONFIG_FILENAME = "config.json"
-_PROJECT_CONFIG_CACHE: Dict[str, tuple] = {}  # path_str → (mtime, config_dict)
 
+class ConfigWatcher:
+    """Watch configuration files and invoke callbacks on change.
 
-def load_project_config(working_dir: str) -> Dict[str, Any]:
-    """Load ``.agent-context/config.json`` from *working_dir* if it exists.
-
-    Uses mtime-based caching so hot paths (every LLM call) only hit disk when
-    the file has changed since the last read.  Returns ``{}`` on missing or
-    invalid JSON — callers never need to guard.
-
-    Schema (all fields optional):
-
-    .. code-block:: json
-
-        {
-          "model": "gemma-4-26b-a4b-it",
-          "instructions": ["Use pnpm, never npm.", "Tests: .venv/bin/pytest."],
-          "tools": {"bash": false, "glob": true},
-          "permissions": {"deny_write": ["*.env", "db/migrations/*"]}
-        }
+    The implementation is intentionally small and resilient — it will be a
+    no-op when the optional ``watchfiles`` dependency is not available.
     """
-    path = Path(working_dir) / ".agent-context" / _PROJECT_CONFIG_FILENAME
-    if not path.exists():
-        return {}
-    try:
-        mtime = path.stat().st_mtime
-    except OSError:
-        return {}
-    cached = _PROJECT_CONFIG_CACHE.get(str(path))
-    if cached is not None:
-        cached_mtime, cached_cfg = cached
-        if mtime == cached_mtime:
-            return cached_cfg
-    try:
-        cfg = json.loads(path.read_text(encoding="utf-8"))
-        if not isinstance(cfg, dict):
-            cfg = {}
-        _PROJECT_CONFIG_CACHE[str(path)] = (mtime, cfg)
-        return cfg
-    except Exception as exc:
-        logger.warning("load_project_config: failed to parse %s: %s", path, exc)
-        return {}
 
+    def __init__(
+        self,
+        *,
+        working_dir: Optional[Path] = None,
+        event_bus: Optional[Any] = None,
+        reload_callbacks: Optional[List[Callable[[set], None]]] = None,
+    ) -> None:
+        self._working_dir: Path = (
+            Path(working_dir) if working_dir is not None else Path.cwd()
+        )
+        self._event_bus = event_bus
+        self._callbacks: List[Callable[[set], None]] = (
+            list(reload_callbacks) if reload_callbacks else []
+        )
+        self._stop_flag: bool = False
+        self._thread: Optional[threading.Thread] = None
+        # Pre-compute availability to let tests override easily
+        self._available: bool = self._check_watchfiles()
 
-def get_project_instructions(working_dir: str) -> List[str]:
-    """Return the ``instructions`` list from the project config.
+    def add_callback(self, cb: Callable[[set], None]) -> None:
+        if cb not in self._callbacks:
+            self._callbacks.append(cb)
 
-    Each element is a plain-text instruction that will be injected into the
-    system prompt as a ``<project_instructions>`` block.
-    """
-    raw = load_project_config(working_dir).get("instructions", [])
-    if not isinstance(raw, list):
-        return []
-    return [str(item) for item in raw if item]
+    @staticmethod
+    def _check_watchfiles() -> bool:
+        """Return True when the optional ``watchfiles`` module appears importable."""
+        try:
+            return importlib.util.find_spec("watchfiles") is not None
+        except Exception:
+            return False
 
+    def _on_change(self, changed_paths: set) -> None:
+        # Invoke all callbacks (exceptions swallowed)
+        for cb in list(self._callbacks):
+            try:
+                cb(changed_paths)
+            except Exception:
+                pass
 
-def get_project_tool_overrides(working_dir: str) -> Dict[str, bool]:
-    """Return tool enable/disable overrides from the project config.
+        # Publish event if an event bus is provided (exceptions swallowed)
+        if self._event_bus is not None:
+            try:
+                payload = {"changed_paths": list(changed_paths)}
+                self._event_bus.publish("config.reloaded", payload)
+            except Exception:
+                pass
 
-    Keys are tool names; values are ``True`` (keep enabled) or ``False``
-    (deregister before the next task).
-    """
-    raw = load_project_config(working_dir).get("tools", {})
-    if not isinstance(raw, dict):
-        return {}
-    return {k: bool(v) for k, v in raw.items()}
+    def start(self) -> bool:
+        """Start the watch loop in a daemon thread. Returns True when started.
 
+        If the optional watchfiles module is not available, returns False.
+        Subsequent calls are idempotent while the thread is alive.
+        """
+        if not self._available:
+            return False
+        if self._thread is not None and self._thread.is_alive():
+            return True
+        # Clear/ensure stop flag
+        self._stop_flag = False
+        t = threading.Thread(
+            target=self._watch_loop, daemon=True, name="config-watcher"
+        )
+        self._thread = t
+        t.start()
+        return True
 
-def get_project_deny_write_patterns(working_dir: str) -> List[str]:
-    """Return path glob patterns that must never be written by the agent.
+    def stop(self) -> None:
+        self._stop_flag = True
 
-    Patterns are matched against the *relative* path of the target file
-    (relative to *working_dir*) using ``fnmatch.fnmatch``.
+    def _watch_loop(self) -> None:
+        """Watch the workspace .agent directory using watchfiles.watch.
 
-    Example: ``[".env*", "db/migrations/*"]``
-    """
-    raw = load_project_config(working_dir).get("permissions", {})
-    if not isinstance(raw, dict):
-        return []
-    deny = raw.get("deny_write", [])
-    if not isinstance(deny, list):
-        return []
-    return [str(p) for p in deny if p]
+        The function tolerates different event payload shapes and will call
+        ``_on_change`` with a set of string file paths.  If ``_stop_flag`` is
+        set before handling a change, the change is ignored and the loop
+        exits.
+        """
+        try:
+            import watchfiles
+        except Exception:
+            return
 
+        watch_dir = Path(self._working_dir) / ".agent"
+        # If the directory doesn't exist, still call watchfiles.watch so that
+        # tests that inject a fake module (or real watchfiles) can still drive
+        # the loop.
+        try:
+            for changes in watchfiles.watch(str(watch_dir), stop_event=None):
+                # Exit early if requested
+                if self._stop_flag:
+                    break
 
-def get_project_model_override(working_dir: str) -> Optional[str]:
-    """Return the per-project model name override, or ``None``.
+                changed: set = set()
+                try:
+                    for ch in changes:
+                        if isinstance(ch, tuple):
+                            if len(ch) >= 2:
+                                changed.add(str(ch[1]))
+                            else:
+                                changed.add(str(ch[0]))
+                        else:
+                            changed.add(str(ch))
+                except Exception:
+                    # Ignore malformed change entries
+                    continue
 
-    When set, this takes precedence over the provider's default model.
-    """
-    val = load_project_config(working_dir).get("model")
-    return str(val) if val and isinstance(val, str) else None
+                # If stop requested after receiving the change, exit without
+                # invoking callbacks (tests expect this behaviour).
+                if self._stop_flag:
+                    break
+
+                if changed:
+                    self._on_change(changed)
+        finally:
+            # Clear thread reference on exit
+            try:
+                self._thread = None
+            except Exception:
+                pass

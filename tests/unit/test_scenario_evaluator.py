@@ -9,6 +9,8 @@ import json
 import pytest
 import shutil
 from datetime import datetime
+
+# ruff: noqa: E501
 from pathlib import Path
 
 from src.core.evaluation.scenario_evaluator import (

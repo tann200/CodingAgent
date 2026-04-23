@@ -91,6 +91,7 @@ def check_read_before_write(path: str) -> Dict[str, Any]:
 
 def reset_guardrail_state() -> None:
     """Reset read-tracking state. Called by Orchestrator.start_new_task()."""
-    _read_files_var.set(set())
+    # BUG-FIX: acquire lock before clearing to prevent race with mark_file_read
     with _global_lock:
+        _read_files_var.set(set())
         _global_read_files.clear()

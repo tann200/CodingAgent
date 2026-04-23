@@ -8,6 +8,8 @@ Covers:
   CAP-5   benchmarks/bench_pipeline.py scenarios complete under 30 s
 """
 
+
+# ruff: noqa: E501
 from __future__ import annotations
 
 import json

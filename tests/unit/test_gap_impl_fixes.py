@@ -29,6 +29,8 @@ import os
 import sys
 import threading
 from pathlib import Path
+
+# ruff: noqa: E501
 from unittest.mock import MagicMock, patch, call
 
 import pytest

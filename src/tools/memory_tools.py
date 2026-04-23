@@ -19,6 +19,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from src.core.paths import get_memory_path
+from src.core.memory.security import scan_memory_content
+from src.core.memory.file_lock import locked_file
 from src.tools.tools_config import agent_context_path
 from src.tools._tool import tool, PermissionKind
 
@@ -126,7 +128,12 @@ def memory_search(
     todo_path = ac / "todo.json"
     if todo_path.exists():
         try:
-            todos = json.loads(todo_path.read_text())
+            try:
+                from src.tools.todo_tools import _load_todo_json
+
+                todos = _load_todo_json(str(ac.parent))
+            except Exception:
+                todos = json.loads(todo_path.read_text())
             for t in todos:
                 desc = t.get("description", "")
                 if query.lower() in desc.lower():
@@ -196,6 +203,11 @@ def memory_save(
             "error": f"content too long ({len(content)} chars, max 1000). Be concise.",
         }
 
+    # Security check: scan for injection/exfiltration patterns
+    scan_error = scan_memory_content(content)
+    if scan_error:
+        return {"status": "error", "error": scan_error}
+
     cat = (category or "note").strip().lower()
     ts = time.strftime("%Y-%m-%d %H:%M")
     entry = f"- [{cat}] {ts}: {content}\n"
@@ -203,27 +215,32 @@ def memory_save(
     try:
         _MEMORY_FILE.parent.mkdir(parents=True, exist_ok=True)
 
-        # Read existing content
-        existing = ""
-        if _MEMORY_FILE.exists():
+        # TASK-REL-2: serialise the entire read-modify-write under an exclusive
+        # OS-level file lock so concurrent memory_save calls (e.g. from two
+        # async tasks or two processes) do not interleave their writes.
+        with locked_file(_MEMORY_FILE, mode="a+") as fh:
+            # Read existing content (seek to start after opening with "a+")
+            fh.seek(0)
             try:
-                existing = _MEMORY_FILE.read_text(encoding="utf-8")
+                existing = fh.read()
             except Exception:
                 existing = ""
 
-        # Trim oldest entries if file would exceed size limit
-        new_content = existing + entry
-        if len(new_content.encode("utf-8")) > _MEMORY_MAX_BYTES:
-            lines = new_content.splitlines(keepends=True)
-            while lines and len("".join(lines).encode("utf-8")) > _MEMORY_MAX_BYTES:
-                lines.pop(0)
-            new_content = "".join(lines)
+            # Trim oldest entries if file would exceed size limit
+            new_content = existing + entry
+            if len(new_content.encode("utf-8")) > _MEMORY_MAX_BYTES:
+                lines = new_content.splitlines(keepends=True)
+                while lines and len("".join(lines).encode("utf-8")) > _MEMORY_MAX_BYTES:
+                    lines.pop(0)
+                new_content = "".join(lines)
 
-        # Atomic write
-        fd, tmp_path = tempfile.mkstemp(dir=str(_MEMORY_FILE.parent), suffix=".tmp")
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(new_content)
-        os.replace(tmp_path, str(_MEMORY_FILE))
+            # Write atomically: write to a sibling temp file, then os.replace.
+            # We still hold the OS lock during the replace so no other process
+            # can read a partial state.
+            fd, tmp_path = tempfile.mkstemp(dir=str(_MEMORY_FILE.parent), suffix=".tmp")
+            with os.fdopen(fd, "w", encoding="utf-8") as tmp_fh:
+                tmp_fh.write(new_content)
+            os.replace(tmp_path, str(_MEMORY_FILE))
 
         return {
             "status": "ok",

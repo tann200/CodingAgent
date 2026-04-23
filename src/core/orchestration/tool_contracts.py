@@ -40,8 +40,16 @@ def validate_patch_size(patch: str) -> Dict[str, Any]:
         return {"status": "error", "error": "Empty patch"}
 
     # Count actual diff lines (lines starting with + or - but not +++ / ---  headers)
-    added_lines = sum(1 for line in patch.splitlines() if line.startswith("+") and not line.startswith("+++"))
-    removed_lines = sum(1 for line in patch.splitlines() if line.startswith("-") and not line.startswith("---"))
+    added_lines = sum(
+        1
+        for line in patch.splitlines()
+        if line.startswith("+") and not line.startswith("+++")
+    )
+    removed_lines = sum(
+        1
+        for line in patch.splitlines()
+        if line.startswith("-") and not line.startswith("---")
+    )
     total_changes = added_lines + removed_lines
 
     if total_changes > MAX_PATCH_LINES:

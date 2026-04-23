@@ -13,6 +13,8 @@ HR-8: start_new_task() clears PreviewService.pending_previews
 HR-9: start_new_task() clears stale delegations
 """
 
+# ruff: noqa: E501
+
 from __future__ import annotations
 
 import asyncio

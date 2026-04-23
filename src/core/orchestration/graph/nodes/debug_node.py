@@ -52,7 +52,6 @@ async def debug_node(state: StateLike, config: Any) -> Dict[str, Any]:
     current_attempt: int = int(state.get("debug_attempts") or 0)
     max_attempts: int = int(state.get("max_debug_attempts") or 3)
     total_debug_attempts: int = int(state.get("total_debug_attempts") or 0)
-    last_error_type: str = state.get("last_debug_error_type") or ""
     last_result = state.get("last_result") or {}
     verification_result = state.get("verification_result") or {}
     # DOOM-LOOP FIX: Use original_task as the authoritative task string.
@@ -124,11 +123,21 @@ async def debug_node(state: StateLike, config: Any) -> Dict[str, Any]:
     # before the MAX_TOTAL_DEBUG hard cap (9) stopped it.  The error type is now
     # used only for routing (TYPE_GUIDANCE), not for resetting retry budgets.
 
-    # Persist error to session store
+    # Persist error to session store (lightweight caller instrumentation)
     try:
+        import threading as _thr
+
         if orchestrator and hasattr(orchestrator, "session_store"):
+            _sid = getattr(orchestrator, "_current_task_id", None)
+            _thread_name = getattr(_thr.current_thread(), "name", "unknown")
+            logger.debug(
+                "session_store: write (session=%r, thread=%s, site=%s)",
+                _sid,
+                _thread_name,
+                "debug_node:add_error",
+            )
             orchestrator.session_store.add_error(
-                session_id=getattr(orchestrator, "_current_task_id", "unknown"),
+                session_id=_sid,
                 error_type=error_type,
                 error_message=error_summary[:500],
                 context={"attempt": current_attempt + 1},
@@ -158,9 +167,184 @@ Generate a YAML tool call to fix the issue. Use edit_file, write_file, or bash a
                 for n, m in orchestrator.tool_registry.tools.items()
             ]
 
+        # Conservative provider/model resolution used across the codebase.
+        # 1) orchestrator.get_provider_capabilities() (authoritative)
+        # 2) ProviderManager.get_provider_capabilities(adapter)
+        # 3) adapter attributes (provider, default_model, models)
+        # Only accept concrete strings (no MagicMock placeholders). Guard imports
+        # locally to avoid circular import issues in tests.
         provider_capabilities = {}
-        if orchestrator and hasattr(orchestrator, "get_provider_capabilities"):
-            provider_capabilities = orchestrator.get_provider_capabilities()
+        try:
+            try:
+                from src.core.utils.strings import (
+                    valid_str as _valid_str,
+                    extract_str as _extract_str,
+                )
+            except Exception:
+
+                def _valid_str(x: object) -> bool:
+                    return (
+                        isinstance(x, str)
+                        and bool(x.strip())
+                        and ("MagicMock" not in x)
+                    )
+
+                def _extract_str(candidate: object) -> str | None:
+                    if candidate is None:
+                        return None
+                    if isinstance(candidate, dict):
+                        for key in (
+                            "provider_name",
+                            "name",
+                            "id",
+                            "key",
+                            "model",
+                            "default_model",
+                            "type",
+                        ):
+                            val = candidate.get(key)
+                            if isinstance(val, str) and _valid_str(val):
+                                return val.strip()
+                        return None
+                    if isinstance(candidate, str) and _valid_str(candidate):
+                        return candidate.strip()
+                    return None
+
+            caps: dict = {}
+
+            # 1) Orchestrator-level capabilities (authoritative)
+            try:
+                if (
+                    orchestrator
+                    and hasattr(orchestrator, "get_provider_capabilities")
+                    and callable(getattr(orchestrator, "get_provider_capabilities"))
+                ):
+                    _rc = orchestrator.get_provider_capabilities()
+                    if isinstance(_rc, dict) and _rc:
+                        caps = dict(_rc)
+            except Exception:
+                caps = {}
+
+            # 2) ProviderManager fallback
+            if not caps:
+                try:
+                    from src.core.inference.llm_manager import (
+                        get_provider_manager as _gpm,
+                    )
+
+                    _pm = _gpm()
+                    adapter_for_pm = getattr(orchestrator, "_adapter", None)
+                    _rc = _pm.get_provider_capabilities(adapter_for_pm)
+                    if isinstance(_rc, dict) and _rc:
+                        caps = dict(_rc)
+                except Exception:
+                    caps = caps or {}
+
+            # 3) Adapter-only last resort (no network probes)
+            if not caps:
+                adapter_for_inspect = getattr(orchestrator, "adapter", None) or getattr(
+                    orchestrator, "_adapter", None
+                )
+                if adapter_for_inspect:
+                    try:
+                        prov_attr = getattr(adapter_for_inspect, "provider", None)
+                    except Exception:
+                        prov_attr = None
+                    provider_name = None
+                    try:
+                        provider_name = _extract_str(prov_attr)
+                    except Exception:
+                        provider_name = None
+                    if not provider_name:
+                        try:
+                            provider_name = _extract_str(
+                                getattr(adapter_for_inspect, "name", None)
+                            )
+                        except Exception:
+                            provider_name = None
+
+                    model = None
+                    try:
+                        model = _extract_str(
+                            getattr(adapter_for_inspect, "default_model", None)
+                        )
+                    except Exception:
+                        model = None
+                    if not model:
+                        try:
+                            models_attr = getattr(adapter_for_inspect, "models", None)
+                            if isinstance(models_attr, (list, tuple)):
+                                for m in models_attr:
+                                    mm = _extract_str(m)
+                                    if mm:
+                                        model = mm
+                                        break
+                            else:
+                                model = _extract_str(models_attr)
+                        except Exception:
+                            model = None
+
+                    supports_native_tools = False
+                    try:
+                        if isinstance(prov_attr, dict):
+                            supports_native_tools = bool(
+                                prov_attr.get("supports_native_tools", False)
+                            )
+                        else:
+                            supports_native_tools = bool(
+                                getattr(
+                                    adapter_for_inspect, "supports_native_tools", False
+                                )
+                            )
+                    except Exception:
+                        supports_native_tools = False
+
+                    provider_family = "default"
+                    try:
+                        from src.core.orchestration.provider_capabilities import (
+                            _map_provider_family_impl as _map_pf,
+                        )
+
+                        provider_family = _map_pf(provider_name or "")
+                    except Exception:
+                        provider_family = "default"
+
+                    caps = {
+                        "supports_native_tools": bool(supports_native_tools),
+                        "provider_family": provider_family,
+                        "model": model,
+                        "provider_name": provider_name or "",
+                    }
+
+            # Sanitize final caps
+            try:
+                _pname = _extract_str(
+                    caps.get("provider_name")
+                    or caps.get("provider")
+                    or caps.get("name")
+                )
+            except Exception:
+                _pname = None
+            try:
+                _model = _extract_str(caps.get("model") or caps.get("default_model"))
+            except Exception:
+                _model = None
+
+            _pf = (
+                caps.get("provider_family")
+                if isinstance(caps.get("provider_family"), str)
+                else None
+            )
+            _pf = _pf or "default"
+
+            provider_capabilities = {
+                "supports_native_tools": bool(caps.get("supports_native_tools", False)),
+                "provider_family": _pf,
+                "model": _model,
+                "provider_name": _pname or "",
+            }
+        except Exception:
+            provider_capabilities = {}
 
         messages = builder.build_prompt(
             role_name="debugger",
@@ -175,13 +359,88 @@ Generate a YAML tool call to fix the issue. Use edit_file, write_file, or bash a
 
         provider = None
         model = None
-        if orchestrator.adapter:
-            if hasattr(orchestrator.adapter, "provider") and isinstance(
-                orchestrator.adapter.provider, dict
+
+        def _valid_str(x: object) -> bool:
+            try:
+                from src.core.utils.strings import valid_str as _vs
+
+                return _vs(x)
+            except Exception:
+                return isinstance(x, str) and bool(x.strip()) and ("MagicMock" not in x)
+
+        # Prefer orchestrator-level capabilities first
+        try:
+            if hasattr(orchestrator, "get_provider_capabilities") and callable(
+                getattr(orchestrator, "get_provider_capabilities")
             ):
-                provider = orchestrator.adapter.provider.get("name") or "None"
-            if hasattr(orchestrator.adapter, "models") and orchestrator.adapter.models:
-                model = orchestrator.adapter.models[0]
+                caps = orchestrator.get_provider_capabilities()
+                if isinstance(caps, dict):
+                    p_raw = caps.get("provider_name") or caps.get("provider")
+                    if _valid_str(p_raw):
+                        provider = p_raw
+                    m_raw = caps.get("model")
+                    if _valid_str(m_raw):
+                        model = m_raw
+        except Exception:
+            provider = None
+            model = None
+
+        # Secondary: ProviderManager with the adapter
+        # Only consult ProviderManager if an adapter instance is present. When
+        # there is no adapter (e.g., in some headless/test contexts) we must not
+        # infer a model from a global provider manager — prefer explicit None.
+        if (provider is None or model is None) and getattr(
+            orchestrator, "adapter", None
+        ) is not None:
+            try:
+                from src.core.inference.llm_manager import get_provider_manager
+
+                pm = get_provider_manager()
+                if pm:
+                    try:
+                        caps = pm.get_provider_capabilities(
+                            getattr(orchestrator, "adapter", None)
+                        )
+                        if isinstance(caps, dict):
+                            p_raw = caps.get("provider_name") or caps.get("provider")
+                            if provider is None and _valid_str(p_raw):
+                                provider = p_raw
+                            m_raw = caps.get("model")
+                            if model is None and _valid_str(m_raw):
+                                model = m_raw
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+        # Final fallback: legacy adapter inspection
+        if (provider is None or model is None) and getattr(
+            orchestrator, "adapter", None
+        ):
+            try:
+                ad = orchestrator.adapter
+                if hasattr(ad, "provider") and isinstance(ad.provider, dict):
+                    provider = provider or (
+                        ad.provider.get("name") or ad.provider.get("type") or None
+                    )
+                if hasattr(ad, "models") and getattr(ad, "models"):
+                    try:
+                        models_attr = getattr(ad, "models")
+                        if isinstance(models_attr, list) and models_attr:
+                            model = model or models_attr[0]
+                    except Exception:
+                        pass
+                else:
+                    # Accept default_model only when it's a concrete non-empty string
+                    try:
+                        if hasattr(ad, "default_model"):
+                            dm = getattr(ad, "default_model")
+                            if isinstance(dm, str) and dm.strip():
+                                model = model or dm
+                    except Exception:
+                        pass
+            except Exception:
+                pass
 
         cancel_event = state.get("cancel_event")
         if not cancel_event:
@@ -253,8 +512,13 @@ Generate a YAML tool call to fix the issue. Use edit_file, write_file, or bash a
 
         content = ""
         if isinstance(resp, dict):
-            if resp.get("choices"):
-                ch = resp["choices"][0].get("message")
+            _choices = resp.get("choices")
+            if _choices and len(_choices) > 0:
+                ch = (
+                    _choices[0].get("message")
+                    if isinstance(_choices[0], dict)
+                    else None
+                )
                 if isinstance(ch, dict):
                     content = ch.get("content") or ""
 

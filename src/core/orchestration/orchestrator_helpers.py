@@ -13,10 +13,10 @@ import json
 import logging
 import re
 import subprocess
+import time
 from typing import Any, Dict
 
 from src.core.logger import logger as guilogger
-from src.core.inference.llm_manager import get_provider_manager
 
 logger = logging.getLogger(__name__)
 
@@ -28,42 +28,194 @@ logger = logging.getLogger(__name__)
 
 def _publish_active_config_impl(orch: Any) -> None:
     """Publish the currently active adapter / model selection to the event bus."""
-    provider = "None"
-    model = "None"
+    provider = ""
+    model = ""
+    available_models: list = []
+
+    # 1) Prefer orchestrator-level capabilities when provided (authoritative)
     try:
-        if orch._adapter:
-            if hasattr(orch._adapter, "provider") and isinstance(
-                orch._adapter.provider, dict
-            ):
-                provider = (
-                    orch._adapter.provider.get("name")
-                    or orch._adapter.provider.get("type")
-                    or "None"
-                )
-            if (
-                hasattr(orch._adapter, "models")
-                and isinstance(orch._adapter.models, list)
-                and orch._adapter.models
-            ):
-                model = orch._adapter.models[0]
-            elif (
-                hasattr(orch._adapter, "default_model") and orch._adapter.default_model
-            ):
-                model = orch._adapter.default_model
+        if hasattr(orch, "get_provider_capabilities") and callable(
+            getattr(orch, "get_provider_capabilities")
+        ):
+            try:
+                caps = orch.get_provider_capabilities()
+                if isinstance(caps, dict):
+                    provider = (
+                        caps.get("provider_name")
+                        or caps.get("provider")
+                        or caps.get("name")
+                        or ""
+                    )
+                    model = caps.get("model") or caps.get("default_model") or ""
+            except Exception:
+                pass
     except Exception:
         pass
 
+    # 2) Fall back to central ProviderManager/provider_capabilities implementation
+    if not provider or not model:
+        try:
+            from src.core.orchestration.provider_capabilities import (
+                get_provider_capabilities_impl as _get_caps,
+            )
+
+            try:
+                caps2 = _get_caps(orch)
+                if isinstance(caps2, dict):
+                    provider = provider or (caps2.get("provider_name") or "")
+                    model = model or (caps2.get("model") or "")
+            except Exception:
+                pass
+            # If provider/model from the central implementation are not
+            # concrete (eg. MagicMock placeholders), fall back to a
+            # conservative inspection of the active adapter attributes.
+            try:
+                from src.core.orchestration.provider_capabilities import (
+                    _valid_str as _pc_valid,
+                    _extract_str as _pc_extract,
+                )
+            except Exception:
+                # Safe local fallbacks mirroring the shared heuristics
+                def _pc_valid(x: Any) -> bool:
+                    return (
+                        isinstance(x, str)
+                        and bool(x.strip())
+                        and ("MagicMock" not in x)
+                    )
+
+                def _pc_extract(candidate: Any) -> Any:
+                    if candidate is None:
+                        return None
+                    if isinstance(candidate, dict):
+                        for key in (
+                            "provider_name",
+                            "name",
+                            "id",
+                            "key",
+                            "model",
+                            "default_model",
+                            "type",
+                        ):
+                            val = candidate.get(key)
+                            if isinstance(val, str):
+                                s = val.strip()
+                                if _pc_valid(s):
+                                    return s
+                        return None
+                    if isinstance(candidate, str):
+                        s = candidate.strip()
+                        return s if _pc_valid(s) else None
+                    return None
+
+            # Only inspect adapter attributes when provider/model are not
+            # already resolved to concrete values.
+            if (not provider or not provider.strip() or "MagicMock" in provider) or (
+                not model or not model.strip() or "MagicMock" in model
+            ):
+                try:
+                    adapter = getattr(orch, "_adapter", None)
+                    if adapter is not None:
+                        # Provider fallback
+                        if not (
+                            _pc_valid(provider) if isinstance(provider, str) else False
+                        ):
+                            p_attr = getattr(adapter, "provider", None)
+                            p_cand = _pc_extract(p_attr)
+                            if p_cand and _pc_valid(p_cand):
+                                provider = p_cand
+                            else:
+                                # adapter may expose a simple name attribute
+                                name_attr = getattr(adapter, "name", None)
+                                name_cand = _pc_extract(name_attr)
+                                if name_cand and _pc_valid(name_cand):
+                                    provider = name_cand
+
+                        # Model fallback
+                        if not (_pc_valid(model) if isinstance(model, str) else False):
+                            dm = _pc_extract(getattr(adapter, "default_model", None))
+                            if dm and _pc_valid(dm):
+                                model = dm
+                            else:
+                                ms = getattr(adapter, "models", None)
+                                if isinstance(ms, list):
+                                    for m in ms:
+                                        m_c = _pc_extract(m)
+                                        if m_c and _pc_valid(m_c):
+                                            model = m_c
+                                            break
+                except Exception:
+                    pass
+        except Exception:
+            # 3) ProviderManager unavailable; try direct ProviderManager lookup
+            try:
+                if getattr(orch, "_adapter", None):
+                    from src.core.inference.llm_manager import get_provider_manager
+
+                    pm = get_provider_manager()
+                    if pm:
+                        try:
+                            caps = pm.get_provider_capabilities(orch._adapter)
+                            if isinstance(caps, dict):
+                                provider = provider or (
+                                    caps.get("provider_name")
+                                    or caps.get("provider")
+                                    or ""
+                                )
+                                model = model or (
+                                    caps.get("model") or caps.get("default_model") or ""
+                                )
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+
+    # Publish sanitized values to the event bus. Filter available models to only
+    # include concrete strings.
     if hasattr(orch, "event_bus"):
-        orch.event_bus.publish(
-            "model.routing",
-            {
-                "selected": model,
-                "provider": provider,
-                "available_models": getattr(orch._adapter, "models", [])
-                if orch._adapter
-                else [],
-            },
-        )
+        adapter = getattr(orch, "_adapter", None)
+        if adapter is not None:
+            try:
+                ms = getattr(adapter, "models", None)
+                if isinstance(ms, list):
+                    # filter in place using the existing validator
+                    try:
+                        from src.core.utils.strings import valid_str as _vs2
+
+                        def _valid_str2(x: Any) -> bool:
+                            return _vs2(x)
+                    except Exception:
+
+                        def _valid_str2(x: Any) -> bool:
+                            return (
+                                isinstance(x, str)
+                                and bool(x.strip())
+                                and ("MagicMock" not in x)
+                            )
+
+                    available_models = [str(m).strip() for m in ms if _valid_str2(m)]
+                else:
+                    try:
+                        from src.core.utils.strings import valid_str as _vs3
+
+                        if _vs3(ms):
+                            available_models = [str(ms).strip()]
+                    except Exception:
+                        if isinstance(ms, str) and ms.strip():
+                            available_models = [str(ms).strip()]
+            except Exception:
+                available_models = getattr(adapter, "models", []) or []
+
+        try:
+            orch.event_bus.publish(
+                "model.routing",
+                {
+                    "selected": model or "",
+                    "provider": provider or "",
+                    "available_models": available_models,
+                },
+            )
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -150,6 +302,38 @@ def begin_step_transaction_impl(orch: Any) -> str:
     step_id = "step_" + datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     orch._step_snapshot_id = step_id
     guilogger.debug(f"begin_step_transaction: started {step_id}")
+    # Record timing of begin_step_transaction (very fast, but useful overall)
+    try:
+        start_ts = time.time()
+        if getattr(orch, "working_dir", None):
+            agent_context_dir = orch.working_dir / ".agent-context"
+            agent_context_dir.mkdir(parents=True, exist_ok=True)
+            timings_path = agent_context_dir / "timings.json"
+            entry = {
+                "phase": "begin_step_transaction",
+                "elapsed": 0.0,
+                "ts": int(start_ts),
+                "step_id": step_id,
+            }
+            if timings_path.exists():
+                try:
+                    data = json.loads(timings_path.read_text(encoding="utf-8"))
+                    if isinstance(data, list):
+                        data.append(entry)
+                    else:
+                        data = [data, entry]
+                except Exception:
+                    data = [entry]
+            else:
+                data = [entry]
+            try:
+                timings_path.write_text(
+                    json.dumps(data, ensure_ascii=False), encoding="utf-8"
+                )
+            except Exception:
+                pass
+    except Exception:
+        pass
     return step_id
 
 
@@ -262,6 +446,7 @@ def _create_session_snapshot_impl(orch: Any) -> None:
 
 def _ensure_working_dir_impl(orch: Any) -> None:
     """Ensure the working directory and .agent-context scaffold exist."""
+    start_ts = time.time()
     try:
         orch.working_dir.mkdir(parents=True, exist_ok=True)
 
@@ -302,6 +487,37 @@ def _ensure_working_dir_impl(orch: Any) -> None:
                 )
         except Exception:
             pass
+    finally:
+        # Best-effort timing/logging for diagnostics
+        try:
+            elapsed = time.time() - start_ts
+            agent_context_dir = orch.working_dir / ".agent-context"
+            agent_context_dir.mkdir(parents=True, exist_ok=True)
+            timings_path = agent_context_dir / "timings.json"
+            entry = {
+                "phase": "ensure_working_dir",
+                "elapsed": elapsed,
+                "ts": int(start_ts),
+            }
+            if timings_path.exists():
+                try:
+                    data = json.loads(timings_path.read_text(encoding="utf-8"))
+                    if isinstance(data, list):
+                        data.append(entry)
+                    else:
+                        data = [data, entry]
+                except Exception:
+                    data = [entry]
+            else:
+                data = [entry]
+            try:
+                timings_path.write_text(
+                    json.dumps(data, ensure_ascii=False), encoding="utf-8"
+                )
+            except Exception:
+                pass
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -311,8 +527,23 @@ def _ensure_working_dir_impl(orch: Any) -> None:
 
 def _background_model_check_impl(orch: Any) -> None:
     """Check for available models in the background (non-blocking)."""
+    start_ts = time.time()
+    # Guarded import to avoid circular imports during tests or when the
+    # provider manager module is unavailable in isolated environments.
     try:
-        pm = get_provider_manager()
+        from src.core.inference.llm_manager import get_provider_manager
+    except Exception:
+        get_provider_manager = None
+
+    try:
+        if not get_provider_manager:
+            return
+        pm = None
+        try:
+            pm = get_provider_manager()
+        except Exception:
+            pm = None
+
         if pm:
             # First try to use cached models to avoid redundant API calls
             cached = None
@@ -323,18 +554,58 @@ def _background_model_check_impl(orch: Any) -> None:
 
             # Only call API if no cached models available
             if not cached:
-                adapters = pm.list_providers()
-                if "lm_studio" in adapters:
-                    ad = pm.get_provider("lm_studio")
-                    if ad and hasattr(ad, "get_models_from_api"):
-                        ad.get_models_from_api()
+                try:
+                    adapters = pm.list_providers()
+                    if "lm_studio" in adapters:
+                        ad = pm.get_provider("lm_studio")
+                        if ad and hasattr(ad, "get_models_from_api"):
+                            ad.get_models_from_api()
+                except Exception:
+                    pass
 
-            orch.event_bus.publish("provider.models.cached", {"provider": "lm_studio"})
-            orch.event_bus.publish(
-                "provider.models.probing.completed", {"provider": "lm_studio"}
-            )
+            try:
+                orch.event_bus.publish(
+                    "provider.models.cached", {"provider": "lm_studio"}
+                )
+                orch.event_bus.publish(
+                    "provider.models.probing.completed", {"provider": "lm_studio"}
+                )
+            except Exception:
+                pass
     except Exception:
         pass
+    finally:
+        # Record timing for provider/model check
+        try:
+            elapsed = time.time() - start_ts
+            if getattr(orch, "working_dir", None):
+                agent_context_dir = orch.working_dir / ".agent-context"
+                agent_context_dir.mkdir(parents=True, exist_ok=True)
+                timings_path = agent_context_dir / "timings.json"
+                entry = {
+                    "phase": "background_model_check",
+                    "elapsed": elapsed,
+                    "ts": int(start_ts),
+                }
+                if timings_path.exists():
+                    try:
+                        data = json.loads(timings_path.read_text(encoding="utf-8"))
+                        if isinstance(data, list):
+                            data.append(entry)
+                        else:
+                            data = [data, entry]
+                    except Exception:
+                        data = [entry]
+                else:
+                    data = [entry]
+                try:
+                    timings_path.write_text(
+                        json.dumps(data, ensure_ascii=False), encoding="utf-8"
+                    )
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------

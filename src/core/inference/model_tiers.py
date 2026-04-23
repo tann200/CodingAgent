@@ -145,8 +145,8 @@ def classify_model(model_name: str, context_window: int = 0) -> ModelTier:
         if context_window <= 131072:
             return ModelTier.MEDIUM
         if context_window <= 200000:
-            return ModelTier.LARGE   # 256K models (Gemma 4 26B A4B, Gemma 4 31B)
-        return ModelTier.FRONTIER    # >200K = frontier-class context
+            return ModelTier.LARGE  # 256K models (Gemma 4 26B A4B, Gemma 4 31B)
+        return ModelTier.FRONTIER  # >200K = frontier-class context
 
     # ── Name keyword heuristics ───────────────────────────────────────────────
     if any(k in name_lower for k in ("mini", "tiny", "nano", "phi-2", "phi2")):

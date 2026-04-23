@@ -16,6 +16,8 @@ Regression tests verify:
 3. A dict with these keys can be constructed without error
 """
 
+
+# ruff: noqa: E501
 import pytest
 
 

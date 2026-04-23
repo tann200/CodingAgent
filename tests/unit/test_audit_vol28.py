@@ -11,6 +11,8 @@ Covers:
 """
 
 import asyncio
+
+# ruff: noqa: E501
 import inspect
 
 

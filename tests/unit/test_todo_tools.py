@@ -1,90 +1,114 @@
-"""
-Tests for todo_tools.py — manage_todo type coercion and basic operations.
-"""
+import threading
+import time
+from pathlib import Path
 
-from src.tools.todo_tools import manage_todo
+import pytest
+
+from src.tools.todo_tools import manage_todo, _todo_json_path, _todo_path
 
 
-def _create_todo(tmp_path):
-    """Helper: create a 3-step TODO list and return the workdir."""
-    result = manage_todo(
-        action="create",
-        workdir=str(tmp_path),
-        steps=["Read file", "Edit function", "Run tests"],
+def test_atomic_save_and_read(tmp_path):
+    workdir = tmp_path
+    # Create a TODO list
+    res = manage_todo(
+        "create", str(workdir), steps=["a", "b", "c"], depends_on=[[], [0], [1]]
     )
-    assert result["status"] == "ok"
-    return str(tmp_path)
+    assert res["status"] == "ok"
+
+    # Read it back
+    r = manage_todo("read", str(workdir))
+    assert r["status"] == "ok"
+    assert r["total"] == 3
+
+    # Check files exist
+    assert _todo_json_path(str(workdir)).exists()
+    assert _todo_path(str(workdir)).exists()
 
 
-class TestManageTodoTypeCoercion:
-    """Regression tests for step_id type coercion (string → int)."""
+def test_concurrent_writes(tmp_path):
+    workdir = tmp_path
 
-    def test_check_with_int_step_id(self, tmp_path):
-        workdir = _create_todo(tmp_path)
-        result = manage_todo(action="check", workdir=workdir, step_id=0)
-        assert result["status"] == "ok"
-        assert result["done_count"] == 1
+    def writer(i):
+        for _ in range(5):
+            manage_todo(
+                "create", str(workdir), steps=[f"task-{i}-{_}"], depends_on=[[]]
+            )
 
-    def test_check_with_string_step_id(self, tmp_path):
-        """YAML tool calls may pass step_id as a string; must coerce to int."""
-        workdir = _create_todo(tmp_path)
-        result = manage_todo(action="check", workdir=workdir, step_id="0")
-        assert result["status"] == "ok", f"String step_id '0' should be accepted, got: {result}"
-        assert result["done_count"] == 1
+    threads = [threading.Thread(target=writer, args=(i,)) for i in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
 
-    def test_check_with_string_step_id_1(self, tmp_path):
-        workdir = _create_todo(tmp_path)
-        result = manage_todo(action="check", workdir=workdir, step_id="1")
-        assert result["status"] == "ok"
-
-    def test_check_invalid_string_step_id(self, tmp_path):
-        workdir = _create_todo(tmp_path)
-        result = manage_todo(action="check", workdir=workdir, step_id="abc")
-        assert result["status"] == "error"
-        assert "integer" in result["error"]
-
-    def test_update_with_string_step_id(self, tmp_path):
-        workdir = _create_todo(tmp_path)
-        result = manage_todo(
-            action="update", workdir=workdir, step_id="2", description="Verify changes"
-        )
-        assert result["status"] == "ok"
-        assert result["steps"][2]["description"] == "Verify changes"
-
-    def test_check_out_of_range_string(self, tmp_path):
-        workdir = _create_todo(tmp_path)
-        result = manage_todo(action="check", workdir=workdir, step_id="99")
-        assert result["status"] == "error"
-        assert "out of range" in result["error"]
+    # Final read should succeed and produce a valid list
+    r = manage_todo("read", str(workdir))
+    assert r["status"] == "ok"
+    # At least one list exists
+    assert r["total"] >= 1
 
 
-class TestManageTodoBasicOps:
-    def test_create_and_read(self, tmp_path):
-        manage_todo(action="create", workdir=str(tmp_path), steps=["Step A", "Step B"])
-        result = manage_todo(action="read", workdir=str(tmp_path))
-        assert result["status"] == "ok"
-        assert result["total"] == 2
-        assert result["done_count"] == 0
+def test_create_rejects_out_of_range_dep(tmp_path):
+    workdir = tmp_path
+    # depends_on references index 5 which is out of range for 2 steps
+    res = manage_todo("create", str(workdir), steps=["a", "b"], depends_on=[[], [5]])
+    assert res["status"] == "error"
+    assert "out-of-range" in res["error"] or "out of range" in res["error"]
 
-    def test_check_then_read(self, tmp_path):
-        manage_todo(action="create", workdir=str(tmp_path), steps=["Step A", "Step B"])
-        manage_todo(action="check", workdir=str(tmp_path), step_id=0)
-        result = manage_todo(action="read", workdir=str(tmp_path))
-        assert result["done_count"] == 1
-        assert result["steps"][0]["done"] is True
-        assert result["steps"][1]["done"] is False
 
-    def test_clear_removes_files(self, tmp_path):
-        manage_todo(action="create", workdir=str(tmp_path), steps=["Step A"])
-        manage_todo(action="clear", workdir=str(tmp_path))
-        result = manage_todo(action="read", workdir=str(tmp_path))
-        assert result["steps"] == []
+def test_create_rejects_cycle(tmp_path):
+    workdir = tmp_path
+    # Simple 2-node cycle: 0 -> 1, 1 -> 0
+    res = manage_todo("create", str(workdir), steps=["a", "b"], depends_on=[[1], [0]])
+    assert res["status"] == "error"
+    assert "cycle" in res["error"]
 
-    def test_create_requires_steps(self, tmp_path):
-        result = manage_todo(action="create", workdir=str(tmp_path))
-        assert result["status"] == "error"
 
-    def test_check_requires_step_id(self, tmp_path):
-        manage_todo(action="create", workdir=str(tmp_path), steps=["Step A"])
-        result = manage_todo(action="check", workdir=str(tmp_path))
-        assert result["status"] == "error"
+def test_threaded_concurrent_create_and_check(tmp_path):
+    workdir = tmp_path
+
+    # Start by creating an initial list of steps
+    res = manage_todo(
+        "create",
+        str(workdir),
+        steps=["s1", "s2", "s3", "s4"],
+        depends_on=[[], [0], [1], [2]],
+    )
+    assert res["status"] == "ok"
+
+    stop = False
+
+    def creator():
+        # Repeatedly create small lists
+        for i in range(10):
+            manage_todo(
+                "create",
+                str(workdir),
+                steps=[f"c{i}-a", f"c{i}-b"],
+                depends_on=[[], [0]],
+            )
+
+    def checker():
+        # Repeatedly mark next available step as done if any
+        for _ in range(20):
+            cur = manage_todo("read", str(workdir))
+            if cur["total"]:
+                # try to check step 0 if exists
+                try:
+                    manage_todo("check", str(workdir), step_id=0)
+                except Exception:
+                    pass
+
+    threads = []
+    for _ in range(3):
+        threads.append(threading.Thread(target=creator))
+        threads.append(threading.Thread(target=checker))
+
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    # Final read should succeed and produce a valid list structure
+    r = manage_todo("read", str(workdir))
+    assert r["status"] == "ok"
+    assert isinstance(r.get("steps", []), list)

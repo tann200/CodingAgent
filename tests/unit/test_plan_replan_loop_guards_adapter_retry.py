@@ -21,6 +21,8 @@ import json
 import threading
 from pathlib import Path
 from typing import Any, Dict
+
+# ruff: noqa: E501
 from unittest.mock import MagicMock, patch
 
 

@@ -7,6 +7,8 @@ Consolidated telemetry tests.  Replaces four single-test files:
   - test_telemetry_publish.py (AdapterWrapper publishes model.response event)
 """
 
+
+# ruff: noqa: E501
 from __future__ import annotations
 
 from pathlib import Path

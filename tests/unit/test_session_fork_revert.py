@@ -8,7 +8,7 @@ from __future__ import annotations
 import pytest
 from pathlib import Path
 
-from src.core.memory.session_store import SessionStore
+from src.core.memory.sqlite_session_store import SqliteSessionStore as SessionStore
 
 
 # ---------------------------------------------------------------------------

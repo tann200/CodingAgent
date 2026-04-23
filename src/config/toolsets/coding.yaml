@@ -6,12 +6,17 @@ tools:
   - list_files
   - glob
   - grep
+  - find_files
   - search_code
   - find_symbol
   - find_references
   - read_file_chunk
   - batched_file_read
   - multi_file_summary
+  - summarize_structure
+  - summarize_structure_detailed
+  - ast_list_symbols
+  - ast_rename
   # Writing
   - write_file
   - edit_file
@@ -21,10 +26,17 @@ tools:
   - delete_file
   - apply_patch
   - generate_patch
+  - create_directory
+  - rename_file
+  - create_state_checkpoint
   # Verification
   - run_tests
   - run_linter
   - syntax_check
+  - run_tests_legacy
+  - run_js_tests
+  - run_eslint
+  - run_ts_check
   # LSP (S2-B) — degrade gracefully when no server installed
   - lsp_diagnostics
   - lsp_references
@@ -42,6 +54,8 @@ tools:
   - git_diff
   - git_commit
   - get_git_diff
+  - git_restore
+  - git_stash
   # Parallel execution
   - batch
   # Web
@@ -53,3 +67,7 @@ tools:
   # Skills
   - load_skill
   - list_skills
+  - memory_save
+  - read_file_bytes
+  - tail_log_file
+  - echo

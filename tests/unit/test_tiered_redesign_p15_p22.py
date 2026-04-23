@@ -11,6 +11,8 @@ Covers:
   P22 / OP-8  — compacted message carries [COMPACTED] marker
 """
 
+
+# ruff: noqa: E501
 from __future__ import annotations
 
 import pytest

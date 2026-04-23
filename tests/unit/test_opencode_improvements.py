@@ -11,6 +11,8 @@ Regression tests for opencode-inspired improvements:
   STATE-2 — recent_tool_calls initialised in initial_state
 """
 
+
+# ruff: noqa: E501
 from __future__ import annotations
 
 import json

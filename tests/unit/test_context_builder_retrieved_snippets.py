@@ -1,4 +1,6 @@
 from src.core.context.context_builder import ContextBuilder
+
+# ruff: noqa: E501
 import json
 
 

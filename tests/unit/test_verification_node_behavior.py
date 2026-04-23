@@ -6,6 +6,8 @@ Tests for verification_node improvements:
 
 Also tests new verification tools: run_js_tests, run_ts_check, run_eslint.
 """
+
+# ruff: noqa: E501
 from unittest.mock import patch
 
 

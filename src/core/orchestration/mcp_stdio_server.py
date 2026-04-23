@@ -412,7 +412,15 @@ class MCPStdioServer:
                     if isinstance(resp, str):
                         text = resp
                     elif isinstance(resp, dict):
-                        ch = (resp.get("choices") or [{}])[0].get("message", {})
+                        _choices = resp.get("choices")
+                        if _choices and len(_choices) > 0:
+                            ch = (
+                                _choices[0].get("message", {})
+                                if isinstance(_choices[0], dict)
+                                else {}
+                            )
+                        else:
+                            ch = resp.get("message", {})
                         text = (
                             ch.get("content", "") if isinstance(ch, dict) else str(ch)
                         )
@@ -481,7 +489,6 @@ class MCPStdioServer:
 
         elif method == "logging/setLevel":
             # Set logging level
-            level = params.get("level", "info")
             return self._build_response(request, {"status": "ok"})
 
         else:

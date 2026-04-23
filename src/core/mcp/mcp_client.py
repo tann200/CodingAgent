@@ -461,9 +461,11 @@ def create_mcp_client(
         scheme = url.split("://", 1)[0].lower() if "://" in url else ""
         if scheme in ("ws", "wss"):
             from src.core.mcp.mcp_ws_client import McpWsClient
+
             return McpWsClient(name=name, url=url, headers=headers)
         if scheme in ("http", "https"):
             from src.core.mcp.mcp_sse_client import McpSseClient
+
             return McpSseClient(name=name, url=url, headers=headers)
         raise ValueError(
             f"create_mcp_client: unrecognised URL scheme {scheme!r} in {url!r}. "

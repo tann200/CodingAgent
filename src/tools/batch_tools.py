@@ -88,7 +88,7 @@ def batch(calls: List[Dict[str, Any]]) -> Dict[str, Any]:
     errors: List[Dict[str, Any]] = []
 
     async def _dispatch(call: Dict[str, Any]) -> Dict[str, Any]:
-        tool_name = call["tool"]
+        tool_name = call.get("tool", "")
         tool_input = call.get("input", {})
         try:
             result = orchestrator.execute_tool(
@@ -125,7 +125,7 @@ def batch(calls: List[Dict[str, Any]]) -> Dict[str, Any]:
                     pool.submit(
                         _ctx.run,
                         orchestrator.execute_tool,
-                        {"name": c["tool"], "arguments": c.get("input", {})},
+                        {"name": c.get("tool", ""), "arguments": c.get("input", {})},
                     )
                     for c in calls
                 ]

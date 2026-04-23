@@ -7,6 +7,8 @@ NEW-3: generate_patch previously joined user-supplied paths directly without cal
 NEW-23: generate_patch had zero test coverage.
 """
 
+# ruff: noqa: E501
+
 
 class TestGeneratePatch:
     """Tests for patch_tools.generate_patch — normal operation and path safety."""
@@ -55,7 +57,10 @@ class TestGeneratePatch:
 
         assert result["status"] == "error"
         assert "error" in result
-        assert "not found" in result["error"].lower() or "no such" in result["error"].lower()
+        assert (
+            "not found" in result["error"].lower()
+            or "no such" in result["error"].lower()
+        )
 
     def test_path_traversal_rejected(self, tmp_path):
         """
@@ -128,9 +133,7 @@ class TestGeneratePatch:
         result = generate_patch("same.py", original, tmp_path)
 
         assert result["status"] == "ok"
-        assert result["patch"] == "", (
-            "Identical content must produce an empty patch"
-        )
+        assert result["patch"] == "", "Identical content must produce an empty patch"
 
     def test_traversal_with_nested_dots(self, tmp_path):
         """

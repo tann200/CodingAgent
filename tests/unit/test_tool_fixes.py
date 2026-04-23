@@ -7,6 +7,8 @@ Tests for the tool fixes:
 """
 import pytest
 from src.tools.file_tools import glob, edit_file_atomic, write_file
+
+# ruff: noqa: E501
 from src.tools.system_tools import grep
 
 

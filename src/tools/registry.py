@@ -4,6 +4,7 @@ Keep a central registry of named tools (function + metadata). Tools are small
 functions that the agent can request the system to call (e.g. read_file,
 write_file, list_dir). The registry is intentionally tiny and test-friendly.
 """
+
 from __future__ import annotations
 
 from typing import Any, Callable, Dict, List, Optional
@@ -13,10 +14,19 @@ _lock = threading.Lock()
 _registry: Dict[str, Dict[str, Any]] = {}
 
 
-def register_tool(name: str, func: Callable[..., Any], description: str = '', side_effects: bool = False) -> None:
+def register_tool(
+    name: str,
+    func: Callable[..., Any],
+    description: str = "",
+    side_effects: bool = False,
+) -> None:
     """Register a tool by name with a description of its signature and purpose."""
     with _lock:
-        _registry[name] = {"func": func, "description": description, "side_effects": side_effects}
+        _registry[name] = {
+            "func": func,
+            "description": description,
+            "side_effects": side_effects,
+        }
 
 
 def unregister_tool(name: str) -> None:
@@ -46,6 +56,7 @@ def call_tool(name: str, *args, **kwargs) -> Any:
 def clear_registry() -> None:
     with _lock:
         _registry.clear()
+
 
 def get_tool_descriptions() -> str:
     """Return a formatted string of all registered tools and their descriptions."""

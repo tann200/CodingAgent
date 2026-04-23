@@ -92,7 +92,11 @@ class GitWorktreeManager:
 
         try:
             proc = await asyncio.create_subprocess_exec(
-                "git", "worktree", "remove", "--force", str(wt_path),
+                "git",
+                "worktree",
+                "remove",
+                "--force",
+                str(wt_path),
                 cwd=self._workspace,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
@@ -125,7 +129,10 @@ class GitWorktreeManager:
         """
         try:
             proc = await asyncio.create_subprocess_exec(
-                "git", "worktree", "list", "--porcelain",
+                "git",
+                "worktree",
+                "list",
+                "--porcelain",
                 cwd=self._workspace,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
@@ -149,11 +156,11 @@ def _parse_worktree_list(text: str) -> list[dict]:
                 current = {}
             continue
         if line.startswith("worktree "):
-            current["worktree"] = line[len("worktree "):]
+            current["worktree"] = line[len("worktree ") :]
         elif line.startswith("HEAD "):
-            current["HEAD"] = line[len("HEAD "):]
+            current["HEAD"] = line[len("HEAD ") :]
         elif line.startswith("branch "):
-            current["branch"] = line[len("branch "):]
+            current["branch"] = line[len("branch ") :]
         elif line == "detached":
             current["detached"] = True
         elif line == "bare":

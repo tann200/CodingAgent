@@ -8,6 +8,8 @@ Covers:
   HR-2  execution_trace capped at 2000 entries on flush (unbounded growth)
 """
 
+
+# ruff: noqa: E501
 import inspect
 
 

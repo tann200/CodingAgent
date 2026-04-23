@@ -11,13 +11,23 @@ system prompt via the `tools_config.configure()` mechanism.
 
 import asyncio
 import logging
-import os
 from contextvars import ContextVar
 from typing import Dict, Any, List, Optional, cast
 from pathlib import Path
 
 from src.core.paths import get_sessions_dir
 from src.tools._tool import tool, PermissionKind
+
+try:
+    from src.core.orchestration.event_bus import (
+        DispatchEvent,
+        DispatchResultEvent,
+        DispatchEvents,
+    )
+except ImportError:
+    DispatchEvent = None
+    DispatchResultEvent = None
+    DispatchEvents = None
 
 # SPAWN-W1: ContextVar that carries the parent orchestrator reference into tool calls.
 # Set by Orchestrator.execute_tool() before dispatching; cleared automatically on exit.
@@ -258,14 +268,9 @@ def delegate_task(
 
     # HR-5 fix: Check delegation depth to prevent unbounded recursive spawning.
     # Use the process-local ContextVar as the authoritative source — it cannot
-    # be forged by subprocesses, unlike os.environ.  Also read the env var as a
-    # belt-and-suspenders fallback so that tests and subprocess launches that set
-    # CODINGAGENT_DELEGATION_DEPTH are honoured even when the ContextVar is 0.
-
+    # be forged by subprocesses. AgentState["delegation_depth"] is used for
+    # cross-session propagation; the ContextVar tracks in-process nesting.
     depth = _DELEGATION_DEPTH_VAR.get()
-    _env_depth_str = os.environ.get("CODINGAGENT_DELEGATION_DEPTH", "")
-    if _env_depth_str.isdigit():
-        depth = max(depth, int(_env_depth_str))
     if depth >= _MAX_DELEGATION_DEPTH:
         return (
             f"Error: Maximum delegation depth ({_MAX_DELEGATION_DEPTH}) exceeded. "
@@ -518,6 +523,7 @@ def delegate_task(
             _manifest_path = None
 
         # SUBAGENT-VIS-1: Notify TUI that a subagent is starting
+        # Also publish DispatchEvent for subagent dispatch tracking
         try:
             if parent_orchestrator is not None:
                 _pbus = getattr(parent_orchestrator, "event_bus", None)
@@ -531,6 +537,15 @@ def delegate_task(
                             "task": subtask_description[:120],
                         },
                     )
+                    # Publish DispatchEvent if available (matching OpenClaw pattern)
+                    if DispatchEvent is not None and hasattr(_pbus, "publish_dispatch"):
+                        _dispatch_event = DispatchEvent(
+                            session_id=child_session_id,
+                            agent_id=canonical_role,
+                            task=subtask_description,
+                            parent_session_id=parent_session_id,
+                        )
+                        _pbus.publish_dispatch(_dispatch_event)
         except Exception:
             pass
 
@@ -539,8 +554,10 @@ def delegate_task(
             # any further in-process delegate_task calls see the correct depth.
             import contextvars as _cv
 
+            # BUG-FIX: ContextVar.set must be called directly, not via ctx.run()
+            # Set depth in parent context before copying
+            _DELEGATION_DEPTH_VAR.set(depth + 1)
             _child_ctx = _cv.copy_context()
-            _child_ctx.run(_DELEGATION_DEPTH_VAR.set, depth + 1)
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
                 # Ensure ContextVars (delegation depth, parent orchestrator, etc.)
                 # are visible inside the worker thread by submitting ctx.run.
@@ -635,6 +652,40 @@ def delegate_task(
                                 "cost_usd": _child_cost,
                             },
                         )
+                        # Publish DispatchResultEvent if available (matching OpenClaw pattern)
+                        if DispatchResultEvent is not None and hasattr(
+                            _pbus, "publish_dispatch_result"
+                        ):
+                            # Ensure we summarise the final_state consistently; fall
+                            # back to the derived `summary` variable computed below
+                            # when _summary isn't defined (older code paths).
+                            _content = None
+                            try:
+                                _content = final_state.get("work_summary")
+                            except Exception:
+                                _content = None
+                            if not _content:
+                                # Try the last assistant message or last_result
+                                _content = None
+                                try:
+                                    hs = final_state.get("history") or []
+                                    for m in reversed(hs):
+                                        if (
+                                            isinstance(m, dict)
+                                            and m.get("role") == "assistant"
+                                        ):
+                                            _content = m.get("content")
+                                            break
+                                except Exception:
+                                    _content = None
+                            if not _content:
+                                _content = ""
+                            _result_event = DispatchResultEvent(
+                                session_id=child_session_id,
+                                content=_content,
+                                parent_session_id=parent_session_id,
+                            )
+                            _pbus.publish_dispatch_result(_result_event)
                         # Roll up child cost into parent state via usage.subagent_cost event
                         if _child_cost > 0:
                             _pbus.publish(
@@ -724,8 +775,19 @@ def delegate_task(
         if parent_session_id is not None:
             try:
                 from src.core.memory.session_store import SessionStore
+                import threading as _thr
 
                 _store = SessionStore(workdir=str(workdir_path))
+                # Caller-side instrumentation: log thread and session so diagnostics
+                # can correlate which thread attempted the DB write.
+                _caller_sid = parent_session_id
+                _tname = getattr(_thr.current_thread(), "name", "unknown")
+                logger.debug(
+                    "session_store: write (session=%r, thread=%s, site=%s)",
+                    _caller_sid,
+                    _tname,
+                    "delegate_task:register_child_session",
+                )
                 _store.register_child_session(
                     parent_session_id=parent_session_id,
                     child_session_id=child_session_id,
@@ -741,8 +803,18 @@ def delegate_task(
         if isinstance(final_state, dict):
             try:
                 from src.core.memory.session_store import SessionStore as _SS2
+                import threading as _thr
 
                 _ss2 = _SS2(workdir=str(workdir_path))
+                # Instrument the caller context for diagnostics
+                _caller_sid = child_session_id
+                _tname = getattr(_thr.current_thread(), "name", "unknown")
+                logger.debug(
+                    "session_store: write (session=%r, thread=%s, site=%s)",
+                    _caller_sid,
+                    _tname,
+                    "delegate_task:save_session_state",
+                )
                 _ss2.save_session_state(
                     session_id=child_session_id,
                     state=final_state,

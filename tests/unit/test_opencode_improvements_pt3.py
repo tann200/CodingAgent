@@ -11,6 +11,8 @@ Regression tests for third batch of opencode-inspired improvements:
   EXPLORE-3  — explore_mode=True allows read tools through
 """
 
+
+# ruff: noqa: E501
 from __future__ import annotations
 
 import json

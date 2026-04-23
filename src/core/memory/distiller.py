@@ -5,6 +5,8 @@ import re
 from typing import Any, Dict, List, Optional
 from pathlib import Path
 
+# ruff: noqa: E501
+
 logger = logging.getLogger(__name__)
 
 # HR-1 fix: module-level singleton executor so _call_llm_sync does not create a new
@@ -114,10 +116,15 @@ def _call_llm_sync(messages: list, format_json: bool = False, **kwargs) -> str:
 
     content = ""
     if isinstance(resp, dict):
-        if resp.get("choices") and isinstance(resp.get("choices"), list):
-            content = resp["choices"][0].get("message", {}).get("content", "") or ""
+        _choices = resp.get("choices")
+        if _choices and isinstance(_choices, list) and len(_choices) > 0:
+            _msg = (
+                _choices[0].get("message", {}) if isinstance(_choices[0], dict) else {}
+            )
+            content = _msg.get("content", "") if isinstance(_msg, dict) else ""
         elif resp.get("message"):
-            content = resp.get("message", {}).get("content", "") or ""
+            _msg = resp.get("message", {})
+            content = _msg.get("content", "") if isinstance(_msg, dict) else ""
 
     # Part A: strip <think>...</think> blocks produced by reasoning models
     # (Qwen3, DeepSeek-R1-Distill, QwQ).  Safe no-op for all other models.
@@ -399,7 +406,14 @@ def distill_context(
             todo_json_path = agent_context / "todo.json"
             if todo_json_path.exists():
                 try:
-                    todo_steps = json.loads(todo_json_path.read_text())
+                    # Use lock-aware loader when available to avoid races with writers
+                    try:
+                        from src.tools.todo_tools import _load_todo_json
+
+                        todo_steps = _load_todo_json(str(agent_context.parent))
+                    except Exception:
+                        todo_steps = json.loads(todo_json_path.read_text())
+
                     done_steps = [s["description"] for s in todo_steps if s.get("done")]
                     pending_steps = [
                         s["description"] for s in todo_steps if not s.get("done")

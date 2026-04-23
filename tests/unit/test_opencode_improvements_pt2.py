@@ -11,6 +11,8 @@ Regression tests for second batch of opencode-inspired improvements:
   STEP-2 — step.finish event is published after tool execution with ok + elapsed_ms
 """
 
+
+# ruff: noqa: E501
 from __future__ import annotations
 
 import json

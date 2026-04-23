@@ -17,6 +17,8 @@ Covers:
   IL-14 path traversal            — symlink outside tree cannot inject content
 """
 
+
+# ruff: noqa: E501
 from __future__ import annotations
 
 import os

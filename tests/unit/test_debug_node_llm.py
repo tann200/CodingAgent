@@ -8,6 +8,8 @@ NEW-4: evaluation_node was incrementing debug_attempts before routing to debug, 
        debug_node incremented again — effectively consuming 2 budget units per cycle.
 """
 import pytest
+
+# ruff: noqa: E501
 from unittest.mock import MagicMock
 
 

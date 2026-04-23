@@ -3,6 +3,8 @@
 Tests are network-free — all HTTP calls are monkeypatched.
 """
 
+
+# ruff: noqa: E501
 from __future__ import annotations
 
 import json

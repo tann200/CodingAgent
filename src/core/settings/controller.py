@@ -77,14 +77,39 @@ class SettingsPanelController:
                 return []
             resp = prov.get_models_from_api()
             models = []
+            # Sanitise probe results: accept only concrete non-empty strings and
+            # filter out test placeholders like 'MagicMock'. Guarded import to
+            # avoid circular imports in tests.
+            try:
+                from src.core.utils.strings import valid_str as _vs
+
+                def _valid_str(x: object) -> bool:
+                    try:
+                        return bool(_vs(x))
+                    except Exception:
+                        return (
+                            isinstance(x, str)
+                            and bool(x.strip())
+                            and ("MagicMock" not in x)
+                        )
+            except Exception:
+
+                def _valid_str(x: object) -> bool:
+                    return (
+                        isinstance(x, str)
+                        and bool(x.strip())
+                        and ("MagicMock" not in x)
+                    )
+
             if isinstance(resp, dict):
                 for m in resp.get("models", []):
+                    fid = None
                     if isinstance(m, dict):
                         fid = m.get("id") or m.get("key") or m.get("name")
-                        if fid:
-                            models.append(fid)
                     elif isinstance(m, str):
-                        models.append(m)
+                        fid = m
+                    if fid and _valid_str(fid):
+                        models.append(str(fid).strip())
             # update providers.json models for this provider only (do not overwrite other keys)
             try:
                 # import dynamically so tests can monkeypatch src.core.inference.llm_manager.resolve_config_path

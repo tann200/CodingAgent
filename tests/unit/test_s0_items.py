@@ -7,6 +7,8 @@ Covers:
 - event_bus.run_with_correlation (D-07)
 """
 
+
+# ruff: noqa: E501
 from __future__ import annotations
 
 import asyncio
@@ -105,7 +107,7 @@ class TestAgentError:
         from src.core.errors import AgentError, ErrorCode
         err = AgentError(ErrorCode.DOOM_LOOP, "looping", context={"turn": 5})
         d = err.to_dict()
-        assert d["error_code"] == "doom_loop"
+        assert d["error_code"] == "plan.doom_loop"  # DOOM_LOOP is an alias for plan.doom_loop
         assert d["message"] == "looping"
         assert d["retryable"] is True
         assert d["turn"] == 5

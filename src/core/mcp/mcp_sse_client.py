@@ -150,7 +150,7 @@ class McpSseClient:
     async def _sse_read_loop(self) -> None:
         """Background task: read SSE events and resolve pending futures."""
         try:
-            import aiohttp  # type: ignore[reportMissingImports]
+            import aiohttp  # type: ignore[reportMissingImports]  # noqa: F401
         except ImportError:
             return
         assert self._session is not None

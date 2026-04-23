@@ -48,8 +48,37 @@ class OpenAICompatibleAdapter(LLMClient):
     ):
         self.base_url = base_url or None
         self.api_key = api_key or None
-        self.default_model = default_model or kwargs.get("model") or None
-        self.models: List[str] = models or []
+        # Guarded import for shared validator to avoid circular imports in tests.
+        try:
+            from src.core.utils.strings import valid_str as _vs  # type: ignore[import]
+
+            def _valid_str(x: Any) -> bool:  # type: ignore[misc]
+                try:
+                    return bool(_vs(x))
+                except Exception:
+                    return (
+                        isinstance(x, str) and bool(x.strip()) and "MagicMock" not in x
+                    )
+        except Exception:
+
+            def _valid_str(x: Any) -> bool:  # type: ignore[misc]
+                return (
+                    isinstance(x, str)
+                    and bool(str(x).strip())
+                    and ("MagicMock" not in str(x))
+                )
+
+        # Sanitize default_model and models inputs so test placeholders don't leak.
+        raw_default = default_model or kwargs.get("model") or None
+        self.default_model = (
+            str(raw_default).strip()
+            if raw_default and _valid_str(raw_default)
+            else None
+        )
+        if models:
+            self.models: List[str] = [str(m).strip() for m in models if _valid_str(m)]
+        else:
+            self.models = []
         self.name = name
         # LIVE-CTX: set dynamically by the provider.context_window event handler
         # (via llm_manager.py → EventBus → core_bridge).  Declared here so that
@@ -618,8 +647,11 @@ class OpenAICompatibleAdapter(LLMClient):
                     choices.append(choice_obj)
 
             if raw_response and "usage" in raw_response:
-                prompt_tokens = raw_response["usage"].get("prompt_tokens", 0)
-                completion_tokens = raw_response["usage"].get("completion_tokens", 0)
+                usage = raw_response["usage"]
+                # BUG-FIX: check usage is dict before calling .get()
+                if isinstance(usage, dict):
+                    prompt_tokens = usage.get("prompt_tokens", 0)
+                    completion_tokens = usage.get("completion_tokens", 0)
 
             # CP-9: Extract Anthropic prompt-cache token counts when present.
             # Anthropic returns these in the usage block of both streaming and

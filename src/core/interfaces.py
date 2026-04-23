@@ -143,8 +143,6 @@ class SessionStoreProtocol(Protocol):
         """Persist a snapshot of *state_json* and return the snapshot ID."""
         ...
 
-    def get_snapshot(
-        self, session_id: str, snapshot_id: str
-    ) -> Optional[str]:
+    def get_snapshot(self, session_id: str, snapshot_id: str) -> Optional[str]:
         """Return the state JSON for *snapshot_id*, or None if not found."""
         ...

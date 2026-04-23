@@ -78,6 +78,119 @@ def _is_url_blocked(url: str) -> bool:
         return True  # Block on any parse failure
 
 
+def _is_ssrf_blocked(url: str) -> None:
+    """Raise PermissionError when *url* points to a blocked/internal address.
+
+    This is the preferred SSRF protection entrypoint. It consults the optional
+    configuration key ``web.ssrf_allowlist`` (list) first; any matching
+    hostname, domain suffix, IP, or CIDR in the allowlist permits the URL.
+
+    On parse or resolution failures we err on the side of permissive (allow the
+    request) so that transient DNS issues do not block normal operation.  When a
+    blocked address is detected a PermissionError is raised.
+    """
+    try:
+        from urllib.parse import urlparse
+
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https"):
+            raise PermissionError(f"Blocked URL scheme: {parsed.scheme}")
+
+        host = parsed.hostname or ""
+
+        # Load optional allowlist from config (web.ssrf_allowlist)
+        try:
+            from src.core.config_loader import load_merged_config
+
+            cfg = load_merged_config() or {}
+            allowlist = (cfg.get("web") or {}).get("ssrf_allowlist") or []
+        except Exception:
+            allowlist = []
+
+        def _host_allowed_by_allowlist(h: str) -> bool:
+            if not allowlist:
+                return False
+            for ent in allowlist:
+                if not isinstance(ent, str):
+                    continue
+                ent = ent.strip()
+                if not ent:
+                    continue
+                # Exact hostname match
+                if h == ent:
+                    return True
+                # Domain suffix match (allow example.com and sub.example.com)
+                if h.endswith("." + ent) or h == ent:
+                    return True
+            return False
+
+        if _host_allowed_by_allowlist(host):
+            return
+
+        # Fast-path textual checks
+        if _BLOCKED_HOSTS.match(host):
+            raise PermissionError(f"URL '{url}' points to a blocked host: {host}")
+
+        # Resolve addresses and check each one. Only catch socket.gaierror
+        # around the getaddrinfo call so PermissionError raised during
+        # address inspection is not swallowed (PermissionError subclasses OSError).
+        try:
+            infos = socket.getaddrinfo(host, None)
+        except socket.gaierror:
+            # DNS resolution failed — allow and let the HTTP client report errors
+            infos = []
+
+        for info in infos:
+            addr_str = info[4][0]
+            try:
+                addr = ipaddress.ip_address(addr_str)
+
+                # If allowlist contains CIDR or IP entries, respect them
+                allowed_by_net = False
+                if allowlist:
+                    for ent in allowlist:
+                        try:
+                            # IP or network
+                            if "/" in ent:
+                                net = ipaddress.ip_network(ent, strict=False)
+                                if addr in net:
+                                    allowed_by_net = True
+                                    break
+                            else:
+                                # exact IP match
+                                ipent = ipaddress.ip_address(ent)
+                                if addr == ipent:
+                                    allowed_by_net = True
+                                    break
+                        except Exception:
+                            continue
+                if allowed_by_net:
+                    continue
+
+                if (
+                    addr.is_loopback
+                    or addr.is_private
+                    or addr.is_link_local
+                    or addr.is_reserved
+                    or addr.is_unspecified
+                    or addr.is_multicast
+                ):
+                    raise PermissionError(
+                        f"URL '{url}' resolved to internal address {addr_str}"
+                    )
+            except ValueError:
+                # Unparseable address — block conservatively
+                raise PermissionError(
+                    f"URL '{url}' resolved to unparseable address: {addr_str}"
+                )
+        return
+    except PermissionError:
+        raise
+    except Exception:
+        # On unexpected errors, block conservatively
+        raise PermissionError(f"URL '{url}' blocked due to parse/resolve error")
+
+
 @tool(tags=["coding", "planning", "debug"], permission_kind=PermissionKind.NETWORK)
 def web_search(query: str, max_results: int = 5) -> Dict[str, Any]:
     """Search the web for documentation, error messages, or package information.
@@ -177,11 +290,10 @@ def read_web_page(url: str, format: str = "markdown") -> Dict[str, Any]:
     if url.startswith("http://"):
         url = "https://" + url[len("http://") :]
 
-    if _is_url_blocked(url):
-        return {
-            "status": "error",
-            "error": f"URL '{url}' points to a private/internal address. Blocked for security.",
-        }
+    try:
+        _is_ssrf_blocked(url)
+    except PermissionError as pe:
+        return {"status": "error", "error": str(pe)}
 
     if format not in ("markdown", "text"):
         return {"status": "error", "error": "format must be 'markdown' or 'text'"}

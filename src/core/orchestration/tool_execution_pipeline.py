@@ -19,7 +19,7 @@ import json
 import logging
 import uuid
 from pathlib import Path
-from typing import Any, Dict, cast, Coroutine, Optional
+from typing import Any, Dict, cast, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -128,7 +128,7 @@ def execute_tool_impl(orch: Any, tool_call: Dict[str, Any]) -> Dict[str, Any]:
     tool_call_id = f"call_{uuid.uuid4().hex[:8]}"
 
     # Hard Rule Enforcement: Read before Edit for write tools
-    path_arg = args.get("path") or args.get("file_path")
+    path_arg = args.get("path") or args.get("file_path") or args.get("src_path")
     if path_arg and name in WRITE_TOOLS_REQUIRING_READ:
         try:
             target = Path(orch.working_dir or ".") / path_arg
@@ -457,8 +457,8 @@ def execute_tool_impl(orch: Any, tool_call: Dict[str, Any]) -> Dict[str, Any]:
         pass
 
     tool = orch.tool_registry.get(name)
-    if not tool:
-        return {"ok": False, "error": f"Tool '{name}' not found."}
+    if not tool or not tool.get("fn"):
+        return {"ok": False, "error": f"Tool '{name}' not found or has no callable."}
 
     try:
         import inspect
@@ -681,7 +681,9 @@ def execute_tool_impl(orch: Any, tool_call: Dict[str, Any]) -> Dict[str, Any]:
                 # creating a new ThreadPoolExecutor per call (~5 ms savings each).
                 _tex = getattr(orch, "_tool_executor", None)
                 if _tex is None:
-                    _tex = _cf.ThreadPoolExecutor(max_workers=2)
+                    # BUG-FIX #2: increased from 2 to 4 to prevent pool exhaustion
+                    # when multiple concurrent tool approvals are pending
+                    _tex = _cf.ThreadPoolExecutor(max_workers=4)
                     orch._tool_executor = _tex
                 # Capture current context so ContextVars (correlation id etc.) are
                 # available in the tool thread.
@@ -1001,8 +1003,23 @@ def execute_tool_impl(orch: Any, tool_call: Dict[str, Any]) -> Dict[str, Any]:
             _safe_args = {
                 k: str(v) if isinstance(v, Path) else v for k, v in args.items()
             }
+            # Coerce None → explicit sentinel for clarity; log thread so we can
+            # correlate background-worker writes in diagnostics/CI artifacts.
+            _sid = getattr(orch, "_current_task_id", None)
+            try:
+                import threading as _thr
+
+                _thread_name = _thr.current_thread().name
+            except Exception:
+                _thread_name = "unknown"
+            logger.debug(
+                "tool_execution: recording tool_call (session=%r, tool=%s, thread=%s)",
+                _sid,
+                name,
+                _thread_name,
+            )
             orch.session_store.add_tool_call(
-                session_id=getattr(orch, "_current_task_id", "unknown"),
+                session_id=_sid,
                 tool_name=name,
                 args=_safe_args,
                 result=res,
@@ -1038,8 +1055,21 @@ def execute_tool_impl(orch: Any, tool_call: Dict[str, Any]) -> Dict[str, Any]:
             _safe_args = {
                 k: str(v) if isinstance(v, Path) else v for k, v in args.items()
             }
+            _sid = getattr(orch, "_current_task_id", None)
+            try:
+                import threading as _thr
+
+                _thread_name = _thr.current_thread().name
+            except Exception:
+                _thread_name = "unknown"
+            logger.debug(
+                "tool_execution (error path): recording tool_call (session=%r, tool=%s, thread=%s)",
+                _sid,
+                name,
+                _thread_name,
+            )
             orch.session_store.add_tool_call(
-                session_id=getattr(orch, "_current_task_id", "unknown"),
+                session_id=_sid,
                 tool_name=name,
                 args=_safe_args,
                 result={"error": str(e)},
@@ -1061,4 +1091,14 @@ def execute_tool_impl(orch: Any, tool_call: Dict[str, Any]) -> Dict[str, Any]:
         except Exception:
             pass
 
-        return {"ok": False, "error": str(e)}
+        # TASK-REL-1: classify the exception and include the typed error code in
+        # the result so callers / nodes can set state["last_error_code"] without
+        # having to re-parse the string.
+        try:
+            from src.core.errors import classify_exception as _classify
+
+            _error_code = _classify(e).value
+        except Exception:
+            _error_code = "system.unknown"
+
+        return {"ok": False, "error": str(e), "error_code": _error_code}

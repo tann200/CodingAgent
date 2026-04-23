@@ -14,6 +14,8 @@ tools:
   - run_tests
   - run_linter
   - syntax_check
+  - diff_state
+  - memory_save
   # Git
   - git_status
   - git_log

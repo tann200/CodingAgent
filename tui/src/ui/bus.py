@@ -458,6 +458,23 @@ class ToolPermissionEvent(Message):
         super().__init__()
 
 
+class SpawnPermissionEvent(Message):
+    """spawn.permission_required — agent needs user approval to spawn a subagent."""
+
+    def __init__(
+        self,
+        tool: str = "",
+        role: str = "",
+        task: str = "",
+        tool_id: str = "",
+    ) -> None:
+        self.tool = tool
+        self.role = role
+        self.task = task
+        self.tool_id = tool_id
+        super().__init__()
+
+
 class UsageTurnSummaryEvent(Message):
     """usage.turn_summary — per-turn token counts and estimated cost (TUI-T6)."""
 
@@ -527,4 +544,16 @@ class DeviceFlowErrorEvent(Message):
 
     def __init__(self, reason: str = "") -> None:
         self.reason = reason
+        super().__init__()
+
+
+class ContextCompactedEvent(Message):
+    """Fired when the agent context is automatically compacted (TASK-TUI-9).
+
+    Triggers a visual compaction divider in the chat log so the user can see
+    where long-term memory was summarised.
+    """
+
+    def __init__(self, message: str = "Context compacted") -> None:
+        self.message = message
         super().__init__()

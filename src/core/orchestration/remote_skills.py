@@ -66,6 +66,18 @@ def _is_stale(path: Path, ttl: int) -> bool:
 def _fetch_text(url: str) -> Optional[str]:
     """Fetch *url* and return the response text, or None on error."""
     try:
+        # SSRF protection: block URLs that resolve to internal/private addresses.
+        try:
+            from src.tools.web_tools import _is_ssrf_blocked
+
+            _is_ssrf_blocked(url)
+        except PermissionError as pe:
+            logger.warning("remote_skills: SSRF blocked for %s: %s", url, pe)
+            return None
+        except Exception:
+            # If SSRF checker is unavailable for any reason, proceed and let
+            # requests report network errors. Do not fail hard here.
+            pass
         import requests
 
         r = requests.get(url, timeout=_FETCH_TIMEOUT)

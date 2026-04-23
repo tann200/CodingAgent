@@ -1,5 +1,7 @@
 """Tests for plan_validator_node."""
 
+# ruff: noqa: E501
+
 import pytest
 from src.core.orchestration.graph.nodes.plan_validator_node import (
     validate_plan,
@@ -49,7 +51,7 @@ class TestValidatePlan:
 
     def test_none_plan(self):
         """Test that None plan is invalid."""
-        result = validate_plan(None) # type: ignore[arg-type]
+        result = validate_plan(None)  # type: ignore[arg-type]
 
         assert result["valid"] is False
 
@@ -203,6 +205,7 @@ class TestPlanValidatorNode:
         assert "errors" in result
         assert len(result["errors"]) > 0
 
+
 def _make_validator_state(plan, enforce_warnings=None):
     """Helper to build a minimal AgentState for plan_validator_node."""
     state: AgentState = {  # type: ignore[assignment]
@@ -260,7 +263,9 @@ class TestPlanValidatorEnforceWarningsDefault:
         # With enforce_warnings=False (default), plan should pass with a warning only
         assert result.get("action_failed") is not True
         plan_validation = result.get("plan_validation", {})
-        assert len(plan_validation.get("warnings", [])) > 0  # warning is present but not blocking
+        assert (
+            len(plan_validation.get("warnings", [])) > 0
+        )  # warning is present but not blocking
 
     @pytest.mark.asyncio
     async def test_plan_without_verification_fails_when_enforce_warnings_true(self):

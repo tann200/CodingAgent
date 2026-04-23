@@ -26,7 +26,17 @@ from typing import TYPE_CHECKING, Any, Callable, Optional
 if TYPE_CHECKING:
     from src.ui.app import AgentApp
 
-from src.ui.logging import get_logger
+try:
+    from src.ui.logging import get_logger
+except Exception:
+    try:
+        from .logging import get_logger
+    except Exception:
+        import logging
+
+        def get_logger(name: str) -> logging.Logger:
+            return logging.getLogger(name)
+
 
 logger = get_logger("bridge")
 
@@ -75,6 +85,7 @@ _EVENT_MAP: dict[str, str] = {
     "task.file_modified": "file.modified",
     "delegation.start": "delegation.start",
     "delegation.finish": "delegation.finish",
+    "spawn.permission_required": "spawn.permission_required",
 }
 
 # AUTO-03: Map TUI role names to CodingAgent system prompt names.
@@ -209,7 +220,15 @@ class AgentBridge:
         self._deferred_init_done: bool = False
 
     def _ensure_deferred_init(self) -> None:
-        """Run trusted-gated deferred init once per bridge lifetime."""
+        """Run trusted-gated deferred init once per bridge lifetime.
+
+        HIGH-11 fix: ``asyncio.run()`` raises ``RuntimeError`` when called
+        from a thread that already has a running event loop (e.g. when
+        Textual places coroutine scheduling state on a worker thread).  Use
+        an explicit ``new_event_loop`` + ``run_until_complete`` + ``close``
+        pattern instead — this is always safe from any thread and does not
+        interfere with the main Textual event loop.
+        """
         if self._deferred_init_done:
             return
         if self._orchestrator is None:
@@ -220,7 +239,11 @@ class AgentBridge:
                 run_deferred_init,
             )
 
-            asyncio.run(run_deferred_init(self._orchestrator))
+            _loop = asyncio.new_event_loop()
+            try:
+                _loop.run_until_complete(run_deferred_init(self._orchestrator))
+            finally:
+                _loop.close()
         except Exception as exc:
             logger.debug(f"deferred_init skipped/failed: {exc}")
         finally:
@@ -315,6 +338,7 @@ class AgentBridge:
         self._subscribe("mcp.server.status", self._on_mcp_server_status)
         # tool permission gate
         self._subscribe("tool.permission_required", self._on_tool_permission_required)
+        self._subscribe("spawn.permission_required", self._on_spawn_permission_required)
         # per-turn token/cost summary (TUI-T6)
         self._subscribe("usage.turn_summary", self._on_usage_turn_summary)
         # GAP-NEW-7: subagent cost rollup — accumulate child cost into session total
@@ -1063,16 +1087,20 @@ class AgentBridge:
         )
 
     def _on_context_compacted(self, payload: dict) -> None:
-        """S9-B: Notify UI when /compact finishes context distillation."""
-        from src.ui.bus import NotificationEvent
+        """S9-B / TASK-TUI-9: Notify UI and insert compaction divider in chat log."""
+        from src.ui.bus import NotificationEvent, ContextCompactedEvent
 
+        msg = payload.get("message", "Context compacted")
         self._post(
             NotificationEvent(
                 level="information",
-                message=payload.get("message", "Context compacted"),
+                message=msg,
                 source="compact",
             )
         )
+        # Also fire the dedicated event so app.py can insert a visual divider
+        # into the chat log at the correct position (not just a toast notification).
+        self._post(ContextCompactedEvent(message=msg))
 
     def _on_task_queue_updated(self, payload: dict) -> None:
         from src.ui.bus import TaskQueueUpdatedEvent
@@ -1132,6 +1160,18 @@ class AgentBridge:
             ToolPermissionEvent(
                 tool=payload.get("tool", "unknown"),
                 args=payload.get("args", {}),
+                tool_id=payload.get("tool_id", ""),
+            )
+        )
+
+    def _on_spawn_permission_required(self, payload: dict) -> None:
+        from src.ui.bus import SpawnPermissionEvent
+
+        self._post(
+            SpawnPermissionEvent(
+                tool=payload.get("tool", "unknown"),
+                role=payload.get("role", ""),
+                task=payload.get("task", ""),
                 tool_id=payload.get("tool_id", ""),
             )
         )
@@ -1624,7 +1664,12 @@ class AgentBridge:
         with self._history_lock:
             # Find the last user message (working backwards)
             for i in range(len(self.history) - 1, -1, -1):
-                if self.history[i][0] == "user":
+                hist_entry = self.history[i]
+                if (
+                    isinstance(hist_entry, (list, tuple))
+                    and len(hist_entry) >= 2
+                    and hist_entry[0] == "user"
+                ):
                     removed = self.history.pop(i)
                     self._save_history()
                     logger.info(f"Undo: removed user message '{removed[1][:50]}...'")

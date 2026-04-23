@@ -18,6 +18,8 @@ Regression tests for tool registration, toolset wiring, and skills system:
   CACHE-1 — clear_cache() resets the toolset loader cache
 """
 
+
+# ruff: noqa: E501
 from __future__ import annotations
 
 import pytest

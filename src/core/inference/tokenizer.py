@@ -81,6 +81,9 @@ def count_messages_tokens(
     """
     total = 0
     for msg in messages:
+        # BUG-FIX: skip non-dict messages to avoid AttributeError
+        if not isinstance(msg, dict):
+            continue
         content = msg.get("content") or ""
         if isinstance(content, list):
             # OpenAI multi-part content blocks

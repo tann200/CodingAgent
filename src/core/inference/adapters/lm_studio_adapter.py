@@ -41,7 +41,35 @@ class LmStudioAdapter(OpenAICompatibleAdapter):
         _base_url = base_url
         _api_key = api_key
         _default_model = default_model or kwargs.pop("model", None)
-        _models: List[str] = list(models) if models else []
+        # Sanitize incoming models list to avoid leaking MagicMock placeholders
+        try:
+            from src.core.utils.strings import valid_str as _vs
+
+            def _valid_str(x: Any) -> bool:
+                try:
+                    return bool(_vs(x))
+                except Exception:
+                    return (
+                        isinstance(x, str) and bool(x.strip()) and "MagicMock" not in x
+                    )
+        except Exception:
+
+            def _valid_str(x: Any) -> bool:
+                return (
+                    isinstance(x, str)
+                    and bool(str(x).strip())
+                    and ("MagicMock" not in str(x))
+                )
+
+        _models: List[str] = []
+        if models:
+            for m in models:
+                if isinstance(m, dict):
+                    fid = m.get("id") or m.get("key") or m.get("name") or m.get("model")
+                else:
+                    fid = m
+                if fid and _valid_str(fid):
+                    _models.append(str(fid).strip())
 
         # ----------------------------------------------------------------
         # 2. Fill missing values from providers.json
@@ -109,6 +137,21 @@ class LmStudioAdapter(OpenAICompatibleAdapter):
         # Fall back to first element of models list if still unset
         if not _default_model and _models:
             _default_model = _models[0]
+
+        # Sanitise _default_model to avoid MagicMock placeholders
+        try:
+            if _default_model is not None and not _valid_str(_default_model):
+                _default_model = None
+            elif _default_model is not None:
+                _default_model = str(_default_model).strip()
+        except Exception:
+            try:
+                if isinstance(_default_model, str) and _default_model.strip():
+                    _default_model = _default_model.strip()
+                else:
+                    _default_model = None
+            except Exception:
+                _default_model = None
 
         # ----------------------------------------------------------------
         # 4. Resolve provider dict (backwards-compat attributes)

@@ -1,4 +1,6 @@
 from pathlib import Path
+
+# ruff: noqa: E501
 import yaml
 
 from src.config.toolsets.loader import (

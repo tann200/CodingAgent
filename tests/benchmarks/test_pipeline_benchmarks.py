@@ -8,6 +8,8 @@ live provider. The goal is to catch regressions in orchestration overhead
 Timing thresholds are deliberately generous to avoid flakiness in slow CI
 environments (GitHub Actions). They serve as regression guards, not SLAs.
 """
+
+# ruff: noqa: E501
 from __future__ import annotations
 
 import asyncio

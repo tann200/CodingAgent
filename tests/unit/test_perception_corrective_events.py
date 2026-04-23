@@ -1,4 +1,6 @@
 from unittest.mock import patch, MagicMock
+
+# ruff: noqa: E501
 import pytest
 
 

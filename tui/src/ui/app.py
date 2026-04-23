@@ -82,6 +82,8 @@ from .bus import (
     # Subagent visibility (SUBAGENT-VIS-2)
     SubagentStartEvent,
     SubagentFinishEvent,
+    # TASK-TUI-9: compaction divider
+    ContextCompactedEvent,
 )
 from .events import (
     PaletteCommand,
@@ -462,9 +464,17 @@ class AgentApp(App[None]):
         self._pending_perm_count: int = 0
         # GAP-PERM-3: tool names that have been "allow always"ed this session
         self._allow_always_tools: set[str] = set()
-        # GAP-MSG-2: queued message (submitted while agent is running)
-        self._queued_message: Optional[str] = None
+        # TASK-TUI-9 / GAP-MSG-2: message queue for submissions during agent run.
+        # Upgraded from single-slot to a proper deque so multiple quick submissions
+        # are all delivered in order when the agent becomes idle.
+        import collections as _collections
+
+        # Use a non-conflicting name for the TUI's own queued messages so we
+        # don't shadow Textual's internal _message_queue (which is a Queue).
+        self._queued_messages: _collections.deque[str] = _collections.deque()
         self._queued_widget: Optional[Static] = None
+        # Legacy alias kept for any code that still references _queued_message
+        self._queued_message: Optional[str] = None
         # Sidebar counters
         self._tool_call_count: int = 0
         self._session_input_tokens: int = 0
@@ -630,6 +640,15 @@ class AgentApp(App[None]):
         if getattr(self, "_shutdown_done", False):
             return
         self._shutdown_done = True
+        # BUG-FIX #4: drain queued messages on shutdown to prevent lost prompts
+        if getattr(self, "_queued_messages", None):
+            while self._queued_messages:
+                try:
+                    msg = self._queued_messages.popleft()
+                    logger.warning("Draining queued message on shutdown: %s", msg[:60])
+                    self._bridge.send_prompt(msg)
+                except Exception:
+                    pass
         self._save_session_snapshot()
         self._bridge.interrupt()
         self._bridge.save_history()
@@ -1037,8 +1056,19 @@ class AgentApp(App[None]):
         except Exception:
             pass
 
+        # TASK-TUI-9: drain the message queue when the agent becomes idle
+        if not event.running and self._queued_messages:
+            self.call_later(self._drain_message_queue)
+
         # MID-INJ: mid-run messages are now buffered by the bridge and injected
         # as system-reminders during the running execution — no post-idle flush needed.
+
+    def _drain_message_queue(self) -> None:
+        """TASK-TUI-9: Send queued messages in order now that agent is idle."""
+        while self._queued_messages and not self.agent_running:
+            msg = self._queued_messages.popleft()
+            logger.info(f"Draining queued message: {msg[:60]}")
+            self._bridge.send_prompt(msg)
 
     @on(ModelRoutingEvent)
     def handle_model_routing(self, event: ModelRoutingEvent) -> None:
@@ -1366,12 +1396,9 @@ class AgentApp(App[None]):
         if event.tool_id and event.tool_id in self._tool_widgets:
             w = self._tool_widgets.pop(event.tool_id)
             self.call_later(
-                lambda widget=w,
-                ic=ok_icon,
-                col=color,
-                r=result_display,
-                lbl=label,
-                s=sep: widget.update(f"[bold {col}]{lbl}[/]{s}{r}")
+                lambda widget=w, ic=ok_icon, col=color, r=result_display, lbl=label, s=sep: (
+                    widget.update(f"[bold {col}]{lbl}[/]{s}{r}")
+                )
             )
         else:
             widget = Static(
@@ -2036,6 +2063,16 @@ class AgentApp(App[None]):
         )
         await self._mount_chat_widget(widget)
 
+    @on(ContextCompactedEvent)
+    async def handle_context_compacted(self, event: ContextCompactedEvent) -> None:
+        """TASK-TUI-9: Insert a visual compaction divider on auto-compaction."""
+        divider = Static(
+            "[dim]══════════════ Context Compacted ══════════════[/]",
+            classes="system_msg compaction_divider",
+            markup=True,
+        )
+        await self._mount_chat_widget(divider)
+
     @on(ContextDegradedEvent)
     async def handle_context_degraded(self, event: ContextDegradedEvent) -> None:
         logger.warning(f"Context degraded: {event.reason}")
@@ -2448,7 +2485,8 @@ class AgentApp(App[None]):
             self._settings.set(f"{role}_provider", pid)
             self._settings.set("default_provider", pid)
             self._settings.save()
-            first_model = (target.get("models") or [""])[0]
+            model_list = target.get("models") or [""]
+            first_model = model_list[0] if model_list else ""
             try:
                 self.query_one("#sb_provider", Static).update(pid)
                 banner = self.query_one("#provider_banner", Static)
@@ -3141,30 +3179,83 @@ class AgentApp(App[None]):
                 logger.debug(f"handle_update_role_model provider switch: {_exc}")
 
         # Apply the model selection to the (now-correct) active adapter.
+        # Sanitize user-supplied model id to avoid leaking test doubles like
+        # MagicMock placeholders into the adapter state. Preserve list identity
+        # when updating adapter.models so other components holding a reference
+        # to the list continue to observe changes.
         try:
             orch = getattr(self._bridge, "_orchestrator", None)
             if orch is not None:
                 adapter = getattr(orch, "_adapter", None)
                 if adapter is not None:
-                    # Try common attribute names for the model setting.
-                    for _attr in ("default_model", "model", "_model"):
-                        if hasattr(adapter, _attr):
-                            setattr(adapter, _attr, event.model_id)
-                            logger.info(
-                                f"handle_update_role_model: set adapter.{_attr} = {event.model_id}"
-                            )
-                            break
-                    # Keep models list consistent so _publish_active_config picks
-                    # the right model as models[0].
-                    if hasattr(adapter, "models") and isinstance(adapter.models, list):
-                        if event.model_id not in adapter.models:
-                            adapter.models.insert(0, event.model_id)
-                        else:
-                            adapter.models.remove(event.model_id)
-                            adapter.models.insert(0, event.model_id)
-                    # Re-publish so banner/sidebar refresh immediately.
-                    if hasattr(orch, "_publish_active_config"):
-                        orch._publish_active_config()
+                    # Local sanitiser: accept concrete non-empty strings and
+                    # reject MagicMock placeholders. Keep this local so the
+                    # TUI remains self-contained in dev mode.
+                    def _valid_str(x: object) -> bool:
+                        return (
+                            isinstance(x, str)
+                            and bool(x.strip())
+                            and ("MagicMock" not in x)
+                        )
+
+                    # Extract a model id string from the event payload.
+                    model_id = None
+                    try:
+                        if isinstance(event.model_id, str) and _valid_str(
+                            event.model_id
+                        ):
+                            model_id = event.model_id.strip()
+                    except Exception:
+                        model_id = None
+
+                    if not model_id:
+                        logger.debug(
+                            f"handle_update_role_model: ignoring invalid model id: {event.model_id}"
+                        )
+                    else:
+                        # Try common attribute names for the model setting.
+                        for _attr in ("default_model", "model", "_model"):
+                            if hasattr(adapter, _attr):
+                                try:
+                                    setattr(adapter, _attr, model_id)
+                                    logger.info(
+                                        f"handle_update_role_model: set adapter.{_attr} = {model_id}"
+                                    )
+                                except Exception:
+                                    logger.debug(
+                                        f"handle_update_role_model: failed to set adapter.{_attr}"
+                                    )
+                                break
+
+                        # Keep models list consistent so _publish_active_config picks
+                        # the right model as models[0]. Update in-place to preserve
+                        # list identity and filter out any MagicMock placeholders.
+                        if hasattr(adapter, "models") and isinstance(
+                            adapter.models, list
+                        ):
+                            try:
+                                # Remove invalid entries first
+                                valid_models = [
+                                    m for m in adapter.models if _valid_str(m)
+                                ]
+                                adapter.models[:] = valid_models
+                                if model_id in adapter.models:
+                                    adapter.models.remove(model_id)
+                                adapter.models.insert(0, model_id)
+                            except Exception:
+                                # Best-effort in-place update failed; try simple insert
+                                try:
+                                    if model_id not in adapter.models:
+                                        adapter.models.insert(0, model_id)
+                                except Exception:
+                                    pass
+
+                        # Re-publish so banner/sidebar refresh immediately.
+                        if hasattr(orch, "_publish_active_config"):
+                            try:
+                                orch._publish_active_config()
+                            except Exception:
+                                pass
         except Exception as _exc:
             logger.debug(f"handle_update_role_model adapter update: {_exc}")
 

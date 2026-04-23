@@ -4,6 +4,7 @@ Shared path-safety utilities used by file_tools, patch_tools, and others.
 Extracted from file_tools.py (#29) so any tool module can import _safe_resolve
 without pulling in the full file_tools dependency tree.
 """
+
 from __future__ import annotations
 
 import os

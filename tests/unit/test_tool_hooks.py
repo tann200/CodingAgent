@@ -21,6 +21,8 @@ Covers:
   TH-18  deferred_init checks _tool_hook_runner attribute (Gap A)
 """
 
+
+# ruff: noqa: E501
 from __future__ import annotations
 
 import json

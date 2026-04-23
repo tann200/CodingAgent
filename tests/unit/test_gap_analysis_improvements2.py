@@ -9,6 +9,8 @@ Covers:
   Model-specific prompt partial files exist (GAP-FRONTIER-1)
 """
 
+
+# ruff: noqa: E501
 from __future__ import annotations
 
 from pathlib import Path

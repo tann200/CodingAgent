@@ -152,7 +152,10 @@ class Truncate:
         if isinstance(data, str):
             return Truncate.output(data, agent_context)
         if isinstance(data, dict):
-            return {k: Truncate.truncate_dict_values(v, agent_context) for k, v in data.items()}
+            return {
+                k: Truncate.truncate_dict_values(v, agent_context)
+                for k, v in data.items()
+            }
         if isinstance(data, list):
             return [Truncate.truncate_dict_values(item, agent_context) for item in data]
         return data

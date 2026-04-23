@@ -4,6 +4,8 @@ Tests for _truncate_tool_output() in execution_node.py — ensures tool results
 exceeding 50 KB are truncated before entering LLM history, preventing context
 blowout from large bash output, git diffs, or file reads.
 """
+
+# ruff: noqa: E501
 import json
 
 import pytest

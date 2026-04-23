@@ -25,7 +25,6 @@ import json
 import logging
 import os
 import tempfile
-from pathlib import Path
 from typing import Optional
 
 from src.core.paths import get_prefs_path

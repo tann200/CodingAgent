@@ -14,6 +14,8 @@ These tests do NOT require a live LLM backend.
 import asyncio
 import threading
 import time
+
+# ruff: noqa: E501
 import pytest
 
 pytestmark = pytest.mark.integration

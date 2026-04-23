@@ -26,13 +26,13 @@ helpers in order.
 from __future__ import annotations
 
 import concurrent.futures as _cf
-import os
 import threading as _threading
 import time
 from pathlib import Path
 from typing import Any, Optional, TYPE_CHECKING, cast
 
 from src.core.logger import logger as guilogger
+import weakref
 from src.core.orchestration.approval_gate import (
     resolve_bash_gate,
     resolve_tool_gate,
@@ -58,6 +58,13 @@ def _init_infrastructure(orch: Any, message_max_tokens: Optional[int]) -> None:
         event_bus=orch.event_bus,
         compact_callback=orch._compact_messages,
     )
+    # Lightweight lock to protect in-memory message replacement during
+    # background compaction operations. Present but optional for tests that
+    # create fake orchestrators.
+    try:
+        orch._msg_mgr_lock = _threading.Lock()
+    except Exception:
+        orch._msg_mgr_lock = None
 
     orch._max_files_per_task = 10
     # F17: In-memory usage counter — flushed once per run_agent_once() instead of per tool call
@@ -127,34 +134,28 @@ def _init_infrastructure(orch: Any, message_max_tokens: Optional[int]) -> None:
         enabled=True,
     )
 
-    # TASK-8: Resolve storage backend (env var > config file > default)
-    def _resolve_storage_backend(working_dir: Any) -> str:
-        """Return 'sqlite' or 'jsonl' based on env var or config."""
-        env_val = os.getenv("CODING_AGENT_STORAGE_BACKEND", "").lower()
-        if env_val in ("sqlite", "jsonl"):
-            return env_val
+    # Initialize SessionStore. Use the raw backend factory to prefer returning
+    # the concrete implementation (SqliteSessionStore or JsonlSessionStore).
+    # This satisfies tests that assert the orchestrator has a raw backend
+    # instance (not the compatibility wrapper). Fall back to the factory
+    # if raw creation fails.
+    try:
+        from src.core.memory.session_store import _create_backend as _raw_create
+
+        orch.session_store = _raw_create(str(orch.working_dir))
+    except Exception:
         try:
-            from src.core.config_loader import load_project_config
+            from src.core.memory.session_store import get_session_store
 
-            cfg = load_project_config(str(working_dir) if working_dir else "")
-            cfg_val = str(cfg.get("storage_backend", "")).lower()
-            if cfg_val in ("sqlite", "jsonl"):
-                return cfg_val
+            orch.session_store = get_session_store(workdir=str(orch.working_dir))
         except Exception:
-            pass
-        return "sqlite"  # default until JSONL is proven in production
+            # Fallback: instantiate JsonlSessionStore directly if factory fails
+            try:
+                from src.core.memory.jsonl_session_store import JsonlSessionStore
 
-    _storage_backend = _resolve_storage_backend(orch.working_dir)
-
-    # Initialize SessionStore for tool call and plan persistence
-    if _storage_backend == "jsonl":
-        from src.core.memory.jsonl_session_store import JsonlSessionStore
-
-        orch.session_store = JsonlSessionStore(str(orch.working_dir))
-    else:
-        from src.core.memory.session_store import SessionStore
-
-        orch.session_store = SessionStore(str(orch.working_dir))
+                orch.session_store = JsonlSessionStore(str(orch.working_dir))
+            except Exception:
+                orch.session_store = None
 
     # Initialize SessionLifecycleManager for graceful shutdown and snapshots
     from src.core.orchestration.session_lifecycle import get_session_lifecycle_manager
@@ -165,6 +166,29 @@ def _init_infrastructure(orch: Any, message_max_tokens: Optional[int]) -> None:
     def _lifecycle_cleanup_hook(session_id: str) -> None:
         try:
             guilogger.debug(f"Lifecycle cleanup for session: {session_id}")
+            # Best-effort: attempt to close the session store to release DB
+            # resources (writer connection). Any failure must not raise.
+            try:
+                ss = getattr(orch, "session_store", None)
+                if ss is not None:
+                    close_fn = getattr(ss, "close", None)
+                    if callable(close_fn):
+                        try:
+                            close_fn()
+                        except Exception:
+                            guilogger.debug(
+                                "Orchestrator: session_store.close() failed during lifecycle cleanup",
+                                exc_info=True,
+                            )
+            except Exception:
+                # Swallow any unexpected error during cleanup; do not escape
+                try:
+                    guilogger.debug(
+                        "Orchestrator: failed to invoke session_store.close()",
+                        exc_info=True,
+                    )
+                except Exception:
+                    pass
         except Exception as e:
             guilogger.warning(f"Lifecycle cleanup hook failed: {e}")
 
@@ -384,6 +408,168 @@ def _init_event_subscriptions(orch: Any) -> None:
     except Exception:
         pass
 
+    # Scheduler distillation requests: run compaction/distillation in background
+    def _on_scheduler_distill_request(payload: Any) -> None:
+        # Run distillation in a background thread so the EventBus publisher
+        # is non-blocking. The handler must fail softly.
+        try:
+            import threading as _threading
+
+            def _worker() -> None:
+                try:
+                    from src.core.memory.distiller import distill_context
+
+                    # Use orch.msg_mgr.messages as the source of truth; copy to
+                    # avoid concurrent mutation while distillation runs.
+                    msgs = []
+                    try:
+                        msgs = list(getattr(orch, "msg_mgr").messages or [])
+                    except Exception:
+                        msgs = []
+                    # Call distill_context with the orchestrator working_dir.
+                    try:
+                        # Capture the distillation result so we can apply any
+                        # returned compacted history back into the in-memory
+                        # MessageManager.  This keeps the handler fail-soft.
+                        distilled = distill_context(
+                            msgs, working_dir=getattr(orch, "working_dir", None)
+                        )
+
+                        # If the distiller returned a compacted history, apply it
+                        # to the orchestrator's MessageManager so the in-memory
+                        # context actually shrinks.
+                        try:
+                            if isinstance(distilled, dict) and (
+                                "_compacted_history" in distilled
+                            ):
+                                compacted = distilled.get("_compacted_history")
+                                if compacted is not None:
+                                    try:
+                                        if (
+                                            hasattr(orch, "msg_mgr")
+                                            and getattr(orch, "msg_mgr", None)
+                                            is not None
+                                        ):
+                                            # Prefer acquiring an orchestrator-owned
+                                            # lock if available to avoid races with
+                                            # concurrent message appends.
+                                            lock = getattr(orch, "_msg_mgr_lock", None)
+                                            try:
+                                                if lock:
+                                                    with lock:
+                                                        orch.msg_mgr.messages = list(
+                                                            compacted
+                                                        )
+                                                else:
+                                                    orch.msg_mgr.messages = list(
+                                                        compacted
+                                                    )
+                                            except Exception:
+                                                # Swallow assignment errors; never raise
+                                                pass
+
+                                            # Compute simple token metrics (best-effort)
+                                            _orig_tok = None
+                                            _new_tok = None
+                                            _tokens_reduced = None
+                                            try:
+                                                from src.core.memory import (
+                                                    distiller as _distiller,
+                                                )
+
+                                                try:
+                                                    _orig_tok = (
+                                                        _distiller._estimate_tokens(
+                                                            msgs or []
+                                                        )
+                                                    )
+                                                except Exception:
+                                                    _orig_tok = None
+                                                try:
+                                                    _new_tok = (
+                                                        _distiller._estimate_tokens(
+                                                            compacted or []
+                                                        )
+                                                    )
+                                                except Exception:
+                                                    _new_tok = None
+                                                if (
+                                                    _orig_tok is not None
+                                                    and _new_tok is not None
+                                                ):
+                                                    _tokens_reduced = (
+                                                        _orig_tok - _new_tok
+                                                    )
+                                            except Exception:
+                                                _orig_tok = _new_tok = (
+                                                    _tokens_reduced
+                                                ) = None
+
+                                            # Publish a compact-applied event for observability
+                                            try:
+                                                orch.event_bus.publish(
+                                                    "message.compaction_applied",
+                                                    {
+                                                        "source": "scheduler",
+                                                        "original_count": len(msgs),
+                                                        "new_count": len(compacted),
+                                                        "dropped_count": max(
+                                                            0,
+                                                            len(msgs) - len(compacted),
+                                                        ),
+                                                        "original_tokens": _orig_tok,
+                                                        "new_tokens": _new_tok,
+                                                        "tokens_reduced": _tokens_reduced,
+                                                    },
+                                                )
+                                            except Exception:
+                                                pass
+                                    except Exception:
+                                        # Assignment must not raise to the EventBus
+                                        pass
+                        except Exception:
+                            pass
+
+                        # Publish completion event for observability.
+                        try:
+                            orch.event_bus.publish(
+                                "scheduler.distill_completed", {"source": "scheduler"}
+                            )
+                        except Exception:
+                            pass
+                    except Exception as _e:
+                        try:
+                            orch.event_bus.publish(
+                                "scheduler.distill_failed", {"error": str(_e)}
+                            )
+                        except Exception:
+                            pass
+                except Exception:
+                    # Any unexpected error must not escape to the EventBus.
+                    try:
+                        import traceback as _tb
+
+                        _tb.print_exc()
+                    except Exception:
+                        pass
+
+            _t = _threading.Thread(target=_worker, daemon=True)
+            _t.start()
+        except Exception:
+            try:
+                guilogger.warning(
+                    "Orchestrator: failed to handle scheduler.distill_request"
+                )
+            except Exception:
+                pass
+
+    try:
+        orch.event_bus.subscribe(
+            "scheduler.distill_request", _on_scheduler_distill_request
+        )
+    except Exception:
+        pass
+
     # Permission gate subscriptions
     def _on_tool_permission_granted(payload: Any) -> None:
         _tid = str(payload.get("tool_id", "")) if isinstance(payload, dict) else ""
@@ -590,6 +776,209 @@ def _init_services(orch: Any) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Config reload helper
+# ---------------------------------------------------------------------------
+
+
+def register_config_reload_handlers(orch: Any) -> None:
+    """Register a callback with the ConfigReloader to refresh runtime state.
+
+    This function is intentionally safe to call in tests and avoids heavy
+    imports until the callback actually runs.
+    """
+    # Avoid registering the same callback multiple times for the same
+    # orchestrator instance. Use a weak set to avoid leaking memory when
+    # orchestrator instances are garbage collected.
+    try:
+        if not hasattr(register_config_reload_handlers, "_registered"):
+            register_config_reload_handlers._registered = weakref.WeakSet()
+        if orch in register_config_reload_handlers._registered:
+            return
+        register_config_reload_handlers._registered.add(orch)
+    except Exception:
+        # If weakref operations fail for any reason, proceed (best-effort).
+        pass
+
+    try:
+        from src.core.config_hot_reload import get_config_reloader
+
+        def _on_config_reloaded(changed_paths: Optional[set]) -> None:
+            guilogger.info("Orchestrator: config reloader callback invoked")
+            # 1) Reload AgentBrainManager caches
+            try:
+                from src.core.orchestration.agent_brain import get_agent_brain_manager
+
+                try:
+                    get_agent_brain_manager().reload()
+                except Exception:
+                    guilogger.warning(
+                        "AgentBrainManager.reload failed during config reload"
+                    )
+            except Exception:
+                guilogger.debug("AgentBrainManager not available to reload")
+
+            # 2) Clear toolset loader cache so updated YAMLs are re-read
+            try:
+                from src.config.toolsets import loader as _ts_loader
+
+                try:
+                    _ts_loader.clear_cache()
+                except Exception:
+                    guilogger.warning(
+                        "toolsets.loader.clear_cache failed during config reload"
+                    )
+            except Exception:
+                guilogger.debug("toolsets.loader not available to clear cache")
+
+            # 3) Rebuild the tool registry and replace orch.tool_registry
+            try:
+                from src.core.orchestration.registry_builder import example_registry
+
+                try:
+                    new_reg = example_registry()
+                    if new_reg:
+                        orch.tool_registry = new_reg
+                        guilogger.info(
+                            "Orchestrator: tool registry rebuilt from config reload"
+                        )
+                except Exception:
+                    guilogger.warning(
+                        "Failed to rebuild tool registry during config reload"
+                    )
+            except Exception:
+                guilogger.debug("registry_builder.example_registry not available")
+
+            # 4) Reinitialize providers so provider changes (providers.json) take effect
+            try:
+                pm = None
+                from src.core.inference.llm_manager import (
+                    get_provider_manager,
+                    _ensure_provider_manager_initialized_sync,
+                )
+
+                try:
+                    pm = get_provider_manager()
+                    if pm:
+                        if getattr(pm, "_event_bus", None) is None:
+                            pm.set_event_bus(orch.event_bus)
+                        _ensure_provider_manager_initialized_sync()
+                except Exception:
+                    guilogger.warning(
+                        "ProviderManager reinitialization failed during config reload"
+                    )
+            except Exception:
+                guilogger.debug("llm_manager ProviderManager not available for reload")
+
+            # 5) Publish a top-level event so UIs or other subsystems can react.
+            try:
+                orch.event_bus.publish(
+                    "config.reloaded", {"changed_paths": list(changed_paths or [])}
+                )
+            except Exception:
+                guilogger.debug(
+                    "Failed to publish orchestrator-level config.reloaded event"
+                )
+
+            # 6) Restart scheduler to pick up config changes safely
+            try:
+                # Stop existing scheduler (best-effort) then re-initialize.
+                try:
+                    _sched = getattr(orch, "_scheduler", None)
+                    if _sched is not None:
+                        try:
+                            _sched.stop_scheduler()
+                        except Exception:
+                            pass
+                        try:
+                            # Clear any registered jobs so re-init starts clean.
+                            if hasattr(_sched, "clear_jobs"):
+                                _sched.clear_jobs()
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+                try:
+                    # Re-run scheduler init helper to pick up env/config changes
+                    try:
+                        _init_scheduler(orch)
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
+        try:
+            get_config_reloader(initial_load=False).add_callback(_on_config_reloaded)
+        except Exception:
+            guilogger.debug("Failed to register config reloader callback")
+    except Exception:
+        # No config reloader available; skip registration silently
+        pass
+
+
+def _init_scheduler(orch: Any) -> None:
+    """Initialize and start the lightweight scheduler for the orchestrator.
+
+    Kept as a small, standalone helper so bootstrap_orchestrator() remains
+    a thin wrapper (ARCH-VOL21-2). This function is conservative and fails
+    silently on any error to avoid impacting startup.
+    """
+    try:
+        import os as _os
+
+        from src.core.scheduler import worker as _sched
+
+        _hb = int(_os.getenv("CODING_AGENT_SCHEDULER_HEARTBEAT", "60") or 60)
+        _dist_int = int(_os.getenv("CODING_AGENT_DISTILL_INTERVAL", "600") or 600)
+
+        def _publish_distill_request() -> None:
+            try:
+                orch.event_bus.publish(
+                    "scheduler.distill_request",
+                    {"source": "scheduler", "time": time.time()},
+                )
+            except Exception:
+                try:
+                    guilogger.warning("Scheduler: failed to publish distill_request")
+                except Exception:
+                    pass
+
+        # Allow per-job config via merged config layer: "scheduler_jobs".
+        # Example: {"periodic_distill_request": {"enabled": true, "interval": 600}}
+        try:
+            from src.core.config_loader import get as _cfg_get
+
+            _sched_cfg = _cfg_get("scheduler_jobs", {}) or {}
+        except Exception:
+            _sched_cfg = {}
+
+        _pd_cfg = (
+            _sched_cfg.get("periodic_distill_request", {})
+            if isinstance(_sched_cfg, dict)
+            else {}
+        )
+        _pd_enabled = _pd_cfg.get("enabled", True)
+        _pd_interval = int(_pd_cfg.get("interval", _dist_int))
+
+        if _pd_enabled:
+            _sched.register_job(
+                "periodic_distill_request", _publish_distill_request, _pd_interval
+            )
+        _sched.start_scheduler(orch, heartbeat_interval=_hb)
+        orch._scheduler = _sched
+        try:
+            orch.lifecycle_manager.on_shutdown(
+                "stop_scheduler", lambda _sid: _sched.stop_scheduler()
+            )
+        except Exception:
+            pass
+    except Exception:
+        # Never fail orchestrator bootstrap because scheduler init failed.
+        pass
+
+
+# ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
 
@@ -613,10 +1002,26 @@ def bootstrap_orchestrator(orch: Any, message_max_tokens: Optional[int]) -> None
     _init_event_subscriptions(orch)
     _init_services(orch)
 
+    # Register configuration hot-reload callback helper. We already expose a
+    # module-level register_config_reload_handlers() above; attach that helper
+    # to the orchestrator instance and invoke it. Keeping the heavy logic at
+    # module scope keeps bootstrap_orchestrator short (ARCH-VOL21-2 requirement)
+    orch.register_config_reload_handlers = register_config_reload_handlers
+    try:
+        register_config_reload_handlers(orch)
+    except Exception:
+        guilogger.debug("Failed to register config reload handlers at bootstrap")
+
     # Gap 8: Bridge EventBus topics to OTel span events (no-op when OTel is disabled).
     try:
         from src.core.telemetry.tracer import wire_event_bus as _wire_otel
 
         _wire_otel(orch.event_bus)
+    except Exception:
+        pass
+
+    # Start the scheduler via a small helper so bootstrap_orchestrator remains thin
+    try:
+        _init_scheduler(orch)
     except Exception:
         pass

@@ -58,8 +58,8 @@ def _format_side_by_side_diff(unified_diff: str, max_width: int = 80) -> str:
             result.append("")
             result.append(current_hunk["header"])
             result.append("")
-        left_texts = [_fmt(l, True) for l in current_hunk["left"]]
-        right_texts = [_fmt(r, False) for r in current_hunk["right"]]
+        left_texts = [_fmt(line, True) for line in current_hunk["left"]]
+        right_texts = [_fmt(line, False) for line in current_hunk["right"]]
         max_len = max(len(left_texts), len(right_texts))
         while len(left_texts) < max_len:
             left_texts.append("")

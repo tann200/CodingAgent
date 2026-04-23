@@ -4,6 +4,8 @@ Regression tests for Audit Vol3 fixes (F1–F16).
 Each test class is named after the fix it covers.
 """
 
+
+# ruff: noqa: E501
 from __future__ import annotations
 
 import json

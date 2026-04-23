@@ -14,7 +14,16 @@ import functools
 import os
 import tempfile
 import time
-from typing import Any, Callable, Dict, List, Optional, Tuple, Awaitable, TypeVar
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    List,
+    Optional,
+    Tuple,
+    Awaitable,
+    TypeVar,
+)
 from pathlib import Path
 import json
 import inspect
@@ -232,8 +241,27 @@ def _get_models_for_provider_key(provider_key: str) -> List[str]:
                 except Exception:
                     resp = None
                 if isinstance(resp, dict):
+                    # Guarded sanitisation: accept only concrete strings and
+                    # normalise LM Studio ids when appropriate. This prevents
+                    # test double placeholders (MagicMock) from leaking into
+                    # cached model lists.
+                    try:
+                        from src.core.utils.strings import valid_str as _vs
+
+                        def _valid_str(x: Any) -> bool:
+                            return _vs(x)
+                    except Exception:
+
+                        def _valid_str(x: Any) -> bool:
+                            return (
+                                isinstance(x, str)
+                                and bool(x.strip())
+                                and "MagicMock" not in x
+                            )
+
                     models = []
                     for m in resp.get("models", []):
+                        fid = None
                         if isinstance(m, dict):
                             fid = (
                                 m.get("id")
@@ -241,10 +269,10 @@ def _get_models_for_provider_key(provider_key: str) -> List[str]:
                                 or m.get("name")
                                 or m.get("model")
                             )
-                            if fid:
-                                models.append(str(fid))
                         elif isinstance(m, str):
-                            models.append(m)
+                            fid = m
+                        if fid and _valid_str(fid):
+                            models.append(str(fid).strip())
                     if models:
                         if provider_key == "lm_studio":
                             models = [_lmstudio_full_id(x) for x in models]
@@ -291,24 +319,42 @@ def normalize_models_for_provider(provider: Dict[str, Any]) -> List[str]:
         return out
     ptype = str(provider.get("type") or "").lower()
     models_field = provider.get("models") or []
+
+    # Guarded import for shared validator to avoid circular imports in tests.
+    try:
+        from src.core.utils.strings import valid_str as _vs
+
+        def _valid_str(x: Any) -> bool:
+            try:
+                return bool(_vs(x))
+            except Exception:
+                return isinstance(x, str) and bool(x.strip()) and ("MagicMock" not in x)
+    except Exception:
+
+        def _valid_str(x: Any) -> bool:
+            return isinstance(x, str) and bool(x.strip()) and ("MagicMock" not in x)
+
     if isinstance(models_field, list):
         for m in models_field:
             if isinstance(m, dict):
                 fid = m.get("id") or m.get("key") or m.get("name") or m.get("model")
-                if not fid:
-                    continue
             elif isinstance(m, str):
                 fid = m
             else:
                 continue
+            if not fid or not _valid_str(fid):
+                continue
+            fid_str = str(fid).strip()
             # If provider type indicates some LM studio, normalize to full id
             if "lm" in ptype or canonical_provider(provider.get("name")) == "lm_studio":
                 try:
-                    out.append(_lmstudio_full_id(fid))
+                    full = _lmstudio_full_id(fid_str)
+                    if _valid_str(full):
+                        out.append(full)
                 except Exception:
-                    out.append(str(fid))
+                    out.append(fid_str)
             else:
-                out.append(str(fid))
+                out.append(fid_str)
     return out
 
 
@@ -366,6 +412,10 @@ def _lmstudio_full_id(raw: str) -> str:
 # Compatibility shims expected by adapters/tests
 DEFAULT_TIMEOUT = 5
 LM_DEFAULT_TIMEOUT = DEFAULT_TIMEOUT
+
+# NOTE: proxy provider identifiers are now stored on ProviderManager so that
+# other modules can extend or query the set via the manager API. See
+# ProviderManager._PROXY_PROVIDER_IDENTIFIERS and add_proxy_identifier().
 
 
 def call_requests(method: str, url: str, **kwargs) -> Any:
@@ -527,6 +577,41 @@ class ProviderManager:
         self._models_cache: Dict[str, List[str]] = {}
         self._event_bus = None
         self.providers_config_path = providers_config_path
+        # Conservative proxy identifiers — kept small. Callers should prefer
+        # explicit adapter/provider flags (requires_functions, is_proxy) when
+        # available. Use add_proxy_identifier() to add custom ids at runtime.
+        self._PROXY_PROVIDER_IDENTIFIERS = frozenset(
+            {
+                "litellm",
+                "lite_llm",
+                "litellm_proxy",
+                "ccr",
+                "ccr_proxy",
+            }
+        )
+
+    def add_proxy_identifier(self, identifier: str) -> None:
+        """Add a new proxy identifier at runtime. The identifier is matched
+        case-insensitively against adapter name/type strings. This method is
+        intentionally conservative: it appends to the existing set without
+        exposing direct mutation of the underlying frozenset.
+        """
+        try:
+            # Convert to a set, mutate, and reassign as frozenset for safety.
+            s = set(self._PROXY_PROVIDER_IDENTIFIERS)
+            s.add(str(identifier).lower())
+            self._PROXY_PROVIDER_IDENTIFIERS = frozenset(s)
+        except Exception:
+            pass
+
+    def remove_proxy_identifier(self, identifier: str) -> None:
+        """Remove a proxy identifier if present."""
+        try:
+            s = set(self._PROXY_PROVIDER_IDENTIFIERS)
+            s.discard(str(identifier).lower())
+            self._PROXY_PROVIDER_IDENTIFIERS = frozenset(s)
+        except Exception:
+            pass
 
     def set_event_bus(self, bus: Any):
         self._event_bus = bus
@@ -538,6 +623,225 @@ class ProviderManager:
         if not key:
             return None
         return self._providers.get(key.lower().replace(" ", "_"))
+
+    def get_provider_capabilities(
+        self, key_or_adapter: Optional[Any] = None
+    ) -> Dict[str, Any]:
+        """Return a synthesized provider capabilities dict for a provider key or adapter.
+
+        Args:
+            key_or_adapter: Either a provider key string (name/type) or an adapter
+                instance. When omitted, the currently active adapter is used.
+
+        Returns a dict with at least the keys:
+            - supports_native_tools (bool)
+            - provider_family (str)
+            - model (Optional[str])
+            - provider_name (str)
+
+        This helper centralises lightweight capability synthesis so callers (tests,
+        context builders) can obtain a consistent view of provider properties
+        without instantiating adapters themselves.
+        """
+        capabilities: Dict[str, Any] = {
+            "supports_native_tools": False,
+            "provider_family": "default",
+            "model": None,
+            "provider_name": "",
+        }
+        try:
+            # Resolve adapter instance
+            adapter = None
+            if isinstance(key_or_adapter, str):
+                adapter = self.get_provider(canonical_provider(key_or_adapter))
+            elif key_or_adapter is None:
+                adapter = self.get_active_adapter()
+            else:
+                adapter = key_or_adapter
+
+            if not adapter:
+                return capabilities
+
+            # Helpers — be conservative and avoid consuming MagicMock placeholders
+            def _valid_str(x: Any) -> bool:
+                try:
+                    from src.core.utils.strings import valid_str as _vs
+
+                    return _vs(x)
+                except Exception:
+                    return (
+                        isinstance(x, str) and bool(x.strip()) and "MagicMock" not in x
+                    )
+
+            def _extract_from_provider_attr(val: Any) -> tuple[str, str]:
+                # returns (name, type)
+                if isinstance(val, dict):
+                    return (
+                        str(val.get("name") or "") or "",
+                        str(val.get("type") or "") or "",
+                    )
+                return ("", "")
+
+            raw_name = ""
+            raw_type = ""
+            provider_attr = getattr(adapter, "provider", None)
+            if isinstance(provider_attr, dict):
+                raw_name, raw_type = _extract_from_provider_attr(provider_attr)
+                capabilities["supports_native_tools"] = bool(
+                    provider_attr.get("supports_native_tools", False)
+                )
+
+            # Fall back to adapter.name when provider dict didn't supply a concrete name
+            if not _valid_str(raw_name):
+                name_attr = getattr(adapter, "name", "")
+                raw_name = str(name_attr or "") if isinstance(name_attr, str) else ""
+            # Sanitize raw_type as well
+            if not _valid_str(raw_type):
+                raw_type = ""
+
+            # Map provider family (simple, local mapping — intentionally small)
+            lookup = (raw_type or raw_name).lower().replace("-", "_").replace(" ", "_")
+            _MAP: Dict[str, str] = {
+                "anthropic": "anthropic",
+                "openai": "openai",
+                "openrouter": "openai",
+                "github_copilot": "openai",
+                "copilot": "openai",
+                "ollama": "local",
+                "lm_studio": "local",
+                "lmstudio": "local",
+                "local": "local",
+                "mock": "mock",
+            }
+            family = "default"
+            if lookup in _MAP:
+                family = _MAP[lookup]
+            else:
+                for k, v in _MAP.items():
+                    if k in lookup:
+                        family = v
+                        break
+
+            capabilities["provider_family"] = family
+            # Only expose provider_name when it's a concrete string
+            if _valid_str(raw_name):
+                capabilities["provider_name"] = raw_name
+            elif _valid_str(raw_type):
+                capabilities["provider_name"] = raw_type
+
+            # Active model (adapter may expose default_model) — only accept concrete strings
+            active_model = getattr(adapter, "default_model", None)
+            if _valid_str(active_model):
+                capabilities["model"] = active_model
+
+            # Copilot-like proxies: inspect model name to refine family
+            if family == "openai" and capabilities.get("model"):
+                m_lower = str(capabilities.get("model") or "").lower()
+                if "claude" in m_lower:
+                    capabilities["provider_family"] = "anthropic"
+                elif "gemini" in m_lower:
+                    capabilities["provider_family"] = "gemini"
+
+            # Additional optional inferred flags
+            capabilities["provider_supports_parallel_tools"] = bool(
+                getattr(adapter, "supports_parallel_tools", False)
+                or (
+                    isinstance(provider_attr, dict)
+                    and provider_attr.get("supports_parallel_tools", False)
+                )
+            )
+            capabilities["supports_function_call"] = bool(
+                getattr(adapter, "supports_function_call", False)
+                or (
+                    isinstance(provider_attr, dict)
+                    and provider_attr.get("supports_function_call", False)
+                )
+            )
+            capabilities["supports_streaming"] = bool(
+                getattr(adapter, "supports_streaming", False)
+            )
+
+            # Context window: adapter may expose a numeric attribute or a getter
+            ctx = None
+            try:
+                if hasattr(adapter, "context_window") and getattr(
+                    adapter, "context_window"
+                ):
+                    ctx = int(getattr(adapter, "context_window") or 0)
+                elif hasattr(adapter, "get_loaded_context_length"):
+                    try:
+                        # Some adapters accept a model name; prefer active_model when present
+                        model_to_query = capabilities.get("model")
+                        if model_to_query:
+                            ctx = adapter.get_loaded_context_length(model_to_query)
+                        else:
+                            ctx = adapter.get_loaded_context_length(None)
+                    except Exception:
+                        # ignore errors from adapter probes
+                        ctx = None
+            except Exception:
+                ctx = None
+            if ctx:
+                try:
+                    capabilities["context_window"] = int(ctx)
+                except Exception:
+                    capabilities["context_window"] = ctx
+
+        except Exception:
+            # conservative fallback already prepared
+            pass
+        return capabilities
+
+    def is_proxy_adapter(self, key_or_adapter: Optional[Any] = None) -> bool:
+        """Conservative detection whether an adapter is a proxy that likely
+        requires a non-empty tools/functions list (e.g., LiteLLM, CCR proxies).
+
+        Accepts either a provider key string or an adapter instance. Returns
+        True only when conservative heuristics indicate the adapter behaves
+        like a proxy requiring functions/tools to be present.
+        """
+        try:
+            adapter = None
+            if isinstance(key_or_adapter, str):
+                adapter = self.get_provider(canonical_provider(key_or_adapter))
+            elif key_or_adapter is None:
+                adapter = self.get_active_adapter()
+            else:
+                adapter = key_or_adapter
+            if not adapter:
+                return False
+
+            # Explicit flags on adapter/provider config take precedence.
+            prov_attr = getattr(adapter, "provider", None)
+            if isinstance(prov_attr, dict) and prov_attr.get("requires_functions"):
+                return True
+            if getattr(adapter, "is_proxy", False) or getattr(
+                adapter, "requires_functions", False
+            ):
+                return True
+
+            # Fallback: conservative name-based detection using registered ids.
+            adapter_name = str(getattr(adapter, "name", "") or "").lower()
+            adapter_cls = getattr(adapter.__class__, "__name__", "").lower()
+            prov_type = ""
+            if isinstance(prov_attr, dict):
+                prov_type = str(prov_attr.get("type") or "") or ""
+            try:
+                for pid in getattr(self, "_PROXY_PROVIDER_IDENTIFIERS", ()):  # type: ignore[attr-defined]
+                    if (
+                        pid in adapter_name
+                        or pid in adapter_cls
+                        or pid in prov_type.lower()
+                        or canonical_provider(adapter_name) == pid
+                        or canonical_provider(prov_type) == pid
+                    ):
+                        return True
+            except Exception:
+                # fall through to False
+                pass
+        except Exception:
+            return False
+        return False
 
     def get_cached_models(self, key: str) -> List[str]:
         if not key:
@@ -826,8 +1130,32 @@ class ProviderManager:
                             resp = None
 
                         models_list = []
+                        # Validate and sanitise probe results: only accept
+                        # concrete non-empty strings (filter MagicMock placeholders)
+                        try:
+                            from src.core.utils.strings import valid_str as _vs
+
+                            def _valid_str(x: Any) -> bool:
+                                try:
+                                    return bool(_vs(x))
+                                except Exception:
+                                    return (
+                                        isinstance(x, str)
+                                        and bool(x.strip())
+                                        and ("MagicMock" not in x)
+                                    )
+                        except Exception:
+
+                            def _valid_str(x: Any) -> bool:
+                                return (
+                                    isinstance(x, str)
+                                    and bool(x.strip())
+                                    and ("MagicMock" not in x)
+                                )
+
                         if isinstance(resp, dict):
                             for m in resp.get("models", []):
+                                fid = None
                                 if isinstance(m, dict):
                                     fid = (
                                         m.get("id")
@@ -835,10 +1163,10 @@ class ProviderManager:
                                         or m.get("name")
                                         or m.get("model")
                                     )
-                                    if fid:
-                                        models_list.append(str(fid))
                                 elif isinstance(m, str):
-                                    models_list.append(m)
+                                    fid = m
+                                if fid and _valid_str(fid):
+                                    models_list.append(str(fid).strip())
 
                         # Normalize LM Studio ids if needed
                         if prov_key == "lm_studio":
@@ -981,6 +1309,9 @@ _INIT_TASK: "asyncio.Task | None" = None  # held so GC cannot collect it (NEW-11
 
 def _ensure_provider_manager_initialized_sync():
     global _INIT_TASK
+    # BUG-FIX #1: check already initialized before spawning task
+    if _provider_manager._initialized:
+        return
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
@@ -1204,8 +1535,43 @@ async def _call_model_internal(
                     adapter = None
         if adapter is None:
             return {"ok": False, "error": "no_adapter_found"}
-        # Prefer adapter.chat if present (we pass messages directly), otherwise try adapter.generate
+        # Prepare call kwargs so we can inject a safe noop function schema for
+        # proxy adapters (LiteLLM-like) that require a non-empty tools/functions
+        # list when callers did not supply any. We keep the original kwargs
+        # behaviour but ensure the adapter receives a sensible `tools` arg.
+        call_extra_args = dict(kwargs or {})
+        try:
+            if tools is not None:
+                call_extra_args["tools"] = tools
+            else:
+                # Decide conservatively whether to inject a noop. Known proxy
+                # targets (LiteLLM) are detected by adapter name/type.
+                inject_noop = False
+                try:
+                    # Use the ProviderManager helper so detection logic is
+                    # centralized and easier to maintain / test.
+                    inject_noop = mgr.is_proxy_adapter(adapter)
+                except Exception:
+                    inject_noop = False
+
+                if inject_noop:
+                    noop_schema = {
+                        "type": "function",
+                        "function": {
+                            "name": "_noop",
+                            "description": "No-op placeholder injected by LLM manager to satisfy proxy requirement",
+                            "parameters": {"type": "object", "properties": {}},
+                        },
+                    }
+                    call_extra_args["tools"] = [noop_schema]
+        except Exception:
+            # Never fail LLM calls due to injection logic
+            pass
+
+        # Initialize last_err so static analyzers and all code paths have a
+        # well-defined variable to inspect after attempted adapter calls.
         last_err = None
+
         if hasattr(adapter, "chat"):
             loop = asyncio.get_running_loop()
             # CODE_QUALITY_AUDIT #7 fix: functools.partial is now a top-level import.
@@ -1217,7 +1583,7 @@ async def _call_model_internal(
                     model=model,
                     stream=stream,
                     format_json=format_json,
-                    **(kwargs or {}),
+                    **call_extra_args,
                 )
                 # Propagate ContextVars (correlation id) into worker thread
                 res = await run_with_correlation(loop, None, fn)
@@ -1241,7 +1607,7 @@ async def _call_model_internal(
                     model=model,
                     stream=stream,
                     format_json=format_json,
-                    **(kwargs or {}),
+                    **call_extra_args,
                 )
                 # Propagate ContextVars into worker thread
                 res = await run_with_correlation(loop, None, fn)

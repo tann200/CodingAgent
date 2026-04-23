@@ -4,6 +4,8 @@ Tests for RollbackManager.
 
 import pytest
 import shutil
+
+# ruff: noqa: E501
 from pathlib import Path
 
 from src.core.orchestration.rollback_manager import (

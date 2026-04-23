@@ -13,6 +13,8 @@ Regression tests for the P1–P10 opencode-inspired improvements (batch 2):
   P10 — load_skill / list_skills path-traversal rejection + not-found error
 """
 
+
+# ruff: noqa: E501
 from __future__ import annotations
 
 import tempfile

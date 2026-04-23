@@ -1,12 +1,15 @@
 from typing import Dict, Any, Optional
 import datetime
 import json
+import logging
 import re
 
 try:
     import yaml as _yaml
 except ImportError:
     _yaml = None  # type: ignore[assignment]
+
+logger = logging.getLogger(__name__)
 
 
 def parse_tool_block(text: str) -> Optional[Dict[str, Any]]:
@@ -49,7 +52,11 @@ def parse_tool_block(text: str) -> Optional[Dict[str, Any]]:
 
     # Strip thinking blocks first (LMStudio/Cherry Studio format)
     # These appear as ```yaml ... ``` AFTER the thinking block
+    # Also strip Gemma-style <|channel|>thought blocks
     cleaned_text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+    cleaned_text = re.sub(
+        r"<\|channel\|>thought.*?<channel\|>", "", cleaned_text, flags=re.DOTALL
+    ).strip()
 
     # Try markdown YAML/JSON code blocks (primary format).
     # The closing fence ``` must be on its own line — i.e. NOT followed by
@@ -69,14 +76,34 @@ def parse_tool_block(text: str) -> Optional[Dict[str, Any]]:
         match = re.search(pattern, cleaned_text, re.DOTALL | re.IGNORECASE)
         if match:
             yaml_content = match.group(1).strip()
+            logger.debug(
+                f"parse_tool_block: matched pattern, content length={len(yaml_content)}"
+            )
             result = _parse_yaml_block(yaml_content)
             if result:
+                logger.debug(
+                    f"parse_tool_block: successfully parsed tool '{result.get('name')}'"
+                )
                 return result
+            else:
+                logger.debug("parse_tool_block: matched pattern but parse failed")
 
     # Try inline YAML format: name: tool_name\narguments: {...}
     inline_result = _parse_inline_yaml(cleaned_text)
     if inline_result:
+        logger.debug(
+            f"parse_tool_block: inline parse succeeded for tool '{inline_result.get('name')}'"
+        )
         return inline_result
+
+    # Log failure details for debugging
+    logger.debug(
+        f"parse_tool_block: all parse methods failed. "
+        f"Input length={len(text)}, cleaned length={len(cleaned_text)}"
+    )
+    # Log first 200 chars of cleaned text for debugging (truncate at newlines)
+    sample = cleaned_text[:200].replace("\n", "\\n")
+    logger.debug(f"parse_tool_block: cleaned sample: {sample}")
 
     return None
 

@@ -11,6 +11,8 @@ Three bugs found in code review of Vol25 additions:
           Fixed: tool name now cached in _perm_tool_names at request time.
 """
 
+
+# ruff: noqa: E501
 from __future__ import annotations
 
 from pathlib import Path

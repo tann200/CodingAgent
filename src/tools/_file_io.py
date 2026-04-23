@@ -15,16 +15,14 @@ import logging
 from pathlib import Path
 from typing import Dict, Any
 
-_logger = logging.getLogger(__name__)
-
 from src.tools._path_utils import safe_resolve as _safe_resolve_impl
 from src.tools._tool import tool, PermissionKind
 from src.tools._diff_gate import (
     _publish_diff_preview,
     register_preview_gate,
-    _preview_gate_lock,
-    _preview_rejected,
 )
+
+_logger = logging.getLogger(__name__)
 
 # Write-size constants (authoritative values — re-exported from file_tools)
 _READ_FILE_MAX_CHARS = 50_000
@@ -222,10 +220,10 @@ def write_file(
                 _gate_ev = register_preview_gate(_path_key)
                 _publish_diff_preview(_path_key, diff, is_new_file=_is_new)
                 _gate_ev.wait(timeout=300.0)
-                with _preview_gate_lock:
-                    _was_rejected = _path_key in _preview_rejected
-                    if _was_rejected:
-                        _preview_rejected.discard(_path_key)
+                # Use helpers to check/clear rejection state atomically
+                from src.tools._diff_gate import pop_preview_rejection
+
+                _was_rejected = pop_preview_rejection(_path_key)
                 if _was_rejected:
                     return {
                         "path": str(p),
@@ -603,9 +601,9 @@ def glob(pattern: str, workdir: Path | None = None) -> Dict[str, Any]:
         # Sort by modification time descending (most recently modified first),
         # matching claw-code-main Rust glob_search behaviour.
         matches.sort(
-            key=lambda rel_path: (base / rel_path).stat().st_mtime
-            if (base / rel_path).exists()
-            else 0.0,
+            key=lambda rel_path: (
+                (base / rel_path).stat().st_mtime if (base / rel_path).exists() else 0.0
+            ),
             reverse=True,
         )
         matches = matches[:LIMIT]

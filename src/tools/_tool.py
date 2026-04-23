@@ -51,18 +51,18 @@ class PermissionKind(str, Enum):
     ``permission_kind`` is the authoritative, semantically richer field.
     """
 
-    READ_FILE    = "ReadFile"     # read file contents, list dirs, glob
-    WRITE_FILE   = "WriteFile"    # create / overwrite / edit files
+    READ_FILE = "ReadFile"  # read file contents, list dirs, glob
+    WRITE_FILE = "WriteFile"  # create / overwrite / edit files
     EXECUTE_BASH = "ExecuteBash"  # run arbitrary shell commands
-    NETWORK      = "NetworkFetch" # fetch URLs, web search
-    GIT_READ     = "GitRead"      # git status / log / diff (no state change)
-    GIT_WRITE    = "GitWrite"     # git commit / stash / restore (state change)
-    MEMORY       = "MemoryWrite"  # update persistent vector memory
-    DELEGATE     = "Delegate"     # spawn a sub-agent session
-    LSP_READ     = "LSP"          # LSP queries (diagnostics, refs, hover)
-    LSP_WRITE    = "LSPWrite"     # LSP rename (modifies files via language server)
-    PLAN         = "Plan"         # toggle plan mode (meta-control)
-    NONE         = "None"         # read-only, no side effects
+    NETWORK = "NetworkFetch"  # fetch URLs, web search
+    GIT_READ = "GitRead"  # git status / log / diff (no state change)
+    GIT_WRITE = "GitWrite"  # git commit / stash / restore (state change)
+    MEMORY = "MemoryWrite"  # update persistent vector memory
+    DELEGATE = "Delegate"  # spawn a sub-agent session
+    LSP_READ = "LSP"  # LSP queries (diagnostics, refs, hover)
+    LSP_WRITE = "LSPWrite"  # LSP rename (modifies files via language server)
+    PLAN = "Plan"  # toggle plan mode (meta-control)
+    NONE = "None"  # read-only, no side effects
 
 
 # ---------------------------------------------------------------------------
@@ -127,6 +127,53 @@ class ToolDefinition:
                 params["properties"][pname] = prop
                 if param.default is inspect.Parameter.empty:
                     required.append(pname)
+        except Exception:
+            pass
+
+        # Post-process: add dynamic enums for well-known parameters.
+        # Example: for the load_skill tool we can enumerate available skill names
+        # so function-calling LLMs can present a concrete set of choices.
+        try:
+            if self.name == "load_skill":
+                try:
+                    # Import lazily to avoid import-time cycles
+                    from src.tools.skill_tools import _list_skill_names
+
+                    names = _list_skill_names()
+                    if names and "name" in params["properties"]:
+                        params["properties"]["name"]["enum"] = names
+                except Exception:
+                    # Fail softly: schema generation should never raise
+                    pass
+            # Populate delegate_task role enum from subagent role config when available
+            if self.name == "delegate_task":
+                try:
+                    # Lazy import to avoid import-time cycles
+                    from src.tools.subagent_tools import _build_valid_roles
+
+                    roles = sorted(list(_build_valid_roles()))
+                    if roles and "role" in params["properties"]:
+                        params["properties"]["role"]["enum"] = roles
+                except Exception:
+                    # Fail softly — schema generation must not raise
+                    pass
+            # Populate any toolset/toolset_name parameter enums from available YAMLs
+            try:
+                for pname in ("toolset", "toolset_name"):
+                    if pname in params["properties"]:
+                        try:
+                            from src.config.toolsets.loader import (
+                                list_available_toolsets,
+                            )
+
+                            tnames = list_available_toolsets()
+                            if tnames:
+                                params["properties"][pname]["enum"] = tnames
+                        except Exception:
+                            # Fail softly — do not raise during schema generation
+                            pass
+            except Exception:
+                pass
         except Exception:
             pass
 

@@ -33,6 +33,21 @@ def example_registry() -> ToolRegistry:
                     "side_effects": entry.get("side_effects", []),
                     "description": entry.get("description", ""),
                 }
+        # Ensure legacy edit_by_line_range comes from file_tools when available.
+        # Some discovery paths may not include _edit_tools; force the file_tools
+        # implementation into the registry so tests and callers see a single
+        # canonical registration originating from file_tools.
+        try:
+            from src.tools import file_tools  # type: ignore[import]
+
+            if hasattr(file_tools, "edit_by_line_range"):
+                reg.tools["edit_by_line_range"] = {
+                    "fn": file_tools.edit_by_line_range,
+                    "side_effects": ["write"],
+                    "description": "edit_by_line_range(path, start_line, end_line, new_content) -> Replace lines in file",
+                }
+        except Exception:
+            pass
         return reg
     except Exception:
         pass  # Fall through to manual registration below
