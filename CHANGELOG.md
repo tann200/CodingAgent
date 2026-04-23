@@ -2,36 +2,31 @@
 
 All notable changes to this project are recorded in this file.
 
-## Unreleased (todo-tools-atomic-save)
+## Unreleased
 
-- Centralized and hardened TODO persistence (`src/tools/todo_tools.py`):
-  - Atomic writes for TODO.md and todo.json using temp files, fsync, atomic replace,
-    backups and restore-on-failure.
-  - Per-workdir advisory locking via `_FileLock`: prefer `fcntl.flock` when
-    available; fallback to exclusive lockfile (O_EXCL) with diagnostic contents.
-  - Conservative stale-lock reclaim using host + TTL; reclaim on network
-    filesystems is disabled by default and can be overridden with
-    `TODO_ALLOW_STALE_RECLAIM_ON_NFS=1`.
+- Orchestration routing & router purity fixes (`src/core/orchestration/graph/builder.py`):
+  - Rewrote `route_after_perception` to make routing deterministic and
+    precedence-aware:
+    - Top-level short-circuits for clarification and context overflow.
+    - Robust extraction of `next_action` from multiple shapes (string/dict).
+    - First-round behavior respects `task_complexity` and `model_tier` (NANO/SMALL
+      fast-paths, LARGE/FRONTIER planning shortcuts).
+    - Subsequent-round precedence: read-only tools favour analysis while write
+      or unknown tools favour execution.
+  - Added canonical constants for tool-type checks and ensured routers use
+    them rather than duplicated literal sets.
+  - Implemented backward-compatible, pure wrapper routers (typed and
+    docstring-safe) required by tests.
+  - Ensured wrappers do not call token budget compaction helpers or mutate
+    the provided state (purity enforced to satisfy tests).
 
-- Read-before-write (RBW) notifier consolidation and ContextBuilder cache
-  invalidation helpers; best-effort metrics for RBW failures.
+- CI / repo housekeeping:
+  - Added tests to verify canonical constants usage and router purity.
+  - Cherry-picked/merged routing fixes into `main` and removed temporary
+    local branches created during the merge process.
 
--- In-process metrics (lock and RBW counters) kept in-memory. No built-in
-  Prometheus export is provided.
+### Notes
 
-- Tests & stress tooling:
-  - Unit tests for locking, stale reclaim, and RBW metrics.
-  - Cross-process stress runner and worker scripts under `tests/utils/`.
-
--- Documentation:
-  - `docs/TODO_METRICS.md` documents the in-process metrics and how to read
-    them programmatically.
-  - Updated `docs/IMPLEMENTATION_TASKS.md` and `README.md` to reference metrics.
-
-### Notes / Caveats
-
-- Reclaiming stale locks on network filesystems is inherently risky; the
-  implementation errs on the side of safety and requires an explicit override
-  to allow reclaim on NFS/CIFS/SMB.
--- Metrics are intentionally lightweight and in-process to keep the project
-  dependency-free for solo development.
+- The vectorstore/LanceDB branch was intentionally left unmerged; no LanceDB
+  code was introduced in the routing fixes. Local temporary branches and the
+  local vectorstore branch were removed per request.
