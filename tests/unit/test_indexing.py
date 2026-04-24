@@ -32,7 +32,7 @@ def test_vector_store_indexing_and_search(test_repo):
     vs.index_code(index)
 
     # Check if db is created
-    assert (test_repo / ".agent-context" / "lancedb").exists()
+    assert (test_repo / ".agent-context" / "vectorstore").exists()
 
     # 2. Search
     results = vs.search("main entry point")

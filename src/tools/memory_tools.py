@@ -36,8 +36,9 @@ def _search_vector_store(query: str, workdir: str) -> List[Dict[str, Any]]:
         raw = vs.search(query)
         results = []
         for item in raw[:5]:
-            # LOGIC-1: Use actual similarity score from LanceDB instead of hardcoded 0.8.
-            # LanceDB returns _distance (lower = more similar). Convert to a [0,1] score
+            # LOGIC-1: Use actual similarity score from the vector store instead of hardcoded 0.8.
+            # Backends typically return a distance (_distance) where lower=more similar;
+            # convert to a [0,1] similarity score.
             # where 1.0 = identical and 0.0 = maximally distant (distance ≥ 2.0 for
             # normalised embeddings).  Clamp to [0, 1] to guard against edge cases.
             distance = item.get("_distance", 1.0) if isinstance(item, dict) else 1.0

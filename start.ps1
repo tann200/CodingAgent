@@ -117,7 +117,7 @@ if (Test-Path $ReqFile) {
 }
 
 # Critical imports check - match start.sh imports
-$CRITICAL_IMPORTS = @('textual','requests','httpx','openai','uv','langgraph','lancedb','langchain_core')
+$CRITICAL_IMPORTS = @('textual','requests','httpx','openai','uv','langgraph','langchain_core')
 $MISSING = @()
 foreach ($mod in $CRITICAL_IMPORTS) {
     try {
@@ -195,4 +195,3 @@ try {
     Write-Error "[start.ps1] Error locating entrypoint: $_"
     exit 1
 }
-

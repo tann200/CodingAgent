@@ -16,7 +16,7 @@ The CodingAgent system is **well-engineered, production-ready, and robust**. Ove
 - 60+ tools with @tool decorator + auto-discovery
 - 5-layer security (patterns, restricted, safe, bash_security, sandbox)
 - Permission system with 5 levels + autonomous mode bypass
-- Session persistence (SQLite/JSONL), vector memory (LanceDB)
+-- Session persistence (SQLite/JSONL), vector memory (vector store)
 - MCP STDIO server for IDE integration
 - Scenario evaluation framework
 - 3800+ deterministic unit tests
@@ -155,7 +155,7 @@ The CodingAgent system is **well-engineered, production-ready, and robust**. Ove
 |-----------|------|---------|--------|
 | Code Indexing | indexing/repo_indexer.py | SHA256 mtime-based | ✅ |
 | Symbol Graph | indexing/symbol_graph.py | Code symbols | ✅ |
-| Semantic Search | indexing/vector_store.py | LanceDB | ✅ |
+| Semantic Search | indexing/vector_store.py | vector store | ✅ |
 | Test Mapping | test_mapper.py | Test discovery | ✅ |
 | Repo Summarization | repo_summary.py | Context summaries | ✅ |
 | LSP Integration | indexing/lsp_client.py | Diagnostics, goto def | ✅ |
@@ -198,7 +198,7 @@ The CodingAgent system is **well-engineered, production-ready, and robust**. Ove
 | Task state | session_store.py (SQLite/JSONL) | ✅ |
 | Context distillation | distiller.py (LLM-based) | ✅ |
 | Conversation memory | message_manager.py (token windowing) | ✅ |
-| Vector memory | vector_store.py (LanceDB) | ✅ |
+| Vector memory | vector_store.py (vector store) | ✅ |
 | Token budgeting | token_budget.py | ✅ |
 | Auto-compaction | auto_compactor.py (CP-6 deterministic) | ✅ |
 | Execution trace | execution_trace.py | ✅ |

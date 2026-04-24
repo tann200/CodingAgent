@@ -118,7 +118,7 @@ else
 fi
 
 # After installing requirements (or skipping), perform a small import check for critical packages
-CRITICAL_IMPORTS=("textual" "requests" "httpx" "openai" "uv" "langgraph" "lancedb" "langchain_core")
+CRITICAL_IMPORTS=("textual" "requests" "httpx" "openai" "uv" "langgraph" "langchain_core")
 MISSING=()
 for mod in "${CRITICAL_IMPORTS[@]}"; do
   echo "[start.sh] Checking import for: $mod"
@@ -187,4 +187,3 @@ else
   echo "[start.sh] ERROR: no entrypoint found (module 'src.main' or main.py)." >&2
   exit 1
 fi
-

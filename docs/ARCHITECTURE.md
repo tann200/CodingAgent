@@ -105,7 +105,7 @@ src/
 │   ├── indexing/             # Repository intelligence
 │   │   ├── repo_indexer.py        # SHA256-based indexing
 │   │   ├── symbol_graph.py        # Symbol graph
-│   │   ├── vector_store.py        # LanceDB vector store
+│   │   ├── vector_store.py        # vector store (backend-agnostic)
 │   │   ├── lsp_manager.py         # LSP manager
 │   │   ├── lsp_client.py          # LSP client
 │   │   └── lsp_context.py        # LSP context injection
@@ -301,7 +301,7 @@ Revert:
 | `MessageManager` | Token windowing + compaction |
 | `Distiller` | LLM-based context distillation |
 | `AutoCompactor` | Deterministic compaction (CP-6) |
-| `VectorStore` | LanceDB semantic search |
+| `VectorStore` | semantic search (backend-agnostic) |
 
 ---
 
@@ -406,7 +406,7 @@ Revert:
 
 ### Storage
 - `sqlite3` — Session persistence
-- `lancedb` — Vector store
+- `vector store` — Vector storage/search (optional)
 
 ### UI
 - `textual` — TUI framework

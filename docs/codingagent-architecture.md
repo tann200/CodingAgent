@@ -117,7 +117,7 @@ src/tools/
 ├── todo_tools.py                   # manage_todo (create/update/complete steps)
 ├── subagent_tools.py               # delegate_task (spawns sub-session)
 ├── repo_tools.py                   # search_code, find_symbol, find_references
-├── memory_tools.py                 # memory_search (LanceDB semantic search)
+├── memory_tools.py                 # memory_search (vector store semantic search)
 ├── web_tools.py                    # web_search, read_web_page (SSRF-protected)
 ├── lsp_tools.py                    # lsp_diagnostics/references/definition/symbols/hover/rename
 ├── formatter.py                    # run_formatter (post-write code formatting)
@@ -772,7 +772,7 @@ class RollbackManager:
 
 ### Advanced memory (`src/core/memory/advanced_features.py`)
 
-LanceDB vector store integration (S9-A):
+Vector store integration (S9-A):
 
 ```python
 class AdvancedMemoryFeatures:
@@ -1245,7 +1245,7 @@ context fraction. The same graph runs NANO (7B, 8 tools, YAML) and FRONTIER (clo
 
 ### 9. Graceful degradation
 
-All optional features (tiktoken, LSP, watchfiles, LanceDB, OTel) are `try/except`-wrapped.
+All optional features (tiktoken, LSP, watchfiles, vector store backend, OTel) are `try/except`-wrapped.
 Missing optional deps → fallback behaviour, not startup failure.
 
 ### 10. Audit-driven development
@@ -1266,7 +1266,7 @@ and a `test_audit_vol<N>.py` regression guard. Vol1–Vol28 covering 300+ indivi
 | Model of trust | Pipeline scaffolds every decision | Model trusted to plan/retry inline |
 | Complexity | High (16 nodes, ~100-field state) | Low (single `run_turn()`) |
 | Safety philosophy | Defense-in-depth (5+ independent layers) | Permission policy + hooks |
-| Memory model | SQLite + LanceDB vector store | `.jsonl` append-only file |
+| Memory model | SQLite + vector store | `.jsonl` append-only file |
 | Provider selection | Config-driven (`providers.json`) | Model-name prefix detection |
 
 ### Pipeline depth

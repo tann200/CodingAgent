@@ -27,6 +27,6 @@ All notable changes to this project are recorded in this file.
 
 ### Notes
 
-- The vectorstore/LanceDB branch was intentionally left unmerged; no LanceDB
+- The vectorstore branch was intentionally left unmerged; no external vector DB
   code was introduced in the routing fixes. Local temporary branches and the
   local vectorstore branch were removed per request.
