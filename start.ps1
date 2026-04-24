@@ -107,7 +107,17 @@ if (Test-Path $ReqFile) {
                 & $VenvPython -m uv install --no-input
                 Write-Host "[start.ps1] 'uv install' succeeded"
             } catch {
-                Write-Error "[start.ps1] 'uv install' failed"; exit 1
+                Write-Warning "[start.ps1] 'uv install' failed; attempting fallback 'pip install -r requirements.txt'"
+                try {
+                    & $VenvPython -m pip install -r $ReqFile
+                    Write-Host "[start.ps1] pip install -r requirements.txt succeeded as fallback"
+                } catch {
+                    if ($ForceInstall) {
+                        Write-Error "[start.ps1] FORCE_INSTALL set and installs failed; aborting"; exit 1
+                    } else {
+                        Write-Warning "[start.ps1] Install failures suppressed (not ForceInstall). Continuing startup."
+                    }
+                }
             }
         } else {
             Write-Error "[start.ps1] 'uv' unavailable and pip install failed; aborting"; exit 1

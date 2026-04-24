@@ -106,8 +106,18 @@ if [ -f "$REQ_FILE" ]; then
     if "$VENV_PYTHON" -m uv install --no-input; then
       echo "[start.sh] 'uv install' succeeded"
     else
-      echo "[start.sh] 'uv install' failed" >&2
-      exit 1
+      echo "[start.sh] 'uv install' failed; attempting fallback 'pip install -r requirements.txt'" >&2
+      if "$VENV_PYTHON" -m pip install -r "$REQ_FILE"; then
+        echo "[start.sh] pip install -r requirements.txt succeeded as fallback"
+      else
+        echo "[start.sh] pip fallback failed" >&2
+        if [ "$FORCE_INSTALL" = "1" ]; then
+          echo "[start.sh] FORCE_INSTALL=1 and installs failed; exiting" >&2
+          exit 1
+        else
+          echo "[start.sh] Install failures suppressed (not FORCE_INSTALL). Continuing startup." >&2
+        fi
+      fi
     fi
 
     # Save the new hash on success
