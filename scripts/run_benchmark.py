@@ -20,7 +20,6 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-import os
 from datetime import datetime
 from pathlib import Path
 
@@ -154,7 +153,7 @@ def main():
         print("No scenarios matched the given filter.", file=sys.stderr)
         sys.exit(1)
 
-    print(f"CodingAgent Benchmark Runner")
+    print("CodingAgent Benchmark Runner")
     print(f"Scenarios file : {scenarios_path}")
     print(f"Matched        : {len(scenarios)} scenario(s)")
     print()

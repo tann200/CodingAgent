@@ -17,7 +17,7 @@ import types
 import unittest
 
 # ruff: noqa: E501
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 
 
 # ---------------------------------------------------------------------------

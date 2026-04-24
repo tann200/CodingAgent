@@ -1,7 +1,7 @@
 import os
 import time
 
-from src.tools.todo_tools import _lock_path, _FileLock, _is_network_filesystem
+from src.tools.todo_tools import _lock_path, _FileLock
 
 
 def test_do_not_reclaim_on_network_fs(tmp_path, monkeypatch):

@@ -1,10 +1,7 @@
 import subprocess
-from pathlib import Path
 
 # ruff: noqa: E501
-import os
 
-import pytest
 import sys
 
 

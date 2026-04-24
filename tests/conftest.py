@@ -2,7 +2,6 @@ import os
 import sys
 import threading
 import queue as _queue
-import json
 
 # ruff: noqa: E501
 

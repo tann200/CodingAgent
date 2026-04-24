@@ -8,7 +8,6 @@ CI; set the RUN_LOCK_DIAG=1 env var to execute the diagnostic test.
 import os
 import sys
 import time
-from pathlib import Path
 
 from src.tools.todo_tools import _lock_path, _FileLock
 

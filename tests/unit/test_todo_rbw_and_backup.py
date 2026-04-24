@@ -1,7 +1,5 @@
 import json
-from pathlib import Path
 
-import pytest
 
 from src.tools.todo_tools import manage_todo, _todo_json_path, _todo_path
 

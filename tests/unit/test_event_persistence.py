@@ -12,7 +12,6 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
@@ -24,7 +23,6 @@ from src.core.orchestration.event_persistence import (
     recover_pending,
     set_pending_dir,
     PERSISTENT_EVENT_TYPES,
-    DEFAULT_MAX_AGE_SECONDS,
 )
 
 

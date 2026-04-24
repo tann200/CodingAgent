@@ -14,13 +14,9 @@ from __future__ import annotations
 
 import inspect
 import sys
-import threading
-import time
 from pathlib import Path
-from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
-import pytest
 
 # ── Ensure tui/src is on sys.path so `ui.*` imports resolve ──────────────────
 _TUI_SRC = str(Path(__file__).parent.parent.parent / "tui" / "src")
@@ -623,7 +619,7 @@ class TestAppStructure:
             if (ln.startswith("from src.core") or ln.startswith("import src.core"))
         ]
         assert top_level_src_core == [], (
-            f"app.py must not have top-level src.core imports; found:\n"
+            "app.py must not have top-level src.core imports; found:\n"
             + "\n".join(top_level_src_core)
         )
 
@@ -725,7 +721,8 @@ class TestLmStudioDiagnostic:
 
     def test_sample_mem_returns_empty_without_psutil(self):
         """sample_mem() must return {} when psutil is unavailable."""
-        import importlib.util, types
+        import importlib.util
+        import types
 
         spec = importlib.util.spec_from_file_location(
             "lmstudio_diagnostic",

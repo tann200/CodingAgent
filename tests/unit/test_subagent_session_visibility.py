@@ -21,7 +21,7 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -166,7 +166,6 @@ class TestSessionListScreenSubagents:
 
     def test_load_sessions_filter_subagents_logic(self, tmp_path):
         """Test the child-session filtering logic without invoking self.app."""
-        from tui.src.ui.screens.session_list import SessionListScreen
         # Write two session files
         parent = {"session_id": "p1", "timestamp": time.time(), "task_name": "parent", "message_count": 5, "messages": []}
         child = {"session_id": "c1", "parent_session_id": "p1", "role": "analyst", "timestamp": time.time(), "task_name": "child", "message_count": 2, "messages": []}
@@ -321,7 +320,8 @@ class TestSubagentToolsSessionPersistence:
     def test_failed_session_payload_has_ok_false(self, tmp_path):
         import json as _json
         import time as _time
-        import tempfile, os
+        import tempfile
+        import os
 
         child_session_id = "child_fail"
         sessions_dir = tmp_path / "sessions"

@@ -1,5 +1,4 @@
 import logging
-import os
 from collections import deque
 from pathlib import Path
 from typing import Callable, Optional

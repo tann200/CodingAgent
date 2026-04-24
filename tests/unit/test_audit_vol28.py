@@ -10,7 +10,6 @@ Covers:
   OVF-6  route_execution routes to memory_sync on context_overflow error
 """
 
-import asyncio
 
 # ruff: noqa: E501
 import inspect

@@ -1,7 +1,6 @@
 import asyncio
 import contextvars
 import concurrent.futures
-import threading
 
 
 def test_contextvar_propagates_into_executor():

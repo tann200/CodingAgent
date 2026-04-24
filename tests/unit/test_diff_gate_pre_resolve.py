@@ -1,4 +1,3 @@
-import threading
 
 from src.tools import _diff_gate as diff_gate
 

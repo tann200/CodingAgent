@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
 
 
 def test_write_file_returns_diff_on_change(tmp_path):

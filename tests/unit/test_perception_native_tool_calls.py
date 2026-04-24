@@ -7,8 +7,6 @@ These tests verify that perception_node correctly handles:
 """
 
 import json
-import pytest
-from unittest.mock import MagicMock, patch
 
 
 def test_parse_native_tool_call_basic():

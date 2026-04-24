@@ -15,7 +15,6 @@ Covers:
 # ruff: noqa: E501
 from __future__ import annotations
 
-import pytest
 
 from src.tools._truncate import (
     MAX_BYTES,

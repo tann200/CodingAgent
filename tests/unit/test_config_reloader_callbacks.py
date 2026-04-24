@@ -1,4 +1,3 @@
-import threading
 
 
 def test_config_reloader_callbacks_invoked(tmp_path):

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import pytest
 
 from src.core.orchestration.provider_capabilities import (
     get_provider_capabilities_impl,

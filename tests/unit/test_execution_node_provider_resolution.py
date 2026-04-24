@@ -2,9 +2,7 @@ from types import SimpleNamespace
 
 
 # ruff: noqa: E501
-import pytest
 
-from src.core.orchestration.graph.nodes import execution_node as exe_mod
 
 
 class DummyOrch(SimpleNamespace):
@@ -60,7 +58,6 @@ def test_providermanager_used_when_orch_missing(monkeypatch):
     orch._adapter = None
 
     # emulate the logic in execution_node that will consult provider manager
-    from src.core.orchestration.graph.nodes.execution_node import _execution_node_impl
 
     # Call the impl with a minimal state to exercise the provider resolution
     state = {"current_step": 0}

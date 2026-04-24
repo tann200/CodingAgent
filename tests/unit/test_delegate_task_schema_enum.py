@@ -1,4 +1,3 @@
-import inspect
 
 
 def test_delegate_task_role_enum_exists():

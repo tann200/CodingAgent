@@ -10,7 +10,6 @@ selection persistence.
 
 import json
 import time
-import threading
 import pytest
 
 from src.core.settings.controller import SettingsPanelController

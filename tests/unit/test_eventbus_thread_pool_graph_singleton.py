@@ -22,7 +22,7 @@ from __future__ import annotations
 import ast
 import threading
 import time
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 

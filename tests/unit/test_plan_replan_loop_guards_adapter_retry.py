@@ -18,9 +18,7 @@ P2-10: syntax_check timeout
 
 import asyncio
 import json
-import threading
 from pathlib import Path
-from typing import Any, Dict
 
 # ruff: noqa: E501
 from unittest.mock import MagicMock, patch
@@ -329,7 +327,6 @@ class TestOrchestratorPlanEnforceWarningsInitialState:
 class TestSettingsPanelAtomicProvidersJsonWrite:
     def test_no_direct_write_text_on_cfg_path(self):
         """Verify that settings_panel uses os.replace (not cfg_path.write_text) for safety."""
-        import ast
 
         # The atomic write logic lives in src/core/settings/controller.py
         # (src/ui/ was retired; the settings controller was extracted there).
@@ -568,7 +565,6 @@ class TestEditByLineRangeStringToIntLineNumberCoercion:
     def test_string_line_numbers_accepted(self, tmp_path):
         """edit_by_line_range should accept string line numbers from LLM."""
         from src.tools.file_tools import edit_by_line_range
-        from pathlib import Path as _Path
 
         target = tmp_path / "foo.py"
         target.write_text("line1\nline2\nline3\n")

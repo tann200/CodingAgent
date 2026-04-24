@@ -10,7 +10,7 @@ safe no-op / in-memory stub.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 import hashlib
 import logging
 import json

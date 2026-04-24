@@ -8,7 +8,6 @@ can see task progress in real time and the agent can track which steps are done.
 import json
 import logging
 import os
-import tempfile
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional

@@ -12,7 +12,6 @@ Covers:
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Dict, List
 
 
 # ---------------------------------------------------------------------------
@@ -223,7 +222,6 @@ class TestRunWithCorrelation:
             set_correlation_id,
             get_correlation_id,
         )
-        import asyncio
 
         set_correlation_id("test-cid-123")
 
@@ -241,7 +239,6 @@ class TestRunWithCorrelation:
 
     def test_returns_coroutine(self):
         from src.core.orchestration.event_bus import run_with_correlation
-        import asyncio
 
         async def _run():
             loop = asyncio.get_running_loop()

@@ -2,7 +2,6 @@ import sys
 from types import SimpleNamespace
 from pathlib import Path
 
-import pytest
 
 
 def test_orchestrator_registers_event_bus_with_server(monkeypatch):

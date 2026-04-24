@@ -37,16 +37,13 @@ Test IDs
 from __future__ import annotations
 
 import os
-import textwrap
 from pathlib import Path
-from typing import Tuple
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 
 from src.core.prompts import PromptContext, SystemPromptBuilder, reload_templates
 from src.core.orchestration.agent_types import (
-    AgentDefinition,
     COMPACTION_AGENT,
     BUILD_AGENT,
 )

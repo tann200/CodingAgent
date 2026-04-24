@@ -20,10 +20,8 @@ from __future__ import annotations
 import json
 import os
 import tempfile
-import threading
 from pathlib import Path
 from unittest.mock import MagicMock, patch
-import pytest
 
 
 # ── TUI-T6 / PERM-W3 — bus events exist and have correct fields ──────────────
@@ -139,7 +137,6 @@ class TestTuiHistoryVersionEnvelope:
 
     def _make_bridge(self, tmp_path, history_path):
         """Create a minimal AgentBridge mock that tests history I/O only."""
-        import sys
 
         # Patch HISTORY_PATH at module level
         import tui.src.ui.core_bridge as cb_mod
@@ -556,7 +553,6 @@ class TestPlanModeTools:
 
     def test_agent_mode_field_in_state(self):
         """AgentState TypedDict must include agent_mode field."""
-        import inspect
         from src.core.orchestration.graph.state import AgentState
 
         hints = AgentState.__annotations__
@@ -637,7 +633,6 @@ class TestInternalUtilityAgents:
 
     def test_generate_session_title_fallback_words(self):
         """Without LLM, generate_session_title uses first N words as fallback."""
-        from unittest.mock import patch
         from src.core.memory.distiller import generate_session_title
 
         # Patch call_internal_agent to return empty (simulates LLM unavailable)

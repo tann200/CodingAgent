@@ -10,7 +10,6 @@ import json
 import tempfile
 from pathlib import Path
 
-import pytest
 
 from src.core.orchestration.permission_policy import (
     DOOM_LOOP_TOKEN,

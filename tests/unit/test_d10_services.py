@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import json
 import pytest
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 
@@ -308,7 +307,6 @@ class TestToolExecutionService:
             patch("src.tools.tools_config.get_active_permission_mode") as mock_mode,
             patch("src.tools.tools_config.get_tool_permission") as mock_perm,
         ):
-            from src.tools.tools_config import PermissionLevel
 
             class _FakeLevel:
                 value = "read_only"

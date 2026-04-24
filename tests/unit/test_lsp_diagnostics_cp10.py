@@ -25,10 +25,8 @@ Covers:
 
 from __future__ import annotations
 
-import asyncio
-import json
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Dict, List
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -37,7 +35,6 @@ from src.core.indexing.lsp_client import Diagnostic, LSPClient, _DummyLSPClient
 from src.core.indexing.lsp_context import (
     _MAX_DIAG_FILES,
     _MAX_DIAG_PER_FILE,
-    _DEFAULT_DIAG_BUDGET,
     get_lsp_diagnostics_block,
 )
 

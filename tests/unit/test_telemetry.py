@@ -8,7 +8,6 @@ Telemetry event bus tests.
 
 from __future__ import annotations
 
-import pytest
 
 from src.core.inference.adapters.mock_adapter import MockAdapter
 from src.core.orchestration.event_bus import EventBus, get_event_bus

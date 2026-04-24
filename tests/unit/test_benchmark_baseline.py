@@ -45,7 +45,6 @@ def test_et3_1_baseline_json_valid():
 def test_et3_2_all_scenarios_covered():
     """ET3-2: Every SCENARIO name in bench_pipeline.py has a threshold in baseline.json."""
     import importlib.util
-    import sys
 
     spec = importlib.util.spec_from_file_location("bench_pipeline", BENCH_PIPELINE)
     if spec is None or spec.loader is None:

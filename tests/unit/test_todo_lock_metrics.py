@@ -80,7 +80,8 @@ def test_metrics_stale_reclaim(tmp_path):
     # Create a fake stale lock with a high PID unlikely to exist
     fake_pid = 999999
     ts = int(time.time() * 1000)
-    import socket, os
+    import socket
+    import os
 
     # Make reclaim immediate for the test
     os.environ["TODO_LOCK_STALE_TTL"] = "0"

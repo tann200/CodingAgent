@@ -17,10 +17,7 @@ Covers:
   OE-VOL21-2   HubAndSpokeCoordinator removed (no live callers)
 """
 
-import ast
-import re
 import inspect
-import importlib
 
 
 class TestBugVol231EnsureFutureTaskReference:
@@ -140,7 +137,6 @@ class TestRaVol231ParsePythonFileLogsExceptions:
 
     def test_exception_handler_logs(self, tmp_path):
         """RA-VOL23-1: parse_python_file must log at DEBUG and return {} on parse failure."""
-        from pathlib import Path
         from unittest.mock import patch
         from src.core.indexing.repo_indexer import parse_python_file
         import src.core.indexing.repo_indexer as ri
@@ -259,7 +255,6 @@ class TestCp14MessageManagerSchemVersion:
     def test_from_dict_future_version_logs_warning(self, capfd):
         """from_dict with a higher version should load without error (just warn)."""
         from src.core.orchestration.message_manager import MessageManager
-        import logging
 
         data = {
             "version": MessageManager.SCHEMA_VERSION + 99,

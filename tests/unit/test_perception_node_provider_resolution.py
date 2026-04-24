@@ -1,8 +1,6 @@
 from types import SimpleNamespace
 
-import pytest
 
-from src.core.orchestration.graph.nodes import perception_node as pmod
 
 
 class DummyOrch(SimpleNamespace):

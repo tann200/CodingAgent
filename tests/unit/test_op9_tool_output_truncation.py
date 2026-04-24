@@ -8,7 +8,6 @@ blowout from large bash output, git diffs, or file reads.
 # ruff: noqa: E501
 import json
 
-import pytest
 
 from src.core.orchestration.graph.nodes.execution_node import (
     _truncate_tool_output,

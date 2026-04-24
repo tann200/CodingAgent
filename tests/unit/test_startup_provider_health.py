@@ -1,8 +1,6 @@
 import asyncio
 
-from types import SimpleNamespace
 
-import pytest
 
 from src.core.startup import provider_health_check
 

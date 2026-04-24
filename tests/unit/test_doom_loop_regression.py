@@ -214,7 +214,6 @@ class TestInferenceLoopOriginalTask:
     def test_original_task_set_in_initial_state(self):
         """run_agent_once_impl must populate original_task from the user prompt."""
         import importlib
-        import sys
 
         # We just inspect the source rather than running the full function
         # (which requires a live orchestrator) — check the dict literal directly.

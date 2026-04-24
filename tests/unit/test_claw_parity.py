@@ -11,8 +11,6 @@ from __future__ import annotations
 import json
 import tempfile
 import threading
-from pathlib import Path
-from typing import Any, Dict
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -292,7 +290,6 @@ class TestPermissionGatewayPolicyGate:
         """Project-level .agent-context/permissions.json takes precedence."""
         from src.core.orchestration.permission_policy import (
             PermissionPolicy,
-            PermissionRule,
             Behavior,
             reset_permission_policy,
         )

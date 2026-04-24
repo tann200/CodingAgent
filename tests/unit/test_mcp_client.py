@@ -6,9 +6,8 @@ Uses asyncio pipes to simulate an MCP server without launching a real subprocess
 from __future__ import annotations
 
 import asyncio
-import json
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock
 
 from src.core.mcp.mcp_client import McpStdioClient, McpToolDefinition, McpToolResult
 

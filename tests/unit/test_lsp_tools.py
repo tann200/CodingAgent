@@ -8,10 +8,8 @@ All tests use ``_DummyLSPClient`` — no live language server required.
 from __future__ import annotations
 
 import asyncio
-import json
 import pytest
-from pathlib import Path
-from unittest.mock import AsyncMock, patch, MagicMock
+from unittest.mock import patch
 
 
 # ── S2-A: LSP data classes ────────────────────────────────────────────────────

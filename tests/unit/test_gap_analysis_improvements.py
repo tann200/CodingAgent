@@ -14,7 +14,6 @@ Covers:
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock, patch
 import re
 
 
@@ -186,7 +185,6 @@ class TestModelIdPartialRouting:
         result = self._select("o1-mini")
         # File doesn't exist → falls through to provider/default; test the pattern matching logic
         from src.core.context.context_builder import ContextBuilder
-        import re
         matched = any(
             re.search(pat, "o1-mini")
             for pat, _ in ContextBuilder._MODEL_ID_PARTIAL_MAP
@@ -195,7 +193,6 @@ class TestModelIdPartialRouting:
 
     def test_claude_opus_matches_anthropic_frontier_pattern(self):
         from src.core.context.context_builder import ContextBuilder
-        import re
         matched = any(
             re.search(pat, "claude-opus-4-6")
             for pat, _ in ContextBuilder._MODEL_ID_PARTIAL_MAP
@@ -204,7 +201,6 @@ class TestModelIdPartialRouting:
 
     def test_claude_haiku_matches_anthropic_small_pattern(self):
         from src.core.context.context_builder import ContextBuilder
-        import re
         matched = any(
             re.search(pat, "claude-haiku-4-5")
             for pat, _ in ContextBuilder._MODEL_ID_PARTIAL_MAP
@@ -213,7 +209,6 @@ class TestModelIdPartialRouting:
 
     def test_gemini_flash_matches_gemini_small_pattern(self):
         from src.core.context.context_builder import ContextBuilder
-        import re
         matched = any(
             re.search(pat, "gemini-2.0-flash")
             for pat, _ in ContextBuilder._MODEL_ID_PARTIAL_MAP
@@ -222,7 +217,6 @@ class TestModelIdPartialRouting:
 
     def test_gemini_pro_matches_gemini_frontier_pattern(self):
         from src.core.context.context_builder import ContextBuilder
-        import re
         matched = any(
             re.search(pat, "gemini-2.5-pro")
             for pat, _ in ContextBuilder._MODEL_ID_PARTIAL_MAP

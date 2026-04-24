@@ -2,7 +2,6 @@ import threading
 import random
 import time
 
-import pytest
 
 import src.tools._diff_gate as diff_gate
 
@@ -70,5 +69,5 @@ def test_register_resolve_concurrent():
     # After resolution, pending previews must be empty and rejected set size
     # should equal the number of rejects (odd indices)
     rejects_expected = sum(1 for i in range(N) if i % 2 == 1)
-    assert not diff_gate.has_pending_previews(), f"_pending_previews not empty"
+    assert not diff_gate.has_pending_previews(), "_pending_previews not empty"
     assert diff_gate.get_preview_rejected_count() == rejects_expected

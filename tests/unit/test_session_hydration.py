@@ -1,11 +1,9 @@
 """Tests for GAP 1: Session State Hydration."""
 
-import pytest
 from src.core.orchestration.event_bus import EventBus
 from src.core.orchestration.agent_session_manager import (
     AgentSessionManager,
     SessionState,
-    get_agent_session_manager,
 )
 
 

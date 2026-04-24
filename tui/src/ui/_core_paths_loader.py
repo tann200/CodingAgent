@@ -17,7 +17,7 @@ import sys
 import os
 from pathlib import Path
 from types import ModuleType
-from typing import Optional, Callable, cast
+from typing import Optional
 
 _MOD_NAME = "_core_paths_real"
 

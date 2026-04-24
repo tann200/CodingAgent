@@ -23,9 +23,6 @@ Covers:
 # ruff: noqa: E501
 from __future__ import annotations
 
-import asyncio
-import re
-import types
 from unittest.mock import MagicMock, patch
 
 

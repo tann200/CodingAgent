@@ -12,8 +12,6 @@ Covers:
 """
 
 import os
-import sys
-import importlib
 import unittest
 from unittest.mock import MagicMock, patch
 

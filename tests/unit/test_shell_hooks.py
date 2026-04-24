@@ -9,10 +9,8 @@ Tests mirror the scenarios from hooks.rs in claw-code:
 
 from __future__ import annotations
 
-import asyncio
 import json
 import sys
-import tempfile
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch

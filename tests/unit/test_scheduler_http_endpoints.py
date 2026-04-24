@@ -4,10 +4,8 @@ import pytest
 from src.server.app import app, register_event_bus
 from src.core.orchestration.event_bus import get_event_bus
 from src.core.scheduler import worker as sched
-import threading
 
 # ruff: noqa: E501
-import queue as _queue
 
 
 def setup_function(_):

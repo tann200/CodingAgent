@@ -10,12 +10,10 @@ The LLM is mocked so tests run in CI without a running local provider.
 # ruff: noqa: E501
 from __future__ import annotations
 
-import asyncio
 import json
-import tempfile
 from pathlib import Path
 from typing import Any, Dict
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 

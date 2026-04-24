@@ -26,12 +26,9 @@ Covers:
 from __future__ import annotations
 
 import json
-import os
 import sys
 from pathlib import Path
-from unittest.mock import patch
 
-import pytest
 
 
 # ---------------------------------------------------------------------------
@@ -401,7 +398,8 @@ def test_post_tool_sh_stub_fire_and_forget(tmp_path):
 
 def test_stub_not_wired_when_hooks_json_exists(tmp_path):
     """When hooks.json provides pre_tool entries the stub is NOT appended."""
-    import sys, json as _json
+    import sys
+    import json as _json
 
     hooks_path = tmp_path / ".agent" / "hooks.json"
     hooks_path.parent.mkdir(parents=True, exist_ok=True)

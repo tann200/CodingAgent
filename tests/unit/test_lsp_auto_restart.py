@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from typing import Any, List
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest

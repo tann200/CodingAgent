@@ -14,7 +14,6 @@ Covers:
 from __future__ import annotations
 
 import asyncio
-import importlib
 from unittest.mock import MagicMock, patch
 
 

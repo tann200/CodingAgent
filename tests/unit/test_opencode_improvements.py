@@ -16,8 +16,7 @@ Regression tests for opencode-inspired improvements:
 from __future__ import annotations
 
 import json
-import types
-from unittest.mock import MagicMock, patch, AsyncMock
+from unittest.mock import MagicMock, patch
 from typing import Any, Dict
 
 import pytest
@@ -376,7 +375,6 @@ def test_recent_tool_calls_in_agent_state():
 
 def test_recent_tool_calls_in_initial_state_source():
     """The orchestrator source sets recent_tool_calls to [] in the initial_state dict."""
-    import ast
     import inspect
     import src.core.orchestration.inference_loop as _il_mod
     import src.core.orchestration.orchestrator as _orc_mod

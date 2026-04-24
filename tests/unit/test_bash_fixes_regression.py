@@ -21,10 +21,8 @@ Covers:
 from __future__ import annotations
 
 import os
-import sys
-from pathlib import Path
-from typing import Any, Dict
-from unittest.mock import MagicMock, patch, call
+from typing import Any
+from unittest.mock import MagicMock, patch
 
 
 # ---------------------------------------------------------------------------
@@ -216,7 +214,7 @@ class TestAnalyzeBashCommandCache:
 class TestBashTruncationFlags:
     def test_stdout_truncated_flag_set_when_cut(self, tmp_path):
         """When stdout is cut, output dict contains stdout_truncated=True."""
-        from src.tools.file_tools import bash, _BASH_STDOUT_MAX_TOKENS
+        from src.tools.file_tools import bash
 
         # Generate output that will definitely exceed the token budget.
         big = tmp_path / "big.txt"
@@ -228,7 +226,7 @@ class TestBashTruncationFlags:
 
     def test_stderr_truncated_flag_set_when_cut(self, tmp_path):
         """When stderr is cut, output dict contains stderr_truncated=True."""
-        from src.tools.file_tools import bash, _BASH_STDERR_MAX_TOKENS
+        from src.tools.file_tools import bash
 
         script = tmp_path / "gen_err.py"
         # 600 tokens ≈ 2400 chars; write 10 KB to stderr.
@@ -337,7 +335,6 @@ class TestPlanningPreflight:
     def test_step_with_npm_install_gets_warning(self):
         """A step description containing 'npm install' should get a warnings entry."""
         from src.tools._security import RESTRICTED_COMMANDS
-        import re
 
         # Simulate the pre-flight logic from planning_node.py
         steps: list[dict[str, Any]] = [

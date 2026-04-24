@@ -10,9 +10,8 @@ heavy I/O (git, AGENT.md discovery) which is exercised in integration tests.
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
-import pytest
 
 from src.core.prompts import PromptContext, SystemPromptBuilder, reload_templates
 from src.core.prompts.system_prompt_builder import (

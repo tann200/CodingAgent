@@ -15,7 +15,6 @@ Covers:
 # ruff: noqa: E501
 from __future__ import annotations
 
-import pytest
 
 
 # ---------------------------------------------------------------------------
@@ -75,7 +74,6 @@ class TestOP4ActualContextWindow:
 
     def test_overflow_detection_uses_actual_window(self):
         """perception_node imports get_actual_context_window for overflow check."""
-        import ast
         from pathlib import Path
 
         src = Path(
@@ -100,7 +98,6 @@ class TestP1GMemoryLeaks:
         return {f"tool_{i}:path_{i}": i for i in range(n)}
 
     def test_tool_last_used_cap_constant_exists(self):
-        import ast
         from pathlib import Path
 
         src = Path(
@@ -185,7 +182,6 @@ class TestOP10PreserveFlag:
         """Normal old tool results are still pruned as before."""
         from src.core.orchestration.graph.nodes.perception_node import (
             _prune_tool_outputs,
-            _PRUNED_TOOL_PLACEHOLDER,
         )
 
         big_content = "x" * 40_000

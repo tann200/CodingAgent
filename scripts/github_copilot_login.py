@@ -53,10 +53,10 @@ def cmd_login() -> None:
 
     print()
     print("=" * 60)
-    print(f"  Open this URL in your browser:")
+    print("  Open this URL in your browser:")
     print(f"  {flow.verification_uri}")
     print()
-    print(f"  Enter this code when prompted:")
+    print("  Enter this code when prompted:")
     print(f"  {flow.user_code}")
     print("=" * 60)
     print()

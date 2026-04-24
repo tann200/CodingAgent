@@ -8,8 +8,6 @@ S8-B: NANO tier forces YAML-only output format (simple_mode), no native tools.
 # ruff: noqa: E501
 from __future__ import annotations
 
-import pytest
-from unittest.mock import MagicMock
 
 
 # ---------------------------------------------------------------------------

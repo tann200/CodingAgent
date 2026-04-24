@@ -13,7 +13,6 @@ We test:
 
 from __future__ import annotations
 
-import pytest
 
 
 # ---------------------------------------------------------------------------
@@ -99,7 +98,6 @@ class TestAgentAppHandlers:
 class TestSlashCommandRouting:
     def test_sc9_handle_slash_command_routes_diff(self) -> None:
         """SC-9: handle_slash_command dispatches 'diff' to _slash_diff."""
-        import ast
         import pathlib
 
         src = pathlib.Path("tui/src/ui/app.py").read_text()

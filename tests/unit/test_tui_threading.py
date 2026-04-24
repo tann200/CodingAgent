@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import threading
 import time
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 
 # ---------------------------------------------------------------------------
@@ -46,7 +46,6 @@ def _make_bridge():
     orch.start_new_task.return_value = "task-001"
     orch.flush_execution_trace = MagicMock()
     # run_agent_once is async — return a coroutine-like result
-    import asyncio
 
     async def _fake_run(*a, **kw):
         return {"response": "ok", "last_result": {"output": "ok"}}

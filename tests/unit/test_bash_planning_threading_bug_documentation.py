@@ -25,7 +25,6 @@ All tests in this file now verify the FIXED behavior with positive assertions.
 import inspect
 
 # ruff: noqa: E501
-import pytest
 
 
 # ---------------------------------------------------------------------------
@@ -361,7 +360,7 @@ class TestTrajectoryLoggerThreadSafe:
 
         # FIXED: All calls should complete without raising
         assert errors == [], (
-            f"NEW-21 fixed: concurrent log_run calls should not raise exceptions"
+            "NEW-21 fixed: concurrent log_run calls should not raise exceptions"
         )
 
     def test_trajectory_logger_has_thread_lock(self):

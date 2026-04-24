@@ -50,7 +50,6 @@ class TestGroqAdapter:
 
     def test_instantiation_with_env_key(self, monkeypatch):
         """GROQ_API_KEY env var is picked up."""
-        import os
         from src.core.inference.adapters.groq_adapter import GroqAdapter
 
         monkeypatch.setenv("GROQ_API_KEY", "gsk_env_key")

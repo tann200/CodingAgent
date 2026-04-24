@@ -150,7 +150,7 @@ class TestFileLockManagerWrites:
     @pytest.mark.asyncio
     async def test_lock_released_even_on_exception(self):
         """Locks acquired in _execute_tool_with_locks are released in the finally block."""
-        from unittest.mock import AsyncMock, MagicMock
+        from unittest.mock import MagicMock
         from src.core.orchestration.graph.nodes.execution_node import (
             _execute_tool_with_locks,
         )
@@ -406,7 +406,6 @@ class TestDelegationNodePRSW:
     @pytest.mark.asyncio
     async def test_delegation_node_resolves_lock_manager_from_state(self, tmp_path):
         """delegation_node picks up _file_lock_manager from state when present."""
-        from unittest.mock import MagicMock, patch
         from src.core.orchestration.graph.nodes.delegation_node import delegation_node
 
         lm = _make_lock_manager()

@@ -11,9 +11,7 @@ UP-2: start_new_task_impl calls clear_repo_summary_cache
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
-from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 
 # ---------------------------------------------------------------------------
@@ -611,8 +609,6 @@ class TestUP2RepoCacheClear:
         """UP-2: clear_repo_summary_cache must exist and be importable."""
         from src.core.orchestration.graph.nodes.analysis_node import (
             clear_repo_summary_cache,
-            _REPO_SUMMARY_CACHE,
-            _REPO_SUMMARY_CACHE_LOCK,
         )
 
         assert callable(clear_repo_summary_cache)

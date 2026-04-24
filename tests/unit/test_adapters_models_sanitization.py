@@ -1,4 +1,3 @@
-import pytest
 
 from src.core.inference.adapters.ollama_adapter import OllamaAdapter
 

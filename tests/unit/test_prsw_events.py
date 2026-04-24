@@ -2,7 +2,6 @@
 Unit tests for PRSW events - Phase 6: PRSW
 """
 
-import pytest
 from src.core.orchestration.event_bus import EventBus
 from src.core.orchestration.prsw_topics import PRSWTopics, AgentTopics
 

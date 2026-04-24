@@ -27,9 +27,10 @@ from __future__ import annotations
 import logging
 import uuid
 
-_logger = logging.getLogger(__name__)
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional, TYPE_CHECKING
+
+_logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from pathlib import Path

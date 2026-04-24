@@ -24,14 +24,10 @@ Covers:
 - BUG-25: edit_code_block calls mark_file_read after reading
 """
 
-import json
-import os
-import sys
 import threading
-from pathlib import Path
 
 # ruff: noqa: E501
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -747,7 +743,6 @@ class TestFileLockManagerSingleton:
 class TestToolSchemaVarKeyword:
     def test_custom_kwargs_name_excluded_from_schema(self):
         """**options (non-standard kwargs name) must not appear in JSON schema."""
-        import inspect
         from src.tools._tool import tool as tool_decorator
 
         @tool_decorator(tags=["coding"])

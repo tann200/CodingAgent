@@ -3,18 +3,13 @@
 from __future__ import annotations
 
 import json
-import time
-import threading
-from pathlib import Path
-from typing import Any
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 # ── Auth module tests ─────────────────────────────────────────────────────────
 
 from src.core.inference.adapters.github_copilot_auth import (
-    DeviceCodeResponse,
     TokenResult,
     start_device_flow,
     poll_for_token,
@@ -26,13 +21,11 @@ from src.core.inference.adapters.github_copilot_auth import (
     AuthCancelled,
     GITHUB_CLIENT_ID,
     refresh_access_token,
-    TOKEN_REFRESH_MARGIN,
 )
 from src.core.inference.adapters.github_copilot_adapter import (
     GithubCopilotAdapter,
     Adapter,
     COPILOT_BASE_URL,
-    _DEFAULT_MODELS,
 )
 
 
@@ -256,7 +249,6 @@ class TestTokenPersistence:
 
     def test_fresh_token_skips_refresh(self, tmp_path, monkeypatch):
         """load_token() should NOT refresh when token is still fresh."""
-        import time as _time
 
         prefs_file = tmp_path / "prefs.json"
         monkeypatch.setenv("CODINGAGENT_PREFS", str(prefs_file))

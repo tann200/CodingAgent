@@ -3,9 +3,8 @@
 Verifies that _dispatch_tool() uses asyncio.to_thread for MEDIUM/LARGE/FRONTIER
 and calls synchronously for NANO/SMALL.
 """
-import asyncio
 import threading
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 

@@ -12,7 +12,6 @@ harmless commands are not incorrectly blocked.
 
 from __future__ import annotations
 
-import pytest
 
 from src.tools.bash_security import BashRiskLevel, analyze_bash_command, is_blocked
 

@@ -13,7 +13,6 @@ def test_orchestrator_registers_config_reload_callback(monkeypatch):
     """Ensure bootstrap_orchestrator registers a config reload callback that
     refreshes AgentBrainManager, toolset cache, tool registry, and provider init.
     """
-    from src.core.orchestration.orchestrator_bootstrap import bootstrap_orchestrator
 
     # Create a minimal orchestrator-like object
     class Orch:

@@ -18,10 +18,9 @@ HR-9: start_new_task() clears stale delegations
 from __future__ import annotations
 
 import asyncio
-import tempfile
 from pathlib import Path
 from typing import Any, Dict
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 
 # ---------------------------------------------------------------------------
@@ -338,7 +337,6 @@ class TestMemoryUpdateNodeAppliesCompactedHistory:
 
     def test_memory_update_node_returns_compacted_history(self, tmp_path):
         """memory_update_node must return compacted history when distill_context compacts."""
-        import asyncio
         from src.core.orchestration.graph.nodes.memory_update_node import (
             memory_update_node,
         )
@@ -361,7 +359,6 @@ class TestMemoryUpdateNodeAppliesCompactedHistory:
 
     def test_memory_update_node_returns_force_compact_false(self, tmp_path):
         """memory_update_node always returns _force_compact: False."""
-        import asyncio
         from src.core.orchestration.graph.nodes.memory_update_node import (
             memory_update_node,
         )
@@ -386,7 +383,6 @@ class TestMemoryUpdateNodeAppliesCompactedHistory:
 class TestExecutionNodePlannedActionOverridesNextAction:
     def test_planned_action_takes_priority_over_next_action(self, tmp_path):
         """planned_action (fresher, from step_controller) must take priority over next_action."""
-        import asyncio
         from src.core.orchestration.graph.nodes.execution_node import execution_node
 
         planned = {"name": "read_file", "arguments": {"path": "app.py"}}
@@ -594,7 +590,6 @@ class TestEvaluationRouterTotalDebugAttemptsCap:
 
     def test_debug_node_increments_debug_attempts(self, tmp_path):
         """debug_node must return incremented debug_attempts in every return path."""
-        import asyncio
         from src.core.orchestration.graph.nodes.debug_node import debug_node
 
         mock_orch = MagicMock()
@@ -882,7 +877,6 @@ class TestExecutionNodeToolCooldownPrimaryArgKey:
 class TestMemoryUpdateNodeInjectsDistilledAnalysisSummary:
     def test_memory_update_node_returns_analysis_summary_from_distilled(self, tmp_path):
         """memory_update_node must return 'analysis_summary' from distilled current_state."""
-        import asyncio
         from src.core.orchestration.graph.nodes.memory_update_node import (
             memory_update_node,
         )

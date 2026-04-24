@@ -5,7 +5,6 @@ from typing import Any
 # ruff: noqa: E501
 from unittest.mock import MagicMock, patch
 
-import pytest
 
 
 def _make_state(history=None, session_id: str = "s1", rounds: int = 0):

@@ -4,7 +4,6 @@ Previously tested ``src.ui.textual_app_impl._HistoryWrapper``; now tests the
 absorbed ``src.core.utils.HistoryWrapper`` directly.
 """
 
-import pytest
 
 from src.core.utils import HistoryWrapper
 

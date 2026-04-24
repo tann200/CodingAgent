@@ -2,7 +2,6 @@ import json
 import yaml
 from pathlib import Path
 
-import pytest
 
 from src.config.toolsets import loader
 

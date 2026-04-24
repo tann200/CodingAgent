@@ -9,7 +9,6 @@ Verifies that the Orchestrator:
 
 from __future__ import annotations
 
-import pytest
 
 from src.core.inference.adapters.mock_adapter import MockAdapter
 from src.core.orchestration.orchestrator import Orchestrator

@@ -9,9 +9,6 @@ graceful no-op path when watchfiles is absent.
 # ruff: noqa: E501
 from __future__ import annotations
 
-import threading
-import time
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 

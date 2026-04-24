@@ -1,8 +1,6 @@
 """Unit tests for the HTTP/SSE server component (Gap 2 implementation)."""
 
-import json
 import pytest
-import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from src.server.app import ServerEventBusAdapter, app

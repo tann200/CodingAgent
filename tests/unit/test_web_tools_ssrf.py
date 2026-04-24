@@ -1,5 +1,3 @@
-import socket
-import ipaddress
 from unittest.mock import patch
 
 import pytest

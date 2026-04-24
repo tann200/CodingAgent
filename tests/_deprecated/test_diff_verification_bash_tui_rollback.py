@@ -420,7 +420,6 @@ class TestTUIEventBusSubscriptionCleanupOnUnmount:
     def test_eb_subscriptions_list_initialised(self):
         """_subscriptions must be an empty list before setup_subscriptions() is called."""
         from tui.src.ui.core_bridge import AgentBridge
-        import threading
 
         bridge = AgentBridge.__new__(AgentBridge)
         bridge._subscriptions = []

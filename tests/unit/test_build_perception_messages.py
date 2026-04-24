@@ -1,4 +1,3 @@
-import tempfile
 from pathlib import Path
 
 from src.core.orchestration.graph.nodes.perception_node import (

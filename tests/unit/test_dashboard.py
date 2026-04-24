@@ -10,7 +10,6 @@ import threading
 # ruff: noqa: E501
 from unittest.mock import MagicMock
 
-import pytest
 
 import importlib.util as _ilu
 import sys as _sys

@@ -115,7 +115,7 @@ def test_e2e_write_hello_py_real_disk(tmp_path: Path, monkeypatch: Any) -> None:
         tmp_path,
         [
             # Perception returns write_file YAML → fast-path execution
-            f"```yaml\nname: write_file\narguments:\n  path: hello.py\n  content: \"def hello():\\n    return 'Hello World'\\n\"\n```",
+            "```yaml\nname: write_file\narguments:\n  path: hello.py\n  content: \"def hello():\\n    return 'Hello World'\\n\"\n```",
             # Completion text → memory_sync
             "hello.py has been created with the hello() function.",
         ],

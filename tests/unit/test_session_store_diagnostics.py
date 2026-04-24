@@ -3,7 +3,6 @@ import json
 import sqlite3
 from pathlib import Path
 
-import pytest
 
 from src.core.memory.session_store import SessionStore
 

@@ -17,7 +17,7 @@ import threading
 from statistics import mean
 import time
 import asyncio
-from typing import Dict, List, Optional, Callable
+from typing import Dict, Optional, Callable
 
 
 class RollingHistogram:

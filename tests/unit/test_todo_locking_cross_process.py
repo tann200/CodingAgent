@@ -1,12 +1,10 @@
 import json
 import subprocess
 import sys
-import time
 from pathlib import Path
 
-import pytest
 
-from src.tools.todo_tools import _todo_json_path, _todo_path
+from src.tools.todo_tools import _todo_json_path
 
 
 def _write_worker_script(path: Path):

@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 import json
-import os
-import threading
 from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -100,7 +98,6 @@ class TestSubagentOrchestratorRecursionPrevention:
 
 def _make_minimal_graph_mock() -> MagicMock:
     """Return a mock graph whose ainvoke() immediately returns a finished state."""
-    import asyncio
 
     async def _fake_ainvoke(state, config=None):
         return {
@@ -277,7 +274,6 @@ class TestManifestFirstSpawning:
         # We intercept json.dumps writes to manifest dir by patching Path.write_text
         # at the specific manifest path. But simpler: let it write for real to tmp_path.
 
-        import asyncio
 
         async def _fake_ainvoke(state, config=None):
             # At this point the manifest should already exist with status=running

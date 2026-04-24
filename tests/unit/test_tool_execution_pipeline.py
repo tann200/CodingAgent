@@ -17,7 +17,6 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-import pytest
 
 
 # ---------------------------------------------------------------------------
@@ -250,7 +249,6 @@ class TestReadBeforeWrite:
         assert "before writing" in res["error"]
 
     def test_allows_write_after_read(self, tmp_path):
-        from pathlib import Path
         from src.core.orchestration.tool_execution_pipeline import execute_tool_impl
 
         target = tmp_path / "existing.py"

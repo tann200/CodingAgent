@@ -17,9 +17,6 @@ Regression tests for the P1–P10 opencode-inspired improvements (batch 2):
 # ruff: noqa: E501
 from __future__ import annotations
 
-import tempfile
-from pathlib import Path
-from typing import Any, Dict
 from unittest.mock import MagicMock, patch
 
 

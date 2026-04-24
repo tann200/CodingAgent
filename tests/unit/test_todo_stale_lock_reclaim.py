@@ -1,5 +1,4 @@
 import time
-from pathlib import Path
 
 import os
 from src.tools.todo_tools import _lock_path, _FileLock

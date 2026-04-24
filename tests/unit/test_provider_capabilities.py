@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from src.core.inference.llm_manager import ProviderManager, get_provider_manager
+from src.core.inference.llm_manager import get_provider_manager
 
 
 class FakeAdapter:

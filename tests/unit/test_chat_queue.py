@@ -8,7 +8,7 @@ here we test the data-model behaviour in isolation without launching Textual.
 from __future__ import annotations
 
 from collections import deque
-from typing import List, Optional
+from typing import List
 
 
 # ---------------------------------------------------------------------------

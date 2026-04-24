@@ -1,7 +1,5 @@
 import types
-from pathlib import Path
 
-import pytest
 
 
 def test_legacy_loader_delegates_to_config_loader(monkeypatch, tmp_path):

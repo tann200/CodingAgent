@@ -16,7 +16,6 @@ from src.core.evaluation.scenario_evaluator import (
     Scenario,
     ScenarioEvaluator,
     get_default_scenarios,
-    run_benchmark,
 )
 
 

@@ -22,8 +22,7 @@ Covers:
 # ruff: noqa: E501
 from __future__ import annotations
 
-import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 from src.core.inference.adapters.anthropic_adapter import (
     AnthropicAdapter,
