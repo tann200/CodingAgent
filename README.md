@@ -9,7 +9,7 @@ A local-first autonomous coding agent built on LangGraph. Runs on local LLMs (LM
 - **Production TUI** — Textual-based terminal UI with streaming, per-tool icons, diff preview, slash commands
 - **Multi-agent delegation** — `delegate_task` spawns role-specific subagents (analyst, operational, strategic, reviewer, debugger)
 - **Security** — bwrap sandbox, 3-tier bash allowlist, workspace scope guard, read-before-write enforcement
-- **Memory** — SQLite session store, LanceDB vector search, context distiller, auto-compactor
+- **Memory** — SQLite session store, vector store-based semantic search, context distiller, auto-compactor
 - **Repository intelligence** — SHA-256 incremental indexing, symbol graph, semantic code search
 - **Model tiers** — NANO (8 tools) → FRONTIER (60 tools) based on model capability
 - **Session fork/revert** — branch sessions for experimental changes

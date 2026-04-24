@@ -12,7 +12,6 @@ langgraph>=0.2.0
 langchain-core>=0.3.0
 pydantic>=2.0.0
 pandas>=2.0.0
-lancedb>=0.10.0
 
 # Development/test tools
 pytest>=8.0.0

@@ -2,7 +2,6 @@
 and S9-B (compact_context on Orchestrator).
 """
 
-
 # ruff: noqa: E501
 from __future__ import annotations
 
@@ -14,9 +13,11 @@ from unittest.mock import MagicMock, patch
 # S9-A — inject_prior_session_memories
 # ---------------------------------------------------------------------------
 
+
 class TestInjectPriorSessionMemories:
     def _make_builder(self, tmp_path):
         from src.core.context.context_builder import ContextBuilder
+
         return ContextBuilder(working_dir=str(tmp_path))
 
     def test_returns_empty_when_vector_store_raises_on_import(self, tmp_path):
@@ -25,7 +26,7 @@ class TestInjectPriorSessionMemories:
         # Patch the class at the source module so the local import inside the method gets it
         with patch(
             "src.core.indexing.vector_store.VectorStore",
-            side_effect=RuntimeError("no lancedb"),
+            side_effect=RuntimeError("no vectorstore"),
         ):
             result = builder.inject_prior_session_memories("write a hello world file")
         assert result == ""
@@ -101,11 +102,13 @@ class TestInjectPriorSessionMemories:
 # S9-A — perception_node wiring (round 0 only)
 # ---------------------------------------------------------------------------
 
+
 class TestPerceptionNodePriorContext:
     """Verify inject_prior_session_memories is callable and returns the right type."""
 
     def test_inject_returns_string(self, tmp_path):
         from src.core.context.context_builder import ContextBuilder
+
         builder = ContextBuilder(working_dir=str(tmp_path))
         mock_vs = MagicMock()
         mock_vs.search_memories.return_value = []
@@ -115,6 +118,7 @@ class TestPerceptionNodePriorContext:
 
     def test_inject_is_method_on_context_builder(self):
         from src.core.context.context_builder import ContextBuilder
+
         assert callable(getattr(ContextBuilder, "inject_prior_session_memories", None))
 
 
@@ -122,9 +126,11 @@ class TestPerceptionNodePriorContext:
 # S9-B — compact_context on Orchestrator
 # ---------------------------------------------------------------------------
 
+
 class TestOrchestratorCompactContext:
     def test_compact_context_method_exists_on_orchestrator_class(self):
         from src.core.orchestration.orchestrator import Orchestrator
+
         assert callable(getattr(Orchestrator, "compact_context", None))
 
     def test_compact_returns_false_when_no_history(self):

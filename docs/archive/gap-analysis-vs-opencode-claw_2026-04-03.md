@@ -157,7 +157,7 @@ CodingAgent has a strong architectural skeleton — a LangGraph state machine, a
 - `ContextBuilder`: tiered prompt assembly, LRU file cache, dynamic skill injection
 - `distill_context()`: LLM-based compaction at ~6000 token threshold; keeps 6 recent messages; writes `TASK_STATE.md`
 - `TokenBudgetMonitor`: warn at 70%, compact at 85% (5-turn cooldown)
-- LanceDB vector store: `index_code()`, `search()`, `add_memory()`, `search_memories()`
+- vector store: `index_code()`, `search()`, `add_memory()`, `search_memories()`
 - Pre-retrieval in perception: concurrent `search_code`, `find_symbol`, `find_references`, `find_tests_for_module`
 - Dual session stores: SQLite WAL + JSON snapshots
 

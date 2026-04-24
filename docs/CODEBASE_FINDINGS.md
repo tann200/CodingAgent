@@ -677,7 +677,7 @@ from src.core.inference.adapters.lm_studio_adapter import LMStudioAdapter
 | CONC-1 | `user_prefs.py:18–20` | Medium | Property/attribute double-definition | Open (no functional bug; not touched) |
 | CONC-2 | `role_tools.py:34–45` | Low | Double event publish on role change | **Fixed** — removed duplicate `bus.publish()` after `bus.publish_with_identity()` |
 | CONC-3 | `advanced_features.py` | Medium | `TrajectoryLogger` not thread-safe | **Already fixed** before this session — `with _trajectory_lock:` present at line 50 |
-| LOGIC-1 | `memory_tools.py:34,65` | Medium | Hardcoded search scores (0.8/0.5) | **Fixed** — vector results use actual `_distance` from LanceDB; keyword results use matched-word fraction |
+| LOGIC-1 | `memory_tools.py:34,65` | Medium | Hardcoded search scores (0.8/0.5) | **Fixed** — vector results use actual `_distance` from the vector store; keyword results use matched-word fraction |
 | LOGIC-2 | `verification_tools.py:81–102` | Low | `test_ids` computed but never used | **Intentional design** — `test_ids` used as boolean check only; `--lf` handles re-run automatically |
 | LOGIC-3 | `config_loader.py:404` | Low | `json.loads()` called twice | **Fixed** — `json.loads(raw)` called once into `parsed`; `isinstance` check uses `parsed` |
 | LOGIC-4 | `repo_analysis_tools.py:96` | Low | Hardcoded `.agent-context` path | Open (low risk; not touched) |

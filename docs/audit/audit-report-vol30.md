@@ -16,7 +16,7 @@ The CodingAgent system is **well-engineered, production-ready, and robust**. Ove
 - 60+ tools with @tool decorator and auto-discovery
 - 5-layer security (patterns, restricted, safe, bash_security, sandbox)
 - Permission system with 5 levels + autonomous mode
-- Session persistence (SQLite/JSONL), vector memory (LanceDB)
+ - Session persistence (SQLite/JSONL), vector memory (vector store)
 - MCP STDIO server for IDE integration
 - 3800+ deterministic unit tests
 
@@ -107,7 +107,7 @@ The CodingAgent system is **well-engineered, production-ready, and robust**. Ove
 |-----------|--------|
 | Code indexing | ✅ repo_indexer.py with SHA256 mtime-based |
 | Symbol graph | ✅ symbol_reader.py |
-| Semantic search | ✅ LanceDB VectorStore |
+| Semantic search | ✅ VectorStore (backend-agnostic) |
 | Reference tracking | ✅ get_symbols_for_task() |
 | Test mapping | ✅ test_mapper.py |
 | Repo summarization | ✅ _REPO_SUMMARY_CACHE |
@@ -124,7 +124,7 @@ All components integrated and used during planning.
 | Task state persistence | ✅ SessionStore (SQLite/JSONL) |
 | Context distillation | ✅ distiller.py with LLM-based prose |
 | Conversation memory | ✅ history in AgentState |
-| Vector memory | ✅ LanceDB VectorStore |
+| Vector memory | ✅ VectorStore (backend-agnostic) |
 | Token budgeting | ✅ token_budget.py |
 | Memory rot prevention | ✅ ContextBuilder.clear_cache() |
 | Stale memory reuse | ✅ _REPO_SUMMARY_CACHE cleared on start |

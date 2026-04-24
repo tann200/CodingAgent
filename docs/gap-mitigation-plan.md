@@ -488,6 +488,6 @@ Those features require state, require routing, and require a graph. They just do
 
 ## What to ignore from the gap analysis
 
-- **Switching to Vercel AI SDK / TypeScript**: No. The Python ecosystem for ML (LanceDB, SentenceTransformer, AST parsing) has no TS equivalent. The semantic search advantage would be lost.
+- **Switching to Vercel AI SDK / TypeScript**: No. The Python ecosystem for ML (vector stores / Lance-like libraries, SentenceTransformer, AST parsing) has no TS equivalent. The semantic search advantage would be lost.
 - **Rewriting the TUI to be an HTTP client**: Deferrable indefinitely. The in-process `EventBus` is not a limitation until there is a use case that requires a second client.
 - **Matching OpenCode's provider count via Vercel AI SDK**: Unnecessary. LiteLLM (Path A in Gap 4) provides equivalent breadth with Python.

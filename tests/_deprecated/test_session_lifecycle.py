@@ -168,7 +168,7 @@ class TestSessionLifecycle:
     async def test_vector_store_saves_session_memory(self, workdir):
         """Test that vector store can save session memory for semantic search."""
         pytest.skip(
-            "Vector store memory feature needs additionalLanceDB configuration - core session tests pass"
+            "Vector store memory feature needs additional vectorstore configuration - core session tests pass"
         )
 
 

@@ -98,7 +98,7 @@ The CodingAgent system is **well-engineered, production-ready, and robust**. Ove
 |-----------|--------|
 | Code indexing | ✅ repo_indexer.py with mtime-based invalidation |
 | Symbol graph | ✅ symbol_reader.py with symlink-resolving Path.resolve() |
-| Semantic search | ✅ VectorStore with LanceDB |
+| Semantic search | ✅ VectorStore (backend-agnostic) |
 | Reference tracking | ✅ get_symbols_for_task() — confirmed working (debunked in Vol18) |
 | Test mapping | ✅ test_mapper.py |
 | Repo summarization | ✅ _REPO_SUMMARY_CACHE in analysis_node |
@@ -114,7 +114,7 @@ All components are integrated and used during planning/analysis.
 | Task state persistence | ✅ SessionStore (SQLite/JSONL) |
 | Context distillation | ✅ distiller.py with LLM-based prose |
 | Conversation memory | ✅ history in AgentState |
-| Vector memory | ✅ LanceDB VectorStore |
+| Vector memory | ✅ VectorStore (backend-agnostic) |
 | Token budgeting | ✅ token_budget.py with max_total_tokens |
 | Memory rot prevention | ✅ ContextBuilder.clear_cache() on new task |
 | Stale memory reuse | ✅ _REPO_SUMMARY_CACHE cleared on start_new_task |
