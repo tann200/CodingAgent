@@ -91,27 +91,29 @@ fi
 if [ -f "$REQ_FILE" ]; then
   echo "[start.sh] requirements detected at $REQ_FILE"
   if [ "$FORCE_INSTALL" = "1" ] || [ "$REQ_HASH" != "$OLD_HASH" ]; then
-    echo "[start.sh] Requirements changed or FORCE_INSTALL set; installing dependencies..."
+    echo "[start.sh] Requirements changed or FORCE_INSTALL set; installing dependencies via uv..."
 
-    # Try uv if present in venv (best-effort) otherwise pip
-    echo "[start.sh] Attempting to use 'uv' if available (best-effort)"
-    if "$VENV_PYTHON" -c "import importlib.util,sys; sys.exit(0 if importlib.util.find_spec('uv') else 1)" 2>/dev/null; then
-      echo "[start.sh] 'uv' found in venv; attempting '$VENV_PYTHON -m uv install --no-input'"
-      if "$VENV_PYTHON" -m uv install --no-input; then
-        echo "[start.sh] 'uv install' succeeded"
-      else
-        echo "[start.sh] 'uv install' failed; falling back to pip install -r requirements.txt"
-        "$VENV_PYTHON" -m pip install -r "$REQ_FILE"
+    # Ensure 'uv' is installed in the venv. If missing, install it with pip.
+    if ! "$VENV_PYTHON" -c "import importlib.util,sys; sys.exit(0 if importlib.util.find_spec('uv') else 1)" 2>/dev/null; then
+      echo "[start.sh] 'uv' not found in venv; installing 'uv' via pip"
+      if ! "$VENV_PYTHON" -m pip install --upgrade uv; then
+        echo "[start.sh] Failed to install 'uv' into venv" >&2
+        exit 1
       fi
+    fi
+
+    echo "[start.sh] Running 'uv install --no-input' to install project dependencies"
+    if "$VENV_PYTHON" -m uv install --no-input; then
+      echo "[start.sh] 'uv install' succeeded"
     else
-      echo "[start.sh] 'uv' not available in venv; using pip to install requirements"
-      "$VENV_PYTHON" -m pip install -r "$REQ_FILE"
+      echo "[start.sh] 'uv install' failed" >&2
+      exit 1
     fi
 
     # Save the new hash on success
     echo "$REQ_HASH" > "$REQ_HASH_FILE" || true
   else
-    echo "[start.sh] Requirements unchanged; skipping install. (set FORCE_INSTALL=1 to force)"
+    echo "[start.sh] Requirements unchanged; skipping uv install. (set FORCE_INSTALL=1 to force)"
   fi
 else
   echo "[start.sh] No requirements.txt found; skipping dependency installation"

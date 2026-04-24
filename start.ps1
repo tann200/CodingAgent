@@ -94,18 +94,23 @@ if (Test-Path $ReqFile) {
         } catch {
             $uvPresent = $false
         }
+        if (-not $uvPresent) {
+            Write-Host "[start.ps1] 'uv' not found in venv; installing 'uv' via pip"
+            & $VenvPython -m pip install --upgrade uv
+            # Re-evaluate uv presence
+            & $VenvPython -c "import importlib,sys; sys.exit(0 if importlib.util.find_spec('uv') else 1)" | Out-Null
+            $uvPresent = $LASTEXITCODE -eq 0
+        }
         if ($uvPresent) {
             Write-Host "[start.ps1] 'uv' found in venv; attempting 'uv install --no-input'"
             try {
                 & $VenvPython -m uv install --no-input
                 Write-Host "[start.ps1] 'uv install' succeeded"
             } catch {
-                Write-Warning "[start.ps1] 'uv install' failed; falling back to pip install -r requirements.txt"
-                & $VenvPython -m pip install -r $ReqFile
+                Write-Error "[start.ps1] 'uv install' failed"; exit 1
             }
         } else {
-            Write-Host "[start.ps1] 'uv' not available in venv; using pip to install requirements"
-            & $VenvPython -m pip install -r $ReqFile
+            Write-Error "[start.ps1] 'uv' unavailable and pip install failed; aborting"; exit 1
         }
         # Save hash
         $reqHash | Out-File -FilePath $ReqHashFile -Encoding ASCII

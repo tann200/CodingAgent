@@ -42,11 +42,11 @@ line-length = 88
 target-version = "py311"
 
 [tool.ruff.lint]
-per-file-ignores = {
-  "tests/**" = ["E402", "F841", "E741", "E731", "F821", "E702", "F401"],
-  "scripts/**" = ["E402", "F841"],
-  "tui/**" = ["E741", "F841", "F401", "E402"],
-}
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["E402", "F841", "E741", "E731", "F821", "E702", "F401"]
+"scripts/**" = ["E402", "F841"]
+"tui/**" = ["E741", "F841", "F401", "E402"]
 
 [tool.black]
 line-length = 88
