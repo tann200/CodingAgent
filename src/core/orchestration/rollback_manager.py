@@ -51,7 +51,13 @@ class RollbackManager:
 
     def __init__(self, workdir: str):
         self.workdir = Path(workdir)
-        self.snapshot_dir = self.workdir / ".agent-context" / "snapshots"
+        try:
+            from src.tools.tools_config import agent_context_path
+
+            self.snapshot_dir = agent_context_path(self.workdir) / "snapshots"
+        except Exception:
+            # Fall back to legacy location
+            self.snapshot_dir = self.workdir / ".agent-context" / "snapshots"
         self.snapshot_dir.mkdir(parents=True, exist_ok=True)
         self.current_snapshot: Optional[str] = None
         self.snapshots: Dict[str, List[FileSnapshot]] = {}
@@ -120,10 +126,43 @@ class RollbackManager:
                 for s in snapshots
             ],
         }
-        snapshot_file.write_text(json.dumps(snapshot_data, indent=2))
+        try:
+            snapshot_file.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                from src.core.io_utils import atomic_write_json
 
-        logger.info(f"Created snapshot {snapshot_id} with {len(snapshots)} files")
-        return snapshot_id
+                logger.debug(
+                    "rollback_manager: attempting atomic_write_json for %s",
+                    snapshot_file,
+                )
+                ok = atomic_write_json(snapshot_file, snapshot_data, logger=logger)
+                if ok:
+                    logger.info(
+                        "Created snapshot %s with %d files", snapshot_id, len(snapshots)
+                    )
+                    return snapshot_id
+                logger.warning(
+                    "rollback_manager: atomic_write_json returned False for %s; falling back",
+                    snapshot_file,
+                )
+            except Exception:
+                logger.debug(
+                    "rollback_manager: atomic_write_json unavailable or failed for %s; falling back",
+                    snapshot_file,
+                    exc_info=True,
+                )
+
+            # Fallback to legacy write
+            snapshot_file.write_text(
+                json.dumps(snapshot_data, indent=2), encoding="utf-8"
+            )
+            logger.info(f"Created snapshot {snapshot_id} with {len(snapshots)} files")
+            return snapshot_id
+        except Exception as e:
+            logger.error(
+                f"rollback_manager: failed to write snapshot {snapshot_id}: {e}"
+            )
+            raise
 
     def rollback(self, snapshot_id: Optional[str] = None) -> Dict[str, Any]:
         """
@@ -276,7 +315,33 @@ class RollbackManager:
                     for s in self.snapshots[snapshot_id]
                 ],
             }
-            snapshot_file.write_text(json.dumps(snapshot_data, indent=2))
+            try:
+                snapshot_file.parent.mkdir(parents=True, exist_ok=True)
+                try:
+                    from src.core.io_utils import atomic_write_json
+
+                    logger.debug(
+                        "rollback_manager.append: attempting atomic_write_json for %s",
+                        snapshot_file,
+                    )
+                    ok = atomic_write_json(snapshot_file, snapshot_data, logger=logger)
+                    if not ok:
+                        snapshot_file.write_text(
+                            json.dumps(snapshot_data, indent=2), encoding="utf-8"
+                        )
+                except Exception:
+                    logger.debug(
+                        "rollback_manager.append: atomic_write_json unavailable for %s; falling back",
+                        snapshot_file,
+                        exc_info=True,
+                    )
+                    snapshot_file.write_text(
+                        json.dumps(snapshot_data, indent=2), encoding="utf-8"
+                    )
+            except Exception as e:
+                logger.warning(
+                    f"append_to_snapshot: failed to persist snapshot {snapshot_id}: {e}"
+                )
         except Exception as e:
             logger.warning(f"append_to_snapshot: failed to persist: {e}")
 

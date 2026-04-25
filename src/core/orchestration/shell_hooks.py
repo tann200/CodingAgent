@@ -53,7 +53,13 @@ from typing import Any, Optional, Sequence, Union
 
 logger = logging.getLogger(__name__)
 
-_SETTINGS_FILE = Path(".agent") / "settings.json"
+try:
+    # Default settings path uses configured context dir when available
+    from src.tools.tools_config import get_context_dir_name
+
+    _SETTINGS_FILE = Path(get_context_dir_name()) / "settings.json"
+except Exception:
+    _SETTINGS_FILE = Path(".localAgent") / "settings.json"
 
 # ---------------------------------------------------------------------------
 # Data types
@@ -140,9 +146,24 @@ def _load_hooks_config(
     }
     try:
         base = Path(workdir) if workdir else Path.cwd()
-        settings_path = base / _SETTINGS_FILE
-        if not settings_path.exists():
-            return empty
+        # Resolve settings path preferring the configured context dir via
+        # tools_config.agent_context_path when available, falling back to
+        # legacy locations.
+        try:
+            from src.tools.tools_config import agent_context_path
+
+            settings_path = agent_context_path(base) / "settings.json"
+        except Exception:
+            import os
+
+            ctx = os.getenv("CODINGAGENT_CONTEXT_DIR") or ".localAgent"
+            settings_path = base / ctx / "settings.json"
+            if not settings_path.exists():
+                legacy = base / ".agent" / "settings.json"
+                if legacy.exists():
+                    settings_path = legacy
+                else:
+                    return empty
         data = json.loads(settings_path.read_text(encoding="utf-8"))
         hooks = data.get("hooks", {})
         if not isinstance(hooks, dict):

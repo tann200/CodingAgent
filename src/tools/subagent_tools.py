@@ -18,6 +18,113 @@ from pathlib import Path
 from src.core.paths import get_sessions_dir
 from src.tools._tool import tool, PermissionKind
 
+
+def _get_agent_context_dir(workdir_path: Path) -> Path:
+    """Return the configured agent-context directory for workdir_path.
+
+    Import and call src.tools.tools_config.agent_context_path at call-time so
+    tests that reconfigure or reset the tools_config module are respected. If
+    the import or call fails, fall back to the legacy workdir/.agent-context.
+    """
+    try:
+        # Import inside the function so tests can monkeypatch or reconfigure
+        # tools_config between test cases without leaving a stale reference.
+        from src.tools.tools_config import agent_context_path as _acp
+
+        try:
+            resolved = _acp(Path(workdir_path))
+            if resolved:
+                return resolved
+        except Exception:
+            # Fall through to legacy fallback
+            pass
+    except Exception:
+        # tools_config not importable — fall back conservatively
+        pass
+
+    return Path(workdir_path) / ".agent-context"
+
+
+def _atomic_write_json(target: Path, obj: dict, logger=None) -> bool:
+    """Module-level atomic JSON writer wrapper.
+
+    Attempts to call src.core.io_utils.atomic_write_json at call-time so tests
+    can monkeypatch tools_config or io_utils between runs. Falls back to a
+    local mkstemp+replace implementation when the central helper is
+    unavailable.
+    """
+    import tempfile as _tempfile
+    import os as _os
+    import json as _json
+    import logging as _logging
+
+    if logger is None:
+        logger = _logging.getLogger(__name__)
+
+    try:
+        from src.core.io_utils import atomic_write_json as _central
+
+        try:
+            ok = _central(target, obj, logger=logger)
+            return bool(ok)
+        except Exception:
+            logger.debug(
+                "_atomic_write_json: central atomic_write_json failed, falling back",
+                exc_info=True,
+            )
+    except Exception:
+        logger.debug(
+            "_atomic_write_json: central atomic_write_json not available, using local fallback",
+            exc_info=True,
+        )
+
+    # Local fallback
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        _fd, _tmp = _tempfile.mkstemp(dir=str(target.parent), suffix=".tmp")
+        try:
+            with _os.fdopen(_fd, "w", encoding="utf-8") as _f:
+                _json.dump(obj, _f, ensure_ascii=False, indent=2)
+                _f.flush()
+                try:
+                    _os.fsync(_f.fileno())
+                except Exception:
+                    pass
+            _os.replace(_tmp, str(target))
+        except Exception:
+            try:
+                _os.unlink(_tmp)
+            except Exception:
+                pass
+            raise
+        try:
+            st = target.stat()
+            logger.info(
+                "delegate_task: manifest written: %s (%d bytes)", target, st.st_size
+            )
+        except Exception:
+            logger.info("delegate_task: manifest written: %s", target)
+        return True
+    except Exception as _aw:
+        logger.warning("delegate_task: atomic manifest write failed: %s", _aw)
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(_json.dumps(obj, indent=2), encoding="utf-8")
+            try:
+                st = target.stat()
+                logger.info(
+                    "delegate_task: manifest written (fallback): %s (%d bytes)",
+                    target,
+                    st.st_size,
+                )
+            except Exception:
+                logger.info("delegate_task: manifest written (fallback): %s", target)
+            return True
+        except Exception as _fb:
+            logger.error("delegate_task: manifest write failed (fallback): %s", _fb)
+            return False
+
+
 try:
     from src.core.orchestration.event_bus import (
         DispatchEvent,
@@ -500,9 +607,15 @@ def delegate_task(
         import json as _json
         import time as _time
 
-        _manifest_dir = workdir_path / ".agent-context" / "subagent_manifests"
+        _manifest_dir = _get_agent_context_dir(workdir_path) / "subagent_manifests"
+        logger.debug("delegate_task: resolved manifest dir: %s", _manifest_dir)
         _manifest: dict = {}  # initialised here so later update blocks are always bound
         _manifest_path: Optional[Path] = None
+
+        # Use module-level _atomic_write_json helper to write manifests so tests
+        # can monkeypatch or replace the central writer. The module-level helper
+        # falls back to a local mkstemp+replace implementation when needed.
+
         try:
             _manifest_dir.mkdir(parents=True, exist_ok=True)
             _manifest = {
@@ -515,11 +628,10 @@ def delegate_task(
                 "status": "running",
             }
             _manifest_path = _manifest_dir / f"subagent_{child_session_id}.json"
-            _manifest_path.write_text(
-                _json.dumps(_manifest, indent=2), encoding="utf-8"
-            )
+            if not _atomic_write_json(_manifest_path, _manifest):
+                _manifest_path = None
         except Exception as _me:
-            logger.debug("delegate_task: manifest write failed: %s", _me)
+            logger.exception("delegate_task: manifest write unexpected error: %s", _me)
             _manifest_path = None
 
         # SUBAGENT-VIS-1: Notify TUI that a subagent is starting
@@ -612,23 +724,18 @@ def delegate_task(
                     "working_dir": str(workdir_path),
                     "ok": True,
                 }
-                import tempfile as _tempfile
-
                 _sp = _sessions_dir / f"session_{child_session_id}.json"
-                _fd, _tmp = _tempfile.mkstemp(dir=str(_sessions_dir), suffix=".tmp")
                 try:
-                    import os as _os
-
-                    with _os.fdopen(_fd, "w", encoding="utf-8") as _f:
-                        _json.dump(_session_payload, _f, ensure_ascii=False)
-                    _os.replace(_tmp, str(_sp))
+                    ok = _atomic_write_json(_sp, _session_payload, logger=logger)
+                    if not ok:
+                        logger.debug(
+                            "delegate_task: failed to write session payload %s", _sp
+                        )
                 except Exception:
-                    try:
-                        import os as _os2
-
-                        _os2.unlink(_tmp)
-                    except OSError:
-                        pass
+                    logger.debug(
+                        "delegate_task: exception when writing session payload",
+                        exc_info=True,
+                    )
             except Exception:
                 pass
 
@@ -736,20 +843,18 @@ def delegate_task(
                 import tempfile as _tempfile
 
                 _sp = _sessions_dir / f"session_{child_session_id}.json"
-                _fd, _tmp = _tempfile.mkstemp(dir=str(_sessions_dir), suffix=".tmp")
                 try:
-                    import os as _os
-
-                    with _os.fdopen(_fd, "w", encoding="utf-8") as _f:
-                        _json.dump(_session_payload, _f, ensure_ascii=False)
-                    _os.replace(_tmp, str(_sp))
+                    ok = _atomic_write_json(_sp, _session_payload, logger=logger)
+                    if not ok:
+                        logger.debug(
+                            "delegate_task: failed to write failed session payload %s",
+                            _sp,
+                        )
                 except Exception:
-                    try:
-                        import os as _os2
-
-                        _os2.unlink(_tmp)
-                    except OSError:
-                        pass
+                    logger.debug(
+                        "delegate_task: exception when writing failed session payload",
+                        exc_info=True,
+                    )
             except Exception:
                 pass
 

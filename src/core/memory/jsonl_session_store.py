@@ -96,7 +96,20 @@ class JsonlSessionStore:
         rotation_bytes: int = _ROTATION_BYTES,
     ) -> None:
         self._workdir = Path(workdir) if workdir else Path.cwd()
-        self._sessions_dir = self._workdir / ".agent-context" / "sessions"
+        # Do not call tools_config.agent_context_path at init-time to avoid
+        # implicitly creating directories during tests. Prefer existing legacy
+        # directories for reads; resolve the canonical path at write-time only.
+        legacy_a = self._workdir / ".agent-context"
+        legacy_b = self._workdir / ".agent"
+        if legacy_a.exists():
+            self._agent_context_dir = legacy_a
+        elif legacy_b.exists():
+            self._agent_context_dir = legacy_b
+        else:
+            # Unresolved yet; write-time operations will call the canonical
+            # resolver which may create directories. We keep None to signal
+            # that resolution has not happened.
+            self._agent_context_dir = None
         self._rotation_bytes = rotation_bytes
         # Per-session locks: session_id → threading.Lock
         self._locks: Dict[str, threading.Lock] = {}
@@ -105,6 +118,38 @@ class JsonlSessionStore:
         self._decisions_lock = threading.Lock()
         # Schema version for compatibility with older tests/tools
         self._SCHEMA_VERSION = 2
+
+    def _get_sessions_dir(self) -> Path:
+        """Resolve and return the sessions directory.
+
+        Preference order for reads: existing legacy dirs (".agent-context", ".agent").
+        If none exist, attempt to call tools_config.agent_context_path at
+        call-time — this may create the canonical directory when a write is
+        about to happen. The resolved value is cached on the instance so
+        subsequent calls reuse the same path.
+        """
+        if getattr(self, "_sessions_dir", None) is not None:
+            return self._sessions_dir
+
+        # Check legacy locations first
+        legacy_a = self._workdir / ".agent-context"
+        legacy_b = self._workdir / ".agent"
+        if legacy_a.exists():
+            ac = legacy_a
+        elif legacy_b.exists():
+            ac = legacy_b
+        else:
+            # Call the canonical resolver at call-time. It may create dirs.
+            try:
+                from src.tools.tools_config import agent_context_path
+
+                ac = agent_context_path(self._workdir)
+            except Exception:
+                ac = self._workdir / ".agent-context"
+
+        self._agent_context_dir = ac
+        self._sessions_dir = ac / "sessions"
+        return self._sessions_dir
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -126,10 +171,11 @@ class JsonlSessionStore:
           - …
           - ``{session_id}.jsonl``  (current / active)
         """
-        base = self._sessions_dir / f"{session_id}.jsonl"
+        sessions_dir = self._get_sessions_dir()
+        base = sessions_dir / f"{session_id}.jsonl"
         rotated: List[Tuple[int, Path]] = []
-        if self._sessions_dir.exists():
-            for p in self._sessions_dir.glob(f"{session_id}.*.jsonl"):
+        if sessions_dir.exists():
+            for p in sessions_dir.glob(f"{session_id}.*.jsonl"):
                 # Extract rotation index from the stem: session_id.N.jsonl
                 stem = p.name[len(session_id) + 1 : -len(".jsonl")]
                 try:
@@ -144,8 +190,9 @@ class JsonlSessionStore:
 
     def _active_file(self, session_id: str) -> Path:
         """Return the path of the current (writable) JSONL file."""
-        self._sessions_dir.mkdir(parents=True, exist_ok=True)
-        return self._sessions_dir / f"{session_id}.jsonl"
+        sessions_dir = self._get_sessions_dir()
+        sessions_dir.mkdir(parents=True, exist_ok=True)
+        return sessions_dir / f"{session_id}.jsonl"
 
     def _rotate_if_needed(self, session_id: str) -> None:
         """If the active file exceeds ``_rotation_bytes``, rotate it.
@@ -163,9 +210,10 @@ class JsonlSessionStore:
             return
         # Find next rotation index
         n = 0
-        while (self._sessions_dir / f"{session_id}.{n}.jsonl").exists():
+        sessions_dir = self._get_sessions_dir()
+        while (sessions_dir / f"{session_id}.{n}.jsonl").exists():
             n += 1
-        dest = self._sessions_dir / f"{session_id}.{n}.jsonl"
+        dest = sessions_dir / f"{session_id}.{n}.jsonl"
         try:
             # Acquire an exclusive lock on the active file while renaming to
             # avoid races with concurrent writers from other processes.
@@ -282,7 +330,8 @@ class JsonlSessionStore:
         Returns *new_session_id*.
         """
         with self._session_lock(session_id):
-            self._sessions_dir.mkdir(parents=True, exist_ok=True)
+            sessions_dir = self._get_sessions_dir()
+            sessions_dir.mkdir(parents=True, exist_ok=True)
             src_files = self._session_files(session_id)
             if not src_files:
                 raise ValueError(
@@ -290,11 +339,12 @@ class JsonlSessionStore:
                 )
             for src in src_files:
                 # Preserve rotation index in destination name
+                sessions_dir = self._get_sessions_dir()
                 if src.name == f"{session_id}.jsonl":
-                    dest = self._sessions_dir / f"{new_session_id}.jsonl"
+                    dest = sessions_dir / f"{new_session_id}.jsonl"
                 else:
                     suffix = src.name[len(session_id) :]  # e.g. ".0.jsonl"
-                    dest = self._sessions_dir / f"{new_session_id}{suffix}"
+                    dest = sessions_dir / f"{new_session_id}{suffix}"
                 try:
                     shutil.copy2(str(src), str(dest))
                     logger.debug(
@@ -369,7 +419,8 @@ class JsonlSessionStore:
 
     def _snapshot_dir(self) -> Path:
         """Directory where per-snapshot JSON files are stored."""
-        return self._sessions_dir / "snapshots"
+        sessions_dir = self._get_sessions_dir()
+        return sessions_dir / "snapshots"
 
     def _snapshot_path(self, session_id: str, snapshot_id: str) -> Path:
         """Path to the sidecar file for a specific snapshot."""
@@ -409,66 +460,20 @@ class JsonlSessionStore:
             "_offset": offset,
             "ts": _utc_now(),
         }
-        # Write sidecar atomically: write to a temp file then os.replace so
-        # readers never see a partially-written JSON file. Perform best-effort
-        # fsync to improve durability; all failures are non-fatal.
-        tmp_path = None
-        fd = None
+        # Write sidecar atomically using shared helper so readers never see
+        # partially-written JSON.
         try:
-            fd, tmp_path = tempfile.mkstemp(dir=str(snap_dir), suffix=".tmp")
-            # fd is an OS-level fd; wrap with a text-mode file object for json.dump
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                fd = None  # ownership transferred to fdopen -> don't close twice
-                json.dump(payload, f, ensure_ascii=False, default=str)
-                try:
-                    f.flush()
-                    os.fsync(f.fileno())
-                except Exception:
-                    # Best-effort; tolerate platforms where fsync may fail
-                    pass
-            # Atomic replace into final location
-            try:
-                os.replace(tmp_path, str(sidecar))
-            except Exception:
-                # If replace fails for any reason, attempt a fallback move
-                try:
-                    shutil.move(tmp_path, str(sidecar))
-                except Exception:
-                    raise
-            # Best-effort: fsync the directory entry so the replaced file is
-            # more likely to be durable across crashes. This may not be
-            # supported on all platforms; ignore errors.
-            try:
-                dir_fd = os.open(str(snap_dir), os.O_RDONLY)
-                try:
-                    os.fsync(dir_fd)
-                except Exception:
-                    pass
-                finally:
-                    try:
-                        os.close(dir_fd)
-                    except Exception:
-                        pass
-            except Exception:
-                pass
+            from src.core.io_utils import atomic_write_json
+
+            ok = atomic_write_json(sidecar, payload, logger=logger)
+            if not ok:
+                logger.error(
+                    "JsonlSessionStore.save_snapshot: sidecar atomic write failed"
+                )
         except Exception as exc:
             logger.error(
                 "JsonlSessionStore.save_snapshot: sidecar write failed: %s", exc
             )
-            # Cleanup the temp file if it exists
-            try:
-                if fd is not None:
-                    try:
-                        os.close(fd)
-                    except Exception:
-                        pass
-                if tmp_path is not None and os.path.exists(tmp_path):
-                    try:
-                        os.unlink(tmp_path)
-                    except Exception:
-                        pass
-            except Exception:
-                pass
 
         return snapshot_id
 
@@ -519,10 +524,11 @@ class JsonlSessionStore:
 
     def list_sessions(self) -> List[str]:
         """Return unique session IDs found in the sessions directory."""
-        if not self._sessions_dir.exists():
+        sessions_dir = self._get_sessions_dir()
+        if not sessions_dir.exists():
             return []
         seen: set[str] = set()
-        for p in self._sessions_dir.glob("*.jsonl"):
+        for p in sessions_dir.glob("*.jsonl"):
             # Parse session_id from filename: strip trailing .N.jsonl or .jsonl
             name = p.stem  # e.g. "abc123" or "abc123.0"
             if "." in name:
@@ -603,7 +609,12 @@ class JsonlSessionStore:
 
         # Exhausted attempts or unrecoverable error — write diagnostic
         try:
-            diag_dir = Path(self._workdir) / ".agent-context"
+            # Use resolved agent-context directory when available to honour
+            # configuration/discovery; fall back to legacy workdir/.agent-context
+            diag_dir = Path(
+                getattr(self, "_agent_context_dir", None)
+                or self._workdir / ".agent-context"
+            )
             diag_dir.mkdir(parents=True, exist_ok=True)
             ts = int(time.time() * 1000)
             sid = session_id or "unknown"
@@ -622,32 +633,41 @@ class JsonlSessionStore:
                 "params": params,
                 "ts": _utc_now(),
             }
-            # Atomic write
-            fd = None
-            tmp = None
+            # Atomic write: prefer the shared helper but fall back to the
+            # legacy mkstemp+replace approach on error.
             try:
-                fd, tmp = tempfile.mkstemp(dir=str(diag_dir), suffix=".tmp")
-                with os.fdopen(fd, "w", encoding="utf-8") as f:
-                    fd = None
-                    json.dump(payload, f, ensure_ascii=False)
+                from src.core.io_utils import atomic_write_json
+
+                ok = atomic_write_json(diag_path, payload, logger=logger)
+            except Exception:
+                ok = False
+
+            if not ok:
+                fd = None
+                tmp = None
+                try:
+                    fd, tmp = tempfile.mkstemp(dir=str(diag_dir), suffix=".tmp")
+                    with os.fdopen(fd, "w", encoding="utf-8") as f:
+                        fd = None
+                        json.dump(payload, f, ensure_ascii=False)
+                        try:
+                            f.flush()
+                            os.fsync(f.fileno())
+                        except Exception:
+                            pass
                     try:
-                        f.flush()
-                        os.fsync(f.fileno())
+                        os.replace(tmp, str(diag_path))
+                    except Exception:
+                        try:
+                            shutil.move(tmp, str(diag_path))
+                        except Exception:
+                            pass
+                finally:
+                    try:
+                        if fd is not None:
+                            os.close(fd)
                     except Exception:
                         pass
-                try:
-                    os.replace(tmp, str(diag_path))
-                except Exception:
-                    try:
-                        shutil.move(tmp, str(diag_path))
-                    except Exception:
-                        pass
-            finally:
-                try:
-                    if fd is not None:
-                        os.close(fd)
-                except Exception:
-                    pass
         except Exception:
             logger.debug(
                 "JsonlSessionStore._write_with_retry: failed to write diagnostic",
@@ -759,8 +779,12 @@ class JsonlSessionStore:
     # ------------------------------------------------------------------
 
     def _decisions_path(self) -> Path:
-        d = Path(self._workdir) / ".agent-context"
-        d.mkdir(parents=True, exist_ok=True)
+        # Use resolved agent-context directory when available; fall back to
+        # legacy workdir/.agent-context for older workspaces.
+        d = Path(
+            getattr(self, "_agent_context_dir", None)
+            or self._workdir / ".agent-context"
+        )
         return d / "decisions.json"
 
     def write_decisions_json(self, limit: int = 50) -> None:
@@ -787,36 +811,58 @@ class JsonlSessionStore:
         all_decisions.sort(key=lambda x: x.get("ts") or "", reverse=True)
         trimmed = all_decisions[: max(0, int(limit))]
 
-        path = self._decisions_path()
-        tmp = None
-        fd = None
+        # For writes prefer the canonical agent-context resolver (may create dirs)
+        try:
+            from src.tools.tools_config import agent_context_path
+
+            ac_dir = agent_context_path(self._workdir)
+        except Exception:
+            ac_dir = (
+                getattr(self, "_agent_context_dir", None)
+                or self._workdir / ".agent-context"
+            )
+
+        path = Path(ac_dir) / "decisions.json"
         with self._decisions_lock:
+            # Attempt lazy import of the shared atomic writer. If it fails or
+            # returns False, fall back to the legacy mkstemp+replace path.
             try:
-                fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
-                with os.fdopen(fd, "w", encoding="utf-8") as f:
-                    fd = None
-                    json.dump(trimmed, f, ensure_ascii=False)
+                from src.core.io_utils import atomic_write_json
+
+                ok = atomic_write_json(path, trimmed, logger=logger)
+            except Exception:
+                ok = False
+
+            if not ok:
+                tmp = None
+                fd = None
+                try:
+                    Path(path.parent).mkdir(parents=True, exist_ok=True)
+                    fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
+                    with os.fdopen(fd, "w", encoding="utf-8") as f:
+                        fd = None
+                        json.dump(trimmed, f, ensure_ascii=False)
+                        try:
+                            f.flush()
+                            os.fsync(f.fileno())
+                        except Exception:
+                            pass
                     try:
-                        f.flush()
-                        os.fsync(f.fileno())
+                        os.replace(tmp, str(path))
+                    except Exception:
+                        try:
+                            shutil.move(tmp, str(path))
+                        except Exception as exc:
+                            logger.error(
+                                "JsonlSessionStore.write_decisions_json: move failed: %s",
+                                exc,
+                            )
+                finally:
+                    try:
+                        if fd is not None:
+                            os.close(fd)
                     except Exception:
                         pass
-                try:
-                    os.replace(tmp, str(path))
-                except Exception:
-                    try:
-                        shutil.move(tmp, str(path))
-                    except Exception as exc:
-                        logger.error(
-                            "JsonlSessionStore.write_decisions_json: move failed: %s",
-                            exc,
-                        )
-            finally:
-                try:
-                    if fd is not None:
-                        os.close(fd)
-                except Exception:
-                    pass
 
     def read_recent_decisions(self, max_entries: int = 10) -> List[Dict[str, Any]]:
         """Read and return the recent decisions from the decisions.json
@@ -837,7 +883,8 @@ class JsonlSessionStore:
     # Session state persistence (inline + sidecar)
 
     def _state_sidecar_path(self, session_id: str) -> Path:
-        d = self._sessions_dir / "state"
+        sessions_dir = self._get_sessions_dir()
+        d = sessions_dir / "state"
         d.mkdir(parents=True, exist_ok=True)
         return d / f"{session_id}.json"
 
@@ -860,37 +907,44 @@ class JsonlSessionStore:
             },
         )
 
-        # Also write a durable sidecar atomically
+        # Also write a durable sidecar atomically. Prefer the shared helper
+        # but fall back to the legacy mkstemp+replace approach on error.
         side = self._state_sidecar_path(session_id)
-        tmp = None
-        fd = None
+        payload = {"state": state, "role": role, "task": task, "ts": _utc_now()}
         try:
-            fd, tmp = tempfile.mkstemp(dir=str(side.parent), suffix=".tmp")
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                fd = None
-                json.dump(
-                    {"state": state, "role": role, "task": task, "ts": _utc_now()},
-                    f,
-                    ensure_ascii=False,
-                )
+            from src.core.io_utils import atomic_write_json
+
+            ok = atomic_write_json(side, payload, logger=logger)
+        except Exception:
+            ok = False
+
+        if not ok:
+            tmp = None
+            fd = None
+            try:
+                Path(side.parent).mkdir(parents=True, exist_ok=True)
+                fd, tmp = tempfile.mkstemp(dir=str(side.parent), suffix=".tmp")
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    fd = None
+                    json.dump(payload, f, ensure_ascii=False)
+                    try:
+                        f.flush()
+                        os.fsync(f.fileno())
+                    except Exception:
+                        pass
                 try:
-                    f.flush()
-                    os.fsync(f.fileno())
+                    os.replace(tmp, str(side))
+                except Exception:
+                    try:
+                        shutil.move(tmp, str(side))
+                    except Exception:
+                        pass
+            finally:
+                try:
+                    if fd is not None:
+                        os.close(fd)
                 except Exception:
                     pass
-            try:
-                os.replace(tmp, str(side))
-            except Exception:
-                try:
-                    shutil.move(tmp, str(side))
-                except Exception:
-                    pass
-        finally:
-            try:
-                if fd is not None:
-                    os.close(fd)
-            except Exception:
-                pass
 
     def load_session_state(self, session_id: str) -> Optional[dict]:
         # Prefer the sidecar when present

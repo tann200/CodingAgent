@@ -6,6 +6,11 @@ import re
 
 from src.tools._tool import tool
 
+try:
+    from src.tools.tools_config import agent_context_path
+except Exception:
+    agent_context_path = None
+
 
 _EXCLUDE_DIRS = {
     ".venv",
@@ -93,8 +98,28 @@ def analyze_repository(workdir: str) -> Dict[str, Any]:
                 rel = str(Path(fpath).relative_to(workdir_path))
                 repo_memory["dependency_relationships"][rel] = fimports
 
-        repo_memory_path = workdir_path / ".agent-context" / "repo_memory.json"
+        ctx = (
+            agent_context_path(workdir_path)
+            if agent_context_path is not None
+            else workdir_path / ".agent-context"
+        )
+        repo_memory_path = Path(ctx) / "repo_memory.json"
         repo_memory_path.parent.mkdir(parents=True, exist_ok=True)
+        # Prefer central atomic JSON writer; fall back to write_text
+        try:
+            from src.core.io_utils import atomic_write_json
+
+            ok = atomic_write_json(repo_memory_path, repo_memory)
+            if ok:
+                return {
+                    "status": "ok",
+                    "message": f"Repository analysis complete. Found {sum(d.get('file_count', 0) for d in languages.values())} files across {list(languages.keys())}.",
+                    "languages": repo_memory["languages"],
+                }
+        except Exception:
+            # Fall back to the original behaviour
+            pass
+
         repo_memory_path.write_text(json.dumps(repo_memory, indent=2))
 
         total = sum(d.get("file_count", 0) for d in languages.values())

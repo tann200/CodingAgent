@@ -4,8 +4,16 @@ venv/
 .env
 
 # Agent working state
+# Primary (new) per-workspace directory used by the codebase
+.localAgent/
+# Legacy names we used previously — keep ignored for developer transitions
 .agent-context/
+.agent/
+# Permission audit and local config overrides (do not commit local secrets)
+.localAgent/permission_audit.jsonl
+.localAgent/config.local.json
 .agent/permission_audit.jsonl
+.agent/config.local.json
 
 # System files
 .DS_Store

@@ -50,7 +50,12 @@ def _default_db_path() -> Path:
 
         return get_data_dir() / _DEFAULT_DB_NAME
     except Exception:
-        return Path(".agent-context") / _DEFAULT_DB_NAME
+        try:
+            from src.tools.tools_config import agent_context_path
+
+            return agent_context_path(Path.cwd()) / _DEFAULT_DB_NAME
+        except Exception:
+            return Path(".agent-context") / _DEFAULT_DB_NAME
 
 
 _CREATE_TABLE_SQL = """

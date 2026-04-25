@@ -12,98 +12,155 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
+def _extract_json_object(text: str) -> Optional[Dict[str, Any]]:
+    """Extract and parse a JSON object with 'name' and 'arguments' keys."""
+    import re as _re
+
+    patterns = [
+        r'\{[^}]*"name"\s*:\s*"[^"]+"\s*,\s*"arguments"\s*:\s*\{',
+    ]
+
+    for pattern in patterns:
+        match = _re.search(pattern, text)
+        if match:
+            start = match.start()
+            depth = 0
+            end = start
+            for i, c in enumerate(text[start:], start):
+                if c == "{":
+                    depth += 1
+                elif c == "}":
+                    depth -= 1
+                    if depth == 0:
+                        end = i + 1
+                        break
+            try:
+                parsed = json.loads(text[start:end])
+                if parsed.get("name") and parsed.get("arguments"):
+                    return parsed
+                if parsed.get("tool") and parsed.get("arguments"):
+                    return {
+                        "name": parsed.get("tool"),
+                        "arguments": parsed.get("arguments"),
+                    }
+            except Exception:
+                pass
+    return None
+
+
 def parse_tool_block(text: str) -> Optional[Dict[str, Any]]:
     """
-     Parses YAML tool blocks from markdown text.
-     Accepts these formats:
+    Parses JSON tool blocks from markdown text.
 
-     1. Markdown code block with yaml:
-     ```yaml
-     name: tool_name
-     arguments:
-       arg_name: value
-     ```
-
-     2. YAML frontmatter-style block:
-     ```yaml
-     name: tool_name
-     arguments:
-       arg_name: value
-     ```
-
-     3. Compact YAML format (direct key-value):
-     ```yaml
-     tool_name:
-       arg_name: value
-     ```
-
-     4. With thinking blocks (LMStudio style):
-    <think>
-     The user wants me to list files...
-    </think>
-     ```yaml
-     name: list_files
-     arguments:
-       path: .
-     ```
+    Primary format:
+    ```json
+    {"name": "tool_name", "arguments": {"arg_name": "value"}}
+    ```
     """
     if not text:
         return None
 
-    # Strip thinking blocks first (LMStudio/Cherry Studio format)
-    # These appear as ```yaml ... ``` AFTER the thinking block
-    # Also strip Gemma-style <|channel|>thought blocks
     cleaned_text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
     cleaned_text = re.sub(
         r"<\|channel\|>thought.*?<channel\|>", "", cleaned_text, flags=re.DOTALL
     ).strip()
 
-    # Try markdown YAML/JSON code blocks (primary format).
-    # The closing fence ``` must be on its own line — i.e. NOT followed by
-    # word characters (like ```typescript or ```json inside content).
-    # Pattern: ``` followed by optional horizontal whitespace then newline or end-of-string.
     _CLOSE_FENCE = r"```[ \t]*(?:\n|$)"
-    yaml_patterns = [
-        # Pattern: ```yaml ... ``` blocks
-        r"```yaml\s*\n(.*?)\n" + _CLOSE_FENCE,
-        # Pattern: ```json ... ``` blocks
+
+    # Try JSON code blocks first
+    json_patterns = [
         r"```json\s*\n(.*?)\n" + _CLOSE_FENCE,
-        # Pattern: ``` ... ``` blocks that might be YAML
-        r"```\s*\n(.*?)\n" + _CLOSE_FENCE,
+        r"```\s*\n(\{.*?\})\n" + _CLOSE_FENCE,
+    ]
+
+    for pattern in json_patterns:
+        match = re.search(pattern, cleaned_text, re.DOTALL | re.IGNORECASE)
+        if match:
+            json_content = match.group(1).strip()
+            try:
+                parsed = json.loads(json_content)
+                if parsed.get("name") and parsed.get("arguments"):
+                    logger.debug(
+                        f"parse_tool_block: JSON parse succeeded for tool '{parsed.get('name')}'"
+                    )
+                    return parsed
+                if parsed.get("tool") and parsed.get("arguments"):
+                    logger.debug(
+                        f"parse_tool_block: JSON parse succeeded for tool '{parsed.get('tool')}'"
+                    )
+                    return {
+                        "name": parsed.get("tool"),
+                        "arguments": parsed.get("arguments"),
+                    }
+            except Exception:
+                pass
+
+    # Try inline JSON
+    inline_result = _extract_json_object(cleaned_text)
+    if inline_result:
+        logger.debug(
+            f"parse_tool_block: inline JSON succeeded for tool '{inline_result.get('name')}'"
+        )
+        return inline_result
+
+    # Try YAML code blocks
+    yaml_patterns = [
+        r"```yaml\s*\n(.*?)\n" + _CLOSE_FENCE,
     ]
 
     for pattern in yaml_patterns:
         match = re.search(pattern, cleaned_text, re.DOTALL | re.IGNORECASE)
         if match:
             yaml_content = match.group(1).strip()
-            logger.debug(
-                f"parse_tool_block: matched pattern, content length={len(yaml_content)}"
-            )
-            result = _parse_yaml_block(yaml_content)
-            if result:
-                logger.debug(
-                    f"parse_tool_block: successfully parsed tool '{result.get('name')}'"
-                )
-                return result
-            else:
-                logger.debug("parse_tool_block: matched pattern but parse failed")
+            # Delegate to the central YAML block parser which understands both
+            # the standard {name: .., arguments: ..} shape and the compact
+            # single-key format (tool_name: { ... }).  This consolidates logic
+            # and avoids missing compact YAML code blocks.
+            try:
+                parsed = _parse_yaml_block(yaml_content)
+                if parsed:
+                    logger.debug(
+                        f"parse_tool_block: YAML code block succeeded for tool '{parsed.get('name')}'"
+                    )
+                    return parsed
+            except Exception:
+                pass
 
-    # Try inline YAML format: name: tool_name\narguments: {...}
-    inline_result = _parse_inline_yaml(cleaned_text)
-    if inline_result:
+    # Try inline YAML
+    inline_yaml = _parse_inline_yaml(cleaned_text)
+    if inline_yaml:
         logger.debug(
-            f"parse_tool_block: inline parse succeeded for tool '{inline_result.get('name')}'"
+            f"parse_tool_block: inline YAML succeeded for tool '{inline_yaml.get('name')}'"
         )
-        return inline_result
+        return inline_yaml
 
-    # Log failure details for debugging
+    # Try compact YAML format: tool_name:\n  key: value
+    compact_yaml = _parse_yaml_block(cleaned_text)
+    if compact_yaml:
+        logger.debug(
+            f"parse_tool_block: compact YAML succeeded for tool '{compact_yaml.get('name')}'"
+        )
+        return compact_yaml
+
+    # Generic code block fallback
+    generic_pattern = r"```\s*\n(.*?)\n" + _CLOSE_FENCE
+    match = re.search(generic_pattern, cleaned_text, re.DOTALL | re.IGNORECASE)
+    if match:
+        content = match.group(1).strip()
+        try:
+            # Reuse the YAML block parser here as a best-effort attempt to
+            # interpret the generic fenced block. This lets us support YAML
+            # shaped content inside non-labeled fences as well.
+            parsed = _parse_yaml_block(content)
+            if parsed:
+                return parsed
+        except Exception:
+            pass
+
     logger.debug(
         f"parse_tool_block: all parse methods failed. "
         f"Input length={len(text)}, cleaned length={len(cleaned_text)}"
     )
-    # Log first 200 chars of cleaned text for debugging (truncate at newlines)
-    sample = cleaned_text[:200].replace("\n", "\\n")
-    logger.debug(f"parse_tool_block: cleaned sample: {sample}")
 
     return None
 

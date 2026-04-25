@@ -366,8 +366,33 @@ class PermissionPolicy:
         if path is None:
             path = get_permissions_path()
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(self.to_dict(), indent=2), encoding="utf-8")
-        logger.info("PermissionPolicy: saved %d rule(s) to %s", len(self._rules), path)
+        try:
+            from src.core.io_utils import atomic_write_json
+
+            ok = atomic_write_json(path, self.to_dict(), logger=logger)
+            if ok:
+                logger.info(
+                    "PermissionPolicy: saved %d rule(s) to %s", len(self._rules), path
+                )
+                return
+            logger.warning(
+                "PermissionPolicy: atomic_write_json returned False for %s; falling back",
+                path,
+            )
+        except Exception:
+            logger.debug(
+                "PermissionPolicy: atomic_write_json unavailable or failed for %s; falling back",
+                path,
+                exc_info=True,
+            )
+
+        try:
+            path.write_text(json.dumps(self.to_dict(), indent=2), encoding="utf-8")
+            logger.info(
+                "PermissionPolicy: saved %d rule(s) to %s", len(self._rules), path
+            )
+        except Exception:
+            logger.exception("PermissionPolicy: failed to write policy to %s", path)
 
 
 # ---------------------------------------------------------------------------

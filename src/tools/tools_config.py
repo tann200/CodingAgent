@@ -148,7 +148,7 @@ TOOL_ALIASES: Dict[str, str] = {
 # Module-level state (mutable, not user-facing)
 # -----------------------------------------------------------------------
 
-_CONTEXT_DIR: str = ".agent-context"
+_CONTEXT_DIR: str = ".localAgent"
 _DEFAULT_WORKDIR: Optional[Path] = None
 _AUTONOMOUS_MODE: bool = False  # AUTO-01: global autonomous-mode flag
 _ACTIVE_PERMISSION_MODE: Optional[PermissionLevel] = (
@@ -172,7 +172,7 @@ _config_lock: threading.Lock = threading.Lock()
 
 
 def configure(
-    context_dir: str = ".agent-context",
+    context_dir: str = ".localAgent",
     default_workdir: Optional[Path] = None,
     autonomous_mode: bool = False,
     require_preview_confirmation: bool = False,
@@ -186,7 +186,7 @@ def configure(
     context_dir:
         Name of the per-project directory used to store tool state
         (TODO.md, TASK_STATE.md, checkpoints, etc.).
-        Default: ``".agent-context"``.
+        Default: ``".localAgent"``.
     default_workdir:
         Default working directory for tool calls that do not explicitly
         pass ``workdir=``.  When *None* the default is the current working
@@ -219,9 +219,26 @@ def agent_context_path(workdir: Path) -> Path:
     """
     with _config_lock:
         ctx_dir = _CONTEXT_DIR
-    p = workdir / ctx_dir
-    p.mkdir(parents=True, exist_ok=True)
-    return p
+    # Prefer an existing configured directory, but fall back to legacy names
+    # when present so older workspaces continue to work during migration.
+    configured = workdir / ctx_dir
+    legacy_a = workdir / ".agent-context"
+    legacy_b = workdir / ".agent"
+
+    # If the configured directory already exists, use it.
+    if configured.exists():
+        return configured
+
+    # Prefer legacy .agent-context then .agent if either exists.
+    if legacy_a.exists():
+        return legacy_a
+    if legacy_b.exists():
+        return legacy_b
+
+    # Nothing exists yet — for backward compatibility with existing tests and
+    # older workspaces create the legacy ".agent-context" directory by default.
+    legacy_a.mkdir(parents=True, exist_ok=True)
+    return legacy_a
 
 
 def get_default_workdir() -> Path:
@@ -236,6 +253,27 @@ def get_context_dir_name() -> str:
     """Return the configured agent-context directory name."""
     with _config_lock:
         return _CONTEXT_DIR
+
+
+def get_audit_dir(workdir: Path) -> Path:
+    """Return the directory to use for permission audit logs.
+
+    Historical tests and behaviour expect audit logs to live under ".agent".
+    This helper centralises that decision so callers (tests, tool code) can
+    consistently rely on the same semantics: prefer existing ".agent" then
+    ".agent-context"; if neither exists create and return ".agent".
+    """
+    wd = Path(workdir) if workdir is not None else Path.cwd()
+    candidate_a = wd / ".agent"
+    candidate_b = wd / ".agent-context"
+
+    if candidate_a.exists():
+        return candidate_a
+    if candidate_b.exists():
+        return candidate_b
+    # Default to creating .agent for audit logs to match legacy tests.
+    candidate_a.mkdir(parents=True, exist_ok=True)
+    return candidate_a
 
 
 # AUTO-01: Autonomous mode helpers
@@ -273,7 +311,7 @@ def requires_preview_confirmation() -> bool:
     until the TUI user clicks Accept or Reject.  When *False* (default), writes
     proceed immediately and the diff is displayed as informational output only.
 
-    Controlled by the ``preview_confirmation`` key in ``.agent/config.json``.
+    Controlled by the ``preview_confirmation`` key in ``.localAgent/config.json``.
     Can also be toggled at runtime via ``set_require_preview_confirmation()``.
     """
     with _config_lock:
@@ -308,3 +346,23 @@ def set_active_permission_mode(mode: PermissionLevel) -> None:
     global _ACTIVE_PERMISSION_MODE
     with _config_lock:
         _ACTIVE_PERMISSION_MODE = mode
+
+
+def reset_to_defaults() -> None:
+    """Reset module-level configuration to the documented defaults.
+
+    This is primarily intended for test code to restore deterministic
+    module state between tests and avoid order-dependent failures.
+    """
+    global \
+        _CONTEXT_DIR, \
+        _DEFAULT_WORKDIR, \
+        _AUTONOMOUS_MODE, \
+        _ACTIVE_PERMISSION_MODE, \
+        _REQUIRE_PREVIEW_CONFIRMATION
+    with _config_lock:
+        _CONTEXT_DIR = ".localAgent"
+        _DEFAULT_WORKDIR = None
+        _AUTONOMOUS_MODE = False
+        _ACTIVE_PERMISSION_MODE = None
+        _REQUIRE_PREVIEW_CONFIRMATION = False

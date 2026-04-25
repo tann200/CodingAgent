@@ -51,7 +51,7 @@ def _parse_args(argv: list) -> argparse.Namespace:
     # TASK-10: `init` subcommand — scaffold .agent/ workspace
     init_parser = subparsers.add_parser(
         "init",
-        help="Scaffold a .agent/ workspace directory with config, hooks, and AGENT.md.",
+        help="Scaffold a .localAgent/ workspace directory with config, hooks, and AGENT.md.",
     )
     init_parser.add_argument(
         "--dir",
@@ -190,11 +190,11 @@ def _parse_args(argv: list) -> argparse.Namespace:
 
 
 def _run_init(target_dir: Optional[str], force: bool) -> int:
-    """TASK-10: Scaffold a .agent/ workspace directory.
+    """TASK-10: Scaffold a .localAgent/ workspace directory.
 
     Creates the following layout inside *target_dir* (defaults to cwd):
 
-        .agent/
+        .localAgent/
             AGENT.md            — blank project-level instructions file
             config.json         — default agent configuration
             hooks/
@@ -211,7 +211,16 @@ def _run_init(target_dir: Optional[str], force: bool) -> int:
     from pathlib import Path as _Path
 
     root = _Path(target_dir).resolve() if target_dir else _Path.cwd()
-    agent_dir = root / ".agent"
+    try:
+        from src.tools.tools_config import get_context_dir_name
+
+        ctx_name = get_context_dir_name()
+    except Exception:
+        import os
+
+        ctx_name = os.getenv("CODINGAGENT_CONTEXT_DIR") or ".localAgent"
+
+    agent_dir = root / ctx_name
 
     _dbg(f"[src.main] init: scaffolding {agent_dir}")
 
@@ -285,7 +294,7 @@ __pycache__/
                 fpath.chmod(current | _stat.S_IXUSR | _stat.S_IXGRP | _stat.S_IXOTH)
             created.append(str(fpath.relative_to(root)))
 
-        print(f"Initialised .agent/ workspace at {root}")
+        print(f"Initialised .localAgent/ workspace at {root}")
         if created:
             print("Created:")
             for f in created:
@@ -301,7 +310,7 @@ __pycache__/
 
 
 def _run_validate_config(workdir: Optional[str]) -> int:
-    """UX-2: Validate .agent/settings.json for the working directory.
+    """UX-2: Validate .localAgent/settings.json for the working directory.
 
     Loads and parses both settings files, reports recognised keys and their
     resolved values, flags unknown keys, and exits 0 on success or 1 if the
@@ -311,10 +320,24 @@ def _run_validate_config(workdir: Optional[str]) -> int:
     from pathlib import Path as _Path
 
     base = _Path(workdir).resolve() if workdir else _Path.cwd()
-    settings_files = [
-        base / ".agent" / "settings.json",
-        base / ".agent" / "settings.local.json",
-    ]
+    try:
+        from src.tools.tools_config import get_context_dir_name
+
+        ctx_name = get_context_dir_name()
+    except Exception:
+        import os
+
+        ctx_name = os.getenv("CODINGAGENT_CONTEXT_DIR") or ".localAgent"
+
+    # Build a list of candidate context directories to search. Prefer the
+    # configured directory, but allow legacy names so this command works in
+    # older workspaces created before the canonical name change.
+    candidates = [base / ctx_name, base / ".agent-context", base / ".agent"]
+
+    settings_files = []
+    for cand in candidates:
+        settings_files.append(cand / "settings.json")
+        settings_files.append(cand / "settings.local.json")
 
     any_found = False
     any_error = False
@@ -362,7 +385,7 @@ def _run_validate_config(workdir: Optional[str]) -> int:
             print(f"  {k}: {_json.dumps(v)}{tag}")
 
     if not any_found:
-        print(f"No settings files found under {base / '.agent'}")
+        print(f"No settings files found under {base / ctx_name}")
         print("Run 'codingagent init' to create a workspace.")
         return 0
 

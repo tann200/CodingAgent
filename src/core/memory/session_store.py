@@ -25,6 +25,7 @@ import json
 import tempfile
 import shutil
 from pathlib import Path
+import logging
 from typing import Any, Optional
 
 try:
@@ -36,6 +37,8 @@ try:
     from src.core.memory.sqlite_session_store import SqliteSessionStore
 except Exception:
     SqliteSessionStore = None  # type: ignore
+
+logger = logging.getLogger(__name__)
 
 
 def _resolve_backend(explicit: Optional[str] = None) -> str:
@@ -178,7 +181,20 @@ class SessionStore:
         # Per-thread connection storage for fallback sqlite DB
         self._local = threading.local()
         # Path for a potential sqlite DB used by tests that access sqlite internals
-        self._db_path = self._workdir / ".agent-context" / "session.db"
+        # Resolve agent-context directory via central helper when available.
+        # Fall back to the legacy ".agent-context" name when the tools
+        # configuration module cannot be imported (keeps tests and older
+        # workspaces functioning during the migration).
+        try:
+            from src.tools.tools_config import agent_context_path
+
+            _agent_ctx = agent_context_path(self._workdir)
+        except Exception:
+            _agent_ctx = self._workdir / ".agent-context"
+
+        # Store the resolved directory for reuse throughout the instance.
+        self._agent_context_dir = _agent_ctx
+        self._db_path = self._agent_context_dir / "session.db"
         # Expose schema version constant for backward compatibility tests.
         try:
             # Also set an instance attribute (keeps prior behaviour for callers
@@ -340,10 +356,31 @@ class SessionStore:
                             "ts": r["created_at"],
                         }
                     )
-                # Atomic write to decisions.json
-                out_dir = self._workdir / ".agent-context"
+                # Atomic write to decisions.json under the resolved agent
+                # context directory.
+                out_dir = self._agent_context_dir
                 out_dir.mkdir(parents=True, exist_ok=True)
                 dest = out_dir / "decisions.json"
+                try:
+                    from src.core.io_utils import atomic_write_json
+
+                    ok = atomic_write_json(dest, decisions, logger=logger)
+                    if ok:
+                        logger.debug(
+                            "SessionStore.write_decisions_json: atomic write succeeded: %s",
+                            dest,
+                        )
+                        return
+                    else:
+                        logger.warning(
+                            "SessionStore.write_decisions_json: atomic_write_json returned False, falling back"
+                        )
+                except Exception:
+                    logger.debug(
+                        "SessionStore.write_decisions_json: atomic_write_json unavailable, using fallback",
+                        exc_info=True,
+                    )
+
                 fd = None
                 tmp = None
                 try:
@@ -432,9 +469,10 @@ class SessionStore:
                 else:
                     break
 
-        # Exhausted or unrecoverable — write diagnostic file
+        # Exhausted or unrecoverable — write diagnostic file under the
+        # resolved agent-context directory.
         try:
-            out_dir = self._workdir / ".agent-context"
+            out_dir = self._agent_context_dir
             out_dir.mkdir(parents=True, exist_ok=True)
             import time
 
@@ -457,6 +495,27 @@ class SessionStore:
             fd = None
             tmp = None
             try:
+                # Try using the shared atomic writer when available
+                try:
+                    from src.core.io_utils import atomic_write_json
+
+                    ok = atomic_write_json(diag_path, payload, logger=logger)
+                    if ok:
+                        logger.debug(
+                            "SessionStore._write_with_retry: diagnostic atomic write succeeded: %s",
+                            diag_path,
+                        )
+                        return False
+                    else:
+                        logger.warning(
+                            "SessionStore._write_with_retry: atomic_write_json returned False, falling back"
+                        )
+                except Exception:
+                    logger.debug(
+                        "SessionStore._write_with_retry: atomic_write_json unavailable for diagnostic, using fallback",
+                        exc_info=True,
+                    )
+
                 fd, tmp = tempfile.mkstemp(dir=str(out_dir), suffix=".tmp")
                 with os.fdopen(fd, "w", encoding="utf-8") as f:
                     fd = None
@@ -491,9 +550,16 @@ class SessionStore:
         Returns an empty list when no decisions are available or the file is
         malformed.
         """
-        # Prefer the sidecar file when present
+        # Prefer the sidecar file when present. Use the resolved agent-context
+        # directory when available (self._agent_context_dir) to honour the
+        # configured or discovered context directory; fall back to the legacy
+        # workdir/.agent-context semantics (keeps older tests/sites working).
         try:
-            out = self._workdir / ".agent-context" / "decisions.json"
+            out = (
+                getattr(self, "_agent_context_dir", None)
+                or self._workdir / ".agent-context"
+            )
+            out = Path(out) / "decisions.json"
             if out.exists():
                 data = json.loads(out.read_text(encoding="utf-8"))
                 if isinstance(data, list):

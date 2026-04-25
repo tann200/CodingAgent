@@ -50,6 +50,7 @@ from src.core.orchestration.graph.nodes.node_utils import (
     _resolve_orchestrator,
     _notify_provider_limit,
 )
+from src.core.orchestration.tool_parser import parse_tool_block
 
 logger = logging.getLogger(__name__)
 
@@ -495,22 +496,53 @@ async def frontier_loop_node(
             break
 
         # ---- Parse tool calls --------------------------------------------
-        try:
-            from src.core.orchestration.tool_parser import parse_tool_block
-
+        tool_calls = []
+        # Extract tool_calls from response - handle both dict and object formats
+        if isinstance(response, dict):
+            # Check nested: response["choices"][0]["message"]["tool_calls"]
+            choices = response.get("choices", [])
+            if choices and len(choices) > 0:
+                msg = choices[0].get("message", {})
+                tool_calls = msg.get("tool_calls") or []
+        else:
+            # Object format (e.g., from some providers)
             tool_calls = getattr(response, "tool_calls", None) or []
-            if not tool_calls and content_text:
-                # Fallback: try parsing JSON/YAML tool blocks from text
-                parsed = parse_tool_block(content_text)
-                if (
-                    parsed
-                    and isinstance(parsed, dict)
-                    and (parsed.get("name") or parsed.get("tool"))
-                ):
-                    tool_calls = [parsed]
-        except Exception as exc:
-            logger.debug("frontier_loop_node: tool parse error: %s", exc)
-            tool_calls = []
+
+        # Try YAML fallback if no native tool calls
+        if not tool_calls and content_text:
+            # Fallback: try parsing JSON/YAML tool blocks from text. Wrap the
+            # whole parse sequence in a try/except so any parsing error is
+            # contained and does not abort the node.
+            try:
+                # First strip thinking blocks (LM Studio style: <think>...</think>)
+                content_for_parse = content_text
+                import re
+
+                content_for_parse = re.sub(
+                    r"<think>.*?</think>", "", content_text, flags=re.DOTALL
+                ).strip()
+                content_for_parse = re.sub(
+                    r"<\|channel\|>thought.*?<\|/channel\|>",
+                    "",
+                    content_for_parse,
+                    flags=re.DOTALL,
+                ).strip()
+
+                if content_for_parse:
+                    parsed = parse_tool_block(content_for_parse)
+                    if (
+                        parsed
+                        and isinstance(parsed, dict)
+                        and (parsed.get("name") or parsed.get("tool"))
+                    ):
+                        tool_calls = [parsed]
+                        logger.info(
+                            "frontier_loop_node: parsed YAML tool call: %r",
+                            parsed.get("name"),
+                        )
+            except Exception as exc:
+                logger.debug("frontier_loop_node: tool parse error: %s", exc)
+                tool_calls = []
 
         # ---- Append assistant message to history -------------------------
         history = list(history)
@@ -518,9 +550,13 @@ async def frontier_loop_node(
 
         # ---- No tool calls → task done (natural language reply) ----------
         if not tool_calls:
+            # Debug: log content preview to help diagnose why YAML wasn't parsed
+            content_preview = (content_text or "")[:200]
             logger.info(
-                "frontier_loop_node: no tool calls in turn %d — task complete",
+                "frontier_loop_node: no tool calls in turn %d — task complete. "
+                "Content preview: %r",
                 turns_taken,
+                content_preview,
             )
             break
 

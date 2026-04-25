@@ -748,8 +748,11 @@ def run_agent_once_impl(
 
                 # If there's no unhandled tool block, we're done
                 if not has_tool_block or handled:
+                    content_preview = (last_assistant or "")[:200]
                     guilogger.debug(
-                        "inference_loop: no unhandled tool block, exiting loop"
+                        "inference_loop: no unhandled tool block, exiting loop. "
+                        "Content preview: %r",
+                        content_preview,
                     )
                     break
 

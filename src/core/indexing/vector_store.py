@@ -78,7 +78,47 @@ class VectorStore:
 
         symbols = repo_index.get("symbols", []) if isinstance(repo_index, dict) else []
         try:
-            (base / "symbols.json").write_text(json.dumps(symbols, indent=2))
+            symbols_path = base / "symbols.json"
+            symbols_path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                from src.core.io_utils import atomic_write_json
+
+                logger.debug(
+                    "VectorStore: attempting atomic_write_json for %s", symbols_path
+                )
+                ok = atomic_write_json(symbols_path, symbols, logger=logger)
+                if ok:
+                    logger.debug(
+                        "VectorStore: atomic_write_json succeeded for %s", symbols_path
+                    )
+                else:
+                    logger.warning(
+                        "VectorStore: atomic_write_json returned False for %s; falling back to write_text",
+                        symbols_path,
+                    )
+                    try:
+                        symbols_path.write_text(
+                            json.dumps(symbols, indent=2), encoding="utf-8"
+                        )
+                    except Exception:
+                        logger.exception(
+                            "VectorStore: failed to write symbols.json fallback to %s",
+                            symbols_path,
+                        )
+            except Exception:
+                logger.debug(
+                    "VectorStore: atomic_write_json unavailable or failed for %s; falling back",
+                    symbols_path,
+                    exc_info=True,
+                )
+                try:
+                    symbols_path.write_text(
+                        json.dumps(symbols, indent=2), encoding="utf-8"
+                    )
+                except Exception:
+                    logger.exception(
+                        "VectorStore: failed to write symbols.json to %s", symbols_path
+                    )
         except Exception:
             logger.exception("Failed to write vectorstore symbols.json")
 

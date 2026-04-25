@@ -10,9 +10,15 @@ def memory_search(query: str, workdir: str) -> Dict[str, Any]:
     Returns simple ranked results: exact match lines from TASK_STATE.md first, then trace entries sorted by recency.
     """
     wd = Path(workdir)
+    try:
+        from src.tools.tools_config import agent_context_path
+
+        agent_ctx = agent_context_path(wd)
+    except Exception:
+        agent_ctx = wd / ".agent-context"
     out: Dict[str, Any] = {"query": query, "results": []}
     try:
-        task_state = wd / ".agent-context" / "TASK_STATE.md"
+        task_state = agent_ctx / "TASK_STATE.md"
         if task_state.exists():
             text = task_state.read_text(encoding="utf-8")
             lines = [line.strip() for line in text.splitlines() if line.strip()]
@@ -24,7 +30,7 @@ def memory_search(query: str, workdir: str) -> Dict[str, Any]:
                     )
             if matches:
                 out["results"].extend(matches)
-        trace_path = wd / ".agent-context" / "execution_trace.json"
+        trace_path = agent_ctx / "execution_trace.json"
         if trace_path.exists():
             trace = json.loads(trace_path.read_text(encoding="utf-8"))
             rev = list(reversed(trace))

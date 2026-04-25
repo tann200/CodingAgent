@@ -694,22 +694,56 @@ class OpenAICompatibleAdapter(LLMClient):
     def extract_tool_calls(self, chat_response: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Extract ``[{"name": ..., "args": ...}]`` from an OpenAI chat response."""
         if isinstance(chat_response, dict):
+            # Check top-level tool_calls first
             if "tool_calls" in chat_response:
                 calls = chat_response["tool_calls"]
                 if isinstance(calls, list):
-                    out = []
-                    for c in calls:
-                        if isinstance(c, dict):
-                            name = c.get("name")
-                            args = c.get("arguments") or c.get("args")
-                            if name and isinstance(args, dict):
-                                out.append({"name": name, "args": args})
-                    return out
+                    return self._parse_tool_calls_list(calls)
+                return []
+
+            # Check nested: response["choices"][0]["message"]["tool_calls"]
+            choices = chat_response.get("choices", [])
+            if choices and len(choices) > 0:
+                msg = choices[0].get("message") or {}
+                calls = msg.get("tool_calls") or []
+                if isinstance(calls, list):
+                    return self._parse_tool_calls_list(calls)
+
             if "function_call" in chat_response:
                 call = chat_response["function_call"]
                 if isinstance(call, dict):
                     name = call.get("name")
-                    args = call.get("arguments") or call.get("args")
-                    if name and isinstance(args, dict):
+                    raw_args = call.get("arguments") or call.get("args")
+                    args = raw_args
+                    if isinstance(raw_args, str):
+                        try:
+                            import json
+
+                            args = json.loads(raw_args)
+                        except Exception:
+                            args = {}
+                    if name and isinstance(args, (dict, str)):
                         return [{"name": name, "args": args}]
         return []
+
+    def _parse_tool_calls_list(self, calls: List[Any]) -> List[Dict[str, Any]]:
+        """Parse a list of tool calls, handling both OpenAI and direct formats."""
+        import json
+
+        out = []
+        for c in calls:
+            if isinstance(c, dict):
+                # Handle both OpenAI format: {"function": {"name": ..., "arguments": ...}}
+                # and direct format: {"name": ..., "arguments": ...}}
+                func = c.get("function") or c
+                name = func.get("name") if isinstance(func, dict) else None
+                raw_args = func.get("arguments") or func.get("args")
+                args = raw_args
+                if isinstance(raw_args, str):
+                    try:
+                        args = json.loads(raw_args)
+                    except Exception:
+                        args = {}
+                if name and isinstance(args, (dict, str)):
+                    out.append({"name": name, "args": args})
+        return out

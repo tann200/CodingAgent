@@ -92,7 +92,12 @@ class SessionLifecycleManager:
 
     def __init__(self, workdir: str):
         self.workdir = Path(workdir)
-        self.snapshot_dir = self.workdir / ".agent-context" / "snapshots"
+        try:
+            from src.tools.tools_config import agent_context_path
+
+            self.snapshot_dir = agent_context_path(self.workdir) / "snapshots"
+        except Exception:
+            self.snapshot_dir = self.workdir / ".agent-context" / "snapshots"
         self.snapshot_dir.mkdir(parents=True, exist_ok=True)
 
         self._shutdown_hooks: Dict[str, Callable[[str], None]] = {}
@@ -311,7 +316,33 @@ class SessionLifecycleManager:
             "metadata": snapshot.metadata,
         }
 
-        snapshot_file.write_text(json.dumps(snapshot_data, indent=2))
+        try:
+            snapshot_file.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                from src.core.io_utils import atomic_write_json
+
+                ok = atomic_write_json(snapshot_file, snapshot_data, logger=logger)
+                if ok:
+                    logger.info(
+                        "Saved snapshot for session %s: %s",
+                        snapshot.session_id,
+                        snapshot_file,
+                    )
+                    return snapshot_file
+                logger.warning(
+                    "session_lifecycle: atomic_write_json returned False for %s; falling back",
+                    snapshot_file,
+                )
+            except Exception:
+                logger.debug(
+                    "session_lifecycle: atomic_write_json unavailable or failed for %s; falling back",
+                    snapshot_file,
+                    exc_info=True,
+                )
+        except Exception:
+            pass
+
+        snapshot_file.write_text(json.dumps(snapshot_data, indent=2), encoding="utf-8")
         logger.info(
             f"Saved snapshot for session {snapshot.session_id}: {snapshot_file}"
         )

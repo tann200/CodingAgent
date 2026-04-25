@@ -517,7 +517,29 @@ class CrossSessionBus:
                 "ttl": message.ttl,
                 "metadata": message.metadata,
             }
-            msg_file.write_text(json.dumps(msg_data))
+            # Prefer centralized atomic writer; fall back to write_text
+            try:
+                msg_file.parent.mkdir(parents=True, exist_ok=True)
+                from src.core.io_utils import atomic_write_json
+
+                logger.debug(
+                    "cross_session_bus: attempting atomic_write_json for %s", msg_file
+                )
+                ok = atomic_write_json(msg_file, msg_data, logger=logger)
+                if ok:
+                    return
+                logger.warning(
+                    "cross_session_bus: atomic_write_json returned False for %s; falling back",
+                    msg_file,
+                )
+            except Exception:
+                logger.debug(
+                    "cross_session_bus: atomic_write_json unavailable or failed for %s; falling back",
+                    msg_file,
+                    exc_info=True,
+                )
+
+            msg_file.write_text(json.dumps(msg_data), encoding="utf-8")
         except Exception as e:
             logger.error(f"Failed to persist message: {e}")
 

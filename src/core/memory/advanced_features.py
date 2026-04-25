@@ -15,13 +15,29 @@ logger = logging.getLogger(__name__)
 # Lock protecting concurrent trajectory file writes (NEW-21)
 _trajectory_lock = threading.Lock()
 
+# Prefer canonical agent-context helpers when available; fall back to legacy
+# ".agent-context" semantics for older workspaces. Keep this module resilient
+# when src.tools.tools_config isn't importable (tests or lightweight runs).
+try:
+    from src.tools.tools_config import agent_context_path  # type: ignore
+except Exception:
+    agent_context_path = None  # type: ignore
+
 
 class TrajectoryLogger:
     """Stores agent runs for training data generation."""
 
     def __init__(self, workdir: Optional[str] = None):
         self.workdir = Path(workdir) if workdir else Path.cwd()
-        self.trajectory_dir = self.workdir / ".agent-context" / "trajectories"
+        # Resolve the canonical agent-context directory when possible; fall
+        # back to the legacy ".agent-context" in the workspace root.
+        ctx = (
+            agent_context_path(self.workdir)
+            if agent_context_path is not None
+            else self.workdir / ".agent-context"
+        )
+        self.context_dir = Path(ctx)
+        self.trajectory_dir = self.context_dir / "trajectories"
         self.trajectory_dir.mkdir(parents=True, exist_ok=True)
 
     def log_run(
@@ -52,6 +68,31 @@ class TrajectoryLogger:
         filepath = self.trajectory_dir / filename
 
         with _trajectory_lock:
+            # Ensure parent directory exists immediately before writing
+            filepath.parent.mkdir(parents=True, exist_ok=True)
+
+            # Prefer central atomic writer; fall back to simple write
+            try:
+                from src.core.io_utils import atomic_write_json
+
+                logger.debug(
+                    "TrajectoryLogger: attempting atomic_write_json for %s", filepath
+                )
+                ok = atomic_write_json(filepath, trajectory, logger=logger)
+                if ok:
+                    logger.info("Trajectory logged atomically: %s", filename)
+                    return str(filepath)
+                logger.warning(
+                    "TrajectoryLogger: atomic_write_json returned False for %s; falling back",
+                    filepath,
+                )
+            except Exception:
+                logger.debug(
+                    "TrajectoryLogger: atomic_write_json unavailable or failed for %s; falling back",
+                    filepath,
+                    exc_info=True,
+                )
+
             with open(filepath, "w", encoding="utf-8") as f:
                 json.dump(trajectory, f, indent=2)
 
@@ -96,6 +137,30 @@ class TrajectoryLogger:
             Path(output_path) if output_path else self.workdir / "training_data.json"
         )
 
+        # Ensure parent dir exists immediately before writing
+        output.parent.mkdir(parents=True, exist_ok=True)
+
+        try:
+            from src.core.io_utils import atomic_write_json
+
+            logger.debug(
+                "TrajectoryLogger: attempting atomic_write_json for %s", output
+            )
+            ok = atomic_write_json(output, trajectories, logger=logger)
+            if ok:
+                logger.info("Training data exported atomically: %s", output)
+                return str(output)
+            logger.warning(
+                "TrajectoryLogger: atomic_write_json returned False for %s; falling back",
+                output,
+            )
+        except Exception:
+            logger.debug(
+                "TrajectoryLogger: atomic_write_json unavailable or failed for %s; falling back",
+                output,
+                exc_info=True,
+            )
+
         with open(output, "w", encoding="utf-8") as f:
             json.dump(trajectories, f, indent=2)
 
@@ -107,7 +172,13 @@ class DreamConsolidator:
 
     def __init__(self, workdir: Optional[str] = None):
         self.workdir = Path(workdir) if workdir else Path.cwd()
-        self.memory_dir = self.workdir / ".agent-context" / "consolidated"
+        ctx = (
+            agent_context_path(self.workdir)
+            if agent_context_path is not None
+            else self.workdir / ".agent-context"
+        )
+        self.context_dir = Path(ctx)
+        self.memory_dir = self.context_dir / "consolidated"
         self.memory_dir.mkdir(parents=True, exist_ok=True)
 
     def consolidate_memories(
@@ -120,7 +191,7 @@ class DreamConsolidator:
             "patterns": [],
         }
 
-        task_state = self.workdir / ".agent-context" / "TASK_STATE.md"
+        task_state = self.context_dir / "TASK_STATE.md"
         if task_state.exists():
             content = task_state.read_text(encoding="utf-8")
 
@@ -146,8 +217,28 @@ class DreamConsolidator:
         summary_file = (
             self.memory_dir / f"consolidated_{datetime.now().strftime('%Y%m%d')}.json"
         )
-        with open(summary_file, "w", encoding="utf-8") as f:
-            json.dump(consolidated, f, indent=2)
+        # Ensure parent exists and prefer atomic write
+        summary_file.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            from src.core.io_utils import atomic_write_json
+
+            logger.debug(
+                "DreamConsolidator: attempting atomic_write_json for %s", summary_file
+            )
+            ok = atomic_write_json(summary_file, consolidated, logger=logger)
+            if not ok:
+                # Fallback
+                with open(summary_file, "w", encoding="utf-8") as f:
+                    json.dump(consolidated, f, indent=2)
+        except Exception:
+            try:
+                with open(summary_file, "w", encoding="utf-8") as f:
+                    json.dump(consolidated, f, indent=2)
+            except Exception:
+                logger.exception(
+                    "DreamConsolidator: failed to write consolidated memory to %s",
+                    summary_file,
+                )
 
         return consolidated
 
@@ -241,7 +332,14 @@ class RefactoringAgent:
         if not smells:
             return None
 
-        smells_path = self.workdir / ".agent-context" / "code_smells.json"
+        # Resolve location in the canonical agent-context directory when
+        # available; otherwise fall back to legacy path.
+        ctx = (
+            agent_context_path(self.workdir)
+            if agent_context_path is not None
+            else self.workdir / ".agent-context"
+        )
+        smells_path = Path(ctx) / "code_smells.json"
         smells_path.parent.mkdir(parents=True, exist_ok=True)
 
         existing_smells = {}
@@ -257,6 +355,27 @@ class RefactoringAgent:
                 if file_path not in existing_smells:
                     existing_smells[file_path] = []
                 existing_smells[file_path].append(smell)
+
+        # Prefer atomic write
+        try:
+            from src.core.io_utils import atomic_write_json
+
+            logger.debug(
+                "RefactoringAgent: attempting atomic_write_json for %s", smells_path
+            )
+            ok = atomic_write_json(smells_path, existing_smells, logger=logger)
+            if ok:
+                return smells_path
+            logger.warning(
+                "RefactoringAgent: atomic_write_json returned False for %s; falling back",
+                smells_path,
+            )
+        except Exception:
+            logger.debug(
+                "RefactoringAgent: atomic_write_json unavailable for %s; falling back",
+                smells_path,
+                exc_info=True,
+            )
 
         smells_path.write_text(json.dumps(existing_smells, indent=2))
         return smells_path
@@ -331,8 +450,33 @@ class ReviewAgent:
 
     def save_review(self, review: Dict[str, Any], append: bool = False) -> Path:
         """Save review to .agent-context/last_review.json."""
-        review_path = self.workdir / ".agent-context" / "last_review.json"
+        ctx = (
+            agent_context_path(self.workdir)
+            if agent_context_path is not None
+            else self.workdir / ".agent-context"
+        )
+        review_path = Path(ctx) / "last_review.json"
         review_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            from src.core.io_utils import atomic_write_json
+
+            logger.debug(
+                "ReviewAgent: attempting atomic_write_json for %s", review_path
+            )
+            ok = atomic_write_json(review_path, review, logger=logger)
+            if ok:
+                return review_path
+            logger.warning(
+                "ReviewAgent: atomic_write_json returned False for %s; falling back",
+                review_path,
+            )
+        except Exception:
+            logger.debug(
+                "ReviewAgent: atomic_write_json unavailable for %s; falling back",
+                review_path,
+                exc_info=True,
+            )
+
         review_path.write_text(json.dumps(review, indent=2))
         return review_path
 

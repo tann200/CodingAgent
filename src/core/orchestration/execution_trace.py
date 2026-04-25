@@ -17,13 +17,29 @@ from src.core.logger import logger as guilogger
 logger = logging.getLogger(__name__)
 
 
+def _resolve_agent_context_dir(orch: Any) -> Path:
+    """Resolve the per-workspace agent context directory for the orchestrator.
+
+    Prefer src.tools.tools_config.agent_context_path when available; fall back
+    to the legacy ".agent-context" directory next to orch.working_dir.
+    """
+    # Guard: orch.working_dir may be a string or Path; callers should ensure it's set
+    wd = Path(orch.working_dir)
+    try:
+        from src.tools.tools_config import agent_context_path
+
+        return agent_context_path(wd)
+    except Exception:
+        return wd / ".agent-context"
+
+
 def _read_execution_trace_impl(orch: Any) -> list:
     """Read execution trace from disk."""
     # BUG-FIX: guard against None working_dir
     if not orch.working_dir:
         return []
     try:
-        trace_path = orch.working_dir / ".agent-context" / "execution_trace.json"
+        trace_path = _resolve_agent_context_dir(orch) / "execution_trace.json"
         if trace_path.exists():
             return json.loads(trace_path.read_text())
     except Exception:
@@ -98,14 +114,42 @@ def flush_execution_trace_impl(orch: Any) -> None:
         _TRACE_MAX = 2000
         if len(trace) > _TRACE_MAX:
             trace = trace[-_TRACE_MAX:]
-        trace_path = orch.working_dir / ".agent-context" / "execution_trace.json"
+        trace_path = _resolve_agent_context_dir(orch) / "execution_trace.json"
 
         def serializer(obj: Any) -> str:
             if isinstance(obj, Path):
                 return str(obj)
             return str(obj)
 
-        trace_path.write_text(json.dumps(trace, indent=2, default=serializer))
+        # Ensure parent directory exists immediately before writing
+        trace_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Prefer central atomic writer; fall back to write_text
+        try:
+            from src.core.io_utils import atomic_write_json
+
+            guilogger.debug(
+                "execution_trace: attempting atomic_write_json for %s", trace_path
+            )
+            ok = atomic_write_json(trace_path, trace, logger=guilogger)
+            if ok:
+                guilogger.info("Execution trace written atomically: %s", trace_path)
+                return
+            guilogger.warning(
+                "execution_trace: atomic_write_json returned False for %s; falling back",
+                trace_path,
+            )
+        except Exception:
+            guilogger.debug(
+                "execution_trace: atomic_write_json unavailable or failed for %s; falling back",
+                trace_path,
+                exc_info=True,
+            )
+
+        try:
+            trace_path.write_text(json.dumps(trace, indent=2, default=serializer))
+        except Exception as e:
+            guilogger.error(f"Orchestrator: failed to flush execution trace: {e}")
     except Exception as e:
         guilogger.error(f"Orchestrator: failed to flush execution trace: {e}")
 
@@ -116,8 +160,30 @@ def _clear_execution_trace_impl(orch: Any) -> None:
     if hasattr(orch, "_execution_trace_buffer"):
         orch._execution_trace_buffer = []
     try:
-        trace_path = orch.working_dir / ".agent-context" / "execution_trace.json"
-        trace_path.write_text(json.dumps([], indent=2))
+        trace_path = _resolve_agent_context_dir(orch) / "execution_trace.json"
+        trace_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            from src.core.io_utils import atomic_write_json
+
+            guilogger.debug(
+                "execution_trace: attempting atomic_write_json to clear %s", trace_path
+            )
+            ok = atomic_write_json(trace_path, [], logger=guilogger)
+            if ok:
+                guilogger.info("Execution trace cleared atomically: %s", trace_path)
+            else:
+                guilogger.warning(
+                    "execution_trace: atomic_write_json returned False while clearing %s; falling back",
+                    trace_path,
+                )
+                trace_path.write_text(json.dumps([], indent=2))
+        except Exception:
+            guilogger.debug(
+                "execution_trace: atomic_write_json unavailable or failed while clearing %s; falling back",
+                trace_path,
+                exc_info=True,
+            )
+            trace_path.write_text(json.dumps([], indent=2))
     except Exception as e:
         guilogger.error(f"Orchestrator: failed to clear execution trace: {e}")
 

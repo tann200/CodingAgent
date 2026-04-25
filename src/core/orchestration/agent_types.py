@@ -526,8 +526,33 @@ class AgentRegistry:
         builtin_ids = {a.id for a in self._BUILTIN_AGENTS}
         custom = [a.to_dict() for a in self._agents.values() if a.id not in builtin_ids]
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(custom, indent=2), encoding="utf-8")
-        logger.info("AgentRegistry: saved %d custom agent(s) to %s", len(custom), path)
+        try:
+            from src.core.io_utils import atomic_write_json
+
+            ok = atomic_write_json(path, custom, logger=logger)
+            if ok:
+                logger.info(
+                    "AgentRegistry: saved %d custom agent(s) to %s", len(custom), path
+                )
+                return
+            logger.warning(
+                "AgentRegistry: atomic_write_json returned False for %s; falling back",
+                path,
+            )
+        except Exception:
+            logger.debug(
+                "AgentRegistry: atomic_write_json unavailable or failed for %s; falling back",
+                path,
+                exc_info=True,
+            )
+
+        try:
+            path.write_text(json.dumps(custom, indent=2), encoding="utf-8")
+            logger.info(
+                "AgentRegistry: saved %d custom agent(s) to %s", len(custom), path
+            )
+        except Exception:
+            logger.exception("AgentRegistry: failed to write custom agents to %s", path)
 
 
 # ---------------------------------------------------------------------------

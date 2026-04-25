@@ -1,10 +1,13 @@
 import json
+import logging
 from pathlib import Path
 from typing import Any, Dict, Optional
 import os
 from src.core.paths import get_prefs_path
 
 DEFAULT_FILENAME = os.getenv("CODINGAGENT_PREFS") or str(get_prefs_path())
+
+logger = logging.getLogger(__name__)
 
 
 class UserPrefs:
@@ -38,9 +41,41 @@ class UserPrefs:
     def save(self) -> None:
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                from src.core.io_utils import atomic_write_json
+
+                logger.debug(
+                    "user_prefs: attempting atomic_write_json for %s", self.path
+                )
+                ok = atomic_write_json(self.path, self.data, logger=logger)
+                if ok:
+                    try:
+                        os.chmod(self.path, 0o600)
+                    except Exception:
+                        # Best-effort: do not fail the save if chmod fails.
+                        pass
+                    logger.debug(
+                        "user_prefs: atomic_write_json succeeded for %s", self.path
+                    )
+                    return
+            except Exception:
+                # Fall back to original write_text behaviour
+                logger.debug(
+                    "user_prefs: atomic_write_json unavailable or error for %s; falling back",
+                    self.path,
+                    exc_info=True,
+                )
+                pass
             self.path.write_text(json.dumps(self.data, indent=2), encoding="utf-8")
+            try:
+                os.chmod(self.path, 0o600)
+            except Exception:
+                # Best-effort
+                pass
         except Exception:
-            pass
+            logger.debug(
+                "user_prefs: failed to save prefs to %s", self.path, exc_info=True
+            )
 
     def get_provider_setting(self, provider_name: str, key: str) -> Optional[Any]:
         providers = self.data.get("providers", {})

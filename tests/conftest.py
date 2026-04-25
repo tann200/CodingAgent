@@ -173,3 +173,63 @@ def _apply_sync_threads_marker(request, monkeypatch):
     monkeypatch.setattr(_threading, "Thread", _SyncThread)
     monkeypatch.setattr(_futures, "ThreadPoolExecutor", _SyncThreadPoolExecutor)
     yield
+
+
+@pytest.fixture(autouse=True)
+def _reset_tools_config():
+    """Autouse fixture to reset src.tools.tools_config module-level state.
+
+    This prevents tests from leaking mutated module-level configuration
+    (context dir name, autonomous mode, etc.) between test cases which
+    causes order-dependent failures. If the tools_config module is not
+    importable in the current test environment we silently skip.
+    """
+    try:
+        # Import lazily so tests that don't include src.tools still run.
+        from src.tools import tools_config
+    except Exception:
+        # Nothing to do if the module isn't available
+        yield
+        return
+
+    # Reset before the test and again after to be defensive.
+    tools_config.reset_to_defaults()
+    try:
+        yield
+    finally:
+        try:
+            tools_config.reset_to_defaults()
+        except Exception:
+            # Best-effort; don't fail tests if reset cannot run during teardown
+            pass
+
+
+@pytest.fixture
+def configure_tools_config():
+    """Fixture to configure src.tools.tools_config during a test.
+
+    Yields a callable that accepts keyword args passed to tools_config.configure.
+    Resets tools_config to defaults on teardown. If the module is not importable
+    a no-op callable is yielded instead.
+    """
+    try:
+        from src.tools import tools_config
+    except Exception:
+        # If the module isn't available, yield a no-op configurator
+        yield lambda **kwargs: None
+        return
+
+    def _do_config(**kwargs):
+        try:
+            tools_config.configure(**kwargs)
+        except Exception:
+            # Best-effort; don't let test setup crash
+            pass
+
+    yield _do_config
+
+    # Teardown: ensure defaults restored
+    try:
+        tools_config.reset_to_defaults()
+    except Exception:
+        pass

@@ -19,6 +19,7 @@ import time
 import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+import logging
 
 from src.core.paths import get_sessions_dir
 
@@ -54,10 +55,36 @@ def save_session(session: StoredSession, path: Path | None = None) -> Path:
         path = _sessions_dir() / f"session_{session.session_id}.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = asdict(session)
+    logger = logging.getLogger(__name__)
+
+    # Prefer shared atomic writer when available; fall back to mkstemp+replace
+    try:
+        from src.core.io_utils import atomic_write_json
+
+        ok = atomic_write_json(path, payload, logger=logger)
+        if ok:
+            return path
+        # atomic_write_json returned False — fall through to fallback
+        logger.warning(
+            "session_store.save_session: atomic_write_json returned False, falling back"
+        )
+    except Exception:
+        # If import or atomic writer fails, fall back to legacy behavior
+        logger.debug(
+            "session_store.save_session: atomic_write_json unavailable, using fallback",
+            exc_info=True,
+        )
+
     fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False)
+            try:
+                f.flush()
+                os.fsync(f.fileno())
+            except Exception:
+                # best-effort
+                pass
         os.replace(tmp, str(path))
     except Exception:
         try:

@@ -242,8 +242,14 @@ class MessageManager:
                 working_dir = None
             if working_dir:
                 try:
-                    agent_context_dir = _Path(working_dir) / ".agent-context"
-                    agent_context_dir.mkdir(parents=True, exist_ok=True)
+                    try:
+                        from src.tools.tools_config import agent_context_path
+
+                        agent_context_dir = agent_context_path(_Path(working_dir))
+                    except Exception:
+                        # Fallback to legacy location when tools_config unavailable
+                        agent_context_dir = _Path(working_dir) / ".agent-context"
+                        agent_context_dir.mkdir(parents=True, exist_ok=True)
                     timings_path = agent_context_dir / "timings.json"
                     entry = {
                         "phase": "message_truncation",
@@ -263,9 +269,24 @@ class MessageManager:
                     else:
                         data = [entry]
                     try:
-                        timings_path.write_text(
-                            json.dumps(data, ensure_ascii=False), encoding="utf-8"
-                        )
+                        timings_path.parent.mkdir(parents=True, exist_ok=True)
+                        try:
+                            from src.core.io_utils import atomic_write_json
+
+                            logger.debug(
+                                "MessageManager: attempting atomic_write_json for %s",
+                                timings_path,
+                            )
+                            ok = atomic_write_json(timings_path, data, logger=logger)
+                            if not ok:
+                                timings_path.write_text(
+                                    json.dumps(data, ensure_ascii=False),
+                                    encoding="utf-8",
+                                )
+                        except Exception:
+                            timings_path.write_text(
+                                json.dumps(data, ensure_ascii=False), encoding="utf-8"
+                            )
                     except Exception:
                         pass
                 except Exception:

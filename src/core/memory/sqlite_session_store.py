@@ -11,7 +11,7 @@ import uuid
 
 # ruff: noqa: E501
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, cast
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +25,20 @@ class SqliteSessionStore:
 
     def __init__(self, workdir: Optional[str] = None):
         self.workdir = Path(workdir) if workdir else Path.cwd()
-        self.db_path = self.workdir / ".agent-context" / "session.db"
+        # Do not resolve the canonical agent-context directory at init-time.
+        # Prefer existing legacy locations for reads; resolve the canonical
+        # path at write-time (call-time) when we intend to create files.
+        legacy_a = self.workdir / ".agent-context"
+        legacy_b = self.workdir / ".agent"
+        if legacy_a.exists():
+            self._agent_context_dir = legacy_a
+        elif legacy_b.exists():
+            self._agent_context_dir = legacy_b
+        else:
+            self._agent_context_dir = None
+        # db_path is resolved lazily via _resolve_db_path when a connection is
+        # required. Keep attribute for compatibility.
+        self.db_path: Optional[Path] = None
         self._lock = threading.RLock()
         self._local = threading.local()
         self._writer_conn: Optional[sqlite3.Connection] = None
@@ -33,7 +46,50 @@ class SqliteSessionStore:
         self._thread_connections_lock = threading.Lock()
         self._session_locks: Dict[str, threading.Lock] = {}
         self._session_locks_lock = threading.Lock()
-        self._ensure_tables()
+        # Do not create DB/tables at init; they will be created lazily when
+        # a writer/connection is first required.
+
+    def _resolve_db_path(self) -> Path:
+        """Resolve and cache the on-disk SQLite DB path.
+
+        Resolution policy:
+        - Prefer an already-discovered _agent_context_dir (legacy dirs may be
+          discovered at init-time).
+        - Otherwise prefer existing legacy locations: {workdir}/.agent-context
+          then {workdir}/.agent.
+        - If neither exists call the canonical resolver
+          src.tools.tools_config.agent_context_path(workdir) at call-time.
+          This may create the canonical directory and is appropriate for
+          write-time resolution.
+        The resolved Path is cached on self.db_path and self._agent_context_dir.
+        """
+        if getattr(self, "db_path", None) is not None:
+            return cast(Path, self.db_path)
+
+        # If an agent-context dir was discovered earlier prefer it
+        ac = getattr(self, "_agent_context_dir", None)
+        if ac is not None:
+            ac_path = Path(ac)
+        else:
+            legacy_a = self.workdir / ".agent-context"
+            legacy_b = self.workdir / ".agent"
+            if legacy_a.exists():
+                ac_path = legacy_a
+            elif legacy_b.exists():
+                ac_path = legacy_b
+            else:
+                try:
+                    # Call-time resolver (may create directories)
+                    from src.tools.tools_config import agent_context_path
+
+                    ac_path = Path(agent_context_path(self.workdir))
+                except Exception:
+                    ac_path = self.workdir / ".agent-context"
+
+        # Cache resolved values
+        self._agent_context_dir = ac_path
+        self.db_path = ac_path / "session.db"
+        return self.db_path
 
     # For brevity this file contains the same logic previously present in
     # src/core/memory/session_store.py but the class is renamed to make the
@@ -50,8 +106,12 @@ class SqliteSessionStore:
             return lock
 
     def _get_connection(self) -> sqlite3.Connection:
+        # Ensure we have a resolved DB path (may call canonical resolver at
+        # call-time). This mirrors the existence-first policy used elsewhere.
+        dbp = self._resolve_db_path()
+
         if not hasattr(self._local, "connection") or self._local.connection is None:
-            conn = sqlite3.connect(str(self.db_path), timeout=30.0)
+            conn = sqlite3.connect(str(dbp), timeout=30.0)
             self._local.connection = conn
             try:
                 with self._thread_connections_lock:
@@ -68,14 +128,21 @@ class SqliteSessionStore:
 
     def _get_writer_connection(self) -> sqlite3.Connection:
         if self._writer_conn is None:
-            self.db_path.parent.mkdir(parents=True, exist_ok=True)
-            conn = sqlite3.connect(
-                str(self.db_path), timeout=30.0, check_same_thread=False
-            )
+            dbp = self._resolve_db_path()
+            # Ensure parent directory exists for the file-based DB
+            dbp.parent.mkdir(parents=True, exist_ok=True)
+            conn = sqlite3.connect(str(dbp), timeout=30.0, check_same_thread=False)
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA busy_timeout=1000")
             self._writer_conn = conn
+            # Ensure required tables exist on first writer creation.
+            try:
+                self._ensure_tables()
+            except Exception:
+                # Best-effort: if table creation fails, log and continue so
+                # caller receives the writer connection and can observe/raise
+                logger.debug("SqliteSessionStore: _ensure_tables failed", exc_info=True)
         return self._writer_conn
 
     _SCHEMA_VERSION = 2
@@ -88,7 +155,9 @@ class SqliteSessionStore:
             return 1
 
     def _ensure_tables(self):
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        # Resolve DB path and ensure tables exist. Writer connection will
+        # create parent directories as needed.
+        _ = self._resolve_db_path()
         conn = self._get_writer_connection()
         try:
             conn.executescript("""
@@ -382,13 +451,29 @@ class SqliteSessionStore:
 
         # Exhausted or unrecoverable error — write diagnostic
         try:
-            diag_dir = Path(self.workdir) / ".agent-context"
+            # Prefer the canonical agent-context resolver at write-time.
+            # This may create the canonical directory and is appropriate
+            # when writing diagnostic files. Fall back to any previously
+            # discovered legacy location if the resolver is unavailable.
+            try:
+                from src.tools.tools_config import agent_context_path
+
+                ac_dir = Path(agent_context_path(self.workdir))
+            except Exception:
+                ac_dir = Path(
+                    getattr(self, "_agent_context_dir", None)
+                    or self.workdir / ".agent-context"
+                )
+
+            diag_dir = ac_dir
             diag_dir.mkdir(parents=True, exist_ok=True)
             ts = int(time.time() * 1000)
             sid = session_id or "unknown"
             diag_path = diag_dir / f"session_store_write_failure_{ts}_{sid}.json"
             payload = {
-                "db_path": str(self.db_path) if hasattr(self, "db_path") else None,
+                "db_path": str(self.db_path)
+                if getattr(self, "db_path", None) is not None
+                else None,
                 "session_id": sid,
                 "attempts": attempts,
                 "last_error": (
@@ -402,31 +487,51 @@ class SqliteSessionStore:
                 "ts": int(time.time()),
             }
 
-            fd = None
-            tmp = None
+            # Try to use shared atomic writer if available
             try:
-                fd, tmp = tempfile.mkstemp(dir=str(diag_dir), suffix=".tmp")
-                with os.fdopen(fd, "w", encoding="utf-8") as f:
-                    fd = None
-                    json.dump(payload, f, ensure_ascii=False)
+                from src.core.io_utils import atomic_write_json
+
+                ok = atomic_write_json(diag_path, payload, logger=logger)
+                if not ok:
+                    logger.warning(
+                        "SqliteSessionStore._write_with_retry: atomic_write_json returned False, falling back"
+                    )
+                else:
+                    logger.debug(
+                        "SqliteSessionStore._write_with_retry: diagnostic atomic write succeeded: %s",
+                        diag_path,
+                    )
+                    return False
+            except Exception:
+                logger.debug(
+                    "SqliteSessionStore._write_with_retry: atomic_write_json unavailable for diagnostic, using fallback",
+                    exc_info=True,
+                )
+                fd = None
+                tmp = None
+                try:
+                    fd, tmp = tempfile.mkstemp(dir=str(diag_dir), suffix=".tmp")
+                    with os.fdopen(fd, "w", encoding="utf-8") as f:
+                        fd = None
+                        json.dump(payload, f, ensure_ascii=False)
+                        try:
+                            f.flush()
+                            os.fsync(f.fileno())
+                        except Exception:
+                            pass
                     try:
-                        f.flush()
-                        os.fsync(f.fileno())
+                        os.replace(tmp, str(diag_path))
+                    except Exception:
+                        try:
+                            shutil.move(tmp, str(diag_path))
+                        except Exception:
+                            pass
+                finally:
+                    try:
+                        if fd is not None:
+                            os.close(fd)
                     except Exception:
                         pass
-                try:
-                    os.replace(tmp, str(diag_path))
-                except Exception:
-                    try:
-                        shutil.move(tmp, str(diag_path))
-                    except Exception:
-                        pass
-            finally:
-                try:
-                    if fd is not None:
-                        os.close(fd)
-                except Exception:
-                    pass
         except Exception:
             logger.debug(
                 "SqliteSessionStore._write_with_retry: failed to write diagnostic",
@@ -458,34 +563,65 @@ class SqliteSessionStore:
                     }
                 )
 
-            out_dir = Path(self.workdir) / ".agent-context"
-            out_dir.mkdir(parents=True, exist_ok=True)
-            dest = out_dir / "decisions.json"
-            fd = None
-            tmp = None
+            # For writes prefer the canonical agent-context resolver. This may
+            # create the canonical directory and is appropriate at write-time.
             try:
-                fd, tmp = tempfile.mkstemp(dir=str(out_dir), suffix=".tmp")
-                with os.fdopen(fd, "w", encoding="utf-8") as f:
-                    fd = None
-                    json.dump(decisions, f, ensure_ascii=False)
+                from src.tools.tools_config import agent_context_path
+
+                ac_dir = agent_context_path(self.workdir)
+            except Exception:
+                ac_dir = (
+                    getattr(self, "_agent_context_dir", None)
+                    or self.workdir / ".agent-context"
+                )
+
+            dest = Path(ac_dir) / "decisions.json"
+            try:
+                from src.core.io_utils import atomic_write_json
+
+                ok = atomic_write_json(dest, decisions, logger=logger)
+                if not ok:
+                    logger.warning(
+                        "SqliteSessionStore.write_decisions_json: atomic_write_json returned False, falling back"
+                    )
+                else:
+                    logger.debug(
+                        "SqliteSessionStore.write_decisions_json: atomic write succeeded: %s",
+                        dest,
+                    )
+                    return
+            except Exception:
+                logger.debug(
+                    "SqliteSessionStore.write_decisions_json: atomic_write_json unavailable, using fallback",
+                    exc_info=True,
+                )
+                # Best-effort fallback to older tempfile strategy
+                fd = None
+                tmp = None
+                try:
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    fd, tmp = tempfile.mkstemp(dir=str(dest.parent), suffix=".tmp")
+                    with os.fdopen(fd, "w", encoding="utf-8") as f:
+                        fd = None
+                        json.dump(decisions, f, ensure_ascii=False)
+                        try:
+                            f.flush()
+                            os.fsync(f.fileno())
+                        except Exception:
+                            pass
                     try:
-                        f.flush()
-                        os.fsync(f.fileno())
+                        os.replace(tmp, str(dest))
+                    except Exception:
+                        try:
+                            shutil.move(tmp, str(dest))
+                        except Exception:
+                            pass
+                finally:
+                    try:
+                        if fd is not None:
+                            os.close(fd)
                     except Exception:
                         pass
-                try:
-                    os.replace(tmp, str(dest))
-                except Exception:
-                    try:
-                        shutil.move(tmp, str(dest))
-                    except Exception:
-                        pass
-            finally:
-                try:
-                    if fd is not None:
-                        os.close(fd)
-                except Exception:
-                    pass
         except Exception:
             # Best-effort: do not propagate failures
             logger.debug(
@@ -518,7 +654,13 @@ class SqliteSessionStore:
         except Exception:
             # Fallback to sidecar file
             try:
-                path = Path(self.workdir) / ".agent-context" / "decisions.json"
+                path = (
+                    Path(
+                        getattr(self, "_agent_context_dir", None)
+                        or self.workdir / ".agent-context"
+                    )
+                    / "decisions.json"
+                )
                 if not path.exists():
                     return []
                 data = json.loads(path.read_text(encoding="utf-8"))

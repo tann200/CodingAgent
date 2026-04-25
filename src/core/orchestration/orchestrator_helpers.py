@@ -306,8 +306,13 @@ def begin_step_transaction_impl(orch: Any) -> str:
     try:
         start_ts = time.time()
         if getattr(orch, "working_dir", None):
-            agent_context_dir = orch.working_dir / ".agent-context"
-            agent_context_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                from src.tools.tools_config import agent_context_path
+
+                agent_context_dir = agent_context_path(orch.working_dir)
+            except Exception:
+                agent_context_dir = orch.working_dir / ".agent-context"
+                agent_context_dir.mkdir(parents=True, exist_ok=True)
             timings_path = agent_context_dir / "timings.json"
             entry = {
                 "phase": "begin_step_transaction",
@@ -327,9 +332,23 @@ def begin_step_transaction_impl(orch: Any) -> str:
             else:
                 data = [entry]
             try:
-                timings_path.write_text(
-                    json.dumps(data, ensure_ascii=False), encoding="utf-8"
-                )
+                timings_path.parent.mkdir(parents=True, exist_ok=True)
+                try:
+                    from src.core.io_utils import atomic_write_json
+
+                    guilogger.debug(
+                        "orchestrator_helpers: attempting atomic_write_json for %s",
+                        timings_path,
+                    )
+                    ok = atomic_write_json(timings_path, data, logger=guilogger)
+                    if not ok:
+                        timings_path.write_text(
+                            json.dumps(data, ensure_ascii=False), encoding="utf-8"
+                        )
+                except Exception:
+                    timings_path.write_text(
+                        json.dumps(data, ensure_ascii=False), encoding="utf-8"
+                    )
             except Exception:
                 pass
     except Exception:
@@ -445,14 +464,20 @@ def _create_session_snapshot_impl(orch: Any) -> None:
 
 
 def _ensure_working_dir_impl(orch: Any) -> None:
-    """Ensure the working directory and .agent-context scaffold exist."""
+    """Ensure the working directory and .localAgent scaffold exist."""
     start_ts = time.time()
     try:
         orch.working_dir.mkdir(parents=True, exist_ok=True)
 
-        # Phase 3: Scaffold .agent-context directory
-        agent_context_dir = orch.working_dir / ".agent-context"
-        agent_context_dir.mkdir(parents=True, exist_ok=True)
+        # Phase 3: Scaffold per-workspace context directory (uses tools_config)
+        try:
+            from src.tools.tools_config import agent_context_path
+
+            agent_context_dir = agent_context_path(orch.working_dir)
+        except Exception:
+            # Fallback if tools_config cannot be imported for any reason
+            agent_context_dir = orch.working_dir / ".agent-context"
+            agent_context_dir.mkdir(parents=True, exist_ok=True)
 
         task_state_path = agent_context_dir / "TASK_STATE.md"
         if not task_state_path.exists():
@@ -466,7 +491,24 @@ def _ensure_working_dir_impl(orch: Any) -> None:
 
         trace_path = agent_context_dir / "execution_trace.json"
         if not trace_path.exists():
-            trace_path.write_text(json.dumps([]))
+            try:
+                trace_path.parent.mkdir(parents=True, exist_ok=True)
+                try:
+                    from src.core.io_utils import atomic_write_json
+
+                    guilogger.debug(
+                        "orchestrator_helpers: attempting atomic_write_json for %s",
+                        trace_path,
+                    )
+                    ok = atomic_write_json(trace_path, [], logger=guilogger)
+                    if not ok:
+                        trace_path.write_text(json.dumps([]))
+                except Exception:
+                    trace_path.write_text(json.dumps([]))
+            except Exception:
+                # If even the fallback write fails, let the error surface via
+                # the outer exception handler so callers can see the failure.
+                trace_path.write_text(json.dumps([]))
 
     except Exception as e:
         guilogger.error(
@@ -491,8 +533,14 @@ def _ensure_working_dir_impl(orch: Any) -> None:
         # Best-effort timing/logging for diagnostics
         try:
             elapsed = time.time() - start_ts
-            agent_context_dir = orch.working_dir / ".agent-context"
-            agent_context_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                from src.tools.tools_config import agent_context_path
+
+                agent_context_dir = agent_context_path(orch.working_dir)
+            except Exception:
+                # Fallback to legacy name when tools_config is unavailable
+                agent_context_dir = orch.working_dir / ".agent-context"
+                agent_context_dir.mkdir(parents=True, exist_ok=True)
             timings_path = agent_context_dir / "timings.json"
             entry = {
                 "phase": "ensure_working_dir",
@@ -511,9 +559,23 @@ def _ensure_working_dir_impl(orch: Any) -> None:
             else:
                 data = [entry]
             try:
-                timings_path.write_text(
-                    json.dumps(data, ensure_ascii=False), encoding="utf-8"
-                )
+                timings_path.parent.mkdir(parents=True, exist_ok=True)
+                try:
+                    from src.core.io_utils import atomic_write_json
+
+                    guilogger.debug(
+                        "orchestrator_helpers: attempting atomic_write_json for %s",
+                        timings_path,
+                    )
+                    ok = atomic_write_json(timings_path, data, logger=guilogger)
+                    if not ok:
+                        timings_path.write_text(
+                            json.dumps(data, ensure_ascii=False), encoding="utf-8"
+                        )
+                except Exception:
+                    timings_path.write_text(
+                        json.dumps(data, ensure_ascii=False), encoding="utf-8"
+                    )
             except Exception:
                 pass
         except Exception:
@@ -572,15 +634,21 @@ def _background_model_check_impl(orch: Any) -> None:
                 )
             except Exception:
                 pass
-    except Exception:
-        pass
+    except Exception as _e:
+        guilogger.warning(f"background_model_check failed: {_e}")
     finally:
         # Record timing for provider/model check
         try:
             elapsed = time.time() - start_ts
             if getattr(orch, "working_dir", None):
-                agent_context_dir = orch.working_dir / ".agent-context"
-                agent_context_dir.mkdir(parents=True, exist_ok=True)
+                try:
+                    from src.tools.tools_config import agent_context_path
+
+                    agent_context_dir = agent_context_path(orch.working_dir)
+                except Exception:
+                    agent_context_dir = orch.working_dir / ".agent-context"
+                    agent_context_dir.mkdir(parents=True, exist_ok=True)
+
                 timings_path = agent_context_dir / "timings.json"
                 entry = {
                     "phase": "background_model_check",
@@ -599,9 +667,23 @@ def _background_model_check_impl(orch: Any) -> None:
                 else:
                     data = [entry]
                 try:
-                    timings_path.write_text(
-                        json.dumps(data, ensure_ascii=False), encoding="utf-8"
-                    )
+                    timings_path.parent.mkdir(parents=True, exist_ok=True)
+                    try:
+                        from src.core.io_utils import atomic_write_json
+
+                        guilogger.debug(
+                            "orchestrator_helpers: attempting atomic_write_json for %s",
+                            timings_path,
+                        )
+                        ok = atomic_write_json(timings_path, data, logger=guilogger)
+                        if not ok:
+                            timings_path.write_text(
+                                json.dumps(data, ensure_ascii=False), encoding="utf-8"
+                            )
+                    except Exception:
+                        timings_path.write_text(
+                            json.dumps(data, ensure_ascii=False), encoding="utf-8"
+                        )
                 except Exception:
                     pass
         except Exception:

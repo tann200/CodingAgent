@@ -379,7 +379,16 @@ class PermissionGateway:
                 try:
                     from pathlib import Path as _Path
 
-                    _proj_path = _Path(_wd) / ".agent-context" / "permissions.json"
+                    try:
+                        from src.tools.tools_config import (
+                            agent_context_path as _agent_context_path,
+                        )
+
+                        _proj_path = (
+                            _agent_context_path(_Path(_wd)) / "permissions.json"
+                        )
+                    except Exception:
+                        _proj_path = _Path(_wd) / ".agent-context" / "permissions.json"
                     if _proj_path.exists():
                         _proj_policy = _PermissionPolicy.load(_proj_path)
                         if len(_proj_policy) > 0:

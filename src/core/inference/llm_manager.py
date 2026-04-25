@@ -185,11 +185,40 @@ def _set_provider_active(provider_type: str, active: bool) -> None:
             if canonical_provider(p.get("type") or p.get("name") or "") == target_key:
                 p["active"] = active
                 break
-        new_text = json.dumps(providers, indent=2)
+        # Prefer the canonical atomic writer where available. Create parent
+        # directory immediately before attempting the write. If atomic write
+        # succeeds we are done; otherwise fall back to the legacy mkstemp+replace
+        # behaviour.
+        try:
+            cfg_path.parent.mkdir(parents=True, exist_ok=True)
+            # Lazy-import the canonical atomic writer to avoid import-time coupling
+            from src.core.io_utils import atomic_write_json
+
+            guilogger.debug(
+                "llm_manager: attempting atomic_write_json for %s", cfg_path
+            )
+            ok = atomic_write_json(cfg_path, providers, logger=guilogger)
+            if ok:
+                guilogger.debug(
+                    "llm_manager: atomic_write_json succeeded for %s", cfg_path
+                )
+                return
+            guilogger.warning(
+                "llm_manager: atomic_write_json returned False for %s; falling back",
+                cfg_path,
+            )
+        except Exception:
+            guilogger.debug(
+                "llm_manager: atomic_write_json unavailable or failed for %s; falling back",
+                cfg_path,
+                exc_info=True,
+            )
+
+        # Fallback: legacy mkstemp + os.replace behaviour
         fd, tmp = tempfile.mkstemp(dir=cfg_path.parent, suffix=".tmp")
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(new_text)
+                f.write(json.dumps(providers, indent=2))
             os.replace(tmp, cfg_path)
         except Exception:
             try:
@@ -526,6 +555,29 @@ def save_provider(
                     to_write = updated
             except Exception:
                 pass
+        # Try canonical atomic writer first (lazy import). If it fails, fall
+        # back to the original write_text behaviour to preserve compatibility.
+        try:
+            from src.core.io_utils import atomic_write_json
+
+            guilogger.debug("llm_manager: attempting atomic_write_json for %s", target)
+            ok = atomic_write_json(target, to_write, logger=guilogger)
+            if ok:
+                guilogger.debug(
+                    "llm_manager: atomic_write_json succeeded for %s", target
+                )
+                return True
+            guilogger.warning(
+                "llm_manager: atomic_write_json returned False for %s; falling back to write_text",
+                target,
+            )
+        except Exception:
+            guilogger.debug(
+                "llm_manager: atomic_write_json unavailable or failed for %s; falling back",
+                target,
+                exc_info=True,
+            )
+
         target.write_text(json.dumps(to_write), encoding="utf-8")
         return True
     except Exception:

@@ -62,11 +62,22 @@ def _get_pending_dir() -> Path:
     if _pending_dir_override is not None:
         return _pending_dir_override
     try:
-        from src.core.paths import get_agent_context_dir  # type: ignore[import]
+        # Prefer the per-workspace agent-context path when available.
+        # This honours the configured context-dir name and existing legacy
+        # directories via the central tools_config helper.
+        from src.tools.tools_config import agent_context_path  # type: ignore[import]
 
-        return get_agent_context_dir() / "event_pending"
+        agent_ctx = agent_context_path(Path.cwd())
+        return agent_ctx / "events" / "pending"
     except Exception:
-        return Path(".agent-context") / "events" / "pending"
+        try:
+            # Fall back to the older helper if tools_config is not importable.
+            from src.core.paths import get_agent_context_dir  # type: ignore[import]
+
+            return get_agent_context_dir() / "event_pending"
+        except Exception:
+            # Final legacy fallback.
+            return Path(".agent-context") / "events" / "pending"
 
 
 def set_pending_dir(path: Path) -> None:
@@ -115,17 +126,27 @@ def persist_event(event_name: str, payload: Dict[str, Any]) -> Path:
         "timestamp": time.time(),
     }
 
-    fd, tmp_path = tempfile.mkstemp(dir=str(pending_dir), suffix=".tmp")
+    # Prefer the centralized atomic JSON writer; fall back to the legacy
+    # mkstemp+os.replace path on import/write errors.
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump(data, fh, default=str)
-        os.replace(tmp_path, str(dest))
+        from src.core.io_utils import atomic_write_json
+
+        ok = atomic_write_json(dest, data, logger=logger)
+        if not ok:
+            # Fall back to legacy path when the helper reports failure
+            raise RuntimeError("atomic_write_json failed")
     except Exception:
+        fd, tmp_path = tempfile.mkstemp(dir=str(pending_dir), suffix=".tmp")
         try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump(data, fh, default=str)
+            os.replace(tmp_path, str(dest))
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
 
     logger.debug("event_persistence: persisted %s → %s", event_name, dest.name)
     return dest

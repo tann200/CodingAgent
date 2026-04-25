@@ -1621,27 +1621,42 @@ class AgentBridge:
     def _save_history(self) -> None:
         """Atomic write after every agent result (§15.4)."""
         HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
+        # Snapshot history under the lock, then attempt centralized atomic write
+        with self._history_lock:
+            payload = {"version": self._HISTORY_VERSION, "history": list(self.history)}
+
+        try:
+            from src.core.io_utils import atomic_write_json
+
+            logger.debug("bridge: attempting atomic_write_json for %s", HISTORY_PATH)
+            ok = atomic_write_json(HISTORY_PATH, payload, logger=logger)
+            if ok:
+                logger.info("History written atomically: %s", HISTORY_PATH)
+                return
+            logger.warning(
+                "bridge: atomic_write_json returned False for %s; falling back",
+                HISTORY_PATH,
+            )
+        except Exception:
+            logger.debug(
+                "bridge: atomic_write_json unavailable or failed for %s; falling back",
+                HISTORY_PATH,
+                exc_info=True,
+            )
+
+        # Fallback to legacy temp-file write
         fd, tmp = tempfile.mkstemp(dir=str(HISTORY_PATH.parent), suffix=".tmp")
         try:
-            # LOW-10 fix: if os.fdopen() raises before handing ownership of fd
-            # to the file object, we must close fd ourselves to avoid a leak.
-            # Wrapping the fdopen() call in a nested try/except achieves this
-            # without restructuring the rest of the function.
             try:
                 fobj = os.fdopen(fd, "w", encoding="utf-8")
             except Exception:
                 os.close(fd)
                 raise
             with fobj:
-                with self._history_lock:
-                    payload = {
-                        "version": self._HISTORY_VERSION,
-                        "history": list(self.history),
-                    }
-                    json.dump(payload, fobj, ensure_ascii=False, indent=2)
+                json.dump(payload, fobj, ensure_ascii=False, indent=2)
             os.replace(tmp, str(HISTORY_PATH))
         except Exception as e:
-            logger.error(f"History save failed: {e}")
+            logger.error("History save failed: %s", e)
             try:
                 os.unlink(tmp)
             except Exception:
@@ -1748,7 +1763,26 @@ class AgentBridge:
             data.sort(key=_score, reverse=True)
             data = data[:500]
 
-            # Atomic write via temp file
+            # Prefer central atomic writer; fall back to mkstemp+replace
+            try:
+                from src.core.io_utils import atomic_write_json
+
+                logger.debug("bridge: attempting atomic_write_json for %s", p)
+                ok = atomic_write_json(p, data, logger=logger)
+                if ok:
+                    logger.debug("bridge: prompt history written atomically: %s", p)
+                    return
+                logger.warning(
+                    "bridge: atomic_write_json returned False for %s; falling back",
+                    p,
+                )
+            except Exception:
+                logger.debug(
+                    "bridge: atomic_write_json unavailable or failed for %s; falling back",
+                    p,
+                    exc_info=True,
+                )
+
             fd, tmp_path = tempfile.mkstemp(dir=str(p.parent), suffix=".tmp")
             try:
                 with os.fdopen(fd, "w", encoding="utf-8") as f:

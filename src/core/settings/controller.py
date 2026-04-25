@@ -135,24 +135,43 @@ class SettingsPanelController:
                             raw["models"] = models
                             changed = True
                     if changed:
-                        # P1-7: Atomic write via tmp-file + rename to prevent corruption
-                        import tempfile
-                        import os
-
-                        new_content = json.dumps(raw, indent=2)
-                        tmp_fd, tmp_path = tempfile.mkstemp(
-                            dir=cfg_path.parent, suffix=".tmp"
-                        )
+                        # Prefer canonical atomic writer. Create parent dir
+                        # immediately before writing. If atomic_write_json is
+                        # unavailable or returns False, fall back to mkstemp+replace.
                         try:
-                            with os.fdopen(tmp_fd, "w", encoding="utf-8") as _f:
-                                _f.write(new_content)
-                            os.replace(tmp_path, cfg_path)
+                            cfg_path.parent.mkdir(parents=True, exist_ok=True)
+                            from src.core.io_utils import atomic_write_json
+
+                            guilogger.debug(
+                                "SettingsPanel: attempting atomic_write_json for %s",
+                                cfg_path,
+                            )
+                            ok = atomic_write_json(cfg_path, raw, logger=guilogger)
+                            if not ok:
+                                guilogger.warning(
+                                    "SettingsPanel: atomic_write_json returned False for %s; falling back",
+                                    cfg_path,
+                                )
+                                raise RuntimeError("atomic_write_json returned False")
                         except Exception:
+                            # Fallback to previous behavior
+                            import tempfile
+                            import os
+
+                            new_content = json.dumps(raw, indent=2)
+                            tmp_fd, tmp_path = tempfile.mkstemp(
+                                dir=cfg_path.parent, suffix=".tmp"
+                            )
                             try:
-                                os.unlink(tmp_path)
-                            except OSError:
-                                pass
-                            raise
+                                with os.fdopen(tmp_fd, "w", encoding="utf-8") as _f:
+                                    _f.write(new_content)
+                                os.replace(tmp_path, cfg_path)
+                            except Exception:
+                                try:
+                                    os.unlink(tmp_path)
+                                except OSError:
+                                    pass
+                                raise
                 if changed:
                     guilogger.info(
                         f"SettingsPanel: updated models for provider {provider_key} in {cfg_path}"

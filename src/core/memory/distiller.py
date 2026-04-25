@@ -256,9 +256,14 @@ def distill_context(
             summary = compact_messages_to_prose(messages, working_dir=working_dir)
             if summary:
                 if working_dir:
-                    cp_path = (
-                        working_dir / ".agent-context" / "compaction_checkpoint.md"
-                    )
+                    try:
+                        from src.tools.tools_config import agent_context_path
+
+                        agent_context = agent_context_path(working_dir)
+                    except Exception:
+                        agent_context = working_dir / ".agent-context"
+
+                    cp_path = agent_context / "compaction_checkpoint.md"
                     try:
                         cp_path.parent.mkdir(parents=True, exist_ok=True)
                         cp_path.write_text(summary, encoding="utf-8")
@@ -269,6 +274,7 @@ def distill_context(
                         logger.warning(
                             f"distill_context: failed to write checkpoint: {_we}"
                         )
+
                 # TASK-08: Compact summary as System message + keep recent msgs
                 # + append continuation signal.
                 # Pattern from claw's compact.rs: system summary first, then
@@ -386,7 +392,13 @@ def distill_context(
 
     if distilled_state and working_dir:
         try:
-            agent_context = working_dir / ".agent-context"
+            try:
+                from src.tools.tools_config import agent_context_path
+
+                agent_context = agent_context_path(working_dir)
+            except Exception:
+                agent_context = working_dir / ".agent-context"
+
             task_state_path = agent_context / "TASK_STATE.md"
             lines = [
                 "# Current Task",
@@ -457,7 +469,14 @@ def distill_context(
     # Also attempt to produce a lightweight repo_memory.json summarizing modules if repo_index is available
     try:
         if working_dir:
-            index_path = working_dir / ".agent-context" / "repo_index.json"
+            try:
+                from src.tools.tools_config import agent_context_path
+
+                _agent_ctx = agent_context_path(working_dir)
+            except Exception:
+                _agent_ctx = working_dir / ".agent-context"
+
+            index_path = _agent_ctx / "repo_index.json"
             if index_path.exists():
                 with open(index_path, "r", encoding="utf-8") as f:
                     repo_index = json.load(f)
@@ -466,13 +485,46 @@ def distill_context(
                     repo_memory["modules"].append(
                         {"path": fdata.get("path"), "imports": fdata.get("imports", [])}
                     )
-                mem_path = working_dir / ".agent-context" / "repo_memory.json"
-                mem_path.write_text(json.dumps(repo_memory, indent=2))
+                mem_path = _agent_ctx / "repo_memory.json"
+                mem_path.parent.mkdir(parents=True, exist_ok=True)
+                try:
+                    from src.core.io_utils import atomic_write_json
+
+                    logger.debug(
+                        "distill_context: attempting atomic_write_json for %s", mem_path
+                    )
+                    ok = atomic_write_json(mem_path, repo_memory, logger=logger)
+                    if not ok:
+                        logger.warning(
+                            "distill_context: atomic_write_json returned False for %s; falling back to write_text",
+                            mem_path,
+                        )
+                        try:
+                            mem_path.write_text(
+                                json.dumps(repo_memory, indent=2), encoding="utf-8"
+                            )
+                        except Exception:
+                            logger.exception(
+                                "Failed fallback write of repo_memory.json to %s",
+                                mem_path,
+                            )
+                except Exception:
+                    logger.debug(
+                        "distill_context: atomic_write_json unavailable or failed for %s; falling back",
+                        mem_path,
+                        exc_info=True,
+                    )
+                    try:
+                        mem_path.write_text(
+                            json.dumps(repo_memory, indent=2), encoding="utf-8"
+                        )
+                    except Exception:
+                        logger.exception(
+                            "Failed to write repo_memory.json to %s", mem_path
+                        )
                 # Build a lightweight file summary cache for large files to speed prompt building
                 try:
-                    summary_path = (
-                        working_dir / ".agent-context" / "file_summaries.json"
-                    )
+                    summary_path = _agent_ctx / "file_summaries.json"
                     summaries = {}
                     for fdata in repo_index.get("files", []):
                         p = working_dir / fdata.get("path")
@@ -491,9 +543,34 @@ def distill_context(
                             except Exception:
                                 continue
                     try:
-                        summary_path.write_text(
-                            json.dumps(summaries, indent=2), encoding="utf-8"
-                        )
+                        summary_path.parent.mkdir(parents=True, exist_ok=True)
+                        try:
+                            from src.core.io_utils import atomic_write_json
+
+                            logger.debug(
+                                "distill_context: attempting atomic_write_json for %s",
+                                summary_path,
+                            )
+                            ok = atomic_write_json(
+                                summary_path, summaries, logger=logger
+                            )
+                            if not ok:
+                                logger.warning(
+                                    "distill_context: atomic_write_json returned False for %s; falling back to write_text",
+                                    summary_path,
+                                )
+                                summary_path.write_text(
+                                    json.dumps(summaries, indent=2), encoding="utf-8"
+                                )
+                        except Exception:
+                            logger.debug(
+                                "distill_context: atomic_write_json unavailable or failed for %s; falling back",
+                                summary_path,
+                                exc_info=True,
+                            )
+                            summary_path.write_text(
+                                json.dumps(summaries, indent=2), encoding="utf-8"
+                            )
                     except Exception:
                         pass
                 except Exception:

@@ -539,17 +539,13 @@ def _init_event_subscriptions(orch: Any) -> None:
                             pass
                     except Exception as _e:
                         try:
-                            orch.event_bus.publish(
-                                "scheduler.distill_failed", {"error": str(_e)}
-                            )
+                            guilogger.warning(f"scheduler.distill_request failed: {_e}")
                         except Exception:
                             pass
                 except Exception:
-                    # Any unexpected error must not escape to the EventBus.
+                    # Any unexpected error must not escape silently.
                     try:
-                        import traceback as _tb
-
-                        _tb.print_exc()
+                        guilogger.warning("scheduler.distill_request unexpected error")
                     except Exception:
                         pass
 

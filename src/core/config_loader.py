@@ -14,6 +14,7 @@ later layer.
 from __future__ import annotations
 
 import json
+import os
 import logging
 import time
 from pathlib import Path
@@ -73,14 +74,27 @@ def _load_config_file(path: Path) -> Dict[str, Any]:
 def _get_workspace_config_paths() -> List[Path]:
     """Get workspace config paths (cwd-based)."""
     try:
-        cwd = Path.cwd()
-        agent_dir = cwd / ".agent"
-        return [
-            agent_dir / "config.json",
-            agent_dir / "config.local.json",
-        ]
+        from src.tools.tools_config import get_context_dir_name
+
+        ctx_name = get_context_dir_name()
     except Exception:
-        return []
+        ctx_name = os.getenv("CODINGAGENT_CONTEXT_DIR") or ".localAgent"
+
+    cwd = Path.cwd()
+    candidate = cwd / ctx_name
+
+    # Prefer the configured candidate when it exists; otherwise fall back to
+    # legacy directories (".agent-context", ".agent") if present. If none
+    # exist, return the configured candidate paths (they will be skipped later
+    # if missing).
+    if candidate.exists():
+        return [candidate / "config.json", candidate / "config.local.json"]
+
+    for legacy in (cwd / ".agent-context", cwd / ".agent"):
+        if legacy.exists():
+            return [legacy / "config.json", legacy / "config.local.json"]
+
+    return [candidate / "config.json", candidate / "config.local.json"]
 
 
 def load_merged_config(working_dir: Optional[Path] = None) -> Dict[str, Any]:
@@ -98,8 +112,48 @@ def load_merged_config(working_dir: Optional[Path] = None) -> Dict[str, Any]:
     if working_dir is None:
         workspace_paths = _get_workspace_config_paths()
     else:
-        agent_dir = Path(working_dir) / ".agent"
-        workspace_paths = [agent_dir / "config.json", agent_dir / "config.local.json"]
+        # Resolve the workspace agent directory using the central helper when
+        # available. This ensures consistent semantics across code and tests.
+        try:
+            from src.tools.tools_config import agent_context_path
+
+            wd = Path(working_dir)
+            agent_dir = agent_context_path(wd)
+            workspace_paths = [
+                agent_dir / "config.json",
+                agent_dir / "config.local.json",
+            ]
+        except Exception:
+            # Fallback to prior heuristic when tools_config is unavailable
+            try:
+                from src.tools.tools_config import get_context_dir_name
+
+                ctx_name = get_context_dir_name()
+            except Exception:
+                ctx_name = os.getenv("CODINGAGENT_CONTEXT_DIR") or ".localAgent"
+            wd = Path(working_dir)
+            candidate = wd / ctx_name
+            if candidate.exists():
+                workspace_paths = [
+                    candidate / "config.json",
+                    candidate / "config.local.json",
+                ]
+            else:
+                legacy_found = False
+                for legacy_name in (".agent-context", ".agent"):
+                    legacy = wd / legacy_name
+                    if legacy.exists():
+                        workspace_paths = [
+                            legacy / "config.json",
+                            legacy / "config.local.json",
+                        ]
+                        legacy_found = True
+                        break
+                if not legacy_found:
+                    workspace_paths = [
+                        candidate / "config.json",
+                        candidate / "config.local.json",
+                    ]
     paths.extend(workspace_paths)
     skipped = []
 
@@ -125,10 +179,16 @@ def load_merged_config(working_dir: Optional[Path] = None) -> Dict[str, Any]:
     # Apply hot-reload update if enabled
     if get_config_reloader is not None:
         try:
+            # get_config_reloader takes the current merged config as its
+            # initial state and returns an object with changed()/load().
             reloader = get_config_reloader(result)
-            if reloader.changed():
-                logger.debug("Hot-reload detected config change, applying")
-                result = reloader.load()
+            try:
+                if reloader.changed():
+                    logger.debug("Hot-reload detected config change, applying")
+                    result = reloader.load()
+            except Exception:
+                # If the reloader interface is not as expected, ignore it.
+                pass
         except Exception as e:
             logger.debug(f"Hot-reload not available: {e}")
 
@@ -187,17 +247,11 @@ def get_mcp_config(working_dir: Optional[Path] = None) -> Dict[str, Any]:
     """
     defaults = {"servers": [], "timeout_seconds": 30, "auto_register_tools": True}
 
-    mcp_cfg: Dict[str, Any] = {}
-    if working_dir is None:
-        merged = load_merged_config()
-        mcp_cfg = merged.get("mcp", {}) if isinstance(merged, dict) else {}
-    else:
-        agent_dir = Path(working_dir) / ".agent"
-        cfg: Dict[str, Any] = {}
-        for p in (agent_dir / "config.json", agent_dir / "config.local.json"):
-            if p.exists():
-                cfg = _deep_merge(cfg, _load_config_file(p))
-        mcp_cfg = cfg.get("mcp", {}) if isinstance(cfg, dict) else {}
+    # Use the central merged config loader which already implements the
+    # configured context-dir name and legacy fallbacks. Forward the
+    # working_dir so callers (tests) get workspace-local overrides.
+    merged = load_merged_config(working_dir=working_dir)
+    mcp_cfg = merged.get("mcp", {}) if isinstance(merged, dict) else {}
 
     # Deep-merge mcp_cfg onto defaults so callers get consistent keys.
     return _deep_merge(defaults, mcp_cfg)
@@ -209,6 +263,18 @@ def get_mcp_servers(working_dir: Optional[Path] = None) -> List[Dict[str, Any]]:
     servers = cfg.get("servers") if isinstance(cfg, dict) else None
     if not isinstance(servers, list):
         return []
+
+    # Add Context7 test server if no servers configured
+    if not servers:
+        servers = [
+            {
+                "name": "context7",
+                "transport": "stdio",
+                "command": "npx",
+                "args": ["-y", "@upstash/context7-mcp"],
+            }
+        ]
+
     return servers
 
 

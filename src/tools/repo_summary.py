@@ -5,6 +5,11 @@ Automatic Repo Summary - Generates quick overview of repository structure.
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 
+try:
+    from src.tools.tools_config import agent_context_path
+except Exception:
+    agent_context_path = None
+
 
 def detect_framework(workdir: str) -> Optional[str]:
     """Detect web framework from imports and files."""
@@ -216,7 +221,12 @@ def _get_config_files_mtime(workdir: str) -> Dict[str, float]:
 def _get_cached_repo_summary(workdir: str) -> Optional[Dict[str, Any]]:
     """Load cached repo summary if config files haven't changed."""
     try:
-        cache_path = Path(workdir) / ".agent-context" / "repo_summary_cache.json"
+        cache_dir = (
+            Path(agent_context_path(workdir))
+            if agent_context_path is not None
+            else Path(workdir) / ".agent-context"
+        )
+        cache_path = cache_dir / "repo_summary_cache.json"
         if not cache_path.exists():
             return None
         import json
@@ -235,7 +245,11 @@ def _get_cached_repo_summary(workdir: str) -> Optional[Dict[str, Any]]:
 def _save_repo_summary_cache(workdir: str, summary: Dict[str, Any]) -> None:
     """Save repo summary to cache."""
     try:
-        cache_dir = Path(workdir) / ".agent-context"
+        cache_dir = (
+            Path(agent_context_path(workdir))
+            if agent_context_path is not None
+            else Path(workdir) / ".agent-context"
+        )
         cache_dir.mkdir(parents=True, exist_ok=True)
         cache_path = cache_dir / "repo_summary_cache.json"
         import json

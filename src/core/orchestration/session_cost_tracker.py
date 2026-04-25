@@ -183,8 +183,17 @@ class SessionCostTracker:
             cost_snapshot = self._session_cost_usd
             # Clear the buffer now so a second flush() before reset() is idempotent
             self._usage_buffer = {}
+
         try:
-            usage_path = self._working_dir / ".agent-context" / "usage.json"
+            # Resolve canonical agent-context directory at write-time. This may
+            # create directories and is appropriate for persistence.
+            try:
+                from src.tools.tools_config import agent_context_path
+
+                usage_path = agent_context_path(self._working_dir) / "usage.json"
+            except Exception:
+                usage_path = self._working_dir / ".agent-context" / "usage.json"
+
             usage_path.parent.mkdir(parents=True, exist_ok=True)
             usage: dict = {}
             if usage_path.exists():
@@ -192,6 +201,7 @@ class SessionCostTracker:
                     usage = json.loads(usage_path.read_text(encoding="utf-8"))
                 except Exception:
                     usage = {}
+
             tool_stats = usage.get("tools", {})
             for name, count in buffer_snapshot.items():
                 prev = tool_stats.get(name, {}).get("calls", 0)
@@ -201,21 +211,56 @@ class SessionCostTracker:
                 usage["last_task_id"] = task_id
             # Persist cumulative session cost for cross-session budget tracking
             usage["session_cost_usd"] = round(cost_snapshot, 8)
-            # Atomic write: write to a temp file then replace to avoid corruption
-            # if the process is killed mid-write.
-            fd, tmp_path = tempfile.mkstemp(
-                dir=usage_path.parent, suffix=".tmp", prefix="usage_"
-            )
+
+            # Use centralized atomic writer when available, fall back to mkstemp
             try:
-                with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                    json.dump(usage, fh, indent=2)
-                os.replace(tmp_path, usage_path)
+                from src.core.io_utils import atomic_write_json
+
+                ok = atomic_write_json(usage_path, usage, logger=logger)
+                if ok:
+                    logger.debug(
+                        "SessionCostTracker.flush: atomic write succeeded: %s",
+                        usage_path,
+                    )
+                    return
+                else:
+                    logger.warning(
+                        "SessionCostTracker.flush: atomic_write_json returned False, falling back"
+                    )
             except Exception:
+                logger.debug(
+                    "SessionCostTracker.flush: atomic_write_json unavailable, using fallback",
+                    exc_info=True,
+                )
+                fd = None
+                tmp_path = None
                 try:
-                    os.unlink(tmp_path)
-                except Exception:
-                    pass
-                raise
+                    usage_path.parent.mkdir(parents=True, exist_ok=True)
+                    fd, tmp_path = tempfile.mkstemp(
+                        dir=str(usage_path.parent), suffix=".tmp", prefix="usage_"
+                    )
+                    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                        fd = None
+                        json.dump(usage, fh, indent=2)
+                        try:
+                            fh.flush()
+                            os.fsync(fh.fileno())
+                        except Exception:
+                            pass
+                    try:
+                        os.replace(tmp_path, usage_path)
+                    except Exception:
+                        try:
+                            os.unlink(tmp_path)
+                        except Exception:
+                            pass
+                        raise
+                finally:
+                    try:
+                        if fd is not None:
+                            os.close(fd)
+                    except Exception:
+                        pass
         except Exception as exc:
             logger.debug("SessionCostTracker.flush: error: %s", exc)
 

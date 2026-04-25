@@ -46,11 +46,26 @@ from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
+
 # Candidate settings files, in merge order (last wins for scalars).
-_SETTINGS_FILES = [
-    Path(".agent") / "settings.json",
-    Path(".agent") / "settings.local.json",
-]
+def _candidate_settings_files_for_workdir(workdir: Path) -> list[Path]:
+    """Return candidate settings files for a workdir, respecting the
+    configured context-dir name and falling back to legacy directories.
+    """
+    try:
+        from src.tools.tools_config import get_context_dir_name
+
+        ctx_name = get_context_dir_name()
+    except Exception:
+        import os as _os
+
+        # Fallback to a safe legacy name when tools_config is unavailable
+        ctx_name = _os.getenv("CODINGAGENT_CONTEXT_DIR") or ".agent-context"
+
+    candidate = Path(ctx_name)
+    # The caller will resolve relative to the provided base workdir.
+    return [candidate / "settings.json", candidate / "settings.local.json"]
+
 
 # Mapping from the JSON ``permissionMode`` string to CodingAgent's
 # ``PermissionLevel`` enum string value.  Imported lazily to avoid circular
@@ -145,8 +160,25 @@ def load_project_settings(workdir: str | Path | None = None) -> ProjectSettings:
     base = Path(workdir) if workdir else Path.cwd()
     merged: dict[str, Any] = {}
 
-    for rel in _SETTINGS_FILES:
-        path = base / rel
+    # Resolve candidate settings files for this workdir and also try legacy
+    # directories if the configured candidate does not exist.
+    candidates = _candidate_settings_files_for_workdir(base)
+    # If the configured candidate doesn't exist, prefer legacy directories
+    # (".agent", ".agent-context") that may already be present in older
+    # workspaces.
+    resolved: list[Path] = []
+    for rel in candidates:
+        candidate_path = base / rel
+        resolved.append(candidate_path)
+
+    # Legacy fallbacks
+    for legacy_name in (".agent-context", ".agent"):
+        legacy_base = base / legacy_name
+        resolved.append(legacy_base / "settings.json")
+        resolved.append(legacy_base / "settings.local.json")
+
+    # Iterate in order and merge any existing JSON settings
+    for path in resolved:
         if not path.exists():
             continue
         try:

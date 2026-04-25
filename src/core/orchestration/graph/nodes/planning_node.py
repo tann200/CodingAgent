@@ -34,7 +34,12 @@ logger = logging.getLogger(__name__)
 
 def _get_last_plan_path(workdir: str) -> Path:
     """Get the path to the last plan JSON file."""
-    return Path(workdir) / ".agent-context" / "last_plan.json"
+    try:
+        from src.tools.tools_config import agent_context_path
+
+        return agent_context_path(Path(workdir)) / "last_plan.json"
+    except Exception:
+        return Path(workdir) / ".agent-context" / "last_plan.json"
 
 
 def _load_last_plan(workdir: str) -> Dict[str, Any]:
@@ -64,7 +69,28 @@ def _save_last_plan(workdir: str, plan: list, task: str, step: int = 0) -> None:
             "working_dir": str(workdir),  # P2-B: stored for TTL resume check
             "saved_at": datetime.now().isoformat(),
         }
-        plan_path.write_text(json.dumps(data, indent=2))
+        try:
+            from src.core.io_utils import atomic_write_json
+
+            logger.debug(
+                "planning_node: attempting atomic_write_json for %s", plan_path
+            )
+            ok = atomic_write_json(plan_path, data, logger=logger)
+            if ok:
+                logger.info("planning_node: saved plan to %s", plan_path)
+                return
+            logger.warning(
+                "planning_node: atomic_write_json returned False for %s; falling back",
+                plan_path,
+            )
+        except Exception:
+            logger.debug(
+                "planning_node: atomic_write_json unavailable or failed for %s; falling back",
+                plan_path,
+                exc_info=True,
+            )
+
+        plan_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
         logger.info(f"planning_node: saved plan to {plan_path}")
     except Exception as e:
         logger.warning(f"planning_node: failed to save last plan: {e}")

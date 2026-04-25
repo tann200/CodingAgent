@@ -135,13 +135,22 @@ class ContextBuilder:
         # would silently look for agent-brain files in the wrong location.
         # Callers that do not have a working_dir should pass the repo root
         # explicitly (NEW-10 fix).
-        if working_dir:
-            self._agent_context_dir = Path(working_dir) / ".agent-context"
-        else:
-            # Fall back to the current working directory so that tests using
-            # monkeypatch.chdir() and callers without an explicit working_dir
-            # both resolve agent-context files relative to the active cwd.
-            self._agent_context_dir = Path.cwd() / ".agent-context"
+        try:
+            from src.tools.tools_config import agent_context_path
+
+            if working_dir:
+                self._agent_context_dir = agent_context_path(Path(working_dir))
+            else:
+                # Fall back to the current working directory so that tests using
+                # monkeypatch.chdir() and callers without an explicit working_dir
+                # both resolve agent-context files relative to the active cwd.
+                self._agent_context_dir = agent_context_path(Path.cwd())
+        except Exception:
+            # Fallback behaviour if tools_config cannot be imported
+            if working_dir:
+                self._agent_context_dir = Path(working_dir) / ".agent-context"
+            else:
+                self._agent_context_dir = Path.cwd() / ".agent-context"
 
         # Token usage tracking for TokenBudgetMonitor
         self._last_token_count: int = 0
@@ -183,8 +192,19 @@ class ContextBuilder:
         # Load user-supplied skills from the working directory so users can add
         # custom skills without modifying the repo.  Workspace skills override
         # built-in skills of the same name, enabling per-project customisation.
+        # Respect configured context-dir name when looking for workspace skills,
+        # but fall back to legacy names for compatibility.
+        try:
+            from src.tools.tools_config import get_context_dir_name
+
+            ctx_name = get_context_dir_name()
+        except Exception:
+            import os
+
+            ctx_name = os.getenv("CODINGAGENT_CONTEXT_DIR") or ".localAgent"
+
         _workspace_skill_dirs = [
-            self._agent_context_dir.parent / ".agent" / "skills",
+            self._agent_context_dir.parent / ctx_name / "skills",
             self._agent_context_dir.parent / ".claude" / "skills",
         ]
         for _wsd in _workspace_skill_dirs:
@@ -370,7 +390,16 @@ class ContextBuilder:
         if removed_any:
             try:
                 cwd = Path.cwd()
-                ac = cwd / ".agent-context"
+                try:
+                    from src.tools.tools_config import get_context_dir_name
+
+                    ctx_name = get_context_dir_name()
+                except Exception:
+                    import os
+
+                    ctx_name = os.getenv("CODINGAGENT_CONTEXT_DIR") or ".localAgent"
+
+                ac = cwd / ctx_name
                 if ac.exists():
                     logp = ac / "context_sanitization.log"
                     with open(logp, "a", encoding="utf-8") as f:
@@ -753,9 +782,13 @@ class ContextBuilder:
         # These come after CP-11 file instructions so they take higher precedence.
         # Injected inside the static prefix so they are cached with the rest.
         try:
-            from src.core.config_loader import get_project_instructions as _gpi
+            # Use the orchestration instruction loader (correct location for this helper).
+            from src.core.orchestration.instruction_loader import (
+                load_project_instructions as _gpi,
+            )
 
-            _proj_instructions = _gpi(str(self._agent_context_dir.parent))
+            # pass a Path object as the loader expects a Path-like cwd
+            _proj_instructions = _gpi(self._agent_context_dir.parent)
             if _proj_instructions:
                 _proj_block = "\n".join(f"- {instr}" for instr in _proj_instructions)
                 parts.append(

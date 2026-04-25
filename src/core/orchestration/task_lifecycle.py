@@ -53,7 +53,13 @@ def start_new_task_impl(orch) -> str:
     # read_file call.
     try:
         _wd = Path(orch.working_dir) if orch.working_dir else Path.cwd()
-        _agent_ctx = _wd / ".agent-context"
+        try:
+            from src.tools.tools_config import agent_context_path
+
+            _agent_ctx = agent_context_path(_wd)
+        except Exception:
+            # Fallback to legacy name when tools_config isn't importable
+            _agent_ctx = _wd / ".agent-context"
         _internal_files = [
             _agent_ctx / "TODO.md",
             _agent_ctx / "todo.json",
@@ -97,7 +103,14 @@ def start_new_task_impl(orch) -> str:
     # MM-1 fix: Invalidate compaction checkpoint from previous task to
     # prevent cross-task memory contamination.
     try:
-        _cp = Path(orch.working_dir) / ".agent-context" / "compaction_checkpoint.md"
+        try:
+            from src.tools.tools_config import agent_context_path
+
+            _cp = (
+                agent_context_path(Path(orch.working_dir)) / "compaction_checkpoint.md"
+            )
+        except Exception:
+            _cp = Path(orch.working_dir) / ".agent-context" / "compaction_checkpoint.md"
         if _cp.exists():
             _cp.unlink()
     except Exception:
@@ -142,7 +155,12 @@ def start_new_task_impl(orch) -> str:
                     pass
         # TASK_STATE.md still needs explicit deletion
         try:
-            _agent_ctx = Path(orch.working_dir) / ".agent-context"
+            try:
+                from src.tools.tools_config import agent_context_path
+
+                _agent_ctx = agent_context_path(Path(orch.working_dir))
+            except Exception:
+                _agent_ctx = Path(orch.working_dir) / ".agent-context"
             _ts = _agent_ctx / "TASK_STATE.md"
             if _ts.exists():
                 _ts.unlink()

@@ -36,6 +36,7 @@ import asyncio
 import json
 import logging
 from dataclasses import dataclass, field
+import os
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -79,9 +80,16 @@ class McpStdioClient:
         tools:   Tool definitions discovered after ``connect()``.
     """
 
-    def __init__(self, name: str, cmd: List[str]) -> None:
+    def __init__(
+        self, name: str, cmd: List[str], env: Optional[Dict[str, str]] = None
+    ) -> None:
         self.name = name
         self.cmd = cmd
+        # Optional environment variables to inject into the subprocess.
+        # When provided we merge these with the current process environment
+        # before launching so sensitive keys (eg. CONTEXT7_API_KEY) can be
+        # supplied without committing them to repository files.
+        self._env = dict(env) if isinstance(env, dict) else None
         self.tools: List[McpToolDefinition] = []
         self._process: Optional[asyncio.subprocess.Process] = None
         self._request_id: int = 0
@@ -115,11 +123,20 @@ class McpStdioClient:
             return
 
         logger.info("mcp_client[%s]: starting subprocess %s", self.name, self.cmd)
+        # Merge provided env onto the current os.environ to avoid dropping
+        # necessary system variables. If no env overrides were provided the
+        # subprocess inherits the parent environment unchanged.
+        proc_env = None
+        if self._env is not None:
+            proc_env = os.environ.copy()
+            proc_env.update({str(k): str(v) for k, v in self._env.items()})
+
         self._process = await asyncio.create_subprocess_exec(
             *self.cmd,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=proc_env,
         )
 
         # Start background reader task
@@ -410,6 +427,7 @@ def create_mcp_client(
     cmd: Optional[List[str]] = None,
     url: Optional[str] = None,
     headers: Optional[Dict[str, Any]] = None,
+    env: Optional[Dict[str, str]] = None,
 ) -> Any:
     """Return the appropriate MCP client for the given transport.
 
@@ -455,7 +473,7 @@ def create_mcp_client(
         client = create_mcp_client("ws_server", url="ws://localhost:3000/ws")
     """
     if cmd is not None:
-        return McpStdioClient(name=name, cmd=cmd)
+        return McpStdioClient(name=name, cmd=cmd, env=env)
 
     if url is not None:
         scheme = url.split("://", 1)[0].lower() if "://" in url else ""

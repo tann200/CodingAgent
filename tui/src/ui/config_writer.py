@@ -86,13 +86,35 @@ def _provider_matches(entry: dict, provider_id: str) -> bool:
 
 
 def _atomic_write(data: list) -> None:
-    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    # Create parent dir immediately before writing. Prefer the central
+    # atomic_write_json helper; if unavailable or it returns False, fall back
+    # to the legacy mkstemp+replace path.
+    try:
+        CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        from src.core.io_utils import atomic_write_json
+
+        logger.debug("config_writer: attempting atomic_write_json for %s", CONFIG_PATH)
+        ok = atomic_write_json(CONFIG_PATH, data, logger=logger)
+        if ok:
+            logger.info("providers.json written atomically (%s)", CONFIG_PATH)
+            return
+        logger.warning(
+            "config_writer: atomic_write_json returned False for %s; falling back",
+            CONFIG_PATH,
+        )
+    except Exception:
+        logger.debug(
+            "config_writer: atomic_write_json unavailable or failed for %s; falling back",
+            CONFIG_PATH,
+            exc_info=True,
+        )
+
     fd, tmp = tempfile.mkstemp(dir=str(CONFIG_PATH.parent), suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
         os.replace(tmp, str(CONFIG_PATH))
-        logger.info(f"providers.json written atomically ({CONFIG_PATH})")
+        logger.info("providers.json written atomically (fallback) (%s)", CONFIG_PATH)
     except Exception as exc:
         logger.error(f"providers.json write error: {exc}")
         try:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 import json
+import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -7,6 +8,8 @@ from typing import Any, Dict, List, Optional
 from src.tools._path_utils import safe_resolve as _safe_resolve
 from src.tools._tool import tool
 from src.tools.tools_config import agent_context_path
+
+logger = logging.getLogger(__name__)
 
 
 @tool(side_effects=["write"], tags=["planning"])
@@ -47,9 +50,36 @@ def create_state_checkpoint(
         "reasoning_summary": reasoning_summary,
         "task_history": [],
     }
-
     try:
-        checkpoint_path.write_text(json.dumps(checkpoint_data, indent=2))
+        # Prefer central atomic writer when available
+        try:
+            checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+            from src.core.io_utils import atomic_write_json
+
+            logger.debug(
+                "state_tools: attempting atomic_write_json for %s", checkpoint_path
+            )
+            ok = atomic_write_json(checkpoint_path, checkpoint_data, logger=logger)
+            if ok:
+                return {
+                    "status": "ok",
+                    "checkpoint_id": checkpoint_id,
+                    "checkpoint_path": str(checkpoint_path),
+                }
+            logger.warning(
+                "state_tools: atomic_write_json returned False for %s; falling back",
+                checkpoint_path,
+            )
+        except Exception:
+            logger.debug(
+                "state_tools: atomic_write_json unavailable or failed for %s; falling back",
+                checkpoint_path,
+                exc_info=True,
+            )
+
+        checkpoint_path.write_text(
+            json.dumps(checkpoint_data, indent=2), encoding="utf-8"
+        )
         return {
             "status": "ok",
             "checkpoint_id": checkpoint_id,

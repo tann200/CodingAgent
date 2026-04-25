@@ -108,6 +108,38 @@ def get_agent_context_dir() -> Path:
     """Return the agent context directory.
 
     This is the directory where agent-specific state is stored.
-    Defaults to the current working directory + \".agent-context\".
+    Preference order for the directory name:
+      1. `src.tools.tools_config.get_context_dir_name()` if available
+      2. `CODINGAGENT_CONTEXT_DIR` environment variable
+      3. Default: ".localAgent"
+
+    For backwards compatibility, if the chosen directory does not exist but
+    one of the legacy directories (".agent-context", ".agent") exists in the
+    current working directory, that existing directory is returned instead.
+    The returned path is guaranteed to exist (created if necessary).
     """
-    return Path.cwd() / ".agent-context"
+    # Prefer runtime configuration from tools_config when possible. Import
+    # locally to avoid impacting module import order for callers that import
+    # this module early.
+    try:
+        from src.tools.tools_config import get_context_dir_name
+
+        ctx_dir_name = get_context_dir_name()
+    except Exception:
+        ctx_dir_name = os.getenv("CODINGAGENT_CONTEXT_DIR") or ".localAgent"
+
+    cwd = Path.cwd()
+    candidate = cwd / ctx_dir_name
+
+    # If the configured candidate already exists, use it.
+    if candidate.exists():
+        return candidate
+
+    # Backwards compatibility: prefer existing legacy directories if present.
+    for legacy in (cwd / ".agent-context", cwd / ".agent"):
+        if legacy.exists():
+            return legacy
+
+    # Otherwise create the configured candidate and return it.
+    candidate.mkdir(parents=True, exist_ok=True)
+    return candidate

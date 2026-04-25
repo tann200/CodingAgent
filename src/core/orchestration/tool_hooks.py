@@ -101,10 +101,26 @@ def _load_hook_config(working_dir: Optional[Path]) -> _HookConfig:
         except Exception as exc:
             logger.debug("tool_hooks: failed to load %s: %s", path, exc)
 
-    # Auto-detect .agent/hooks/pre_tool.sh / post_tool.sh stubs (from
+    # Auto-detect .localAgent/hooks/pre_tool.sh / post_tool.sh stubs (from
     # `codingagent init`) when no hooks.json entries exist for that hook type.
     if working_dir is not None:
-        stub_dir = working_dir / ".agent" / "hooks"
+        # Resolve the configured agent-context directory using the central
+        # helper when available; fall back to the legacy location if needed.
+        try:
+            from src.tools.tools_config import agent_context_path
+
+            stub_dir = agent_context_path(working_dir) / "hooks"
+        except Exception:
+            # Fallback to legacy logic: configured ctx name env var or configured
+            # default. Use .agent-context as a safe legacy fallback when tools_config
+            # is not importable.
+            import os as _os
+
+            ctx_name = _os.getenv("CODINGAGENT_CONTEXT_DIR") or ".agent-context"
+            stub_dir = working_dir / ctx_name / "hooks"
+            if not stub_dir.exists():
+                # Legacy location
+                stub_dir = working_dir / ".agent" / "hooks"
         _sh_map = (
             ("pre_tool", stub_dir / "pre_tool.sh"),
             ("post_tool", stub_dir / "post_tool.sh"),
@@ -120,7 +136,23 @@ def _load_hook_config(working_dir: Optional[Path]) -> _HookConfig:
 def _workspace_hooks_path(working_dir: Optional[Path]) -> Optional[Path]:
     if working_dir is None:
         return None
-    return working_dir / ".agent" / "hooks.json"
+    try:
+        from src.tools.tools_config import get_context_dir_name
+
+        ctx = get_context_dir_name()
+    except Exception:
+        import os as _os
+
+        ctx = _os.getenv("CODINGAGENT_CONTEXT_DIR") or ".agent-context"
+
+    candidate = working_dir / ctx / "hooks.json"
+    if candidate.exists():
+        return candidate
+    # Legacy fallback when workspace uses .agent
+    legacy = working_dir / ".agent" / "hooks.json"
+    if legacy.exists():
+        return legacy
+    return candidate
 
 
 def _matches(pattern: str, tool_name: str) -> bool:

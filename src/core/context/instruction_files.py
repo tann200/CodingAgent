@@ -45,8 +45,8 @@ _CANDIDATE_NAMES: tuple[tuple[str, ...], ...] = (
     # CodingAgent / OpenCode convention
     ("AGENTS.md",),
     ("AGENTS.local.md",),
-    (".agent", "AGENTS.md"),
-    (".agent", "instructions.md"),
+    (".localAgent", "AGENTS.md"),
+    (".localAgent", "instructions.md"),
     # Claude Code / claw-code convention (TASK-1)
     ("CLAUDE.md",),
     ("CLAUDE.local.md",),

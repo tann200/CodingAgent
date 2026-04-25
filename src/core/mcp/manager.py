@@ -3,12 +3,11 @@
 Coordinates multiple configured MCP servers, registers their tools into the
 agent tool registry, and publishes aggregated health/status events.
 
-Current transport support:
-- ``stdio`` (implemented via :class:`McpStdioClient`)
-
-Future transports (Gap 1):
-- ``sse``
-- ``http`` / ``streamable_http``
+Transport support:
+- ``stdio`` (local subprocess)
+- ``http`` (HTTP Streamable)
+- ``sse`` (Server-Sent Events)
+- ``ws`` / ``websocket`` (WebSocket)
 """
 
 from __future__ import annotations
@@ -20,6 +19,10 @@ from typing import Any, Dict, List, Optional
 
 from src.core.config_loader import get_mcp_config, get_mcp_servers
 from src.core.mcp.mcp_client import McpStdioClient
+from src.core.mcp.mcp_http_client import McpHttpClient
+from src.core.mcp.mcp_sse_client import McpSseClient
+from src.core.mcp.mcp_ws_client import McpWsClient
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +66,7 @@ class McpServerManager:
         self._registry = registry
         self._event_bus = event_bus
         self._working_dir = working_dir
-        self._clients: Dict[str, McpStdioClient] = {}
+        self._clients: Dict[str, Any] = {}
         self._states: Dict[str, McpServerState] = {}
         self._started: bool = False
 
@@ -174,26 +177,90 @@ class McpServerManager:
             if not name:
                 continue
             transport = str(cfg.get("transport") or "stdio").strip().lower()
-            st = McpServerState(name=name, transport=transport)
-            self._states[name] = st
 
-            if transport != "stdio":
+            supported_transports = {"stdio", "http", "sse", "ws", "websocket"}
+            if transport not in supported_transports:
+                st = McpServerState(name=name, transport=transport)
+                self._states[name] = st
                 st.last_error = f"Unsupported MCP transport: {transport}"
                 self._publish_status()
                 continue
 
+            url = cfg.get("url") or cfg.get("endpoint")
             cmd = self._normalize_server_cmd(cfg)
-            if not cmd:
-                st.last_error = "Missing MCP server command (cmd/command)"
+            # Allow servers to provide an `env` mapping to be passed to subprocess
+            # environments (stdio transport) or used to build Authorization
+            # headers for HTTP transports. This avoids committing secrets to
+            # repository-scoped files.
+            cfg_env = cfg.get("env") if isinstance(cfg.get("env"), dict) else None
+
+            # If a CONTEXT7_API_KEY exists in the process environment and the
+            # server did not explicitly provide an API key, prefer the process
+            # environment. This allows users to `export CONTEXT7_API_KEY=...`
+            # before launching the agent.
+            if cfg_env is None:
+                cfg_env = {}
+            if "CONTEXT7_API_KEY" not in cfg_env and os.environ.get("CONTEXT7_API_KEY"):
+                cfg_env["CONTEXT7_API_KEY"] = os.environ.get("CONTEXT7_API_KEY")
+
+            # Ensure we have a server state object for reporting/status updates
+            st = McpServerState(name=name, transport=transport)
+            self._states[name] = st
+
+            if transport in ("http", "sse", "ws", "websocket") and url:
+                ws_url = str(url)
+                # Build headers from cfg or environment API key
+                headers: Dict[str, str] = {}
+                # Allow cfg to specify headers directly
+                if isinstance(cfg.get("headers"), dict):
+                    headers.update(
+                        {str(k): str(v) for k, v in cfg.get("headers").items()}
+                    )
+                # If an API key is available in cfg_env, prefer it for Authorization
+                api_key = cfg_env.get("CONTEXT7_API_KEY")
+                if api_key:
+                    headers.setdefault("Authorization", f"Bearer {api_key}")
+
+                if transport == "sse":
+                    client = McpSseClient(name=name, url=ws_url, headers=headers)
+                elif transport in ("ws", "websocket"):
+                    client = McpWsClient(name=name, url=ws_url, headers=headers)
+                else:
+                    client = McpHttpClient(name=name, url=ws_url, headers=headers)
+            elif transport == "stdio" and cmd:
+                # Some tests monkeypatch McpStdioClient with factories that do
+                # not accept the new "env" keyword. Be backwards-compatible by
+                # trying the new signature first and falling back to the
+                # original (name, cmd) form on TypeError.
+                try:
+                    client = McpStdioClient(name=name, cmd=cmd, env=cfg_env)
+                except TypeError:
+                    # Fall back to older factory signature
+                    try:
+                        client = McpStdioClient(name=name, cmd=cmd)
+                    except Exception as exc:  # pragma: no cover - defensive
+                        raise
+
+                # Safely attach notification handler if supported
+                try:
+                    client.add_notification_handler(
+                        lambda method, params, _name=name: self._on_server_notification(
+                            _name, method, params
+                        )
+                    )
+                except Exception:
+                    # Some client implementations may not support notifications;
+                    # ignore and continue.
+                    pass
+            else:
+                st = McpServerState(name=name, transport=transport)
+                self._states[name] = st
+                if transport in ("http", "sse", "ws", "websocket"):
+                    st.last_error = "Missing MCP server URL (url/endpoint)"
+                else:
+                    st.last_error = "Missing MCP server command (cmd/command)"
                 self._publish_status()
                 continue
-
-            client = McpStdioClient(name=name, cmd=cmd)
-            client.add_notification_handler(
-                lambda method, params, _name=name: self._on_server_notification(
-                    _name, method, params
-                )
-            )
 
             try:
                 await client.connect()

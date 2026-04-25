@@ -86,7 +86,6 @@ def _prefs_get(provider: str) -> Optional[str]:
 
 def _prefs_set(provider: str, key: str) -> None:
     """Write API key to prefs.json fallback store."""
-    _PREFS_PATH.parent.mkdir(parents=True, exist_ok=True)
     try:
         data: dict = {}
         if _PREFS_PATH.exists():
@@ -95,7 +94,42 @@ def _prefs_set(provider: str, key: str) -> None:
             except Exception:
                 pass
         data.setdefault("api_keys", {})[provider] = key
-        # Atomic write via temp + replace
+
+        # Create parent dir only immediately before attempting to write.
+        # Try using the canonical atomic writer first (lazy import). If it
+        # returns True we consider the write successful and apply the
+        # restrictive permissions. On False/exception we fall back to the
+        # previous mkstemp+replace implementation.
+        try:
+            _PREFS_PATH.parent.mkdir(parents=True, exist_ok=True)
+            from src.core.io_utils import atomic_write_json
+
+            logger.debug(
+                "credentials: attempting atomic_write_json for %s", _PREFS_PATH
+            )
+            ok = atomic_write_json(_PREFS_PATH, data, logger=logger)
+            if ok:
+                try:
+                    os.chmod(_PREFS_PATH, 0o600)
+                except Exception:
+                    # Best-effort: do not fail the write flow if chmod fails.
+                    pass
+                logger.debug(
+                    "credentials: atomic_write_json succeeded for %s", _PREFS_PATH
+                )
+                return
+            logger.warning(
+                "credentials: atomic_write_json returned False for %s; falling back to legacy write",
+                _PREFS_PATH,
+            )
+        except Exception:
+            logger.debug(
+                "credentials: atomic_write_json unavailable or failed for %s; falling back",
+                _PREFS_PATH,
+                exc_info=True,
+            )
+
+        # Fallback: legacy mkstemp + replace flow (preserve behaviour).
         fd, tmp = tempfile.mkstemp(dir=_PREFS_PATH.parent, suffix=".tmp")
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
@@ -123,6 +157,38 @@ def _prefs_delete(provider: str) -> None:
     try:
         data = json.loads(_PREFS_PATH.read_text(encoding="utf-8"))
         data.get("api_keys", {}).pop(provider, None)
+        # As with _prefs_set, prefer the canonical atomic writer but fall
+        # back to the legacy mkstemp+replace semantics if needed.
+        try:
+            _PREFS_PATH.parent.mkdir(parents=True, exist_ok=True)
+            from src.core.io_utils import atomic_write_json
+
+            logger.debug(
+                "credentials: attempting atomic_write_json for delete to %s",
+                _PREFS_PATH,
+            )
+            ok = atomic_write_json(_PREFS_PATH, data, logger=logger)
+            if ok:
+                try:
+                    os.chmod(_PREFS_PATH, 0o600)
+                except Exception:
+                    pass
+                logger.debug(
+                    "credentials: atomic_write_json succeeded for delete to %s",
+                    _PREFS_PATH,
+                )
+                return
+            logger.warning(
+                "credentials: atomic_write_json returned False for delete to %s; falling back",
+                _PREFS_PATH,
+            )
+        except Exception:
+            logger.debug(
+                "credentials: atomic_write_json unavailable or failed for delete to %s; falling back",
+                _PREFS_PATH,
+                exc_info=True,
+            )
+
         fd, tmp = tempfile.mkstemp(dir=_PREFS_PATH.parent, suffix=".tmp")
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as fh:

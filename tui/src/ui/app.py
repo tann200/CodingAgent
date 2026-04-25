@@ -784,15 +784,45 @@ class AgentApp(App[None]):
                 "working_dir": self._bridge.working_dir or str(os.getcwd()),
             }
             p = self._get_sessions_dir() / f"session_{self._session_id}.json"
+
+            # Ensure parent dir immediately before writing
+            p.parent.mkdir(parents=True, exist_ok=True)
+
+            # Prefer central atomic writer; fall back to mkstemp+replace
+            try:
+                from src.core.io_utils import atomic_write_json
+
+                logger.debug("app: attempting atomic_write_json for %s", p)
+                ok = atomic_write_json(p, payload, logger=logger)
+                if ok:
+                    logger.info("Session snapshot written atomically: %s", p)
+                    return
+                logger.warning(
+                    "app: atomic_write_json returned False for %s; falling back",
+                    p,
+                )
+            except Exception:
+                logger.debug(
+                    "app: atomic_write_json unavailable or failed for %s; falling back",
+                    p,
+                    exc_info=True,
+                )
+
             fd, tmp_path = tempfile.mkstemp(dir=str(p.parent), suffix=".tmp")
             try:
-                with os.fdopen(fd, "w", encoding="utf-8") as f:
-                    json.dump(payload, f, ensure_ascii=False)
+                try:
+                    fobj = os.fdopen(fd, "w", encoding="utf-8")
+                except Exception:
+                    os.close(fd)
+                    raise
+                with fobj:
+                    json.dump(payload, fobj, ensure_ascii=False)
                 os.replace(tmp_path, str(p))
-            except Exception:
+            except Exception as e:
+                logger.error("Session snapshot save failed: %s", e)
                 try:
                     os.unlink(tmp_path)
-                except OSError:
+                except Exception:
                     pass
         except Exception:
             pass
@@ -1396,9 +1426,12 @@ class AgentApp(App[None]):
         if event.tool_id and event.tool_id in self._tool_widgets:
             w = self._tool_widgets.pop(event.tool_id)
             self.call_later(
-                lambda widget=w, ic=ok_icon, col=color, r=result_display, lbl=label, s=sep: (
-                    widget.update(f"[bold {col}]{lbl}[/]{s}{r}")
-                )
+                lambda widget=w,
+                ic=ok_icon,
+                col=color,
+                r=result_display,
+                lbl=label,
+                s=sep: (widget.update(f"[bold {col}]{lbl}[/]{s}{r}"))
             )
         else:
             widget = Static(
