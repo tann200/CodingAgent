@@ -3,6 +3,9 @@ import hashlib
 import json
 import logging
 import re
+import tempfile
+import os
+import shutil
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 from datetime import datetime
@@ -223,8 +226,71 @@ def _save_index_metadata(base_path: Path, metadata: Dict[str, Any]) -> None:
     """Save index metadata for incremental updates."""
     meta_path = base_path / ".agent-context" / "repo_index_meta.json"
     meta_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(meta_path, "w") as f:
-        json.dump(metadata, f, indent=2)
+
+    # Prefer central atomic writer; fall back to mkstemp + os.replace
+    try:
+        try:
+            from src.core.io_utils import atomic_write_json
+
+            ok = atomic_write_json(meta_path, metadata, logger=logger)
+            if ok:
+                return
+            logger.warning(
+                "repo_indexer: atomic_write_json returned False for %s; falling back",
+                meta_path,
+            )
+        except Exception:
+            import traceback
+
+            logger.debug(
+                "repo_indexer: atomic_write_json unavailable or failed for %s; falling back\n%s",
+                meta_path,
+                traceback.format_exc(),
+            )
+
+        fd, tmp_path = tempfile.mkstemp(dir=str(meta_path.parent), suffix=".tmp")
+        try:
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    json.dump(metadata, f, indent=2)
+            except Exception:
+                try:
+                    os.close(fd)
+                except Exception:
+                    pass
+                raise
+
+            try:
+                os.replace(tmp_path, str(meta_path))
+            except Exception:
+                try:
+                    shutil.move(tmp_path, str(meta_path))
+                except Exception:
+                    import traceback
+
+                    logger.debug(
+                        "repo_indexer: mkstemp fallback failed for %s; final fallback to write_text\n%s",
+                        meta_path,
+                        traceback.format_exc(),
+                    )
+                    try:
+                        meta_path.write_text(
+                            json.dumps(metadata, indent=2), encoding="utf-8"
+                        )
+                    except Exception:
+                        logger.exception(
+                            "repo_indexer: failed to write metadata to %s", meta_path
+                        )
+        except Exception as e:
+            logger.error("repo_indexer: failed to save metadata %s: %s", meta_path, e)
+            try:
+                if os.path.exists(tmp_path):
+                    os.unlink(tmp_path)
+            except Exception:
+                pass
+    except Exception:
+        # Keep function non-raising; errors logged above.
+        pass
 
 
 def index_repository(workdir: str, incremental: bool = True) -> Dict[str, Any]:

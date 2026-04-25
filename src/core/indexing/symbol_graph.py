@@ -4,6 +4,9 @@ import hashlib
 import json
 import logging
 import re
+import tempfile
+import os
+import shutil
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from datetime import datetime
@@ -135,17 +138,81 @@ class SymbolGraph:
     def _save_graph(self):
         """Persist graph to disk."""
         self.graph_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(self.graph_path, "w") as f:
-            json.dump(
-                {
-                    "nodes": self.nodes,
-                    "edges": self.edges,
-                    "file_hashes": self.file_hashes,
-                    "updated_at": datetime.now().isoformat(),
-                },
-                f,
-                indent=2,
+
+        payload = {
+            "nodes": self.nodes,
+            "edges": self.edges,
+            "file_hashes": self.file_hashes,
+            "updated_at": datetime.now().isoformat(),
+        }
+
+        try:
+            try:
+                from src.core.io_utils import atomic_write_json
+
+                ok = atomic_write_json(self.graph_path, payload, logger=logger)
+                if ok:
+                    return
+                logger.warning(
+                    "symbol_graph: atomic_write_json returned False for %s; falling back",
+                    self.graph_path,
+                )
+            except Exception:
+                import traceback
+
+                logger.debug(
+                    "symbol_graph: atomic_write_json unavailable or failed for %s; falling back\n%s",
+                    self.graph_path,
+                    traceback.format_exc(),
+                )
+
+            fd, tmp_path = tempfile.mkstemp(
+                dir=str(self.graph_path.parent), suffix=".tmp"
             )
+            try:
+                try:
+                    with os.fdopen(fd, "w", encoding="utf-8") as f:
+                        json.dump(payload, f, indent=2)
+                except Exception:
+                    try:
+                        os.close(fd)
+                    except Exception:
+                        pass
+                    raise
+
+                try:
+                    os.replace(tmp_path, str(self.graph_path))
+                except Exception:
+                    try:
+                        shutil.move(tmp_path, str(self.graph_path))
+                    except Exception:
+                        import traceback
+
+                        logger.debug(
+                            "symbol_graph: mkstemp fallback failed for %s; final fallback to write_text\n%s",
+                            self.graph_path,
+                            traceback.format_exc(),
+                        )
+                        try:
+                            self.graph_path.write_text(
+                                json.dumps(payload, indent=2), encoding="utf-8"
+                            )
+                        except Exception:
+                            logger.exception(
+                                "symbol_graph: failed to write graph to %s",
+                                self.graph_path,
+                            )
+            except Exception as e:
+                logger.error(
+                    "symbol_graph: failed to save graph %s: %s", self.graph_path, e
+                )
+                try:
+                    if os.path.exists(tmp_path):
+                        os.unlink(tmp_path)
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
     def _get_file_hash(self, path: Path) -> str:
         """Get hash of file content."""
