@@ -187,8 +187,8 @@ class HookRegistry:
             try:
                 fn(payload)
             except Exception as exc:
-                # Preserve WARNING severity but avoid exc_info=True. Include
-                # the formatted traceback in the message for observability.
+                # Preserve WARNING severity but include the formatted traceback
+                # in the message via traceback.format_exc() (avoid exc_info=True).
                 try:
                     import traceback
 

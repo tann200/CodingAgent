@@ -40,8 +40,8 @@ class MockEventBus:
             try:
                 cb(payload)
             except Exception as exc:
-                # Log warning and include formatted traceback without using
-                # exc_info=True to satisfy linters.
+                # Log warning and include formatted traceback via
+                # traceback.format_exc() (avoid exc_info=True to satisfy linters).
                 try:
                     import traceback
 
