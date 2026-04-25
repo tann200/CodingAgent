@@ -147,8 +147,38 @@ def flush_execution_trace_impl(orch: Any) -> None:
                 traceback.format_exc(),
             )
 
+        # Fallback: write via a unique-temp + atomic replace to avoid
+        # exposing partially-written JSON to readers.
         try:
-            trace_path.write_text(json.dumps(trace, indent=2, default=serializer))
+            import tempfile
+            import os
+            import shutil
+
+            fd = None
+            tmp = None
+            try:
+                fd, tmp = tempfile.mkstemp(dir=str(trace_path.parent), suffix=".tmp")
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    fd = None
+                    json.dump(trace, f, indent=2, default=serializer)
+                    try:
+                        f.flush()
+                        os.fsync(f.fileno())
+                    except Exception:
+                        pass
+                try:
+                    os.replace(tmp, str(trace_path))
+                except Exception:
+                    try:
+                        shutil.move(tmp, str(trace_path))
+                    except Exception:
+                        pass
+            finally:
+                try:
+                    if fd is not None:
+                        os.close(fd)
+                except Exception:
+                    pass
         except Exception as e:
             guilogger.error(f"Orchestrator: failed to flush execution trace: {e}")
     except Exception as e:
@@ -172,19 +202,48 @@ def _clear_execution_trace_impl(orch: Any) -> None:
             ok = atomic_write_json(trace_path, [], logger=guilogger)
             if ok:
                 guilogger.info("Execution trace cleared atomically: %s", trace_path)
-            else:
-                guilogger.warning(
-                    "execution_trace: atomic_write_json returned False while clearing %s; falling back",
-                    trace_path,
-                )
-                trace_path.write_text(json.dumps([], indent=2))
+                return
+            guilogger.warning(
+                "execution_trace: atomic_write_json returned False while clearing %s; falling back",
+                trace_path,
+            )
         except Exception:
             guilogger.debug(
                 "execution_trace: atomic_write_json unavailable or failed while clearing %s; falling back\n%s",
                 trace_path,
                 traceback.format_exc(),
             )
-            trace_path.write_text(json.dumps([], indent=2))
+
+        # mkstemp -> os.replace fallback for JSON write
+        try:
+            import tempfile
+            import os
+            import shutil
+
+            fd = None
+            tmp = None
+            try:
+                fd, tmp = tempfile.mkstemp(dir=str(trace_path.parent), suffix=".tmp")
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    fd = None
+                    json.dump([], f, indent=2)
+                    try:
+                        f.flush()
+                        os.fsync(f.fileno())
+                    except Exception:
+                        pass
+                try:
+                    os.replace(tmp, str(trace_path))
+                except Exception:
+                    shutil.move(tmp, str(trace_path))
+            finally:
+                try:
+                    if fd is not None:
+                        os.close(fd)
+                except Exception:
+                    pass
+        except Exception as e:
+            guilogger.error(f"Orchestrator: failed to clear execution trace: {e}")
     except Exception as e:
         guilogger.error(f"Orchestrator: failed to clear execution trace: {e}")
 
