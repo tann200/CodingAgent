@@ -2,6 +2,9 @@ from typing import List, Dict, Any, Callable, Optional
 import re
 import logging
 import json
+import tempfile
+import os
+import shutil
 
 logger = logging.getLogger(__name__)
 
@@ -278,15 +281,67 @@ class MessageManager:
                                 timings_path,
                             )
                             ok = atomic_write_json(timings_path, data, logger=logger)
-                            if not ok:
-                                timings_path.write_text(
-                                    json.dumps(data, ensure_ascii=False),
-                                    encoding="utf-8",
-                                )
+                            if ok:
+                                pass
+                            else:
+                                # mkstemp fallback
+                                try:
+                                    fd = None
+                                    tmp_path = None
+                                    fd, tmp_path = tempfile.mkstemp(
+                                        dir=str(timings_path.parent), suffix=".tmp"
+                                    )
+                                    with os.fdopen(fd, "w", encoding="utf-8") as f:
+                                        fd = None
+                                        json.dump(data, f, ensure_ascii=False)
+                                        try:
+                                            f.flush()
+                                            os.fsync(f.fileno())
+                                        except Exception:
+                                            pass
+                                    try:
+                                        os.replace(tmp_path, str(timings_path))
+                                    except Exception:
+                                        shutil.move(tmp_path, str(timings_path))
+                                except Exception:
+                                    try:
+                                        if tmp_path and os.path.exists(tmp_path):
+                                            os.unlink(tmp_path)
+                                    except Exception:
+                                        pass
                         except Exception:
-                            timings_path.write_text(
-                                json.dumps(data, ensure_ascii=False), encoding="utf-8"
-                            )
+                            # atomic_write_json unavailable — mkstemp fallback
+                            try:
+                                fd = None
+                                tmp_path = None
+                                fd, tmp_path = tempfile.mkstemp(
+                                    dir=str(timings_path.parent), suffix=".tmp"
+                                )
+                                try:
+                                    with os.fdopen(fd, "w", encoding="utf-8") as f:
+                                        fd = None
+                                        json.dump(data, f, ensure_ascii=False)
+                                        try:
+                                            f.flush()
+                                            os.fsync(f.fileno())
+                                        except Exception:
+                                            pass
+                                    try:
+                                        os.replace(tmp_path, str(timings_path))
+                                    except Exception:
+                                        shutil.move(tmp_path, str(timings_path))
+                                finally:
+                                    try:
+                                        if fd is not None:
+                                            os.close(fd)
+                                    except Exception:
+                                        pass
+                            except Exception:
+                                try:
+                                    if tmp_path and os.path.exists(tmp_path):
+                                        os.unlink(tmp_path)
+                                except Exception:
+                                    pass
                     except Exception:
                         pass
                 except Exception:
