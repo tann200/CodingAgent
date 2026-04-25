@@ -9,6 +9,7 @@ import hashlib
 import json
 import logging
 import shutil
+import os
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 from datetime import datetime
@@ -154,12 +155,57 @@ class RollbackManager:
                     traceback.format_exc(),
                 )
 
-            # Fallback to legacy write
-            snapshot_file.write_text(
-                json.dumps(snapshot_data, indent=2), encoding="utf-8"
-            )
-            logger.info(f"Created snapshot {snapshot_id} with {len(snapshots)} files")
-            return snapshot_id
+            # Fallback: write via mkstemp -> os.replace + fsync to avoid
+            # exposing partially-written JSON. As a last resort, fall back to
+            # Path.write_text.
+            fd = None
+            tmp_path = None
+            try:
+                import tempfile
+
+                fd, tmp_path = tempfile.mkstemp(
+                    dir=str(snapshot_file.parent), suffix=".tmp"
+                )
+                try:
+                    with os.fdopen(fd, "w", encoding="utf-8") as f:
+                        fd = None
+                        json.dump(snapshot_data, f, indent=2)
+                        try:
+                            f.flush()
+                            os.fsync(f.fileno())
+                        except Exception:
+                            pass
+                    try:
+                        os.replace(tmp_path, str(snapshot_file))
+                    except Exception:
+                        try:
+                            shutil.move(tmp_path, str(snapshot_file))
+                        except Exception:
+                            # final fallback
+                            snapshot_file.write_text(
+                                json.dumps(snapshot_data, indent=2), encoding="utf-8"
+                            )
+                except Exception:
+                    try:
+                        if fd is not None:
+                            os.close(fd)
+                    except Exception:
+                        pass
+                    raise
+                logger.info(
+                    f"Created snapshot {snapshot_id} with {len(snapshots)} files"
+                )
+                return snapshot_id
+            except Exception as e:
+                logger.error(
+                    f"rollback_manager: failed to write snapshot {snapshot_id}: {e}"
+                )
+                try:
+                    if tmp_path and os.path.exists(tmp_path):
+                        os.unlink(tmp_path)
+                except Exception:
+                    pass
+                raise
         except Exception as e:
             logger.error(
                 f"rollback_manager: failed to write snapshot {snapshot_id}: {e}"
@@ -216,10 +262,40 @@ class RollbackManager:
                     backup_path = file_path.with_suffix(file_path.suffix + ".backup")
                     shutil.copy2(file_path, backup_path)
 
-                # Restore content
+                # Restore content via mkstemp -> replace to avoid partial writes
                 file_path.parent.mkdir(parents=True, exist_ok=True)
-                file_path.write_text(snap.content, encoding="utf-8")
-                restored_files.append(snap.path)
+                try:
+                    import tempfile
+
+                    fd = None
+                    tmpf = None
+                    try:
+                        fd, tmpf = tempfile.mkstemp(
+                            dir=str(file_path.parent), suffix=".tmp"
+                        )
+                        with os.fdopen(fd, "w", encoding="utf-8") as f:
+                            fd = None
+                            f.write(snap.content)
+                            try:
+                                f.flush()
+                                os.fsync(f.fileno())
+                            except Exception:
+                                pass
+                        try:
+                            os.replace(tmpf, str(file_path))
+                        except Exception:
+                            shutil.move(tmpf, str(file_path))
+                        restored_files.append(snap.path)
+                    except Exception:
+                        try:
+                            if fd is not None:
+                                os.close(fd)
+                        except Exception:
+                            pass
+                        raise
+                except Exception as e:
+                    logger.error(f"Failed to restore {snap.path}: {e}")
+                    return {"ok": False, "error": f"Failed to restore {snap.path}: {e}"}
 
             except Exception as e:
                 logger.error(f"Failed to restore {snap.path}: {e}")
@@ -328,9 +404,45 @@ class RollbackManager:
                     )
                     ok = atomic_write_json(snapshot_file, snapshot_data, logger=logger)
                     if not ok:
-                        snapshot_file.write_text(
-                            json.dumps(snapshot_data, indent=2), encoding="utf-8"
-                        )
+                        # mkstemp fallback for append persistence
+                        fd = None
+                        tmp_path = None
+                        try:
+                            import tempfile
+
+                            fd, tmp_path = tempfile.mkstemp(
+                                dir=str(snapshot_file.parent), suffix=".tmp"
+                            )
+                            try:
+                                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                                    fd = None
+                                    json.dump(snapshot_data, indent=2, fp=f)
+                                    try:
+                                        f.flush()
+                                        os.fsync(f.fileno())
+                                    except Exception:
+                                        pass
+                                try:
+                                    os.replace(tmp_path, str(snapshot_file))
+                                except Exception:
+                                    shutil.move(tmp_path, str(snapshot_file))
+                            except Exception:
+                                try:
+                                    if fd is not None:
+                                        os.close(fd)
+                                except Exception:
+                                    pass
+                                raise
+                        except Exception:
+                            try:
+                                if tmp_path and os.path.exists(tmp_path):
+                                    os.unlink(tmp_path)
+                            except Exception:
+                                pass
+                            # final fallback to Path.write_text
+                            snapshot_file.write_text(
+                                json.dumps(snapshot_data, indent=2), encoding="utf-8"
+                            )
                 except Exception:
                     import traceback
 
@@ -339,9 +451,45 @@ class RollbackManager:
                         snapshot_file,
                         traceback.format_exc(),
                     )
-                    snapshot_file.write_text(
-                        json.dumps(snapshot_data, indent=2), encoding="utf-8"
-                    )
+                    # mkstemp fallback
+                    fd = None
+                    tmp_path = None
+                    try:
+                        import tempfile
+
+                        fd, tmp_path = tempfile.mkstemp(
+                            dir=str(snapshot_file.parent), suffix=".tmp"
+                        )
+                        try:
+                            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                                fd = None
+                                json.dump(snapshot_data, f, indent=2)
+                                try:
+                                    f.flush()
+                                    os.fsync(f.fileno())
+                                except Exception:
+                                    pass
+                            try:
+                                os.replace(tmp_path, str(snapshot_file))
+                            except Exception:
+                                shutil.move(tmp_path, str(snapshot_file))
+                        except Exception:
+                            try:
+                                if fd is not None:
+                                    os.close(fd)
+                            except Exception:
+                                pass
+                            raise
+                    except Exception:
+                        try:
+                            if tmp_path and os.path.exists(tmp_path):
+                                os.unlink(tmp_path)
+                        except Exception:
+                            pass
+                        # final fallback
+                        snapshot_file.write_text(
+                            json.dumps(snapshot_data, indent=2), encoding="utf-8"
+                        )
             except Exception as e:
                 logger.warning(
                     f"append_to_snapshot: failed to persist snapshot {snapshot_id}: {e}"
