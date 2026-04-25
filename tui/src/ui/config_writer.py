@@ -103,10 +103,13 @@ def _atomic_write(data: list) -> None:
             CONFIG_PATH,
         )
     except Exception:
+        import traceback as _traceback
+
         logger.debug(
-            "config_writer: atomic_write_json unavailable or failed for %s; falling back",
+            "config_writer: atomic_write_json unavailable or failed for %s; falling back: %s\n%s",
             CONFIG_PATH,
-            exc_info=True,
+            _e if " _e" in locals() else None,
+            _traceback.format_exc(),
         )
 
     fd, tmp = tempfile.mkstemp(dir=str(CONFIG_PATH.parent), suffix=".tmp")

@@ -533,10 +533,12 @@ class CrossSessionBus:
                     msg_file,
                 )
             except Exception:
+                import traceback
+
                 logger.debug(
-                    "cross_session_bus: atomic_write_json unavailable or failed for %s; falling back",
+                    "cross_session_bus: atomic_write_json unavailable or failed for %s; falling back\n%s",
                     msg_file,
-                    exc_info=True,
+                    traceback.format_exc(),
                 )
 
             msg_file.write_text(json.dumps(msg_data), encoding="utf-8")

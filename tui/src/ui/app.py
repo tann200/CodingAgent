@@ -801,11 +801,14 @@ class AgentApp(App[None]):
                     "app: atomic_write_json returned False for %s; falling back",
                     p,
                 )
-            except Exception:
+            except Exception as _e:
+                import traceback as _traceback
+
                 logger.debug(
-                    "app: atomic_write_json unavailable or failed for %s; falling back",
+                    "app: atomic_write_json unavailable or failed for %s; falling back: %s\n%s",
                     p,
-                    exc_info=True,
+                    _e,
+                    _traceback.format_exc(),
                 )
 
             fd, tmp_path = tempfile.mkstemp(dir=str(p.parent), suffix=".tmp")
@@ -3522,7 +3525,8 @@ class AgentApp(App[None]):
 
             self.push_screen(SettingsScreen(self._settings))
         except Exception as exc:
-            logger.error(f"action_open_settings failed: {exc}", exc_info=True)
+            # Preserve stacktrace at ERROR level for diagnostics
+            logger.exception(f"action_open_settings failed: {exc}")
             self.notify(f"Could not open settings: {exc}", severity="error")
 
     # Legacy /clear helper alias

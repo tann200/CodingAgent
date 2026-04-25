@@ -52,6 +52,7 @@ from __future__ import annotations
 import fnmatch
 import json
 import logging
+import traceback
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -380,10 +381,11 @@ class PermissionPolicy:
                 path,
             )
         except Exception:
+            # Log stack trace at debug level using traceback.format_exc() to avoid exc_info kwarg
             logger.debug(
-                "PermissionPolicy: atomic_write_json unavailable or failed for %s; falling back",
+                "PermissionPolicy: atomic_write_json unavailable or failed for %s; falling back\n%s",
                 path,
-                exc_info=True,
+                traceback.format_exc(),
             )
 
         try:

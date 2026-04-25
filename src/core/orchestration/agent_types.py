@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import logging
+import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Set
@@ -541,9 +542,9 @@ class AgentRegistry:
             )
         except Exception:
             logger.debug(
-                "AgentRegistry: atomic_write_json unavailable or failed for %s; falling back",
+                "AgentRegistry: atomic_write_json unavailable or failed for %s; falling back\n%s",
                 path,
-                exc_info=True,
+                traceback.format_exc(),
             )
 
         try:

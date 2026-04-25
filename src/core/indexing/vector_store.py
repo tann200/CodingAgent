@@ -15,6 +15,7 @@ import hashlib
 import logging
 import json
 import re
+import traceback
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -107,9 +108,9 @@ class VectorStore:
                         )
             except Exception:
                 logger.debug(
-                    "VectorStore: atomic_write_json unavailable or failed for %s; falling back",
+                    "VectorStore: atomic_write_json unavailable or failed for %s; falling back\n%s",
                     symbols_path,
-                    exc_info=True,
+                    traceback.format_exc(),
                 )
                 try:
                     symbols_path.write_text(

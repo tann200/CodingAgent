@@ -550,8 +550,11 @@ class JsonlSessionStore:
             with self._locks_lock:
                 self._locks.clear()
         except Exception:
+            import traceback
+
             logger.debug(
-                "JsonlSessionStore.close: unexpected error during close", exc_info=True
+                "JsonlSessionStore.close: unexpected error during close\n%s",
+                traceback.format_exc(),
             )
 
     # ------------------------------------------------------------------
@@ -669,9 +672,11 @@ class JsonlSessionStore:
                     except Exception:
                         pass
         except Exception:
+            import traceback
+
             logger.debug(
-                "JsonlSessionStore._write_with_retry: failed to write diagnostic",
-                exc_info=True,
+                "JsonlSessionStore._write_with_retry: failed to write diagnostic\n%s",
+                traceback.format_exc(),
             )
 
         return False
@@ -765,8 +770,11 @@ class JsonlSessionStore:
         except Exception:
             # Fail silently — add_decision should not raise due to decision
             # memory sidecar write failures.
+            import traceback
+
             logger.debug(
-                "JsonlSessionStore: write_decisions_json failed", exc_info=True
+                "JsonlSessionStore: write_decisions_json failed\n%s",
+                traceback.format_exc(),
             )
 
     def get_decisions(self, session_id: str) -> List[Dict[str, Any]]:

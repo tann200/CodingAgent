@@ -123,10 +123,12 @@ def _prefs_set(provider: str, key: str) -> None:
                 _PREFS_PATH,
             )
         except Exception:
+            import traceback
+
             logger.debug(
-                "credentials: atomic_write_json unavailable or failed for %s; falling back",
+                "credentials: atomic_write_json unavailable or failed for %s; falling back\n%s",
                 _PREFS_PATH,
-                exc_info=True,
+                traceback.format_exc(),
             )
 
         # Fallback: legacy mkstemp + replace flow (preserve behaviour).
@@ -183,10 +185,12 @@ def _prefs_delete(provider: str) -> None:
                 _PREFS_PATH,
             )
         except Exception:
+            import traceback
+
             logger.debug(
-                "credentials: atomic_write_json unavailable or failed for delete to %s; falling back",
+                "credentials: atomic_write_json unavailable or failed for delete to %s; falling back\n%s",
                 _PREFS_PATH,
-                exc_info=True,
+                traceback.format_exc(),
             )
 
         fd, tmp = tempfile.mkstemp(dir=_PREFS_PATH.parent, suffix=".tmp")

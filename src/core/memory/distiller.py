@@ -1,6 +1,7 @@
 import concurrent.futures
 import json
 import logging
+import traceback
 import re
 from typing import Any, Dict, List, Optional
 from pathlib import Path
@@ -510,9 +511,9 @@ def distill_context(
                             )
                 except Exception:
                     logger.debug(
-                        "distill_context: atomic_write_json unavailable or failed for %s; falling back",
+                        "distill_context: atomic_write_json unavailable or failed for %s; falling back\n%s",
                         mem_path,
-                        exc_info=True,
+                        traceback.format_exc(),
                     )
                     try:
                         mem_path.write_text(
@@ -564,9 +565,9 @@ def distill_context(
                                 )
                         except Exception:
                             logger.debug(
-                                "distill_context: atomic_write_json unavailable or failed for %s; falling back",
+                                "distill_context: atomic_write_json unavailable or failed for %s; falling back\n%s",
                                 summary_path,
-                                exc_info=True,
+                                traceback.format_exc(),
                             )
                             summary_path.write_text(
                                 json.dumps(summaries, indent=2), encoding="utf-8"

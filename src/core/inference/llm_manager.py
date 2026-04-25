@@ -10,6 +10,7 @@ Design goals for tests:
 """
 
 import asyncio
+import traceback
 import functools
 import os
 import tempfile
@@ -209,9 +210,9 @@ def _set_provider_active(provider_type: str, active: bool) -> None:
             )
         except Exception:
             guilogger.debug(
-                "llm_manager: atomic_write_json unavailable or failed for %s; falling back",
+                "llm_manager: atomic_write_json unavailable or failed for %s; falling back\n%s",
                 cfg_path,
-                exc_info=True,
+                traceback.format_exc(),
             )
 
         # Fallback: legacy mkstemp + os.replace behaviour
@@ -573,9 +574,9 @@ def save_provider(
             )
         except Exception:
             guilogger.debug(
-                "llm_manager: atomic_write_json unavailable or failed for %s; falling back",
+                "llm_manager: atomic_write_json unavailable or failed for %s; falling back\n%s",
                 target,
-                exc_info=True,
+                traceback.format_exc(),
             )
 
         target.write_text(json.dumps(to_write), encoding="utf-8")

@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import traceback
 import re
 from pathlib import Path
 from typing import Mapping, Dict, Any, Optional
@@ -85,9 +86,9 @@ def _save_last_plan(workdir: str, plan: list, task: str, step: int = 0) -> None:
             )
         except Exception:
             logger.debug(
-                "planning_node: atomic_write_json unavailable or failed for %s; falling back",
+                "planning_node: atomic_write_json unavailable or failed for %s; falling back\n%s",
                 plan_path,
-                exc_info=True,
+                traceback.format_exc(),
             )
 
         plan_path.write_text(json.dumps(data, indent=2), encoding="utf-8")

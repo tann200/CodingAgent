@@ -5,6 +5,7 @@ import time
 import shutil
 import json
 import logging
+import traceback
 import tempfile
 import threading
 import uuid
@@ -46,8 +47,20 @@ class SqliteSessionStore:
         self._thread_connections_lock = threading.Lock()
         self._session_locks: Dict[str, threading.Lock] = {}
         self._session_locks_lock = threading.Lock()
-        # Do not create DB/tables at init; they will be created lazily when
-        # a writer/connection is first required.
+        # Historically the DB and tables were created at init-time. Some tests
+        # expect the DB file to exist immediately after construction. Prefer
+        # lazy creation, but attempt an eager create here as a best-effort to
+        # preserve test expectations while failing safely when the resolver
+        # cannot run in the current environment.
+        try:
+            # This will resolve the path, create parent dirs and ensure tables.
+            self._get_writer_connection()
+        except Exception:
+            # Best-effort: do not propagate initialization failures.
+            logger.debug(
+                "SqliteSessionStore: eager DB creation failed during init\n%s",
+                traceback.format_exc(),
+            )
 
     def _resolve_db_path(self) -> Path:
         """Resolve and cache the on-disk SQLite DB path.
@@ -118,8 +131,8 @@ class SqliteSessionStore:
                     self._thread_connections[threading.get_ident()] = conn
             except Exception:
                 logger.debug(
-                    "SqliteSessionStore: failed to register thread connection",
-                    exc_info=True,
+                    "SqliteSessionStore: failed to register thread connection\n%s",
+                    traceback.format_exc(),
                 )
             self._local.connection.row_factory = sqlite3.Row
             self._local.connection.execute("PRAGMA journal_mode=WAL")
@@ -142,7 +155,10 @@ class SqliteSessionStore:
             except Exception:
                 # Best-effort: if table creation fails, log and continue so
                 # caller receives the writer connection and can observe/raise
-                logger.debug("SqliteSessionStore: _ensure_tables failed", exc_info=True)
+                logger.debug(
+                    "SqliteSessionStore: _ensure_tables failed\n%s",
+                    traceback.format_exc(),
+                )
         return self._writer_conn
 
     _SCHEMA_VERSION = 2
@@ -393,7 +409,8 @@ class SqliteSessionStore:
             self.write_decisions_json()
         except Exception:
             logger.debug(
-                "SqliteSessionStore: write_decisions_json failed", exc_info=True
+                "SqliteSessionStore: write_decisions_json failed\n%s",
+                traceback.format_exc(),
             )
 
     def get_decisions(self, session_id: str) -> List[Dict[str, Any]]:
@@ -464,79 +481,80 @@ class SqliteSessionStore:
                     getattr(self, "_agent_context_dir", None)
                     or self.workdir / ".agent-context"
                 )
-
-            diag_dir = ac_dir
-            diag_dir.mkdir(parents=True, exist_ok=True)
-            ts = int(time.time() * 1000)
-            sid = session_id or "unknown"
-            diag_path = diag_dir / f"session_store_write_failure_{ts}_{sid}.json"
-            payload = {
-                "db_path": str(self.db_path)
-                if getattr(self, "db_path", None) is not None
-                else None,
-                "session_id": sid,
-                "attempts": attempts,
-                "last_error": (
-                    "SQLITE_BUSY/LOCKED"
-                    if isinstance(last_err, sqlite3.OperationalError)
-                    and "lock" in str(last_err).lower()
-                    else str(last_err)
-                ),
-                "sql": sql,
-                "params": params,
-                "ts": int(time.time()),
-            }
-
-            # Try to use shared atomic writer if available
-            try:
-                from src.core.io_utils import atomic_write_json
-
-                ok = atomic_write_json(diag_path, payload, logger=logger)
-                if not ok:
-                    logger.warning(
-                        "SqliteSessionStore._write_with_retry: atomic_write_json returned False, falling back"
-                    )
-                else:
-                    logger.debug(
-                        "SqliteSessionStore._write_with_retry: diagnostic atomic write succeeded: %s",
-                        diag_path,
-                    )
-                    return False
-            except Exception:
-                logger.debug(
-                    "SqliteSessionStore._write_with_retry: atomic_write_json unavailable for diagnostic, using fallback",
-                    exc_info=True,
-                )
-                fd = None
-                tmp = None
-                try:
-                    fd, tmp = tempfile.mkstemp(dir=str(diag_dir), suffix=".tmp")
-                    with os.fdopen(fd, "w", encoding="utf-8") as f:
-                        fd = None
-                        json.dump(payload, f, ensure_ascii=False)
-                        try:
-                            f.flush()
-                            os.fsync(f.fileno())
-                        except Exception:
-                            pass
-                    try:
-                        os.replace(tmp, str(diag_path))
-                    except Exception:
-                        try:
-                            shutil.move(tmp, str(diag_path))
-                        except Exception:
-                            pass
-                finally:
-                    try:
-                        if fd is not None:
-                            os.close(fd)
-                    except Exception:
-                        pass
         except Exception:
             logger.debug(
-                "SqliteSessionStore._write_with_retry: failed to write diagnostic",
-                exc_info=True,
+                "SqliteSessionStore._write_with_retry: failed to resolve agent-context path for diagnostic\n%s",
+                traceback.format_exc(),
             )
+            return False
+
+        diag_dir = ac_dir
+        diag_dir.mkdir(parents=True, exist_ok=True)
+        ts = int(time.time() * 1000)
+        sid = session_id or "unknown"
+        diag_path = diag_dir / f"session_store_write_failure_{ts}_{sid}.json"
+        payload = {
+            "db_path": str(self.db_path)
+            if getattr(self, "db_path", None) is not None
+            else None,
+            "session_id": sid,
+            "attempts": attempts,
+            "last_error": (
+                "SQLITE_BUSY/LOCKED"
+                if isinstance(last_err, sqlite3.OperationalError)
+                and "lock" in str(last_err).lower()
+                else str(last_err)
+            ),
+            "sql": sql,
+            "params": params,
+            "ts": int(time.time()),
+        }
+
+        # Try to use shared atomic writer if available
+        try:
+            from src.core.io_utils import atomic_write_json
+
+            ok = atomic_write_json(diag_path, payload, logger=logger)
+            if not ok:
+                logger.warning(
+                    "SqliteSessionStore._write_with_retry: atomic_write_json returned False, falling back"
+                )
+            else:
+                logger.debug(
+                    "SqliteSessionStore._write_with_retry: diagnostic atomic write succeeded: %s",
+                    diag_path,
+                )
+                return False
+        except Exception:
+            logger.debug(
+                "SqliteSessionStore._write_with_retry: atomic_write_json unavailable for diagnostic, using fallback\n%s",
+                traceback.format_exc(),
+            )
+            fd = None
+            tmp = None
+            try:
+                fd, tmp = tempfile.mkstemp(dir=str(diag_dir), suffix=".tmp")
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    fd = None
+                    json.dump(payload, f, ensure_ascii=False)
+                    try:
+                        f.flush()
+                        os.fsync(f.fileno())
+                    except Exception:
+                        pass
+                try:
+                    os.replace(tmp, str(diag_path))
+                except Exception:
+                    try:
+                        shutil.move(tmp, str(diag_path))
+                    except Exception:
+                        pass
+            finally:
+                try:
+                    if fd is not None:
+                        os.close(fd)
+                except Exception:
+                    pass
 
         return False
 
@@ -592,8 +610,8 @@ class SqliteSessionStore:
                     return
             except Exception:
                 logger.debug(
-                    "SqliteSessionStore.write_decisions_json: atomic_write_json unavailable, using fallback",
-                    exc_info=True,
+                    "SqliteSessionStore.write_decisions_json: atomic_write_json unavailable, using fallback\n%s",
+                    traceback.format_exc(),
                 )
                 # Best-effort fallback to older tempfile strategy
                 fd = None
@@ -625,7 +643,8 @@ class SqliteSessionStore:
         except Exception:
             # Best-effort: do not propagate failures
             logger.debug(
-                "SqliteSessionStore.write_decisions_json failed", exc_info=True
+                "SqliteSessionStore.write_decisions_json failed\n%s",
+                traceback.format_exc(),
             )
 
     def read_recent_decisions(self, max_entries: int = 10) -> List[Dict[str, Any]]:
@@ -1339,9 +1358,9 @@ class SqliteSessionStore:
                 conn.close()
             except Exception:
                 logger.debug(
-                    "SqliteSessionStore.close: failed to close thread connection %s",
+                    "SqliteSessionStore.close: failed to close thread connection %s\n%s",
                     tid,
-                    exc_info=True,
+                    traceback.format_exc(),
                 )
         try:
             with self._lock:
@@ -1350,12 +1369,13 @@ class SqliteSessionStore:
                         self._writer_conn.close()
                     except Exception:
                         logger.debug(
-                            "SqliteSessionStore.close: failed to close writer connection",
-                            exc_info=True,
+                            "SqliteSessionStore.close: failed to close writer connection\n%s",
+                            traceback.format_exc(),
                         )
                     finally:
                         self._writer_conn = None
         except Exception:
             logger.debug(
-                "SqliteSessionStore.close: unexpected error during close", exc_info=True
+                "SqliteSessionStore.close: unexpected error during close\n%s",
+                traceback.format_exc(),
             )

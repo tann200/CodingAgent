@@ -9,6 +9,7 @@ from __future__ import annotations
 import datetime
 import json
 import logging
+import traceback
 from pathlib import Path
 from typing import Any, Optional
 
@@ -141,9 +142,9 @@ def flush_execution_trace_impl(orch: Any) -> None:
             )
         except Exception:
             guilogger.debug(
-                "execution_trace: atomic_write_json unavailable or failed for %s; falling back",
+                "execution_trace: atomic_write_json unavailable or failed for %s; falling back\n%s",
                 trace_path,
-                exc_info=True,
+                traceback.format_exc(),
             )
 
         try:
@@ -179,9 +180,9 @@ def _clear_execution_trace_impl(orch: Any) -> None:
                 trace_path.write_text(json.dumps([], indent=2))
         except Exception:
             guilogger.debug(
-                "execution_trace: atomic_write_json unavailable or failed while clearing %s; falling back",
+                "execution_trace: atomic_write_json unavailable or failed while clearing %s; falling back\n%s",
                 trace_path,
-                exc_info=True,
+                traceback.format_exc(),
             )
             trace_path.write_text(json.dumps([], indent=2))
     except Exception as e:

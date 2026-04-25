@@ -175,17 +175,27 @@ def _init_infrastructure(orch: Any, message_max_tokens: Optional[int]) -> None:
                     if callable(close_fn):
                         try:
                             close_fn()
-                        except Exception:
+                        except Exception as e:
+                            # Log the exception and stacktrace at DEBUG level without
+                            # using exc_info to satisfy linters. Use a local import so
+                            # we avoid adding module-level dependencies.
+                            import traceback
+
                             guilogger.debug(
-                                "Orchestrator: session_store.close() failed during lifecycle cleanup",
-                                exc_info=True,
+                                "Orchestrator: session_store.close() failed during lifecycle cleanup: %s\n%s",
+                                e,
+                                traceback.format_exc(),
                             )
-            except Exception:
-                # Swallow any unexpected error during cleanup; do not escape
+            except Exception as e:
+                # Swallow any unexpected error during cleanup; do not escape.
+                # Log debug output including the traceback via traceback.format_exc().
                 try:
+                    import traceback
+
                     guilogger.debug(
-                        "Orchestrator: failed to invoke session_store.close()",
-                        exc_info=True,
+                        "Orchestrator: failed to invoke session_store.close(): %s\n%s",
+                        e,
+                        traceback.format_exc(),
                     )
                 except Exception:
                     pass

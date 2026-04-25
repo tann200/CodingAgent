@@ -87,10 +87,12 @@ class TrajectoryLogger:
                     filepath,
                 )
             except Exception:
+                import traceback
+
                 logger.debug(
-                    "TrajectoryLogger: atomic_write_json unavailable or failed for %s; falling back",
+                    "TrajectoryLogger: atomic_write_json unavailable or failed for %s; falling back\n%s",
                     filepath,
-                    exc_info=True,
+                    traceback.format_exc(),
                 )
 
             with open(filepath, "w", encoding="utf-8") as f:
@@ -155,10 +157,12 @@ class TrajectoryLogger:
                 output,
             )
         except Exception:
+            import traceback
+
             logger.debug(
-                "TrajectoryLogger: atomic_write_json unavailable or failed for %s; falling back",
+                "TrajectoryLogger: atomic_write_json unavailable or failed for %s; falling back\n%s",
                 output,
-                exc_info=True,
+                traceback.format_exc(),
             )
 
         with open(output, "w", encoding="utf-8") as f:
@@ -371,10 +375,12 @@ class RefactoringAgent:
                 smells_path,
             )
         except Exception:
+            import traceback
+
             logger.debug(
-                "RefactoringAgent: atomic_write_json unavailable for %s; falling back",
+                "RefactoringAgent: atomic_write_json unavailable for %s; falling back\n%s",
                 smells_path,
-                exc_info=True,
+                traceback.format_exc(),
             )
 
         smells_path.write_text(json.dumps(existing_smells, indent=2))
@@ -471,10 +477,12 @@ class ReviewAgent:
                 review_path,
             )
         except Exception:
+            import traceback
+
             logger.debug(
-                "ReviewAgent: atomic_write_json unavailable for %s; falling back",
+                "ReviewAgent: atomic_write_json unavailable for %s; falling back\n%s",
                 review_path,
-                exc_info=True,
+                traceback.format_exc(),
             )
 
         review_path.write_text(json.dumps(review, indent=2))

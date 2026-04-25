@@ -1,6 +1,7 @@
 from __future__ import annotations
 import json
 import logging
+import traceback
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -72,9 +73,9 @@ def create_state_checkpoint(
             )
         except Exception:
             logger.debug(
-                "state_tools: atomic_write_json unavailable or failed for %s; falling back",
+                "state_tools: atomic_write_json unavailable or failed for %s; falling back\n%s",
                 checkpoint_path,
-                exc_info=True,
+                traceback.format_exc(),
             )
 
         checkpoint_path.write_text(

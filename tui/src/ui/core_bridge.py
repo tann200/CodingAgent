@@ -1438,7 +1438,8 @@ class AgentBridge:
                 )
             # else: mock mode — events come through EventBus from mock_engine
         except Exception as exc:
-            logger.error(f"Agent error: {exc}", exc_info=True)
+            # Log full stack at ERROR level and preserve original behaviour
+            logger.exception(f"Agent error: {exc}")
             self._post(WorkerError(message=str(exc), traceback=""))
         finally:
             with self._agent_lock:
@@ -1637,11 +1638,14 @@ class AgentBridge:
                 "bridge: atomic_write_json returned False for %s; falling back",
                 HISTORY_PATH,
             )
-        except Exception:
+        except Exception as _e:
+            import traceback as _traceback
+
             logger.debug(
-                "bridge: atomic_write_json unavailable or failed for %s; falling back",
+                "bridge: atomic_write_json unavailable or failed for %s; falling back: %s\n%s",
                 HISTORY_PATH,
-                exc_info=True,
+                _e,
+                _traceback.format_exc(),
             )
 
         # Fallback to legacy temp-file write
@@ -1776,11 +1780,14 @@ class AgentBridge:
                     "bridge: atomic_write_json returned False for %s; falling back",
                     p,
                 )
-            except Exception:
+            except Exception as _e:
+                import traceback as _traceback
+
                 logger.debug(
-                    "bridge: atomic_write_json unavailable or failed for %s; falling back",
+                    "bridge: atomic_write_json unavailable or failed for %s; falling back: %s\n%s",
                     p,
-                    exc_info=True,
+                    _e,
+                    _traceback.format_exc(),
                 )
 
             fd, tmp_path = tempfile.mkstemp(dir=str(p.parent), suffix=".tmp")

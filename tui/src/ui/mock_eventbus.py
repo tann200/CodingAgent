@@ -40,12 +40,23 @@ class MockEventBus:
             try:
                 cb(payload)
             except Exception as exc:
-                logger.warning(
-                    "MockEventBus subscriber raised on event %r: %s",
-                    event,
-                    exc,
-                    exc_info=True,
-                )
+                # Log warning and include formatted traceback without using
+                # exc_info=True to satisfy linters.
+                try:
+                    import traceback
+
+                    logger.warning(
+                        "MockEventBus subscriber raised on event %r: %s\n%s",
+                        event,
+                        exc,
+                        traceback.format_exc(),
+                    )
+                except Exception:
+                    logger.warning(
+                        "MockEventBus subscriber raised on event %r: %s",
+                        event,
+                        exc,
+                    )
 
 
 _mock_bus: MockEventBus | None = None

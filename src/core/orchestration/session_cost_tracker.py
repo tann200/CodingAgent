@@ -227,10 +227,13 @@ class SessionCostTracker:
                     logger.warning(
                         "SessionCostTracker.flush: atomic_write_json returned False, falling back"
                     )
-            except Exception:
+            except Exception as _e:
+                import traceback as _traceback
+
                 logger.debug(
-                    "SessionCostTracker.flush: atomic_write_json unavailable, using fallback",
-                    exc_info=True,
+                    "SessionCostTracker.flush: atomic_write_json unavailable, using fallback: %s\n%s",
+                    _e,
+                    _traceback.format_exc(),
                 )
                 fd = None
                 tmp_path = None

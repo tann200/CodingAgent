@@ -376,9 +376,11 @@ class SessionStore:
                             "SessionStore.write_decisions_json: atomic_write_json returned False, falling back"
                         )
                 except Exception:
+                    import traceback
+
                     logger.debug(
-                        "SessionStore.write_decisions_json: atomic_write_json unavailable, using fallback",
-                        exc_info=True,
+                        "SessionStore.write_decisions_json: atomic_write_json unavailable, using fallback\n%s",
+                        traceback.format_exc(),
                     )
 
                 fd = None
@@ -510,10 +512,13 @@ class SessionStore:
                         logger.warning(
                             "SessionStore._write_with_retry: atomic_write_json returned False, falling back"
                         )
-                except Exception:
+                except Exception as _e:
+                    import traceback as _traceback
+
                     logger.debug(
-                        "SessionStore._write_with_retry: atomic_write_json unavailable for diagnostic, using fallback",
-                        exc_info=True,
+                        "SessionStore._write_with_retry: atomic_write_json unavailable for diagnostic, using fallback: %s\n%s",
+                        _e,
+                        _traceback.format_exc(),
                     )
 
                 fd, tmp = tempfile.mkstemp(dir=str(out_dir), suffix=".tmp")

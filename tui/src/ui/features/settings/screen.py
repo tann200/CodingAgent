@@ -80,7 +80,8 @@ class SettingsScreen(ModalScreen):
         try:
             yield from self._compose_inner()
         except Exception as exc:
-            logger.error(f"SettingsScreen.compose() raised: {exc}", exc_info=True)
+            # Preserve ERROR-level stack trace information using logger.exception
+            logger.exception("SettingsScreen.compose() raised: %s", exc)
             from textual.widgets import Label as _Label
 
             yield _Label(f"[bold red]Settings error:[/] {exc}", markup=True)

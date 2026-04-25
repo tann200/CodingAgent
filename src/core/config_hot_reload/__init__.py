@@ -193,16 +193,34 @@ class ConfigReloader:
         try:
             if callable(fn):
                 self._callbacks.append(fn)
-        except Exception:
-            logging.debug("config_reloader: failed to add callback", exc_info=True)
+        except Exception as e:
+            try:
+                import traceback
+
+                logging.debug(
+                    "config_reloader: failed to add callback: %s\n%s",
+                    e,
+                    traceback.format_exc(),
+                )
+            except Exception:
+                logging.debug("config_reloader: failed to add callback")
 
     def remove_callback(self, fn: Callable[[Optional[set]], None]) -> None:
         """Remove a previously registered callback (no-op if absent)."""
         try:
             if fn in self._callbacks:
                 self._callbacks.remove(fn)
-        except Exception:
-            logging.debug("config_reloader: failed to remove callback", exc_info=True)
+        except Exception as e:
+            try:
+                import traceback
+
+                logging.debug(
+                    "config_reloader: failed to remove callback: %s\n%s",
+                    e,
+                    traceback.format_exc(),
+                )
+            except Exception:
+                logging.debug("config_reloader: failed to remove callback")
 
     def _invoke_callbacks(self, changed_paths: Optional[set]) -> None:
         """Safely invoke registered callbacks with the provided changed_paths."""

@@ -67,15 +67,21 @@ def _atomic_write_json(target: Path, obj: dict, logger=None) -> bool:
         try:
             ok = _central(target, obj, logger=logger)
             return bool(ok)
-        except Exception:
+        except Exception as _e:
+            import traceback as _traceback
+
             logger.debug(
-                "_atomic_write_json: central atomic_write_json failed, falling back",
-                exc_info=True,
+                "_atomic_write_json: central atomic_write_json failed, falling back: %s\n%s",
+                _e,
+                _traceback.format_exc(),
             )
-    except Exception:
+    except Exception as _e:
+        import traceback as _traceback
+
         logger.debug(
-            "_atomic_write_json: central atomic_write_json not available, using local fallback",
-            exc_info=True,
+            "_atomic_write_json: central atomic_write_json not available, using local fallback: %s\n%s",
+            _e,
+            _traceback.format_exc(),
         )
 
     # Local fallback
@@ -731,10 +737,13 @@ def delegate_task(
                         logger.debug(
                             "delegate_task: failed to write session payload %s", _sp
                         )
-                except Exception:
+                except Exception as _e:
+                    import traceback as _traceback
+
                     logger.debug(
-                        "delegate_task: exception when writing session payload",
-                        exc_info=True,
+                        "delegate_task: exception when writing session payload: %s\n%s",
+                        _e,
+                        _traceback.format_exc(),
                     )
             except Exception:
                 pass
@@ -850,10 +859,13 @@ def delegate_task(
                             "delegate_task: failed to write failed session payload %s",
                             _sp,
                         )
-                except Exception:
+                except Exception as _e:
+                    import traceback as _traceback
+
                     logger.debug(
-                        "delegate_task: exception when writing failed session payload",
-                        exc_info=True,
+                        "delegate_task: exception when writing failed session payload: %s\n%s",
+                        _e,
+                        _traceback.format_exc(),
                     )
             except Exception:
                 pass

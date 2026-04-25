@@ -49,9 +49,21 @@ def _inc_lock_metric(key: str) -> None:
         with _lock_metrics_lock:
             if key in _lock_metrics:
                 _lock_metrics[key] += 1
-    except Exception:
-        # Metrics must never interfere with normal operation
-        logger.debug("Failed to increment lock metric %s", key, exc_info=True)
+    except Exception as e:
+        # Metrics must never interfere with normal operation. Log debug output
+        # and include the traceback using traceback.format_exc() (lint-friendly).
+        try:
+            import traceback
+
+            logger.debug(
+                "Failed to increment lock metric %s: %s\n%s",
+                key,
+                e,
+                traceback.format_exc(),
+            )
+        except Exception:
+            # Best-effort logging only
+            logger.debug("Failed to increment lock metric %s", key)
 
 
 def get_lock_metrics() -> Dict[str, int]:
@@ -80,8 +92,18 @@ def _inc_rbw_metric(key: str) -> None:
         with _rbw_metrics_lock:
             if key in _rbw_metrics:
                 _rbw_metrics[key] += 1
-    except Exception:
-        logger.debug("Failed to increment rbw metric %s", key, exc_info=True)
+    except Exception as e:
+        try:
+            import traceback
+
+            logger.debug(
+                "Failed to increment rbw metric %s: %s\n%s",
+                key,
+                e,
+                traceback.format_exc(),
+            )
+        except Exception:
+            logger.debug("Failed to increment rbw metric %s", key)
 
 
 def get_rbw_metrics() -> Dict[str, int]:

@@ -146,10 +146,12 @@ class RollbackManager:
                     snapshot_file,
                 )
             except Exception:
+                import traceback
+
                 logger.debug(
-                    "rollback_manager: atomic_write_json unavailable or failed for %s; falling back",
+                    "rollback_manager: atomic_write_json unavailable or failed for %s; falling back\n%s",
                     snapshot_file,
-                    exc_info=True,
+                    traceback.format_exc(),
                 )
 
             # Fallback to legacy write
@@ -330,10 +332,12 @@ class RollbackManager:
                             json.dumps(snapshot_data, indent=2), encoding="utf-8"
                         )
                 except Exception:
+                    import traceback
+
                     logger.debug(
-                        "rollback_manager.append: atomic_write_json unavailable for %s; falling back",
+                        "rollback_manager.append: atomic_write_json unavailable for %s; falling back\n%s",
                         snapshot_file,
-                        exc_info=True,
+                        traceback.format_exc(),
                     )
                     snapshot_file.write_text(
                         json.dumps(snapshot_data, indent=2), encoding="utf-8"

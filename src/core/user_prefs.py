@@ -60,10 +60,12 @@ class UserPrefs:
                     return
             except Exception:
                 # Fall back to original write_text behaviour
+                import traceback
+
                 logger.debug(
-                    "user_prefs: atomic_write_json unavailable or error for %s; falling back",
+                    "user_prefs: atomic_write_json unavailable or error for %s; falling back\n%s",
                     self.path,
-                    exc_info=True,
+                    traceback.format_exc(),
                 )
                 pass
             self.path.write_text(json.dumps(self.data, indent=2), encoding="utf-8")
@@ -73,8 +75,12 @@ class UserPrefs:
                 # Best-effort
                 pass
         except Exception:
+            import traceback
+
             logger.debug(
-                "user_prefs: failed to save prefs to %s", self.path, exc_info=True
+                "user_prefs: failed to save prefs to %s\n%s",
+                self.path,
+                traceback.format_exc(),
             )
 
     def get_provider_setting(self, provider_name: str, key: str) -> Optional[Any]:

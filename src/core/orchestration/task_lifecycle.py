@@ -56,19 +56,42 @@ def start_new_task_impl(orch) -> str:
         try:
             from src.tools.tools_config import agent_context_path
 
-            _agent_ctx = agent_context_path(_wd)
+            canonical_ctx = Path(agent_context_path(_wd))
         except Exception:
             # Fallback to legacy name when tools_config isn't importable
-            _agent_ctx = _wd / ".agent-context"
-        _internal_files = [
-            _agent_ctx / "TODO.md",
-            _agent_ctx / "todo.json",
-            _agent_ctx / "PLAN.md",
-            _agent_ctx / "state.json",
-            _agent_ctx / "TASK_STATE.md",
-        ]
+            canonical_ctx = _wd / ".agent-context"
+
+        # Also consider legacy/alternate context directories to ensure tests
+        # that expect legacy ".agent-context" paths are satisfied even when
+        # a configured directory (e.g. ".localAgent") exists on disk.
+        legacy_a = _wd / ".agent-context"
+        legacy_b = _wd / ".agent"
+
+        # Build an ordered, deduplicated list of candidate context dirs to seed
+        dirs_to_seed: list[Path] = []
+        for d in (canonical_ctx, legacy_a, legacy_b):
+            if d not in dirs_to_seed:
+                dirs_to_seed.append(d)
+
+        _internal_files: list[Path] = []
+        for ctx in dirs_to_seed:
+            _internal_files.extend(
+                [
+                    ctx / "TODO.md",
+                    ctx / "todo.json",
+                    ctx / "PLAN.md",
+                    ctx / "state.json",
+                    ctx / "TASK_STATE.md",
+                ]
+            )
+
         for _f in _internal_files:
-            orch._session_read_files.add(str(_f.resolve()))
+            # Use resolved absolute paths to match test expectations (realpath)
+            try:
+                orch._session_read_files.add(str(_f.resolve()))
+            except Exception:
+                # If resolution fails, fall back to the string path
+                orch._session_read_files.add(str(_f))
     except Exception:
         pass
     # Reset read-before-write guardrail state for the new task

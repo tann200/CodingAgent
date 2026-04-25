@@ -334,10 +334,12 @@ class SessionLifecycleManager:
                     snapshot_file,
                 )
             except Exception:
+                import traceback
+
                 logger.debug(
-                    "session_lifecycle: atomic_write_json unavailable or failed for %s; falling back",
+                    "session_lifecycle: atomic_write_json unavailable or failed for %s; falling back\n%s",
                     snapshot_file,
-                    exc_info=True,
+                    traceback.format_exc(),
                 )
         except Exception:
             pass

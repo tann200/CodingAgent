@@ -187,13 +187,25 @@ class HookRegistry:
             try:
                 fn(payload)
             except Exception as exc:
-                _logger.warning(
-                    "hook_registry: handler %r raised for hook %r: %s",
-                    fn,
-                    hook,
-                    exc,
-                    exc_info=True,
-                )
+                # Preserve WARNING severity but avoid exc_info=True. Include
+                # the formatted traceback in the message for observability.
+                try:
+                    import traceback
+
+                    _logger.warning(
+                        "hook_registry: handler %r raised for hook %r: %s\n%s",
+                        fn,
+                        hook,
+                        exc,
+                        traceback.format_exc(),
+                    )
+                except Exception:
+                    _logger.warning(
+                        "hook_registry: handler %r raised for hook %r: %s",
+                        fn,
+                        hook,
+                        exc,
+                    )
                 if raise_on_error:
                     raise
 

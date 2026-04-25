@@ -70,9 +70,11 @@ def save_session(session: StoredSession, path: Path | None = None) -> Path:
         )
     except Exception:
         # If import or atomic writer fails, fall back to legacy behavior
+        import traceback
+
         logger.debug(
-            "session_store.save_session: atomic_write_json unavailable, using fallback",
-            exc_info=True,
+            "session_store.save_session: atomic_write_json unavailable, using fallback\n%s",
+            traceback.format_exc(),
         )
 
     fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
