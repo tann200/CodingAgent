@@ -2,6 +2,9 @@ from __future__ import annotations
 import json
 import logging
 import traceback
+import tempfile
+import os
+import shutil
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -52,9 +55,10 @@ def create_state_checkpoint(
         "task_history": [],
     }
     try:
+        checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+
         # Prefer central atomic writer when available
         try:
-            checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
             from src.core.io_utils import atomic_write_json
 
             logger.debug(
@@ -78,9 +82,54 @@ def create_state_checkpoint(
                 traceback.format_exc(),
             )
 
-        checkpoint_path.write_text(
-            json.dumps(checkpoint_data, indent=2), encoding="utf-8"
-        )
+        # Fallback: mkstemp + atomic replace
+        fd, tmp_path = tempfile.mkstemp(dir=str(checkpoint_path.parent), suffix=".tmp")
+        try:
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    json.dump(checkpoint_data, f, indent=2)
+            except Exception:
+                try:
+                    os.close(fd)
+                except Exception:
+                    pass
+                raise
+
+            try:
+                os.replace(tmp_path, str(checkpoint_path))
+            except Exception:
+                try:
+                    shutil.move(tmp_path, str(checkpoint_path))
+                except Exception as e:
+                    import traceback as _tb
+
+                    logger.error(
+                        "state_tools: fallback write failed for %s: %s\n%s",
+                        checkpoint_path,
+                        e,
+                        _tb.format_exc(),
+                    )
+                    # Final fallback to Path.write_text
+                    try:
+                        checkpoint_path.write_text(
+                            json.dumps(checkpoint_data, indent=2), encoding="utf-8"
+                        )
+                    except Exception:
+                        logger.error(
+                            "state_tools: final fallback write_text failed for %s\n%s",
+                            checkpoint_path,
+                            traceback.format_exc(),
+                        )
+        except Exception as e:
+            logger.error(
+                "state_tools: failed to save checkpoint %s: %s", checkpoint_path, e
+            )
+            try:
+                if os.path.exists(tmp_path):
+                    os.unlink(tmp_path)
+            except Exception:
+                pass
+
         return {
             "status": "ok",
             "checkpoint_id": checkpoint_id,
