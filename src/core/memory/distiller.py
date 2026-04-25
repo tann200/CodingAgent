@@ -3,6 +3,9 @@ import json
 import logging
 import traceback
 import re
+import tempfile
+import os
+import shutil
 from typing import Any, Dict, List, Optional
 from pathlib import Path
 
@@ -256,6 +259,7 @@ def distill_context(
         try:
             summary = compact_messages_to_prose(messages, working_dir=working_dir)
             if summary:
+                # Write a compaction checkpoint if we have a working dir
                 if working_dir:
                     try:
                         from src.tools.tools_config import agent_context_path
@@ -267,10 +271,30 @@ def distill_context(
                     cp_path = agent_context / "compaction_checkpoint.md"
                     try:
                         cp_path.parent.mkdir(parents=True, exist_ok=True)
-                        cp_path.write_text(summary, encoding="utf-8")
-                        logger.info(
-                            f"distill_context: compaction checkpoint written to {cp_path}"
+                        # Use mkstemp -> replace to avoid partial files for .md
+                        fd, tmp_path = tempfile.mkstemp(
+                            dir=str(cp_path.parent), suffix=".tmp"
                         )
+                        try:
+                            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                                f.write(summary)
+                            try:
+                                os.replace(tmp_path, str(cp_path))
+                            except Exception:
+                                shutil.move(tmp_path, str(cp_path))
+                        except Exception as _we:
+                            logger.warning(
+                                f"distill_context: failed to write checkpoint: {_we}"
+                            )
+                            try:
+                                if os.path.exists(tmp_path):
+                                    os.unlink(tmp_path)
+                            except Exception:
+                                pass
+                        else:
+                            logger.info(
+                                f"distill_context: compaction checkpoint written to {cp_path}"
+                            )
                     except Exception as _we:
                         logger.warning(
                             f"distill_context: failed to write checkpoint: {_we}"
@@ -463,7 +487,33 @@ def distill_context(
                 for err in errors:
                     lines.append(f"- {err}")
 
-            task_state_path.write_text("\n".join(lines))
+            # Write TASK_STATE.md atomically using mkstemp -> replace
+            task_state_path.parent.mkdir(parents=True, exist_ok=True)
+            content_text = "\n".join(lines)
+            fd = None
+            tmp_path = None
+            try:
+                fd, tmp_path = tempfile.mkstemp(
+                    dir=str(task_state_path.parent), suffix=".tmp"
+                )
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    f.write(content_text)
+                try:
+                    os.replace(tmp_path, str(task_state_path))
+                except Exception:
+                    shutil.move(tmp_path, str(task_state_path))
+            except Exception:
+                logger.exception("Failed to write TASK_STATE.md to %s", task_state_path)
+                try:
+                    if fd is not None:
+                        os.close(fd)
+                except Exception:
+                    pass
+                try:
+                    if tmp_path and os.path.exists(tmp_path):
+                        os.unlink(tmp_path)
+                except Exception:
+                    pass
         except Exception as e:
             logger.error(f"Failed to write TASK_STATE.md: {e}")
 
@@ -488,6 +538,7 @@ def distill_context(
                     )
                 mem_path = _agent_ctx / "repo_memory.json"
                 mem_path.parent.mkdir(parents=True, exist_ok=True)
+                # Prefer atomic_write_json when available
                 try:
                     from src.core.io_utils import atomic_write_json
 
@@ -497,13 +548,19 @@ def distill_context(
                     ok = atomic_write_json(mem_path, repo_memory, logger=logger)
                     if not ok:
                         logger.warning(
-                            "distill_context: atomic_write_json returned False for %s; falling back to write_text",
+                            "distill_context: atomic_write_json returned False for %s; falling back to mkstemp",
                             mem_path,
                         )
+                        fd, tmp_path = tempfile.mkstemp(
+                            dir=str(mem_path.parent), suffix=".tmp"
+                        )
                         try:
-                            mem_path.write_text(
-                                json.dumps(repo_memory, indent=2), encoding="utf-8"
-                            )
+                            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                                json.dump(repo_memory, f, indent=2)
+                            try:
+                                os.replace(tmp_path, str(mem_path))
+                            except Exception:
+                                shutil.move(tmp_path, str(mem_path))
                         except Exception:
                             logger.exception(
                                 "Failed fallback write of repo_memory.json to %s",
@@ -515,14 +572,21 @@ def distill_context(
                         mem_path,
                         traceback.format_exc(),
                     )
+                    fd, tmp_path = tempfile.mkstemp(
+                        dir=str(mem_path.parent), suffix=".tmp"
+                    )
                     try:
-                        mem_path.write_text(
-                            json.dumps(repo_memory, indent=2), encoding="utf-8"
-                        )
+                        with os.fdopen(fd, "w", encoding="utf-8") as f:
+                            json.dump(repo_memory, f, indent=2)
+                        try:
+                            os.replace(tmp_path, str(mem_path))
+                        except Exception:
+                            shutil.move(tmp_path, str(mem_path))
                     except Exception:
                         logger.exception(
                             "Failed to write repo_memory.json to %s", mem_path
                         )
+
                 # Build a lightweight file summary cache for large files to speed prompt building
                 try:
                     summary_path = _agent_ctx / "file_summaries.json"
@@ -557,21 +621,39 @@ def distill_context(
                             )
                             if not ok:
                                 logger.warning(
-                                    "distill_context: atomic_write_json returned False for %s; falling back to write_text",
+                                    "distill_context: atomic_write_json returned False for %s; falling back to mkstemp",
                                     summary_path,
                                 )
-                                summary_path.write_text(
-                                    json.dumps(summaries, indent=2), encoding="utf-8"
+                                fd, tmp_path = tempfile.mkstemp(
+                                    dir=str(summary_path.parent), suffix=".tmp"
                                 )
+                                try:
+                                    with os.fdopen(fd, "w", encoding="utf-8") as f:
+                                        json.dump(summaries, f, indent=2)
+                                    try:
+                                        os.replace(tmp_path, str(summary_path))
+                                    except Exception:
+                                        shutil.move(tmp_path, str(summary_path))
+                                except Exception:
+                                    pass
                         except Exception:
                             logger.debug(
                                 "distill_context: atomic_write_json unavailable or failed for %s; falling back\n%s",
                                 summary_path,
                                 traceback.format_exc(),
                             )
-                            summary_path.write_text(
-                                json.dumps(summaries, indent=2), encoding="utf-8"
+                            fd, tmp_path = tempfile.mkstemp(
+                                dir=str(summary_path.parent), suffix=".tmp"
                             )
+                            try:
+                                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                                    json.dump(summaries, f, indent=2)
+                                try:
+                                    os.replace(tmp_path, str(summary_path))
+                                except Exception:
+                                    shutil.move(tmp_path, str(summary_path))
+                            except Exception:
+                                pass
                     except Exception:
                         pass
                 except Exception:
