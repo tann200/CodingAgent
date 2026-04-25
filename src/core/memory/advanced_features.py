@@ -6,6 +6,9 @@ import ast
 import json
 import logging
 import threading
+import tempfile
+import os
+import shutil
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from datetime import datetime
@@ -95,8 +98,33 @@ class TrajectoryLogger:
                     traceback.format_exc(),
                 )
 
-            with open(filepath, "w", encoding="utf-8") as f:
-                json.dump(trajectory, f, indent=2)
+            # mkstemp -> replace fallback to avoid leaving partial files
+            fd, tmp_path = tempfile.mkstemp(dir=str(filepath.parent), suffix=".tmp")
+            try:
+                try:
+                    with os.fdopen(fd, "w", encoding="utf-8") as f:
+                        json.dump(trajectory, f, indent=2)
+                except Exception:
+                    try:
+                        os.close(fd)
+                    except Exception:
+                        pass
+                    raise
+
+                try:
+                    os.replace(tmp_path, str(filepath))
+                except Exception:
+                    shutil.move(tmp_path, str(filepath))
+            except Exception:
+                # Last resort: write directly (best-effort)
+                try:
+                    filepath.write_text(
+                        json.dumps(trajectory, indent=2), encoding="utf-8"
+                    )
+                except Exception:
+                    logger.exception(
+                        "TrajectoryLogger: failed to write trajectory to %s", filepath
+                    )
 
         logger.info(f"Trajectory logged: {filename}")
         return str(filepath)
@@ -165,8 +193,30 @@ class TrajectoryLogger:
                 traceback.format_exc(),
             )
 
-        with open(output, "w", encoding="utf-8") as f:
-            json.dump(trajectories, f, indent=2)
+        # mkstemp -> replace fallback
+        fd, tmp_path = tempfile.mkstemp(dir=str(output.parent), suffix=".tmp")
+        try:
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    json.dump(trajectories, f, indent=2)
+            except Exception:
+                try:
+                    os.close(fd)
+                except Exception:
+                    pass
+                raise
+
+            try:
+                os.replace(tmp_path, str(output))
+            except Exception:
+                shutil.move(tmp_path, str(output))
+        except Exception:
+            try:
+                output.write_text(json.dumps(trajectories, indent=2), encoding="utf-8")
+            except Exception:
+                logger.exception(
+                    "TrajectoryLogger: failed to export training data to %s", output
+                )
 
         return str(output)
 
@@ -383,7 +433,30 @@ class RefactoringAgent:
                 traceback.format_exc(),
             )
 
-        smells_path.write_text(json.dumps(existing_smells, indent=2))
+        # mkstemp -> replace to avoid partial writes
+        fd, tmp_path = tempfile.mkstemp(dir=str(smells_path.parent), suffix=".tmp")
+        try:
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    json.dump(existing_smells, f, indent=2)
+            except Exception:
+                try:
+                    os.close(fd)
+                except Exception:
+                    pass
+                raise
+
+            try:
+                os.replace(tmp_path, str(smells_path))
+            except Exception:
+                shutil.move(tmp_path, str(smells_path))
+        except Exception:
+            try:
+                smells_path.write_text(json.dumps(existing_smells, indent=2))
+            except Exception:
+                logger.exception(
+                    "RefactoringAgent: failed to write smells to %s", smells_path
+                )
         return smells_path
 
     def suggest_refactoring(self, file_path: str) -> Dict[str, Any]:
@@ -485,7 +558,30 @@ class ReviewAgent:
                 traceback.format_exc(),
             )
 
-        review_path.write_text(json.dumps(review, indent=2))
+        # mkstemp fallback to avoid partial writes
+        fd, tmp_path = tempfile.mkstemp(dir=str(review_path.parent), suffix=".tmp")
+        try:
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    json.dump(review, f, indent=2)
+            except Exception:
+                try:
+                    os.close(fd)
+                except Exception:
+                    pass
+                raise
+
+            try:
+                os.replace(tmp_path, str(review_path))
+            except Exception:
+                shutil.move(tmp_path, str(review_path))
+        except Exception:
+            try:
+                review_path.write_text(json.dumps(review, indent=2))
+            except Exception:
+                logger.exception(
+                    "ReviewAgent: failed to write review to %s", review_path
+                )
         return review_path
 
 
