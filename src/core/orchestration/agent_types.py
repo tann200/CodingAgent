@@ -23,6 +23,8 @@ Design principles:
 from __future__ import annotations
 
 import json
+import os
+import shutil
 import logging
 import traceback
 from dataclasses import dataclass, field
@@ -547,8 +549,48 @@ class AgentRegistry:
                 traceback.format_exc(),
             )
 
+        # Fallback: write via mkstemp -> os.replace with fsync and cleanup,
+        # final fallback to Path.write_text only if necessary.
         try:
-            path.write_text(json.dumps(custom, indent=2), encoding="utf-8")
+            import tempfile
+
+            fd = None
+            tmp_path = None
+            try:
+                fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
+                try:
+                    with os.fdopen(fd, "w", encoding="utf-8") as f:
+                        fd = None
+                        json.dump(custom, f, indent=2)
+                        try:
+                            f.flush()
+                            os.fsync(f.fileno())
+                        except Exception:
+                            pass
+                    try:
+                        os.replace(tmp_path, str(path))
+                    except Exception:
+                        try:
+                            shutil.move(tmp_path, str(path))
+                        except Exception:
+                            # final fallback
+                            path.write_text(
+                                json.dumps(custom, indent=2), encoding="utf-8"
+                            )
+                except Exception:
+                    try:
+                        if fd is not None:
+                            os.close(fd)
+                    except Exception:
+                        pass
+                    raise
+            except Exception:
+                try:
+                    if tmp_path and os.path.exists(tmp_path):
+                        os.unlink(tmp_path)
+                except Exception:
+                    pass
+                raise
             logger.info(
                 "AgentRegistry: saved %d custom agent(s) to %s", len(custom), path
             )

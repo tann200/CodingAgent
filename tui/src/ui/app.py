@@ -811,20 +811,37 @@ class AgentApp(App[None]):
                     _traceback.format_exc(),
                 )
 
-            fd, tmp_path = tempfile.mkstemp(dir=str(p.parent), suffix=".tmp")
+            fd = None
+            tmp_path = None
             try:
+                fd, tmp_path = tempfile.mkstemp(dir=str(p.parent), suffix=".tmp")
                 try:
-                    fobj = os.fdopen(fd, "w", encoding="utf-8")
+                    try:
+                        fobj = os.fdopen(fd, "w", encoding="utf-8")
+                    except Exception:
+                        if fd is not None:
+                            os.close(fd)
+                        raise
+                    with fobj:
+                        json.dump(payload, fobj, ensure_ascii=False)
+                        try:
+                            fobj.flush()
+                            os.fsync(fobj.fileno())
+                        except Exception:
+                            pass
+                    os.replace(tmp_path, str(p))
                 except Exception:
-                    os.close(fd)
+                    try:
+                        if fd is not None:
+                            os.close(fd)
+                    except Exception:
+                        pass
                     raise
-                with fobj:
-                    json.dump(payload, fobj, ensure_ascii=False)
-                os.replace(tmp_path, str(p))
             except Exception as e:
                 logger.error("Session snapshot save failed: %s", e)
                 try:
-                    os.unlink(tmp_path)
+                    if tmp_path and os.path.exists(tmp_path):
+                        os.unlink(tmp_path)
                 except Exception:
                     pass
         except Exception:
@@ -2667,7 +2684,62 @@ class AgentApp(App[None]):
                 )
                 mcp_section["servers"] = servers_list
                 cfg["mcp"] = mcp_section
-                config_path.write_text(_json.dumps(cfg, indent=2), encoding="utf-8")
+                # Prefer a canonical atomic JSON writer when available (lazy import)
+                try:
+                    from src.core.io_utils import atomic_write_json
+
+                    logger.debug(
+                        "app: attempting atomic_write_json for %s", config_path
+                    )
+                    ok = atomic_write_json(config_path, cfg, logger=logger)
+                    if ok:
+                        logger.info("MCP config saved atomically: %s", config_path)
+                    else:
+                        logger.warning(
+                            "app: atomic_write_json returned False for %s; falling back",
+                            config_path,
+                        )
+                        raise RuntimeError("atomic_write_json returned False")
+                except Exception:
+                    # Fallback: write via unique-temp + atomic replace to avoid
+                    # exposing partially-written config files.
+                    import tempfile as _tempfile
+                    import os as _os
+                    import shutil as _shutil
+                    import traceback as _traceback
+
+                    fd = None
+                    tmp = None
+                    try:
+                        config_path.parent.mkdir(parents=True, exist_ok=True)
+                        fd, tmp = _tempfile.mkstemp(
+                            dir=str(config_path.parent), suffix=".tmp"
+                        )
+                        with _os.fdopen(fd, "w", encoding="utf-8") as f:
+                            fd = None
+                            f.write(_json.dumps(cfg, indent=2))
+                            try:
+                                f.flush()
+                                _os.fsync(f.fileno())
+                            except Exception:
+                                pass
+                        try:
+                            _os.replace(tmp, str(config_path))
+                        except Exception:
+                            try:
+                                _shutil.move(tmp, str(config_path))
+                            except Exception:
+                                logger.debug(
+                                    "app: fallback write failed for %s\n%s",
+                                    config_path,
+                                    _traceback.format_exc(),
+                                )
+                    finally:
+                        try:
+                            if fd is not None:
+                                _os.close(fd)
+                        except Exception:
+                            pass
                 text = (
                     f"[bold]MCP server added:[/] {new_name}\n"
                     f"  cmd: {' '.join(new_cmd)}\n"
@@ -2841,7 +2913,51 @@ class AgentApp(App[None]):
             )
             try:
                 export_path.parent.mkdir(parents=True, exist_ok=True)
-                export_path.write_text(md_text, encoding="utf-8")
+                # Write markdown export atomically using mkstemp + os.replace so
+                # the user never sees partial export files.
+                try:
+                    import tempfile as _tempfile
+                    import os as _os
+                    import shutil as _shutil
+                    import traceback as _traceback
+
+                    fd = None
+                    tmp = None
+                    try:
+                        fd, tmp = _tempfile.mkstemp(
+                            dir=str(export_path.parent), suffix=".md.tmp"
+                        )
+                        with _os.fdopen(fd, "w", encoding="utf-8") as f:
+                            fd = None
+                            f.write(md_text)
+                            try:
+                                f.flush()
+                                _os.fsync(f.fileno())
+                            except Exception:
+                                pass
+                        try:
+                            _os.replace(tmp, str(export_path))
+                        except Exception:
+                            try:
+                                _shutil.move(tmp, str(export_path))
+                            except Exception:
+                                logger.debug(
+                                    "app: export fallback write failed for %s\n%s",
+                                    export_path,
+                                    _traceback.format_exc(),
+                                )
+                    finally:
+                        try:
+                            if fd is not None:
+                                _os.close(fd)
+                        except Exception:
+                            pass
+                except Exception as exc:
+                    w = Static(
+                        f"[bold #ff5555]✗ Export failed:[/] {exc}",
+                        classes="system_msg",
+                        markup=True,
+                    )
                 w = Static(
                     f"[bold]✓ Exported[/] {len(history)} messages\n  → {export_path}",
                     classes="system_msg",

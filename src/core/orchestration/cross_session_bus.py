@@ -13,6 +13,9 @@ import logging
 import threading
 import time
 import uuid
+import tempfile
+import os
+import shutil
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Dict, List, Optional, Callable, Any, Union
@@ -517,9 +520,9 @@ class CrossSessionBus:
                 "ttl": message.ttl,
                 "metadata": message.metadata,
             }
-            # Prefer centralized atomic writer; fall back to write_text
+            # Prefer centralized atomic writer; fall back to mkstemp+os.replace
+            msg_file.parent.mkdir(parents=True, exist_ok=True)
             try:
-                msg_file.parent.mkdir(parents=True, exist_ok=True)
                 from src.core.io_utils import atomic_write_json
 
                 logger.debug(
@@ -541,7 +544,52 @@ class CrossSessionBus:
                     traceback.format_exc(),
                 )
 
-            msg_file.write_text(json.dumps(msg_data), encoding="utf-8")
+            fd = None
+            tmp_path = None
+            try:
+                fd, tmp_path = tempfile.mkstemp(dir=str(msg_file.parent), suffix=".tmp")
+                try:
+                    with os.fdopen(fd, "w", encoding="utf-8") as f:
+                        fd = None
+                        json.dump(msg_data, f)
+                        try:
+                            f.flush()
+                            os.fsync(f.fileno())
+                        except Exception:
+                            pass
+                    try:
+                        os.replace(tmp_path, str(msg_file))
+                    except Exception:
+                        try:
+                            shutil.move(tmp_path, str(msg_file))
+                        except Exception:
+                            import traceback
+
+                            logger.debug(
+                                "cross_session_bus: mkstemp fallback failed for %s; falling back to write_text\n%s",
+                                msg_file,
+                                traceback.format_exc(),
+                            )
+                            try:
+                                msg_file.write_text(
+                                    json.dumps(msg_data), encoding="utf-8"
+                                )
+                            except Exception as e:
+                                logger.error(f"Failed to persist message: {e}")
+                except Exception:
+                    try:
+                        if fd is not None:
+                            os.close(fd)
+                    except Exception:
+                        pass
+                    raise
+            except Exception as e:
+                logger.error(f"Failed to persist message: {e}")
+                try:
+                    if tmp_path and os.path.exists(tmp_path):
+                        os.unlink(tmp_path)
+                except Exception:
+                    pass
         except Exception as e:
             logger.error(f"Failed to persist message: {e}")
 

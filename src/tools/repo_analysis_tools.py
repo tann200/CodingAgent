@@ -1,5 +1,7 @@
 from typing import Dict, Any, List
 from pathlib import Path
+import os
+import shutil
 import ast
 import json
 import re
@@ -120,7 +122,52 @@ def analyze_repository(workdir: str) -> Dict[str, Any]:
             # Fall back to the original behaviour
             pass
 
-        repo_memory_path.write_text(json.dumps(repo_memory, indent=2))
+        # Fallback: write via mkstemp -> os.replace with fsync; final fallback
+        # to Path.write_text only if necessary.
+        try:
+            import tempfile
+
+            fd = None
+            tmp_path = None
+            try:
+                fd, tmp_path = tempfile.mkstemp(
+                    dir=str(repo_memory_path.parent), suffix=".tmp"
+                )
+                try:
+                    with os.fdopen(fd, "w", encoding="utf-8") as f:
+                        fd = None
+                        json.dump(repo_memory, f, indent=2)
+                        try:
+                            f.flush()
+                            os.fsync(f.fileno())
+                        except Exception:
+                            pass
+                    try:
+                        os.replace(tmp_path, str(repo_memory_path))
+                    except Exception:
+                        try:
+                            shutil.move(tmp_path, str(repo_memory_path))
+                        except Exception:
+                            repo_memory_path.write_text(
+                                json.dumps(repo_memory, indent=2)
+                            )
+                except Exception:
+                    try:
+                        if fd is not None:
+                            os.close(fd)
+                    except Exception:
+                        pass
+                    raise
+            except Exception:
+                try:
+                    if tmp_path and os.path.exists(tmp_path):
+                        os.unlink(tmp_path)
+                except Exception:
+                    pass
+                raise
+        except Exception:
+            # final fallback — let exception propagate to caller
+            repo_memory_path.write_text(json.dumps(repo_memory, indent=2))
 
         total = sum(d.get("file_count", 0) for d in languages.values())
         return {

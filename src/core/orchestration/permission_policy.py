@@ -388,8 +388,49 @@ class PermissionPolicy:
                 traceback.format_exc(),
             )
 
+        # Fallback: write via mkstemp -> os.replace with fsync to avoid
+        # exposing partially-written JSON. As a last resort the old
+        # Path.write_text behaviour is attempted (only if mkstemp fails).
         try:
-            path.write_text(json.dumps(self.to_dict(), indent=2), encoding="utf-8")
+            import tempfile
+
+            fd = None
+            tmp = None
+            try:
+                fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
+                try:
+                    with os.fdopen(fd, "w", encoding="utf-8") as f:
+                        fd = None
+                        json.dump(self.to_dict(), f, indent=2)
+                        try:
+                            f.flush()
+                            os.fsync(f.fileno())
+                        except Exception:
+                            pass
+                    try:
+                        os.replace(tmp, str(path))
+                    except Exception:
+                        try:
+                            shutil.move(tmp, str(path))
+                        except Exception:
+                            # Last-resort fallback
+                            path.write_text(
+                                json.dumps(self.to_dict(), indent=2), encoding="utf-8"
+                            )
+                except Exception:
+                    try:
+                        if fd is not None:
+                            os.close(fd)
+                    except Exception:
+                        pass
+                    raise
+            except Exception:
+                try:
+                    if tmp and os.path.exists(tmp):
+                        os.unlink(tmp)
+                except Exception:
+                    pass
+                raise
             logger.info(
                 "PermissionPolicy: saved %d rule(s) to %s", len(self._rules), path
             )

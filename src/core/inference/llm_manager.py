@@ -215,16 +215,42 @@ def _set_provider_active(provider_type: str, active: bool) -> None:
                 traceback.format_exc(),
             )
 
-        # Fallback: legacy mkstemp + os.replace behaviour
-        fd, tmp = tempfile.mkstemp(dir=cfg_path.parent, suffix=".tmp")
+        # Fallback: legacy mkstemp + os.replace behaviour. Ensure data is
+        # flushed and fsynced to reduce risk of partial reads on crash.
+        fd = None
+        tmp = None
         try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(json.dumps(providers, indent=2))
-            os.replace(tmp, cfg_path)
+            fd, tmp = tempfile.mkstemp(dir=str(cfg_path.parent), suffix=".tmp")
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    # clear fd so finally block doesn't try to close it twice
+                    fd = None
+                    json.dump(providers, f, indent=2)
+                    try:
+                        f.flush()
+                        os.fsync(f.fileno())
+                    except Exception:
+                        pass
+                try:
+                    os.replace(tmp, str(cfg_path))
+                except Exception:
+                    try:
+                        shutil.move(tmp, str(cfg_path))
+                    except Exception:
+                        raise
+            except Exception:
+                # ensure fd is closed on early failure
+                try:
+                    if fd is not None:
+                        os.close(fd)
+                except Exception:
+                    pass
+                raise
         except Exception:
             try:
-                os.unlink(tmp)
-            except OSError:
+                if tmp and os.path.exists(tmp):
+                    os.unlink(tmp)
+            except Exception:
                 pass
             raise
 
@@ -579,8 +605,54 @@ def save_provider(
                 traceback.format_exc(),
             )
 
-        target.write_text(json.dumps(to_write), encoding="utf-8")
-        return True
+        # Fallback: write via unique-temp + atomic replace to avoid exposing
+        # partially-written JSON. If this fails, fall back to the original
+        # Path.write_text behaviour as a last resort so callers get the file
+        # created when possible.
+        try:
+            import tempfile
+            import os
+            import shutil
+
+            fd = None
+            tmp = None
+            try:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                fd, tmp = tempfile.mkstemp(dir=str(target.parent), suffix=".tmp")
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    fd = None
+                    json.dump(to_write, f, ensure_ascii=False)
+                    try:
+                        f.flush()
+                        os.fsync(f.fileno())
+                    except Exception:
+                        pass
+                try:
+                    os.replace(tmp, str(target))
+                except Exception:
+                    try:
+                        shutil.move(tmp, str(target))
+                    except Exception:
+                        pass
+            finally:
+                try:
+                    if fd is not None:
+                        os.close(fd)
+                except Exception:
+                    pass
+            return True
+        except Exception:
+            # Last-resort fallback to preserve previous behaviour
+            try:
+                target.write_text(json.dumps(to_write), encoding="utf-8")
+                return True
+            except Exception:
+                guilogger.debug(
+                    "llm_manager: fallback write failed for %s\n%s",
+                    target,
+                    traceback.format_exc(),
+                )
+                return False
     except Exception:
         return False
 

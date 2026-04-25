@@ -1,0 +1,7 @@
+{
+  "base_url": "http://127.0.0.1:11434",
+  "models": [
+    "qwen3.5:9b",
+    "other-model"
+  ]
+}
