@@ -12,6 +12,9 @@ import json
 import logging
 import threading
 import time
+import tempfile
+import os
+import shutil
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -316,8 +319,12 @@ class SessionLifecycleManager:
             "metadata": snapshot.metadata,
         }
 
+        # Ensure parent exists
+        snapshot_file.parent.mkdir(parents=True, exist_ok=True)
+
+        # Prefer central atomic writer; fall back to mkstemp+os.replace and
+        # finally Path.write_text as a last resort.
         try:
-            snapshot_file.parent.mkdir(parents=True, exist_ok=True)
             try:
                 from src.core.io_utils import atomic_write_json
 
@@ -341,14 +348,80 @@ class SessionLifecycleManager:
                     snapshot_file,
                     traceback.format_exc(),
                 )
+
+            # Fallback: write to a unique temp file in the same directory and
+            # atomically replace the target. Ensure we fsync the file to reduce
+            # the chance of readers seeing partial content on crash.
+            fd = None
+            tmp_path = None
+            try:
+                fd, tmp_path = tempfile.mkstemp(
+                    dir=str(snapshot_file.parent), suffix=".tmp"
+                )
+                try:
+                    with os.fdopen(fd, "w", encoding="utf-8") as f:
+                        # clear fd so the finally block does not try to close it again
+                        fd = None
+                        json.dump(snapshot_data, f, ensure_ascii=False, indent=2)
+                        try:
+                            f.flush()
+                            os.fsync(f.fileno())
+                        except Exception:
+                            # best-effort only
+                            pass
+
+                    try:
+                        os.replace(tmp_path, str(snapshot_file))
+                    except Exception:
+                        # Older platforms may not support os.replace semantics in
+                        # some edge cases; fall back to shutil.move.
+                        try:
+                            shutil.move(tmp_path, str(snapshot_file))
+                        except Exception:
+                            import traceback
+
+                            logger.debug(
+                                "session_lifecycle: mkstemp fallback failed for %s; falling back to write_text\n%s",
+                                snapshot_file,
+                                traceback.format_exc(),
+                            )
+                            # Attempt best-effort final fallback
+                            try:
+                                snapshot_file.write_text(
+                                    json.dumps(snapshot_data, indent=2),
+                                    encoding="utf-8",
+                                )
+                            except Exception:
+                                logger.exception(
+                                    "session_lifecycle: final fallback write_text failed for %s",
+                                    snapshot_file,
+                                )
+                except Exception:
+                    # Ensure fd is closed on early failure
+                    try:
+                        if fd is not None:
+                            os.close(fd)
+                    except Exception:
+                        pass
+                    raise
+            except Exception as e:
+                logger.exception(
+                    "session_lifecycle: failed to save snapshot %s: %s",
+                    snapshot_file,
+                    e,
+                )
+                try:
+                    if tmp_path and os.path.exists(tmp_path):
+                        os.unlink(tmp_path)
+                except Exception:
+                    pass
         except Exception:
+            # Swallow to preserve caller behaviour; errors are logged above.
             pass
 
-        snapshot_file.write_text(json.dumps(snapshot_data, indent=2), encoding="utf-8")
         logger.info(
             f"Saved snapshot for session {snapshot.session_id}: {snapshot_file}"
         )
-
         return snapshot_file
 
     def load_snapshot(self, session_id: str) -> Optional[SessionSnapshot]:
