@@ -111,6 +111,53 @@ def _check_shell_flags(cmd_parts: list, first_cmd: str) -> Optional[Dict[str, An
     Returns an error dict if a blocked flag is found, else None.
     Shared by both ``bash()`` and ``bash_readonly()`` to avoid duplication.
     """
+    # Enhanced dangerous pattern detection
+    _DANGEROUS_PATTERNS = [
+        (
+            "rm",
+            ["-rf", "-r", "-f", "--recursive", "--force"],
+            "Use delete_file tool instead of rm -rf",
+        ),
+        ("dd", ["of=", "conv=notrunc"], "dd with output file is not allowed"),
+        ("mkfs", [], "Filesystem creation is not allowed"),
+        ("fdisk", [], "Partition editing is not allowed"),
+        ("parted", [], "Partition editing is not allowed"),
+        ("ssh", ["-i"], "Interactive SSH is not allowed; use ssh with key auth only"),
+        ("chmod", ["777"], "World-writable permissions (777) are not allowed"),
+        ("chown", [], "Ownership change is not allowed"),
+        ("killall", [], "killall is not allowed; use kill with specific PID"),
+        ("pkill", ["-f"], "Process killing by name is not allowed"),
+        ("reboot", [], "System reboot is not allowed"),
+        ("shutdown", [], "System shutdown is not allowed"),
+        ("init", [], "Init control is not allowed"),
+        ("halt", [], "System halt is not allowed"),
+        ("poweroff", [], "Power off is not allowed"),
+        ("mount", [], "Mount operations require approval"),
+        ("umount", [], "Unmount operations require approval"),
+        (":(){:|:&};:", None, "Fork bomb detected"),
+        (
+            "curl",
+            ["-o", "--output"],
+            "File download requires approval; use web_tools instead",
+        ),
+        (
+            "wget",
+            ["-O", "--output-document"],
+            "File download requires approval; use web_tools instead",
+        ),
+    ]
+
+    for cmd, flags, msg in _DANGEROUS_PATTERNS:
+        if first_cmd == cmd:
+            # Block entire dangerous command category
+            return {"status": "error", "error": msg}
+        # Check if any flag matches
+        if flags:
+            for part in cmd_parts[1:]:
+                for flag in flags:
+                    if part == flag or part.startswith(flag + "="):
+                        return {"status": "error", "error": msg}
+
     if first_cmd == "sed":
         for _part in cmd_parts[1:]:
             if (

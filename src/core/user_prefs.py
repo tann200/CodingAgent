@@ -3,6 +3,7 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, Optional
 import os
+import shutil
 from src.core.paths import get_prefs_path
 
 DEFAULT_FILENAME = os.getenv("CODINGAGENT_PREFS") or str(get_prefs_path())
@@ -68,7 +69,63 @@ class UserPrefs:
                     traceback.format_exc(),
                 )
                 pass
-            self.path.write_text(json.dumps(self.data, indent=2), encoding="utf-8")
+            # mkstemp -> os.replace fallback (preferred over direct write_text)
+            try:
+                import tempfile
+
+                _fd = None
+                _tmp = None
+                try:
+                    _fd, _tmp = tempfile.mkstemp(
+                        dir=str(self.path.parent), suffix=".tmp"
+                    )
+                    try:
+                        with os.fdopen(_fd, "w", encoding="utf-8") as _f:
+                            _fd = None
+                            json.dump(self.data, _f, indent=2)
+                            try:
+                                _f.flush()
+                                os.fsync(_f.fileno())
+                            except Exception:
+                                pass
+                        try:
+                            os.replace(_tmp, str(self.path))
+                        except Exception:
+                            try:
+                                shutil.move(_tmp, str(self.path))
+                            except Exception:
+                                # Final fallback to write_text
+                                self.path.write_text(
+                                    json.dumps(self.data, indent=2), encoding="utf-8"
+                                )
+                    except Exception:
+                        if _fd is not None:
+                            try:
+                                os.close(_fd)
+                            except Exception:
+                                pass
+                        raise
+                except Exception:
+                    try:
+                        if _tmp and os.path.exists(_tmp):
+                            os.unlink(_tmp)
+                    except Exception:
+                        pass
+                    raise
+            except Exception:
+                # Last-resort: attempt a direct write and log
+                try:
+                    self.path.write_text(
+                        json.dumps(self.data, indent=2), encoding="utf-8"
+                    )
+                except Exception:
+                    import traceback
+
+                    logger.debug(
+                        "user_prefs: failed final fallback write for %s\n%s",
+                        self.path,
+                        traceback.format_exc(),
+                    )
             try:
                 os.chmod(self.path, 0o600)
             except Exception:

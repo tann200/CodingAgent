@@ -1,7 +1,8 @@
 # CodingAgent Architecture
 
 > **Status**: Production-ready — 3844+ tests passing, 0 Critical/High issues
-> **Last Updated**: 2026-04-14
+> **Last Updated**: 2026-04-25
+> **Atomic Writes**: Implemented in 13 files (see `docs/ATOMIC_WRITE_SUMMARY.md`)
 
 ---
 
@@ -266,7 +267,6 @@ perception → frontier_loop → verification → evaluation → memory_sync
 ```
 
 ### 3.3 Session Fork/Revert Flow
-
 ```
 Fork:
   1. Create snapshot via SnapshotManager
@@ -276,6 +276,19 @@ Fork:
 Revert:
   1. Load original snapshot
   2. Restore via git checkout
+```
+
+### 3.4 Atomic File Writes
+
+All whole-file JSON writes use atomic primitives to prevent readers from observing partial writes:
+
+```
+1. Try: atomic_write_json(target, obj, logger) — central helper
+2. Fallback: mkstemp → write → f.flush()+os.fsync() → os.replace
+3. Final fallback: Path.write_text (only if mkstemp fails)
+```
+
+See `docs/ATOMIC_WRITE_SUMMARY.md` for full details.
   3. Restore session state
 ```
 
@@ -346,6 +359,7 @@ Revert:
 | Approval gate | ✅ Complete |
 | Loop guards | ✅ Complete |
 | --resume-session | ✅ Complete |
+| Atomic file writes (mkstemp+replace) | ✅ Complete |
 
 ---
 
@@ -355,6 +369,9 @@ Revert:
 |--------|------|--------|
 | Vol28 | 2026-04-13 | 0 Critical, 0 High |
 | Vol29 | 2026-04-14 | 0 Critical, 0 High |
+| Vol30 | 2026-04-18 | 0 Critical, 0 High |
+| Vol31 | 2026-04-20 | 0 Critical, 0 High |
+| Vol32 | 2026-04-25 | 0 Critical, 0 High (full audit) |
 
 ---
 

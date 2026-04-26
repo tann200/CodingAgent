@@ -12,6 +12,8 @@ the authoritative public symbol for test compatibility.
 from __future__ import annotations
 
 import logging
+import os
+import shutil
 from pathlib import Path
 from typing import Dict, Any
 
@@ -242,8 +244,59 @@ def write_file(
         # Fallback: publish without gate
         _publish_diff_preview(str(p), diff, is_new_file=not bool(original_content))
 
-    # Write new content
-    p.write_text(content, encoding="utf-8")
+    # Write new content atomically using mkstemp -> os.replace with fsync.
+    # This avoids exposing partially-written files to readers.
+    try:
+        import tempfile
+
+        _fd = None
+        _tmp_path = None
+        try:
+            _fd, _tmp_path = tempfile.mkstemp(dir=str(p.parent), suffix=".tmp")
+            try:
+                # Wrap fd in a text-mode file and write
+                with os.fdopen(_fd, "w", encoding="utf-8") as _f:
+                    _fd = None
+                    _f.write(content)
+                    try:
+                        _f.flush()
+                        os.fsync(_f.fileno())
+                    except Exception:
+                        # fsync best-effort; don't fail the write for platform limits
+                        pass
+                try:
+                    os.replace(_tmp_path, str(p))
+                except Exception:
+                    try:
+                        shutil.move(_tmp_path, str(p))
+                    except Exception:
+                        # Final fallback: write_text (last-resort)
+                        p.write_text(content, encoding="utf-8")
+            except Exception as _write_exc:
+                try:
+                    if _fd is not None:
+                        try:
+                            os.close(_fd)
+                        except Exception:
+                            pass
+                finally:
+                    raise
+        except Exception as _mk_exc:
+            # Ensure temp file cleaned up if present
+            try:
+                if _tmp_path and os.path.exists(_tmp_path):
+                    os.unlink(_tmp_path)
+            except Exception:
+                pass
+            _logger.exception("write_file atomic write failed for %s", p)
+            return {"path": str(p), "status": "error", "error": str(_mk_exc)}
+    except Exception as e:
+        # Broad fallback: attempt a simple write_text and report error if that fails
+        try:
+            p.write_text(content, encoding="utf-8")
+        except Exception as _final_exc:
+            _logger.exception("write_file fallback write_text failed for %s", p)
+            return {"path": str(p), "status": "error", "error": str(_final_exc)}
 
     # MEM-1: Invalidate context cache entry so the next ContextBuilder instantiation
     # re-reads from disk rather than serving the pre-write cached content.

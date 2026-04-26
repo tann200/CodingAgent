@@ -3,6 +3,9 @@ import json
 import logging
 import traceback
 import re
+import tempfile
+import os
+import shutil
 from pathlib import Path
 from typing import Mapping, Dict, Any, Optional
 
@@ -67,7 +70,7 @@ def _save_last_plan(workdir: str, plan: list, task: str, step: int = 0) -> None:
             "plan": plan,
             "task": task,
             "current_step": step,
-            "working_dir": str(workdir),  # P2-B: stored for TTL resume check
+            "working_dir": str(workdir),
             "saved_at": datetime.now().isoformat(),
         }
         try:
@@ -91,10 +94,36 @@ def _save_last_plan(workdir: str, plan: list, task: str, step: int = 0) -> None:
                 traceback.format_exc(),
             )
 
-        plan_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
-        logger.info(f"planning_node: saved plan to {plan_path}")
+        # mkstemp fallback
+        fd, tmp_path = tempfile.mkstemp(dir=str(plan_path.parent), suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+                try:
+                    f.flush()
+                    os.fsync(f.fileno())
+                except Exception:
+                    pass
+            try:
+                os.replace(tmp_path, str(plan_path))
+            except Exception:
+                try:
+                    shutil.move(tmp_path, str(plan_path))
+                except Exception:
+                    logger.warning(
+                        "planning_node: mkstemp fallback failed for %s; final fallback to write_text",
+                        plan_path,
+                    )
+                    plan_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        except Exception:
+            try:
+                if fd:
+                    os.close(fd)
+            except Exception:
+                pass
+            raise
     except Exception as e:
-        logger.warning(f"planning_node: failed to save last plan: {e}")
+        logger.warning("planning_node: failed to save last plan: %s", e)
 
 
 async def planning_node(state: StateLike, config: Any) -> Dict[str, Any]:

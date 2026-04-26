@@ -235,10 +235,10 @@ def _select_corrective_prompt(
         ),
     ]
     idx = max(0, min(att - 1, len(prompts) - 1))
-    # Model-tier adjustments: for 'nano' models use the most concise variant
+    # Model-tier adjustments: for SMALL models use more concise variant
     # for attempts >=2 to reduce token usage.
     tier = (model_tier or "").lower()
-    if tier == "nano" and att >= 2:
+    if tier == "small" and att >= 2:
         # Return the prescriptive example (index 1) which is compact.
         return prompts[1]
     return prompts[idx]
@@ -385,12 +385,12 @@ def _handle_no_tool_or_empty_response(
     )
 
     tier = (_model_tier_str or "").lower()
-    if tier == "nano":
-        _max_corrective_2 = 1
-    elif tier == "small":
+    if tier == "small":
         _max_corrective_2 = 2
-    else:
+    elif tier == "medium":
         _max_corrective_2 = 3
+    else:
+        _max_corrective_2 = 4
 
     if empty_response_count >= _max_corrective_2:
         logger.error(
@@ -1766,7 +1766,7 @@ async def _perception_node_impl(
     # references, code identifiers, or clear action verbs, small models are
     # likely to hallucinate a plan.  Return a clarifying question instead of
     # entering the pipeline on a bad premise.
-    if _rounds_now == 0 and _model_tier_str in ("nano", "small"):
+    if _rounds_now == 0 and _model_tier_str == "small":
         _raw_task = (state.get("task") or "").strip()
         _task_words = _raw_task.split()
         _ACTION_VERBS = {
@@ -1854,6 +1854,49 @@ async def _perception_node_impl(
             llm_kwargs["temperature"] = 0.4
     except Exception:
         pass
+
+    # Handle thinking mode for reasoning models like Qwen3.5-9B
+    # Increase token budget to accommodate thinking tokens and disable thinking for efficiency
+    try:
+        if orchestrator and hasattr(orchestrator, "get_provider_capabilities"):
+            caps = orchestrator.get_provider_capabilities()
+            if isinstance(caps, dict):
+                model_name = caps.get("model") or caps.get("default_model") or ""
+                if model_name:
+                    from src.core.inference.thinking_utils import (
+                        is_reasoning_model,
+                        budget_max_tokens,
+                        supports_no_think,
+                        get_thinking_directive,
+                    )
+
+                    if is_reasoning_model(model_name):
+                        # Increase max_tokens to accommodate thinking tokens
+                        current_max = llm_kwargs.get("max_tokens", 0)
+                        if current_max > 0:
+                            adjusted_max = budget_max_tokens(current_max, model_name)
+                            llm_kwargs["max_tokens"] = adjusted_max
+                            logger.info(
+                                f"[THINKING_MODE] Increased max_tokens for reasoning model {model_name}: {current_max} -> {adjusted_max}"
+                            )
+
+                        # For Qwen3 and similar models that support /no_think, disable thinking to save tokens
+                        if supports_no_think(model_name):
+                            llm_kwargs["think"] = False
+                            logger.info(
+                                f"[THINKING_MODE] Disabled thinking for model {model_name}"
+                            )
+                    else:
+                        # For non-reasoning models, ensure thinking is off if supported
+                        if supports_no_think(model_name):
+                            llm_kwargs["think"] = False
+                            logger.info(
+                                f"[THINKING_MODE] Disabled thinking for non-reasoning model {model_name}"
+                            )
+    except Exception as e:
+        logger.debug(
+            f"[THINKING_MODE] Error in thinking mode handling: {e}"
+        )  # Fail gracefully - don't break LLM calls over thinking mode issues
 
     # LLM Inference
     logger.info(

@@ -691,9 +691,12 @@ def delegate_task(
                 try:
                     _manifest["status"] = "completed"
                     _manifest["completed_at"] = _time.time()
-                    _manifest_path.write_text(
-                        _json.dumps(_manifest, indent=2), encoding="utf-8"
-                    )
+                    _ok = _atomic_write_json(_manifest_path, _manifest, logger=logger)
+                    if not _ok:
+                        logger.debug(
+                            "delegate_task: atomic_write_json returned False for manifest at %s",
+                            _manifest_path,
+                        )
                 except Exception:
                     pass
 
@@ -825,9 +828,12 @@ def delegate_task(
                     _manifest["status"] = "failed"
                     _manifest["error"] = str(_subagent_err)
                     _manifest["failed_at"] = _time.time()
-                    _manifest_path.write_text(
-                        _json.dumps(_manifest, indent=2), encoding="utf-8"
-                    )
+                    _ok = _atomic_write_json(_manifest_path, _manifest, logger=logger)
+                    if not _ok:
+                        logger.debug(
+                            "delegate_task: atomic_write_json returned False for manifest at %s",
+                            _manifest_path,
+                        )
                 except Exception:
                     pass
 

@@ -122,52 +122,56 @@ def analyze_repository(workdir: str) -> Dict[str, Any]:
             # Fall back to the original behaviour
             pass
 
-        # Fallback: write via mkstemp -> os.replace with fsync; final fallback
-        # to Path.write_text only if necessary.
+        # Fallback: mkstemp -> os.replace with fsync; final fallback to Path.write_text.
         try:
             import tempfile
 
-            fd = None
-            tmp_path = None
+            _fd = None
+            _tmp = None
             try:
-                fd, tmp_path = tempfile.mkstemp(
+                _fd, _tmp = tempfile.mkstemp(
                     dir=str(repo_memory_path.parent), suffix=".tmp"
                 )
                 try:
-                    with os.fdopen(fd, "w", encoding="utf-8") as f:
-                        fd = None
-                        json.dump(repo_memory, f, indent=2)
+                    with os.fdopen(_fd, "w", encoding="utf-8") as _f:
+                        _fd = None
+                        json.dump(repo_memory, _f, indent=2)
                         try:
-                            f.flush()
-                            os.fsync(f.fileno())
+                            _f.flush()
+                            os.fsync(_f.fileno())
                         except Exception:
                             pass
                     try:
-                        os.replace(tmp_path, str(repo_memory_path))
+                        os.replace(_tmp, str(repo_memory_path))
                     except Exception:
                         try:
-                            shutil.move(tmp_path, str(repo_memory_path))
+                            shutil.move(_tmp, str(repo_memory_path))
                         except Exception:
+                            # Last-resort: write directly (should be rare)
                             repo_memory_path.write_text(
                                 json.dumps(repo_memory, indent=2)
                             )
                 except Exception:
-                    try:
-                        if fd is not None:
-                            os.close(fd)
-                    except Exception:
-                        pass
+                    if _fd is not None:
+                        try:
+                            os.close(_fd)
+                        except Exception:
+                            pass
                     raise
-            except Exception:
+            except Exception as _ex:
                 try:
-                    if tmp_path and os.path.exists(tmp_path):
-                        os.unlink(tmp_path)
+                    if _tmp and os.path.exists(_tmp):
+                        os.unlink(_tmp)
                 except Exception:
                     pass
+                # Surface an error to the caller rather than silently succeed
                 raise
-        except Exception:
-            # final fallback — let exception propagate to caller
-            repo_memory_path.write_text(json.dumps(repo_memory, indent=2))
+        except Exception as e:
+            # Final fallback — attempt a direct write and report errors to caller
+            try:
+                repo_memory_path.write_text(json.dumps(repo_memory, indent=2))
+            except Exception as _final:
+                raise
 
         total = sum(d.get("file_count", 0) for d in languages.values())
         return {

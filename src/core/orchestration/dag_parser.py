@@ -1,6 +1,9 @@
 import json
 import logging
 import re
+import tempfile
+import os
+import shutil
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Set
 
@@ -255,7 +258,40 @@ class PlanDAG:
             todo_md.parent.mkdir(parents=True, exist_ok=True)
             todo_md.write_text(self.to_todo_markdown())
             todo_data = self.to_todo_format()
-            todo_json.write_text(json.dumps(todo_data, indent=2))
+            # atomic + mkstemp fallback for JSON
+            try:
+                from src.core.io_utils import atomic_write_json
+
+                ok = atomic_write_json(todo_json, todo_data, logger=logger)
+                if ok:
+                    logger.info(f"PlanDAG: synced to {todo_json_path} (atomic)")
+                else:
+                    raise RuntimeError("atomic_write_json returned False")
+            except Exception:
+                fd = None
+                tmp_path = None
+                try:
+                    fd, tmp_path = tempfile.mkstemp(
+                        dir=str(todo_json.parent), suffix=".tmp"
+                    )
+                    with os.fdopen(fd, "w", encoding="utf-8") as f:
+                        json.dump(todo_data, f, indent=2)
+                        try:
+                            f.flush()
+                            os.fsync(f.fileno())
+                        except Exception:
+                            pass
+                    try:
+                        os.replace(tmp_path, str(todo_json))
+                    except Exception:
+                        shutil.move(tmp_path, str(todo_json))
+                except Exception:
+                    try:
+                        if fd:
+                            os.close(fd)
+                    except Exception:
+                        pass
+                    todo_json.write_text(json.dumps(todo_data, indent=2))
             logger.info(
                 f"PlanDAG: synced to {todo_path} and {todo_json_path} (fallback)"
             )

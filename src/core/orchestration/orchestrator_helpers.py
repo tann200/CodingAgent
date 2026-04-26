@@ -756,13 +756,89 @@ def _ensure_working_dir_impl(orch: Any) -> None:
                     )
                     ok = atomic_write_json(timings_path, data, logger=guilogger)
                     if not ok:
-                        timings_path.write_text(
-                            json.dumps(data, ensure_ascii=False), encoding="utf-8"
-                        )
+                        # mkstemp fallback preferred over direct write_text
+                        try:
+                            import tempfile
+
+                            _fd = None
+                            _tmp = None
+                            try:
+                                timings_path.parent.mkdir(parents=True, exist_ok=True)
+                                _fd, _tmp = tempfile.mkstemp(
+                                    dir=str(timings_path.parent), suffix=".tmp"
+                                )
+                                with os.fdopen(_fd, "w", encoding="utf-8") as _f:
+                                    _fd = None
+                                    _f.write(json.dumps(data, ensure_ascii=False))
+                                    try:
+                                        _f.flush()
+                                        os.fsync(_f.fileno())
+                                    except Exception:
+                                        pass
+                                try:
+                                    os.replace(_tmp, str(timings_path))
+                                except Exception:
+                                    try:
+                                        shutil.move(_tmp, str(timings_path))
+                                    except Exception:
+                                        timings_path.write_text(
+                                            json.dumps(data, ensure_ascii=False),
+                                            encoding="utf-8",
+                                        )
+                            finally:
+                                try:
+                                    if _fd is not None:
+                                        os.close(_fd)
+                                except Exception:
+                                    pass
+                        except Exception:
+                            guilogger.debug(
+                                "orchestrator_helpers: fallback write failed for %s\n%s",
+                                timings_path,
+                                traceback.format_exc(),
+                            )
                 except Exception:
-                    timings_path.write_text(
-                        json.dumps(data, ensure_ascii=False), encoding="utf-8"
-                    )
+                    # atomic_write_json failed to import/call — use mkstemp fallback
+                    try:
+                        import tempfile
+
+                        _fd = None
+                        _tmp = None
+                        try:
+                            timings_path.parent.mkdir(parents=True, exist_ok=True)
+                            _fd, _tmp = tempfile.mkstemp(
+                                dir=str(timings_path.parent), suffix=".tmp"
+                            )
+                            with os.fdopen(_fd, "w", encoding="utf-8") as _f:
+                                _fd = None
+                                _f.write(json.dumps(data, ensure_ascii=False))
+                                try:
+                                    _f.flush()
+                                    os.fsync(_f.fileno())
+                                except Exception:
+                                    pass
+                            try:
+                                os.replace(_tmp, str(timings_path))
+                            except Exception:
+                                try:
+                                    shutil.move(_tmp, str(timings_path))
+                                except Exception:
+                                    timings_path.write_text(
+                                        json.dumps(data, ensure_ascii=False),
+                                        encoding="utf-8",
+                                    )
+                        finally:
+                            try:
+                                if _fd is not None:
+                                    os.close(_fd)
+                            except Exception:
+                                pass
+                    except Exception:
+                        guilogger.debug(
+                            "orchestrator_helpers: fallback write failed for %s\n%s",
+                            timings_path,
+                            traceback.format_exc(),
+                        )
             except Exception:
                 pass
         except Exception:
@@ -864,13 +940,76 @@ def _background_model_check_impl(orch: Any) -> None:
                         )
                         ok = atomic_write_json(timings_path, data, logger=guilogger)
                         if not ok:
-                            timings_path.write_text(
-                                json.dumps(data, ensure_ascii=False), encoding="utf-8"
-                            )
+                            import tempfile
+
+                            _fd = None
+                            _tmp = None
+                            try:
+                                _fd, _tmp = tempfile.mkstemp(
+                                    dir=str(timings_path.parent), suffix=".tmp"
+                                )
+                                with os.fdopen(_fd, "w", encoding="utf-8") as _f:
+                                    _fd = None
+                                    _f.write(json.dumps(data, ensure_ascii=False))
+                                    try:
+                                        _f.flush()
+                                        os.fsync(_f.fileno())
+                                    except Exception:
+                                        pass
+                                try:
+                                    os.replace(_tmp, str(timings_path))
+                                except Exception:
+                                    try:
+                                        shutil.move(_tmp, str(timings_path))
+                                    except Exception:
+                                        timings_path.write_text(
+                                            json.dumps(data, ensure_ascii=False),
+                                            encoding="utf-8",
+                                        )
+                            finally:
+                                try:
+                                    if _fd is not None:
+                                        os.close(_fd)
+                                except Exception:
+                                    pass
                     except Exception:
-                        timings_path.write_text(
-                            json.dumps(data, ensure_ascii=False), encoding="utf-8"
+                        guilogger.debug(
+                            "orchestrator_helpers: atomic_write_json unavailable for %s; using mkstemp fallback\n%s",
+                            timings_path,
+                            traceback.format_exc(),
                         )
+                        import tempfile
+
+                        _fd = None
+                        _tmp = None
+                        try:
+                            _fd, _tmp = tempfile.mkstemp(
+                                dir=str(timings_path.parent), suffix=".tmp"
+                            )
+                            with os.fdopen(_fd, "w", encoding="utf-8") as _f:
+                                _fd = None
+                                _f.write(json.dumps(data, ensure_ascii=False))
+                                try:
+                                    _f.flush()
+                                    os.fsync(_f.fileno())
+                                except Exception:
+                                    pass
+                            try:
+                                os.replace(_tmp, str(timings_path))
+                            except Exception:
+                                try:
+                                    shutil.move(_tmp, str(timings_path))
+                                except Exception:
+                                    timings_path.write_text(
+                                        json.dumps(data, ensure_ascii=False),
+                                        encoding="utf-8",
+                                    )
+                        finally:
+                            try:
+                                if _fd is not None:
+                                    os.close(_fd)
+                            except Exception:
+                                pass
                 except Exception:
                     pass
         except Exception:

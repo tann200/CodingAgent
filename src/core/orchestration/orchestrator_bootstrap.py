@@ -276,6 +276,19 @@ def _init_providers(orch: Any) -> None:
                     guilogger.info(
                         f"Orchestrator init: picked adapter: {name}, adapter: {orch._adapter}"
                     )
+            # HANG-FIX: _publish_active_config must be called explicitly when _adapter
+            # is set directly (not through the adapter property setter) so that
+            # model_tier and other capability-derived fields are populated before
+            # graph nodes call call_model with provider=None model=None.
+            if orch._adapter is not None:
+                try:
+                    from src.core.orchestration.orchestrator_helpers import (
+                        _publish_active_config_impl,
+                    )
+
+                    _publish_active_config_impl(orch)
+                except Exception:
+                    pass
     except Exception:
         pass
 
