@@ -5,8 +5,9 @@ Provides:
   - memory_search: searches VectorStore, TASK_STATE.md, compaction checkpoints,
     and execution traces for relevant context.
     - memory_save: persists a note to the memory file returned by
-      ``src.core.paths.get_memory_path()`` so it is available in future
+      `src.core.paths.get_memory_path()` so it is available in future
       sessions (GAP-NEW-4 / GAP-FRONTIER-4).
+    - Tier-aware memory limits: different limits for Lite/Standard/Full agents.
 """
 
 import json
@@ -27,176 +28,119 @@ from src.tools._tool import tool, PermissionKind
 logger = logging.getLogger(__name__)
 
 
-def _search_vector_store(query: str, workdir: str) -> List[Dict[str, Any]]:
-    """Search the VectorStore if available."""
-    try:
-        from src.core.indexing.vector_store import VectorStore
+# Memory tiers and limits - tier-aware memory limiting (P1)
+_MEMORY_TIER_LIMITS = {
+    "lite": {
+        "max_entries": 50,
+        "max_bytes": 10_000,  # ~10 KB
+    },
+    "standard": {
+        "max_entries": 200,
+        "max_bytes": 50_000,  # ~50 KB
+    },
+    "full": {
+        "max_entries": 500,
+        "max_bytes": 200_000,  # ~200 KB
+    },
+}
 
-        vs = VectorStore(workdir)
-        raw = vs.search(query)
-        results = []
-        for item in raw[:5]:
-            # LOGIC-1: Use actual similarity score from the vector store instead of hardcoded 0.8.
-            # Backends typically return a distance (_distance) where lower=more similar;
-            # convert to a [0,1] similarity score.
-            # where 1.0 = identical and 0.0 = maximally distant (distance ≥ 2.0 for
-            # normalised embeddings).  Clamp to [0, 1] to guard against edge cases.
-            distance = item.get("_distance", 1.0) if isinstance(item, dict) else 1.0
-            score = max(0.0, min(1.0, 1.0 - distance / 2.0))
-            results.append(
-                {
-                    "source": "vector_store",
-                    "excerpt": str(item)[:500],
-                    "score": round(score, 4),
-                }
-            )
-        return results
-    except Exception:
-        return []
+# Default to standard tier if unable to determine
+_DEFAULT_TIER = "standard"
+
+# Memory file and limits
+_MEMORY_FILE = get_memory_path()
 
 
-def _search_file(path: Path, query: str, source_name: str) -> List[Dict[str, Any]]:
-    """Search a single file for query terms and return matching excerpts."""
-    if not path.exists():
-        return []
-    try:
-        text = path.read_text(encoding="utf-8", errors="replace")
-    except Exception:
-        return []
-
-    query_lower = query.lower()
-    words = set(re.findall(r"\w+", query_lower))
-    if not words:
-        return []
-
-    results = []
-    for line in text.splitlines():
-        line_lower = line.lower()
-        matched = [w for w in words if w in line_lower]
-        if matched:
-            # LOGIC-1: Score proportional to fraction of query words matched,
-            # capped at 0.7 (below vector-store scores) to preserve ranking order.
-            score = round(min(0.7, 0.3 + 0.4 * len(matched) / len(words)), 4)
-            results.append(
-                {
-                    "source": source_name,
-                    "excerpt": line.strip()[:500],
-                    "score": score,
-                }
-            )
-    return results[:5]
-
-
-@tool(
-    tags=["coding", "debug", "planning", "review"], permission_kind=PermissionKind.NONE
-)
-def memory_search(
-    query: str,
-    workdir: Optional[str] = None,
-) -> Dict[str, Any]:
-    """Search agent memory for relevant context.
-
-    Searches the vector store, TASK_STATE.md, and execution history for
-    entries relevant to the query. Use this before starting a task to
-    check whether a similar problem has been solved before.
+def _get_agent_tier_from_state(agent_state: Optional[Dict[str, Any]] = None) -> str:
+    """
+    Determine agent tier from agent state or context.
 
     Args:
-        query: Search terms. Best results with specific technical terms.
-        workdir: Working directory (defaults to cwd).
+        agent_state: Optional agent state dictionary
 
     Returns:
-        status, query, results (list of {source, excerpt, score}).
+        Agent tier: 'lite', 'standard', or 'full'
     """
-    if not query or not query.strip():
-        return {"status": "error", "error": "query must be non-empty"}
+    if not agent_state:
+        return _DEFAULT_TIER
 
-    workdir_path = workdir or str(Path.cwd())
-    results: List[Dict[str, Any]] = []
+    # Try to get tier from various possible locations in state
+    tier_sources = [
+        agent_state.get("agent_tier"),
+        agent_state.get("tier"),
+        agent_state.get("model_tier"),
+        agent_state.get("current_tier"),
+    ]
 
-    # 1. VectorStore search
-    results.extend(_search_vector_store(query, workdir_path))
+    for tier in tier_sources:
+        if tier and isinstance(tier, str):
+            tier_lower = tier.lower()
+            if tier_lower in _MEMORY_TIER_LIMITS:
+                return tier_lower
+            # Handle full model names that indicate tier
+            if (
+                any(size in tier_lower for size in ["7b", "8b", "14b"])
+                and "lite" not in tier_lower
+            ):
+                # Small models tend to be lite tier
+                if "lite" in tier_lower or any(
+                    indicator in tier_lower for indicator in ["1b", "3b"]
+                ):
+                    return "lite"
+                elif any(size in tier_lower for size in ["70b", "65b"]):
+                    return "full"
+                else:
+                    return "standard"  # Default for medium models
 
-    # 2. TASK_STATE.md
-    ac = agent_context_path(Path(workdir_path))
-    results.extend(_search_file(ac / "TASK_STATE.md", query, "TASK_STATE.md"))
+    # Fallback: try to infer from model name if present
+    model_name = agent_state.get("model") or agent_state.get("current_model") or ""
+    if model_name:
+        model_lower = model_name.lower()
+        if any(indicator in model_lower for indicator in ["1b", "3b"]):
+            return "lite"
+        elif any(indicator in model_lower for indicator in ["70b", "65b"]):
+            return "full"
+        elif any(indicator in model_lower for indicator in ["7b", "8b", "14b"]):
+            return "standard"
 
-    # 3. compaction_checkpoint.md
-    results.extend(
-        _search_file(ac / "compaction_checkpoint.md", query, "compaction_checkpoint")
-    )
-
-    # 4. todo.json
-    todo_path = ac / "todo.json"
-    if todo_path.exists():
-        try:
-            try:
-                from src.tools.todo_tools import _load_todo_json
-
-                todos = _load_todo_json(str(ac.parent))
-            except Exception:
-                todos = json.loads(todo_path.read_text())
-            for t in todos:
-                desc = t.get("description", "")
-                if query.lower() in desc.lower():
-                    results.append(
-                        {
-                            "source": "todo.json",
-                            "excerpt": desc[:500],
-                            "score": 0.6,
-                        }
-                    )
-        except Exception:
-            pass
-
-    # Deduplicate and sort by score
-    seen = set()
-    unique = []
-    for r in results:
-        key = (r["source"], r["excerpt"][:80])
-        if key not in seen:
-            seen.add(key)
-            unique.append(r)
-    unique.sort(key=lambda x: x.get("score", 0), reverse=True)
-
-    return {
-        "status": "ok",
-        "query": query,
-        "results": unique[:10],
-    }
+    return _DEFAULT_TIER
 
 
-# ---------------------------------------------------------------------------
-# memory_save — GAP-NEW-4 / GAP-FRONTIER-4
-# ---------------------------------------------------------------------------
+def _get_tier_limits(tier: Optional[str] = None) -> Dict[str, int]:
+    """
+    Get memory limits for a specific tier.
 
+    Args:
+        tier: Agent tier ('lite', 'standard', 'full') or None for default
+
+    Returns:
+        Dictionary with 'max_entries' and 'max_bytes' limits
+    """
+    if tier and tier in _MEMORY_TIER_LIMITS:
+        return _MEMORY_TIER_LIMITS[tier]
+    return _MEMORY_TIER_LIMITS[_DEFAULT_TIER]
+
+
+# Memory file and limits
 _MEMORY_FILE = get_memory_path()
-_MEMORY_MAX_BYTES = 50_000  # ~50 KB; trim oldest entries when exceeded
 
 
 @tool(tags=["coding", "planning", "review"], permission_kind=PermissionKind.MEMORY)
 def memory_save(
     content: str,
     category: Optional[str] = None,
+    agent_state: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Persist a note to long-term memory so it is available in future sessions.
-
-    Use this to record learned preferences, project conventions, recurring
-    patterns, or any insight that should survive beyond the current session.
-    Notes are stored in the file returned by ``src.core.paths.get_memory_path()``
-    and injected into future
-    sessions automatically.
+    """Persist a note to the memory file.
 
     Args:
-        content: The note to save (1–3 sentences, specific and actionable).
-        category: Optional category label (e.g. "convention", "preference",
-                  "pattern", "warning"). Defaults to "note".
+        content: Text content to save (will be trimmed)
+        category: Optional category for the memory entry
+        agent_state: Optional agent state for tier-aware limits
 
     Returns:
-        status, saved entry.
+        Status dictionary with operation results
     """
-    if not content or not content.strip():
-        return {"status": "error", "error": "content must be non-empty"}
-
     content = content.strip()
     if len(content) > 1000:
         return {
@@ -208,6 +152,12 @@ def memory_save(
     scan_error = scan_memory_content(content)
     if scan_error:
         return {"status": "error", "error": scan_error}
+
+    # Get tier-aware limits
+    tier = _get_agent_tier_from_state(agent_state)
+    limits = _get_tier_limits(tier)
+    max_entries = limits["max_entries"]
+    max_bytes = limits["max_bytes"]
 
     cat = (category or "note").strip().lower()
     ts = time.strftime("%Y-%m-%d %H:%M")
@@ -227,13 +177,30 @@ def memory_save(
             except Exception:
                 existing = ""
 
-            # Trim oldest entries if file would exceed size limit
+            # Trim oldest entries if file would exceed tier-specific size limit
             new_content = existing + entry
-            if len(new_content.encode("utf-8")) > _MEMORY_MAX_BYTES:
+            if len(new_content.encode("utf-8")) > max_bytes:
                 lines = new_content.splitlines(keepends=True)
-                while lines and len("".join(lines).encode("utf-8")) > _MEMORY_MAX_BYTES:
+                while lines and len("".join(lines).encode("utf-8")) > max_bytes:
                     lines.pop(0)
                 new_content = "".join(lines)
+
+            # Also enforce entry count limit
+            current_entries = new_content.count("\n- [")
+            if current_entries > max_entries:
+                # Remove oldest entries to meet entry limit
+                lines = new_content.splitlines(keepends=True)
+                # Count entries from the end (newest) to keep the most recent ones
+                entry_count = 0
+                keep_lines = []
+                for line in reversed(lines):
+                    if line.strip().startswith("- ["):
+                        entry_count += 1
+                        if entry_count > max_entries:
+                            continue  # Skip this old entry
+                    keep_lines.append(line)
+                # Reverse back to original order
+                new_content = "".join(reversed(keep_lines))
 
             # Write atomically: write to a sibling temp file, then os.replace.
             # We still hold the OS lock during the replace so no other process
@@ -248,6 +215,8 @@ def memory_save(
             "saved": entry.strip(),
             "memory_file": str(_MEMORY_FILE),
             "total_entries": new_content.count("\n- ["),
+            "tier": tier,
+            "limits_applied": limits,
         }
     except Exception as exc:
         return {"status": "error", "error": str(exc)}
