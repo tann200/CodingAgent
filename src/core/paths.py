@@ -66,8 +66,24 @@ def get_user_config_path() -> Path:
 
 
 def get_memory_path() -> Path:
-    """Return the path to memory.md."""
+    """Return the path to memory.md (global, per-user agent memory)."""
     return get_data_dir() / "memory.md"
+
+
+def get_user_preferences_path(workdir: Optional[Path] = None) -> Path:
+    """Return the path to preferences.md (project-specific user preferences).
+
+    This stores user preferences, working style, and explicit instructions
+    that are specific to each project. Stored in the project's .codingAgent/
+    directory (project-specific) rather than global ~/.coding_agent/ (global).
+
+    Args:
+        workdir: The project working directory. Defaults to cwd.
+    """
+    from src.tools.tools_config import agent_context_path
+
+    wd = workdir if workdir else Path.cwd()
+    return agent_context_path(wd) / "preferences.md"
 
 
 def get_events_db_path() -> Path:
@@ -108,30 +124,28 @@ def get_agent_context_dir() -> Path:
     """Return the agent context directory.
 
     This is the directory where agent-specific state is stored.
-    Preference order for the directory name:
-      1. `src.tools.tools_config.get_context_dir_name()` if available
+
+    Priority order for the directory name:
+      1. `src.tools.tools_config.get_context_dir_name()` (default: .codingAgent)
       2. `CODINGAGENT_CONTEXT_DIR` environment variable
-      3. Default: ".localAgent"
 
     For backwards compatibility, if the chosen directory does not exist but
     one of the legacy directories (".agent-context", ".agent") exists in the
     current working directory, that existing directory is returned instead.
     The returned path is guaranteed to exist (created if necessary).
+
+    Use `agent_context_path()` from tools_config for explicit workdir support.
     """
-    # Prefer runtime configuration from tools_config when possible. Import
-    # locally to avoid impacting module import order for callers that import
-    # this module early.
     try:
         from src.tools.tools_config import get_context_dir_name
 
         ctx_dir_name = get_context_dir_name()
     except Exception:
-        ctx_dir_name = os.getenv("CODINGAGENT_CONTEXT_DIR") or ".localAgent"
+        ctx_dir_name = os.getenv("CODINGAGENT_CONTEXT_DIR") or ".codingAgent"
 
     cwd = Path.cwd()
     candidate = cwd / ctx_dir_name
 
-    # If the configured candidate already exists, use it.
     if candidate.exists():
         return candidate
 

@@ -198,7 +198,7 @@ class TestContextBuilderUsesWorkingDir:
         from src.core.context.context_builder import ContextBuilder
 
         # Write TASK_STATE.md to tmp_path (simulating distiller output)
-        agent_ctx = tmp_path / ".agent-context"
+        agent_ctx = tmp_path / ".codingAgent"
         agent_ctx.mkdir(parents=True, exist_ok=True)
         (agent_ctx / "TASK_STATE.md").write_text("## Current Task\nDo something\n")
 

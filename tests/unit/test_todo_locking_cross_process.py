@@ -74,7 +74,7 @@ def test_cross_process_todo_writes(tmp_path):
     assert all(isinstance(item, dict) and "description" in item for item in data)
 
     # No leftover temp files
-    agent_ctx = workdir / ".agent-context"
+    agent_ctx = workdir / ".codingAgent"
     assert agent_ctx.exists()
     tmp_files = [p for p in agent_ctx.iterdir() if ".tmp." in p.name]
     assert not tmp_files, f"Found leftover temp files: {tmp_files}"

@@ -9,7 +9,6 @@ Covers:
   GAP-FRONTIER-6 tier-dependent plan step limits
 """
 
-
 # ruff: noqa: E501
 from __future__ import annotations
 
@@ -21,29 +20,33 @@ import re
 # GAP-FRONTIER-6: get_plan_step_limit
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 class TestGetPlanStepLimit:
-    def test_nano_limit_4(self):
-        from src.core.inference.model_tiers import ModelTier, get_plan_step_limit
-        assert get_plan_step_limit(ModelTier.NANO) == 4
+    # NANO removed - replaced with SMALL
 
     def test_small_limit_6(self):
         from src.core.inference.model_tiers import ModelTier, get_plan_step_limit
+
         assert get_plan_step_limit(ModelTier.SMALL) == 6
 
-    def test_medium_limit_10(self):
+    def test_medium_limit_12(self):  # Changed from 10 to 12 for 256K context
         from src.core.inference.model_tiers import ModelTier, get_plan_step_limit
-        assert get_plan_step_limit(ModelTier.MEDIUM) == 10
+
+        assert get_plan_step_limit(ModelTier.MEDIUM) == 12
 
     def test_large_limit_16(self):
         from src.core.inference.model_tiers import ModelTier, get_plan_step_limit
+
         assert get_plan_step_limit(ModelTier.LARGE) == 16
 
     def test_frontier_limit_20(self):
         from src.core.inference.model_tiers import ModelTier, get_plan_step_limit
+
         assert get_plan_step_limit(ModelTier.FRONTIER) == 20
 
     def test_all_tiers_have_limits(self):
         from src.core.inference.model_tiers import ModelTier, get_plan_step_limit
+
         for tier in ModelTier:
             assert get_plan_step_limit(tier) > 0
 
@@ -52,70 +55,86 @@ class TestGetPlanStepLimit:
 # GAP-SMALL-2: role file selection
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 class TestSelectRoleForTier:
     def _make_builder_with_roles(self, roles: dict) -> "ContextBuilder":
         from src.core.context.context_builder import ContextBuilder
+
         builder = ContextBuilder()
         builder.roles = roles
         return builder
 
-    def test_nano_selects_operational_small(self):
-        builder = self._make_builder_with_roles({
-            "operational": "BASE operational",
-            "operational-small": "SMALL operational",
-            "operational-frontier": "FRONTIER operational",
-        })
-        result = builder._select_role_for_tier("operational", "nano")
+    def test_small_selects_operational_small(self):
+        builder = self._make_builder_with_roles(
+            {
+                "operational": "BASE operational",
+                "operational-small": "SMALL operational",
+                "operational-frontier": "FRONTIER operational",
+            }
+        )
+        result = builder._select_role_for_tier("operational", "small")
         assert result == "SMALL operational"
 
-    def test_small_selects_operational_small(self):
-        builder = self._make_builder_with_roles({
-            "operational": "BASE operational",
-            "operational-small": "SMALL operational",
-        })
+    def test_small_selects_operational_small_fallback(self):  # Updated from nano
+        builder = self._make_builder_with_roles(
+            {
+                "operational": "BASE operational",
+                "operational-small": "SMALL operational",
+            }
+        )
         result = builder._select_role_for_tier("operational", "small")
         assert result == "SMALL operational"
 
     def test_frontier_selects_operational_frontier(self):
-        builder = self._make_builder_with_roles({
-            "operational": "BASE operational",
-            "operational-frontier": "FRONTIER operational",
-        })
+        builder = self._make_builder_with_roles(
+            {
+                "operational": "BASE operational",
+                "operational-frontier": "FRONTIER operational",
+            }
+        )
         result = builder._select_role_for_tier("operational", "frontier")
         assert result == "FRONTIER operational"
 
     def test_large_selects_operational_frontier(self):
-        builder = self._make_builder_with_roles({
-            "operational": "BASE operational",
-            "operational-frontier": "FRONTIER operational",
-        })
+        builder = self._make_builder_with_roles(
+            {
+                "operational": "BASE operational",
+                "operational-frontier": "FRONTIER operational",
+            }
+        )
         result = builder._select_role_for_tier("operational", "large")
         assert result == "FRONTIER operational"
 
     def test_medium_selects_base_operational(self):
-        builder = self._make_builder_with_roles({
-            "operational": "BASE operational",
-            "operational-small": "SMALL operational",
-            "operational-frontier": "FRONTIER operational",
-        })
+        builder = self._make_builder_with_roles(
+            {
+                "operational": "BASE operational",
+                "operational-small": "SMALL operational",
+                "operational-frontier": "FRONTIER operational",
+            }
+        )
         result = builder._select_role_for_tier("operational", "medium")
         assert result == "BASE operational"
 
     def test_non_operational_role_unaffected(self):
-        builder = self._make_builder_with_roles({
-            "operational": "BASE",
-            "operational-small": "SMALL",
-            "analyst": "analyst content",
-        })
+        builder = self._make_builder_with_roles(
+            {
+                "operational": "BASE",
+                "operational-small": "SMALL",
+                "analyst": "analyst content",
+            }
+        )
         result = builder._select_role_for_tier("analyst", "small")
         assert result == "analyst content"
 
     def test_fallback_when_variant_missing(self):
         """If operational-small.md missing, fall back to operational.md."""
-        builder = self._make_builder_with_roles({
-            "operational": "BASE operational",
-            # no operational-small
-        })
+        builder = self._make_builder_with_roles(
+            {
+                "operational": "BASE operational",
+                # no operational-small
+            }
+        )
         result = builder._select_role_for_tier("operational", "nano")
         assert result == "BASE operational"
 
@@ -124,9 +143,14 @@ class TestSelectRoleForTier:
 # GAP-SMALL-1: simplified output format for NANO/SMALL
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 class TestSmallTierOutputFormat:
     def _build_static_prefix(self, tier: str) -> str:
-        from src.core.context.context_builder import ContextBuilder, _STATIC_PROMPT_CACHE
+        from src.core.context.context_builder import (
+            ContextBuilder,
+            _STATIC_PROMPT_CACHE,
+        )
+
         _STATIC_PROMPT_CACHE.clear()
         builder = ContextBuilder()
         builder.roles = {
@@ -169,9 +193,11 @@ class TestSmallTierOutputFormat:
 # GAP-FRONTIER-1: model-ID prompt partial routing
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 class TestModelIdPartialRouting:
     def _select(self, model_id: str, provider_family: str = "") -> str:
         from src.core.context.context_builder import ContextBuilder
+
         builder = ContextBuilder()
         caps = {"model": model_id, "provider_family": provider_family}
         return builder._select_prompt_partial(
@@ -185,14 +211,15 @@ class TestModelIdPartialRouting:
         result = self._select("o1-mini")
         # File doesn't exist → falls through to provider/default; test the pattern matching logic
         from src.core.context.context_builder import ContextBuilder
+
         matched = any(
-            re.search(pat, "o1-mini")
-            for pat, _ in ContextBuilder._MODEL_ID_PARTIAL_MAP
+            re.search(pat, "o1-mini") for pat, _ in ContextBuilder._MODEL_ID_PARTIAL_MAP
         )
         assert matched
 
     def test_claude_opus_matches_anthropic_frontier_pattern(self):
         from src.core.context.context_builder import ContextBuilder
+
         matched = any(
             re.search(pat, "claude-opus-4-6")
             for pat, _ in ContextBuilder._MODEL_ID_PARTIAL_MAP
@@ -201,6 +228,7 @@ class TestModelIdPartialRouting:
 
     def test_claude_haiku_matches_anthropic_small_pattern(self):
         from src.core.context.context_builder import ContextBuilder
+
         matched = any(
             re.search(pat, "claude-haiku-4-5")
             for pat, _ in ContextBuilder._MODEL_ID_PARTIAL_MAP
@@ -209,6 +237,7 @@ class TestModelIdPartialRouting:
 
     def test_gemini_flash_matches_gemini_small_pattern(self):
         from src.core.context.context_builder import ContextBuilder
+
         matched = any(
             re.search(pat, "gemini-2.0-flash")
             for pat, _ in ContextBuilder._MODEL_ID_PARTIAL_MAP
@@ -217,6 +246,7 @@ class TestModelIdPartialRouting:
 
     def test_gemini_pro_matches_gemini_frontier_pattern(self):
         from src.core.context.context_builder import ContextBuilder
+
         matched = any(
             re.search(pat, "gemini-2.5-pro")
             for pat, _ in ContextBuilder._MODEL_ID_PARTIAL_MAP
@@ -233,6 +263,7 @@ class TestModelIdPartialRouting:
 # ─────────────────────────────────────────────────────────────────────────────
 # GAP-SMALL-5: format_error not counted toward no_plan_fail_count
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 class TestFormatErrorNotCountedAsDoomLoop:
     def _make_state(self, no_plan_fail_count: int = 0) -> dict:
@@ -303,6 +334,7 @@ class TestFormatErrorNotCountedAsDoomLoop:
 # New role files exist
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 class TestNewRoleFilesExist:
     _BASE = Path(__file__).parents[2] / "src" / "config" / "agent-brain" / "roles"
 
@@ -315,7 +347,9 @@ class TestNewRoleFilesExist:
     def test_operational_small_is_short(self):
         content = (self._BASE / "operational-small.md").read_text()
         lines = [l for l in content.splitlines() if l.strip()]
-        assert len(lines) <= 60, f"operational-small.md has {len(lines)} non-empty lines, expected ≤60"
+        assert len(lines) <= 60, (
+            f"operational-small.md has {len(lines)} non-empty lines, expected ≤60"
+        )
 
     def test_operational_small_has_status_field(self):
         content = (self._BASE / "operational-small.md").read_text()
@@ -328,7 +362,11 @@ class TestNewRoleFilesExist:
 
     def test_operational_frontier_has_reflection_gate(self):
         content = (self._BASE / "operational-frontier.md").read_text()
-        assert "reflect" in content.lower() or "reasoning" in content.lower() or "I am calling" in content
+        assert (
+            "reflect" in content.lower()
+            or "reasoning" in content.lower()
+            or "I am calling" in content
+        )
 
     def test_operational_frontier_has_exploration_section(self):
         content = (self._BASE / "operational-frontier.md").read_text()
@@ -339,8 +377,14 @@ class TestNewRoleFilesExist:
 # Gap analysis document exists
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 class TestGapAnalysisDocument:
-    _DOC = Path(__file__).parents[2] / "docs" / "audit" / "gap-analysis-opencode-vs-codingagent.md"
+    _DOC = (
+        Path(__file__).parents[2]
+        / "docs"
+        / "audit"
+        / "gap-analysis-opencode-vs-codingagent.md"
+    )
 
     def test_document_exists(self):
         assert self._DOC.exists()

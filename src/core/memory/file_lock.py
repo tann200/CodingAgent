@@ -77,15 +77,45 @@ try:
         _fcntl.flock(fh.fileno(), _fcntl.LOCK_UN)
 
 except ImportError:
-    # Windows: fcntl is unavailable.  Fall back to a no-op (the threading.Lock
-    # above still provides intra-process safety; cross-process safety on Windows
-    # would require msvcrt.locking which is more complex and rarely needed for
-    # the local-first use case).
-    def _lock_file(fh: IO, exclusive: bool) -> None:  # type: ignore[misc]
-        pass
+    # Windows: fcntl is unavailable.
+    # Try to use msvcrt for basic file locking on Windows.
+    # If that fails, log a warning and continue with threading.Lock only.
+    try:
+        import msvcrt
 
-    def _unlock_file(fh: IO) -> None:  # type: ignore[misc]
-        pass
+        def _lock_file(fh: IO, exclusive: bool) -> None:
+            # msvcrt.locking provides basic file locking
+            # Note: This is per-process, not per-file-handle
+            try:
+                msvcrt.locking(fh.fileno(), msvcrt.LK_LOCK, 1)
+            except (OSError, ImportError):
+                # Locking failed or not available - continue with threading lock only
+                pass
+
+        def _unlock_file(fh: IO) -> None:
+            try:
+                msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+            except (OSError, ImportError):
+                pass
+
+    except ImportError:
+        # Neither fcntl nor msvcrt available - no-op fallback
+        import logging as _logging
+
+        _logger = _logging.getLogger(__name__)
+        _warned = False
+
+        def _lock_file(fh: IO, exclusive: bool) -> None:  # type: ignore[misc]
+            global _warned
+            if not _warned:
+                _logger.warning(
+                    "file_lock: No OS-level locking available (fcntl/msvcrt unavailable). "
+                    "Using threading.Lock only - cross-process safety not guaranteed."
+                )
+                _warned = True
+
+        def _unlock_file(fh: IO) -> None:  # type: ignore[misc]
+            pass
 
 
 # ---------------------------------------------------------------------------

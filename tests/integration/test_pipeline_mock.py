@@ -406,7 +406,7 @@ def test_pm6_fix_syntax_pipeline(tmp_path, monkeypatch):
     assert isinstance(result, dict), f"Expected dict result, got {type(result)}"
 
     # Verify execution trace records the expected tool calls.
-    trace_path = tmp_path / ".agent-context" / "execution_trace.json"
+    trace_path = tmp_path / ".codingAgent" / "execution_trace.json"
     assert trace_path.exists(), "Execution trace must be written by run_agent_once"
 
     trace = json.loads(trace_path.read_text(encoding="utf-8"))

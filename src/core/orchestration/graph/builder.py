@@ -33,6 +33,16 @@ try:
 except Exception:
     _get_token_budget_monitor = None  # type: ignore[assignment]
 
+# v2: workflow_selector integration
+try:
+    from src.core.inference.workflow_selector import (
+        WorkflowType,
+        should_use_single_loop as _should_use_single_loop,
+    )
+except Exception:
+    WorkflowType = None  # type: ignore[assignment]
+    _should_use_single_loop = None  # type: ignore[assignment]
+
 # D-11: Named routing constants — avoids magic numbers in router functions.
 _MAX_ROUNDS_PLANNING = 15  # force-end after this many planning rounds
 _DEFAULT_MAX_TOOL_CALLS = 30  # default budget for standard agent graph
@@ -361,13 +371,26 @@ def _is_large_or_frontier(state: Mapping[str, Any]) -> bool:
 
 
 def _is_nano_or_small(state: Mapping[str, Any]) -> bool:
-    """Return True when the active model tier is NANO or SMALL.
+    """Return True when the active model tier is SMALL.
 
     Used by P3-A to skip expensive overhead nodes (analysis, analyst_delegation)
-    that add context pressure without improving outcomes on 1–9B models.
+    that add context pressure without improving outcomes on 7-9B models.
     """
     tier = (state.get("model_tier") or "").lower()
-    return tier in ("nano", "small")
+    return tier == "small"
+
+
+def _is_lite_mode(state: Mapping[str, Any]) -> bool:
+    """Return True when v2 SINGLE_LOOP mode should be used.
+
+    Uses workflow_selector if available (v2 Phase 0), otherwise falls back
+    to tier check (NANO/SMALL without v2 integration).
+    """
+    if _should_use_single_loop is not None:
+        model_name = state.get("model") or ""
+        hardware_name = state.get("hardware_profile") or "auto"
+        return _should_use_single_loop(model_name, hardware_name)
+    return _is_nano_or_small(state)
 
 
 def route_after_perception(
@@ -868,7 +891,7 @@ def should_after_debug(
     # counters while total_recovery_attempts keeps growing.
     _total_recovery = int(state.get("total_recovery_attempts") or 0)
     _model_tier = (state.get("model_tier") or "medium").lower()
-    _RECOVERY_CAPS = {"nano": 2, "small": 4, "medium": 8, "large": 12, "frontier": 12}
+    _RECOVERY_CAPS = {"small": 4, "medium": 8, "large": 12, "frontier": 12}
     _recovery_cap = _RECOVERY_CAPS.get(_model_tier, 8)
     if _total_recovery >= _recovery_cap:
         logger.warning(
@@ -899,7 +922,7 @@ def should_after_replan(
     # P2-A: Global recovery cap check (mirrors should_after_debug).
     _total_recovery = int(state.get("total_recovery_attempts") or 0)
     _model_tier = (state.get("model_tier") or "medium").lower()
-    _RECOVERY_CAPS = {"nano": 2, "small": 4, "medium": 8, "large": 12, "frontier": 12}
+    _RECOVERY_CAPS = {"small": 4, "medium": 8, "large": 12, "frontier": 12}
     _recovery_cap = _RECOVERY_CAPS.get(_model_tier, 8)
     if _total_recovery >= _recovery_cap:
         logger.warning(
@@ -1570,15 +1593,91 @@ def _compile_frontier_graph():
     return workflow.compile()
 
 
+def _compile_lite_graph():
+    """Compile a minimal graph for LITE mode (v2 Phase 1).
+
+    The lite graph uses a single-loop node (frontier_loop_node) with
+    reduced overhead:
+    - No analysis node (context pressure)
+    - No analyst_delegation (extra LLM call)
+    - No verification node (tool result heuristics instead)
+    - No replan node (retry + hint instead)
+
+    Graph topology::
+
+        perception → frontier_loop (lite config)
+        frontier_loop → memory_sync | end
+        memory_sync → end
+
+    The lite config disables:
+    - verification_node
+    - evaluation_node
+    - replan_node
+    - analyst_delegation_node
+    """
+    from src.core.orchestration.graph.nodes.frontier_loop_node import (
+        frontier_loop_node,
+    )
+
+    workflow = StateGraph(AgentState)
+
+    async def _perception(state: StateLike, config: RunnableConfig):
+        return await perception_node(state, config)
+
+    async def _frontier_loop(state: StateLike, config: RunnableConfig):
+        return await frontier_loop_node(state, config)
+
+    async def _memory_sync(state: StateLike, config: RunnableConfig):
+        return await memory_update_node(state, config)
+
+    workflow.add_node("perception", _perception)
+    workflow.add_node("frontier_loop", _frontier_loop)
+    workflow.add_node("memory_sync", _memory_sync)
+
+    workflow.set_entry_point("perception")
+
+    def _route_perception_lite(
+        state: Mapping[str, Any],
+    ) -> Literal["frontier_loop", "memory_sync"]:
+        if state.get("needs_clarification"):
+            return "memory_sync"
+        if "context_overflow" in (state.get("errors") or []):
+            return "memory_sync"
+        return "frontier_loop"
+
+    workflow.add_conditional_edges(
+        "perception",
+        _route_perception_lite,
+        {"frontier_loop": "frontier_loop", "memory_sync": "memory_sync"},
+    )
+
+    def _route_frontier_loop_exit_lite(
+        state: Mapping[str, Any],
+    ) -> Literal["memory_sync"]:
+        return "memory_sync"
+
+    workflow.add_conditional_edges(
+        "frontier_loop",
+        _route_frontier_loop_exit_lite,
+        {"memory_sync": "memory_sync"},
+    )
+
+    workflow.add_edge("memory_sync", END)
+
+    return workflow.compile()
+
+
 def build_tier_graph(tier: str):
     """Return a compiled LangGraph graph appropriate for *tier*.
 
     Parameters
     ----------
     tier:
-        Model tier string (e.g. ``"frontier"``, ``"large"``, ``"medium"``).
-        Case-insensitive.  ``"large"`` and ``"frontier"`` get the
-        ``frontier_loop_node`` graph; all others get the standard graph.
+        Model tier string (e.g. ``"frontier"``, ``"large"``, ``"medium"``,
+        ``"lite"``). Case-insensitive.
+        - ``"large"`` and ``"frontier"`` get the ``frontier_loop_node`` graph
+        - ``"lite"`` gets the single_loop node (v2 Phase 1)
+        - All others get the standard graph
 
     Returns
     -------
@@ -1594,6 +1693,10 @@ def build_tier_graph(tier: str):
     _tier = (tier or "").lower()
     cache_key = "frontier" if _tier in ("large", "frontier") else "standard"
 
+    # v2: LITE mode uses single_loop graph
+    if _tier == "lite":
+        cache_key = "lite"
+
     # Fast path (no lock)
     cached = _GRAPH_CACHE.get(cache_key)
     if cached is not None:
@@ -1607,6 +1710,8 @@ def build_tier_graph(tier: str):
         logger.info("build_tier_graph: compiling '%s' graph", cache_key)
         if cache_key == "frontier":
             compiled = _compile_frontier_graph()
+        elif cache_key == "lite":
+            compiled = _compile_lite_graph()
         else:
             compiled = compile_agent_graph()
         _GRAPH_CACHE[cache_key] = compiled

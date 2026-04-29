@@ -8,7 +8,7 @@ modifying core code.
 
 import logging
 from typing import Dict, List, Callable, Any, Optional
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 
 logger = logging.getLogger(__name__)

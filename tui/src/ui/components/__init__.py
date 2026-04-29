@@ -8,6 +8,8 @@ from .diff_viewer import SideBySideDiff, InlineDiff
 from .chat_input import ChatTextArea
 from .file_picker import FilePickerOverlay
 from .subagent_progress import SubagentProgress
+from .bash_block import BashBlock
+from .todo_list import TodoListWidget
 
 __all__ = [
     "HistoryInput",
@@ -21,4 +23,6 @@ __all__ = [
     "ChatTextArea",
     "FilePickerOverlay",
     "SubagentProgress",
+    "BashBlock",
+    "TodoListWidget",
 ]

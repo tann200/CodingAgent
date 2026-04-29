@@ -109,11 +109,13 @@ class ConfigReloader:
                 logging.debug(f"Error in config watcher: {e}")
 
     def _file_hash(self, path: Path) -> str:
-        """Calculate a simple hash of the config file content."""
+        """Calculate a stable hash of the config file content."""
         try:
+            import hashlib
+
             content = path.read_text(encoding="utf-8") if path.exists() else ""
-            # Use string form of Python's hash to keep the return type stable
-            return str(hash(content))
+            # Use SHA-256 for stable hashing across process restarts
+            return hashlib.sha256(content.encode("utf-8")).hexdigest()[:16]
         except Exception:
             return "0"
 

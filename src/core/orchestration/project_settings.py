@@ -57,10 +57,8 @@ def _candidate_settings_files_for_workdir(workdir: Path) -> list[Path]:
 
         ctx_name = get_context_dir_name()
     except Exception:
-        import os as _os
-
-        # Fallback to a safe legacy name when tools_config is unavailable
-        ctx_name = _os.getenv("CODINGAGENT_CONTEXT_DIR") or ".agent-context"
+        # Use .codingAgent as fallback
+        ctx_name = ".codingAgent"
 
     candidate = Path(ctx_name)
     # The caller will resolve relative to the provided base workdir.
@@ -157,27 +155,23 @@ def load_project_settings(workdir: str | Path | None = None) -> ProjectSettings:
     ProjectSettings
         Always returns a valid object — never raises.
     """
+    global _ACTIVE_SETTINGS
     base = Path(workdir) if workdir else Path.cwd()
     merged: dict[str, Any] = {}
 
-    # Resolve candidate settings files for this workdir and also try legacy
-    # directories if the configured candidate does not exist.
-    candidates = _candidate_settings_files_for_workdir(base)
-    # If the configured candidate doesn't exist, prefer legacy directories
-    # (".agent", ".agent-context") that may already be present in older
-    # workspaces.
     resolved: list[Path] = []
-    for rel in candidates:
+    for rel in _candidate_settings_files_for_workdir(base):
         candidate_path = base / rel
         resolved.append(candidate_path)
 
-    # Legacy fallbacks
-    for legacy_name in (".agent-context", ".agent"):
-        legacy_base = base / legacy_name
-        resolved.append(legacy_base / "settings.json")
-        resolved.append(legacy_base / "settings.local.json")
+    # Add context directories for settings
+    from src.tools.tools_config import get_context_dir_name
 
-    # Iterate in order and merge any existing JSON settings
+    for context_name in (get_context_dir_name(), ".codingAgent"):
+        context_base = base / context_name
+        resolved.append(context_base / "settings.json")
+        resolved.append(context_base / "settings.local.json")
+
     for path in resolved:
         if not path.exists():
             continue
@@ -194,7 +188,58 @@ def load_project_settings(workdir: str | Path | None = None) -> ProjectSettings:
         except Exception as exc:
             logger.debug("project_settings: failed to load %s: %s", path, exc)
 
-    return _parse(merged)
+    settings = _parse(merged)
+    _ACTIVE_SETTINGS = settings
+    return settings
+
+
+def reload_project_settings(workdir: str | Path | None = None) -> ProjectSettings:
+    """Reload project settings from disk.
+
+    Forces a re-read of all settings files, useful after external edits.
+    """
+    return load_project_settings(workdir)
+
+
+def watch_project_settings(
+    workdir: str | Path,
+    callback: Any = None,
+) -> Any:
+    """Start watching settings files for changes.
+
+    Returns a watcher handle that can be stopped.
+    """
+    import threading
+
+    base = Path(workdir)
+    settings_files = [
+        base / ".agent-context" / "settings.json",
+        base / ".agent-context" / "settings.local.json",
+        base / ".agent" / "settings.json",
+    ]
+
+    def _poll():
+        import time
+
+        mtimes = {f: f.stat().st_mtime for f in settings_files if f.exists()}
+        while getattr(_poll, "running", True):
+            time.sleep(2)
+            for f in settings_files:
+                if not f.exists():
+                    continue
+                try:
+                    if f.stat().st_mtime != mtimes.get(f, 0):
+                        mtimes[f] = f.stat().st_mtime
+                        reload_project_settings(workdir)
+                        if callback:
+                            callback()
+                except Exception:
+                    pass
+
+    _poll.running = True
+    thread = threading.Thread(target=_poll, daemon=True)
+    thread.start()
+    return _poll
 
 
 # ---------------------------------------------------------------------------

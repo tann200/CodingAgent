@@ -2,13 +2,13 @@
 Regression tests for Vol30 audit fixes.
 
 Covers:
-  P1-B  _prune_tools() now called from build_prompt() — NANO/SMALL get correct tool count
+  P1-B  _prune_tools() now called from build_prompt() — SMALL/MEDIUM get correct tool count
   P1-C  Thinking-block detection uses strip_thinking() (re.sub DOTALL) not tag-only replace
   P1-C  Tool parsing attempted on thinking-stripped content first
   P2-A  Global recovery cap (total_recovery_attempts) in debug_node, replan_node, and routing
-"""
 
-# ruff: noqa: E501
+> Updated 2026-04-27: NANO removed, replaced with SMALL
+"""
 
 import inspect
 
@@ -26,14 +26,12 @@ class TestP1BPruneToolsCalledInBuildPrompt:
         from src.core.context import context_builder as cb_mod
 
         src = inspect.getsource(cb_mod.ContextBuilder._build_static_system_prefix)
-        # Both calls must be present
         assert "_prune_tools" in src, (
             "P1-B: _prune_tools() must be called inside _build_static_system_prefix"
         )
         assert "_render_tools_for_tier" in src, (
             "P1-B: _render_tools_for_tier() must be called inside _build_static_system_prefix"
         )
-        # Prune must appear before render in the source text
         prune_idx = src.index("_prune_tools")
         render_idx = src.index("_render_tools_for_tier")
         assert prune_idx < render_idx, (
@@ -41,43 +39,10 @@ class TestP1BPruneToolsCalledInBuildPrompt:
             f"(prune at {prune_idx}, render at {render_idx})"
         )
 
-    def test_nano_tier_tool_count_enforced(self):
-        """build_prompt with NANO tier must return ≤8 tools in the system prompt."""
-        import tempfile
-        from pathlib import Path
-        from src.core.context.context_builder import ContextBuilder
-
-        # Build 20 dummy tools — NANO should receive at most 8
-        dummy_tools = [
-            {"name": f"tool_{i}", "description": f"A tool number {i}."}
-            for i in range(20)
-        ]
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            (Path(tmpdir) / ".agent-context").mkdir()
-            cb = ContextBuilder(working_dir=tmpdir)
-            messages = cb.build_prompt(
-                role_name="operational",
-                active_skills=[],
-                task_description="test task",
-                tools=dummy_tools,
-                conversation=[],
-                model_tier="nano",
-            )
-
-        system_msg = next(
-            (m["content"] for m in messages if m.get("role") == "system"), ""
-        )
-        # Count how many "name: tool_" entries appear in <available_tools>
-        import re
-
-        tool_entries = re.findall(r"name: tool_\d+", system_msg)
-        assert len(tool_entries) <= 8, (
-            f"P1-B: NANO tier must have ≤8 tools in prompt, got {len(tool_entries)}"
-        )
+    # Updated 2026-04-27: NANO -> SMALL, removed duplicate
 
     def test_small_tier_tool_count_enforced(self):
-        """build_prompt with SMALL tier must return ≤20 tools."""
+        """build_prompt with SMALL tier must return ≤20 tools (ModelTier.SMALL limit = 20)."""
         import tempfile
         from pathlib import Path
         from src.core.context.context_builder import ContextBuilder
@@ -88,7 +53,9 @@ class TestP1BPruneToolsCalledInBuildPrompt:
         ]
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            (Path(tmpdir) / ".agent-context").mkdir()
+            from src.tools.tools_config import agent_context_path
+
+            agent_context_path(Path(tmpdir)).mkdir(parents=True, exist_ok=True)
             cb = ContextBuilder(working_dir=tmpdir)
             messages = cb.build_prompt(
                 role_name="operational",
@@ -121,7 +88,7 @@ class TestP1BPruneToolsCalledInBuildPrompt:
         ]
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            (Path(tmpdir) / ".agent-context").mkdir()
+            (Path(tmpdir) / ".codingAgent").mkdir()
             cb = ContextBuilder(working_dir=tmpdir)
             messages = cb.build_prompt(
                 role_name="operational",
@@ -308,19 +275,19 @@ class TestP2AGlobalRecoveryCap:
         )
 
     def test_recovery_cap_is_tier_aware(self):
-        """NANO tier cap (2) is lower than FRONTIER cap (12)."""
+        """SMALL tier cap (4) is lower than FRONTIER cap (12)."""
         from src.core.orchestration.graph.builder import should_after_debug
 
-        # NANO with 2 attempts should hit cap
-        nano_state = {
-            "total_recovery_attempts": 2,
-            "model_tier": "nano",
+        # SMALL with 4 attempts should hit cap (cap=4)
+        small_state = {
+            "total_recovery_attempts": 4,
+            "model_tier": "small",  # Changed from "nano"
             "next_action": None,
             "debug_attempts": 0,
             "max_debug_attempts": 3,
         }
-        assert should_after_debug(nano_state) == "memory_sync", (
-            "P2-A: NANO tier should hit global cap at 2 total_recovery_attempts"
+        assert should_after_debug(small_state) == "memory_sync", (
+            "P2-A: SMALL tier should hit global cap at 4 total_recovery_attempts"
         )
 
         # FRONTIER with 2 attempts should NOT hit cap (cap=12)

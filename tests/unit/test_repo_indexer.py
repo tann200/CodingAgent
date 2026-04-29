@@ -331,7 +331,7 @@ class TestGetSymbolsForTask:
         from pathlib import Path as _Path
 
         # Write a synthetic index with the correct structure
-        agent_ctx = _Path(tmp_path) / ".agent-context"
+        agent_ctx = _Path(tmp_path) / ".codingAgent"
         agent_ctx.mkdir(exist_ok=True)
         fake_index = {
             "files": [{"path": "auth.py", "language": "python"}],
@@ -378,7 +378,7 @@ class TestGetSymbolsForTask:
         import json
         from pathlib import Path as _Path
 
-        agent_ctx = _Path(tmp_path) / ".agent-context"
+        agent_ctx = _Path(tmp_path) / ".codingAgent"
         agent_ctx.mkdir(exist_ok=True)
         fake_index = {
             "files": [],
@@ -396,7 +396,7 @@ class TestGetSymbolsForTask:
         import json
         from pathlib import Path as _Path
 
-        agent_ctx = _Path(tmp_path) / ".agent-context"
+        agent_ctx = _Path(tmp_path) / ".codingAgent"
         agent_ctx.mkdir(exist_ok=True)
         fake_index = {
             "files": [],
@@ -427,7 +427,7 @@ class TestGetSymbolsForTask:
         import json
         from pathlib import Path as _Path
 
-        agent_ctx = _Path(tmp_path) / ".agent-context"
+        agent_ctx = _Path(tmp_path) / ".codingAgent"
         agent_ctx.mkdir(exist_ok=True)
         fake_index = {
             "files": [],

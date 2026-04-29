@@ -2,20 +2,16 @@ from typing import Dict, Any, List
 from pathlib import Path
 import json
 
-# ruff: noqa: E501
-
 
 def memory_search(query: str, workdir: str) -> Dict[str, Any]:
     """Search TASK_STATE.md and execution_trace.json for the query.
     Returns simple ranked results: exact match lines from TASK_STATE.md first, then trace entries sorted by recency.
     """
     wd = Path(workdir)
-    try:
-        from src.tools.tools_config import agent_context_path
+    from src.tools.tools_config import agent_context_path
 
-        agent_ctx = agent_context_path(wd)
-    except Exception:
-        agent_ctx = wd / ".agent-context"
+    agent_ctx = agent_context_path(wd)
+
     out: Dict[str, Any] = {"query": query, "results": []}
     try:
         task_state = agent_ctx / "TASK_STATE.md"

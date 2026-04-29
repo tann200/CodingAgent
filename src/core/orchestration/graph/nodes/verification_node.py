@@ -67,14 +67,6 @@ async def verification_node(state: StateLike, config: Any) -> Dict[str, Any]:
     # P3-B: Tier-gated early exits.
     _tier = (state.get("model_tier") or "").lower()
     _last_tool = state.get("last_tool_name") or ""
-    if _tier == "nano":
-        logger.info(
-            "verification_node: P3-B NANO tier — skipping verification (overhead not justified)"
-        )
-        return {
-            "verification_passed": True,
-            "verification_result": {"status": "skipped_nano"},
-        }
     if _tier == "small" and _last_tool not in _WRITE_TOOLS_ALWAYS_VERIFY:
         logger.info(
             "verification_node: P3-B SMALL tier + read-only tool '%s' — skipping verification",

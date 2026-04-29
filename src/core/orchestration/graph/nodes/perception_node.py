@@ -1867,7 +1867,6 @@ async def _perception_node_impl(
                         is_reasoning_model,
                         budget_max_tokens,
                         supports_no_think,
-                        get_thinking_directive,
                     )
 
                     if is_reasoning_model(model_name):
@@ -2057,6 +2056,38 @@ async def _perception_node_impl(
         except Exception:
             # Non-fatal: continue normal flow when helper fails
             pass
+
+    # Handle content without tool calls - if we have meaningful content and retried, return it
+    current_empty_response_count = int(state.get("empty_response_count") or 0)
+    if _content_no_thinking.strip() and current_empty_response_count >= 1:
+        # Check if the content looks like a reasonable answer (not just thinking process)
+        content_lower = _content_no_thinking.lower().strip()
+        # Skip if it's clearly still thinking-related
+        if not any(
+            phrase in content_lower
+            for phrase in [
+                "thinking process",
+                "analyze the request",
+                "let me think",
+                "i need to think",
+                "first,",
+                "second,",
+                "third,",
+                "step 1",
+                "step 2",
+                "step 3",
+            ]
+        ):
+            # Return the content as final answer
+            return {
+                "history": state["history"]
+                + [{"role": "assistant", "content": _content_no_thinking.strip()}],
+                "next_action": None,  # We are done
+                "rounds": _rounds_now + 1,
+                "turn_count": turn_count,
+                "empty_response_count": 0,  # Reset counter since we got a response
+                **({"model_tier": _model_tier_str} if _model_tier_str else {}),
+            }
 
     # Preserve plan state if already exists
     current_plan = state.get("current_plan")

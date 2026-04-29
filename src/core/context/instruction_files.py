@@ -42,12 +42,12 @@ MAX_TOTAL_INSTRUCTION_CHARS: int = 12_000
 # addition to the original AGENTS.md convention.  SHA-256 dedup handles the
 # case where both variants exist with identical content.
 _CANDIDATE_NAMES: tuple[tuple[str, ...], ...] = (
-    # CodingAgent / OpenCode convention
+    # CodingAgent convention
     ("AGENTS.md",),
     ("AGENTS.local.md",),
-    (".localAgent", "AGENTS.md"),
-    (".localAgent", "instructions.md"),
-    # Claude Code / claw-code convention (TASK-1)
+    (".codingAgent", "AGENTS.md"),
+    (".codingAgent", "instructions.md"),
+    # Claude Code / claw-code convention
     ("CLAUDE.md",),
     ("CLAUDE.local.md",),
     (".claude", "CLAUDE.md"),

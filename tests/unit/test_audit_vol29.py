@@ -157,7 +157,7 @@ class TestHr2ExecutionTraceCap:
         from src.core.orchestration.execution_trace import flush_execution_trace_impl
 
         # Build a fake orchestrator with a big existing trace file
-        context_dir = tmp_path / ".agent-context"
+        context_dir = tmp_path / ".codingAgent"
         context_dir.mkdir()
         trace_path = context_dir / "execution_trace.json"
 

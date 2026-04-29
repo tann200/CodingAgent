@@ -14,7 +14,6 @@ later layer.
 from __future__ import annotations
 
 import json
-import os
 import logging
 import time
 from pathlib import Path
@@ -78,21 +77,14 @@ def _get_workspace_config_paths() -> List[Path]:
 
         ctx_name = get_context_dir_name()
     except Exception:
-        ctx_name = os.getenv("CODINGAGENT_CONTEXT_DIR") or ".localAgent"
+        ctx_name = ".codingAgent"
 
     cwd = Path.cwd()
     candidate = cwd / ctx_name
 
-    # Prefer the configured candidate when it exists; otherwise fall back to
-    # legacy directories (".agent-context", ".agent") if present. If none
-    # exist, return the configured candidate paths (they will be skipped later
-    # if missing).
+    # Use agent_context_path() for consistent behavior
     if candidate.exists():
         return [candidate / "config.json", candidate / "config.local.json"]
-
-    for legacy in (cwd / ".agent-context", cwd / ".agent"):
-        if legacy.exists():
-            return [legacy / "config.json", legacy / "config.local.json"]
 
     return [candidate / "config.json", candidate / "config.local.json"]
 
@@ -130,7 +122,7 @@ def load_merged_config(working_dir: Optional[Path] = None) -> Dict[str, Any]:
 
                 ctx_name = get_context_dir_name()
             except Exception:
-                ctx_name = os.getenv("CODINGAGENT_CONTEXT_DIR") or ".localAgent"
+                ctx_name = ctx_name = ".codingAgent"
             wd = Path(working_dir)
             candidate = wd / ctx_name
             if candidate.exists():
@@ -206,15 +198,17 @@ def get_agent_config_path() -> Path:
 # Global config cache
 _cached_config: Optional[Dict[str, Any]] = None
 _last_load_time: float = 0.0
+_config_lock: threading.Lock = threading.Lock()
 
 
 def get_global_config() -> Dict[str, Any]:
-    """Get the global merged configuration with simple caching."""
+    """Get the global merged configuration with thread-safe caching."""
     global _cached_config, _last_load_time
-    if _cached_config is None or time.time() - _last_load_time > 300:  # 5 min cache
-        _cached_config = load_merged_config()
-        _last_load_time = time.time()
-    return _cached_config
+    with _config_lock:
+        if _cached_config is None or time.time() - _last_load_time > 300:  # 5 min cache
+            _cached_config = load_merged_config()
+            _last_load_time = time.time()
+        return _cached_config
 
 
 def get(key: str, default: Any = None, working_dir: Optional[Path] = None) -> Any:

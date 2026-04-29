@@ -9,7 +9,7 @@ class TestSessionLifecycle:
     @pytest.fixture
     def workdir(self, tmp_path):
         """Create a workdir with .agent-context."""
-        agent_context = tmp_path / ".agent-context"
+        agent_context = tmp_path / ".codingAgent"
         agent_context.mkdir()
         return tmp_path
 
@@ -122,7 +122,7 @@ class TestSessionLifecycle:
 
     def test_state_files_cleared_on_new_session(self, workdir):
         """Test that state files are cleared when starting new session."""
-        agent_context = workdir / ".agent-context"
+        agent_context = workdir / ".codingAgent"
 
         # Create state files with content
         (agent_context / "TODO.md").write_text("- [ ] Old task")
@@ -151,7 +151,7 @@ class TestSessionLifecycle:
 
     def test_session_state_files_preserved_on_quit(self, workdir):
         """Test that session state is preserved before clearing."""
-        agent_context = workdir / ".agent-context"
+        agent_context = workdir / ".codingAgent"
 
         # Create state files with content
         todo_content = "- [x] Task 1\n- [ ] Task 2"

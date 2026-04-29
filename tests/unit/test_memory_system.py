@@ -91,7 +91,7 @@ class TestMemoryTools:
         """memory_search finds lines in TASK_STATE.md."""
         from src.core.memory.memory_tools import memory_search
 
-        ctx_dir = tmp_path / ".agent-context"
+        ctx_dir = tmp_path / ".codingAgent"
         ctx_dir.mkdir()
         (ctx_dir / "TASK_STATE.md").write_text("# Task\nfix the bug\nadd tests\n")
 
@@ -103,7 +103,7 @@ class TestMemoryTools:
         """memory_search on broken JSON returns status='error'."""
         from src.core.memory.memory_tools import memory_search
 
-        ctx_dir = tmp_path / ".agent-context"
+        ctx_dir = tmp_path / ".codingAgent"
         ctx_dir.mkdir()
         bad_json = ctx_dir / "execution_trace.json"
         bad_json.write_text("NOT JSON")

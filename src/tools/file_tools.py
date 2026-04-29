@@ -61,15 +61,9 @@ def _safe_resolve(path: str, workdir: "Path | None" = None) -> Path:
 _logger = logging.getLogger(__name__)
 
 
-class WorkspaceGuard:
-    """No-op guard when src.core is not available."""
-
-    def guard_operation(self, *args: object, **kwargs: object) -> Dict[str, str]:
-        return {"status": "ok"}
-
-
+# WorkspaceGuard: import from shared location
 try:
-    from src.core.orchestration.workspace_guard import WorkspaceGuard  # type: ignore[assignment]  # noqa: F401
+    from src.tools._workspace_guard import WorkspaceGuard  # type: ignore[assignment]  # noqa: F401
 except ImportError:
     pass
 

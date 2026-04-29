@@ -32,7 +32,10 @@ from .components import (
     ChatTextArea,
     FilePickerOverlay,
     SubagentProgress,
+    BashBlock,
+    TodoListWidget,
 )
+from .components.inline_tool import TOOL_RENDER_MAP, FALLBACK_RENDER  # TASK-TUI-1
 from .settings import SettingsStore
 from .logging import get_logger
 from .bus import (
@@ -1359,27 +1362,37 @@ class AgentApp(App[None]):
         # Retrieve cached args (for rich rendering of todowrite/question).
         cached_args = self._tool_args.pop(event.tool_id, {}) if event.tool_id else {}
 
-        # GAP-TUI-4: todowrite / manage_todo → render as # Todos block.
+        # TASK-TUI-4: todowrite / manage_todo → render as TodoListWidget
         tool_lower = event.tool_name.lower()
         if tool_lower in ("todowrite", "manage_todo") and event.ok:
-            finished_markup = _render_todo_block(cached_args, event.result_text)
-            if finished_markup:
-                if event.tool_id and event.tool_id in self._tool_widgets:
-                    w = self._tool_widgets.pop(event.tool_id)
-                    self.call_later(
-                        lambda widget=w, m=finished_markup: widget.update(m)
-                    )
-                else:
-                    self._sched_chat_widget(
-                        Static(finished_markup, classes="tool_msg", markup=True)
-                    )
-                try:
-                    self.query_one("#sb_tool_activity", Static).update(
-                        "⚙ todos updated"
-                    )
-                except Exception:
-                    pass
-                return
+            try:
+                import json
+
+                items = json.loads(event.result_text)
+                if isinstance(items, list):
+                    widget = TodoListWidget()
+                    widget.update_items(items)
+                    if event.tool_id and event.tool_id in self._tool_widgets:
+                        old_w = self._tool_widgets.pop(event.tool_id)
+                        old_w.remove()
+                    else:
+                        self._sched_chat_widget(
+                            Static(
+                                "[bold #a78bfa]Todos updated[/]",
+                                classes="tool_msg",
+                                markup=True,
+                            )
+                        )
+                    self._sched_chat_widget(widget)
+                    try:
+                        self.query_one("#sb_tool_activity", Static).update(
+                            "⚙ todos updated"
+                        )
+                    except Exception:
+                        pass
+                    return
+            except Exception:
+                pass
 
         # GAP-TUI-5: question / ask_user → render as # Questions Q&A block.
         if tool_lower in ("question", "ask_user") and event.ok:
@@ -1428,19 +1441,36 @@ class AgentApp(App[None]):
                 pass
             return
 
-        # GAP-TUI-3: bash output rendered as a fenced block (truncate >40 lines).
+        # TASK-TUI-3: Use BashBlock for collapsible bash output
         if tool_lower in ("bash", "run_bash"):
-            if len(result_lines) > 40:
-                extra = len(result_lines) - 40
-                result_lines = result_lines[:40] + [f"… {extra} more lines (truncated)"]
-            result_display = "\n".join(result_lines)
-            label = f"{ok_icon} {event.tool_name}"
-        else:
-            if len(result_lines) > 60:
-                extra = len(result_lines) - 60
-                result_lines = result_lines[:60] + [f"… {extra} more lines"]
-            result_display = "\n".join(result_lines)
-            label = f"{icon} {event.tool_name}"
+            command = cached_args.get("command", "")
+            desc = cached_args.get("description", "")
+            block = BashBlock(command=command, description=desc)
+            block.set_output(result_lines)
+            if event.tool_id and event.tool_id in self._tool_widgets:
+                old_w = self._tool_widgets.pop(event.tool_id)
+                old_w.remove()
+                self._sched_chat_widget(block)
+            else:
+                header = Static(
+                    f"[bold #fbbf24]# {desc or event.tool_name}[/]",
+                    classes="tool_msg",
+                    markup=True,
+                )
+                self._sched_chat_widget(header)
+                self._sched_chat_widget(block)
+            try:
+                self.query_one("#sb_tool_activity", Static).update("# bash done")
+            except Exception:
+                pass
+            return
+
+        # Generic: truncate long output
+        if len(result_lines) > 60:
+            extra = len(result_lines) - 60
+            result_lines = result_lines[:60] + [f"… {extra} more lines"]
+        result_display = "\n".join(result_lines)
+        label = f"{icon} {event.tool_name}"
 
         sep = "\n" if result_display else ""
         if event.tool_id and event.tool_id in self._tool_widgets:

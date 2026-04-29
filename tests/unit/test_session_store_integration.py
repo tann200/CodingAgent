@@ -30,7 +30,7 @@ class TestSessionStoreDirectAPI:
         store.add_plan(session_id="s2", plan=plan, status="created")
 
         # Verify it doesn't raise and db file exists
-        assert (tmp_path / ".agent-context" / "session.db").exists()
+        assert (tmp_path / ".codingAgent" / "session.db").exists()
 
     def test_add_and_retrieve_error(self, tmp_path):
         store = SessionStore(workdir=str(tmp_path))
@@ -45,7 +45,7 @@ class TestSessionStoreDirectAPI:
 
     def test_db_file_created(self, tmp_path):
         SessionStore(workdir=str(tmp_path))
-        assert (tmp_path / ".agent-context" / "session.db").exists()
+        assert (tmp_path / ".codingAgent" / "session.db").exists()
 
     def test_separate_sessions_isolated(self, tmp_path):
         store = SessionStore(workdir=str(tmp_path))

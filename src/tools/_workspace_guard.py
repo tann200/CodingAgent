@@ -1,0 +1,22 @@
+"""Shared WorkspaceGuard class - single source of truth.
+
+This module provides the WorkspaceGuard class that all tool modules use.
+The real implementation lives in src.core.orchestration.workspace_guard.
+When the core module is unavailable (e.g., during testing), a no-op fallback is used.
+"""
+
+from typing import Any, Dict
+
+
+class WorkspaceGuard:
+    """No-op guard when src.core is not available."""
+
+    def guard_operation(self, *args: object, **kwargs: object) -> Dict[str, str]:
+        """No-op operation - always returns ok."""
+        return {"status": "ok"}
+
+
+try:
+    from src.core.orchestration.workspace_guard import WorkspaceGuard  # type: ignore[assignment]
+except ImportError:
+    pass

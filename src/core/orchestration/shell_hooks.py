@@ -59,7 +59,7 @@ try:
 
     _SETTINGS_FILE = Path(get_context_dir_name()) / "settings.json"
 except Exception:
-    _SETTINGS_FILE = Path(".localAgent") / "settings.json"
+    _SETTINGS_FILE = Path(".codingAgent") / "settings.json"
 
 # ---------------------------------------------------------------------------
 # Data types
@@ -146,24 +146,17 @@ def _load_hooks_config(
     }
     try:
         base = Path(workdir) if workdir else Path.cwd()
-        # Resolve settings path preferring the configured context dir via
-        # tools_config.agent_context_path when available, falling back to
-        # legacy locations.
+        # Resolve settings path using agent_context_path()
         try:
-            from src.tools.tools_config import agent_context_path
+            from src.tools.tools_config import agent_context_path, get_context_dir_name
 
             settings_path = agent_context_path(base) / "settings.json"
         except Exception:
-            import os
-
-            ctx = os.getenv("CODINGAGENT_CONTEXT_DIR") or ".localAgent"
+            ctx = get_context_dir_name()
             settings_path = base / ctx / "settings.json"
-            if not settings_path.exists():
-                legacy = base / ".agent" / "settings.json"
-                if legacy.exists():
-                    settings_path = legacy
-                else:
-                    return empty
+
+        if not settings_path.exists():
+            return empty
         data = json.loads(settings_path.read_text(encoding="utf-8"))
         hooks = data.get("hooks", {})
         if not isinstance(hooks, dict):

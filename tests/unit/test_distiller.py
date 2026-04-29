@@ -14,7 +14,7 @@ def test_distill_context_success(tmp_path):
         "errors_resolved": [],
     }
 
-    (tmp_path / ".agent-context").mkdir(parents=True, exist_ok=True)
+    (tmp_path / ".codingAgent").mkdir(parents=True, exist_ok=True)
 
     with patch(
         "src.core.memory.distiller._call_llm_sync",
@@ -27,7 +27,7 @@ def test_distill_context_success(tmp_path):
 
     assert result["current_task"] == "Write test cases for MVP"
 
-    task_state_file = tmp_path / ".agent-context" / "TASK_STATE.md"
+    task_state_file = tmp_path / ".codingAgent" / "TASK_STATE.md"
     assert task_state_file.exists()
     content = task_state_file.read_text()
     assert "Write test cases for MVP" in content

@@ -4,7 +4,8 @@ D-06 / S0-A: Replace all ``len(text) // 4`` heuristics with this module.
 
 Priority order:
 1. tiktoken (OpenAI models, works offline after first download)
-2. Character heuristic: ``len(text) // 3.5`` (more accurate than //4)
+2. HuggingFace transformers (Qwen3, Gemma, local models) — v2 Phase 3
+3. Character heuristic: ``len(text) // 3.5`` (more accurate than //4)
 
 Usage::
 
@@ -25,11 +26,82 @@ from typing import Any, Dict, List, Optional
 def _get_encoder(encoding_name: str):
     """Return a cached tiktoken encoder or None if tiktoken is unavailable."""
     try:
-        import tiktoken  # optional dependency  # type: ignore[import]
+        import tiktoken  # type: ignore[import]
 
         return tiktoken.get_encoding(encoding_name)
     except Exception:
         return None
+
+
+# v2 Phase 3: HuggingFace tokenizer cache
+_HF_TOKENIZERS: Dict[str, Any] = {}
+
+
+def _get_hf_tokenizer(model_hint: Optional[str]) -> Optional[Any]:
+    """Get HuggingFace tokenizer for local models (Qwen3, Gemma, etc.).
+
+    Uses a simple LRU cache to avoid repeated loading.
+    Returns None if transformers not available or model not supported.
+    """
+    if not model_hint:
+        return None
+    m = model_hint.lower()
+
+    # Check if this is a local model that benefits from HF tokenizer
+    hf_models = (
+        "qwen3",
+        "qwen2",
+        "gemma",
+        "llama",
+        "mistral",
+        "phi",
+        "deepseek",
+        "qwq",
+    )
+    if not any(k in m for k in hf_models):
+        return None
+
+    # Check cache
+    if m in _HF_TOKENIZERS:
+        return _HF_TOKENIZERS[m]
+
+    # Try to load
+    try:
+        from transformers import AutoTokenizer  # type: ignore[import]
+
+        tokenizer = AutoTokenizer.from_pretrained(
+            f"models/{model_hint}",  # Local model path
+            local_files_only=True,
+        )
+        _HF_TOKENIZERS[m] = tokenizer
+        return tokenizer
+    except Exception:
+        pass
+
+    # Try from HuggingFace Hub (requires internet)
+    try:
+        from transformers import AutoTokenizer  # type: ignore[import]
+
+        tokenizer = AutoTokenizer.from_pretrained(
+            _hf_model_name(model_hint),
+            trust_remote_code=True,
+        )
+        _HF_TOKENIZERS[m] = tokenizer
+        return tokenizer
+    except Exception:
+        return None
+
+
+def _hf_model_name(model_hint: str) -> str:
+    """Map model hint to HuggingFace model name."""
+    m = model_hint.lower()
+    if "qwen3" in m:
+        return "Qwen/Qwen2.5-7B"  # Fallback tokenizer
+    if "gemma" in m:
+        return "google/gemma-2b"
+    if "llama" in m:
+        return "meta-llama/Llama-2-7b"
+    return model_hint  # Try as-is
 
 
 def _encoding_for_model(model_hint: Optional[str]) -> str:
@@ -48,17 +120,28 @@ def _encoding_for_model(model_hint: Optional[str]) -> str:
 def count_tokens(text: str, model_hint: Optional[str] = None) -> int:
     """Return token count for *text*.
 
-    Uses tiktoken when available; falls back to character heuristic otherwise.
-    The fallback uses ``len(text) / 3.5`` which is more accurate than the
-    traditional ``/ 4`` for mixed code+prose content.
+    Priority:
+    1. HuggingFace tokenizer (local models: Qwen3, Gemma, Llama) — v2 Phase 3
+    2. tiktoken (OpenAI, Claude, cloud models)
+    3. Character heuristic: len(text) / 3.5 (fallback)
 
     Args:
         text:       The string to count tokens for.
-        model_hint: Model name used to select the tiktoken encoding.  If None
-                    or unknown, defaults to ``cl100k_base``.
+        model_hint: Model name used to select tokenizer.
     """
     if not text:
         return 0
+
+    # v2 Phase 3: Try HuggingFace first for local models
+    if model_hint:
+        hf_tok = _get_hf_tokenizer(model_hint)
+        if hf_tok is not None:
+            try:
+                return len(hf_tok.encode(text))
+            except Exception:
+                pass
+
+    # tiktoken or fallback
     encoding_name = _encoding_for_model(model_hint)
     enc = _get_encoder(encoding_name)
     if enc is not None:
@@ -111,3 +194,27 @@ def fits_in_budget(
 ) -> bool:
     """Return True if the messages fit within *budget* tokens."""
     return count_messages_tokens(messages, model_hint) <= budget
+
+
+def clear_tokenizer_cache(model_hint: Optional[str] = None) -> None:
+    """Clear HuggingFace tokenizer cache.
+
+    Args:
+        model_hint: If provided, clear only that model's tokenizer.
+                    If None, clear all cached tokenizers.
+    """
+    global _HF_TOKENIZERS
+
+    if model_hint:
+        m = model_hint.lower()
+        if m in _HF_TOKENIZERS:
+            del _HF_TOKENIZERS[m]
+    else:
+        _HF_TOKENIZERS.clear()
+
+
+# Periodic cleanup: clear cache if it grows too large
+def _check_cache_size():
+    """Internal: clear cache if it exceeds reasonable size."""
+    if len(_HF_TOKENIZERS) > 10:  # Arbitrary limit
+        _HF_TOKENIZERS.clear()

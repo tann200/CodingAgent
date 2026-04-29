@@ -577,109 +577,30 @@ class JsonlSessionStore:
         attempts: int = 5,
         base_backoff: float = 0.05,
     ) -> bool:
-        """Best-effort compatibility shim used by tests.
+        """Best-effort compatibility shim used by tests."""
 
-        Attempts to execute ``conn.execute(sql, params)`` and commit. On
-        sqlite3.OperationalError containing 'lock' this retries with
-        exponential backoff. On exhaustion writes a diagnostic JSON file into
-        ``{workdir}/.agent-context/session_store_write_failure_*.json`` and
-        returns False.
-        """
-        last_err: Optional[Exception] = None
-        for i in range(1, max(1, attempts) + 1):
-            try:
-                # Execute then commit if available
-                if hasattr(conn, "execute"):
-                    conn.execute(sql, params)
-                if hasattr(conn, "commit"):
-                    conn.commit()
-                return True
-            except Exception as e:
-                last_err = e
-                msg = str(e).lower()
-                # Detect SQLITE_BUSY/locked semantics
-                if isinstance(e, sqlite3.OperationalError) and "lock" in msg:
-                    # busy, retry
-                    sleep_for = base_backoff * (2 ** (i - 1))
-                    try:
-                        time.sleep(sleep_for)
-                    except Exception:
-                        pass
-                    continue
-                else:
-                    # Non-locked error — write diagnostic and abort
-                    break
+        def write_operation():
+            if hasattr(conn, "execute"):
+                conn.execute(sql, params)
+            if hasattr(conn, "commit"):
+                conn.commit()
+            return True
 
-        # Exhausted attempts or unrecoverable error — write diagnostic
+        # Use shared utility for retry logic
+        from src.core.memory._write_retry_utils import write_with_retry
+
         try:
-            # Use resolved agent-context directory when available to honour
-            # configuration/discovery; fall back to legacy workdir/.agent-context
-            diag_dir = Path(
-                getattr(self, "_agent_context_dir", None)
-                or self._workdir / ".agent-context"
+            return write_with_retry(
+                write_func=write_operation,
+                max_attempts=attempts,
+                base_delay=base_backoff,
+                max_delay=1.0,
+                context_msg="JsonlSessionStore",
             )
-            diag_dir.mkdir(parents=True, exist_ok=True)
-            ts = int(time.time() * 1000)
-            sid = session_id or "unknown"
-            diag_path = diag_dir / f"session_store_write_failure_{ts}_{sid}.json"
-            payload = {
-                "db_path": getattr(
-                    conn, "db_path", str(getattr(conn, "database", "unknown"))
-                ),
-                "session_id": sid,
-                "attempts": attempts,
-                "last_error": "SQLITE_BUSY/LOCKED"
-                if isinstance(last_err, sqlite3.OperationalError)
-                and "lock" in str(last_err).lower()
-                else str(last_err),
-                "sql": sql,
-                "params": params,
-                "ts": _utc_now(),
-            }
-            # Atomic write: prefer the shared helper but fall back to the
-            # legacy mkstemp+replace approach on error.
-            try:
-                from src.core.io_utils import atomic_write_json
-
-                ok = atomic_write_json(diag_path, payload, logger=logger)
-            except Exception:
-                ok = False
-
-            if not ok:
-                fd = None
-                tmp = None
-                try:
-                    fd, tmp = tempfile.mkstemp(dir=str(diag_dir), suffix=".tmp")
-                    with os.fdopen(fd, "w", encoding="utf-8") as f:
-                        fd = None
-                        json.dump(payload, f, ensure_ascii=False)
-                        try:
-                            f.flush()
-                            os.fsync(f.fileno())
-                        except Exception:
-                            pass
-                    try:
-                        os.replace(tmp, str(diag_path))
-                    except Exception:
-                        try:
-                            shutil.move(tmp, str(diag_path))
-                        except Exception:
-                            pass
-                finally:
-                    try:
-                        if fd is not None:
-                            os.close(fd)
-                    except Exception:
-                        pass
-        except Exception:
-            import traceback
-
-            logger.debug(
-                "JsonlSessionStore._write_with_retry: failed to write diagnostic\n%s",
-                traceback.format_exc(),
-            )
-
-        return False
+        except Exception as e:
+            # Write diagnostic on failure (preserving original behavior)
+            _write_diagnostic_on_failure(self, session_id, e)
+            return False
 
     # Tool calls, plans, errors, decisions — simple append/read methods
 

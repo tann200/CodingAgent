@@ -124,7 +124,7 @@ def test_agent_loop_plaintext_tools(
 
     # Run the orchestrator repeatedly until the deterministic adapter has produced all steps
     executed_tools = []
-    trace_path = tmp_path / ".agent-context" / "execution_trace.json"
+    trace_path = tmp_path / ".codingAgent" / "execution_trace.json"
     import time
 
     max_rounds = 12

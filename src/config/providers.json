@@ -4,9 +4,11 @@
     "type": "lm_studio",
     "base_url": "http://localhost:1234/v1",
     "models": [
+      "qwen/qwen3.5-9b",
       "gemma-4-26b-a4b-it",
       "gemma-4-e4b-it"
     ],
+    "default_model": "qwen/qwen3.5-9b",
     "supports_native_tools": true,
     "provider_supports_parallel_tools": false,
     "disable_thinking": false,

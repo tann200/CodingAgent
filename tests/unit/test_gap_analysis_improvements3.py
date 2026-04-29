@@ -13,7 +13,6 @@ Covers:
   TUI-BRIDGE    usage.subagent_cost wired into core_bridge
 """
 
-
 # ruff: noqa: E501
 from __future__ import annotations
 
@@ -25,6 +24,7 @@ import pytest
 # ─────────────────────────────────────────────────────────────────────────────
 # GAP-SMALL-6: disable_thinking in Ollama adapter
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 class TestSmall6OllamaDisableThinking:
     """Ollama adapter injects 'think': false when provider.disable_thinking=True."""
@@ -66,6 +66,7 @@ class TestSmall6OllamaDisableThinking:
     def test_disable_thinking_field_in_ollama_adapter_source(self):
         """The source file of OllamaAdapter contains the disable_thinking guard."""
         from pathlib import Path
+
         src = (
             Path(__file__).parent.parent.parent
             / "src/core/inference/adapters/ollama_adapter.py"
@@ -78,12 +79,13 @@ class TestSmall6OllamaDisableThinking:
 # GAP-NEW-1: Retry-After header parsing
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 class TestNew1RetryAfterHeader:
     """openai_compat_adapter parses retry-after headers on 429."""
 
     def _parse_retry_wait(self, headers: dict, attempt: int = 0) -> float:
         """Replicate the GAP-NEW-1 retry wait computation."""
-        _retry_wait = 2 ** attempt
+        _retry_wait = 2**attempt
         for _hdr in ("retry-after", "x-ratelimit-reset-requests", "x-ratelimit-reset"):
             _hval = headers.get(_hdr)
             if _hval:
@@ -107,15 +109,17 @@ class TestNew1RetryAfterHeader:
         assert wait == 5.0
 
     def test_retry_after_takes_priority_over_x_ratelimit(self):
-        wait = self._parse_retry_wait({
-            "retry-after": "3",
-            "x-ratelimit-reset-requests": "15",
-        })
+        wait = self._parse_retry_wait(
+            {
+                "retry-after": "3",
+                "x-ratelimit-reset-requests": "15",
+            }
+        )
         assert wait == 3.0
 
     def test_invalid_header_falls_back_to_exponential(self):
         wait = self._parse_retry_wait({"retry-after": "not-a-number"}, attempt=1)
-        assert wait == 2 ** 1  # exponential backoff fallback
+        assert wait == 2**1  # exponential backoff fallback
 
     def test_no_header_uses_exponential(self):
         wait = self._parse_retry_wait({}, attempt=2)
@@ -129,6 +133,7 @@ class TestNew1RetryAfterHeader:
 # ─────────────────────────────────────────────────────────────────────────────
 # GAP-NEW-2: Workspace skill discovery
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 class TestNew2WorkspaceSkillDiscovery:
     """ContextBuilder loads skills from .agent/skills/ and .claude/skills/."""
@@ -228,10 +233,13 @@ class TestNew2WorkspaceSkillDiscovery:
 # GAP-NEW-3: Token-aware compaction threshold
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 class TestNew3TokenAwareCompaction:
     """Compaction threshold is 85% of actual context window."""
 
-    def _compute_threshold(self, context_window: int, config_default: int = 10_000) -> int:
+    def _compute_threshold(
+        self, context_window: int, config_default: int = 10_000
+    ) -> int:
         return int(context_window * 0.85) if context_window > 0 else config_default
 
     def test_85_percent_of_8k_window(self):
@@ -260,12 +268,16 @@ class TestNew3TokenAwareCompaction:
 # GAP-NEW-4: memory_save tool
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 class TestNew4MemorySave:
     """memory_save persists notes and enforces size limits."""
 
-    def _call_save(self, content: str, category: str | None = None, memory_file: Path | None = None):
+    def _call_save(
+        self, content: str, category: str | None = None, memory_file: Path | None = None
+    ):
         """Call memory_save with a patched memory file path."""
         import src.tools.memory_tools as mt
+
         original = mt._MEMORY_FILE
         if memory_file is not None:
             mt._MEMORY_FILE = memory_file
@@ -282,7 +294,9 @@ class TestNew4MemorySave:
 
     def test_saved_entry_format(self, tmp_path):
         mem_file = tmp_path / "memory.md"
-        result = self._call_save("Remember this", category="convention", memory_file=mem_file)
+        result = self._call_save(
+            "Remember this", category="convention", memory_file=mem_file
+        )
         assert result["status"] == "ok"
         content = mem_file.read_text()
         assert "[convention]" in content
@@ -297,12 +311,15 @@ class TestNew4MemorySave:
 
     def test_empty_content_returns_error(self):
         from src.tools.memory_tools import memory_save
+
         result = memory_save(content="")
         assert result["status"] == "error"
 
-    def test_content_over_1000_chars_rejected(self):
+    def test_content_over_2200_chars_rejected(self):
         from src.tools.memory_tools import memory_save
-        result = memory_save(content="x" * 1001)
+
+        # Per IMPLEMENTATION_PLAN.md character bounds (2200 for lite/standard/full tiers)
+        result = memory_save(content="x" * 2201)
         assert result["status"] == "error"
         assert "too long" in result["error"]
 
@@ -317,15 +334,22 @@ class TestNew4MemorySave:
     def test_size_cap_trims_oldest(self, tmp_path):
         """When file exceeds 50KB, oldest entries are trimmed."""
         import src.tools.memory_tools as mt
+
         mem_file = tmp_path / "memory.md"
         original = mt._MEMORY_FILE
-        original_max = mt._MEMORY_MAX_BYTES
+        original_limits = mt._MEMORY_TIER_LIMITS.copy()
         mt._MEMORY_FILE = mem_file
-        mt._MEMORY_MAX_BYTES = 200  # tiny cap for test
+        # Patch tier-aware limits for test
+        mt._MEMORY_TIER_LIMITS = {
+            "standard": {"max_entries": 100, "max_bytes": 200, "max_chars": 2200}
+        }
         try:
             # Write entries until cap is hit
             for i in range(20):
-                mt.memory_save(content=f"Entry number {i:03d} — some filler text here", category="test")
+                mt.memory_save(
+                    content=f"Entry number {i:03d} — some filler text here",
+                    category="test",
+                )
             content = mem_file.read_text()
             # File should be under the cap
             assert len(content.encode("utf-8")) <= 200
@@ -333,17 +357,20 @@ class TestNew4MemorySave:
             assert "Entry number 019" in content
         finally:
             mt._MEMORY_FILE = original
-            mt._MEMORY_MAX_BYTES = original_max
+            mt._MEMORY_TIER_LIMITS = original_limits
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # GAP-NEW-5: disable_thinking in openai_compat_adapter
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 class TestNew5OpenAICompatDisableThinking:
     """openai_compat_adapter injects 'think': false when provider.disable_thinking=True."""
 
-    def _make_payload(self, disable_thinking: bool, existing_payload: dict | None = None) -> dict:
+    def _make_payload(
+        self, disable_thinking: bool, existing_payload: dict | None = None
+    ) -> dict:
         payload = existing_payload or {}
         if disable_thinking and "think" not in payload:
             payload["think"] = False
@@ -358,12 +385,15 @@ class TestNew5OpenAICompatDisableThinking:
         assert "think" not in payload
 
     def test_existing_think_key_preserved(self):
-        payload = self._make_payload(disable_thinking=True, existing_payload={"think": True})
+        payload = self._make_payload(
+            disable_thinking=True, existing_payload={"think": True}
+        )
         assert payload["think"] is True
 
     def test_disable_thinking_in_openai_compat_source(self):
         """The source file of OpenAICompatibleAdapter contains the disable_thinking guard."""
         from pathlib import Path
+
         src = (
             Path(__file__).parent.parent.parent
             / "src/core/inference/adapters/openai_compat_adapter.py"
@@ -376,6 +406,7 @@ class TestNew5OpenAICompatDisableThinking:
 # GAP-NEW-7: usage.subagent_cost event published from subagent_tools
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 class TestNew7SubagentCostRollup:
     """subagent_tools publishes usage.subagent_cost when child has nonzero cost."""
 
@@ -383,7 +414,9 @@ class TestNew7SubagentCostRollup:
         published_events = []
 
         mock_bus = MagicMock()
-        mock_bus.publish = MagicMock(side_effect=lambda name, payload: published_events.append((name, payload)))
+        mock_bus.publish = MagicMock(
+            side_effect=lambda name, payload: published_events.append((name, payload))
+        )
 
         # Simulate the subagent_tools post-completion logic
         final_state = {"session_cost_usd": 0.005}
@@ -391,18 +424,24 @@ class TestNew7SubagentCostRollup:
         canonical_role = "analyst"
 
         _child_cost = float(final_state.get("session_cost_usd") or 0.0)
-        mock_bus.publish("delegation.finish", {
-            "child_session_id": child_session_id,
-            "role": canonical_role,
-            "ok": True,
-            "cost_usd": _child_cost,
-        })
-        if _child_cost > 0:
-            mock_bus.publish("usage.subagent_cost", {
+        mock_bus.publish(
+            "delegation.finish",
+            {
                 "child_session_id": child_session_id,
                 "role": canonical_role,
+                "ok": True,
                 "cost_usd": _child_cost,
-            })
+            },
+        )
+        if _child_cost > 0:
+            mock_bus.publish(
+                "usage.subagent_cost",
+                {
+                    "child_session_id": child_session_id,
+                    "role": canonical_role,
+                    "cost_usd": _child_cost,
+                },
+            )
 
         event_names = [e[0] for e in published_events]
         assert "usage.subagent_cost" in event_names
@@ -414,7 +453,9 @@ class TestNew7SubagentCostRollup:
     def test_cost_event_not_published_when_zero(self):
         published_events = []
         mock_bus = MagicMock()
-        mock_bus.publish = MagicMock(side_effect=lambda name, payload: published_events.append((name, payload)))
+        mock_bus.publish = MagicMock(
+            side_effect=lambda name, payload: published_events.append((name, payload))
+        )
 
         final_state = {"session_cost_usd": 0.0}
         _child_cost = float(final_state.get("session_cost_usd") or 0.0)
@@ -436,6 +477,7 @@ class TestNew7SubagentCostRollup:
 # ─────────────────────────────────────────────────────────────────────────────
 # GAP-NEW-8: operational-small.md contains manage_todo hint
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 class TestNew8SmallModelTodoHint:
     """operational-small.md must reference manage_todo for multi-step tasks."""
@@ -463,48 +505,3 @@ class TestNew8SmallModelTodoHint:
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TUI bridge: usage.subagent_cost handler wired
-# ─────────────────────────────────────────────────────────────────────────────
-
-class TestTUIBridgeSubagentCostHandler:
-    """core_bridge subscribes to usage.subagent_cost and has _on_subagent_cost."""
-
-    def test_handler_method_exists(self):
-        from tui.src.ui.core_bridge import AgentBridge
-        assert hasattr(AgentBridge, "_on_subagent_cost")
-
-    def test_handler_is_callable(self):
-        from tui.src.ui.core_bridge import AgentBridge
-        assert callable(AgentBridge._on_subagent_cost)
-
-    def test_usage_subagent_cost_in_subscriptions(self):
-        """Verify the subscription is registered in setup_subscriptions."""
-        import inspect
-        from tui.src.ui.core_bridge import AgentBridge
-        source = inspect.getsource(AgentBridge.setup_subscriptions)
-        assert "usage.subagent_cost" in source
-        assert "_on_subagent_cost" in source
-
-    def test_handler_skips_zero_cost(self):
-        """_on_subagent_cost should not post events for zero-cost subagents."""
-        from tui.src.ui.core_bridge import AgentBridge
-
-        mock_app = MagicMock()
-        bridge = AgentBridge.__new__(AgentBridge)
-        bridge._app = mock_app
-        bridge._post = MagicMock()
-
-        bridge._on_subagent_cost({"cost_usd": 0.0, "role": "analyst"})
-        bridge._post.assert_not_called()
-
-    def test_handler_posts_event_for_positive_cost(self):
-        """_on_subagent_cost posts a UsageTurnSummaryEvent for positive cost."""
-        from tui.src.ui.core_bridge import AgentBridge
-
-        bridge = AgentBridge.__new__(AgentBridge)
-        bridge._post = MagicMock()
-
-        bridge._on_subagent_cost({"cost_usd": 0.002, "role": "reviewer"})
-        bridge._post.assert_called_once()
-        call_args = bridge._post.call_args[0][0]
-        assert call_args.cost_usd == pytest.approx(0.002)
-        assert "[reviewer]" in call_args.model

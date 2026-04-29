@@ -250,9 +250,10 @@ class MessageManager:
 
                         agent_context_dir = agent_context_path(_Path(working_dir))
                     except Exception:
-                        # Fallback to legacy location when tools_config unavailable
-                        agent_context_dir = _Path(working_dir) / ".agent-context"
-                        agent_context_dir.mkdir(parents=True, exist_ok=True)
+                        # Use agent_context_path for fallback
+                        from src.tools.tools_config import agent_context_path
+
+                        agent_context_dir = agent_context_path(_Path(working_dir))
                     timings_path = agent_context_dir / "timings.json"
                     entry = {
                         "phase": "message_truncation",

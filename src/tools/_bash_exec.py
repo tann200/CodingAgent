@@ -151,12 +151,12 @@ def _check_shell_flags(cmd_parts: list, first_cmd: str) -> Optional[Dict[str, An
         if first_cmd == cmd:
             # Block entire dangerous command category
             return {"status": "error", "error": msg}
-        # Check if any flag matches
-        if flags:
-            for part in cmd_parts[1:]:
-                for flag in flags:
-                    if part == flag or part.startswith(flag + "="):
-                        return {"status": "error", "error": msg}
+            # Check if any flag matches (only for the matching command)
+            if flags:
+                for part in cmd_parts[1:]:
+                    for flag in flags:
+                        if part == flag or part.startswith(flag + "="):
+                            return {"status": "error", "error": msg}
 
     if first_cmd == "sed":
         for _part in cmd_parts[1:]:
@@ -340,58 +340,10 @@ def bash(
             "error": f"Command '{cmd_parts[0]}' not allowed. Allowed: {sorted(SAFE_COMMANDS | TEST_COMPILE_COMMANDS)}",
         }
 
-    # TUI-03: tier-3 approval gate — pause and ask user before executing sensitive commands.
-    # The gate is bypassed in autonomous mode so headless runs are never blocked.
-    _gate_setup_ok = False
-    try:
-        from src.tools._approval import is_tier3
-        from src.tools.tools_config import is_autonomous
-
-        # register_bash_gate and _bash_denied are defined in approval_gate.py.
-        # Import them directly so static checkers (pyright) can resolve the symbols.
-        from src.core.orchestration.approval_gate import (
-            register_bash_gate,
-            _bash_denied,
-        )
-        from src.core.orchestration.event_bus import get_event_bus
-
-        _gate_setup_ok = True
-        if is_tier3(command) and not is_autonomous():
-            import uuid as _uuid_t3
-
-            _tool_id = str(_uuid_t3.uuid4())[:8]
-            _gate_ev = register_bash_gate(_tool_id)
-            try:
-                get_event_bus().publish(
-                    "bash.approval_required",
-                    {"tool_id": _tool_id, "command": command},
-                )
-            except Exception:
-                pass
-            _approved = _gate_ev.wait(timeout=120.0)
-            if not _approved or _tool_id in _bash_denied:
-                _bash_denied.discard(_tool_id)
-                return {"status": "denied", "output": "Bash command denied by user."}
-    except Exception as _gate_exc:
-        # Gate setup failed — log a warning so this is visible in logs.
-        # If the gate was not yet initialised (e.g. headless / test mode), proceed.
-        # If it was initialised but failed partway through, that is unexpected: warn and block.
-        if _gate_setup_ok:
-            _logger.warning(
-                "bash: tier-3 approval gate failed unexpectedly; blocking command for safety. "
-                "Error: %s cmd=%r",
-                _gate_exc,
-                command,
-            )
-            return {
-                "status": "error",
-                "error": "Approval gate failure — command blocked for safety. Re-run to retry.",
-            }
-        else:
-            _logger.debug(
-                "bash: approval gate unavailable (headless/test mode) — proceeding. cmd=%r",
-                command,
-            )
+    # Tier-3 approval gate
+    _approval_result = _check_tier3_approval(command)
+    if _approval_result is not None:
+        return _approval_result
 
     # Background execution: spawn without waiting, return PID as task ID.
     if run_in_background:
@@ -678,3 +630,52 @@ def check_background_task(
         return {"status": "ok", "pid": pid, "running": True, "exit_code": None}
     except OSError:
         return {"status": "ok", "pid": pid, "running": False, "exit_code": None}
+
+
+def _check_tier3_approval(command: str) -> Optional[Dict[str, Any]]:
+    """Check tier-3 approval gate.
+
+    Returns approval result dict if command should be blocked, None if approved.
+    """
+    try:
+        from src.tools._approval import is_tier3
+        from src.tools.tools_config import is_autonomous
+
+        # register_bash_gate and _bash_denied are defined in approval_gate.py.
+        from src.core.orchestration.approval_gate import (
+            register_bash_gate,
+            _bash_denied,
+        )
+        from src.core.orchestration.event_bus import get_event_bus
+
+        if is_tier3(command) and not is_autonomous():
+            import uuid as _uuid_t3
+
+            _tool_id = str(_uuid_t3.uuid4())[:8]
+            _gate_ev = register_bash_gate(_tool_id)
+            try:
+                get_event_bus().publish(
+                    "bash.approval_required",
+                    {"tool_id": _tool_id, "command": command},
+                )
+            except Exception:
+                pass
+
+            _approved = _gate_ev.wait(timeout=120.0)
+            if not _approved or _tool_id in _bash_denied:
+                _bash_denied.discard(_tool_id)
+                return {"status": "denied", "output": "Bash command denied by user."}
+    except Exception as _gate_exc:
+        # Gate setup failed — block for safety
+        _logger.warning(
+            "bash: tier-3 approval gate failed unexpectedly; blocking command for safety. "
+            "Error: %s cmd=%r",
+            _gate_exc,
+            command,
+        )
+        return {
+            "status": "error",
+            "error": "Approval gate failure — command blocked for safety. Re-run to retry.",
+        }
+
+    return None

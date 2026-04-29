@@ -14,12 +14,15 @@ Usage::
 
 If no server is installed for the language the manager silently returns a
 ``_DummyLSPClient`` (all methods return empty results).
+
+v2 Phase 3: CPU-aware concurrency limits (max 2 concurrent LSPs for 6-core CPUs).
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import shutil
 import threading
 from pathlib import Path
@@ -28,6 +31,17 @@ from typing import Dict, Optional
 from src.core.indexing.lsp_client import LSPClient, _DummyLSPClient
 
 logger = logging.getLogger(__name__)
+
+
+def _get_default_max_lsps() -> int:
+    """Get default max concurrent LSPs based on CPU cores."""
+    cores = os.cpu_count() or 4
+    if cores <= 6:
+        return 2
+    if cores <= 12:
+        return 3
+    return 4
+
 
 # Map file extension → language key (used in lsp_servers.yaml)
 _EXT_LANGUAGE: Dict[str, str] = {
@@ -83,17 +97,28 @@ class LSPManager:
 
     Clients are started lazily on the first ``get_client()`` call.
 
+    v2 Phase 3: CPU-aware concurrency limits (max 2 for 6-core, 3 for 12-core, 4 for more).
+
     Parameters
     ----------
     workspace:
         Absolute path to the workspace root.
+    max_concurrent:
+        Maximum number of concurrent LSP servers (default: CPU-aware auto).
     """
 
-    def __init__(self, workspace: Path) -> None:
+    def __init__(
+        self,
+        workspace: Path,
+        max_concurrent: Optional[int] = None,
+    ) -> None:
         self._workspace = workspace.resolve()
         self._clients: Dict[str, LSPClient | _DummyLSPClient] = {}
         self._lock = asyncio.Lock()
         self._config = _load_server_config()
+        self._max_concurrent = max_concurrent or _get_default_max_lsps()
+        self._active_count = 0
+        self._semaphore: Optional[asyncio.Semaphore] = None
 
     async def get_client(self, language: str) -> LSPClient | _DummyLSPClient:
         """Return a started LSP client for *language*.
@@ -138,6 +163,12 @@ class LSPManager:
 
             self._clients[language] = client
             return client
+
+    def get_semaphore(self) -> asyncio.Semaphore:
+        """Get or create a semaphore for concurrency control."""
+        if self._semaphore is None:
+            self._semaphore = asyncio.Semaphore(self._max_concurrent)
+        return self._semaphore
 
     async def get_client_for_file(self, path: str) -> LSPClient | _DummyLSPClient:
         """Return a client inferred from the file extension of *path*."""

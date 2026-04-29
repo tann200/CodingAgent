@@ -4,7 +4,6 @@ Covers acceptance criteria from docs/implementation-plan-claw-parity.md.
 All tests are unit-level (no LLM calls, no live network).
 """
 
-
 # ruff: noqa: E501
 from __future__ import annotations
 
@@ -300,7 +299,7 @@ class TestPermissionGatewayPolicyGate:
         )
 
         # Write a project-level deny for bash
-        proj_dir = tmp_path / ".agent-context"
+        proj_dir = tmp_path / ".codingAgent"
         proj_dir.mkdir()
         (proj_dir / "permissions.json").write_text(
             json.dumps(
@@ -573,7 +572,7 @@ class TestTierGraphCache:
 
         _reset_compiled_graph()
         gf = build_tier_graph("frontier")
-        gs = build_tier_graph("nano")
+        gs = build_tier_graph("small")  # Changed from "nano"
         assert gf is not gs
 
     def test_reset_clears_cache(self):
@@ -601,7 +600,7 @@ class TestTierGraphCache:
 
         def _get():
             try:
-                results.append(build_tier_graph("nano"))
+                results.append(build_tier_graph("small"))  # Changed from "nano"
             except Exception as exc:
                 errors.append(exc)
 

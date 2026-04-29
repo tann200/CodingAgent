@@ -445,7 +445,7 @@ class TestPlanPersistence:
         from src.core.orchestration.graph.nodes.planning_node import _get_last_plan_path
 
         path = _get_last_plan_path(str(tmp_path))
-        assert ".agent-context" in str(path)
+        assert ".codingAgent" in str(path)
         assert "last_plan.json" in str(path)
 
     def test_save_and_load_last_plan(self, tmp_path):
@@ -484,7 +484,7 @@ class TestPlanPersistence:
         from src.core.orchestration.graph.nodes.planning_node import _load_last_plan
 
         # Create an invalid JSON file
-        plan_path = tmp_path / ".agent-context" / "last_plan.json"
+        plan_path = tmp_path / ".codingAgent" / "last_plan.json"
         plan_path.parent.mkdir(parents=True, exist_ok=True)
         plan_path.write_text("not valid json")
 

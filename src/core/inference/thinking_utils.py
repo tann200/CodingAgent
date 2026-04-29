@@ -9,14 +9,23 @@ the codebase:
   2. Strip <think> blocks from any response string.
   3. Choose an appropriate max_tokens budget (reasoning models need a larger
      budget so thinking tokens don't crowd out the real answer).
+  4. Control thinking mode via CLI (--thinking auto|on|off)
 """
 
 from __future__ import annotations
 
 import re
 import logging
+from enum import Enum
 
 logger = logging.getLogger(__name__)
+
+
+class ThinkingMode(str, Enum):
+    OFF = "off"  # Never use thinking (small local models default)
+    AUTO = "auto"  # Enabled for reasoning models or multi-step tasks
+    ON = "on"  # Always on (debug, complex tasks)
+
 
 # Substrings that identify models with automatic thinking-token generation or
 # "reasoning-first" behaviour that requires the beast/reasoning prompt variant.
@@ -26,7 +35,7 @@ logger = logging.getLogger(__name__)
 # emit <think> blocks but still need a different prompting style (no CoT
 # instructions, direct output, no streaming tool-call format).
 _REASONING_MODEL_PATTERNS = (
-    "qwen3",
+    "qwen3",  # Covers qwen3, qwen3.5, qwen3.5-9b
     "deepseek-r1",
     "deepseek_r1",
     "qwq",
@@ -41,7 +50,7 @@ _REASONING_MODEL_PATTERNS = (
 
 # Qwen3 specifically supports /no_think to suppress the think block entirely.
 _NO_THINK_SUPPORTED_PATTERNS = (
-    "qwen3",
+    "qwen3",  # Covers qwen3, qwen3.5
     "qwq",
 )
 
@@ -106,9 +115,47 @@ def get_active_model_id() -> str:
         )
         if providers:
             p = providers[0]
-            # providers.json entries may carry a 'model' or 'default_model' key
             model_id = p.get("model") or p.get("default_model") or p.get("name") or ""
             return str(model_id)
     except Exception:
         pass
     return ""
+
+
+def resolve_thinking_mode(cli_mode: ThinkingMode | None, model_id: str) -> bool:
+    """Resolve whether thinking should be enabled for this model.
+
+    Args:
+        cli_mode: CLI --thinking flag value (None = use default)
+        model_id: Active model identifier
+
+    Returns:
+        True if thinking should be enabled, False otherwise
+    """
+    if cli_mode == ThinkingMode.ON:
+        return True
+    if cli_mode == ThinkingMode.OFF:
+        return False
+
+    # AUTO mode: enable for reasoning models
+    if cli_mode == ThinkingMode.AUTO or cli_mode is None:
+        return is_reasoning_model(model_id)
+
+    return False
+
+
+def get_thinking_directive(model_id: str, enabled: bool) -> str | None:
+    """Get the prompt directive to control thinking mode.
+
+    Args:
+        model_id: Active model identifier
+        enabled: Whether thinking should be enabled
+
+    Returns:
+        Prompt directive string, or None if model doesn't support it
+    """
+    if not enabled and supports_no_think(model_id):
+        return "/no_think"
+    if enabled and model_id.lower().startswith("qwen3"):
+        return None  # Qwen3 thinks by default, no directive needed
+    return None

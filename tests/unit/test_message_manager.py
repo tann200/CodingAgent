@@ -141,7 +141,7 @@ class TestContextBuilderSessionSummary:
     def test_task_state_injected_when_present(self, tmp_path, monkeypatch):
         from src.core.context.context_builder import ContextBuilder
 
-        agent_ctx = tmp_path / ".agent-context"
+        agent_ctx = tmp_path / ".codingAgent"
         agent_ctx.mkdir()
         task_state = agent_ctx / "TASK_STATE.md"
         task_state.write_text(
@@ -166,7 +166,7 @@ class TestContextBuilderSessionSummary:
     def test_empty_task_state_not_injected(self, tmp_path, monkeypatch):
         from src.core.context.context_builder import ContextBuilder
 
-        agent_ctx = tmp_path / ".agent-context"
+        agent_ctx = tmp_path / ".codingAgent"
         agent_ctx.mkdir()
         task_state = agent_ctx / "TASK_STATE.md"
         task_state.write_text("# Current Task\n\n# Completed Steps\n\n# Next Step")
@@ -227,7 +227,7 @@ class TestDistillerRicherFormat:
         import json
         import unittest.mock as mock
 
-        (tmp_path / ".agent-context").mkdir()
+        (tmp_path / ".codingAgent").mkdir()
         rich_state = {
             "current_task": "Fix login bug",
             "current_state": "Identified root cause",
@@ -246,7 +246,7 @@ class TestDistillerRicherFormat:
                 working_dir=tmp_path,
             )
 
-        task_state = (tmp_path / ".agent-context" / "TASK_STATE.md").read_text()
+        task_state = (tmp_path / ".codingAgent" / "TASK_STATE.md").read_text()
         assert "Fix login bug" in task_state
         assert "Identified root cause" in task_state
         assert "src/auth.py" in task_state

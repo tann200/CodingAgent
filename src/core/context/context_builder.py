@@ -146,11 +146,11 @@ class ContextBuilder:
                 # both resolve agent-context files relative to the active cwd.
                 self._agent_context_dir = agent_context_path(Path.cwd())
         except Exception:
-            # Fallback behaviour if tools_config cannot be imported
+            # Fallback: use agent_context_path which handles legacy dirs
             if working_dir:
-                self._agent_context_dir = Path(working_dir) / ".agent-context"
+                self._agent_context_dir = agent_context_path(Path(working_dir))
             else:
-                self._agent_context_dir = Path.cwd() / ".agent-context"
+                self._agent_context_dir = agent_context_path(Path.cwd())
 
         # Token usage tracking for TokenBudgetMonitor
         self._last_token_count: int = 0
@@ -199,9 +199,7 @@ class ContextBuilder:
 
             ctx_name = get_context_dir_name()
         except Exception:
-            import os
-
-            ctx_name = os.getenv("CODINGAGENT_CONTEXT_DIR") or ".localAgent"
+            ctx_name = ".codingAgent"
 
         _workspace_skill_dirs = [
             self._agent_context_dir.parent / ctx_name / "skills",
@@ -256,7 +254,7 @@ class ContextBuilder:
                 if content:
                     return content
             # 2. Tier variant
-            if tier in ("nano", "small"):
+            if tier == "small":
                 content = self.roles.get("operational-small", "")
                 if content:
                     return content
@@ -319,6 +317,14 @@ class ContextBuilder:
     def _get_todo_content(self) -> Optional[str]:
         """Get TODO.md content with module-level mtime caching."""
         return self._read_text_cached(self._agent_context_dir / "TODO.md")
+
+    def _get_preferences_content(self) -> Optional[str]:
+        """Get preferences.md content with module-level mtime caching.
+
+        Project-specific user preferences stored in .agent-context/preferences.md.
+        This file contains user preferences, working style, and explicit instructions.
+        """
+        return self._read_text_cached(self._agent_context_dir / "preferences.md")
 
     def _get_summary_cache(self) -> Dict:
         """Get file_summaries.json with module-level mtime caching."""
@@ -395,9 +401,7 @@ class ContextBuilder:
 
                     ctx_name = get_context_dir_name()
                 except Exception:
-                    import os
-
-                    ctx_name = os.getenv("CODINGAGENT_CONTEXT_DIR") or ".localAgent"
+                    ctx_name = ".codingAgent"
 
                 ac = cwd / ctx_name
                 if ac.exists():
@@ -548,7 +552,7 @@ class ContextBuilder:
                 return partial
 
         tier = (model_tier or "").lower()
-        if tier in ("nano", "small"):
+        if tier == "small":
             partial = self._load_prompt_partial("local-small.md")
             if partial:
                 return partial
@@ -610,7 +614,7 @@ class ContextBuilder:
             from src.core.inference.model_tiers import ModelTier
 
             tier = ModelTier(model_tier) if model_tier else ModelTier.MEDIUM
-            is_minimal = tier in (ModelTier.NANO, ModelTier.SMALL)
+            is_minimal = tier == ModelTier.SMALL
         except Exception:
             is_minimal = False
 
@@ -879,7 +883,7 @@ class ContextBuilder:
                 "After the tool result is returned, you may call one more tool if needed.\n"
                 "</output_format>"
             )
-        elif tier_str in ("nano", "small"):
+        elif tier_str == "small":
             # GAP-SMALL-1: simplified output format for small models — only STATUS: line required.
             format_instr = (
                 "<output_format>\n"
@@ -1032,6 +1036,17 @@ class ContextBuilder:
                 )
         except Exception:
             pass  # never fail prompt building due to missing TODO.md
+
+        # 1c. Project-specific user preferences — auto-injected from preferences.md
+        #    User preferences, working style, explicit instructions for this project.
+        try:
+            prefs_content = self._get_preferences_content()
+            if prefs_content and len(prefs_content) > 10:
+                dynamic_parts.append(
+                    f"<user_preferences>\n{prefs_content}\n</user_preferences>"
+                )
+        except Exception:
+            pass  # never fail prompt building due to missing preferences.md
 
         # 1b. Repository Intelligence block (if any retrieved snippets provided)
         # Step 8: If a ContextController is available, run enforce_budget() to drop or

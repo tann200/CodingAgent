@@ -37,7 +37,7 @@ def test_jsonl_write_with_retry_writes_diag(tmp_path: Path) -> None:
     )
     assert ok is False
 
-    diag_dir = Path(tmp_path) / ".agent-context"
+    diag_dir = Path(tmp_path) / ".codingAgent"
     diag = _find_diag_file(diag_dir)
     assert diag is not None
     payload = json.loads(diag.read_text(encoding="utf-8"))
@@ -58,7 +58,7 @@ def test_sqlite_write_with_retry_writes_diag(tmp_path: Path) -> None:
     )
     assert ok is False
 
-    diag_dir = Path(tmp_path) / ".agent-context"
+    diag_dir = Path(tmp_path) / ".codingAgent"
     diag = _find_diag_file(diag_dir)
     assert diag is not None
     payload = json.loads(diag.read_text(encoding="utf-8"))

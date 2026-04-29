@@ -461,7 +461,7 @@ class TestDistillerCheckpointWriteAndSchemaValidation:
                     distiller.distill_context(messages, working_dir=tmp_path)
 
         mock_cmp.assert_called_once()
-        cp_path = tmp_path / ".agent-context" / "compaction_checkpoint.md"
+        cp_path = tmp_path / ".codingAgent" / "compaction_checkpoint.md"
         assert cp_path.exists(), (
             "compaction_checkpoint.md should be written at 50+ messages"
         )

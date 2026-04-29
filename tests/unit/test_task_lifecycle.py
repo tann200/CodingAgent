@@ -91,7 +91,7 @@ class TestStartNewTaskImpl:
         assert "file_b.py" not in orch._session_read_files
         # At least the internal agent files should be pre-seeded.
         # Use os.path.realpath to handle symlinks (e.g. /tmp → /private/tmp on macOS).
-        agent_ctx = os.path.realpath("/tmp/test_working_dir/.agent-context")
+        agent_ctx = os.path.realpath("/tmp/test_working_dir/.codingAgent")
         seeded = orch._session_read_files
         assert any(os.path.realpath(p).startswith(agent_ctx) for p in seeded), (
             f"Expected agent-context files in _session_read_files, got: {seeded}"

@@ -13,7 +13,7 @@ def test_distiller_writes_file_summaries(tmp_path, monkeypatch):
     content = "\n".join([f"line {i}" for i in range(400)])
     f.write_text(content)
     # create repo_index.json expected layout
-    ac = tmp_path / ".agent-context"
+    ac = tmp_path / ".codingAgent"
     ac.mkdir()
     repo_index = {"files": [{"path": "src/big.py"}], "symbols": []}
     (ac / "repo_index.json").write_text(json.dumps(repo_index))

@@ -320,12 +320,14 @@ class SymbolGraph:
                             "methods": [
                                 n.name
                                 for n in node.body
-                                if isinstance(n, ast.FunctionDef)
+                                if isinstance(
+                                    n, (ast.FunctionDef, ast.AsyncFunctionDef)
+                                )
                             ],
                             "docstring": ast.get_docstring(node) or "",
                         }
                     )
-                elif isinstance(node, ast.FunctionDef):
+                elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     symbols["functions"].append(
                         {
                             "name": node.name,

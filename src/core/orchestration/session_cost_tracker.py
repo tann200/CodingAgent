@@ -192,7 +192,7 @@ class SessionCostTracker:
 
                 usage_path = agent_context_path(self._working_dir) / "usage.json"
             except Exception:
-                usage_path = self._working_dir / ".agent-context" / "usage.json"
+                usage_path = self._working_dir / ".codingAgent" / "usage.json"
 
             usage_path.parent.mkdir(parents=True, exist_ok=True)
             usage: dict = {}

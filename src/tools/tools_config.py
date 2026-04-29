@@ -148,7 +148,7 @@ TOOL_ALIASES: Dict[str, str] = {
 # Module-level state (mutable, not user-facing)
 # -----------------------------------------------------------------------
 
-_CONTEXT_DIR: str = ".localAgent"
+_CONTEXT_DIR: str = ".codingAgent"  # PREFERRED: project-specific context directory
 _DEFAULT_WORKDIR: Optional[Path] = None
 _AUTONOMOUS_MODE: bool = False  # AUTO-01: global autonomous-mode flag
 _ACTIVE_PERMISSION_MODE: Optional[PermissionLevel] = (
@@ -172,7 +172,7 @@ _config_lock: threading.Lock = threading.Lock()
 
 
 def configure(
-    context_dir: str = ".localAgent",
+    context_dir: str = ".codingAgent",
     default_workdir: Optional[Path] = None,
     autonomous_mode: bool = False,
     require_preview_confirmation: bool = False,
@@ -185,8 +185,8 @@ def configure(
     ----------
     context_dir:
         Name of the per-project directory used to store tool state
-        (TODO.md, TASK_STATE.md, checkpoints, etc.).
-        Default: ``".localAgent"``.
+        (TODO.md, TASK_STATE.md, preferences.md, checkpoints, etc.).
+        Default: ``".codingAgent"``.
     default_workdir:
         Default working directory for tool calls that do not explicitly
         pass ``workdir=``.  When *None* the default is the current working
@@ -218,27 +218,27 @@ def agent_context_path(workdir: Path) -> Path:
     Creates the directory if it does not exist.
     """
     with _config_lock:
-        ctx_dir = _CONTEXT_DIR
-    # Prefer an existing configured directory, but fall back to legacy names
-    # when present so older workspaces continue to work during migration.
+        ctx_dir = _CONTEXT_DIR  # Defaults to .codingAgent
+
+    # Priority order:
+    # 1. Configured directory (e.g., .codingAgent) if it exists
+    # 2. Legacy .agent-context (backward compatibility)
+    # 3. Legacy .agent (backward compatibility)
+    # 4. Create configured directory (.codingAgent) as default
     configured = workdir / ctx_dir
     legacy_a = workdir / ".agent-context"
     legacy_b = workdir / ".agent"
 
-    # If the configured directory already exists, use it.
     if configured.exists():
-        return configured
-
-    # Prefer legacy .agent-context then .agent if either exists.
+        return configured  # 1. Use configured
     if legacy_a.exists():
-        return legacy_a
+        return legacy_a  # 2. Fallback to legacy .agent-context
     if legacy_b.exists():
-        return legacy_b
+        return legacy_b  # 3. Fallback to legacy .agent
 
-    # Nothing exists yet — for backward compatibility with existing tests and
-    # older workspaces create the legacy ".agent-context" directory by default.
-    legacy_a.mkdir(parents=True, exist_ok=True)
-    return legacy_a
+    # Nothing exists yet — create .codingAgent as default
+    configured.mkdir(parents=True, exist_ok=True)
+    return configured
 
 
 def get_default_workdir() -> Path:
@@ -258,22 +258,9 @@ def get_context_dir_name() -> str:
 def get_audit_dir(workdir: Path) -> Path:
     """Return the directory to use for permission audit logs.
 
-    Historical tests and behaviour expect audit logs to live under ".agent".
-    This helper centralises that decision so callers (tests, tool code) can
-    consistently rely on the same semantics: prefer existing ".agent" then
-    ".agent-context"; if neither exists create and return ".agent".
+    Uses agent_context_path() for consistent behavior.
     """
-    wd = Path(workdir) if workdir is not None else Path.cwd()
-    candidate_a = wd / ".agent"
-    candidate_b = wd / ".agent-context"
-
-    if candidate_a.exists():
-        return candidate_a
-    if candidate_b.exists():
-        return candidate_b
-    # Default to creating .agent for audit logs to match legacy tests.
-    candidate_a.mkdir(parents=True, exist_ok=True)
-    return candidate_a
+    return agent_context_path(workdir if workdir else Path.cwd())
 
 
 # AUTO-01: Autonomous mode helpers
@@ -361,7 +348,7 @@ def reset_to_defaults() -> None:
         _ACTIVE_PERMISSION_MODE, \
         _REQUIRE_PREVIEW_CONFIRMATION
     with _config_lock:
-        _CONTEXT_DIR = ".localAgent"
+        _CONTEXT_DIR = ".codingAgent"
         _DEFAULT_WORKDIR = None
         _AUTONOMOUS_MODE = False
         _ACTIVE_PERMISSION_MODE = None

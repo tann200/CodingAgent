@@ -166,7 +166,7 @@ def analyze_repository(workdir: str) -> Dict[str, Any]:
                     pass
                 # Surface an error to the caller rather than silently succeed
                 raise
-        except Exception as e:
+        except Exception:
             # Final fallback — attempt a direct write and report errors to caller
             try:
                 repo_memory_path.write_text(json.dumps(repo_memory, indent=2))

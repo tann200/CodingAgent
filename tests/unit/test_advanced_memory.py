@@ -6,10 +6,9 @@ RefactoringAgent, ReviewAgent, and SkillLearner.
 import pytest
 import shutil
 import json
-
-# ruff: noqa: E501
 from pathlib import Path
 
+from src.tools.tools_config import agent_context_path
 from src.core.memory.advanced_features import (
     TrajectoryLogger,
     DreamConsolidator,
@@ -116,10 +115,13 @@ class TestDreamConsolidator:
 
     def test_consolidate_memories_creates_file(self, temp_workdir):
         """Test consolidation creates a summary file."""
+        from src.tools.tools_config import agent_context_path
+
         consolidator = DreamConsolidator(temp_workdir)
 
-        # Create TASK_STATE.md with some content
-        task_state = Path(temp_workdir) / ".agent-context" / "TASK_STATE.md"
+        # Create TASK_STATE.md with some content using the correct path
+        ctx_dir = agent_context_path(Path(temp_workdir))
+        task_state = ctx_dir / "TASK_STATE.md"
         task_state.parent.mkdir(parents=True, exist_ok=True)
         task_state.write_text(
             "Completed: def test(): pass\nTask: Create a test function"
@@ -136,7 +138,8 @@ class TestDreamConsolidator:
         consolidator = DreamConsolidator(temp_workdir)
 
         # Create TASK_STATE.md with test content
-        task_state = Path(temp_workdir) / ".agent-context" / "TASK_STATE.md"
+        ctx_dir = agent_context_path(Path(temp_workdir))
+        task_state = ctx_dir / "TASK_STATE.md"
         task_state.parent.mkdir(parents=True, exist_ok=True)
         task_state.write_text("Running pytest tests")
 
@@ -454,7 +457,7 @@ class TestMemoryUpdateNodeIntegration:
         # Mock the distill_context to avoid LLM calls (must be sync — distill_context is sync)
         def mock_distill(*args, **kwargs):
             # Create minimal TASK_STATE.md to satisfy consolidation
-            agent_context = tmp_path / ".agent-context"
+            agent_context = agent_context_path(tmp_path)
             agent_context.mkdir(parents=True, exist_ok=True)
             (agent_context / "TASK_STATE.md").write_text(
                 "Task: test\nCompleted: step1\nNext: step2"
@@ -504,6 +507,7 @@ class TestMemoryUpdateNodeIntegration:
         result = await memory_update_node(state, mock_config)
         assert isinstance(result, dict)
 
+
 class TestSkillLearnerMemoryNodeWiring:
     """Tests that SkillLearner is correctly wired into memory_update_node."""
 
@@ -531,7 +535,9 @@ class TestSkillLearnerMemoryNodeWiring:
             True,
         )
 
-        from src.core.orchestration.graph.nodes.memory_update_node import memory_update_node
+        from src.core.orchestration.graph.nodes.memory_update_node import (
+            memory_update_node,
+        )
 
         state = {
             "task": "implement authentication module",
@@ -549,7 +555,9 @@ class TestSkillLearnerMemoryNodeWiring:
 
         skill_dir = tmp_path / "agent-brain" / "skills"
         skills = list(skill_dir.glob("*.md")) if skill_dir.exists() else []
-        assert len(skills) >= 1, "Expected at least one skill file to be created with ENABLE_ADVANCED_MEMORY=1"
+        assert len(skills) >= 1, (
+            "Expected at least one skill file to be created with ENABLE_ADVANCED_MEMORY=1"
+        )
 
     @pytest.mark.asyncio
     async def test_skill_not_created_for_single_tool_task(
@@ -565,7 +573,9 @@ class TestSkillLearnerMemoryNodeWiring:
             mock_distill,
         )
 
-        from src.core.orchestration.graph.nodes.memory_update_node import memory_update_node
+        from src.core.orchestration.graph.nodes.memory_update_node import (
+            memory_update_node,
+        )
 
         state = {
             "task": "single tool task",
@@ -603,7 +613,9 @@ class TestSkillLearnerMemoryNodeWiring:
             True,
         )
 
-        from src.core.orchestration.graph.nodes.memory_update_node import memory_update_node
+        from src.core.orchestration.graph.nodes.memory_update_node import (
+            memory_update_node,
+        )
 
         state = {
             "task": "implement duplicate task",

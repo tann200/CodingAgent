@@ -142,6 +142,14 @@ def parse_tool_block(text: str) -> Optional[Dict[str, Any]]:
         )
         return compact_yaml
 
+    # v2 Phase 2: Try Qwen3 native XML tool format
+    xml_result = _parse_qwen3_xml(cleaned_text)
+    if xml_result:
+        logger.debug(
+            f"parse_tool_block: Qwen3 XML succeeded for tool '{xml_result.get('name')}'"
+        )
+        return xml_result
+
     # Generic code block fallback
     generic_pattern = r"```\s*\n(.*?)\n" + _CLOSE_FENCE
     match = re.search(generic_pattern, cleaned_text, re.DOTALL | re.IGNORECASE)
@@ -457,3 +465,44 @@ def _parse_inline_yaml(text: str) -> Optional[Dict[str, Any]]:
         return {"name": name, "arguments": args}
 
     return None
+
+
+def _parse_qwen3_xml(text: str) -> Optional[Dict[str, Any]]:
+    """Parse Qwen3 native XML tool call format.
+
+    Qwen3 can emit tool calls in XML format:
+    ```
+    <tool_call>
+      <name>tool_name</name>
+      <arguments>
+      {"arg1": "value1", "arg2": "value2"}
+      </arguments>
+    </tool_call>
+    ```
+
+    This parser extracts the tool name and arguments, converting arguments
+    to JSON if they're a JSON string.
+    """
+    import re as _re
+
+    name_pattern = r"<name>\s*([A-Za-z_]\w*)\s*</name>"
+    args_pattern = r"<arguments>\s*(.*?)\s*</arguments>"
+
+    name_match = _re.search(name_pattern, text, _re.DOTALL)
+    args_match = _re.search(args_pattern, text, _re.DOTALL)
+
+    if not name_match:
+        return None
+
+    tool_name = name_match.group(1)
+
+    if args_match:
+        args_str = args_match.group(1).strip()
+        try:
+            args = json.loads(args_str)
+            if isinstance(args, dict):
+                return {"name": tool_name, "arguments": args}
+        except Exception:
+            pass
+
+    return {"name": tool_name, "arguments": {}}

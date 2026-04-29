@@ -2,7 +2,6 @@
 skill_loader.py — Load SKILL.md files for agent capabilities.
 """
 
-import os
 import yaml
 import logging
 from pathlib import Path

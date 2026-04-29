@@ -55,7 +55,7 @@ class TestSessionCostTracker:
         t.record_tool_call("read_file", 5)
         t.flush(task_id="abc123")
 
-        usage_path = tmp_path / ".agent-context" / "usage.json"
+        usage_path = tmp_path / ".codingAgent" / "usage.json"
         assert usage_path.exists()
         data = json.loads(usage_path.read_text())
         assert data["tools"]["bash"]["calls"] == 3
@@ -67,7 +67,7 @@ class TestSessionCostTracker:
 
         t = SessionCostTracker(working_dir=tmp_path)
         t.flush()  # should not create usage.json
-        usage_path = tmp_path / ".agent-context" / "usage.json"
+        usage_path = tmp_path / ".codingAgent" / "usage.json"
         assert not usage_path.exists()
 
     def test_flush_accumulates_across_calls(self, tmp_path):
@@ -80,7 +80,7 @@ class TestSessionCostTracker:
         t.record_tool_call("read_file", 3)
         t.flush()
 
-        usage_path = tmp_path / ".agent-context" / "usage.json"
+        usage_path = tmp_path / ".codingAgent" / "usage.json"
         data = json.loads(usage_path.read_text())
         # 2 + 3 = 5
         assert data["tools"]["read_file"]["calls"] == 5
@@ -98,7 +98,7 @@ class TestSessionCostTracker:
         t.flush(task_id="task1")
         t.flush(task_id="task1")  # second flush — buffer already cleared
 
-        usage_path = tmp_path / ".agent-context" / "usage.json"
+        usage_path = tmp_path / ".codingAgent" / "usage.json"
         data = json.loads(usage_path.read_text())
         # Must still be 3, not 6
         assert data["tools"]["read_file"]["calls"] == 3, (

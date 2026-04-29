@@ -6,7 +6,7 @@ import json
 
 def test_context_builder_uses_summary_cache(tmp_path):
     # prepare .agent-context with file_summaries.json
-    ac = tmp_path / ".agent-context"
+    ac = tmp_path / ".codingAgent"
     ac.mkdir(parents=True, exist_ok=True)
     summaries = {"src/main.py": "SHORT SUMMARY FROM CACHE"}
     (ac / "file_summaries.json").write_text(json.dumps(summaries))

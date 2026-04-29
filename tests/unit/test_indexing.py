@@ -22,7 +22,7 @@ def test_repo_indexer(test_repo):
     assert len(index["symbols"]) == 3  # main, App, helper
 
     # Check if index file is created
-    assert (test_repo / ".agent-context" / "repo_index.json").exists()
+    assert (test_repo / ".codingAgent" / "repo_index.json").exists()
 
 
 def test_vector_store_indexing_and_search(test_repo):
@@ -32,7 +32,7 @@ def test_vector_store_indexing_and_search(test_repo):
     vs.index_code(index)
 
     # Check if db is created
-    assert (test_repo / ".agent-context" / "vectorstore").exists()
+    assert (test_repo / ".codingAgent" / "vectorstore").exists()
 
     # 2. Search
     results = vs.search("main entry point")

@@ -50,7 +50,7 @@ class TestGetSymbolsForTask:
                         "docstring": sym.get("docstring"),
                     }
                 )
-        ctx = workdir / ".agent-context"
+        ctx = workdir / ".codingAgent"
         ctx.mkdir(parents=True, exist_ok=True)
         (ctx / "repo_index.json").write_text(
             json.dumps({"files": files, "symbols": flat_symbols}), encoding="utf-8"

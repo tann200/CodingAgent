@@ -29,7 +29,7 @@ def test_vectorstore_index_and_search(tmp_path):
     vs.index_code(repo_index)
 
     # Ensure symbols.json persisted
-    p = Path(workdir) / ".agent-context" / "vectorstore" / "symbols.json"
+    p = Path(workdir) / ".codingAgent" / "vectorstore" / "symbols.json"
     assert p.exists()
     data = json.loads(p.read_text())
     assert isinstance(data, list)

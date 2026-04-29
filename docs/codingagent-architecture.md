@@ -5,6 +5,12 @@
 > `docs/claw-code-architecture.md` for direct comparison analysis.
 > All file paths are relative to the `CodingAgent` repository root unless
 > an absolute path is given.
+>
+> **Status:** Production-ready — 500+ tests passing, 0 Critical/High issues
+> **Last Updated:** 2026-04-27
+> **Atomic Writes:** Implemented in 13 files (see `docs/ATOMIC_WRITE_SUMMARY.md`)
+> **Implementation Plan:** See `IMPLEMENTATION_PLAN.md` - All P0/P1 items complete
+> **Architecture V2:** Context directory `.codingAgent`, tiered memory, FTS5 search
 
 ---
 
@@ -37,6 +43,15 @@ CodingAgent/
 │   │   ├── paths.py                   # OS-agnostic path utilities (localappdata vs per-user CodingAgent data dir — use src.core.paths.get_data_dir())
 │   │   ├── orchestration/             # LangGraph pipeline + orchestrator + services
 │   │   ├── inference/                 # LLM adapters, model tiers, tokenizer
+│   │   │   ├── adapters/              # Ollama, OpenAI, Anthropic, Gemini
+│   │   │   ├── model_capability_profile.py  # v2: ModelProfile, AgentMode
+│   │   │   ├── hardware_capability_profile.py  # v2: HardwareProfile, VRAM detection
+│   │   │   ├── runtime_profile.py     # v2: model × hardware merge
+│   │   │   ├── workflow_selector.py    # v2: SINGLE_LOOP vs FRONTIER_LOOP
+│   │   │   ├── kv_cache_governor.py   # v2: VRAM monitoring
+│   │   │   ├── thinking_utils.py      # v2: thinking mode control
+│   │   │   ├── tokenizer.py           # tiktoken + HuggingFace
+│   │   │   └── model_tiers.py         # Legacy tier system (NANO→FRONTIER)
 │   │   ├── context/                   # ContextBuilder, ContextController
 │   │   ├── memory/                    # Distiller, SessionStore, AdvancedMemory
 │   │   ├── indexing/                  # RepoIndexer, VectorStore, SymbolGraph, LSP
@@ -54,7 +69,7 @@ CodingAgent/
 │   └── benchmarks/                    # 7 latency benchmarks
 ├── docs/                              # Architecture and design documents
 ├── scripts/                           # Dev scripts (run_tui, add_provider, etc.)
-├── .agent-context/                    # Per-workspace runtime state (SQLite, TODO.md, etc.)
+├── .codingAgent/                   # Per-workspace runtime state (SQLite, preferences.md, TODO.md, etc.)
 ├── pyproject.toml
 ├── requirements.txt
 └── pytest.ini
@@ -418,7 +433,7 @@ class ContextBuilder:
 [DYNAMIC SECTION — cached per workdir/date/git-head]
 6.  Environment block             date, git HEAD, workspace path
 7.  TODO.md / PLAN.md progress    <task_progress> (if file exists)
-8.  Per-project instructions      <project_config_instructions> from .agent-context/config.json (OP-5)
+8.  Per-project instructions      <project_config_instructions> from .codingAgent/config.json (OP-5)
 9.  Prior session memories        <prior_context> from VectorStore (S9-A)
 10. Task embedding                <task>...</task>
 ```
@@ -482,8 +497,8 @@ CodingAgent uses a robust discovery system that mirrors claw code's ancestor-wal
 1. **Ancestor walk (CP-11):** Walks from the current working directory up to the filesystem root, looking for `AGENTS.md` and `.agent/AGENTS.md` in each directory.
 2. **Deduplication (CP-3):** Uses SHA-256 content hashing to ensure that the same instruction content is not injected multiple times (common when symlinks or repeated files exist).
 3. **Budgeting:** Enforces a per-file character cap (4,000) and a total character cap (12,000) to prevent context bloat.
-4. **Project context:** `.agent-context/config.json#instructions` — per-project instruction strings (OP-5).
-5. **Progress tracking:** `TODO.md` / `PLAN.md` in `.agent-context/` — injected as `<task_progress>`.
+4. **Project context:** `.codingAgent/config.json#instructions` — per-project instruction strings (OP-5).
+5. **Progress tracking:** `TODO.md` / `PLAN.md` in `.codingAgent/` — injected as `<task_progress>`.
 6. **Bundled brain:** `src/config/agent-brain/` — bundled roles + skills.
 
 Discovered files are rendered with scope labels (e.g., `AGENTS.md (scope: /path/to/dir)`) so the model understands the hierarchy.
@@ -654,7 +669,7 @@ Max 700 words. Plain prose. No JSON.
 **SCAN-6 fix:** Singleton `ThreadPoolExecutor` with `shutdown(wait=False)` + `future.cancel()`
 on timeout to avoid thread leaks.
 
-**P2-3 checkpoint:** At ≥50 messages, write `.agent-context/compaction_checkpoint.md`
+**P2-3 checkpoint:** At ≥50 messages, write `.codingAgent/compaction_checkpoint.md`
 so a crashed session can resume from the last known state.
 
 ### Overflow detection (OP-4)
@@ -873,7 +888,7 @@ Located in `src/core/orchestration/shell_hooks.py`. Allows executing arbitrary s
 
 ### Project-context legacy (OP-5)
 
-`.agent-context/config.json` — mtime-cached, loaded by `load_project_config()`. This was the original project-level config mechanism before CP-13 implementation. It is still used for:
+`.codingAgent/config.json` — mtime-cached, loaded by `load_project_config()`. This was the original project-level config mechanism before CP-13 implementation. It is still used for:
 - `instructions` (merged with CP-11 walk).
 - `deny_write_patterns` (used by guardrails.py).
 
@@ -1115,7 +1130,7 @@ def run_with_correlation(loop, executor, fn, *args)  # D-07
 (PB-4 buffer flush), published to `usage.recorded` event.
 
 Execution trace: `_execution_trace_buffer` flushed to
-`.agent-context/execution_trace.json` at task end (`flush_execution_trace()`).
+`.codingAgent/execution_trace.json` at task end (`flush_execution_trace()`).
 
 ---
 
@@ -1133,12 +1148,39 @@ Execution trace: `_execution_trace_buffer` flushed to
 | `app.py` | Main Textual `App` class; slash commands; session management |
 | `controller.py` | Event-driven controller; routes agent events to widgets |
 | `coordinator.py` | Session + tool execution coordination |
-| `chat_input.py` | Input widget; `/` slash-command dispatch (`/mcp`, `/fast`, `/fork`, `/diff`, ...) |
+| `chat_input.py` | Input widget; `/` slash-command dispatch |
+| `history_input.py` | History navigation input |
 | `events.py` | Custom Textual message types for agent communication |
-| `screens/timeline.py` | Execution timeline (perception → planning → execution nodes) |
-| `screens/session_list.py` | Active sessions; fork/revert |
-| `features/settings/screen.py` | Provider selection, API key management |
-| `features/oauth/screen.py` | GitHub Copilot device flow |
+| `widgets.py` | Base widget classes |
+| `bus.py` | Event bus for TUI internal events |
+| `settings.py` | TUI settings management |
+| `config_writer.py` | Configuration file writer |
+
+#### TUI Components (`tui/src/ui/components/`)
+
+| Component | Purpose |
+|---|---|
+| `artifact.py` | Code artifact rendering |
+| `bash_block.py` | Bash command output block with expand/collapse |
+| `cards.py` | Card-based UI elements |
+| `diff_viewer.py` | Side-by-side diff viewer |
+| `file_picker.py` | File/directory picker |
+| `inline_tool.py` | Inline tool rendering |
+| `stream_view.py` | Streaming output view |
+| `subagent_progress.py` | Subagent progress display |
+| `thinking.py` | Thinking/reasoning display |
+| `todo_list.py` | Interactive TODO list |
+| `console.py` | Console output |
+| `history_input.py` | History navigation |
+
+#### TUI Screens (`tui/src/ui/screens/`)
+
+| Screen | Purpose |
+|---|---|
+| `timeline.py` | Execution timeline (perception → planning → execution nodes) |
+| `session_list.py` | Active sessions; fork/revert |
+| `settings/screen.py` | Provider selection, API key management |
+| `oauth/screen.py` | GitHub Copilot device flow |
 
 ### TUI slash commands
 
@@ -1159,7 +1201,7 @@ diff for user review before the write is committed (F14).
 
 ```
 tests/
-├── unit/           (~206 tests, 15+ test files)
+├── unit/           (~330 tests, 15+ test files)
 │   ├── test_model_tiers.py          (24 tests)
 │   ├── test_s0_items.py             (29 tests)
 │   ├── test_bash_security.py
@@ -1248,6 +1290,20 @@ context fraction. The same graph runs NANO (7B, 8 tools, YAML) and FRONTIER (clo
 All optional features (tiktoken, LSP, watchfiles, vector store backend, OTel) are `try/except`-wrapped.
 Missing optional deps → fallback behaviour, not startup failure.
 
+### 10. Atomic file writes
+
+All whole-file JSON writes use atomic primitives to prevent readers from observing partial writes:
+
+```
+1. Try: atomic_write_json(target, obj, logger) — central helper in src/core/io_utils.py
+2. Fallback: mkstemp → write → f.flush()+os.fsync() → os.replace
+3. Final fallback: Path.write_text (only if mkstemp fails)
+```
+
+Files hardened: `llm_manager.py`, `subagent_tools.py`, `orchestrator_helpers.py`, `planning_node.py`, `dag_parser.py`, `user_prefs.py`, `rollback_manager.py`, `repo_indexer.py`, `advanced_features.py`, `state_tools.py`, `_file_io.py`, `repo_analysis_tools.py`.
+
+See `docs/ATOMIC_WRITE_SUMMARY.md` for full details.
+
 ### 10. Audit-driven development
 
 Each bug fix is tracked in `docs/audit/audit-report-vol<N>.md` with a code fix, test,
@@ -1320,5 +1376,130 @@ CodingAgent has achieved functional parity with claw code for all major features
 
 ---
 
-*Document generated 2026-04-12. Source: `/Users/tann200/PycharmProjects/CodingAgent`.*
+## 16. Audit History
+
+| Volume | Date | Status |
+|--------|------|--------|
+| Vol28 | 2026-04-13 | 0 Critical, 0 High |
+| Vol29 | 2026-04-14 | 0 Critical, 0 High |
+| Vol30 | 2026-04-18 | 0 Critical, 0 High |
+| Vol31 | 2026-04-20 | 0 Critical, 0 High |
+| Vol32 | 2026-04-25 | 0 Critical, 0 High (full audit) |
+| Vol33 | 2026-04-26 | 0 Critical, 0 High (re-audit) |
+
+See `docs/audit/audit-report-vol33.md` for latest audit details.
+
+---
+
+## 17. Implementation Status
+
+| Feature | Status |
+|---------|--------|
+| LangGraph pipeline | ✅ Complete |
+| Multi-file atomic rollback | ✅ Complete |
+| Advanced memory | ✅ Complete |
+| Repository intelligence | ✅ Complete |
+| PRSW (Parallel Reads, Sequential Writes) | ✅ Complete |
+| DAG-based wave execution | ✅ Complete |
+| Native Tool Support (frontier + local) | ✅ Complete |
+| Role-Based Prompt Injection | ✅ Complete |
+| Model tiers (NANO→FRONTIER) | ✅ Complete |
+| MCP STDIO Server | ✅ Complete |
+| Session fork/revert | ✅ Complete |
+| Bubblewrap sandbox | ✅ Complete |
+| Approval gate | ✅ Complete |
+| Loop guards | ✅ Complete |
+| --resume-session | ✅ Complete |
+| Atomic file writes (mkstemp+replace) | ✅ Complete |
+| Per-tool permission policy | ✅ Complete |
+| /undo command | ✅ Complete |
+
+### v2 Architecture (2026-04-26) — Local Model Optimization
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| Two-axis profiling (model × hardware) | ✅ Complete | `src/core/inference/model_capability_profile.py` |
+| Hardware profile detection (VRAM) | ✅ Complete | `src/core/inference/hardware_capability_profile.py` |
+| Runtime profile merge | ✅ Complete | `src/core/inference/runtime_profile.py` |
+| Binary workflow (SMALL/MEDIUM+) | ✅ Complete | `src/core/inference/workflow_selector.py` |
+| Lite mode single-loop graph | ✅ Complete | `graph/builder.py` _compile_lite_graph() |
+| KV cache governor | ✅ Complete | `src/core/inference/kv_cache_governor.py` |
+| --thinking CLI flag | ✅ Complete | `src/main.py`, `src/core/inference/thinking_utils.py` |
+| Qwen3 XML tool parser | ✅ Complete | `src/core/orchestration/tool_parser.py` |
+| HuggingFace tokenizer | ✅ Complete | `src/core/inference/tokenizer.py` |
+| CPU-aware LSP concurrency | ✅ Complete | `src/core/indexing/lsp_manager.py` |
+| LRU embedding cache | ✅ Complete | `src/core/indexing/vector_store.py` |
+
+### v2 Architecture Spec
+
+See `docs/ARCHITECTURE_V2.md` for the target architecture.
+
+**Key v2 changes:**
+- Binary workflow (LITE/standard/full) instead of 5-tier system
+- Single-loop ReAct++ for small models (≤14B params)
+- VRAM-aware context limits
+- AgentMode: LITE (≤14B), STANDARD (14-70B), FULL (cloud)
+
+---
+
+## 18. Key Constants
+
+### Loop Guards
+- `DOOM_LOOP_THRESHOLD = 3` — identical tool call detection
+- `ALTERNATING_LOOP_THRESHOLD = 3` — alternating tool detection
+- `COOLDOWN_GAP = 3` — tool cooldown between same-tool calls
+- `_MAX_ROUNDS_PLANNING = 15` — max planning rounds
+- `_AUTONOMOUS_MAX_TOOL_CALLS = 100` — max tool calls in autonomous mode
+
+### Tool Limits
+- `_BASH_STDOUT_MAX = 16_384` bytes
+- `_BASH_STDERR_MAX = 6_000` bytes
+- `_TOOL_OUTPUT_MAX_BYTES = 50_000` (frontier loop)
+
+### Sandbox Levels
+- `off` — no sandboxing
+- `workspace` — bwrap with workspace write (default)
+- `full` — bwrap + network disabled
+
+### Model Tiers
+
+| Tier | Params | Context | Tools | Max Steps | Max Turns |
+|------|--------|---------|-------|-----------|-----------|
+| NANO | ≤7B | ≤4K | 8 | 4 | 15 |
+| SMALL | 7-14B | 4-16K | 20 | 6 | 25 |
+| MEDIUM | 14-70B | 16-128K | 35 | 10 | 40 |
+| LARGE | >70B | >128K | 50 | 16 | 60 |
+| FRONTIER | Cloud | >200K | 60 | 20 | 80 |
+
+---
+
+## 19. Environment Variables
+
+| Variable | Purpose |
+|----------|---------|
+| `CODINGAGENT_SANDBOX_LEVEL` | Sandbox level (off/workspace/full) |
+| `CODINGAGENT_TRUSTED` | Trust mode (skip approval) |
+| `CODING_AGENT_HTTP_SERVER` | Start HTTP server |
+| `CODINGAGENT_MODEL` | Default model |
+| `CODINGAGENT_PROVIDER` | Default provider |
+| `CODING_AGENT_SCHEDULER_HEARTBEAT` | Scheduler heartbeat interval |
+| `CODING_AGENT_DISTILL_INTERVAL` | Default distill interval |
+| `CODING_AGENT_ADMIN_TOKEN` | Admin HTTP endpoint token |
+
+---
+
+## 20. Configuration Files
+
+| File | Purpose |
+|------|---------|
+| `.codingAgent/config.json` | Project settings |
+| `.codingAgent/sessions.db` | SQLite session store |
+| `.codingAgent/memory/` | Vector store |
+| `providers.json` | LLM provider config |
+| `toolsets/*.yaml` | Toolset definitions |
+| `config/agent-brain/roles/*.md` | Role prompts |
+
+---
+
+*Document generated 2026-04-26. Source: `/Users/tann200/PycharmProjects/CodingAgent`.*
 *Companion document: `docs/claw-code-architecture.md`.*

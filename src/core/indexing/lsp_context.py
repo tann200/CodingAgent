@@ -51,22 +51,23 @@ def _get_symbols(workdir: Path) -> List[Dict[str, Any]]:
         from src.core.indexing.symbol_graph import SymbolGraph
 
         sg = SymbolGraph(workdir=str(workdir))
-        nodes = sg.nodes  # dict: symbol_id -> node dict
         symbols = []
-        for _, node in nodes.items():
-            kind = node.get("type", "")
-            name = node.get("name", "")
-            file_path = node.get("file", "")
-            line = node.get("line", 0)
-            if name and kind in ("function", "class", "method"):
-                symbols.append(
-                    {
-                        "name": name,
-                        "kind": kind,
-                        "file": file_path,
-                        "line": line,
-                    }
-                )
+        # SymbolGraph.nodes is file-level: {file_path: {"symbols": {sym_id: {...}}}}
+        for file_path, file_node in sg.nodes.items():
+            file_symbols = file_node.get("symbols", {})
+            for sym_id, sym_data in file_symbols.items():
+                kind = sym_data.get("type", "")
+                name = sym_data.get("name", "")
+                line = sym_data.get("line", 0)
+                if name and kind in ("function", "class", "method"):
+                    symbols.append(
+                        {
+                            "name": name,
+                            "kind": kind,
+                            "file": file_path,
+                            "line": line,
+                        }
+                    )
         # Sort: classes first, then functions, by file then name
         symbols.sort(
             key=lambda s: (0 if s["kind"] == "class" else 1, s["file"], s["name"])

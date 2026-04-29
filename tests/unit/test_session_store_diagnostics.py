@@ -32,7 +32,7 @@ def test_write_with_retry_exhausts_and_writes_diagnostic(tmp_path: Path):
     )
     assert ok is False
 
-    diag_dir = tmp_path / ".agent-context"
+    diag_dir = tmp_path / ".codingAgent"
     assert diag_dir.exists()
 
     # Find the diagnostic file
@@ -85,6 +85,6 @@ def test_write_with_retry_succeeds_after_retries(tmp_path: Path):
     assert ok is True
 
     # Ensure no diagnostic file for this session exists
-    diag_dir = tmp_path / ".agent-context"
+    diag_dir = tmp_path / ".codingAgent"
     files = list(diag_dir.glob("session_store_write_failure_*_s2.json"))
     assert len(files) == 0

@@ -5,17 +5,16 @@ S1-A: Provides ``ModelTier`` and ``classify_model()`` so that nodes and
 based on the size of the active model.
 
 Tiers:
-- NANO     ≤7B / ≤4K context — YAML tools, simple_mode, 8-tool limit
-- SMALL    7–14B / 4–16K     — YAML tools, full pipeline, 20-tool limit
-- MEDIUM   14–70B / 16–128K  — JSON tools, full pipeline, 35-tool limit
-- LARGE    >70B / >128K      — JSON tools, parallel calls, 50-tool limit
+- SMALL    7–14B / 16K     — YAML tools, full pipeline, 20-tool limit
+- MEDIUM   14–70B / 32K  — JSON tools, full pipeline, 35-tool limit
+- LARGE    >70B / 64K      — JSON tools, parallel calls, 50-tool limit
 - FRONTIER Cloud frontier     — JSON tools, parallel calls, 60-tool limit
 
 Hardware target: 16GB VRAM.
+  - qwen3:14b (q4): ~8GB — MEDIUM (16K-32K ctx)
+  - qwen3:9b (q4): ~6GB — SMALL (16K ctx)
   - gemma-4-31b (q4): ~15.5GB  — FRONTIER (fits on single 16GB GPU)
   - gemma-4-26b-a4b (q4): ~13GB — FRONTIER (MoE, 3.8B active, fast)
-  - gemma-4-e4b (fp16): ~8GB   — SMALL (128K ctx, agentic-capable)
-  - gemma-4-e2b (fp16): ~4GB   — SMALL (128K ctx, mobile-class)
 """
 
 from __future__ import annotations
@@ -28,16 +27,14 @@ from typing import Optional
 class ModelTier(str, Enum):
     """Model capability tier — drives tool list size and prompt format."""
 
-    NANO = "nano"  # ≤7B params / ≤4K context
-    SMALL = "small"  # 7–14B / 4–16K context
-    MEDIUM = "medium"  # 14–70B / 16–128K context
-    LARGE = "large"  # >70B / >128K context
+    SMALL = "small"  # 7–14B / 16K context
+    MEDIUM = "medium"  # 14–70B / 32K context
+    LARGE = "large"  # >70B / 64K context
     FRONTIER = "frontier"  # Cloud frontier (GPT-4o, Claude Opus, Gemini Ultra)
 
 
 # Maximum number of tools to include in context for each tier.
 _TOOL_LIMITS: dict[ModelTier, int] = {
-    ModelTier.NANO: 8,
     ModelTier.SMALL: 20,
     ModelTier.MEDIUM: 35,
     ModelTier.LARGE: 50,
@@ -45,9 +42,8 @@ _TOOL_LIMITS: dict[ModelTier, int] = {
 }
 
 # Patterns that indicate a FRONTIER cloud model.
-# These are matched before the NANO/SMALL keyword heuristics so that e.g.
-# "gpt-4o-mini" (cloud, "mini" substring) correctly resolves to FRONTIER
-# instead of being demoted to NANO by the keyword fallback.
+# These are matched before the keyword heuristics so that e.g.
+# "gpt-4o-mini" (cloud, "mini" substring) correctly resolves to FRONTIER.
 _FRONTIER_PATTERNS = re.compile(
     r"gpt-4o|gpt-4\.5|gpt-3\.5-turbo|o1|o3|o4"
     r"|claude-opus|claude-3-opus|claude-sonnet|claude-haiku|claude-3"
@@ -71,11 +67,19 @@ _GEMMA4_MEDIUM_PATTERNS = re.compile(
 
 # Patterns that indicate a Gemma 4 edge model (E2B / E4B).
 # These are small on-device models but with 128K context windows and native
-# function-calling support — more capable than a generic NANO 7B model.
-# They classify as SMALL (not NANO) so they get full pipeline + 20-tool limit.
+# function-calling support — more capable than a generic 7B model.
+# They classify as SMALL so they get full pipeline + 20-tool limit.
 # Covers HuggingFace (gemma-4-e4b-it), Ollama (gemma4:e4b), LM Studio (gemma-4-e4b-it).
 _GEMMA4_EDGE_PATTERNS = re.compile(
     r"gemma-4-e[24]b|gemma4-e[24]b|gemma4:e[24]b|gemma-4.*e[24]b",
+    re.IGNORECASE,
+)
+
+# Qwen3.5 patterns: 262K context, linear attention (efficient KV), vision + multilingual.
+# Classifies as LARGE due to 262K context capability.
+# Covers: qwen3.5-9b, qwen3.5-32b, qwen3.5-72b, qwen3.5-14b
+_QWEN35_PATTERNS = re.compile(
+    r"qwen3\.5|qwen3-3\.5|qwen-3\.5|qwen3\.5:|qwen3_5",
     re.IGNORECASE,
 )
 
@@ -111,23 +115,25 @@ def classify_model(model_name: str, context_window: int = 0) -> ModelTier:
 
     # ── Gemma 4 26B A4B (MoE, 4B active) ────────────────────────────────────
     # Must be checked before param-count extraction: "26b" → 26B → MEDIUM
-    # which happens to be correct, but the A4B suffix can also match "a4b" → 4B → NANO
+    # which happens to be correct, but the A4B suffix can also match "a4b" → 4B
     # (wrong). Explicit pattern check ensures correct MEDIUM classification.
     if _GEMMA4_MEDIUM_PATTERNS.search(name_lower):
         return ModelTier.MEDIUM
 
     # ── Gemma 4 edge models (E2B / E4B) ─────────────────────────────────────
-    # Check before param-count extraction: "e4b" would be parsed as 4B → NANO,
+    # Check before param-count extraction: "e4b" would be parsed as 4B,
     # but these models have 128K context and native function-calling — SMALL is
     # the correct tier.
     if _GEMMA4_EDGE_PATTERNS.search(name_lower):
         return ModelTier.SMALL
 
+    # ── Qwen3.5 models (262K context, linear attention) ──────────────────────
+    if _QWEN35_PATTERNS.search(name_lower):
+        return ModelTier.LARGE  # 262K context capability
+
     # ── Parameter-count based classification ─────────────────────────────────
     params = _extract_param_count(name_lower)
     if params is not None:
-        if params <= 7:
-            return ModelTier.NANO
         if params <= 14:
             return ModelTier.SMALL
         if params <= 70:
@@ -138,8 +144,6 @@ def classify_model(model_name: str, context_window: int = 0) -> ModelTier:
     # Never classify below MEDIUM for models with >64K context — large context
     # windows indicate modern, capable models regardless of apparent size.
     if context_window > 0:
-        if context_window <= 4096:
-            return ModelTier.NANO
         if context_window <= 16384:
             return ModelTier.SMALL
         if context_window <= 131072:
@@ -149,9 +153,7 @@ def classify_model(model_name: str, context_window: int = 0) -> ModelTier:
         return ModelTier.FRONTIER  # >200K = frontier-class context
 
     # ── Name keyword heuristics ───────────────────────────────────────────────
-    if any(k in name_lower for k in ("mini", "tiny", "nano", "phi-2", "phi2")):
-        return ModelTier.NANO
-    if any(k in name_lower for k in ("small", "lite", "1b", "2b", "3b")):
+    if any(k in name_lower for k in ("small", "lite", "1b", "2b", "3b", "4b", "7b")):
         return ModelTier.SMALL
     if any(k in name_lower for k in ("large", "medium", "base", "mistral-7b")):
         return ModelTier.MEDIUM
@@ -172,15 +174,15 @@ def supports_native_tools(tier: ModelTier) -> bool:
 
 def is_simple_mode(tier: ModelTier) -> bool:
     """Return True if the tier should use simple_mode (YAML, single tool/message)."""
-    return tier == ModelTier.NANO
+    return tier == ModelTier.SMALL
 
 
 # GAP-FRONTIER-6: Tier-dependent planning step limit.
 # Frontier models should not be capped at 8 steps — complex tasks require more.
+# Gemma 4 26B A4B: 256K context, ~40 tok/s, MEDIUM tier with LARGE capability.
 _STEP_LIMITS: dict[ModelTier, int] = {
-    ModelTier.NANO: 4,
     ModelTier.SMALL: 6,
-    ModelTier.MEDIUM: 10,
+    ModelTier.MEDIUM: 12,  # Increased for 256K context models
     ModelTier.LARGE: 16,
     ModelTier.FRONTIER: 20,
 }
@@ -196,15 +198,13 @@ def get_plan_step_limit(tier: ModelTier) -> int:
 
 
 # GAP-9: Tier-dependent max_turns default.
-# SMALL models (e.g. Gemma 4 E4B) exhaust context in ~25 turns.
-# FRONTIER models (Gemma 4 31B/26B, Claude, GPT-4o) support longer runs.
+# Gemma 4 26B A4B has 256K context - more turns allowed.
 # These are defaults only — project maxTurns and --max-turns CLI always win.
 _MAX_TURNS: dict[ModelTier, int] = {
-    ModelTier.NANO: 15,  # 7K–16K context; overflows quickly
-    ModelTier.SMALL: 25,  # 32K–128K context; moderate task length
-    ModelTier.MEDIUM: 40,  # 128K context; longer tasks feasible
-    ModelTier.LARGE: 60,  # >128K context; complex multi-file tasks
-    ModelTier.FRONTIER: 80,  # 256K context; long autonomous runs
+    ModelTier.SMALL: 25,  # 16K context
+    ModelTier.MEDIUM: 50,  # 256K context (Gemma 4 26B A4B)
+    ModelTier.LARGE: 60,  # 256K+ context
+    ModelTier.FRONTIER: 80,  # 200K context; long autonomous runs
 }
 
 

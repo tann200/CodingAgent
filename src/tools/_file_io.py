@@ -33,16 +33,9 @@ _WRITE_HARD_LINE_LIMIT = 500
 _WRITE_WARN_LINE_LIMIT = 200
 
 
-# WorkspaceGuard: no-op fallback; real import shadows it at runtime
-class WorkspaceGuard:
-    """No-op guard when src.core is not available."""
-
-    def guard_operation(self, *args: object, **kwargs: object) -> Dict[str, str]:
-        return {"status": "ok"}
-
-
+# WorkspaceGuard: import from shared location
 try:
-    from src.core.orchestration.workspace_guard import WorkspaceGuard  # type: ignore[assignment]
+    from src.tools._workspace_guard import WorkspaceGuard  # type: ignore[assignment]
 except ImportError:
     pass
 
@@ -290,7 +283,7 @@ def write_file(
                 pass
             _logger.exception("write_file atomic write failed for %s", p)
             return {"path": str(p), "status": "error", "error": str(_mk_exc)}
-    except Exception as e:
+    except Exception:
         # Broad fallback: attempt a simple write_text and report error if that fails
         try:
             p.write_text(content, encoding="utf-8")

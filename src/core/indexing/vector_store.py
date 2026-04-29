@@ -6,6 +6,8 @@ the rest of the codebase can opt into semantic-search features when available.
 It deliberately does NOT depend on external vector DBs or heavy ML stacks
 (pyarrow, pandas, pydantic, sentence-transformers). The implementation is a
 safe no-op / in-memory stub.
+
+v2 Phase 3: RAM-optimized embedding cache for 64GB systems.
 """
 
 from __future__ import annotations
@@ -19,9 +21,55 @@ import traceback
 import tempfile
 import os
 import shutil
+from collections import OrderedDict
 from pathlib import Path
 
+from src.tools.tools_config import agent_context_path
+
 logger = logging.getLogger(__name__)
+
+
+# v2 Phase 3: LRU cache for embeddings (RAM optimization)
+_EMBEDDING_CACHE: OrderedDict[str, List[float]] = OrderedDict()
+_EMBEDDING_CACHE_LIMIT = 10000  # Max embeddings to cache
+
+
+def _get_cached_embedding(text: str, dim: int = 8) -> List[float]:
+    """Get cached embedding or compute and cache it.
+
+    For 64GB RAM systems, caching up to 10K embeddings is safe
+    (~10K * 8 * 4 bytes = 320KB for float32).
+    """
+    cache_key = f"{text[:256]}"  # Truncate for cache key
+    if cache_key in _EMBEDDING_CACHE:
+        _EMBEDDING_CACHE.move_to_end(cache_key)
+        return _EMBEDDING_CACHE[cache_key]
+
+    # Compute embedding
+    h = hashlib.sha256(str(text).encode()).digest()
+    vec: List[float] = []
+    for i in range(dim):
+        b1 = h[(i * 2) % len(h)]
+        b2 = h[(i * 2 + 1) % len(h)]
+        v = ((b1 << 8) + b2) / 65535.0
+        vec.append((v * 2.0) - 1.0)
+
+    # Cache it
+    _EMBEDDING_CACHE[cache_key] = vec
+    if len(_EMBEDDING_CACHE) > _EMBEDDING_CACHE_LIMIT:
+        _EMBEDDING_CACHE.popitem(last=False)  # LRU eviction
+
+    return vec
+
+
+def clear_embedding_cache() -> None:
+    """Clear the embedding cache (call after memory pressure)."""
+    _EMBEDDING_CACHE.clear()
+
+
+def get_embedding_cache_size() -> int:
+    """Return number of cached embeddings."""
+    return len(_EMBEDDING_CACHE)
 
 
 class _DummyModel:
@@ -29,6 +77,8 @@ class _DummyModel:
 
     It produces small fixed-size vectors derived from a SHA256 digest so tests
     and simple in-memory usages behave deterministically without heavy deps.
+
+    v2 Phase 3: Uses LRU-cached embeddings for 64GB RAM optimization.
     """
 
     def __init__(self, dim: int = 8) -> None:
@@ -42,13 +92,7 @@ class _DummyModel:
             texts = [texts]
         out: List[List[float]] = []
         for t in texts:
-            h = hashlib.sha256(str(t).encode()).digest()
-            vec: List[float] = []
-            for i in range(self._dim):
-                b1 = h[(i * 2) % len(h)]
-                b2 = h[(i * 2 + 1) % len(h)]
-                v = ((b1 << 8) + b2) / 65535.0
-                vec.append((v * 2.0) - 1.0)
+            vec = _get_cached_embedding(str(t), self._dim)
             out.append(vec)
         return out
 
@@ -77,7 +121,7 @@ class VectorStore:
         (the minimal data other modules/tests expect). The implementation is
         intentionally simple and dependency-free.
         """
-        base = Path(self.workdir) / ".agent-context" / "vectorstore"
+        base = agent_context_path(Path(self.workdir)) / "vectorstore"
         base.mkdir(parents=True, exist_ok=True)
 
         symbols = repo_index.get("symbols", []) if isinstance(repo_index, dict) else []

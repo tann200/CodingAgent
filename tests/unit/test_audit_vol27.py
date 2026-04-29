@@ -468,7 +468,7 @@ class TestUP1TaskDecomposedFlag:
         import json
 
         # Write a saved plan
-        ctx_dir = tmp_path / ".agent-context"
+        ctx_dir = tmp_path / ".codingAgent"
         ctx_dir.mkdir(parents=True)
         from datetime import datetime
 

@@ -52,7 +52,7 @@ def test_write_with_retry_diagnostic_written(tmp_path: Path):
         base_backoff=0.001,
     )
     assert ok is False
-    diag_dir = tmp_path / ".agent-context"
+    diag_dir = tmp_path / ".codingAgent"
     assert diag_dir.exists()
     files = list(diag_dir.glob("session_store_write_failure_*.json"))
     assert len(files) >= 1

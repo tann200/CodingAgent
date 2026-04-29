@@ -82,13 +82,13 @@ class TestAnalyzeRepository:
         (tmp_path / "main.py").write_text("def main(): pass\n")
         result = analyze_repository(str(tmp_path))
         assert result["status"] == "ok"
-        assert (tmp_path / ".agent-context" / "repo_memory.json").exists()
+        assert (tmp_path / ".codingAgent" / "repo_memory.json").exists()
 
     def test_memory_json_structure(self, tmp_path):
         """repo_memory.json has module_summaries and dependency_relationships."""
         (tmp_path / "a.py").write_text("import os\ndef foo(): pass\n")
         analyze_repository(str(tmp_path))
-        raw = json.loads((tmp_path / ".agent-context" / "repo_memory.json").read_text())
+        raw = json.loads((tmp_path / ".codingAgent" / "repo_memory.json").read_text())
         assert "module_summaries" in raw
         assert "dependency_relationships" in raw
         assert "a.py" in raw["module_summaries"]
@@ -101,7 +101,7 @@ class TestAnalyzeRepository:
         (venv_dir / "ignored.py").write_text("def should_be_ignored(): pass\n")
         (tmp_path / "main.py").write_text("def real(): pass\n")
         analyze_repository(str(tmp_path))
-        raw = json.loads((tmp_path / ".agent-context" / "repo_memory.json").read_text())
+        raw = json.loads((tmp_path / ".codingAgent" / "repo_memory.json").read_text())
         keys = list(raw["module_summaries"].keys())
         assert not any(".venv" in k for k in keys)
         assert any("main.py" in k for k in keys)
@@ -112,7 +112,7 @@ class TestAnalyzeRepository:
             "async def start(): pass\nasync def stop(): pass\n"
         )
         analyze_repository(str(tmp_path))
-        raw = json.loads((tmp_path / ".agent-context" / "repo_memory.json").read_text())
+        raw = json.loads((tmp_path / ".codingAgent" / "repo_memory.json").read_text())
         fns = raw["module_summaries"]["service.py"]["functions"]
         assert "start" in fns
         assert "stop" in fns

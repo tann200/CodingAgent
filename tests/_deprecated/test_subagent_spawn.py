@@ -277,7 +277,7 @@ class TestManifestFirstSpawning:
 
         async def _fake_ainvoke(state, config=None):
             # At this point the manifest should already exist with status=running
-            manifest_dir = tmp_path / ".agent-context" / "subagent_manifests"
+            manifest_dir = tmp_path / ".codingAgent" / "subagent_manifests"
             found = list(manifest_dir.glob("subagent_*.json"))
             if found:
                 data = json.loads(found[0].read_text())
@@ -362,7 +362,7 @@ class TestManifestFirstSpawning:
 
     def test_manifest_file_path_pattern(self, tmp_path: Path) -> None:
         self._run_and_collect_manifests(tmp_path)
-        manifest_dir = tmp_path / ".agent-context" / "subagent_manifests"
+        manifest_dir = tmp_path / ".codingAgent" / "subagent_manifests"
         files = list(manifest_dir.glob("subagent_*.json"))
         assert len(files) == 1
 

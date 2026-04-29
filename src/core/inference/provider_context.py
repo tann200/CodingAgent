@@ -169,21 +169,20 @@ def get_actual_context_window() -> int:
 
 
 # P3-F: Per-tier context fractions.
-# NANO models need to reserve more for their short output (4K ctx → output needs ~50%).
-# Frontier models with 200K+ context can allocate 80% to the prompt safely.
+# Gemma 4 26B A4B has 256K context - more room for prompt.
+# SMALL: 60% (16K of 16K), MEDIUM: 75% (192K of 256K), LARGE: 80%.
 _TIER_CONTEXT_FRACTION: dict[str, float] = {
-    "nano": 0.50,  # ≤7B / ≤8K ctx — output needs half the window
-    "small": 0.60,  # 7–14B / 8–32K ctx
-    "medium": 0.70,  # 14–70B / 32–128K ctx
-    "large": 0.75,  # 70B+ / 128K+ ctx
-    "frontier": 0.80,  # cloud / 31B+ / 256K ctx
+    "small": 0.60,  # 7–14B / 16K ctx
+    "medium": 0.75,  # 256K ctx (Gemma 4 26B A4B)
+    "large": 0.80,  # 256K+ ctx
+    "frontier": 0.80,  # cloud / 200K+ ctx
 }
 
 
 def get_context_budget(
     fraction: float = 0.65,
     min_tokens: int = 6000,
-    max_tokens: int = 131072,
+    max_tokens: int = 262144,  # 256K for Gemma 4 26B A4B
     model_tier: str = "",
 ) -> int:
     """
@@ -194,14 +193,13 @@ def get_context_budget(
     ``set_active_context_length()``) over the static providers.json value.
 
     P3-F: When *model_tier* is provided, overrides *fraction* with the
-    tier-specific value from ``_TIER_CONTEXT_FRACTION`` so that NANO models
-    (which have tiny context windows) get a smaller budget than frontier models
-    that have 200K+ tokens to work with.
+    tier-specific value from ``_TIER_CONTEXT_FRACTION`` so that SMALL models
+    get a smaller budget than LARGE models that have 256K tokens to work with.
 
     fraction   — default fraction when model_tier is absent or unknown (0.65)
     min_tokens — lower clamp (guarantees a usable minimum even for tiny models)
     max_tokens — upper clamp (avoids bloated prompts for very large context windows)
-    model_tier — optional tier string (e.g. "nano", "small", "frontier")
+    model_tier — optional tier string (e.g. "small", "medium", "frontier")
     """
     if model_tier:
         fraction = _TIER_CONTEXT_FRACTION.get(model_tier.lower(), fraction)

@@ -58,7 +58,7 @@ def test_loop_prevention(tmp_path, monkeypatch):
 
     import time
 
-    trace_path = tmp_path / ".agent-context" / "execution_trace.json"
+    trace_path = tmp_path / ".codingAgent" / "execution_trace.json"
     trace = []
     max_rounds = 12
     scenario_len = len(scenarios["loop_scenario"])

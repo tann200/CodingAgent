@@ -238,7 +238,7 @@ class McpServerManager:
                     # Fall back to older factory signature
                     try:
                         client = McpStdioClient(name=name, cmd=cmd)
-                    except Exception as exc:  # pragma: no cover - defensive
+                    except Exception:  # pragma: no cover - defensive
                         raise
 
                 # Safely attach notification handler if supported

@@ -7,7 +7,7 @@ from src.core.orchestration.event_bus import EventBus, get_event_bus
 def test_session_new_clears_task_state(tmp_path):
     """Test that a session.new handler clears TASK_STATE.md when called."""
 
-    agent_context = tmp_path / ".agent-context"
+    agent_context = tmp_path / ".codingAgent"
     agent_context.mkdir(parents=True, exist_ok=True)
     task_state_path = agent_context / "TASK_STATE.md"
 

@@ -317,9 +317,11 @@ class TestGuardrailsContextVar:
 class TestTodoStatusMarkdown:
     def _create_todo(self, tmp_path, steps):
         from src.tools.todo_tools import _save_todo
+        from src.tools.tools_config import agent_context_path
 
         _save_todo(str(tmp_path), steps)
-        md = (tmp_path / ".agent-context" / "TODO.md").read_text()
+        ctx_dir = agent_context_path(tmp_path)
+        md = (ctx_dir / "TODO.md").read_text()
         return md
 
     def test_in_progress_shows_tilde(self, tmp_path):

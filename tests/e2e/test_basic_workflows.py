@@ -23,7 +23,7 @@ import pytest
 
 def _make_workdir() -> Path:
     d = Path(tempfile.mkdtemp())
-    (d / ".agent-context").mkdir()
+    (d / ".codingAgent").mkdir()
     (d / "app.py").write_text(
         "def add(a, b):\n    return a + b\n\ndef subtract(a, b):\n    return a - b\n"
     )

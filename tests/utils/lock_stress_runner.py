@@ -60,7 +60,7 @@ def run(processes: int, iters: int, workdir: str = None) -> int:
             any_fail = True
 
     # Check for leftover temp files in .agent-context under workdir
-    ac = Path(workdir) / ".agent-context"
+    ac = Path(workdir) / ".codingAgent"
     leftover = []
     if ac.exists():
         for p in ac.rglob("*"):

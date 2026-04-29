@@ -37,12 +37,12 @@ def preflight_check_impl(orch: Any, tool_call: Dict[str, Any]) -> Dict[str, Any]
             else []
         )
         # P3-D: Auto-correct high-confidence typos (cutoff=0.85, single unique match)
-        # for SMALL and above.  NANO models should fail fast (wrong name = context leak).
+        # for SMALL and above.
         _auto_corrected = False
         try:
             _model_tier = getattr(orch, "_model_tier", None) or ""
             _tier_lower = str(_model_tier).lower()
-            if _tier_lower not in ("nano", ""):
+            if _tier_lower not in ("small", ""):
                 _high_conf = difflib.get_close_matches(
                     name, _all_tool_names, n=1, cutoff=0.85
                 )

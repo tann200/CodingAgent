@@ -9,7 +9,7 @@ def test_contextbuilder_invalidated_after_manage_todo_write(tmp_path):
     ContextBuilder.invalidate_path so cached TODO.md content is evicted.
     """
     workdir = str(tmp_path)
-    ac = tmp_path / ".agent-context"
+    ac = tmp_path / ".codingAgent"
     ac.mkdir(parents=True, exist_ok=True)
 
     # Create initial TODO.md content directly

@@ -29,7 +29,7 @@ import pytest
 
 def _make_workdir() -> Path:
     d = Path(tempfile.mkdtemp())
-    (d / ".agent-context").mkdir()
+    (d / ".codingAgent").mkdir()
     (d / "main.py").write_text("def main():\n    pass\n")
     return d
 

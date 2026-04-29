@@ -28,16 +28,9 @@ _logger = logging.getLogger(__name__)
 _EDIT_NET_CHANGE_WARN = 200  # edit_file warns on large net-line changes
 
 
-# WorkspaceGuard: no-op fallback; real import shadows it at runtime
-class WorkspaceGuard:
-    """No-op guard when src.core is not available."""
-
-    def guard_operation(self, *args: object, **kwargs: object) -> Dict[str, str]:
-        return {"status": "ok"}
-
-
+# WorkspaceGuard: import from shared location
 try:
-    from src.core.orchestration.workspace_guard import WorkspaceGuard  # type: ignore[assignment]
+    from src.tools._workspace_guard import WorkspaceGuard  # type: ignore[assignment]
 except ImportError:
     pass
 

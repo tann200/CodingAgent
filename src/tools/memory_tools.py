@@ -10,19 +10,15 @@ Provides:
     - Tier-aware memory limits: different limits for Lite/Standard/Full agents.
 """
 
-import json
 import logging
 import os
-import re
 import tempfile
 import time
-from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 from src.core.paths import get_memory_path
 from src.core.memory.security import scan_memory_content
 from src.core.memory.file_lock import locked_file
-from src.tools.tools_config import agent_context_path
 from src.tools._tool import tool, PermissionKind
 
 logger = logging.getLogger(__name__)
@@ -33,15 +29,25 @@ _MEMORY_TIER_LIMITS = {
     "lite": {
         "max_entries": 50,
         "max_bytes": 10_000,  # ~10 KB
+        "max_chars": 2200,  # P0: character bounds (matching hermes-agent)
     },
     "standard": {
         "max_entries": 200,
         "max_bytes": 50_000,  # ~50 KB
+        "max_chars": 2200,
     },
     "full": {
         "max_entries": 500,
         "max_bytes": 200_000,  # ~200 KB
+        "max_chars": 2200,
     },
+}
+
+# USER memory separate bounds (per hermes-agent dual-store pattern)
+_USER_TIER_LIMITS = {
+    "lite": {"max_chars": 1375},
+    "standard": {"max_chars": 1375},
+    "full": {"max_chars": 1375},
 }
 
 # Default to standard tier if unable to determine
@@ -114,11 +120,18 @@ def _get_tier_limits(tier: Optional[str] = None) -> Dict[str, int]:
         tier: Agent tier ('lite', 'standard', 'full') or None for default
 
     Returns:
-        Dictionary with 'max_entries' and 'max_bytes' limits
+        Dictionary with 'max_entries', 'max_bytes', and 'max_chars' limits
     """
     if tier and tier in _MEMORY_TIER_LIMITS:
         return _MEMORY_TIER_LIMITS[tier]
     return _MEMORY_TIER_LIMITS[_DEFAULT_TIER]
+
+
+def _get_user_tier_limits(tier: Optional[str] = None) -> int:
+    """Get user memory character limits for a specific tier."""
+    if tier and tier in _USER_TIER_LIMITS:
+        return _USER_TIER_LIMITS[tier]["max_chars"]
+    return _USER_TIER_LIMITS[_DEFAULT_TIER]["max_chars"]
 
 
 # Memory file and limits
@@ -142,10 +155,17 @@ def memory_save(
         Status dictionary with operation results
     """
     content = content.strip()
-    if len(content) > 1000:
+    if not content:
+        return {"status": "error", "error": "content cannot be empty"}
+
+    tier = _get_agent_tier_from_state(agent_state)
+    limits = _get_tier_limits(tier)
+    max_chars = limits.get("max_chars", 2200)
+
+    if len(content) > max_chars:
         return {
             "status": "error",
-            "error": f"content too long ({len(content)} chars, max 1000). Be concise.",
+            "error": f"content too long ({len(content)} chars, max {max_chars}). Be concise.",
         }
 
     # Security check: scan for injection/exfiltration patterns

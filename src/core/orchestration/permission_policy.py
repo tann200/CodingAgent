@@ -392,6 +392,8 @@ class PermissionPolicy:
         # exposing partially-written JSON. As a last resort the old
         # Path.write_text behaviour is attempted (only if mkstemp fails).
         try:
+            import os
+            import shutil
             import tempfile
 
             fd = None
@@ -413,7 +415,6 @@ class PermissionPolicy:
                         try:
                             shutil.move(tmp, str(path))
                         except Exception:
-                            # Last-resort fallback
                             path.write_text(
                                 json.dumps(self.to_dict(), indent=2), encoding="utf-8"
                             )

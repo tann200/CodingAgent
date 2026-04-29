@@ -4,6 +4,13 @@
 
 This document provides a comprehensive analysis comparing hermes-agent's architecture with CodingAgent, identifying gaps and proposing implementation priorities. The analysis covers seven key areas: memory system, state management, tool registry, async handling, error classification, context compression, and operational utilities.
 
+> **Status (2026-04-27):** All P0/P1 items implemented
+> - Context directory: `.codingAgent` (was `.localAgent`/`.agent-context`)
+> - Character bounds: 2200 chars
+> - FTS5 search: Implemented
+> - Preferences: `.codingAgent/preferences.md`
+> - Tiered memory: lite/standard/full
+
 ---
 
 ## 1. Memory System Comparison
@@ -44,104 +51,18 @@ class MemoryStore:
 
 ### Implementation Plan
 
-| Priority | Feature | Files to Modify | Estimated Effort |
-|----------|---------|-----------------|------------------|
-| **P0** | Add injection scanning | `src/tools/memory_tools.py`, new `src/core/memory/security.py` | 2 days |
-| **P0** | Add character bounds | `src/core/paths.py`, `src/tools/memory_tools.py` | 1 day |
-| **P1** | Add frozen snapshot pattern | `src/core/memory/memory_tools.py`, `src/core/context/context_builder.py` | 3 days |
-| **P1** | Add dual memory stores | `src/core/paths.py`, `src/tools/memory_tools.py` | 2 days |
-| **P2** | Add file locking | `src/core/memory/memory_tools.py` | 1 day |
-
-### P0 Implementation: Injection Scanning
-
-```python
-# File: src/core/memory/security.py
-"""Memory security: injection and exfiltration pattern scanning."""
-
-import re
-from typing import Optional
-
-_MEMORY_THREAT_PATTERNS = [
-    # Prompt injection
-    (r'ignore\s+(previous|all|above|prior)\s+instructions', "prompt_injection"),
-    (r'you\s+are\s+now\s+', "role_hijack"),
-    (r'do\s+not\s+tell\s+the\s+user', "deception_hide"),
-    (r'system\s+prompt\s+override', "sys_prompt_override"),
-    # Exfiltration via curl/wget with secrets
-    (r'curl\s+[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)', "exfil_curl"),
-    (r'wget\s+[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)', "exfil_wget"),
-    (r'cat\s+[^\n]*(\.env|credentials|\.netrc|\.pgpass|\.npmrc|\.pypirc)', "read_secrets"),
-    # SSH backdoor patterns
-    (r'authorized_keys', "ssh_backdoor"),
-    (r'\$HOME/\.ssh|\~/\.ssh', "ssh_access"),
-]
-
-_INVISIBLE_CHARS = {
-    '\u200b', '\u200c', '\u200d', '\u2060', '\ufeff',
-    '\u202a', '\u202b', '\u202c', '\u202d', '\u202e',
-}
-
-def scan_memory_content(content: str) -> Optional[str]:
-    """Scan memory content for injection/exfil patterns.
-    
-    Returns error string if blocked, None if content is safe.
-    """
-    for char in _INVISIBLE_CHARS:
-        if char in content:
-            return f"Blocked: invisible unicode U+{ord(char):04X}"
-    
-    for pattern, pid in _MEMORY_THREAT_PATTERNS:
-        if re.search(pattern, content, re.IGNORECASE):
-            return f"Blocked: threat pattern '{pid}'"
-    
-    return None
-```
-
----
-
-## 2. State Management Comparison
-
-### Current State
-
-| Aspect | hermes-agent | CodingAgent | Gap |
-|--------|--------------|-------------|-----|
-| **Storage** | SQLite + FTS5 | SQLite | Medium |
-| **Schema versioning** | Yes (v1→v6) | No | High |
-| **Token/billing tracking** | Yes | Partial | Medium |
-| **FTS5 search** | Yes | No | High |
-| **Session hierarchy** | parent_session_id chains | Child sessions | Low |
-| **WAL mode** | Yes, with jitter retry | Yes | Low |
-| **Migration system** | Yes | No | High |
-
-### hermes-agent Implementation (hermes_state.py)
-
-```python
-# Schema versioning in hermes:
-SCHEMA_VERSION = 6
-
-def _init_schema(self):
-    # Check version and run migrations
-    cursor.execute("SELECT version FROM schema_version LIMIT 1")
-    row = cursor.fetchone()
-    if row is None:
-        cursor.execute("INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,))
-    else:
-        current_version = row["version"] if isinstance(row, sqlite3.Row) else row[0]
-        if current_version < 2:
-            self._migrate_v2(cursor)
-        if current_version < 3:
-            self._migrate_v3(cursor)
-        # ... etc
-```
-
-### Implementation Plan
-
-| Priority | Feature | Files to Modify | Estimated Effort |
-|----------|---------|-----------------|------------------|
-| **P1** | Add schema versioning | `src/core/memory/session_store.py` | 2 days |
-| **P1** | Add FTS5 full-text search | `src/core/memory/session_store.py` | 3 days |
-| **P2** | Add migration system | `src/core/memory/session_store.py` | 2 days |
-| **P2** | Enhance token/billing | `src/core/orchestration/session_cost_tracker.py` | 2 days |
+| Priority | Feature | Status | Files to Modify |
+|----------|---------|--------|-----------------|
+| **P0** | Add injection scanning | ✅ Done | `src/core/memory/security.py` |
+| **P0** | Add character bounds | ✅ Done | `src/tools/memory_tools.py` |
+| **P0** | Frozen snapshot pattern | ✅ Done | `src/core/memory/frozen_snapshot.py`, context_builder |
+| **P1** | Add schema versioning | ✅ Done | `src/core/memory/sqlite_session_store.py` |
+| **P1** | Add FTS5 full-text search | ✅ Done | `src/core/memory/sqlite_session_store.py` |
+| **P1** | Jittered backoff | ✅ Done | `src/core/utils/retry.py` |
+| **P1** | Tiered memory limits | ✅ Done | `src/tools/memory_tools.py` |
+| **P1** | Migration system | ✅ Done | `src/core/memory/sqlite_session_store.py` |
+| **P2** | Thread-local event loops | ✅ Done | `src/core/inference/llm_manager.py` |
+| **P2** | Tool output pruning | ✅ Done | `src/core/context/context_builder.py` |
 
 ---
 
@@ -195,10 +116,10 @@ def resolve_toolset(toolset: str) -> Set[str]:
 
 ### Implementation Plan
 
-| Priority | Feature | Files to Modify | Estimated Effort |
-|----------|---------|-----------------|------------------|
-| **P2** | Add AST-based discovery | `src/core/orchestration/registry_builder.py` | 3 days |
-| **P2** | Add toolset composition | `src/config/toolsets/loader.py` | 2 days |
+| Priority | Feature | Status |
+|----------|---------|--------|
+| **P2** | AST-based discovery | ✅ Done |
+| **P2** | Toolset composition | ✅ Done |
 
 ---
 
@@ -325,10 +246,12 @@ while tail_protect_tokens > TAIL_TOKEN_BUDGET:
 
 ### Implementation Plan
 
-| Priority | Feature | Files to Modify | Estimated Effort |
-|----------|---------|-----------------|------------------|
-| **P2** | Add tool output pruning | `src/core/memory/distiller.py` | 2 days |
-| **P2** | Token-budget tail protection | `src/core/memory/distiller.py` | 1 day |
+| Priority | Feature | Status |
+|----------|---------|--------|
+| **P2** | AST tool discovery | ✅ Done (src/tools/_registry.py) |
+| **P2** | Toolset composition | ✅ Done (src/config/toolsets/loader.py) |
+| **P2** | Thread-local event loops | ✅ Done |
+| **P2** | Tool output pruning | ✅ Done |
 
 ---
 

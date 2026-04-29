@@ -49,7 +49,7 @@ def _mock_call_model(response_text: str):
 def workdir(tmp_path):
     """Isolated working directory with a minimal Python file."""
     (tmp_path / "hello.py").write_text("def greet(name):\n    return f'Hello, {name}'\n")
-    (tmp_path / ".agent-context").mkdir()
+    (tmp_path / ".codingAgent").mkdir()
     return tmp_path
 
 

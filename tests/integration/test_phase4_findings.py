@@ -368,7 +368,7 @@ class TestPersistentDecisionMemory:
         store = SessionStore(workdir=str(tmp_path))
         store.add_decision("sess-2", "complete: fix bug", "all good")
 
-        decisions_path = tmp_path / ".agent-context" / "decisions.json"
+        decisions_path = tmp_path / ".codingAgent" / "decisions.json"
         assert decisions_path.exists(), "decisions.json should be written to disk"
         data = json.loads(decisions_path.read_text(encoding="utf-8"))
         assert isinstance(data, list)
@@ -407,7 +407,7 @@ class TestPersistentDecisionMemory:
         # Now flush with limit=50
         store.write_decisions_json(limit=50)
         data = json.loads(
-            (tmp_path / ".agent-context" / "decisions.json").read_text(encoding="utf-8")
+            (tmp_path / ".codingAgent" / "decisions.json").read_text(encoding="utf-8")
         )
         assert len(data) <= 50
 
@@ -415,7 +415,7 @@ class TestPersistentDecisionMemory:
         from src.core.memory.session_store import SessionStore
 
         # Write malformed JSON
-        dec_path = tmp_path / ".agent-context" / "decisions.json"
+        dec_path = tmp_path / ".codingAgent" / "decisions.json"
         dec_path.parent.mkdir(parents=True, exist_ok=True)
         dec_path.write_text("NOT_JSON{{{", encoding="utf-8")
 
@@ -430,7 +430,7 @@ class TestPersistentDecisionMemory:
         store.add_decision("sess-5", "task done", "passed all checks")
 
         # File should exist immediately after add_decision
-        decisions_path = tmp_path / ".agent-context" / "decisions.json"
+        decisions_path = tmp_path / ".codingAgent" / "decisions.json"
         assert decisions_path.exists()
 
 

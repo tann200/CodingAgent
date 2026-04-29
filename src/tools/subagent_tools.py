@@ -610,7 +610,6 @@ def delegate_task(
         # CP-2: Write manifest JSON *before* spawning the subagent thread so the
         # parent's context directory always contains a record of the spawned work,
         # even if the subagent crashes or is cancelled.
-        import json as _json
         import time as _time
 
         _manifest_dir = _get_agent_context_dir(workdir_path) / "subagent_manifests"
@@ -855,7 +854,6 @@ def delegate_task(
                     "ok": False,
                     "error": str(_subagent_err),
                 }
-                import tempfile as _tempfile
 
                 _sp = _sessions_dir / f"session_{child_session_id}.json"
                 try:

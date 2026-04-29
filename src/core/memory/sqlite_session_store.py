@@ -26,16 +26,12 @@ class SqliteSessionStore:
 
     def __init__(self, workdir: Optional[str] = None):
         self.workdir = Path(workdir) if workdir else Path.cwd()
-        # Do not resolve the canonical agent-context directory at init-time.
-        # Prefer existing legacy locations for reads; resolve the canonical
-        # path at write-time (call-time) when we intend to create files.
-        legacy_a = self.workdir / ".agent-context"
-        legacy_b = self.workdir / ".agent"
-        if legacy_a.exists():
-            self._agent_context_dir = legacy_a
-        elif legacy_b.exists():
-            self._agent_context_dir = legacy_b
-        else:
+        # Use agent_context_path() for consistent behavior
+        try:
+            from src.tools.tools_config import agent_context_path
+
+            self._agent_context_dir = agent_context_path(self.workdir)
+        except Exception:
             self._agent_context_dir = None
         # db_path is resolved lazily via _resolve_db_path when a connection is
         # required. Keep attribute for compatibility.
@@ -84,20 +80,13 @@ class SqliteSessionStore:
         if ac is not None:
             ac_path = Path(ac)
         else:
-            legacy_a = self.workdir / ".agent-context"
-            legacy_b = self.workdir / ".agent"
-            if legacy_a.exists():
-                ac_path = legacy_a
-            elif legacy_b.exists():
-                ac_path = legacy_b
-            else:
-                try:
-                    # Call-time resolver (may create directories)
-                    from src.tools.tools_config import agent_context_path
+            # Use agent_context_path() for consistent behavior
+            try:
+                from src.tools.tools_config import agent_context_path
 
-                    ac_path = Path(agent_context_path(self.workdir))
-                except Exception:
-                    ac_path = self.workdir / ".agent-context"
+                ac_path = agent_context_path(self.workdir)
+            except Exception:
+                ac_path = agent_context_path(self.workdir)
 
         # Cache resolved values
         self._agent_context_dir = ac_path
@@ -248,14 +237,101 @@ class SqliteSessionStore:
                     saved_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
             """)
+
             conn.execute(
                 "INSERT OR IGNORE INTO schema_meta (key, value) VALUES ('schema_version', ?)",
                 (str(self._SCHEMA_VERSION),),
             )
             conn.commit()
+
+            self._ensure_fts_index(conn)
+            self._run_migrations(conn)
+
         except Exception as e:
             logger.error(f"SqliteSessionStore: failed to create tables: {e}")
-        # Note: migrations and other helpers omitted for brevity.
+
+    def _run_migrations(self, conn: sqlite3.Connection) -> None:
+        """Run schema migrations from current version to target version."""
+        try:
+            row = conn.execute(
+                "SELECT value FROM schema_meta WHERE key = 'schema_version'"
+            ).fetchone()
+            current_version = int(row["value"]) if row else 1
+        except Exception:
+            current_version = 1
+
+        if current_version >= self._SCHEMA_VERSION:
+            return
+
+        logger.info(
+            f"SqliteSessionStore: migrating from v{current_version} to v{self._SCHEMA_VERSION}"
+        )
+
+        if current_version < 2 and self._SCHEMA_VERSION >= 2:
+            self._migrate_v2(conn)
+            current_version = 2
+
+        conn.execute(
+            "UPDATE schema_meta SET value = ? WHERE key = 'schema_version'",
+            (str(self._SCHEMA_VERSION),),
+        )
+        conn.commit()
+        logger.info(
+            f"SqliteSessionStore: migration complete to v{self._SCHEMA_VERSION}"
+        )
+
+    def _migrate_v2(self, conn: sqlite3.Connection) -> None:
+        """Migration from v1 to v2: Add session_children table if not exists."""
+        try:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS session_children (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    parent_session_id TEXT NOT NULL,
+                    child_session_id TEXT NOT NULL,
+                    role TEXT,
+                    task TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_children_parent ON session_children(parent_session_id);
+            """)
+            logger.debug("SqliteSessionStore: v2 migration complete")
+        except Exception as e:
+            logger.warning(f"SqliteSessionStore: v2 migration failed: {e}")
+
+    def _ensure_fts_index(self, conn: sqlite3.Connection) -> None:
+        """Create and maintain FTS5 full-text search index."""
+        try:
+            conn.executescript("""
+                CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+                    session_id,
+                    role,
+                    content,
+                    tokenize='porter unicode61'
+                );
+            """)
+
+            conn.execute("""
+                CREATE TRIGGER IF NOT EXISTS messages_ai AFTER INSERT ON messages BEGIN
+                    INSERT INTO messages_fts (session_id, role, content)
+                    VALUES (new.session_id, new.role, new.content);
+                END;
+            """)
+
+            conn.execute("""
+                CREATE TRIGGER IF NOT EXISTS messages_ad AFTER DELETE ON messages BEGIN
+                    DELETE FROM messages_fts WHERE rowid IN (
+                        SELECT rowid FROM messages_fts WHERE session_id = old.session_id 
+                        AND content = old.content LIMIT 1
+                    );
+                END;
+            """)
+
+            conn.commit()
+            logger.debug("SqliteSessionStore: FTS5 index ready")
+        except Exception as e:
+            logger.warning(f"SqliteSessionStore: FTS index creation failed: {e}")
 
     # ------------------------------------------------------------------
     # High-level convenience API (parity with JsonlSessionStore)
@@ -286,6 +362,97 @@ class SqliteSessionStore:
             (session_id or "unknown",),
         ).fetchall()
         return [{"role": r["role"], "content": r["content"]} for r in rows]
+
+    def search(
+        self,
+        query: str,
+        session_id: Optional[str] = None,
+        limit: int = 20,
+    ) -> List[Dict[str, Any]]:
+        """Full-text search using FTS5.
+
+        Args:
+            query: Search query (supports FTS5 operators like AND, OR, NOT)
+            session_id: Optional session filter
+            limit: Maximum results to return
+
+        Returns:
+            List of matching message dicts with session_id, role, content
+        """
+        if not query or not query.strip():
+            return []
+
+        conn = self._get_connection()
+
+        try:
+            if session_id:
+                sql = """
+                    SELECT m.session_id, m.role, m.content, rank
+                    FROM messages_fts fts
+                    JOIN messages m ON m.rowid = fts.rowid
+                    WHERE messages_fts MATCH ?
+                      AND m.session_id = ?
+                    ORDER BY rank
+                    LIMIT ?
+                """
+                rows = conn.execute(sql, (query, session_id, limit)).fetchall()
+            else:
+                sql = """
+                    SELECT m.session_id, m.role, m.content, rank
+                    FROM messages_fts fts
+                    JOIN messages m ON m.rowid = fts.rowid
+                    WHERE messages_fts MATCH ?
+                    ORDER BY rank
+                    LIMIT ?
+                """
+                rows = conn.execute(sql, (query, limit)).fetchall()
+
+            return [
+                {
+                    "session_id": r["session_id"],
+                    "role": r["role"],
+                    "content": r["content"],
+                    "rank": r["rank"],
+                }
+                for r in rows
+            ]
+        except Exception as e:
+            logger.warning(f"SqliteSessionStore: FTS search error: {e}")
+            return []
+
+    def _search_fallback(
+        self,
+        query: str,
+        session_id: Optional[str] = None,
+        limit: int = 20,
+    ) -> List[Dict[str, Any]]:
+        """Fallback LIKE-based search when FTS is unavailable."""
+        conn = self._get_connection()
+        pattern = f"%{query}%"
+
+        if session_id:
+            sql = """
+                SELECT session_id, role, content
+                FROM messages
+                WHERE session_id = ? AND content LIKE ?
+                ORDER BY created_at DESC
+                LIMIT ?
+            """
+            rows = conn.execute(sql, (session_id, pattern, limit)).fetchall()
+        else:
+            sql = """
+                SELECT session_id, role, content
+                FROM messages
+                WHERE content LIKE ?
+                ORDER BY created_at DESC
+                LIMIT ?
+            """
+            rows = conn.execute(sql, (pattern, limit)).fetchall()
+
+        return [
+            {"session_id": r["session_id"], "role": r["role"], "content": r["content"]}
+            for r in rows
+        ]
 
     def add_tool_call(
         self,
@@ -437,55 +604,29 @@ class SqliteSessionStore:
         attempts: int = 5,
         base_backoff: float = 0.05,
     ) -> bool:
-        """Retry a write against *conn* on SQLITE_BUSY/locked errors.
+        """Retry a write against *conn* on SQLITE_BUSY/locked errors."""
 
-        Attempts to execute ``conn.execute(sql, params)`` and commit. On
-        sqlite3.OperationalError containing 'lock' this retries with
-        exponential backoff. On exhaustion a diagnostic JSON file is written
-        into ``{workdir}/.agent-context/session_store_write_failure_*.json``
-        and False is returned.
-        """
-        last_err: Optional[Exception] = None
-        for i in range(1, max(1, attempts) + 1):
-            try:
-                if hasattr(conn, "execute"):
-                    conn.execute(sql, params)
-                if hasattr(conn, "commit"):
-                    conn.commit()
-                return True
-            except Exception as e:
-                last_err = e
-                msg = str(e).lower()
-                if isinstance(e, sqlite3.OperationalError) and "lock" in msg:
-                    sleep_for = base_backoff * (2 ** (i - 1))
-                    try:
-                        time.sleep(sleep_for)
-                    except Exception:
-                        pass
-                    continue
-                else:
-                    break
+        def write_operation():
+            if hasattr(conn, "execute"):
+                conn.execute(sql, params)
+            if hasattr(conn, "commit"):
+                conn.commit()
+            return True
 
-        # Exhausted or unrecoverable error — write diagnostic
+        # Use shared utility for retry logic
+        from src.core.memory._write_retry_utils import write_with_retry
+
         try:
-            # Prefer the canonical agent-context resolver at write-time.
-            # This may create the canonical directory and is appropriate
-            # when writing diagnostic files. Fall back to any previously
-            # discovered legacy location if the resolver is unavailable.
-            try:
-                from src.tools.tools_config import agent_context_path
-
-                ac_dir = Path(agent_context_path(self.workdir))
-            except Exception:
-                ac_dir = Path(
-                    getattr(self, "_agent_context_dir", None)
-                    or self.workdir / ".agent-context"
-                )
-        except Exception:
-            logger.debug(
-                "SqliteSessionStore._write_with_retry: failed to resolve agent-context path for diagnostic\n%s",
-                traceback.format_exc(),
+            return write_with_retry(
+                write_func=write_operation,
+                max_attempts=attempts,
+                base_delay=base_backoff,
+                max_delay=1.0,
+                context_msg="SqliteSessionStore",
             )
+        except Exception as e:
+            # Write diagnostic on failure (preserving original behavior)
+            _write_diagnostic_on_failure(self, session_id, e)
             return False
 
         diag_dir = ac_dir
