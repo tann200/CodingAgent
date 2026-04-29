@@ -65,12 +65,12 @@ class TestPermissionRequiredTools:
 class TestWritePermissionAudit:
     def test_creates_audit_file(self, tmp_path):
         _write_permission_audit(str(tmp_path), "read_file", {}, "allow")
-        audit = tmp_path / ".agent" / "permission_audit.jsonl"
+        audit = tmp_path / ".codingAgent" / "permission_audit.jsonl"
         assert audit.exists()
 
     def test_entry_is_valid_json(self, tmp_path):
         _write_permission_audit(str(tmp_path), "write_file", {}, "deny", "blocked")
-        audit = tmp_path / ".agent" / "permission_audit.jsonl"
+        audit = tmp_path / ".codingAgent" / "permission_audit.jsonl"
         entry = json.loads(audit.read_text().strip())
         assert entry["tool"] == "write_file"
         assert entry["decision"] == "deny"
@@ -81,7 +81,9 @@ class TestWritePermissionAudit:
         _write_permission_audit(str(tmp_path), "tool_a", {}, "allow")
         _write_permission_audit(str(tmp_path), "tool_b", {}, "deny")
         lines = (
-            (tmp_path / ".agent" / "permission_audit.jsonl").read_text().splitlines()
+            (tmp_path / ".codingAgent" / "permission_audit.jsonl")
+            .read_text()
+            .splitlines()
         )
         assert len(lines) == 2
 

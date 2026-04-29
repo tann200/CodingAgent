@@ -13,7 +13,6 @@ Covers:
   ORCH-W4 — plan_enter / plan_exit tool calls
 """
 
-
 # ruff: noqa: E501
 from __future__ import annotations
 
@@ -436,13 +435,13 @@ class TestPermissionAuditLog:
         assert "permission_audit.jsonl" in constants_src
 
     def test_audit_file_created_on_allow(self, tmp_path):
-        """_write_permission_audit should create .agent/permission_audit.jsonl."""
+        """_write_permission_audit should create .codingAgent/permission_audit.jsonl."""
         from src.core.orchestration.orchestrator import _write_permission_audit
 
         _write_permission_audit(
             str(tmp_path), "read_file", {}, "allow", "passed_all_gates"
         )
-        audit_path = tmp_path / ".agent" / "permission_audit.jsonl"
+        audit_path = tmp_path / ".codingAgent" / "permission_audit.jsonl"
         assert audit_path.exists()
 
     def test_audit_entry_is_valid_json(self, tmp_path):
@@ -457,7 +456,7 @@ class TestPermissionAuditLog:
             "deny",
             "agent_permission_rules",
         )
-        audit_path = tmp_path / ".agent" / "permission_audit.jsonl"
+        audit_path = tmp_path / ".codingAgent" / "permission_audit.jsonl"
         lines = [l.strip() for l in audit_path.read_text().splitlines() if l.strip()]
         assert len(lines) == 1
         entry = json.loads(lines[0])
@@ -477,7 +476,7 @@ class TestPermissionAuditLog:
         _write_permission_audit(
             str(tmp_path), "write_file", {}, "deny", "agent_permission_rules"
         )
-        audit_path = tmp_path / ".agent" / "permission_audit.jsonl"
+        audit_path = tmp_path / ".codingAgent" / "permission_audit.jsonl"
         lines = [l.strip() for l in audit_path.read_text().splitlines() if l.strip()]
         assert len(lines) == 2
         decisions = [json.loads(l)["decision"] for l in lines]
