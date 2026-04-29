@@ -528,7 +528,7 @@ def get_symbols_for_task(
     and optionally ``start_line`` / ``docstring``.
     """
     try:
-        index_path = Path(workdir) / ".agent-context" / "repo_index.json"
+        index_path = Path(workdir) / ".codingAgent" / "repo_index.json"
         if not index_path.exists():
             # RA-VOL22-1: Log explicitly so developers can distinguish "no matches"
             # from "index not yet built" when fast-path tasks return empty symbols.

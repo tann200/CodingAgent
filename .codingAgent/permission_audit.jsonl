@@ -37,3 +37,14 @@
 {"ts": "2026-04-29T12:53:59.443582+00:00", "tool": "read_file", "decision": "allow", "reason": "passed_all_gates"}
 {"ts": "2026-04-29T12:53:59.453529+00:00", "tool": "plan_exit", "decision": "allow", "reason": "passed_all_gates"}
 {"ts": "2026-04-29T12:53:59.457074+00:00", "tool": "my_tool", "decision": "allow", "reason": "passed_all_gates"}
+{"ts": "2026-04-29T21:48:22.553919+00:00", "tool": "test_tool", "decision": "allow", "reason": "passed_all_gates"}
+{"ts": "2026-04-29T21:48:22.560257+00:00", "tool": "read_file", "decision": "allow", "reason": "passed_all_gates"}
+{"ts": "2026-04-29T21:48:22.563609+00:00", "tool": "test_tool", "decision": "allow", "reason": "passed_all_gates"}
+{"ts": "2026-04-29T21:48:23.218776+00:00", "tool": "write_file", "decision": "allow", "reason": "passed_all_gates"}
+{"ts": "2026-04-29T21:48:23.221364+00:00", "tool": "read_file", "decision": "allow", "reason": "passed_all_gates"}
+{"ts": "2026-04-29T21:48:28.036392+00:00", "tool": "read_file", "decision": "allow", "reason": "passed_all_gates"}
+{"ts": "2026-04-29T21:50:02.374850+00:00", "tool": "no_such_tool", "decision": "allow", "reason": "passed_all_gates"}
+{"ts": "2026-04-29T21:50:02.377495+00:00", "tool": "my_tool", "decision": "allow", "reason": "passed_all_gates"}
+{"ts": "2026-04-29T21:50:02.381945+00:00", "tool": "read_file", "decision": "allow", "reason": "passed_all_gates"}
+{"ts": "2026-04-29T21:50:02.392704+00:00", "tool": "plan_exit", "decision": "allow", "reason": "passed_all_gates"}
+{"ts": "2026-04-29T21:50:02.397120+00:00", "tool": "my_tool", "decision": "allow", "reason": "passed_all_gates"}
