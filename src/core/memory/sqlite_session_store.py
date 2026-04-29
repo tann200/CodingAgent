@@ -1,7 +1,6 @@
 from __future__ import annotations
 import os
 import sqlite3
-import time
 import shutil
 import json
 import logging
@@ -613,6 +612,11 @@ class SqliteSessionStore:
                 conn.commit()
             return True
 
+        # Store attempts on self so _write_diagnostic_on_failure can access it
+        self._write_retry_attempts = attempts
+        self._write_last_sql = sql
+        self._write_last_params = params
+
         # Use shared utility for retry logic
         from src.core.memory._write_retry_utils import write_with_retry
 
@@ -626,54 +630,66 @@ class SqliteSessionStore:
             )
         except Exception as e:
             # Write diagnostic on failure (preserving original behavior)
-            _write_diagnostic_on_failure(self, session_id, e)
+            self._write_diagnostic_on_failure(session_id, e)
             return False
 
-        diag_dir = ac_dir
-        diag_dir.mkdir(parents=True, exist_ok=True)
-        ts = int(time.time() * 1000)
-        sid = session_id or "unknown"
-        diag_path = diag_dir / f"session_store_write_failure_{ts}_{sid}.json"
-        payload = {
-            "db_path": str(self.db_path)
-            if getattr(self, "db_path", None) is not None
-            else None,
-            "session_id": sid,
-            "attempts": attempts,
-            "last_error": (
-                "SQLITE_BUSY/LOCKED"
-                if isinstance(last_err, sqlite3.OperationalError)
-                and "lock" in str(last_err).lower()
-                else str(last_err)
-            ),
-            "sql": sql,
-            "params": params,
-            "ts": int(time.time()),
-        }
-
-        # Try to use shared atomic writer if available
+    def _write_diagnostic_on_failure(self, session_id: str, exc: Exception) -> None:
+        """Write diagnostic information on write failure for debugging."""
         try:
-            from src.core.io_utils import atomic_write_json
+            import time
 
-            ok = atomic_write_json(diag_path, payload, logger=logger)
-            if not ok:
-                logger.warning(
-                    "SqliteSessionStore._write_with_retry: atomic_write_json returned False, falling back"
-                )
-            else:
-                logger.debug(
-                    "SqliteSessionStore._write_with_retry: diagnostic atomic write succeeded: %s",
-                    diag_path,
-                )
-                return False
-        except Exception:
-            logger.debug(
-                "SqliteSessionStore._write_with_retry: atomic_write_json unavailable for diagnostic, using fallback\n%s",
-                traceback.format_exc(),
-            )
+            ts = int(time.time() * 1000)
+            sid = session_id or "unknown"
+
+            try:
+                from src.tools.tools_config import agent_context_path
+
+                diag_dir = agent_context_path(self.workdir)
+            except Exception:
+                diag_dir = self.workdir / ".codingAgent"
+
+            diag_dir.mkdir(parents=True, exist_ok=True)
+            diag_path = diag_dir / f"session_store_write_failure_{ts}_{sid}.json"
+
+            last_err = getattr(self, "_write_last_error", exc)
+            payload = {
+                "db_path": str(self.db_path)
+                if getattr(self, "db_path", None) is not None
+                else None,
+                "session_id": sid,
+                "attempts": getattr(self, "_write_retry_attempts", 5),
+                "last_error": (
+                    "SQLITE_BUSY/LOCKED"
+                    if isinstance(last_err, sqlite3.OperationalError)
+                    and "lock" in str(last_err).lower()
+                    else str(last_err)
+                ),
+                "sql": getattr(self, "_write_last_sql", "UNKNOWN"),
+                "params": getattr(self, "_write_last_params", ()),
+                "ts": ts,
+            }
             fd = None
             tmp = None
             try:
+                try:
+                    from src.core.io_utils import atomic_write_json
+
+                    ok = atomic_write_json(diag_path, payload, logger=logger)
+                    if ok:
+                        logger.debug(
+                            "SqliteSessionStore._write_with_retry: diagnostic atomic write succeeded: %s",
+                            diag_path,
+                        )
+                        return
+                except Exception as _e:
+                    import traceback as _traceback
+
+                    logger.debug(
+                        "SqliteSessionStore._write_with_retry: atomic_write_json unavailable for diagnostic, using fallback: %s\n%s",
+                        _e,
+                        _traceback.format_exc(),
+                    )
+
                 fd, tmp = tempfile.mkstemp(dir=str(diag_dir), suffix=".tmp")
                 with os.fdopen(fd, "w", encoding="utf-8") as f:
                     fd = None
@@ -696,8 +712,8 @@ class SqliteSessionStore:
                         os.close(fd)
                 except Exception:
                     pass
-
-        return False
+        except Exception:
+            pass
 
     def write_decisions_json(self, limit: int = 50) -> None:
         """Collect recent decisions from the DB and write decisions.json sidecar.

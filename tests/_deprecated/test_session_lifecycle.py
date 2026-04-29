@@ -8,7 +8,7 @@ class TestSessionLifecycle:
 
     @pytest.fixture
     def workdir(self, tmp_path):
-        """Create a workdir with .agent-context."""
+        """Create a workdir with .codingAgent."""
         agent_context = tmp_path / ".codingAgent"
         agent_context.mkdir()
         return tmp_path

@@ -192,7 +192,7 @@ class TestContextBuilderUsesWorkingDir:
 
     def test_task_state_file_found_with_working_dir(self, tmp_path):
         """
-        NEW-10 FIXED: Files written in tmp_path/.agent-context/ are now found
+        NEW-10 FIXED: Files written in tmp_path/.codingAgent/ are now found
         when ContextBuilder is initialized with working_dir=tmp_path.
         """
         from src.core.context.context_builder import ContextBuilder

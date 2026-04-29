@@ -59,7 +59,7 @@ def run(processes: int, iters: int, workdir: str = None) -> int:
             print(f"Worker {idx} produced non-JSON output:\n{s}")
             any_fail = True
 
-    # Check for leftover temp files in .agent-context under workdir
+    # Check for leftover temp files in .codingAgent under workdir
     ac = Path(workdir) / ".codingAgent"
     leftover = []
     if ac.exists():

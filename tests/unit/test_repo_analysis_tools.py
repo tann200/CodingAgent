@@ -78,7 +78,7 @@ class TestAnalyzeRepository:
     """Integration tests for analyze_repository()."""
 
     def test_creates_repo_memory_json(self, tmp_path):
-        """analyze_repository creates .agent-context/repo_memory.json."""
+        """analyze_repository creates .codingAgent/repo_memory.json."""
         (tmp_path / "main.py").write_text("def main(): pass\n")
         result = analyze_repository(str(tmp_path))
         assert result["status"] == "ok"

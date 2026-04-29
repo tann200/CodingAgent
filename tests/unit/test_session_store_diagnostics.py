@@ -43,7 +43,10 @@ def test_write_with_retry_exhausts_and_writes_diagnostic(tmp_path: Path):
     assert data.get("db_path") is not None
     assert data.get("session_id") == "s1"
     assert data.get("attempts") == 2
-    assert data.get("last_error") == "SQLITE_BUSY/LOCKED"
+    assert (
+        "locked" in data.get("last_error", "").lower()
+        or "busy" in data.get("last_error", "").lower()
+    )
 
 
 class FakeCursor:

@@ -154,7 +154,7 @@ class TestLoadProjectSettings:
 
     def test_settings_json_loaded(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            agent_dir = Path(tmp) / ".agent"
+            agent_dir = Path(tmp) / ".codingAgent"
             agent_dir.mkdir()
             (agent_dir / "settings.json").write_text(
                 json.dumps({"model": "claude-opus-4", "maxTurns": 30}),
@@ -166,7 +166,7 @@ class TestLoadProjectSettings:
 
     def test_settings_local_json_overrides(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            agent_dir = Path(tmp) / ".agent"
+            agent_dir = Path(tmp) / ".codingAgent"
             agent_dir.mkdir()
             (agent_dir / "settings.json").write_text(
                 json.dumps({"model": "gpt-4o", "permissionMode": "read_only"}),
@@ -183,7 +183,7 @@ class TestLoadProjectSettings:
 
     def test_local_overrides_hooks(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            agent_dir = Path(tmp) / ".agent"
+            agent_dir = Path(tmp) / ".codingAgent"
             agent_dir.mkdir()
             (agent_dir / "settings.json").write_text(
                 json.dumps({"hooks": {"PreToolUse": ["./base.sh"]}}),
@@ -204,7 +204,7 @@ class TestLoadProjectSettings:
 
     def test_malformed_json_silently_skipped(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            agent_dir = Path(tmp) / ".agent"
+            agent_dir = Path(tmp) / ".codingAgent"
             agent_dir.mkdir()
             (agent_dir / "settings.json").write_text(
                 "{not valid json}", encoding="utf-8"
@@ -214,7 +214,7 @@ class TestLoadProjectSettings:
 
     def test_non_dict_json_silently_skipped(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            agent_dir = Path(tmp) / ".agent"
+            agent_dir = Path(tmp) / ".codingAgent"
             agent_dir.mkdir()
             (agent_dir / "settings.json").write_text("[1, 2, 3]", encoding="utf-8")
             s = load_project_settings(tmp)
@@ -223,7 +223,7 @@ class TestLoadProjectSettings:
     def test_defaults_to_cwd(self, monkeypatch: pytest.MonkeyPatch) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             monkeypatch.chdir(tmp)
-            agent_dir = Path(tmp) / ".agent"
+            agent_dir = Path(tmp) / ".codingAgent"
             agent_dir.mkdir()
             (agent_dir / "settings.json").write_text(
                 json.dumps({"model": "from-cwd"}), encoding="utf-8"
@@ -233,7 +233,7 @@ class TestLoadProjectSettings:
 
     def test_permission_mode_from_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            agent_dir = Path(tmp) / ".agent"
+            agent_dir = Path(tmp) / ".codingAgent"
             agent_dir.mkdir()
             (agent_dir / "settings.json").write_text(
                 json.dumps({"permissionMode": "workspaceWrite"}),
@@ -275,7 +275,7 @@ class TestBudgetCeiling:
 
     def test_budget_ceiling_from_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            agent_dir = Path(tmp) / ".agent"
+            agent_dir = Path(tmp) / ".codingAgent"
             agent_dir.mkdir()
             (agent_dir / "settings.json").write_text(
                 json.dumps({"budgetCeiling": 0.25}),
@@ -286,7 +286,7 @@ class TestBudgetCeiling:
 
     def test_budget_ceiling_local_override_wins(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            agent_dir = Path(tmp) / ".agent"
+            agent_dir = Path(tmp) / ".codingAgent"
             agent_dir.mkdir()
             (agent_dir / "settings.json").write_text(
                 json.dumps({"budgetCeiling": 1.0}), encoding="utf-8"
@@ -334,7 +334,7 @@ class TestEnableSemanticEvaluation:
 
     def test_from_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            agent_dir = Path(tmp) / ".agent"
+            agent_dir = Path(tmp) / ".codingAgent"
             agent_dir.mkdir()
             (agent_dir / "settings.json").write_text(
                 json.dumps({"enableSemanticEvaluation": False}), encoding="utf-8"
@@ -375,7 +375,7 @@ class TestMaxLlmWaitSeconds:
 
     def test_from_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            agent_dir = Path(tmp) / ".agent"
+            agent_dir = Path(tmp) / ".codingAgent"
             agent_dir.mkdir()
             (agent_dir / "settings.json").write_text(
                 json.dumps({"maxLlmWaitSeconds": 300}), encoding="utf-8"

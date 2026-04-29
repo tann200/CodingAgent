@@ -43,8 +43,9 @@ def test_jsonl_write_with_retry_writes_diag(tmp_path: Path) -> None:
     payload = json.loads(diag.read_text(encoding="utf-8"))
     assert payload.get("session_id") == "s1"
     # Expect last_error to indicate a locked/busy condition
-    assert "SQLITE_BUSY" in payload.get("last_error", "") or "LOCKED" in payload.get(
-        "last_error", ""
+    assert (
+        "locked" in payload.get("last_error", "").lower()
+        or "busy" in payload.get("last_error", "").lower()
     )
 
 

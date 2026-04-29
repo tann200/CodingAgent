@@ -286,7 +286,7 @@ class TestPermissionGatewayPolicyGate:
             reset_permission_policy(None)
 
     def test_project_policy_merged(self, tmp_path):
-        """Project-level .agent-context/permissions.json takes precedence."""
+        """Project-level .codingAgent/permissions.json takes precedence."""
         from src.core.orchestration.permission_policy import (
             PermissionPolicy,
             Behavior,

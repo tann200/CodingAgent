@@ -1,50 +1,56 @@
 """tests/unit/test_s8_items.py — Tests for S8-A (schema stripping) and S8-B (simple_mode).
 
-S8-A: ContextBuilder renders short tool descriptions for NANO/SMALL tiers.
-S8-B: NANO tier forces YAML-only output format (simple_mode), no native tools.
+S8-A: ContextBuilder renders short tool descriptions for SMALL tier.
+S8-B: SMALL tier forces YAML-only output format (simple_mode), no native tools.
 """
-
 
 # ruff: noqa: E501
 from __future__ import annotations
 
+from src.core.context.context_builder import ContextBuilder
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_tools(*names_descs):
     """Return a list of minimal tool dicts for testing."""
-    return [
-        {"name": n, "description": d}
-        for n, d in names_descs
-    ]
+    return [{"name": n, "description": d} for n, d in names_descs]
 
 
 # ---------------------------------------------------------------------------
 # S8-A — _render_tools_for_tier
 # ---------------------------------------------------------------------------
 
+
 class TestRenderToolsForTier:
     def _get_builder(self):
         from src.core.context.context_builder import ContextBuilder
+
         return ContextBuilder()
 
     def test_medium_tier_keeps_full_description(self):
         builder = self._get_builder()
         tools = _make_tools(
-            ("read_file", "Reads a file. Returns its content. Accepts a path argument."),
+            (
+                "read_file",
+                "Reads a file. Returns its content. Accepts a path argument.",
+            ),
         )
         rendered = builder._render_tools_for_tier(tools, "medium")
         assert "Reads a file. Returns its content." in rendered
 
-    def test_nano_tier_truncates_to_first_sentence(self):
+    def test_small_tier_truncates_to_first_sentence(self):
         builder = self._get_builder()
         tools = _make_tools(
-            ("read_file", "Reads a file. Returns its content. Accepts a path argument."),
+            (
+                "read_file",
+                "Reads a file. Returns its content. Accepts a path argument.",
+            ),
         )
-        rendered = builder._render_tools_for_tier(tools, "nano")
+        rendered = builder._render_tools_for_tier(tools, "small")
         # Only first sentence should appear
         assert "Reads a file." in rendered
         # Second sentence should NOT appear
@@ -104,11 +110,13 @@ class TestRenderToolsForTier:
 # S8-B — simple_mode output format in build_prompt
 # ---------------------------------------------------------------------------
 
+
 class TestSimpleModeBuildPrompt:
     """Verify that NANO tier produces simple_mode output format instructions."""
 
     def _minimal_build(self, model_tier):
         from src.core.context.context_builder import ContextBuilder
+
         builder = ContextBuilder()
         messages = builder.build_prompt(
             role_name="operational",
@@ -152,21 +160,21 @@ class TestSimpleModeBuildPrompt:
 # S8-B — is_simple_mode integration
 # ---------------------------------------------------------------------------
 
-class TestIsSimpleMode:
-    def test_nano_is_simple(self):
-        from src.core.inference.model_tiers import ModelTier, is_simple_mode
-        assert is_simple_mode(ModelTier.NANO) is True
 
-    def test_small_not_simple(self):
+class TestIsSimpleMode:
+    def test_small_is_simple(self):
         from src.core.inference.model_tiers import ModelTier, is_simple_mode
-        assert is_simple_mode(ModelTier.SMALL) is False
+
+        assert is_simple_mode(ModelTier.SMALL) is True
 
     def test_medium_not_simple(self):
         from src.core.inference.model_tiers import ModelTier, is_simple_mode
+
         assert is_simple_mode(ModelTier.MEDIUM) is False
 
     def test_frontier_not_simple(self):
         from src.core.inference.model_tiers import ModelTier, is_simple_mode
+
         assert is_simple_mode(ModelTier.FRONTIER) is False
 
 
@@ -174,11 +182,9 @@ class TestIsSimpleMode:
 # S8-A + S8-B Integration — tool description token budget
 # ---------------------------------------------------------------------------
 
-class TestSchemaStrippingTokenSavings:
-    """Verify NANO descriptions are meaningfully shorter than MEDIUM descriptions."""
 
-    def test_nano_descriptions_shorter_than_medium(self):
-        from src.core.context.context_builder import ContextBuilder
+class TestSchemaStrippingTokenSavings:
+    def test_small_descriptions_shorter_than_medium(self):
         builder = ContextBuilder()
         long_desc = (
             "Reads the full text content of a file from the filesystem. "
@@ -186,6 +192,6 @@ class TestSchemaStrippingTokenSavings:
             "Binary files may cause encoding errors."
         )
         tools = [{"name": "read_file", "description": long_desc}]
-        nano_render = builder._render_tools_for_tier(tools, "nano")
+        small_render = builder._render_tools_for_tier(tools, "small")
         medium_render = builder._render_tools_for_tier(tools, "medium")
-        assert len(nano_render) < len(medium_render)
+        assert len(small_render) < len(medium_render)

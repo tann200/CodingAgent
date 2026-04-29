@@ -143,7 +143,7 @@ Let me know if you need anything else!"""
         """File listing lines like '.DS_Store (file)' must not become plan steps."""
         from src.core.orchestration.graph.nodes.planning_node import _parse_plan_content
 
-        content = ".DS_Store (file)\n.agent-context (directory)\ntest_dir (directory)"
+        content = ".DS_Store (file)\n.codingAgent (directory)\ntest_dir (directory)"
         result = _parse_plan_content(content)
         assert result == [], f"File listing must not become plan steps, got: {result}"
 

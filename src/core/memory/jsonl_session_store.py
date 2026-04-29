@@ -53,8 +53,6 @@ import threading
 import uuid
 import tempfile
 import os
-import time
-import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -586,6 +584,9 @@ class JsonlSessionStore:
                 conn.commit()
             return True
 
+        # Store attempts on self so _write_diagnostic_on_failure can access it
+        self._write_retry_attempts = attempts
+
         # Use shared utility for retry logic
         from src.core.memory._write_retry_utils import write_with_retry
 
@@ -599,8 +600,81 @@ class JsonlSessionStore:
             )
         except Exception as e:
             # Write diagnostic on failure (preserving original behavior)
-            _write_diagnostic_on_failure(self, session_id, e)
+            self._write_diagnostic_on_failure(session_id, e)
             return False
+
+    def _write_diagnostic_on_failure(self, session_id: str, exc: Exception) -> None:
+        """Write diagnostic information on write failure for debugging."""
+        try:
+            # Write directly to .codingAgent directory (not sessions subdirectory)
+            # to match what SessionStore._write_with_retry does
+            import time
+
+            ts = int(time.time() * 1000)
+            sid = session_id or "unknown"
+
+            # Get the agent context directory directly
+            try:
+                from src.tools.tools_config import agent_context_path
+
+                diag_dir = agent_context_path(self._workdir)
+            except Exception:
+                diag_dir = self._workdir / ".codingAgent"
+
+            diag_dir.mkdir(parents=True, exist_ok=True)
+            diag_path = diag_dir / f"session_store_write_failure_{ts}_{sid}.json"
+            payload = {
+                "session_id": sid,
+                "attempts": getattr(self, "_write_retry_attempts", 5),
+                "last_error": str(exc),
+                "ts": ts,
+            }
+            fd = None
+            tmp = None
+            try:
+                try:
+                    from src.core.io_utils import atomic_write_json
+
+                    ok = atomic_write_json(diag_path, payload, logger=logger)
+                    if ok:
+                        logger.debug(
+                            "JsonlSessionStore._write_with_retry: diagnostic atomic write succeeded: %s",
+                            diag_path,
+                        )
+                        return
+                except Exception as _e:
+                    import traceback as _traceback
+
+                    logger.debug(
+                        "JsonlSessionStore._write_with_retry: atomic_write_json unavailable for diagnostic, using fallback: %s\n%s",
+                        _e,
+                        _traceback.format_exc(),
+                    )
+
+                fd, tmp = tempfile.mkstemp(dir=str(diag_dir), suffix=".tmp")
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    fd = None
+                    json.dump(payload, f, ensure_ascii=False)
+                    try:
+                        f.flush()
+                        os.fsync(f.fileno())
+                    except Exception:
+                        pass
+                try:
+                    os.replace(tmp, str(diag_path))
+                except Exception:
+                    try:
+                        shutil.move(tmp, str(diag_path))
+                    except Exception:
+                        pass
+            finally:
+                try:
+                    if fd is not None:
+                        os.close(fd)
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
     # Tool calls, plans, errors, decisions — simple append/read methods
 

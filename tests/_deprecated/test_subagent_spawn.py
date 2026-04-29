@@ -258,7 +258,7 @@ class TestDelegateTaskDepthGuard:
 
 class TestManifestFirstSpawning:
     """CP-2: A JSON manifest must be written to
-    <workdir>/.agent-context/subagent_manifests/subagent_<id>.json
+    <workdir>/.codingAgent/subagent_manifests/subagent_<id>.json
     *before* the subagent thread is executed, and updated on completion/failure.
     """
 

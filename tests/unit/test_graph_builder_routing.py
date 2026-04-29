@@ -1350,15 +1350,16 @@ class TestP3bBShouldAfterPlanValidator:
 
 
 # ---------------------------------------------------------------------------
-# P3-A: NANO/SMALL tier routing tests
+# P3-A: SMALL/SMALL tier routing tests
 # ---------------------------------------------------------------------------
 
 
 class TestIsNanoOrSmall:
     """Unit tests for the _is_nano_or_small() helper."""
 
-    def test_nano_returns_true(self):
-        assert _is_nano_or_small({"model_tier": "nano"}) is True
+    def test_nano_returns_false(self):
+        """NANO tier was removed; returns False."""
+        assert _is_nano_or_small({"model_tier": "nano"}) is False
 
     def test_small_returns_true(self):
         assert _is_nano_or_small({"model_tier": "small"}) is True
@@ -1377,32 +1378,19 @@ class TestIsNanoOrSmall:
 
 
 class TestP3ARouteAfterPerception:
-    """P3-A: NANO/SMALL always skip analysis."""
-
-    def test_nano_complex_first_round_goes_to_planning(self):
-        """NANO + complex task + round 0 → planning (skip analysis)."""
-        state = _make_state(
-            task="refactor the entire authentication module",
-            task_complexity="complex",
-            model_tier="nano",
-            rounds=0,
-        )
-        result = route_after_perception(state)
-        assert result == "planning", (
-            f"P3-A: NANO + complex task should go to planning, got {result!r}"
-        )
+    """P3-A: SMALL always skips analysis (SMALL removed)."""
 
     def test_small_complex_first_round_goes_to_planning(self):
-        """SMALL + complex + round 0 → planning."""
+        """SMALL + complex task + round 0 → planning (skip analysis)."""
         state = _make_state(
-            task="implement a new API layer",
+            task="refactor the entire authentication module",
             task_complexity="complex",
             model_tier="small",
             rounds=0,
         )
         result = route_after_perception(state)
         assert result == "planning", (
-            f"P3-A: SMALL + complex should go to planning, got {result!r}"
+            f"P3-A: SMALL + complex task should go to planning, got {result!r}"
         )
 
     def test_medium_complex_first_round_goes_to_analysis(self):
@@ -1418,17 +1406,17 @@ class TestP3ARouteAfterPerception:
             f"MEDIUM + complex should still go to analysis, got {result!r}"
         )
 
-    def test_nano_with_next_action_goes_to_execution(self):
-        """NANO + next_action set → execution always (skip analysis + planning override)."""
+    def test_small_with_next_action_goes_to_execution(self):
+        """SMALL + next_action set → execution always (skip analysis + planning override)."""
         state = _make_state(
             task="refactor the codebase",
             task_complexity="complex",
-            model_tier="nano",
+            model_tier="small",
             next_action={"tool": "read_file", "args": {}},
         )
         result = route_after_perception(state)
         assert result == "execution", (
-            f"P3-A: NANO + next_action should always execute, got {result!r}"
+            f"P3-A: SMALL + next_action should always execute, got {result!r}"
         )
 
     def test_small_with_next_action_complex_goes_to_execution(self):
@@ -1444,35 +1432,26 @@ class TestP3ARouteAfterPerception:
             f"P3-A: SMALL + next_action + complex should execute, got {result!r}"
         )
 
-    def test_nano_no_action_heuristic_complex_goes_to_planning(self):
-        """NANO with no next_action and heuristic-complex task → planning (not analysis)."""
+    def test_small_no_action_heuristic_complex_goes_to_planning(self):
+        """SMALL with no next_action and heuristic-complex task → planning (not analysis)."""
         state = _make_state(
             task="refactor the codebase",
             task_complexity=None,  # no flag — heuristic would fire
-            model_tier="nano",
-            rounds=0,
+            model_tier="small",
+            next_action=None,
         )
         result = route_after_perception(state)
         assert result == "planning", (
-            f"P3-A: NANO first round with no action should go to planning, got {result!r}"
+            f"P3-A: SMALL + heuristic-complex should go to planning, got {result!r}"
+        )
+        result = route_after_perception(state)
+        assert result == "planning", (
+            f"P3-A: SMALL first round with no action should go to planning, got {result!r}"
         )
 
 
 class TestP3AShouldAfterAnalysis:
-    """P3-A: NANO/SMALL always skip analyst_delegation."""
-
-    def test_nano_always_goes_to_planning(self):
-        """NANO skips analyst_delegation even on complex tasks."""
-        state = _make_state(
-            task="refactor the entire authentication module",
-            task_complexity="complex",
-            model_tier="nano",
-            relevant_files=["a.py", "b.py", "c.py", "d.py"],  # >3 → complex heuristic
-        )
-        result = should_after_analysis(state)
-        assert result == "planning", (
-            f"P3-A: NANO should skip analyst_delegation and go to planning, got {result!r}"
-        )
+    """P3-A: SMALL always skips analyst_delegation."""
 
     def test_small_always_goes_to_planning(self):
         """SMALL also skips analyst_delegation."""

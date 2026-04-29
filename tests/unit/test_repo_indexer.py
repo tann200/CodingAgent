@@ -325,7 +325,7 @@ class TestGetSymbolsForTask:
 
     def test_returns_matching_symbols(self, tmp_path):
         """get_symbols_for_task returns symbols whose name matches task tokens."""
-        index_repository(str(tmp_path))  # ensure .agent-context dir exists
+        index_repository(str(tmp_path))  # ensure .codingAgent dir exists
 
         import json
         from pathlib import Path as _Path

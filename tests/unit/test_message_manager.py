@@ -186,7 +186,7 @@ class TestContextBuilderSessionSummary:
     def test_missing_task_state_file_does_not_crash(self, tmp_path, monkeypatch):
         from src.core.context.context_builder import ContextBuilder
 
-        monkeypatch.chdir(tmp_path)  # no .agent-context dir
+        monkeypatch.chdir(tmp_path)  # no .codingAgent dir
 
         cb = ContextBuilder()
         msgs = cb.build_prompt(
