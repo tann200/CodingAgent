@@ -6,6 +6,7 @@ venv/
 # Agent working state
 # Primary (new) per-workspace directory used by the codebase
 .localAgent/
+.codingAgent/
 # Legacy names we used previously — keep ignored for developer transitions
 .agent-context/
 .agent/
