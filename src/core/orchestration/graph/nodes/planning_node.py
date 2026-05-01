@@ -927,6 +927,8 @@ Respond ONLY with valid JSON, no additional text."""
                 "plan_attempts": plan_attempts,
                 "plan_mode_approved": None,
                 "affected_files": _extract_affected_files(steps),
+                "relevant_files": relevant_files,
+                "key_symbols": key_symbols,
             }
     except Exception as e:
         logger.error(f"planning_node: plan generation failed: {e}")
@@ -951,6 +953,8 @@ Respond ONLY with valid JSON, no additional text."""
             "plan_attempts": plan_attempts,
             "plan_mode_approved": None,
             "affected_files": _extract_affected_files(fallback_plan),
+            "relevant_files": relevant_files,
+            "key_symbols": key_symbols,
         }
 
     from src.core.orchestration.dag_parser import _convert_flat_to_dag
@@ -967,6 +971,8 @@ Respond ONLY with valid JSON, no additional text."""
         "current_wave": 0,
         "plan_mode_approved": None,  # P2-9: reset approval gate for each new plan cycle
         "affected_files": _extract_affected_files(current_plan),
+        "relevant_files": relevant_files,
+        "key_symbols": key_symbols,
     }
 
 

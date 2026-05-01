@@ -619,4 +619,6 @@ class TestPlanPersistence:
         ]
         assert "Relevant files: auth/views.py, auth/service.py" in task_description
         assert "Key symbols: login_user, AuthService" in task_description
+        assert result.get("relevant_files") == ["auth/views.py", "auth/service.py"]
+        assert result.get("key_symbols") == ["login_user", "AuthService"]
         assert result.get("current_plan"), result
