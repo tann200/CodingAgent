@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 import os
 import shutil
+import subprocess
 import tempfile
 from pathlib import Path
 from typing import Dict, Any
@@ -235,57 +236,49 @@ def write_file(
 
     # Write new content atomically using mkstemp -> os.replace with fsync.
     # This avoids exposing partially-written files to readers.
+    _fd = None
+    _tmp_path = None
     try:
-        import tempfile
-
-        _fd = None
-        _tmp_path = None
+        _fd, _tmp_path = tempfile.mkstemp(dir=str(p.parent), suffix=".tmp")
         try:
-            _fd, _tmp_path = tempfile.mkstemp(dir=str(p.parent), suffix=".tmp")
-            try:
-                # Wrap fd in a text-mode file and write
-                with os.fdopen(_fd, "w", encoding="utf-8") as _f:
-                    _fd = None
-                    _f.write(content)
-                    try:
-                        _f.flush()
-                        os.fsync(_f.fileno())
-                    except Exception:
-                        # fsync best-effort; don't fail the write for platform limits
-                        pass
+            # Wrap fd in a text-mode file and write
+            with os.fdopen(_fd, "w", encoding="utf-8") as _f:
+                _fd = None
+                _f.write(content)
                 try:
-                    os.replace(_tmp_path, str(p))
+                    _f.flush()
+                    os.fsync(_f.fileno())
                 except Exception:
-                    try:
-                        shutil.move(_tmp_path, str(p))
-                    except Exception:
-                        # Final fallback: write_text (last-resort)
-                        p.write_text(content, encoding="utf-8")
-            except Exception as _write_exc:
-                try:
-                    if _fd is not None:
-                        try:
-                            os.close(_fd)
-                        except Exception:
-                            pass
-                finally:
-                    raise
-        except Exception as _mk_exc:
-            # Ensure temp file cleaned up if present
+                    # fsync best-effort; don't fail the write for platform limits
+                    pass
             try:
-                if _tmp_path and os.path.exists(_tmp_path):
-                    os.unlink(_tmp_path)
+                os.replace(_tmp_path, str(p))
             except Exception:
-                pass
-            _logger.exception("write_file atomic write failed for %s", p)
-            return {"path": str(p), "status": "error", "error": str(_mk_exc)}
-    except Exception:
-        # Broad fallback: attempt a simple write_text and report error if that fails
+                try:
+                    shutil.move(_tmp_path, str(p))
+                except Exception as _mv_exc:
+                    # Neither os.replace nor shutil.move succeeded — clean up and fail.
+                    try:
+                        os.unlink(_tmp_path)
+                    except Exception:
+                        pass
+                    raise _mv_exc
+        except Exception:
+            if _fd is not None:
+                try:
+                    os.close(_fd)
+                except Exception:
+                    pass
+            raise
+    except Exception as _mk_exc:
+        # Ensure temp file cleaned up if present
         try:
-            p.write_text(content, encoding="utf-8")
-        except Exception as _final_exc:
-            _logger.exception("write_file fallback write_text failed for %s", p)
-            return {"path": str(p), "status": "error", "error": str(_final_exc)}
+            if _tmp_path and os.path.exists(_tmp_path):
+                os.unlink(_tmp_path)
+        except Exception:
+            pass
+        _logger.exception("write_file atomic write failed for %s", p)
+        return {"path": str(p), "status": "error", "error": str(_mk_exc)}
 
     # MEM-1: Invalidate context cache entry so the next ContextBuilder instantiation
     # re-reads from disk rather than serving the pre-write cached content.
@@ -458,9 +451,7 @@ def delete_file(
         # TS-4: Warn if the file is tracked by git (deletion would remove history)
         git_warning = None
         try:
-            import subprocess as _sp
-
-            _gr = _sp.run(
+            _gr = subprocess.run(
                 ["git", "ls-files", "--error-unmatch", str(p)],
                 capture_output=True,
                 text=True,
@@ -473,15 +464,11 @@ def delete_file(
                     "Deleting it will remove the file from the working tree; "
                     "use 'git rm' to also stage the deletion."
                 )
-                import logging as _logging
-
-                _logging.getLogger(__name__).warning(f"delete_file: {git_warning}")
+                _logger.warning("delete_file: %s", git_warning)
         except Exception:
             pass
 
         if p.is_dir():
-            import shutil
-
             shutil.rmtree(p)
         else:
             p.unlink()
@@ -579,23 +566,27 @@ def read_file_chunk(
     if not p.exists():
         return {"path": str(p), "status": "not_found"}
 
-    with p.open("r", encoding="utf-8") as f:
-        f.seek(offset)
-        content = f.read(limit)
-        # GAP-S1: Mark file as read for guardrail enforcement
-        try:
-            from src.tools.guardrails import mark_file_read
+    # Open in binary, apply byte offset, then decode to handle multi-byte UTF-8
+    # correctly. Text-mode seek() is only safe with offsets returned by tell().
+    with p.open("rb") as _bf:
+        if offset > 0:
+            _bf.seek(offset)
+        raw = _bf.read(limit if limit != -1 else None)
+    content = raw.decode("utf-8", errors="replace")
+    # GAP-S1: Mark file as read for guardrail enforcement
+    try:
+        from src.tools.guardrails import mark_file_read
 
-            mark_file_read(str(p.resolve()))
-        except Exception:
-            pass
-        return {
-            "path": str(p),
-            "status": "ok",
-            "content": content,
-            "offset": offset,
-            "limit": limit,
-        }
+        mark_file_read(str(p.resolve()))
+    except Exception:
+        pass
+    return {
+        "path": str(p),
+        "status": "ok",
+        "content": content,
+        "offset": offset,
+        "limit": limit,
+    }
 
 
 @tool(tags=["coding"], permission_kind=PermissionKind.READ_FILE)

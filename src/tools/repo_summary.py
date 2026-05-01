@@ -28,8 +28,12 @@ def detect_framework(workdir: str) -> Optional[str]:
         "Laravel": ["Illuminate\\", "artisan serve"],
     }
 
-    # Scan Python files for imports
-    py_files = list(workdir_path.rglob("*.py"))
+    # Scan Python files for imports, excluding virtual envs and caches
+    _FW_EXCLUDE = {".venv", "venv", "__pycache__", ".git", "node_modules"}
+    py_files = [
+        f for f in workdir_path.rglob("*.py")
+        if not any(part in _FW_EXCLUDE for part in f.parts)
+    ]
     for py_file in py_files[:20]:  # Limit scanning
         try:
             content = py_file.read_text(encoding="utf-8", errors="ignore")
@@ -253,13 +257,25 @@ def _save_repo_summary_cache(workdir: str, summary: Dict[str, Any]) -> None:
         cache_dir.mkdir(parents=True, exist_ok=True)
         cache_path = cache_dir / "repo_summary_cache.json"
         import json
+        import os
+        import tempfile
 
         cache = {
             "config_mtimes": _get_config_files_mtime(workdir),
             "summary": summary,
         }
-        with open(cache_path, "w") as f:
-            json.dump(cache, f)
+        # Write atomically: temp file + os.replace to avoid partial-write corruption.
+        _fd, _tmp = tempfile.mkstemp(dir=str(cache_dir), suffix=".tmp")
+        try:
+            with os.fdopen(_fd, "w") as _f:
+                json.dump(cache, _f)
+            os.replace(_tmp, str(cache_path))
+        except Exception:
+            try:
+                os.unlink(_tmp)
+            except Exception:
+                pass
+            raise
     except Exception:
         pass
 

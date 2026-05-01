@@ -33,11 +33,16 @@ the base URL is overridden to  https://copilot-api.<domain>.
 from __future__ import annotations
 
 import logging
+import threading
 from typing import Any, Dict, List, Optional, Union
 
 from src.core.inference.adapters.openai_compat_adapter import OpenAICompatibleAdapter
 
 _logger = logging.getLogger(__name__)
+
+# Thread-local store for per-request context stashed by _chat_internal()
+# so _headers() can read it without instance-level data races.
+_tl = threading.local()
 
 COPILOT_BASE_URL = "https://api.githubcopilot.com"
 _USER_AGENT = "CodingAgent/1.0"
@@ -132,13 +137,13 @@ class GithubCopilotAdapter(OpenAICompatibleAdapter):
                 "Use 'Login with GitHub' in Settings to authorize."
             )
 
-        # Fall back to stashed context set by _chat_internal()
+        # Fall back to thread-local context set by _chat_internal()
         msgs = (
             messages
             if messages is not None
-            else getattr(self, "_pending_messages", None)
+            else getattr(_tl, "pending_messages", None)
         )
-        mdl = model if model is not None else getattr(self, "_pending_model", None)
+        mdl = model if model is not None else getattr(_tl, "pending_model", None)
 
         # CP-02: x-initiator reflects whether the last turn was from the user
         # or from the model (agent turn).  Matches OpenCode copilot.ts logic.
@@ -181,14 +186,15 @@ class GithubCopilotAdapter(OpenAICompatibleAdapter):
         - Stash messages/model so _headers() can access them (CP-02/03/04)
         - Handle 401 Unauthorized by clearing the stale token (CP-07)
         """
-        # Stash for _headers() which is called with no args by the base retry loop
-        self._pending_messages = messages if isinstance(messages, list) else None
+        # Stash for _headers() which is called with no args by the base retry loop.
+        # Use thread-local storage to avoid data races when the adapter is shared.
+        _tl.pending_messages = messages if isinstance(messages, list) else None
         resolved_model = model or (
             self.models[0] if isinstance(self.models, list) and self.models else None
         )
         if resolved_model:
             resolved_model = self.resolve_model_name(resolved_model)
-        self._pending_model = resolved_model
+        _tl.pending_model = resolved_model
 
         result = super()._chat_internal(
             messages=messages,

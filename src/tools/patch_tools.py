@@ -61,9 +61,9 @@ def generate_patch(
         old = p.read_text(encoding="utf-8").splitlines(keepends=True)
         new = new_content.splitlines(keepends=True)
         patch_lines = list(
-            difflib.unified_diff(old, new, fromfile=str(p), tofile=str(p), lineterm="")
+            difflib.unified_diff(old, new, fromfile=str(p), tofile=str(p), lineterm="\n")
         )
-        patch = "\n".join(patch_lines)
+        patch = "".join(patch_lines)
         return {"status": "ok", "patch": patch}
     except Exception as e:
         return {"status": "error", "error": str(e)}

@@ -6,7 +6,7 @@ and all calls run concurrently.  Results are returned in the same order as the
 input list.
 
 Constraints:
-- Maximum 10 calls per batch (avoids runaway concurrency).
+- Maximum 10 calls per batch (avoids runaway concurrency). This limit is enforced
 - Nesting is blocked (a batch call cannot contain another batch call).
 - Only tools registered in the current orchestrator may be invoked.
 

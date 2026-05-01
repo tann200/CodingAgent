@@ -290,7 +290,9 @@ def execute_tool_impl(orch: Any, tool_call: Dict[str, Any]) -> Dict[str, Any]:
             pass
 
     _needs_gate = (not _workdir_confined) and (name in PERMISSION_REQUIRED_TOOLS)
-    if not _needs_gate and not _workdir_confined:
+    if not _needs_gate:
+        # Also gate tools classified as DANGER or PROMPT by PermissionLevel,
+        # regardless of workdir confinement.
         try:
             from src.tools.tools_config import get_tool_permission, PermissionLevel
 

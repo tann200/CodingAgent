@@ -32,11 +32,24 @@ _logger = logging.getLogger(__name__)
 _EDIT_NET_CHANGE_WARN = 200  # edit_file warns on large net-line changes
 
 
-# WorkspaceGuard: import from shared location
+# WorkspaceGuard: import from shared location; fall back to a no-op stub so
+# callers get a clean NameError-free guard context on ImportError.
 try:
     from src.tools._workspace_guard import WorkspaceGuard  # type: ignore[assignment]
 except ImportError:
-    pass
+    import contextlib
+
+    class WorkspaceGuard:  # type: ignore[no-redef]
+        """No-op stub used when _workspace_guard is unavailable."""
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
 
 
 def _fuzzy_find(content: str, target: str) -> Optional[str]:
@@ -519,7 +532,7 @@ def edit_file_atomic(
 def multiedit(
     path: str,
     edits: list,
-    workdir: Path = None,  # type: ignore[assignment]
+    workdir: Optional[Path] = None,
     user_approved: bool = False,
 ) -> Dict[str, Any]:
     """Apply multiple string replacements to a single file atomically.

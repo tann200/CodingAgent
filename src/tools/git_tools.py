@@ -17,6 +17,9 @@ from src.tools._tool import tool, PermissionKind
 
 logger = logging.getLogger(__name__)
 
+# Resolves lazily to the process working directory at the time it is dereferenced.
+# It is used as a parameter default for public tool functions; callers that need
+# a specific directory should pass an explicit Path.
 DEFAULT_WORKDIR = Path(".")
 
 

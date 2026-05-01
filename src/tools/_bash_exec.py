@@ -111,8 +111,9 @@ def _check_shell_flags(cmd_parts: list, first_cmd: str) -> Optional[Dict[str, An
     Returns an error dict if a blocked flag is found, else None.
     Shared by both ``bash()`` and ``bash_readonly()`` to avoid duplication.
     """
-    # Enhanced dangerous pattern detection
-    _DANGEROUS_PATTERNS = [
+    # Destructive-command patterns checked by this gate (distinct from the
+    # module-level DANGEROUS_PATTERNS which checks shell metacharacters).
+    _DESTRUCTIVE_CMD_PATTERNS = [
         (
             "rm",
             ["-rf", "-r", "-f", "--recursive", "--force"],
@@ -147,7 +148,7 @@ def _check_shell_flags(cmd_parts: list, first_cmd: str) -> Optional[Dict[str, An
         ),
     ]
 
-    for cmd, flags, msg in _DANGEROUS_PATTERNS:
+    for cmd, flags, msg in _DESTRUCTIVE_CMD_PATTERNS:
         if first_cmd == cmd:
             if not flags:
                 return {"status": "error", "error": msg}
