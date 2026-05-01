@@ -416,8 +416,8 @@ class SqliteSessionStore:
                 for r in rows
             ]
         except Exception as e:
-            logger.warning(f"SqliteSessionStore: FTS search error: {e}")
-            return []
+            logger.warning(f"SqliteSessionStore: FTS search error: {e}; falling back to LIKE search")
+            return self._search_fallback(query, session_id=session_id, limit=limit)
 
     def _search_fallback(
         self,

@@ -152,10 +152,10 @@ class KVCacheGovernor:
         }
 
     def reset(self) -> None:
-        """Reset state (e.g., after compaction)."""
+        """Reset state after a compaction has been applied."""
+        self._compaction_count += 1
         self._current_tokens = 0
         self._last_action = CompactionAction.NONE
-        self._compaction_count += 1
 
     def project_tokens(self, incoming_tokens: int) -> int:
         """Project token count after adding incoming tokens."""
