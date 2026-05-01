@@ -50,7 +50,7 @@ Re-verification confirms:
 | ID | Issue | Severity | Status |
 |----|-------|---------|--------|
 | S-1 | Shell dangerous pattern detection | LOW | ✅ FIXED (enhanced _DANGEROUS_PATTERNS) |
-| S-2 | Some tools lack pydantic contracts | LOW | ✅ VERIFIED (7 contracts registered) |
+| S-2 | Some tools lack pydantic contracts | LOW | ✅ VERIFIED (10 contracts registered) |
 
 ---
 
@@ -106,7 +106,7 @@ Re-verification confirms:
 - ✅ Enhanced shell pattern detection (2026-04-25)
 
 ### Phase 2 — Robustness (Completed)
-- ✅ Tool contracts verified (7 registered)
+- ✅ Tool contracts verified (10 registered)
 - ✅ Core component verification
 
 ### Phase 3 — Capability (Complete)

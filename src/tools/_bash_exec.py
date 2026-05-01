@@ -149,14 +149,12 @@ def _check_shell_flags(cmd_parts: list, first_cmd: str) -> Optional[Dict[str, An
 
     for cmd, flags, msg in _DANGEROUS_PATTERNS:
         if first_cmd == cmd:
-            # Block entire dangerous command category
-            return {"status": "error", "error": msg}
-            # Check if any flag matches (only for the matching command)
-            if flags:
-                for part in cmd_parts[1:]:
-                    for flag in flags:
-                        if part == flag or part.startswith(flag + "="):
-                            return {"status": "error", "error": msg}
+            if not flags:
+                return {"status": "error", "error": msg}
+            for part in cmd_parts[1:]:
+                for flag in flags:
+                    if part == flag or part.startswith(flag + "="):
+                        return {"status": "error", "error": msg}
 
     if first_cmd == "sed":
         for _part in cmd_parts[1:]:

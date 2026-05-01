@@ -11,7 +11,6 @@ refactor.
 
 import logging  # noqa: E402
 from pathlib import Path  # noqa: F401, E402
-from typing import Dict  # noqa: E402
 
 from src.tools._path_utils import safe_resolve  # noqa: F401, E402
 

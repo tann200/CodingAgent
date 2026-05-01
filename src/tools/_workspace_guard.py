@@ -5,7 +5,7 @@ The real implementation lives in src.core.orchestration.workspace_guard.
 When the core module is unavailable (e.g., during testing), a no-op fallback is used.
 """
 
-from typing import Any, Dict
+from typing import Dict
 
 
 class WorkspaceGuard:
@@ -17,6 +17,6 @@ class WorkspaceGuard:
 
 
 try:
-    from src.core.orchestration.workspace_guard import WorkspaceGuard  # type: ignore[assignment]
+    from src.core.orchestration.workspace_guard import WorkspaceGuard as _WorkspaceGuard  # noqa: F401
 except ImportError:
     pass
