@@ -29,6 +29,7 @@ from src.core.orchestration.tool_constants import (  # noqa: E402
     WRITE_TOOLS_REQUIRING_READ,
     DRY_RUN_BLOCKED_TOOLS,
     PERMISSION_REQUIRED_TOOLS,
+    PERM_ORDER as _PERM_ORDER,
     _write_permission_audit,
 )
 
@@ -303,13 +304,6 @@ def execute_tool_impl(orch: Any, tool_call: Dict[str, Any]) -> Dict[str, Any]:
     # When --permission-mode is set, block any tool whose required level is
     # more permissive than the active mode.  Ordering (least → most permissive):
     #   READ_ONLY < WORKSPACE_WRITE < DANGER < PROMPT < ALLOW
-    _PERM_ORDER = {
-        "read_only": 0,
-        "workspace_write": 1,
-        "danger": 2,
-        "prompt": 3,
-        "allow": 4,
-    }
     try:
         from src.tools.tools_config import (
             get_active_permission_mode,
@@ -368,7 +362,11 @@ def execute_tool_impl(orch: Any, tool_call: Dict[str, Any]) -> Dict[str, Any]:
                         pass
                 orch.event_bus.publish(
                     "tool.permission_required",
-                    {"tool": name, "args": args, "tool_id": _t4_id},
+                    {
+                        "tool": name,
+                        "args": {k: str(v)[:200] for k, v in args.items() if k != "content"},
+                        "tool_id": _t4_id,
+                    },
                 )
                 # PERF-VOL23-2: _t4_ev is a threading.Event; .wait(120) blocks the
                 # calling thread for up to 2 minutes.  When execute_tool_impl runs

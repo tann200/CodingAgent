@@ -328,7 +328,11 @@ class ToolExecutionService:
                 if self._event_bus is not None and hasattr(self._event_bus, "publish"):
                     self._event_bus.publish(
                         "tool.permission_required",
-                        {"tool": name, "args": args, "tool_id": _t4_id},
+                        {
+                            "tool": name,
+                            "args": {k: str(v)[:200] for k, v in args.items() if k != "content"},
+                            "tool_id": _t4_id,
+                        },
                     )
             except Exception:
                 pass

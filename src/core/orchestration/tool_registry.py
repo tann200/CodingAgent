@@ -13,8 +13,6 @@ Keeping this out of the 4000-line orchestrator means:
 
 from __future__ import annotations
 
-import inspect
-import re
 from typing import Any, Callable, Dict, List, Optional
 
 # ---------------------------------------------------------------------------
@@ -88,15 +86,6 @@ class ToolRegistry:
             "side_effects": side_effects or [],
             "description": description,
         }
-        # also register in global registry for other consumers
-        try:
-            from src.tools.registry import register_tool
-
-            register_tool(
-                name, fn, description=description, side_effects=bool(side_effects)
-            )
-        except Exception:
-            pass
 
     def get(self, name: str) -> Optional[Dict[str, Any]]:
         return self.tools.get(name)
@@ -116,71 +105,23 @@ class ToolRegistry:
     def get_openai_functions(self) -> List[Dict[str, Any]]:
         """Convert registered tools to OpenAI function-calling format.
 
-        MC-1 fix: Enable native function-calling API support. Tools are converted
-        to the OpenAI /v1/chat/completions 'tools' parameter format with name,
-        description, and inferred parameters from function signatures.
+        Delegates to the authoritative schema generation in
+        ``src.tools._registry.ToolRegistry`` so there is a single schema
+        implementation across both registry classes.
         """
-        functions = []
-        for name, meta in self.tools.items():
-            desc = meta.get("description", "")
-            fn = meta.get("fn")
-            if not fn:
-                continue
+        try:
+            from src.tools._registry import ToolRegistry as _TR
 
-            # Parse parameters from docstring/signature
-            params: Dict[str, Any] = {"type": "object", "properties": {}}
-            required: List[str] = []
-
-            # Try to get signature
-            try:
-                sig = inspect.signature(fn)
-                for pname, param in sig.parameters.items():
-                    if pname in ("kwargs", "self", "cls"):
-                        continue
-                    ptype = "string"
-                    if param.annotation != inspect.Parameter.empty:
-                        ann = str(param.annotation).lower()
-                        if "int" in ann:
-                            ptype = "integer"
-                        elif "float" in ann or "double" in ann:
-                            ptype = "number"
-                        elif "bool" in ann:
-                            ptype = "boolean"
-                        elif "list" in ann or "array" in ann:
-                            ptype = "array"
-                    params["properties"][pname] = {"type": ptype}
-                    required.append(pname)
-            except Exception:
-                pass
-
-            # Try to extract params from description
-            desc_params = re.findall(r"(\w+)\s*:\s*(\w+)", desc)
-            for pname, ptype in desc_params:
-                if pname not in params["properties"]:
-                    t = "string"
-                    if ptype.lower() in ("int", "integer"):
-                        t = "integer"
-                    elif ptype.lower() in ("float", "number"):
-                        t = "number"
-                    elif ptype.lower() in ("bool", "boolean"):
-                        t = "boolean"
-                    elif ptype.lower() in ("list", "array"):
-                        t = "array"
-                    params["properties"][pname] = {"type": t}
-                    if pname not in required:
-                        required.append(pname)
-
-            func_def: Dict[str, Any] = {
-                "type": "function",
-                "function": {
-                    "name": name,
-                    "description": desc,
-                    "parameters": params,
-                },
-            }
-            if required:
-                func_def["function"]["parameters"]["required"] = required
-
-            functions.append(func_def)
-
-        return functions
+            bridge = _TR()
+            for name, meta in self.tools.items():
+                fn = meta.get("fn")
+                if fn:
+                    bridge.register(
+                        name=name,
+                        fn=fn,
+                        description=meta.get("description", ""),
+                        side_effects=meta.get("side_effects", []),
+                    )
+            return bridge.get_openai_functions()
+        except Exception:
+            return []

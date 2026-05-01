@@ -129,13 +129,6 @@ class ToolRegistry:
         with self._lock:
             self._tools[name] = entry
             self._origins[name] = origin
-        # Mirror into the legacy module-level registry for backward compat
-        try:
-            from src.tools.registry import register_tool as _rt
-
-            _rt(name, fn, description=description, side_effects=bool(side_effects))
-        except Exception:
-            pass
 
     def register_definition(
         self, defn: ToolDefinition, origin: str = "builtin"
