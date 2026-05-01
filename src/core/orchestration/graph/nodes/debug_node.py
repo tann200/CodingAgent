@@ -504,7 +504,7 @@ Generate a YAML tool call to fix the issue. Use edit_file, write_file, or bash a
                     "total_recovery_attempts": next_recovery,
                     "errors": [f"llm_timeout:{_debug_llm_timeout}s"],
                 }
-            await asyncio.sleep(0.2)
+            await asyncio.wait([llm_task], timeout=0.2)
         try:
             resp = await llm_task
         except asyncio.CancelledError:

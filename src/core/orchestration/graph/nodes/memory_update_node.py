@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Dict, Any, List
 from concurrent.futures import ThreadPoolExecutor
 
-from src.core.orchestration.graph.state import StateLike
+from src.core.orchestration.graph.state import StateLike, replace_state_list
 
 # Hoisted to module level so tests can patch
 # src.core.orchestration.graph.nodes.memory_update_node.distill_context
@@ -331,7 +331,7 @@ async def memory_update_node(state: StateLike, config: Any) -> Dict[str, Any]:
     if _distilled_summary:
         result["analysis_summary"] = _distilled_summary
     if _updated_history is not None:
-        result["history"] = _updated_history
+        result["history"] = replace_state_list(_updated_history)
     return result
 
 

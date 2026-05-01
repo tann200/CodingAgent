@@ -19,6 +19,26 @@ from src.core.orchestration.dag_parser import PlanDAG  # noqa: F401
 
 _logger = logging.getLogger(__name__)
 
+
+class ReplaceList(list):
+    """Marker list for LangGraph reducers that should replace existing state."""
+
+
+def merge_or_replace_list(left: list[Any] | None, right: list[Any] | None) -> list[Any]:
+    """Append by default, but allow explicit replacement for compaction paths."""
+    if isinstance(right, ReplaceList):
+        return list(right)
+    if left is None:
+        return list(right or [])
+    if right is None:
+        return list(left)
+    return list(left) + list(right)
+
+
+def replace_state_list(items: list[Any] | None) -> ReplaceList:
+    """Wrap a list so LangGraph reducers replace instead of append."""
+    return ReplaceList(items or [])
+
 # ---------------------------------------------------------------------------
 # AgentState — shared state of the LangGraph cognitive pipeline.
 # All Optional[X] annotations are written as X | None (Python 3.10+ union
@@ -32,8 +52,8 @@ class _AgentStateSpec(TypedDict, total=False):
     """
 
     task: str
-    history: Annotated[List[Dict[str, Any]], operator.add]
-    verified_reads: Annotated[List[str], operator.add]
+    history: Annotated[List[Dict[str, Any]], merge_or_replace_list]
+    verified_reads: Annotated[List[str], merge_or_replace_list]
     next_action: Dict[str, Any] | None
     last_result: Dict[str, Any] | None
     rounds: int

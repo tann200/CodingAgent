@@ -301,7 +301,7 @@ Respond ONLY with the JSON array, no other text."""
                     "total_recovery_attempts": total_recovery_attempts,
                     "errors": [f"llm_timeout:{_replan_llm_timeout}s"],
                 }
-            await asyncio.sleep(0.2)
+            await asyncio.wait([_rp_task], timeout=0.2)
         try:
             resp = await _rp_task
         except asyncio.CancelledError:

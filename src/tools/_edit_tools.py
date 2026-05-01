@@ -12,6 +12,10 @@ the authoritative public symbol for test compatibility.
 from __future__ import annotations
 
 import logging
+import os
+import re
+import subprocess
+import tempfile
 from pathlib import Path
 from typing import Dict, Any, Optional
 
@@ -105,6 +109,63 @@ def _fuzzy_find(content: str, target: str) -> Optional[str]:
     return None
 
 
+def _verify_new_content(
+    p: Path, new_content: str, workdir: Path
+) -> dict[str, Any] | None:
+    """Validate candidate content using a temporary sibling file.
+
+    This keeps the target file untouched until validation passes.
+    """
+    def _norm_lint_key(err: dict[str, Any], path_tokens: list[str]) -> tuple[Any, Any, str]:
+        msg = str(err.get("message") or "")
+        for token in path_tokens:
+            if token:
+                msg = msg.replace(token, "<path>")
+        msg = re.sub(r"\((?:<path>|[^()]+), line (\d+)\)", r"(<path>, line \1)", msg)
+        return (err.get("line"), err.get("code"), msg)
+
+    try:
+        from src.tools.lint_dispatch import quick_lint
+
+        baseline_result = quick_lint(str(p), workdir)
+        baseline_errors = list((baseline_result or {}).get("lint_errors") or [])
+        baseline_keys = set()
+        for err in baseline_errors:
+            if isinstance(err, dict):
+                baseline_keys.add(_norm_lint_key(err, [str(p), p.name]))
+
+        with tempfile.TemporaryDirectory(
+            dir=str(p.parent),
+            prefix=f".{p.stem}.",
+        ) as tmp_dir:
+            tmp_file = Path(tmp_dir) / p.name
+            tmp_file.write_text(new_content, encoding="utf-8")
+
+            lint_result = quick_lint(str(tmp_file), workdir)
+            if lint_result and lint_result.get("lint_errors"):
+                errors = []
+                for err in lint_result["lint_errors"]:
+                    if not isinstance(err, dict):
+                        continue
+                    if _norm_lint_key(err, [str(tmp_file), tmp_file.name, str(p), p.name]) not in baseline_keys:
+                        errors.append(err)
+            else:
+                errors = []
+
+        if errors:
+            errors_str = "\n".join(
+                f"Line {e.get('line', '?')}: {e.get('message')}" for e in errors[:5]
+            )
+            return {
+                "path": str(p),
+                "status": "error",
+                "error": f"Pre-write verification failed. Edit introduces syntax errors:\n\n{errors_str}",
+                "lint_errors": errors,
+            }
+    except Exception as e:
+        _logger.warning("Pre-write verification error: %s", e)
+    return None
+
 @tool(side_effects=["write"], tags=["coding"])
 def edit_file(
     path: str,
@@ -135,9 +196,6 @@ def edit_file(
     if not p.exists():
         return {"path": str(p), "status": "not_found"}
 
-    import subprocess
-    import tempfile
-    import os
     import difflib
 
     # Read original content BEFORE modification for diff generation
@@ -147,6 +205,8 @@ def edit_file(
         f.write(patch)
         patch_file = f.name
 
+    tmp_target_path: str | None = None
+
     try:
         if not patch.strip().startswith("---") and not patch.strip().startswith("@@"):
             return {
@@ -155,10 +215,17 @@ def edit_file(
                 "error": "Invalid patch format. Must be unified diff.",
             }
 
+        fd, tmp_target_path = tempfile.mkstemp(
+            dir=str(p.parent),
+            prefix=f".{p.stem}.patch.",
+            suffix=p.suffix or ".tmp",
+        )
+        os.close(fd)
+        Path(tmp_target_path).write_text(original_content, encoding="utf-8")
+
         # Apply unified diff.
-        # Using -f to force (ignore previous patches) and -u (unified)
         proc = subprocess.run(
-            ["patch", "-u", "-f", str(p), "-i", patch_file],
+            ["patch", "-u", "-f", tmp_target_path, "-i", patch_file],
             capture_output=True,
             text=True,
             check=False,
@@ -171,8 +238,12 @@ def edit_file(
                 "error": f"Patch failed code {proc.returncode}:\n{proc.stdout}\n{proc.stderr}",
             }
 
-        # Read new content AFTER modification to compute diff
-        new_content = p.read_text(encoding="utf-8")
+        new_content = Path(tmp_target_path).read_text(encoding="utf-8")
+        ver_err = _verify_new_content(p, new_content, workdir)
+        if ver_err:
+            return ver_err
+
+        p.write_text(new_content, encoding="utf-8")
 
         # Generate unified diff for TUI display
         original_lines = original_content.splitlines(keepends=True)
@@ -211,6 +282,11 @@ def edit_file(
             os.remove(patch_file)
         except OSError:
             pass
+        if tmp_target_path:
+            try:
+                os.remove(tmp_target_path)
+            except OSError:
+                pass
 
 
 @tool(side_effects=["write"], tags=["coding"])
@@ -294,6 +370,11 @@ def edit_by_line_range(
         original_lines[: start_line - 1] + replacement_lines + original_lines[end_line:]
     )
     new_content_str = "".join(new_lines)
+    # PRE-WRITE VERIFICATION
+    ver_err = _verify_new_content(p, new_content_str, workdir)
+    if ver_err:
+        return ver_err
+
     p.write_text(new_content_str, encoding="utf-8")
 
     from src.tools.patch_tools import generate_unified_diff as _gen_diff
@@ -313,16 +394,7 @@ def edit_by_line_range(
         "lines_added": len([ln for ln in diff_lines if ln.startswith("+")]),
         "lines_removed": len([ln for ln in diff_lines if ln.startswith("-")]),
     }
-    # IMPL-5: Post-write auto-lint — informational, does not block the write
-    try:
-        from src.tools.lint_dispatch import quick_lint as _quick_lint
-
-        lint_result = _quick_lint(str(p), workdir)
-        if lint_result and lint_result.get("lint_errors"):
-            result["lint_warnings"] = lint_result["lint_errors"]
-            result["lint_status"] = "warnings"
-    except Exception:
-        pass
+    
     return result
 
 
@@ -416,6 +488,11 @@ def edit_file_atomic(
             "lines_removed": 0,
         }
 
+    # PRE-WRITE VERIFICATION
+    ver_err = _verify_new_content(p, new_content, workdir)
+    if ver_err:
+        return ver_err
+
     # PREV-1: Blocking diff preview gate.
     # When require_preview_confirmation is True AND a TUI is subscribed to
     # file.diff.preview, publish the diff and block until the user accepts
@@ -490,16 +567,7 @@ def edit_file_atomic(
         "lines_added": len([ln for ln in diff_lines if ln.startswith("+")]),
         "lines_removed": len([ln for ln in diff_lines if ln.startswith("-")]),
     }
-    # IMPL-5: Post-write auto-lint — informational, does not block the write
-    try:
-        from src.tools.lint_dispatch import quick_lint as _quick_lint
-
-        lint_result = _quick_lint(str(p), workdir)
-        if lint_result and lint_result.get("lint_errors"):
-            result["lint_warnings"] = lint_result["lint_errors"]
-            result["lint_status"] = "warnings"
-    except Exception:
-        pass
+    
     return result
 
 
@@ -602,6 +670,11 @@ def multiedit(
         working_content = working_content.replace(matched, new, 1)
 
     # All edits validated — write once
+    # PRE-WRITE VERIFICATION
+    ver_err = _verify_new_content(p, working_content, workdir)
+    if ver_err:
+        return ver_err
+
     p.write_text(working_content, encoding="utf-8")
 
     # P9: Auto-format after write (best-effort)
