@@ -120,17 +120,6 @@ async def verification_node(state: StateLike, config: Any) -> Dict[str, Any]:
     # W1: Trigger verification for any side-effecting tool that reported success.
     # Previously only edit_file with a "path" field was caught; bash, write_file, and
     # patch tools were silently skipped.  Widen the check to cover all write tools.
-    SIDE_EFFECT_TOOLS = {
-        "write_file",
-        "edit_file",
-        "edit_file_atomic",
-        "edit_by_line_range",
-        "bash",
-        "patch_apply",
-        "apply_patch",
-        "create_file",
-        "delete_file",
-    }
     last_tool_name: str = state.get("last_tool_name") or ""
     try:
         if isinstance(last_result, dict):
@@ -139,7 +128,7 @@ async def verification_node(state: StateLike, config: Any) -> Dict[str, Any]:
             )  # handle both wrapped and flat results
             if isinstance(r, dict) and r.get("status") == "ok":
                 # Any side-effecting tool that succeeded triggers verification
-                if last_tool_name in SIDE_EFFECT_TOOLS:
+                if last_tool_name in _WRITE_TOOLS_ALWAYS_VERIFY:
                     need_verify = True
                 # Fallback: path present → legacy edit_file shape
                 elif r.get("path"):

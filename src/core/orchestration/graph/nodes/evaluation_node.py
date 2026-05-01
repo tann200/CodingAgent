@@ -1,11 +1,17 @@
 import asyncio
 import json
 import logging
+import threading
 from typing import Dict, Any
 
 from src.core.orchestration.graph.state import StateLike
 
 logger = logging.getLogger(__name__)
+
+
+def _failed(r: dict) -> bool:
+    """Return True if a verification result dict indicates failure."""
+    return isinstance(r, dict) and r.get("status") == "fail"
 
 
 async def evaluation_node(state: StateLike, config: Any) -> Dict[str, Any]:
@@ -31,9 +37,6 @@ async def evaluation_node(state: StateLike, config: Any) -> Dict[str, Any]:
         failure_reasons: list = []
 
         # Still collect human-readable reasons for the log even when using the flag.
-        def _failed(r: dict) -> bool:
-            return isinstance(r, dict) and r.get("status") == "fail"
-
         # Python keys
         for key, label in (
             ("tests", "Tests"),
@@ -60,9 +63,6 @@ async def evaluation_node(state: StateLike, config: Any) -> Dict[str, Any]:
         # Recompute from scratch — covers both Python and JS/TS result keys.
         verification_passed = True
         failure_reasons = []
-
-        def _failed(r: dict) -> bool:  # type: ignore[misc]
-            return isinstance(r, dict) and r.get("status") == "fail"
 
         # Python verification keys
         for key, label in (
@@ -122,14 +122,12 @@ async def evaluation_node(state: StateLike, config: Any) -> Dict[str, Any]:
 
             _orch = _resolve_orchestrator(state, config)
             if _orch and hasattr(_orch, "session_store") and _orch.session_store:
-                import threading as _thr
-
                 # Prefer explicit session_id from state; fall back to None so
                 # SessionStore normalises to 'unknown' for file/DB naming but
                 # preserves the original value in diagnostics.
                 _session_id = state.get("session_id") or None
                 _task_desc = (state.get("task") or "")[:200]
-                _thread_name = getattr(_thr.current_thread(), "name", "unknown")
+                _thread_name = getattr(threading.current_thread(), "name", "unknown")
                 logger.debug(
                     "session_store: write (session=%r, thread=%s, site=%s)",
                     _session_id,

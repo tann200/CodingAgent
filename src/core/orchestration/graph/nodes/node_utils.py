@@ -1,7 +1,24 @@
+import contextlib
 import logging
 from typing import Mapping, Any, Optional
 
 logger = logging.getLogger(__name__)
+
+# OTel tracing — shared no-op wrapper so each node file doesn't duplicate this.
+try:
+    from src.core.telemetry.tracer import span_node as _otel_span_node
+
+    _HAS_TRACER = True
+except Exception:
+    _otel_span_node = None  # type: ignore[assignment]
+    _HAS_TRACER = False
+
+
+def span_node(name: str, attributes: "dict | None" = None):
+    """Thin wrapper: delegates to OTel span_node or returns a no-op context."""
+    if _HAS_TRACER and _otel_span_node is not None:
+        return _otel_span_node(name, attributes)
+    return contextlib.nullcontext()
 
 
 def _resolve_orchestrator(state: Mapping[str, Any], config: Any) -> Any:
@@ -132,13 +149,5 @@ def _notify_provider_limit(error_msg: str) -> None:
             from src.core.orchestration.event_bus import get_event_bus
 
             bus = get_event_bus()
-            bus.publish(
-                "ui.notification",
-                {
-                    "level": "warning",
-                    "message": error_msg,
-                    "source": "provider",
-                },
-            )
-        except Exception:
-            pass
+        except Exception as _eb_err:
+            logger.debug("node_utils: event_bus publish failed: %s", _eb_err)

@@ -9,6 +9,14 @@ from src.tools.repo_summary import generate_repo_summary
 
 logger = logging.getLogger(__name__)
 
+# Common English stopwords / verbs that are not code identifiers, used when
+# extracting symbol candidates from the task description (M-09).
+_SKIP_WORDS = {
+    "the", "and", "for", "with", "that", "this", "from", "into",
+    "add", "fix", "use", "run", "get", "set", "new", "old", "all",
+    "make", "update", "create", "delete", "remove", "implement", "change",
+}
+
 # F8 / F15 fix: Cache indexed directories keyed by (resolved_path, mtime) so
 # index_repository() is skipped on repeated calls to the same unchanged directory,
 # but re-runs when the working dir changes or its mtime changes (stale cache fix).
@@ -365,32 +373,6 @@ Use this repository context to plan your deep-dive searches."""
             r"\b[A-Z][a-zA-Z0-9]{2,}\b|\b[a-z_][a-z0-9_]{2,}\b", task
         )
         # Filter out common English stopwords / verbs that are not identifiers
-        _SKIP_WORDS = {
-            "the",
-            "and",
-            "for",
-            "with",
-            "that",
-            "this",
-            "from",
-            "into",
-            "add",
-            "fix",
-            "use",
-            "run",
-            "get",
-            "set",
-            "new",
-            "old",
-            "all",
-            "make",
-            "update",
-            "create",
-            "delete",
-            "remove",
-            "implement",
-            "change",
-        }
         symbol_candidates = [
             s for s in symbol_candidates if s.lower() not in _SKIP_WORDS
         ]
@@ -520,5 +502,5 @@ Use this repository context to plan your deep-dive searches."""
         "call_graph": call_graph_data if call_graph_data else None,
         "test_map": test_map_data if test_map_data else None,
         # HR-11 fix: indicate whether analysis succeeded or failed
-        "analysis_failed": analysis_failed if "analysis_failed" in locals() else False,
+        "analysis_failed": analysis_failed,
     }

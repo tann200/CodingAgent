@@ -14,24 +14,8 @@ from src.core.orchestration.graph.nodes.node_utils import (
     _resolve_orchestrator,
 )
 from src.core.orchestration.event_bus import run_with_correlation
-
-# Gap 8: OTel tracing — no-op when opentelemetry-sdk is not installed.
-try:
-    from src.core.telemetry.tracer import span_node as _otel_span_node
-
-    _HAS_TRACER = True
-except Exception:
-    _otel_span_node = None  # type: ignore[assignment]
-    _HAS_TRACER = False
-
-
-def _span_node(name: str, attributes: "dict | None" = None):
-    """Thin wrapper: delegates to OTel span_node or returns a no-op context."""
-    if _HAS_TRACER and _otel_span_node is not None:
-        return _otel_span_node(name, attributes)
-    import contextlib
-
-    return contextlib.nullcontext()
+from src.core.utils.strings import valid_str as _valid_str, extract_str as _extract_str
+from src.core.orchestration.graph.nodes.node_utils import span_node as _span_node
 
 
 # Gap 3: Plugin hooks — lazy import so the registry is not required at import time.
@@ -255,6 +239,10 @@ except Exception:
 
 if _llm_helpers is not None:
     _await_llm_task = _llm_helpers._await_llm_task  # type: ignore[assignment]
+else:
+    async def _await_llm_task(task, timeout=None, cancel_event=None):  # type: ignore[misc]
+        """No-op fallback when llm_helpers is unavailable."""
+        return await task
 
 
 def _extract_message_obj(resp: Any) -> dict:
@@ -1345,37 +1333,6 @@ async def _perception_node_impl(
     # locally to avoid circular import issues in tests.
     provider_capabilities = {}
     try:
-        try:
-            from src.core.utils.strings import (
-                valid_str as _valid_str,
-                extract_str as _extract_str,
-            )
-        except Exception:
-
-            def _valid_str(x: object) -> bool:
-                return isinstance(x, str) and bool(x.strip()) and ("MagicMock" not in x)
-
-            def _extract_str(candidate: object) -> str | None:
-                if candidate is None:
-                    return None
-                if isinstance(candidate, dict):
-                    for key in (
-                        "provider_name",
-                        "name",
-                        "id",
-                        "key",
-                        "model",
-                        "default_model",
-                        "type",
-                    ):
-                        val = candidate.get(key)
-                        if isinstance(val, str) and _valid_str(val):
-                            return val.strip()
-                    return None
-                if isinstance(candidate, str) and _valid_str(candidate):
-                    return candidate.strip()
-                return None
-
         caps: dict = {}
 
         # 1) Orchestrator-level capabilities (authoritative)
@@ -1513,39 +1470,7 @@ async def _perception_node_impl(
             _active_model_name = provider_capabilities.get("model") or ""
         else:
             if orchestrator and getattr(orchestrator, "adapter", None):
-                try:
-                    _extract = _extract_str
-                except Exception:
-                    # Fallback local extractor if the shared one is not defined
-                    def _valid_str_local(x: object) -> bool:
-                        return (
-                            isinstance(x, str)
-                            and bool(x.strip())
-                            and ("MagicMock" not in x)
-                        )
-
-                    def _extract_local(candidate: object) -> str | None:
-                        if candidate is None:
-                            return None
-                        if isinstance(candidate, dict):
-                            for key in (
-                                "provider_name",
-                                "name",
-                                "id",
-                                "key",
-                                "model",
-                                "default_model",
-                                "type",
-                            ):
-                                val = candidate.get(key)
-                                if isinstance(val, str) and _valid_str_local(val):
-                                    return val.strip()
-                            return None
-                        if isinstance(candidate, str) and _valid_str_local(candidate):
-                            return candidate.strip()
-                        return None
-
-                    _extract = _extract_local
+                _extract = _extract_str
 
                 # Inspect adapter.models first
                 _models = getattr(orchestrator.adapter, "models", None)
@@ -1590,41 +1515,6 @@ async def _perception_node_impl(
     # only as a last resort inspect adapter.provider/default_model.
     provider = None
     model = None
-
-    def _valid_str(x: object) -> bool:
-        try:
-            from src.core.utils.strings import valid_str as _vs
-
-            return _vs(x)
-        except Exception:
-            # Ensure a concrete, non-empty string that is not a MagicMock placeholder.
-            return isinstance(x, str) and bool(x.strip()) and ("MagicMock" not in x)
-
-    def _extract_str(candidate: object) -> str | None:
-        """Extract a concrete string from various candidate shapes or return None."""
-        try:
-            from src.core.utils.strings import extract_str as _es
-
-            return _es(candidate)
-        except Exception:
-            if candidate is None:
-                return None
-            if isinstance(candidate, dict):
-                for key in (
-                    "model",
-                    "default_model",
-                    "name",
-                    "id",
-                    "provider_name",
-                    "type",
-                ):
-                    val = candidate.get(key)
-                    if isinstance(val, str) and _valid_str(val):
-                        return val.strip()
-                return None
-            if isinstance(candidate, str) and _valid_str(candidate):
-                return candidate.strip()
-            return None
 
     try:
         if (

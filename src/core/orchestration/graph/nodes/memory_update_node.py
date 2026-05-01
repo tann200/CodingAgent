@@ -11,9 +11,14 @@ from src.core.orchestration.graph.state import StateLike, replace_state_list
 # src.core.orchestration.graph.nodes.memory_update_node.distill_context
 try:
     from src.core.memory.distiller import distill_context, compact_messages_to_prose
-except ImportError:
+except ImportError as _distiller_err:
     distill_context = None  # type: ignore[assignment]
     compact_messages_to_prose = None  # type: ignore[assignment]
+    import logging as _log
+    _log.getLogger(__name__).warning(
+        "memory_update_node: distiller unavailable (%s) — context compaction disabled",
+        _distiller_err,
+    )
 
 from src.core.memory.advanced_features import TrajectoryLogger
 

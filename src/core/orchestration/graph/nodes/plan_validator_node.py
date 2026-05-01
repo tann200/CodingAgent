@@ -1,4 +1,5 @@
 import logging
+import re
 from typing import Dict, Any, List, Optional, Set
 
 from src.core.orchestration.graph.state import StateLike
@@ -90,9 +91,7 @@ def validate_plan(
         # Matches `tool_name` or 'tool_name' patterns — catches cases like
         # "Use `write_file` to …" where the LLM named a non-existent tool.
         if tool_name is None and registered_tools is not None and description:
-            import re as _re
-
-            for m in _re.findall(r"[`'\"]([a-z_][a-z0-9_]{2,})[`'\"]", description):
+            for m in re.findall(r"[`'\"]([a-z_][a-z0-9_]{2,})[`'\"]", description):
                 # Only flag tokens that look like tool names (contain underscore)
                 # and are NOT in the registry — avoids false positives on file names.
                 if "_" in m and m not in registered_tools:

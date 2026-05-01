@@ -21,24 +21,9 @@ from src.core.orchestration.loop_guards import (
     RECENT_CALLS_WINDOW as _RECENT_CALLS_WINDOW,
 )
 from src.core.orchestration.event_bus import run_with_correlation
+from src.core.utils.strings import valid_str as _valid_str, extract_str as _extract_str
 
-# Gap 8: OTel tracing — no-op when opentelemetry-sdk is not installed.
-try:
-    from src.core.telemetry.tracer import span_node as _otel_span_node
-
-    _HAS_TRACER = True
-except Exception:
-    _otel_span_node = None  # type: ignore[assignment]
-    _HAS_TRACER = False
-
-
-def _span_node(name: str, attributes: "dict | None" = None):
-    """Thin wrapper: delegates to OTel span_node or returns a no-op context."""
-    if _HAS_TRACER and _otel_span_node is not None:
-        return _otel_span_node(name, attributes)
-    import contextlib
-
-    return contextlib.nullcontext()
+from src.core.orchestration.graph.nodes.node_utils import span_node as _span_node
 
 
 # Gap 3: Plugin hooks — lazy import so the registry is not required at import time.
@@ -112,10 +97,19 @@ def _truncate_tool_output(res: dict) -> dict:
 
 
 def _inc_step_retry(state: Mapping[str, Any], current_step: int) -> dict:
-    """Return a new step_retry_counts dict with current_step's count incremented."""
-    counts = dict(state.get("step_retry_counts") or {})
-    key = str(current_step)
-    counts[key] = int(counts.get(key, 0)) + 1
+    """Return a new step_retry_counts dict with current_step's count incremented.
+
+    Keys are normalised to int so mixed str/int dicts from state deserialization
+    are unified — avoids double-counting on retry budget checks.
+    """
+    raw = state.get("step_retry_counts") or {}
+    counts: dict = {}
+    for k, v in raw.items():
+        try:
+            counts[int(k)] = int(v)
+        except (ValueError, TypeError):
+            counts[k] = v
+    counts[current_step] = counts.get(current_step, 0) + 1
     return counts
 
 
@@ -347,206 +341,8 @@ Original task: {original_task or state.get("task")}
 
 Generate the appropriate tool call to complete this step. Respond with ONLY a tool call in the required YAML format."""
 
-            provider_capabilities = {}
-            # Conservative provider/model resolution:
-            # 1) orchestrator.get_provider_capabilities() (authoritative)
-            # 2) ProviderManager.get_provider_capabilities(adapter)
-            # 3) adapter attributes (provider, default_model, models)
-            # Accept only concrete strings (no MagicMock placeholders). Guard imports
-            # locally to avoid circular import issues in tests.
-            try:
-                try:
-                    from src.core.utils.strings import (
-                        valid_str as _valid_str,
-                        extract_str as _extract_str,
-                    )
-                except Exception:
-                    # Fallback heuristics when utils unavailable (keeps tests robust).
-                    def _valid_str(x: object) -> bool:
-                        return (
-                            isinstance(x, str)
-                            and bool(str(x).strip())
-                            and "MagicMock" not in str(x)
-                        )
-
-                    def _extract_str(candidate: object) -> str | None:
-                        if candidate is None:
-                            return None
-                        if isinstance(candidate, dict):
-                            for key in (
-                                "provider_name",
-                                "name",
-                                "id",
-                                "key",
-                                "model",
-                                "default_model",
-                                "type",
-                            ):
-                                val = candidate.get(key)
-                                if isinstance(val, str) and _valid_str(val):
-                                    return val.strip()
-                            return None
-                        if isinstance(candidate, str) and _valid_str(candidate):
-                            return candidate.strip()
-                        return None
-
-                caps: dict = {}
-
-                # 1) Orchestrator-level capabilities (authoritative)
-                try:
-                    if (
-                        orchestrator
-                        and hasattr(orchestrator, "get_provider_capabilities")
-                        and callable(getattr(orchestrator, "get_provider_capabilities"))
-                    ):
-                        _rc = orchestrator.get_provider_capabilities()
-                        if isinstance(_rc, dict) and _rc:
-                            caps = dict(_rc)
-                except Exception:
-                    caps = {}
-
-                # 2) ProviderManager fallback
-                if not caps:
-                    try:
-                        from src.core.inference.llm_manager import (
-                            get_provider_manager as _gpm,
-                        )
-
-                        _pm = _gpm()
-                        adapter = getattr(orchestrator, "_adapter", None)
-                        _rc = _pm.get_provider_capabilities(adapter)
-                        if isinstance(_rc, dict) and _rc:
-                            caps = dict(_rc)
-                    except Exception:
-                        # keep caps as-is and fall back to adapter below
-                        caps = caps or {}
-
-                # 3) Adapter-only last resort (no network probes)
-                if (
-                    not caps
-                    and orchestrator
-                    and getattr(orchestrator, "_adapter", None)
-                ):
-                    adapter = orchestrator._adapter
-                    # provider name extraction
-                    try:
-                        prov_attr = getattr(adapter, "provider", None)
-                    except Exception:
-                        prov_attr = None
-                    provider_name = None
-                    try:
-                        provider_name = _extract_str(prov_attr)
-                    except Exception:
-                        provider_name = None
-                    if not provider_name:
-                        try:
-                            provider_name = _extract_str(getattr(adapter, "name", None))
-                        except Exception:
-                            provider_name = None
-
-                    # model extraction: prefer default_model, then models list
-                    model = None
-                    try:
-                        model = _extract_str(getattr(adapter, "default_model", None))
-                    except Exception:
-                        model = None
-                    if not model:
-                        try:
-                            models_attr = getattr(adapter, "models", None)
-                            if isinstance(models_attr, (list, tuple)):
-                                for m in models_attr:
-                                    mm = _extract_str(m)
-                                    if mm:
-                                        model = mm
-                                        break
-                            else:
-                                model = _extract_str(models_attr)
-                        except Exception:
-                            model = None
-
-                    # supports_native_tools inference
-                    supports_native_tools = False
-                    try:
-                        if isinstance(prov_attr, dict):
-                            supports_native_tools = bool(
-                                prov_attr.get("supports_native_tools", False)
-                            )
-                        else:
-                            supports_native_tools = bool(
-                                getattr(adapter, "supports_native_tools", False)
-                            )
-                    except Exception:
-                        supports_native_tools = False
-
-                    # provider_family: try to reuse central mapping when available
-                    provider_family = "default"
-                    try:
-                        from src.core.orchestration.provider_capabilities import (
-                            _map_provider_family_impl as _map_pf,
-                        )
-
-                        provider_family = _map_pf(provider_name or "")
-                    except Exception:
-                        provider_family = "default"
-
-                    caps = {
-                        "supports_native_tools": bool(supports_native_tools),
-                        "provider_family": provider_family,
-                        "model": model,
-                        "provider_name": provider_name or "",
-                    }
-
-                # Sanitize final caps: ensure only concrete strings are exposed
-                try:
-                    _pname = _extract_str(
-                        caps.get("provider_name")
-                        or caps.get("provider")
-                        or caps.get("name")
-                    )
-                except Exception:
-                    _pname = None
-                try:
-                    _model = _extract_str(
-                        caps.get("model") or caps.get("default_model")
-                    )
-                except Exception:
-                    _model = None
-
-                _pf = (
-                    caps.get("provider_family")
-                    if isinstance(caps.get("provider_family"), str)
-                    and _valid_str(caps.get("provider_family"))
-                    else None
-                )
-                if not _pf and _pname:
-                    try:
-                        from src.core.orchestration.provider_capabilities import (
-                            _map_provider_family_impl as _map_pf2,
-                        )
-
-                        _pf = _map_pf2(_pname)
-                    except Exception:
-                        _pf = "default"
-                _pf = _pf or "default"
-
-                provider_capabilities = {
-                    "supports_native_tools": bool(
-                        caps.get("supports_native_tools", False)
-                    ),
-                    "provider_family": _pf,
-                    "model": _model,
-                    "provider_name": _pname or "",
-                    # preserve a few optional flags if present
-                    "provider_supports_parallel_tools": bool(
-                        caps.get("provider_supports_parallel_tools", False)
-                    ),
-                    "supports_function_call": bool(
-                        caps.get("supports_function_call", False)
-                    ),
-                    "supports_streaming": bool(caps.get("supports_streaming", False)),
-                }
-            except Exception:
-                provider_capabilities = {}
+            from src.core.orchestration.provider_capabilities import resolve_provider_capabilities as _resolve_pc
+            provider_capabilities = _resolve_pc(orchestrator)
 
             messages = builder.build_prompt(
                 role_name="operational",
@@ -1200,7 +996,7 @@ Generate the appropriate tool call to complete this step. Respond with ONLY a to
                         if isinstance(ws_idx, int) and ws_idx < len(updated_plan):
                             step_done = updated_plan[ws_idx].get("completed")
                             # P2-8: Treat exhausted-retry steps as "done" so wave can advance
-                            step_retries = int(_step_retry_counts.get(str(ws_idx), 0))
+                            step_retries = int(_step_retry_counts.get(ws_idx, _step_retry_counts.get(str(ws_idx), 0)))
                             step_retry_exhausted = step_retries >= _MAX_STEP_RETRIES
                             if not step_done and not step_retry_exhausted:
                                 all_in_wave_complete = False

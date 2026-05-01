@@ -4,6 +4,7 @@ import logging
 import traceback
 import re
 import tempfile
+import threading
 import os
 import shutil
 from pathlib import Path
@@ -13,27 +14,41 @@ from src.core.orchestration.graph.state import StateLike
 from src.core.context.context_builder import ContextBuilder
 from src.core.inference.llm_manager import call_model
 from src.core.orchestration.graph.nodes.node_utils import _resolve_orchestrator
-
-# Gap 8: OTel tracing — no-op when opentelemetry-sdk is not installed.
-try:
-    from src.core.telemetry.tracer import span_node as _otel_span_node
-
-    _HAS_TRACER = True
-except Exception:
-    _otel_span_node = None  # type: ignore[assignment]
-    _HAS_TRACER = False
-
-
-def _span_node(name: str, attributes: "dict | None" = None):
-    """Thin wrapper: delegates to OTel span_node or returns a no-op context."""
-    if _HAS_TRACER and _otel_span_node is not None:
-        return _otel_span_node(name, attributes)
-    import contextlib
-
-    return contextlib.nullcontext()
+from src.core.utils.strings import valid_str as _valid_str, extract_str as _extract_str
+from src.core.orchestration.graph.nodes.node_utils import span_node as _span_node
 
 
 logger = logging.getLogger(__name__)
+
+_PLAN_RESUME_TTL_SECONDS = 1800  # 30 minutes
+
+
+def _plan_is_resumable(
+    data: Dict[str, Any],
+    current_task: str,
+    wd: str,
+    resume_session: bool = False,
+) -> bool:
+    """Return True if a saved plan should be resumed rather than regenerated."""
+    if resume_session:
+        return bool(data.get("plan"))
+    if data.get("task", "") != current_task:
+        return False
+    saved_at_str = data.get("saved_at", "")
+    try:
+        from datetime import datetime as _dt
+
+        saved_dt = _dt.fromisoformat(saved_at_str)
+        age_seconds = (_dt.now() - saved_dt).total_seconds()
+        if age_seconds > _PLAN_RESUME_TTL_SECONDS:
+            logger.info(
+                f"planning_node: saved plan is {age_seconds:.0f}s old "
+                f"(> {_PLAN_RESUME_TTL_SECONDS}s TTL) — not resuming"
+            )
+            return False
+    except Exception:
+        return False
+    return True
 
 
 def _hydrate_repo_context_from_index(
@@ -239,43 +254,15 @@ async def _planning_node_impl(state: Mapping[str, Any], config: Any) -> Dict[str
             # P2-B fix: Replace 80% Jaccard word-overlap with TTL + exact match.
             # Jaccard was unreliable — "fix the login bug" and "test the login bug"
             # share >80% word overlap but need completely different plans.
-            # New rules:
-            #   1. Exact task string match always resumes (covers minor whitespace diffs).
-            #   2. Saved plan must be < 30 minutes old (same session / short pause).
-            #   3. Working directory must match (no cross-project resume).
-            # Users who want to explicitly resume an older plan should use --resume.
-            _PLAN_RESUME_TTL_SECONDS = 1800  # 30 minutes
-
-            def _plan_is_resumable(
-                data: Dict[str, Any], current_task: str, wd: str
-            ) -> bool:
-                # Explicit user opt-in overrides all TTL/similarity checks
-                if state.get("resume_session"):
-                    return bool(data.get("plan"))
-                # Exact task match
-                if data.get("task", "") != current_task:
-                    return False
-                # TTL check
-                saved_at_str = data.get("saved_at", "")
-                try:
-                    from datetime import datetime as _dt
-
-                    saved_dt = _dt.fromisoformat(saved_at_str)
-                    age_seconds = (_dt.now() - saved_dt).total_seconds()
-                    if age_seconds > _PLAN_RESUME_TTL_SECONDS:
-                        logger.info(
-                            f"planning_node: saved plan is {age_seconds:.0f}s old "
-                            f"(> {_PLAN_RESUME_TTL_SECONDS}s TTL) — not resuming"
-                        )
-                        return False
-                except Exception:
-                    return False  # unparseable timestamp → do not resume
-                return True
-
             if (
                 loaded_plan
                 and task
-                and _plan_is_resumable(last_plan_data, task, working_dir)
+                and _plan_is_resumable(
+                    last_plan_data,
+                    task,
+                    working_dir,
+                    resume_session=bool(state.get("resume_session")),
+                )
             ):
                 logger.info(
                     f"planning_node: resuming from saved plan with {len(loaded_plan)} steps"
@@ -521,192 +508,8 @@ Respond ONLY with valid JSON, no additional text."""
         # 3) adapter attributes (provider, default_model, models)
         # Only accept concrete strings (no MagicMock placeholders). Guard imports
         # locally to avoid circular import issues in tests.
-        provider_capabilities = {}
-        try:
-            try:
-                from src.core.utils.strings import (
-                    valid_str as _valid_str,
-                    extract_str as _extract_str,
-                )
-            except Exception:
-                # Fallback heuristics when utils unavailable (keeps tests robust).
-                def _valid_str(x: object) -> bool:
-                    return (
-                        isinstance(x, str)
-                        and bool(str(x).strip())
-                        and "MagicMock" not in str(x)
-                    )
-
-                def _extract_str(candidate: object) -> str | None:
-                    if candidate is None:
-                        return None
-                    if isinstance(candidate, dict):
-                        for key in (
-                            "provider_name",
-                            "name",
-                            "id",
-                            "key",
-                            "model",
-                            "default_model",
-                            "type",
-                        ):
-                            val = candidate.get(key)
-                            if isinstance(val, str) and _valid_str(val):
-                                return val.strip()
-                        return None
-                    if isinstance(candidate, str) and _valid_str(candidate):
-                        return candidate.strip()
-                    return None
-
-            caps: dict = {}
-
-            # 1) Orchestrator-level capabilities (authoritative)
-            try:
-                if (
-                    orchestrator
-                    and hasattr(orchestrator, "get_provider_capabilities")
-                    and callable(getattr(orchestrator, "get_provider_capabilities"))
-                ):
-                    _rc = orchestrator.get_provider_capabilities()
-                    if isinstance(_rc, dict) and _rc:
-                        caps = dict(_rc)
-            except Exception:
-                caps = {}
-
-            # 2) ProviderManager fallback
-            if not caps:
-                try:
-                    from src.core.inference.llm_manager import (
-                        get_provider_manager as _gpm,
-                    )
-
-                    _pm = _gpm()
-                    adapter = getattr(orchestrator, "_adapter", None)
-                    _rc = _pm.get_provider_capabilities(adapter)
-                    if isinstance(_rc, dict) and _rc:
-                        caps = dict(_rc)
-                except Exception:
-                    # keep caps as-is and fall back to adapter below
-                    caps = caps or {}
-
-            # 3) Adapter-only last resort (no network probes)
-            if not caps and orchestrator and getattr(orchestrator, "_adapter", None):
-                adapter = orchestrator._adapter
-                # provider name extraction
-                try:
-                    prov_attr = getattr(adapter, "provider", None)
-                except Exception:
-                    prov_attr = None
-                provider_name = None
-                try:
-                    provider_name = _extract_str(prov_attr)
-                except Exception:
-                    provider_name = None
-                if not provider_name:
-                    try:
-                        provider_name = _extract_str(getattr(adapter, "name", None))
-                    except Exception:
-                        provider_name = None
-
-                # model extraction: prefer default_model, then models list
-                model = None
-                try:
-                    model = _extract_str(getattr(adapter, "default_model", None))
-                except Exception:
-                    model = None
-                if not model:
-                    try:
-                        models_attr = getattr(adapter, "models", None)
-                        if isinstance(models_attr, (list, tuple)):
-                            for m in models_attr:
-                                mm = _extract_str(m)
-                                if mm:
-                                    model = mm
-                                    break
-                        else:
-                            model = _extract_str(models_attr)
-                    except Exception:
-                        model = None
-
-                # supports_native_tools inference
-                supports_native_tools = False
-                try:
-                    if isinstance(prov_attr, dict):
-                        supports_native_tools = bool(
-                            prov_attr.get("supports_native_tools", False)
-                        )
-                    else:
-                        supports_native_tools = bool(
-                            getattr(adapter, "supports_native_tools", False)
-                        )
-                except Exception:
-                    supports_native_tools = False
-
-                # provider_family: try to reuse central mapping when available
-                provider_family = "default"
-                try:
-                    from src.core.orchestration.provider_capabilities import (
-                        _map_provider_family_impl as _map_pf,
-                    )
-
-                    provider_family = _map_pf(provider_name or "")
-                except Exception:
-                    provider_family = "default"
-
-                caps = {
-                    "supports_native_tools": bool(supports_native_tools),
-                    "provider_family": provider_family,
-                    "model": model,
-                    "provider_name": provider_name or "",
-                }
-
-            # Sanitize final caps: ensure only concrete strings are exposed
-            try:
-                _pname = _extract_str(
-                    caps.get("provider_name")
-                    or caps.get("provider")
-                    or caps.get("name")
-                )
-            except Exception:
-                _pname = None
-            try:
-                _model = _extract_str(caps.get("model") or caps.get("default_model"))
-            except Exception:
-                _model = None
-
-            _pf = (
-                caps.get("provider_family")
-                if isinstance(caps.get("provider_family"), str)
-                and _valid_str(caps.get("provider_family"))
-                else None
-            )
-            if not _pf and _pname:
-                try:
-                    from src.core.orchestration.provider_capabilities import (
-                        _map_provider_family_impl as _map_pf2,
-                    )
-
-                    _pf = _map_pf2(_pname)
-                except Exception:
-                    _pf = "default"
-            _pf = _pf or "default"
-
-            provider_capabilities = {
-                "supports_native_tools": bool(caps.get("supports_native_tools", False)),
-                "provider_family": _pf,
-                "model": _model,
-                "provider_name": _pname or "",
-                # preserve a few optional flags if present
-                "provider_supports_parallel_tools": bool(
-                    caps.get("provider_supports_parallel_tools", False)
-                ),
-                "supports_function_call": bool(
-                    caps.get("supports_function_call", False)
-                ),
-                "supports_streaming": bool(caps.get("supports_streaming", False)),
-            }
-        except Exception:
-            provider_capabilities = {}
+        from src.core.orchestration.provider_capabilities import resolve_provider_capabilities as _resolve_pc
+        provider_capabilities = _resolve_pc(orchestrator)
 
         messages = builder.build_prompt(
             role_name="strategic",
@@ -869,13 +672,12 @@ Respond ONLY with valid JSON, no additional text."""
             # Persist plan to session store
             try:
                 import json as _json
-                import threading as _thr
 
                 # Use the orchestrator already resolved at the top of the function (NEW-9).
                 # The previous re-fetch via config.get() failed on RunnableConfig objects.
                 if orchestrator and hasattr(orchestrator, "session_store"):
                     _sid = getattr(orchestrator, "_current_task_id", None)
-                    _thread_name = getattr(_thr.current_thread(), "name", "unknown")
+                    _thread_name = getattr(threading.current_thread(), "name", "unknown")
                     logger.debug(
                         "session_store: write (session=%r, thread=%s, site=%s)",
                         _sid,
