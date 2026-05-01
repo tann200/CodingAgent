@@ -41,7 +41,7 @@ async def _await_llm_task(
                     "rounds": state.get("rounds", 0) + 1,
                     "errors": [f"llm_timeout:{perc_timeout}s"],
                 }
-            await asyncio.sleep(0.2)
+            await asyncio.wait([llm_task], timeout=0.2)
         resp = await llm_task
         return False, resp
     except asyncio.CancelledError:
