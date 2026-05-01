@@ -114,6 +114,33 @@ class TestPlanningNode:
         result = _parse_plan_content("")
         assert result == []
 
+
+class TestGraphStateReducers:
+    def test_merge_or_replace_list_appends_by_default(self):
+        from src.core.orchestration.graph.state import merge_or_replace_list
+
+        left = [{"role": "user", "content": "old"}]
+        right = [{"role": "assistant", "content": "new"}]
+
+        merged = merge_or_replace_list(left, right)
+
+        assert merged == left + right
+
+    def test_merge_or_replace_list_replaces_when_marked(self):
+        from src.core.orchestration.graph.state import (
+            merge_or_replace_list,
+            replace_state_list,
+        )
+
+        left = [{"role": "user", "content": "old"}]
+        replacement = replace_state_list(
+            [{"role": "system", "content": "compacted"}]
+        )
+
+        merged = merge_or_replace_list(left, replacement)
+
+        assert merged == [{"role": "system", "content": "compacted"}]
+
     @pytest.mark.asyncio
     async def test_planning_with_conversational_filler(self):
         """Test planning filters out conversational filler."""
