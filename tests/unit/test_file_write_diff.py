@@ -24,3 +24,16 @@ def test_write_file_no_change_has_no_diff(tmp_path):
     assert result.get("status") == "no_change"
     # no diff key expected for no_change
     assert "diff" in result and result.get("diff") == ""
+
+
+def test_write_file_rejects_new_syntax_error_and_preserves_original(tmp_path):
+    from src.tools.file_tools import write_file
+
+    target = tmp_path / "bad.py"
+    target.write_text("def ok():\n    return 1\n", encoding="utf-8")
+
+    result = write_file("bad.py", "def broken(:\n    return 1\n", workdir=tmp_path)
+
+    assert result.get("status") == "error"
+    assert "Pre-write verification failed" in result.get("error", "")
+    assert target.read_text(encoding="utf-8") == "def ok():\n    return 1\n"

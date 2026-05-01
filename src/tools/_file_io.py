@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import shutil
+import tempfile
 from pathlib import Path
 from typing import Dict, Any
 
@@ -82,6 +84,62 @@ def _check_project_deny_write(abs_path: Path, workdir: Path) -> None:
         raise
     except Exception:
         pass  # non-fatal — don't let config errors prevent writes
+
+
+def _verify_write_candidate(
+    p: Path, candidate_content: str, workdir: Path
+) -> dict[str, Any] | None:
+    """Validate a pending write against fast lint rules before touching the target."""
+
+    def _norm_lint_key(err: dict[str, Any], path_tokens: list[str]) -> tuple[Any, Any, str]:
+        msg = str(err.get("message") or "")
+        for token in path_tokens:
+            if token:
+                msg = msg.replace(token, "<path>")
+        msg = re.sub(r"\((?:<path>|[^()]+), line (\d+)\)", r"(<path>, line \1)", msg)
+        return (err.get("line"), err.get("code"), msg)
+
+    try:
+        from src.tools.lint_dispatch import quick_lint
+
+        baseline_result = quick_lint(str(p), workdir)
+        baseline_errors = list((baseline_result or {}).get("lint_errors") or [])
+        baseline_keys = set()
+        for err in baseline_errors:
+            if isinstance(err, dict):
+                baseline_keys.add(_norm_lint_key(err, [str(p), p.name]))
+
+        with tempfile.TemporaryDirectory(
+            dir=str(p.parent),
+            prefix=f".{p.stem}.",
+        ) as tmp_dir:
+            tmp_file = Path(tmp_dir) / p.name
+            tmp_file.write_text(candidate_content, encoding="utf-8")
+
+            lint_result = quick_lint(str(tmp_file), workdir)
+            if lint_result and lint_result.get("lint_errors"):
+                new_errors = []
+                for err in lint_result["lint_errors"]:
+                    if not isinstance(err, dict):
+                        continue
+                    if _norm_lint_key(err, [str(tmp_file), tmp_file.name, str(p), p.name]) not in baseline_keys:
+                        new_errors.append(err)
+            else:
+                new_errors = []
+
+        if new_errors:
+            errors_str = "\n".join(
+                f"Line {e.get('line', '?')}: {e.get('message')}" for e in new_errors[:5]
+            )
+            return {
+                "path": str(p),
+                "status": "error",
+                "error": f"Pre-write verification failed. Write introduces syntax errors:\n\n{errors_str}",
+                "lint_errors": new_errors,
+            }
+    except Exception as exc:
+        _logger.warning("write_file pre-write verification error: %s", exc)
+    return None
 
 
 _OS_JUNK = frozenset(
@@ -195,6 +253,10 @@ def write_file(
                 "Split into multiple smaller writes."
             ),
         }
+
+    ver_err = _verify_write_candidate(p, content, workdir)
+    if ver_err:
+        return ver_err
 
     # PREV-1: If preview confirmation is required, block until the user
     # accepts or rejects the diff in the TUI (same gate as edit_file_atomic).
@@ -318,16 +380,6 @@ def write_file(
     except Exception:
         pass  # Never block a write on formatter failure
 
-    # IMPL-5: Post-write auto-lint — informational, does not block the write
-    try:
-        from src.tools.lint_dispatch import quick_lint as _quick_lint
-
-        lint_result = _quick_lint(str(p), workdir)
-        if lint_result and lint_result.get("lint_errors"):
-            result["lint_warnings"] = lint_result["lint_errors"]
-            result["lint_status"] = "warnings"
-    except Exception:
-        pass  # Never block a write on lint failure
     # F13: Signal when a file write is unreasonably large — agent should split the task.
     if lines_added > _WRITE_WARN_LINE_LIMIT:
         result["requires_split"] = True
