@@ -1,7 +1,6 @@
 import asyncio
 import atexit
 import logging
-import re
 from pathlib import Path
 from typing import Dict, Any, List
 from concurrent.futures import ThreadPoolExecutor
@@ -16,23 +15,7 @@ except ImportError:
     distill_context = None  # type: ignore[assignment]
     compact_messages_to_prose = None  # type: ignore[assignment]
 
-from src.core.memory.advanced_features import (
-    TrajectoryLogger,
-    DreamConsolidator,
-    RefactoringAgent,
-    ReviewAgent,
-    SkillLearner,
-)
-
-# MM-2 fix: Gate all advanced memory subsystems behind an env-var flag.
-# They add LLM call overhead at memory-sync time but their outputs are not yet
-# consumed by any planning or context-building pathway.  Disabled by default;
-# set ENABLE_ADVANCED_MEMORY=1 to opt in.
-import os as _os
-
-_ADVANCED_MEMORY_ENABLED: bool = (
-    _os.environ.get("ENABLE_ADVANCED_MEMORY", "0").strip() == "1"
-)
+from src.core.memory.advanced_features import TrajectoryLogger
 
 logger = logging.getLogger(__name__)
 
@@ -172,146 +155,7 @@ async def memory_update_node(state: StateLike, config: Any) -> Dict[str, Any]:
         except Exception as e:
             logger.warning(f"memory_update_node: trajectory logging failed: {e}")
 
-    async def run_dream_consolidation():
-        try:
-            consolidator = DreamConsolidator(str(workdir_path))
-            result = consolidator.consolidate_memories()
-            logger.info(
-                f"memory_update_node: consolidation complete: {result.get('patterns', [])}"
-            )
-        except Exception as e:
-            logger.warning(f"memory_update_node: consolidation failed: {e}")
-
-    async def run_review_agent():
-        if not (task_success and history):
-            return
-        try:
-            patch = _extract_patch_from_history(history)
-            if not patch:
-                return
-
-            review_agent = ReviewAgent(str(workdir_path))
-            # Always inside asyncio.gather so a running loop always exists (NEW-13)
-            loop = asyncio.get_running_loop()
-            try:
-                from src.core.orchestration.event_bus import run_with_correlation
-
-                review_result = await run_with_correlation(
-                    loop, _executor, review_agent.review_patch, patch
-                )
-            except Exception:
-                review_result = await loop.run_in_executor(
-                    _executor, review_agent.review_patch, patch
-                )
-            logger.info(
-                f"memory_update_node: patch review complete: {review_result.get('overall', 'unknown')}"
-            )
-
-            # Save review to .agent-context/last_review.json
-            review_agent.save_review(review_result)
-        except Exception as e:
-            logger.warning(f"memory_update_node: patch review failed: {e}")
-
-    async def run_refactoring_agent():
-        if not (task_success and history):
-            return
-        try:
-            modified_files = _extract_modified_files(history)
-            if not modified_files:
-                return
-            refactoring_agent = RefactoringAgent(str(workdir_path))
-
-            async def analyze_file(file_path: str):
-                if not file_path.endswith(".py"):
-                    return []
-                try:
-                    # Always inside asyncio.gather so a running loop always exists (NEW-13)
-                    loop = asyncio.get_running_loop()
-                    try:
-                        from src.core.orchestration.event_bus import (
-                            run_with_correlation,
-                        )
-
-                        smells = await run_with_correlation(
-                            loop,
-                            _executor,
-                            refactoring_agent.detect_code_smells,
-                            file_path,
-                        )
-                    except Exception:
-                        smells = await loop.run_in_executor(
-                            _executor, refactoring_agent.detect_code_smells, file_path
-                        )
-                    if smells:
-                        logger.info(
-                            f"memory_update_node: found {len(smells)} code smells in {file_path}"
-                        )
-                    return smells
-                except Exception as e:
-                    logger.warning(
-                        f"memory_update_node: refactoring failed for {file_path}: {e}"
-                    )
-                    return []
-
-            all_smells = []
-            for smells in await asyncio.gather(
-                *[analyze_file(f) for f in modified_files]
-            ):
-                all_smells.extend(smells)
-
-            # Save smells to .agent-context/code_smells.json
-            if all_smells:
-                refactoring_agent.save_smells(all_smells)
-        except Exception as e:
-            logger.warning(f"memory_update_node: refactoring analysis failed: {e}")
-
-    async def run_skill_learner():
-        if not (task_success and task and len(tool_sequence) >= 2):
-            return
-        try:
-            skill_learner = SkillLearner(str(workdir_path))
-            existing_skills = skill_learner.list_skills()
-
-            skill_name = re.sub(r"[^a-z0-9_]", "_", task[:40].lower()).strip("_")
-
-            if skill_name and skill_name not in existing_skills:
-                tool_names = [t.get("content", "")[:60] for t in tool_sequence[:5]]
-                skill_learner.create_skill(
-                    name=skill_name,
-                    description=f"Auto-learned from successful task: {task[:120]}",
-                    patterns=[f"Use {t}" for t in tool_names if t],
-                    examples=[
-                        {
-                            "task": task[:200],
-                            "solution": str(current_plan)[:400],
-                        }
-                    ],
-                )
-                logger.info(f"memory_update_node: created skill '{skill_name}'")
-        except Exception as e:
-            logger.warning(f"memory_update_node: skill learning failed: {e}")
-
-    # MM-2 fix: advanced memory features are gated behind ENABLE_ADVANCED_MEMORY=1.
-    # By default they are disabled because their outputs are not yet consumed by any
-    # planning/context pathway, and they add unnecessary LLM call overhead per task.
-    if _ADVANCED_MEMORY_ENABLED:
-        advanced_tasks = [
-            run_trajectory_logging(),
-            run_dream_consolidation(),
-            run_review_agent(),
-            run_refactoring_agent(),
-            run_skill_learner(),
-        ]
-        logger.info(
-            "memory_update_node: running advanced memory features (ENABLE_ADVANCED_MEMORY=1)"
-        )
-    else:
-        # Always run trajectory logging (pure file write, no LLM cost) even when advanced
-        # features are disabled — it provides useful audit trails with zero overhead.
-        advanced_tasks = [run_trajectory_logging()]
-        logger.debug(
-            "memory_update_node: advanced memory features disabled (set ENABLE_ADVANCED_MEMORY=1 to enable)"
-        )
+    advanced_tasks = [run_trajectory_logging()]
 
     # Use return_exceptions=True so all tasks run even if some fail (H14 fix)
     results = await asyncio.gather(
@@ -360,16 +204,3 @@ def _extract_patch_from_history(history: List[Dict]) -> str:
                 return content
     return ""
 
-
-def _extract_modified_files(history: List[Dict]) -> List[str]:
-    """Extract list of modified files from history."""
-    files = []
-    for item in history:
-        if isinstance(item, dict):
-            content = str(item.get("content", ""))
-            if ".py" in content or ".js" in content or ".ts" in content:
-                paths = re.findall(
-                    r"(?:[\w\-/]+\.(?:py|js|ts|jsx|tsx|md|txt))", content
-                )
-                files.extend(paths)
-    return list(set(files))[:10]

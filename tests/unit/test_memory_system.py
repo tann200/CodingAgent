@@ -128,30 +128,6 @@ class TestAdvancedFeatures:
 
         assert TrajectoryLogger is not None
 
-    def test_dream_consolidator_exists(self):
-        """Test DreamConsolidator class exists."""
-        from src.core.memory.advanced_features import DreamConsolidator
-
-        assert DreamConsolidator is not None
-
-    def test_refactoring_agent_exists(self):
-        """Test RefactoringAgent class exists."""
-        from src.core.memory.advanced_features import RefactoringAgent
-
-        assert RefactoringAgent is not None
-
-    def test_review_agent_exists(self):
-        """Test ReviewAgent class exists."""
-        from src.core.memory.advanced_features import ReviewAgent
-
-        assert ReviewAgent is not None
-
-    def test_skill_learner_exists(self):
-        """Test SkillLearner class exists."""
-        from src.core.memory.advanced_features import SkillLearner
-
-        assert SkillLearner is not None
-
 
 class TestMemoryIntegration:
     """Integration tests for memory system."""

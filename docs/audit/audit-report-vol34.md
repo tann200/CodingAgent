@@ -113,40 +113,25 @@ Addressing the state reducer memory leaks and implementing pre-write code verifi
 
 ## 14. Prioritized Fix List
 
-### Phase 1 — Critical Stability Fixes
+### Phase 1 — Critical Stability Fixes ✅ RESOLVED
 
-- **Refactor LangGraph State Reducer**
-  - **Description**: Replace `operator.add` in `history` and `verified_reads` with a custom reducer (or LangGraph's native `add_messages` that supports `RemoveMessage` patterns) so outdated messages can be purged from the checkpoint history.
-  - **Location**: `src/core/orchestration/graph/state.py`
-  - **Estimated Complexity**: Medium
-  - **Expected Impact**: Resolves critical memory leaks, eliminates checkpoint bloat, and restores performance on long-running tasks.
+- **Refactor LangGraph State Reducer** ✅
+  - **Resolution**: Replaced `operator.add` with `merge_or_replace_list` reducer and `ReplaceList` marker class in `src/core/orchestration/graph/state.py`. Compaction in `memory_update_node` now calls `replace_state_list()` so history is truly shrunk at checkpoint boundaries.
 
-### Phase 2 — Robustness Improvements
+### Phase 2 — Robustness Improvements ✅ RESOLVED
 
-- **Implement Pre-Write Code Verification**
-  - **Description**: Rearchitect file modification tools to execute syntax and lint verification in memory/temporary files. Only execute the actual disk write after the patch passes safety checks, rejecting bad patches upfront.
-  - **Location**: `src/tools/_edit_tools.py`
-  - **Estimated Complexity**: Medium
-  - **Expected Impact**: Protects the repository from being left in a corrupted state due to hallucinations or partial writes.
+- **Implement Pre-Write Code Verification** ✅
+  - **Resolution**: Added `_verify_new_content()` to `src/tools/_edit_tools.py` (covers `edit_file`, `edit_file_atomic`, `edit_by_line_range`, `multiedit`) and `_verify_write_candidate()` to `src/tools/_file_io.py` (`write_file`). Both use a temp-sibling-dir lint check with baseline comparison before any disk write occurs.
 
-- **Refactor Async Task Polling**
-  - **Description**: Replace `while not task.done(): await asyncio.sleep(0.2)` patterns with robust `asyncio.wait()` or `asyncio.wait_for()` primitives.
-  - **Location**: `src/core/orchestration/graph/nodes/replan_node.py`, `src/core/orchestration/graph/nodes/debug_node.py`
-  - **Estimated Complexity**: Low
-  - **Expected Impact**: Improves system responsiveness to user cancellation and eliminates busy-polling overhead.
+- **Refactor Async Task Polling** ✅
+  - **Resolution**: Replaced `while not task.done(): await asyncio.sleep(0.2)` with `await asyncio.wait([task], timeout=0.2)` in `replan_node.py`, `debug_node.py`, and `llm_helpers.py`.
 
-### Phase 3 — Capability Improvements
+### Phase 3 — Capability Improvements ✅ RESOLVED
 
-- **Enable Retrieval-Augmented Planning**
-  - **Description**: Convert `_planning_node_impl` into a multi-turn reasoning graph of its own, or grant it `supports_native_tools`, so it can perform targeted `grep` and `read` tool calls dynamically before locking in its final plan DAG.
-  - **Location**: `src/core/orchestration/graph/nodes/planning_node.py`
-  - **Estimated Complexity**: High
-  - **Expected Impact**: Drastically increases the agent's autonomy and ability to handle large-scale, complex coding requests without relying solely on the static `analysis_node` output.
+- **Enable Retrieval-Augmented Planning** ✅
+  - **Resolution**: Added `_hydrate_repo_context_from_index()` to `src/core/orchestration/graph/nodes/planning_node.py`. Falls back to `get_symbols_for_task` from the repo index when `analysis_node` context is sparse; hydrated `relevant_files` and `key_symbols` are returned on all planning result paths.
 
-### Phase 4 — Advanced Features
+### Phase 4 — Advanced Features ✅ RESOLVED
 
-- **Retire or Re-integrate DreamConsolidator / SkillLearner**
-  - **Description**: Strip out the dormant memory agents, or properly route their synthesized summaries and discovered "skills" into the `perception_node` context block.
-  - **Location**: `src/core/memory/advanced_features.py`
-  - **Estimated Complexity**: Low (if removing) / High (if integrating)
-  - **Expected Impact**: Cleans up technical debt, streamlines the cognitive pipeline, and clarifies the architecture.
+- **Retire DreamConsolidator / RefactoringAgent / ReviewAgent / SkillLearner** ✅
+  - **Resolution**: Deleted all four dormant sub-agent classes from `src/core/memory/advanced_features.py` and removed their import/call sites from `memory_update_node.py`. `TrajectoryLogger` (pure file-write audit trail) is retained. Associated dead-code test file `test_advanced_memory.py` removed.
