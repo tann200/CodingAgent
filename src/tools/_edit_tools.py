@@ -19,7 +19,7 @@ import tempfile
 from pathlib import Path
 from typing import Dict, Any, Optional
 
-from src.tools._path_utils import safe_resolve as _safe_resolve_impl
+from src.tools._path_utils import safe_resolve as _safe_resolve
 from src.tools._tool import tool
 from src.tools._diff_gate import (
     _publish_diff_preview,
@@ -37,16 +37,6 @@ try:
     from src.tools._workspace_guard import WorkspaceGuard  # type: ignore[assignment]
 except ImportError:
     pass
-
-
-def _safe_resolve(path: str, workdir: Path | None) -> Path:
-    """Thin wrapper around _path_utils.safe_resolve for use within this module.
-
-    Accept None for workdir (tests may pass None); fall back to Path.cwd().
-    """
-    if workdir is None:
-        workdir = Path.cwd()
-    return _safe_resolve_impl(path, workdir)
 
 
 def _fuzzy_find(content: str, target: str) -> Optional[str]:
@@ -109,62 +99,7 @@ def _fuzzy_find(content: str, target: str) -> Optional[str]:
     return None
 
 
-def _verify_new_content(
-    p: Path, new_content: str, workdir: Path
-) -> dict[str, Any] | None:
-    """Validate candidate content using a temporary sibling file.
-
-    This keeps the target file untouched until validation passes.
-    """
-    def _norm_lint_key(err: dict[str, Any], path_tokens: list[str]) -> tuple[Any, Any, str]:
-        msg = str(err.get("message") or "")
-        for token in path_tokens:
-            if token:
-                msg = msg.replace(token, "<path>")
-        msg = re.sub(r"\((?:<path>|[^()]+), line (\d+)\)", r"(<path>, line \1)", msg)
-        return (err.get("line"), err.get("code"), msg)
-
-    try:
-        from src.tools.lint_dispatch import quick_lint
-
-        baseline_result = quick_lint(str(p), workdir)
-        baseline_errors = list((baseline_result or {}).get("lint_errors") or [])
-        baseline_keys = set()
-        for err in baseline_errors:
-            if isinstance(err, dict):
-                baseline_keys.add(_norm_lint_key(err, [str(p), p.name]))
-
-        with tempfile.TemporaryDirectory(
-            dir=str(p.parent),
-            prefix=f".{p.stem}.",
-        ) as tmp_dir:
-            tmp_file = Path(tmp_dir) / p.name
-            tmp_file.write_text(new_content, encoding="utf-8")
-
-            lint_result = quick_lint(str(tmp_file), workdir)
-            if lint_result and lint_result.get("lint_errors"):
-                errors = []
-                for err in lint_result["lint_errors"]:
-                    if not isinstance(err, dict):
-                        continue
-                    if _norm_lint_key(err, [str(tmp_file), tmp_file.name, str(p), p.name]) not in baseline_keys:
-                        errors.append(err)
-            else:
-                errors = []
-
-        if errors:
-            errors_str = "\n".join(
-                f"Line {e.get('line', '?')}: {e.get('message')}" for e in errors[:5]
-            )
-            return {
-                "path": str(p),
-                "status": "error",
-                "error": f"Pre-write verification failed. Edit introduces syntax errors:\n\n{errors_str}",
-                "lint_errors": errors,
-            }
-    except Exception as e:
-        _logger.warning("Pre-write verification error: %s", e)
-    return None
+from src.tools._lint_verify import verify_candidate_content as _verify_new_content
 
 @tool(side_effects=["write"], tags=["coding"])
 def edit_file(

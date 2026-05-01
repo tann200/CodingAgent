@@ -50,6 +50,16 @@ DRY_RUN_BLOCKED_TOOLS: frozenset = frozenset(
     }
 )
 
+# Ordering of permission levels from least to most permissive.
+# Shared by permission_gateway.py and tool_execution_service.py.
+PERM_ORDER: dict[str, int] = {
+    "read_only": 0,
+    "workspace_write": 1,
+    "danger": 2,
+    "prompt": 3,
+    "allow": 4,
+}
+
 # Tools that always require explicit user approval before execution
 PERMISSION_REQUIRED_TOOLS: frozenset = frozenset(
     {

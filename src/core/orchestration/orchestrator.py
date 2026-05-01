@@ -12,23 +12,27 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from src.core.orchestration.event_bus import EventBus  # noqa: F401
-from src.core.orchestration.work_summary import _generate_work_summary  # noqa: F401
-from src.core.orchestration.tool_result_formatter import TOOL_RESULT_FORMATTERS  # noqa: F401
+from src.core.orchestration.event_bus import EventBus
+from src.core.orchestration.work_summary import _generate_work_summary
+from src.core.orchestration.tool_result_formatter import TOOL_RESULT_FORMATTERS
 from src.core.orchestration.tool_constants import (
-    WRITE_TOOLS_REQUIRING_READ,  # noqa: F401
+    WRITE_TOOLS_REQUIRING_READ,
     PERMISSION_REQUIRED_TOOLS,
     DRY_RUN_BLOCKED_TOOLS,
+    _write_permission_audit,
 )
 
-# Backwards-compatible utility re-exports
-from src.core.orchestration.tool_constants import (
-    _write_permission_audit as _write_permission_audit,
-)
-
-# Backwards-compatible re-exports (tests patch these on the orchestrator module)
-PERMISSION_REQUIRED_TOOLS = PERMISSION_REQUIRED_TOOLS
-DRY_RUN_BLOCKED_TOOLS = DRY_RUN_BLOCKED_TOOLS
+# Backwards-compatible re-exports so external callers and tests can import
+# these names directly from the orchestrator module.
+__all__ = [
+    "EventBus",
+    "_generate_work_summary",
+    "TOOL_RESULT_FORMATTERS",
+    "WRITE_TOOLS_REQUIRING_READ",
+    "PERMISSION_REQUIRED_TOOLS",
+    "DRY_RUN_BLOCKED_TOOLS",
+    "_write_permission_audit",
+]
 
 # Phase A: constants — re-exported for backward compatibility.
 

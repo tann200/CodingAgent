@@ -83,7 +83,17 @@ class PermissionTable:
     def __init__(self, db_path: Optional[Path] = None) -> None:
         self._db_path = db_path or _default_db_path()
         self._lock = threading.Lock()
+        self._local = threading.local()
         self._ensure_schema()
+
+    def _get_connection(self) -> sqlite3.Connection:
+        """Return a thread-local SQLite connection, creating it on first access."""
+        if not hasattr(self._local, "conn"):
+            self._db_path.parent.mkdir(parents=True, exist_ok=True)
+            conn = sqlite3.connect(str(self._db_path), check_same_thread=False)
+            conn.execute("PRAGMA journal_mode=WAL")
+            self._local.conn = conn
+        return self._local.conn
 
     # ------------------------------------------------------------------
     # Public API
@@ -125,25 +135,22 @@ class PermissionTable:
 
         now = int(time.time())
         with self._lock:
-            conn = self._connect()
-            try:
-                cur = conn.execute(
-                    "INSERT INTO permission_rules (tool_kind, pattern, action, scope, created_at)"
-                    " VALUES (?, ?, ?, ?, ?)",
-                    (tool_kind, pattern, action, scope, now),
-                )
-                conn.commit()
-                row_id = cur.lastrowid
-                logger.debug(
-                    "permission_table: added rule %s %s → %s (%s)",
-                    tool_kind,
-                    pattern,
-                    action,
-                    scope,
-                )
-                return row_id
-            finally:
-                conn.close()
+            conn = self._get_connection()
+            cur = conn.execute(
+                "INSERT INTO permission_rules (tool_kind, pattern, action, scope, created_at)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (tool_kind, pattern, action, scope, now),
+            )
+            conn.commit()
+            row_id = cur.lastrowid
+            logger.debug(
+                "permission_table: added rule %s %s → %s (%s)",
+                tool_kind,
+                pattern,
+                action,
+                scope,
+            )
+            return row_id
 
     def check(self, tool_kind: str, argument: str = "") -> Optional[str]:
         """Check whether *argument* matches any stored rule for *tool_kind*.
@@ -165,15 +172,12 @@ class PermissionTable:
             ``None`` means no rule matched — the caller decides.
         """
         with self._lock:
-            conn = self._connect()
-            try:
-                rows = conn.execute(
-                    "SELECT pattern, action FROM permission_rules"
-                    " WHERE tool_kind = ? ORDER BY id DESC",
-                    (tool_kind,),
-                ).fetchall()
-            finally:
-                conn.close()
+            conn = self._get_connection()
+            rows = conn.execute(
+                "SELECT pattern, action FROM permission_rules"
+                " WHERE tool_kind = ? ORDER BY id DESC",
+                (tool_kind,),
+            ).fetchall()
 
         # Helper: match path-style patterns (containing '/') using
         # segment-wise matching so that the special token '**' behaves like
@@ -252,21 +256,18 @@ class PermissionTable:
         ``scope``, ``created_at``.
         """
         with self._lock:
-            conn = self._connect()
-            try:
-                if tool_kind:
-                    rows = conn.execute(
-                        "SELECT id, tool_kind, pattern, action, scope, created_at"
-                        " FROM permission_rules WHERE tool_kind = ? ORDER BY id",
-                        (tool_kind,),
-                    ).fetchall()
-                else:
-                    rows = conn.execute(
-                        "SELECT id, tool_kind, pattern, action, scope, created_at"
-                        " FROM permission_rules ORDER BY id",
-                    ).fetchall()
-            finally:
-                conn.close()
+            conn = self._get_connection()
+            if tool_kind:
+                rows = conn.execute(
+                    "SELECT id, tool_kind, pattern, action, scope, created_at"
+                    " FROM permission_rules WHERE tool_kind = ? ORDER BY id",
+                    (tool_kind,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT id, tool_kind, pattern, action, scope, created_at"
+                    " FROM permission_rules ORDER BY id",
+                ).fetchall()
 
         return [
             {
@@ -283,62 +284,45 @@ class PermissionTable:
     def delete_rule(self, rule_id: int) -> bool:
         """Delete a rule by its row id.  Returns True when a row was deleted."""
         with self._lock:
-            conn = self._connect()
-            try:
-                cur = conn.execute(
-                    "DELETE FROM permission_rules WHERE id = ?", (rule_id,)
-                )
-                conn.commit()
-                return cur.rowcount > 0
-            finally:
-                conn.close()
+            conn = self._get_connection()
+            cur = conn.execute(
+                "DELETE FROM permission_rules WHERE id = ?", (rule_id,)
+            )
+            conn.commit()
+            return cur.rowcount > 0
 
     def clear_session_rules(self) -> int:
         """Delete all rules with ``scope='session'``.  Returns count deleted."""
         with self._lock:
-            conn = self._connect()
-            try:
-                cur = conn.execute(
-                    "DELETE FROM permission_rules WHERE scope = 'session'"
+            conn = self._get_connection()
+            cur = conn.execute(
+                "DELETE FROM permission_rules WHERE scope = 'session'"
+            )
+            conn.commit()
+            deleted = cur.rowcount
+            if deleted:
+                logger.debug(
+                    "permission_table: cleared %d session rule(s)", deleted
                 )
-                conn.commit()
-                deleted = cur.rowcount
-                if deleted:
-                    logger.debug(
-                        "permission_table: cleared %d session rule(s)", deleted
-                    )
-                return deleted
-            finally:
-                conn.close()
+            return deleted
 
     def clear_all(self) -> None:
         """Delete all rules (used in tests)."""
         with self._lock:
-            conn = self._connect()
-            try:
-                conn.execute("DELETE FROM permission_rules")
-                conn.commit()
-            finally:
-                conn.close()
+            conn = self._get_connection()
+            conn.execute("DELETE FROM permission_rules")
+            conn.commit()
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _connect(self) -> sqlite3.Connection:
-        """Open a SQLite connection (not thread-shared)."""
-        self._db_path.parent.mkdir(parents=True, exist_ok=True)
-        return sqlite3.connect(str(self._db_path), check_same_thread=False)
-
     def _ensure_schema(self) -> None:
         """Create the table if it does not exist."""
         try:
-            conn = self._connect()
-            try:
-                conn.executescript(_CREATE_TABLE_SQL)
-                conn.commit()
-            finally:
-                conn.close()
+            conn = self._get_connection()
+            conn.executescript(_CREATE_TABLE_SQL)
+            conn.commit()
         except Exception as exc:
             logger.warning("permission_table: schema init failed: %s", exc)
 

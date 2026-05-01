@@ -337,96 +337,8 @@ def begin_step_transaction_impl(orch: Any) -> str:
                 data = [entry]
             try:
                 timings_path.parent.mkdir(parents=True, exist_ok=True)
-                try:
-                    from src.core.io_utils import atomic_write_json
-
-                    guilogger.debug(
-                        "orchestrator_helpers: attempting atomic_write_json for %s",
-                        timings_path,
-                    )
-                    ok = atomic_write_json(timings_path, data, logger=guilogger)
-                    if not ok:
-                        # Fallback: write via unique-temp + atomic replace to avoid
-                        # exposing partially-written JSON.
-                        try:
-                            import tempfile
-                            import os
-                            import shutil
-
-                            fd = None
-                            tmp = None
-                            try:
-                                timings_path.parent.mkdir(parents=True, exist_ok=True)
-                                fd, tmp = tempfile.mkstemp(
-                                    dir=str(timings_path.parent), suffix=".tmp"
-                                )
-                                with os.fdopen(fd, "w", encoding="utf-8") as f:
-                                    fd = None
-                                    json.dump(data, f, ensure_ascii=False)
-                                    try:
-                                        f.flush()
-                                        os.fsync(f.fileno())
-                                    except Exception:
-                                        pass
-                                try:
-                                    os.replace(tmp, str(timings_path))
-                                except Exception:
-                                    try:
-                                        shutil.move(tmp, str(timings_path))
-                                    except Exception:
-                                        pass
-                            finally:
-                                try:
-                                    if fd is not None:
-                                        os.close(fd)
-                                except Exception:
-                                    pass
-                        except Exception:
-                            guilogger.debug(
-                                "orchestrator_helpers: fallback write failed for %s\n%s",
-                                timings_path,
-                                traceback.format_exc(),
-                            )
-                except Exception:
-                    try:
-                        import tempfile
-                        import os
-                        import shutil
-
-                        fd = None
-                        tmp = None
-                        try:
-                            timings_path.parent.mkdir(parents=True, exist_ok=True)
-                            fd, tmp = tempfile.mkstemp(
-                                dir=str(timings_path.parent), suffix=".tmp"
-                            )
-                            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                                fd = None
-                                json.dump(data, f, ensure_ascii=False)
-                                try:
-                                    f.flush()
-                                    os.fsync(f.fileno())
-                                except Exception:
-                                    pass
-                            try:
-                                os.replace(tmp, str(timings_path))
-                            except Exception:
-                                try:
-                                    shutil.move(tmp, str(timings_path))
-                                except Exception:
-                                    pass
-                        finally:
-                            try:
-                                if fd is not None:
-                                    os.close(fd)
-                            except Exception:
-                                pass
-                    except Exception:
-                        guilogger.debug(
-                            "orchestrator_helpers: fallback write failed for %s\n%s",
-                            timings_path,
-                            traceback.format_exc(),
-                        )
+                from src.core.io_utils import atomic_write_json
+                atomic_write_json(timings_path, data, logger=guilogger)
             except Exception:
                 pass
     except Exception:
@@ -476,25 +388,10 @@ def _get_tool_timeout_impl(orch: Any, tool_name: str) -> int:
         from src.core.orchestration.tool_registry import get_tool_timeout as _gtt
 
         return _gtt(tool_name)
-    except Exception:
-        # Fallback: inline defaults so the orchestrator still works even if
-        # tool_registry cannot be imported (e.g. during unit-test isolation).
-        _fallback: dict = {
-            "bash": 60,
-            "run_tests": 120,
-            "run_linter": 60,
-            "syntax_check": 30,
-            "run_js_tests": 120,
-            "run_ts_check": 120,
-            "run_eslint": 60,
-            "search_code": 30,
-            "grep": 30,
-            "edit_file_atomic": 30,
-            "find_symbol": 30,
-            "list_files": 10,
-            "glob": 10,
-        }
-        return _fallback.get(tool_name, 30)
+    except Exception as _e:
+        # tool_registry unavailable (e.g. during unit-test isolation); use safe default.
+        logger.warning("Could not load tool timeout for '%s' from tool_registry (using default 30s): %s", tool_name, _e)
+        return 30
 
 
 def _normalize_tool_result_impl(orch: Any, res: Any) -> Dict[str, Any]:
@@ -620,80 +517,15 @@ def _ensure_working_dir_impl(orch: Any) -> None:
         if not trace_path.exists():
             try:
                 trace_path.parent.mkdir(parents=True, exist_ok=True)
-                try:
-                    from src.core.io_utils import atomic_write_json
-
-                    guilogger.debug(
-                        "orchestrator_helpers: attempting atomic_write_json for %s",
-                        trace_path,
-                    )
-                    ok = atomic_write_json(trace_path, [], logger=guilogger)
-                    if not ok:
-                        # mkstemp -> replace fallback for JSON
-                        fd = None
-                        tmp = None
-                        try:
-                            fd, tmp = tempfile.mkstemp(
-                                dir=str(trace_path.parent), suffix=".tmp"
-                            )
-                            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                                f.write(json.dumps([]))
-                                try:
-                                    f.flush()
-                                    os.fsync(f.fileno())
-                                except Exception:
-                                    pass
-                            try:
-                                os.replace(tmp, str(trace_path))
-                            except Exception:
-                                shutil.move(tmp, str(trace_path))
-                        except Exception:
-                            try:
-                                if tmp and os.path.exists(tmp):
-                                    os.unlink(tmp)
-                            except Exception:
-                                pass
-                            raise
-                except Exception:
-                    # atomic_write_json not available — mkstemp fallback
-                    fd = None
-                    tmp = None
-                    try:
-                        fd, tmp = tempfile.mkstemp(
-                            dir=str(trace_path.parent), suffix=".tmp"
-                        )
-                        with os.fdopen(fd, "w", encoding="utf-8") as f:
-                            f.write(json.dumps([]))
-                            try:
-                                f.flush()
-                                os.fsync(f.fileno())
-                            except Exception:
-                                pass
-                        try:
-                            os.replace(tmp, str(trace_path))
-                        except Exception:
-                            shutil.move(tmp, str(trace_path))
-                    except Exception:
-                        try:
-                            if tmp and os.path.exists(tmp):
-                                os.unlink(tmp)
-                        except Exception:
-                            pass
-                        try:
-                            trace_path.write_text(json.dumps([]))
-                        except Exception:
-                            guilogger.debug(
-                                "orchestrator_helpers: failed to write trace_path fallback: %s",
-                                traceback.format_exc(),
-                            )
+                from src.core.io_utils import atomic_write_json
+                if not atomic_write_json(trace_path, [], logger=guilogger):
+                    trace_path.write_text(json.dumps([]))
             except Exception:
-                # If even the fallback write fails, let the error surface via
-                # the outer exception handler so callers can see the failure.
                 try:
                     trace_path.write_text(json.dumps([]))
                 except Exception:
                     guilogger.debug(
-                        "orchestrator_helpers: failed to write trace_path final fallback: %s",
+                        "orchestrator_helpers: failed to write trace_path fallback: %s",
                         traceback.format_exc(),
                     )
 
@@ -747,98 +579,8 @@ def _ensure_working_dir_impl(orch: Any) -> None:
                 data = [entry]
             try:
                 timings_path.parent.mkdir(parents=True, exist_ok=True)
-                try:
-                    from src.core.io_utils import atomic_write_json
-
-                    guilogger.debug(
-                        "orchestrator_helpers: attempting atomic_write_json for %s",
-                        timings_path,
-                    )
-                    ok = atomic_write_json(timings_path, data, logger=guilogger)
-                    if not ok:
-                        # mkstemp fallback preferred over direct write_text
-                        try:
-                            import tempfile
-
-                            _fd = None
-                            _tmp = None
-                            try:
-                                timings_path.parent.mkdir(parents=True, exist_ok=True)
-                                _fd, _tmp = tempfile.mkstemp(
-                                    dir=str(timings_path.parent), suffix=".tmp"
-                                )
-                                with os.fdopen(_fd, "w", encoding="utf-8") as _f:
-                                    _fd = None
-                                    _f.write(json.dumps(data, ensure_ascii=False))
-                                    try:
-                                        _f.flush()
-                                        os.fsync(_f.fileno())
-                                    except Exception:
-                                        pass
-                                try:
-                                    os.replace(_tmp, str(timings_path))
-                                except Exception:
-                                    try:
-                                        shutil.move(_tmp, str(timings_path))
-                                    except Exception:
-                                        timings_path.write_text(
-                                            json.dumps(data, ensure_ascii=False),
-                                            encoding="utf-8",
-                                        )
-                            finally:
-                                try:
-                                    if _fd is not None:
-                                        os.close(_fd)
-                                except Exception:
-                                    pass
-                        except Exception:
-                            guilogger.debug(
-                                "orchestrator_helpers: fallback write failed for %s\n%s",
-                                timings_path,
-                                traceback.format_exc(),
-                            )
-                except Exception:
-                    # atomic_write_json failed to import/call — use mkstemp fallback
-                    try:
-                        import tempfile
-
-                        _fd = None
-                        _tmp = None
-                        try:
-                            timings_path.parent.mkdir(parents=True, exist_ok=True)
-                            _fd, _tmp = tempfile.mkstemp(
-                                dir=str(timings_path.parent), suffix=".tmp"
-                            )
-                            with os.fdopen(_fd, "w", encoding="utf-8") as _f:
-                                _fd = None
-                                _f.write(json.dumps(data, ensure_ascii=False))
-                                try:
-                                    _f.flush()
-                                    os.fsync(_f.fileno())
-                                except Exception:
-                                    pass
-                            try:
-                                os.replace(_tmp, str(timings_path))
-                            except Exception:
-                                try:
-                                    shutil.move(_tmp, str(timings_path))
-                                except Exception:
-                                    timings_path.write_text(
-                                        json.dumps(data, ensure_ascii=False),
-                                        encoding="utf-8",
-                                    )
-                        finally:
-                            try:
-                                if _fd is not None:
-                                    os.close(_fd)
-                            except Exception:
-                                pass
-                    except Exception:
-                        guilogger.debug(
-                            "orchestrator_helpers: fallback write failed for %s\n%s",
-                            timings_path,
-                            traceback.format_exc(),
-                        )
+                from src.core.io_utils import atomic_write_json
+                atomic_write_json(timings_path, data, logger=guilogger)
             except Exception:
                 pass
         except Exception:
@@ -931,85 +673,8 @@ def _background_model_check_impl(orch: Any) -> None:
                     data = [entry]
                 try:
                     timings_path.parent.mkdir(parents=True, exist_ok=True)
-                    try:
-                        from src.core.io_utils import atomic_write_json
-
-                        guilogger.debug(
-                            "orchestrator_helpers: attempting atomic_write_json for %s",
-                            timings_path,
-                        )
-                        ok = atomic_write_json(timings_path, data, logger=guilogger)
-                        if not ok:
-                            import tempfile
-
-                            _fd = None
-                            _tmp = None
-                            try:
-                                _fd, _tmp = tempfile.mkstemp(
-                                    dir=str(timings_path.parent), suffix=".tmp"
-                                )
-                                with os.fdopen(_fd, "w", encoding="utf-8") as _f:
-                                    _fd = None
-                                    _f.write(json.dumps(data, ensure_ascii=False))
-                                    try:
-                                        _f.flush()
-                                        os.fsync(_f.fileno())
-                                    except Exception:
-                                        pass
-                                try:
-                                    os.replace(_tmp, str(timings_path))
-                                except Exception:
-                                    try:
-                                        shutil.move(_tmp, str(timings_path))
-                                    except Exception:
-                                        timings_path.write_text(
-                                            json.dumps(data, ensure_ascii=False),
-                                            encoding="utf-8",
-                                        )
-                            finally:
-                                try:
-                                    if _fd is not None:
-                                        os.close(_fd)
-                                except Exception:
-                                    pass
-                    except Exception:
-                        guilogger.debug(
-                            "orchestrator_helpers: atomic_write_json unavailable for %s; using mkstemp fallback\n%s",
-                            timings_path,
-                            traceback.format_exc(),
-                        )
-                        import tempfile
-
-                        _fd = None
-                        _tmp = None
-                        try:
-                            _fd, _tmp = tempfile.mkstemp(
-                                dir=str(timings_path.parent), suffix=".tmp"
-                            )
-                            with os.fdopen(_fd, "w", encoding="utf-8") as _f:
-                                _fd = None
-                                _f.write(json.dumps(data, ensure_ascii=False))
-                                try:
-                                    _f.flush()
-                                    os.fsync(_f.fileno())
-                                except Exception:
-                                    pass
-                            try:
-                                os.replace(_tmp, str(timings_path))
-                            except Exception:
-                                try:
-                                    shutil.move(_tmp, str(timings_path))
-                                except Exception:
-                                    timings_path.write_text(
-                                        json.dumps(data, ensure_ascii=False),
-                                        encoding="utf-8",
-                                    )
-                        finally:
-                            try:
-                                if _fd is not None:
-                                    os.close(_fd)
-                            except Exception:
-                                pass
+                    from src.core.io_utils import atomic_write_json
+                    atomic_write_json(timings_path, data, logger=guilogger)
                 except Exception:
                     pass
         except Exception:

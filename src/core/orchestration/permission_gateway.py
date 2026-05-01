@@ -55,9 +55,11 @@ except Exception:
 try:
     from src.core.orchestration.tool_constants import (
         PERMISSION_REQUIRED_TOOLS as _PERMISSION_REQUIRED_TOOLS,
+        PERM_ORDER as _PERM_ORDER,
     )
 except Exception:
     _PERMISSION_REQUIRED_TOOLS = set()  # type: ignore[assignment]
+    _PERM_ORDER = {"read_only": 0, "workspace_write": 1, "danger": 2, "prompt": 3, "allow": 4}  # type: ignore[assignment]
 
 try:
     from src.tools.tools_config import (
@@ -166,16 +168,6 @@ def _primary_arg_for_tool(tool_name: str, args: dict) -> str:
             return s[:256]  # cap length for pattern matching
     return ""
 
-
-# Ordering of permission levels from least to most permissive.
-# Used by _gate4_permission_mode to compare tool vs. active-mode ranks.
-_PERM_ORDER: dict[str, int] = {
-    "read_only": 0,
-    "workspace_write": 1,
-    "danger": 2,
-    "prompt": 3,
-    "allow": 4,
-}
 
 # Tools that are auto-approved when every path/workdir arg is inside the
 # project working directory.  ask_user is always auto-approved regardless
@@ -430,8 +422,8 @@ class PermissionGateway:
                 # Reuse Gate 5's interactive TUI-event flow.
                 return self._gate5_user_approval(name, args)
 
-        except Exception:
-            pass  # policy failures must never block tool execution
+        except Exception as _e:
+            logger.warning("Gate 2c permission policy check failed (fail-open): %s", _e)  # policy failures must never block tool execution
 
         return PermissionResult(allowed=True)
 

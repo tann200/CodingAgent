@@ -555,10 +555,6 @@ class SessionStore:
         Returns an empty list when no decisions are available or the file is
         malformed.
         """
-        # Prefer the sidecar file when present. Use the resolved agent-context
-        # directory when available (self._agent_context_dir) to honour the
-        # configured or discovered context directory; fall back to the legacy
-        # workdir/.agent-context semantics (keeps older tests/sites working).
         try:
             out = (
                 getattr(self, "_agent_context_dir", None)
@@ -569,9 +565,8 @@ class SessionStore:
                 data = json.loads(out.read_text(encoding="utf-8"))
                 if isinstance(data, list):
                     return data[: max(0, int(max_entries))]
-                return []
         except Exception:
-            return []
+            pass
 
         # Delegate to underlying store if it provides a reader
         if hasattr(self._store, "read_recent_decisions"):
@@ -580,7 +575,7 @@ class SessionStore:
                     max_entries=max_entries
                 )
             except Exception:
-                return []
+                pass
 
         return []
 

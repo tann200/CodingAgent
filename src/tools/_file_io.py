@@ -13,13 +13,12 @@ from __future__ import annotations
 
 import logging
 import os
-import re
 import shutil
 import tempfile
 from pathlib import Path
 from typing import Dict, Any
 
-from src.tools._path_utils import safe_resolve as _safe_resolve_impl
+from src.tools._path_utils import safe_resolve as _safe_resolve
 from src.tools._tool import tool, PermissionKind
 from src.tools._diff_gate import (
     _publish_diff_preview,
@@ -40,17 +39,6 @@ try:
     from src.tools._workspace_guard import WorkspaceGuard  # type: ignore[assignment]
 except ImportError:
     pass
-
-
-def _safe_resolve(path: str, workdir: Path | None) -> Path:
-    """Thin wrapper around _path_utils.safe_resolve for use within this module.
-
-    Accepts None for workdir (tests may pass None). When workdir is None we
-    fall back to Path.cwd().
-    """
-    if workdir is None:
-        workdir = Path.cwd()
-    return _safe_resolve_impl(path, workdir)
 
 
 def _check_project_deny_write(abs_path: Path, workdir: Path) -> None:
@@ -86,61 +74,7 @@ def _check_project_deny_write(abs_path: Path, workdir: Path) -> None:
         pass  # non-fatal — don't let config errors prevent writes
 
 
-def _verify_write_candidate(
-    p: Path, candidate_content: str, workdir: Path
-) -> dict[str, Any] | None:
-    """Validate a pending write against fast lint rules before touching the target."""
-
-    def _norm_lint_key(err: dict[str, Any], path_tokens: list[str]) -> tuple[Any, Any, str]:
-        msg = str(err.get("message") or "")
-        for token in path_tokens:
-            if token:
-                msg = msg.replace(token, "<path>")
-        msg = re.sub(r"\((?:<path>|[^()]+), line (\d+)\)", r"(<path>, line \1)", msg)
-        return (err.get("line"), err.get("code"), msg)
-
-    try:
-        from src.tools.lint_dispatch import quick_lint
-
-        baseline_result = quick_lint(str(p), workdir)
-        baseline_errors = list((baseline_result or {}).get("lint_errors") or [])
-        baseline_keys = set()
-        for err in baseline_errors:
-            if isinstance(err, dict):
-                baseline_keys.add(_norm_lint_key(err, [str(p), p.name]))
-
-        with tempfile.TemporaryDirectory(
-            dir=str(p.parent),
-            prefix=f".{p.stem}.",
-        ) as tmp_dir:
-            tmp_file = Path(tmp_dir) / p.name
-            tmp_file.write_text(candidate_content, encoding="utf-8")
-
-            lint_result = quick_lint(str(tmp_file), workdir)
-            if lint_result and lint_result.get("lint_errors"):
-                new_errors = []
-                for err in lint_result["lint_errors"]:
-                    if not isinstance(err, dict):
-                        continue
-                    if _norm_lint_key(err, [str(tmp_file), tmp_file.name, str(p), p.name]) not in baseline_keys:
-                        new_errors.append(err)
-            else:
-                new_errors = []
-
-        if new_errors:
-            errors_str = "\n".join(
-                f"Line {e.get('line', '?')}: {e.get('message')}" for e in new_errors[:5]
-            )
-            return {
-                "path": str(p),
-                "status": "error",
-                "error": f"Pre-write verification failed. Write introduces syntax errors:\n\n{errors_str}",
-                "lint_errors": new_errors,
-            }
-    except Exception as exc:
-        _logger.warning("write_file pre-write verification error: %s", exc)
-    return None
-
+from src.tools._lint_verify import verify_candidate_content as _verify_write_candidate
 
 _OS_JUNK = frozenset(
     {

@@ -23,6 +23,7 @@ from src.core.orchestration.graph.nodes.delegation_node import delegation_node
 from src.core.orchestration.graph.nodes.analyst_delegation_node import (
     analyst_delegation_node,
 )
+from src.core.orchestration.graph.nodes.wait_for_user_node import wait_for_user_node
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +49,9 @@ _MAX_ROUNDS_PLANNING = 15  # force-end after this many planning rounds
 _DEFAULT_MAX_TOOL_CALLS = 30  # default budget for standard agent graph
 _AUTONOMOUS_MAX_TOOL_CALLS = 100  # default budget for autonomous/full graph
 _LOOP_GUARD_ROUNDS = 10  # round threshold for stuck-loop detection
+
+# P2-A: Tier-aware global recovery caps (used in should_after_debug & should_after_replan).
+_RECOVERY_CAPS: dict[str, int] = {"small": 4, "medium": 8, "large": 12, "frontier": 12}
 
 
 def should_after_plan_validator(
@@ -891,7 +895,6 @@ def should_after_debug(
     # counters while total_recovery_attempts keeps growing.
     _total_recovery = int(state.get("total_recovery_attempts") or 0)
     _model_tier = (state.get("model_tier") or "medium").lower()
-    _RECOVERY_CAPS = {"small": 4, "medium": 8, "large": 12, "frontier": 12}
     _recovery_cap = _RECOVERY_CAPS.get(_model_tier, 8)
     if _total_recovery >= _recovery_cap:
         logger.warning(
@@ -922,7 +925,6 @@ def should_after_replan(
     # P2-A: Global recovery cap check (mirrors should_after_debug).
     _total_recovery = int(state.get("total_recovery_attempts") or 0)
     _model_tier = (state.get("model_tier") or "medium").lower()
-    _RECOVERY_CAPS = {"small": 4, "medium": 8, "large": 12, "frontier": 12}
     _recovery_cap = _RECOVERY_CAPS.get(_model_tier, 8)
     if _total_recovery >= _recovery_cap:
         logger.warning(
@@ -1114,67 +1116,21 @@ def compile_agent_graph():
     """
     workflow = StateGraph(AgentState)
 
-    # 1. Add Nodes
-    async def _perception(state: StateLike, config: RunnableConfig):
-        return await perception_node(state, config)
-
-    async def _analysis(state: StateLike, config: RunnableConfig):
-        return await analysis_node(state, config)
-
-    async def _planning(state: StateLike, config: RunnableConfig):
-        return await planning_node(state, config)
-
-    async def _execution(state: StateLike, config: RunnableConfig):
-        return await execution_node(state, config)
-
-    async def _step_controller(state: StateLike, config: RunnableConfig):
-        return await step_controller_node(state, config)
-
-    async def _verification(state: StateLike, config: RunnableConfig):
-        return await verification_node(state, config)
-
-    async def _debug(state: StateLike, config: RunnableConfig):
-        return await debug_node(state, config)
-
-    async def _memory_sync(state: StateLike, config: RunnableConfig):
-        return await memory_update_node(state, config)
-
-    async def _replan(state: StateLike, config: RunnableConfig):
-        return await replan_node(state, config)
-
-    async def _evaluation(state: StateLike, config: RunnableConfig):
-        return await evaluation_node(state, config)
-
-    async def _plan_validator(state: StateLike, config: RunnableConfig):
-        return await plan_validator_node(state, config)
-
-    async def _delegation(state: StateLike, config: RunnableConfig):
-        return await delegation_node(state, config)
-
-    async def _analyst_delegation(state: StateLike, config: RunnableConfig):
-        return await analyst_delegation_node(state, config)
-
-    async def _wait_for_user(state: StateLike, config: RunnableConfig):
-        from src.core.orchestration.graph.nodes.wait_for_user_node import (
-            wait_for_user_node,
-        )
-
-        return await wait_for_user_node(state, config)
-
-    workflow.add_node("perception", _perception)
-    workflow.add_node("analysis", _analysis)
-    workflow.add_node("planning", _planning)
-    workflow.add_node("plan_validator", _plan_validator)
-    workflow.add_node("execution", _execution)
-    workflow.add_node("step_controller", _step_controller)
-    workflow.add_node("verification", _verification)
-    workflow.add_node("debug", _debug)
-    workflow.add_node("memory_sync", _memory_sync)
-    workflow.add_node("delegation", _delegation)
-    workflow.add_node("analyst_delegation", _analyst_delegation)
-    workflow.add_node("replan", _replan)
-    workflow.add_node("evaluation", _evaluation)
-    workflow.add_node("wait_for_user", _wait_for_user)
+    # 1. Add Nodes — pass node functions directly (no wrapper overhead)
+    workflow.add_node("perception", perception_node)
+    workflow.add_node("analysis", analysis_node)
+    workflow.add_node("planning", planning_node)
+    workflow.add_node("plan_validator", plan_validator_node)
+    workflow.add_node("execution", execution_node)
+    workflow.add_node("step_controller", step_controller_node)
+    workflow.add_node("verification", verification_node)
+    workflow.add_node("debug", debug_node)
+    workflow.add_node("memory_sync", memory_update_node)
+    workflow.add_node("delegation", delegation_node)
+    workflow.add_node("analyst_delegation", analyst_delegation_node)
+    workflow.add_node("replan", replan_node)
+    workflow.add_node("evaluation", evaluation_node)
+    workflow.add_node("wait_for_user", wait_for_user_node)
 
     # 2. Define Flow
     workflow.set_entry_point("perception")

@@ -37,6 +37,31 @@ class AdapterWrapper:
             pass
         return out
 
+    def _publish_telemetry(self, out: Dict[str, Any]) -> None:
+        """Publish model response telemetry to the event bus (best-effort)."""
+        try:
+            if self.event_bus is not None:
+                try:
+                    from src.core.inference.telemetry import publish_model_response
+                except Exception:
+                    publish_model_response = None
+                try:
+                    if publish_model_response:
+                        publish_model_response(
+                            self.event_bus,
+                            str(out.get("provider") or "unknown"),
+                            str(out.get("model") or "unknown"),
+                            out.get("prompt_tokens", 0),
+                            out.get("completion_tokens", 0),
+                            out.get("total_tokens", 0),
+                            float(out.get("latency", 0.0)),
+                            extra={"adapter": "wrapper"},
+                        )
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
     def generate(
         self,
         messages: List[Dict[str, Any]],
@@ -124,30 +149,7 @@ class AdapterWrapper:
                     "raw": res,
                 }
                 # publish telemetry if event_bus provided (best-effort)
-                try:
-                    if self.event_bus is not None:
-                        try:
-                            from src.core.inference.telemetry import (
-                                publish_model_response,
-                            )
-                        except Exception:
-                            publish_model_response = None
-                        try:
-                            if publish_model_response:
-                                publish_model_response(
-                                    self.event_bus,
-                                    str(out.get("provider") or "unknown"),
-                                    str(out.get("model") or "unknown"),
-                                    out.get("prompt_tokens", 0),
-                                    out.get("completion_tokens", 0),
-                                    out.get("total_tokens", 0),
-                                    float(out.get("latency", 0.0)),
-                                    extra={"adapter": "wrapper"},
-                                )
-                        except Exception:
-                            pass
-                except Exception:
-                    pass
+                self._publish_telemetry(out)
                 return out
             else:
                 # non-dict response -> coerce
@@ -164,30 +166,7 @@ class AdapterWrapper:
                     ],
                     "raw": res,
                 }
-                try:
-                    if self.event_bus is not None:
-                        try:
-                            from src.core.inference.telemetry import (
-                                publish_model_response,
-                            )
-                        except Exception:
-                            publish_model_response = None
-                        try:
-                            if publish_model_response:
-                                publish_model_response(
-                                    self.event_bus,
-                                    str(out.get("provider") or "unknown"),
-                                    str(out.get("model") or "unknown"),
-                                    out.get("prompt_tokens", 0),
-                                    out.get("completion_tokens", 0),
-                                    out.get("total_tokens", 0),
-                                    float(out.get("latency", 0.0)),
-                                    extra={"adapter": "wrapper"},
-                                )
-                        except Exception:
-                            pass
-                except Exception:
-                    pass
+                self._publish_telemetry(out)
                 return out
         except Exception as e:
             return {"ok": False, "error": str(e), "raw": res}

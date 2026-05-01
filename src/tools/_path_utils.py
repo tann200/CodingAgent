@@ -11,12 +11,13 @@ import os
 from pathlib import Path
 
 
-def safe_resolve(path: str, workdir: Path) -> Path:
+def safe_resolve(path: str, workdir: Path | None) -> Path:
     """
     Safely resolve *path* relative to *workdir*, blocking path-traversal and
     symlink-escape attacks.
 
     - Relative paths are anchored to *workdir*.
+    - When *workdir* is ``None``, ``Path.cwd()`` is used as the anchor.
     - ``strict=True`` resolve is attempted first so symlinks are followed fully;
       falls back to non-strict for not-yet-created files.
     - ``os.path.realpath`` is used as a second layer to catch symlinks that
@@ -25,6 +26,8 @@ def safe_resolve(path: str, workdir: Path) -> Path:
     Raises:
         PermissionError: if the resolved path escapes *workdir*.
     """
+    if workdir is None:
+        workdir = Path.cwd()
     p = Path(path)
     if not p.is_absolute():
         p = workdir / p

@@ -40,17 +40,9 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional
 
-logger = logging.getLogger(__name__)
+from src.core.orchestration.tool_constants import PERM_ORDER as _PERM_ORDER
 
-# Ordering of permission levels from least to most permissive.
-# Defined at module level to avoid rebuilding on every _check_permission_mode call.
-_PERM_ORDER: dict[str, int] = {
-    "read_only": 0,
-    "workspace_write": 1,
-    "danger": 2,
-    "prompt": 3,
-    "allow": 4,
-}
+logger = logging.getLogger(__name__)
 
 # TS-4: Transient error keywords that warrant an automatic retry.
 _TRANSIENT_ERROR_KEYWORDS = (
@@ -384,8 +376,8 @@ class ToolExecutionService:
                         ),
                     },
                 )
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.warning("Permission mode check failed for tool '%s' (fail-open): %s", name, _e)
         return ExecutionVerdict(blocked=False)
 
     @staticmethod
@@ -407,8 +399,8 @@ class ToolExecutionService:
                         ),
                     },
                 )
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.warning("Explore mode check failed for tool '%s' (fail-open): %s", name, _e)
         return ExecutionVerdict(blocked=False)
 
     @staticmethod
@@ -437,8 +429,8 @@ class ToolExecutionService:
                             ),
                         },
                     )
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.warning("Plan mode check failed for tool '%s' (fail-open): %s", name, _e)
         return ExecutionVerdict(blocked=False)
 
     def _run_pre_hook(self, name: str, args: Dict[str, Any]) -> ExecutionVerdict:
