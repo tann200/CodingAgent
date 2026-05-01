@@ -36,6 +36,55 @@ def _span_node(name: str, attributes: "dict | None" = None):
 logger = logging.getLogger(__name__)
 
 
+def _hydrate_repo_context_from_index(
+    working_dir: str, task: str, relevant_files: list[str], key_symbols: list[str]
+) -> tuple[list[str], list[str], list[dict[str, Any]]]:
+    """Best-effort repo-index fallback for planning context.
+
+    planning_node already benefits from analysis_node output when available.
+    This fallback only fills gaps when planning starts with weak repo context.
+    """
+    indexed_symbols: list[dict[str, Any]] = []
+    hydrated_files = list(relevant_files)
+    hydrated_symbols = list(key_symbols)
+
+    if not working_dir or not task or (hydrated_files and hydrated_symbols):
+        return hydrated_files, hydrated_symbols, indexed_symbols
+
+    try:
+        from src.core.indexing.repo_indexer import get_symbols_for_task as _gst
+
+        indexed_symbols = list(_gst(working_dir, task, max_results=8) or [])
+        if indexed_symbols:
+            if not hydrated_files:
+                hydrated_files = list(
+                    dict.fromkeys(
+                        str(sym.get("file_path"))
+                        for sym in indexed_symbols
+                        if sym.get("file_path")
+                    )
+                )[:10]
+            if not hydrated_symbols:
+                hydrated_symbols = list(
+                    dict.fromkeys(
+                        str(sym.get("name"))
+                        for sym in indexed_symbols
+                        if sym.get("name")
+                    )
+                )[:10]
+            logger.info(
+                "planning_node: hydrated repo context from index (%d files, %d symbols)",
+                len(hydrated_files),
+                len(hydrated_symbols),
+            )
+    except Exception as exc:
+        logger.debug(
+            "planning_node: repo-context hydration failed (non-critical): %s", exc
+        )
+
+    return hydrated_files, hydrated_symbols, indexed_symbols
+
+
 def _get_last_plan_path(workdir: str) -> Path:
     """Get the path to the last plan JSON file."""
     try:
@@ -299,8 +348,16 @@ async def _planning_node_impl(state: Mapping[str, Any], config: Any) -> Dict[str
 
         # Build repo-aware context from analysis output
         analysis_summary = str(s.get("analysis_summary") or "No analysis available")
-        relevant_files: list = list(s.get("relevant_files") or [])  # type: ignore[arg-type]
-        key_symbols: list = list(s.get("key_symbols") or [])  # type: ignore[arg-type]
+        relevant_files: list[str] = list(s.get("relevant_files") or [])  # type: ignore[arg-type]
+        key_symbols: list[str] = list(s.get("key_symbols") or [])  # type: ignore[arg-type]
+        repo_lookup_symbols: list[dict[str, Any]] = []
+
+        relevant_files, key_symbols, repo_lookup_symbols = _hydrate_repo_context_from_index(
+            str(s.get("working_dir") or ""),
+            task,
+            relevant_files,
+            key_symbols,
+        )
 
         repo_context = ""
         if relevant_files or key_symbols:
@@ -343,9 +400,11 @@ async def _planning_node_impl(state: Mapping[str, Any], config: Any) -> Dict[str
         # RA-1: Fallback symbol query when call_graph absent (fast-path skipped analysis)
         if not call_graph and s.get("working_dir"):
             try:
-                from src.core.indexing.repo_indexer import get_symbols_for_task as _gst
+                _symbols = repo_lookup_symbols
+                if not _symbols:
+                    from src.core.indexing.repo_indexer import get_symbols_for_task as _gst
 
-                _symbols = _gst(s["working_dir"], task, max_results=5)
+                    _symbols = _gst(s["working_dir"], task, max_results=5)
                 if _symbols:
                     graph_context += (
                         f"\n\n## Relevant Symbols\n"

@@ -558,3 +558,65 @@ class TestPlanPersistence:
         # Check that the plan was resumed
         assert result.get("current_plan") == saved_plan
         assert result.get("plan_resumed") is True
+
+    @pytest.mark.asyncio
+    async def test_planning_node_hydrates_repo_context_from_index(self, tmp_path):
+        """planning_node should enrich prompt context from repo index when analysis is sparse."""
+        from src.core.orchestration.graph.nodes.planning_node import planning_node
+
+        mock_orch = MagicMock()
+        mock_orch.tool_registry.tools = {}
+        mock_orch.session_store = None
+        mock_orch.get_provider_capabilities.return_value = {}
+        mock_orch.cancel_event = None
+
+        llm_response = {
+            "choices": [
+                {
+                    "message": {
+                        "content": '[{"description": "Inspect auth flow", "files": ["auth/views.py"], "depends_on": []}]'
+                    }
+                }
+            ]
+        }
+
+        state = _make_state(
+            task="update auth login flow",
+            working_dir=str(tmp_path),
+            current_plan=[],
+            analysis_summary=None,
+            relevant_files=[],
+            key_symbols=[],
+        )
+
+        with (
+            patch(
+                "src.core.orchestration.graph.nodes.planning_node._resolve_orchestrator",
+                return_value=mock_orch,
+            ),
+            patch(
+                "src.core.indexing.repo_indexer.get_symbols_for_task",
+                return_value=[
+                    {"name": "login_user", "file_path": "auth/views.py"},
+                    {"name": "AuthService", "file_path": "auth/service.py"},
+                ],
+            ),
+            patch(
+                "src.core.orchestration.graph.nodes.planning_node.call_model",
+                new=AsyncMock(return_value=llm_response),
+            ),
+            patch(
+                "src.core.orchestration.graph.nodes.planning_node.ContextBuilder"
+            ) as mock_cb,
+        ):
+            mock_cb.return_value.build_prompt.return_value = [
+                {"role": "user", "content": "plan"}
+            ]
+            result = await planning_node(state, {})
+
+        task_description = mock_cb.return_value.build_prompt.call_args.kwargs[
+            "task_description"
+        ]
+        assert "Relevant files: auth/views.py, auth/service.py" in task_description
+        assert "Key symbols: login_user, AuthService" in task_description
+        assert result.get("current_plan"), result
