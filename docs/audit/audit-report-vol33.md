@@ -103,14 +103,33 @@ Re-verification confirms:
 
 ### Phase 1 — Critical Stability (Completed)
 - ✅ Atomic file writes (2026-04-25)
+  - **Location**: `src/core/io_utils.py` and across core modules
+  - **Complexity**: Medium
+  - **Impact**: Eliminates JSON file corruption during concurrent operations
 - ✅ Enhanced shell pattern detection (2026-04-25)
+  - **Location**: `src/tools/_bash_exec.py`
+  - **Complexity**: Low
+  - **Impact**: Fixes dead code bug in pattern checking logic, preventing bypass of command blocklist
 
 ### Phase 2 — Robustness (Completed)
 - ✅ Tool contracts verified (10 registered)
+  - **Location**: `src/core/orchestration/tool_contracts.py`
+  - **Complexity**: Low
+  - **Impact**: Provides strong Pydantic schemas for core tools, improving LLM reliability
 - ✅ Core component verification
+  - **Location**: Test suites
+  - **Complexity**: Low
+  - **Impact**: Validates all recent fixes pass regression testing
 
 ### Phase 3 — Capability (Complete)
+- ✅ Auto-invoke `debug_node` on verification failure verified
+  - **Location**: `src/core/orchestration/graph/nodes/evaluation_node.py`
+  - **Complexity**: Medium
+  - **Impact**: System automatically loops through `debug_node` to fix failed test commands 
 - ✅ Symbol graph usage verified in planning
+  - **Location**: `src/core/orchestration/graph/nodes/planning_node.py`
+  - **Complexity**: Medium
+  - **Impact**: Provides LLM with relevant code context during planning phase, retrieved via fast index
 
 ### Phase 4 — Advanced (N/A)
 - No advanced features needed for MVP.
