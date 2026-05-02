@@ -18,5 +18,7 @@ class WorkspaceGuard:
 
 try:
     from src.core.orchestration.workspace_guard import WorkspaceGuard as _WorkspaceGuard  # noqa: F401
+    # Replace the stub with the real implementation if available
+    WorkspaceGuard = _WorkspaceGuard  # type: ignore[assignment]
 except ImportError:
     pass

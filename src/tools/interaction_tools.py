@@ -13,6 +13,7 @@ import threading
 from typing import Any, Dict, List, Literal, Optional
 
 from src.tools._tool import tool
+from src.core.orchestration.event_bus import get_event_bus as _get_event_bus
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +61,6 @@ def ask_user(question: str, choices: Optional[List[str]] = None) -> Dict[str, An
 
     bus = None
     try:
-        from src.core.orchestration.event_bus import get_event_bus
 
         bus = get_event_bus()
         bus.subscribe("user.response", _on_user_response)
@@ -149,7 +149,6 @@ def submit_plan_for_review(
 
     bus = None
     try:
-        from src.core.orchestration.event_bus import get_event_bus
 
         bus = get_event_bus()
         bus.subscribe("plan_review.response", _on_plan_response)
@@ -228,7 +227,6 @@ def send_user_message(
     }
 
     try:
-        from src.core.orchestration.event_bus import get_event_bus
 
         bus = get_event_bus()
         bus.publish("agent.message", payload)

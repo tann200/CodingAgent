@@ -18,6 +18,11 @@ import subprocess
 from pathlib import Path
 from typing import Dict, List, Optional
 
+try:
+    import yaml
+except ImportError:
+    yaml = None  # type: ignore[assignment]
+
 logger = logging.getLogger(__name__)
 
 _CONFIG_PATH = Path(__file__).parents[1] / "config" / "formatters.yaml"
@@ -28,9 +33,9 @@ _CMD_CACHE: Dict[str, Optional[List[str]]] = {}
 
 def _load_config() -> Dict:
     """Load formatters.yaml; return empty dict on error."""
+    if yaml is None:
+        return {}
     try:
-        import yaml  # type: ignore[import]
-
         if _CONFIG_PATH.exists():
             return yaml.safe_load(_CONFIG_PATH.read_text(encoding="utf-8")) or {}
     except ImportError:

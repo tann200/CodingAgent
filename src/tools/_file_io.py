@@ -11,40 +11,36 @@ the authoritative public symbol for test compatibility.
 
 from __future__ import annotations
 
+import base64
+import difflib
+import fnmatch
 import logging
 import os
 import shutil
 import subprocess
 import tempfile
+from fnmatch import fnmatch as _fnmatch
 from pathlib import Path
 from typing import Dict, Any
 
 from src.tools._path_utils import safe_resolve as _safe_resolve
 from src.tools._tool import tool, PermissionKind
 from src.tools._diff_gate import (
-    _publish_diff_preview,
-    register_preview_gate,
+    pop_review_rejection as _pop_review_rejection,
+    push_review_required as _push_review_required,
 )
-
-_logger = logging.getLogger(__name__)
-
-# Write-size constants (authoritative values — re-exported from file_tools)
-_READ_FILE_MAX_CHARS = 50_000
-_READ_FILE_MAX_LINE = 2_000
-_WRITE_HARD_LINE_LIMIT = 500
-_WRITE_WARN_LINE_LIMIT = 200
-
-
-# WorkspaceGuard: import from shared location; fall back to a no-op stub so
-# call-sites work even if _workspace_guard is absent.
-try:
-    from src.tools._workspace_guard import WorkspaceGuard  # type: ignore[assignment]
-except ImportError:
-    class WorkspaceGuard:  # type: ignore[no-redef]
-        """No-op stub used when _workspace_guard is unavailable."""
-
-        def is_protected(self, path) -> bool:
-            return False
+from src.tools._workspace_guard import WorkspaceGuard  # type: ignore[assignment]
+from src.tools._lint_verify import verify_candidate_content as _verify_write_candidate
+from src.tools._security import is_path_allowed as _is_path_allowed
+from src.tools.guardrails import (
+    check_read_before_write as _check_read_before_write,
+    mark_file_read as _mark_file_read,
+)
+from src.tools.tools_config import requires_review_confirmation as _requires_review
+from src.core.config_loader import get_project_deny_write_patterns as _get_deny_patterns
+from src.core.context.context_builder import ContextBuilder as _ContextBuilder
+from src.core.orchestration.event_bus import get_event_bus as _get_event_bus
+from src.tools.formatter import run_formatter as _run_formatter
 
 
 def _check_project_deny_write(abs_path: Path, workdir: Path) -> None:
@@ -55,10 +51,8 @@ def _check_project_deny_write(abs_path: Path, workdir: Path) -> None:
     the relative path of *abs_path*.  No-ops silently when the config file is
     absent or when no patterns are configured.
     """
-    import fnmatch
 
     try:
-        from src.core.config_loader import get_project_deny_write_patterns
 
         patterns = get_project_deny_write_patterns(str(workdir))
         if not patterns:
@@ -115,7 +109,6 @@ def write_file(
 
     # GAP-S1: Read-before-write guardrail
     try:
-        from src.tools.guardrails import check_read_before_write
 
         rbw = check_read_before_write(path)
         if rbw:
@@ -123,7 +116,6 @@ def write_file(
     except Exception:
         pass
 
-    import difflib
 
     p = _safe_resolve(path, workdir)
 
@@ -210,7 +202,6 @@ def write_file(
 
         if requires_preview_confirmation():
             # Blocking gate — wait for TUI accept/reject
-            from src.core.orchestration.event_bus import get_event_bus as _get_bus
 
             _has_sub = _get_bus().has_subscribers("file.diff.preview")
             if _has_sub:
@@ -288,7 +279,6 @@ def write_file(
     # MEM-1: Invalidate context cache entry so the next ContextBuilder instantiation
     # re-reads from disk rather than serving the pre-write cached content.
     try:
-        from src.core.context.context_builder import ContextBuilder as _CB
 
         _CB.invalidate_path(str(p))
     except Exception:
@@ -304,7 +294,6 @@ def write_file(
     }
     # S2-C: Auto-formatter — run after write; failures are warnings only.
     try:
-        from src.tools.formatter import run_formatter as _run_formatter
 
         _formatted = _run_formatter(str(p))
         if _formatted:
@@ -357,7 +346,6 @@ def read_file(
 
     # GAP-S1: Mark file as read for guardrail enforcement
     try:
-        from src.tools.guardrails import mark_file_read
 
         mark_file_read(str(p.resolve()))
     except Exception:
@@ -439,7 +427,6 @@ def delete_file(
 
     # Read-before-write guardrail: deletion is destructive
     try:
-        from src.tools.guardrails import check_read_before_write
 
         rbw = check_read_before_write(path)
         if rbw:
@@ -536,7 +523,6 @@ def rename_file(
 
     # Read-before-write guardrail: rename is destructive on the source file
     try:
-        from src.tools.guardrails import check_read_before_write
 
         rbw = check_read_before_write(resolved_src)
         if rbw:
@@ -550,12 +536,6 @@ def rename_file(
         return {"ok": True, "status": "ok", "renamed": str(dst_resolved)}
     except Exception as e:
         return {"status": "error", "error": str(e)}
-
-
-def sandbox_info(workdir: Path | None = None) -> Dict[str, Any]:
-    if workdir is None:
-        workdir = Path.cwd()
-    return {"workdir": str(workdir.resolve())}
 
 
 @tool(tags=["coding"], permission_kind=PermissionKind.READ_FILE)
@@ -580,7 +560,6 @@ def read_file_chunk(
     content = raw.decode("utf-8", errors="replace")
     # GAP-S1: Mark file as read for guardrail enforcement
     try:
-        from src.tools.guardrails import mark_file_read
 
         mark_file_read(str(p.resolve()))
     except Exception:
@@ -594,12 +573,14 @@ def read_file_chunk(
     }
 
 
+_GLOB_RESULT_LIMIT = 500
+
+
 @tool(tags=["coding"], permission_kind=PermissionKind.READ_FILE)
 def glob(pattern: str, workdir: Path | None = None) -> Dict[str, Any]:
     """Find files matching a glob pattern. Supports ** for recursive matching."""
     if workdir is None:
         workdir = Path.cwd()
-    LIMIT = 500
     try:
         base = Path(workdir).resolve()
         # F13 fix: reject patterns that escape the working directory via ".."
@@ -709,7 +690,6 @@ def read_file_bytes(
     """
     if workdir is None:
         workdir = Path.cwd()
-    import base64
 
     p = _safe_resolve(path, workdir)
     if not p.exists():

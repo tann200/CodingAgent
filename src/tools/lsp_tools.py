@@ -55,12 +55,7 @@ def _get_manager(working_dir: Optional[str] = None):
     return get_lsp_manager(workspace=root)
 
 
-def _ok(output: str) -> Dict[str, Any]:
-    return {"ok": True, "output": output}
-
-
-def _err(msg: str) -> Dict[str, Any]:
-    return {"ok": False, "output": msg}
+from src.tools._tool import ok, err
 
 
 # ---------------------------------------------------------------------------
@@ -91,21 +86,21 @@ async def lsp_diagnostics(
         mgr = _get_manager(working_dir)
         client = await mgr.get_client_for_file(path)
         if not client.available:
-            return _ok(_UNAVAILABLE_MSG)
+            return ok(_UNAVAILABLE_MSG)
         uri = _path_to_uri(path)
         diags = await client.get_diagnostics(uri)
         if not diags:
-            return _ok("No diagnostics — file looks clean.")
+            return ok("No diagnostics — file looks clean.")
         lines = []
         for d in diags:
             lines.append(
                 f"  [{d.severity_label.upper()}] line {d.line + 1}:{d.col + 1} "
                 f"{d.message}" + (f" ({d.source})" if d.source else "")
             )
-        return _ok(f"Diagnostics for {path}:\n" + "\n".join(lines))
+        return ok(f"Diagnostics for {path}:\n" + "\n".join(lines))
     except Exception as exc:
         logger.debug("lsp_diagnostics: error: %s", exc)
-        return _ok(_UNAVAILABLE_MSG)
+        return ok(_UNAVAILABLE_MSG)
 
 
 # ---------------------------------------------------------------------------
@@ -134,16 +129,16 @@ async def lsp_references(
         mgr = _get_manager(working_dir)
         client = await mgr.get_client_for_file(path)
         if not client.available:
-            return _ok(_UNAVAILABLE_MSG)
+            return ok(_UNAVAILABLE_MSG)
         uri = _path_to_uri(path)
         refs = await client.get_references(uri, line, col)
         if not refs:
-            return _ok("No references found.")
+            return ok("No references found.")
         lines = [f"  {r.uri}:{r.start_line + 1}:{r.start_col + 1}" for r in refs]
-        return _ok(f"References ({len(refs)}):\n" + "\n".join(lines))
+        return ok(f"References ({len(refs)}):\n" + "\n".join(lines))
     except Exception as exc:
         logger.debug("lsp_references: error: %s", exc)
-        return _ok(_UNAVAILABLE_MSG)
+        return ok(_UNAVAILABLE_MSG)
 
 
 # ---------------------------------------------------------------------------
@@ -172,18 +167,18 @@ async def lsp_definition(
         mgr = _get_manager(working_dir)
         client = await mgr.get_client_for_file(path)
         if not client.available:
-            return _ok(_UNAVAILABLE_MSG)
+            return ok(_UNAVAILABLE_MSG)
         uri = _path_to_uri(path)
         locs = await client.get_definition(uri, line, col)
         if not locs:
-            return _ok("No definition found.")
+            return ok("No definition found.")
         lines = [
             f"  {loc.uri}:{loc.start_line + 1}:{loc.start_col + 1}" for loc in locs
         ]
-        return _ok("Definition:\n" + "\n".join(lines))
+        return ok("Definition:\n" + "\n".join(lines))
     except Exception as exc:
         logger.debug("lsp_definition: error: %s", exc)
-        return _ok(_UNAVAILABLE_MSG)
+        return ok(_UNAVAILABLE_MSG)
 
 
 # ---------------------------------------------------------------------------
@@ -206,20 +201,20 @@ async def lsp_symbols(
         mgr = _get_manager(working_dir)
         client = await mgr.get_client_for_file(path)
         if not client.available:
-            return _ok(_UNAVAILABLE_MSG)
+            return ok(_UNAVAILABLE_MSG)
         uri = _path_to_uri(path)
         syms = await client.get_symbols(uri)
         if not syms:
-            return _ok("No symbols found.")
+            return ok("No symbols found.")
         lines = [
             f"  {s.kind_label:12} {s.name}  (line {s.start_line + 1}–{s.end_line + 1})"
             + (f" — {s.detail}" if s.detail else "")
             for s in syms
         ]
-        return _ok(f"Symbols in {path} ({len(syms)}):\n" + "\n".join(lines))
+        return ok(f"Symbols in {path} ({len(syms)}):\n" + "\n".join(lines))
     except Exception as exc:
         logger.debug("lsp_symbols: error: %s", exc)
-        return _ok(_UNAVAILABLE_MSG)
+        return ok(_UNAVAILABLE_MSG)
 
 
 # ---------------------------------------------------------------------------
@@ -248,15 +243,15 @@ async def lsp_hover(
         mgr = _get_manager(working_dir)
         client = await mgr.get_client_for_file(path)
         if not client.available:
-            return _ok(_UNAVAILABLE_MSG)
+            return ok(_UNAVAILABLE_MSG)
         uri = _path_to_uri(path)
         text = await client.get_hover(uri, line, col)
         if not text:
-            return _ok("No hover information available.")
-        return _ok(f"Hover at {path}:{line + 1}:{col + 1}:\n{text}")
+            return ok("No hover information available.")
+        return ok(f"Hover at {path}:{line + 1}:{col + 1}:\n{text}")
     except Exception as exc:
         logger.debug("lsp_hover: error: %s", exc)
-        return _ok(_UNAVAILABLE_MSG)
+        return ok(_UNAVAILABLE_MSG)
 
 
 # ---------------------------------------------------------------------------
@@ -288,11 +283,11 @@ async def lsp_rename(
         mgr = _get_manager(working_dir)
         client = await mgr.get_client_for_file(path)
         if not client.available:
-            return _ok(_UNAVAILABLE_MSG)
+            return ok(_UNAVAILABLE_MSG)
         uri = _path_to_uri(path)
         edit = await client.rename(uri, line, col, new_name)
         if not edit.changes:
-            return _ok("No rename edits produced — symbol may not support renaming.")
+            return ok("No rename edits produced — symbol may not support renaming.")
 
         # Apply the edits to disk
         total_edits = 0
@@ -334,13 +329,13 @@ async def lsp_rename(
                     "lsp_rename: failed to apply edit to %s: %s", file_uri, file_exc
                 )
 
-        return _ok(
+        return ok(
             f"Renamed to '{new_name}' in {len(edited_files)} file(s) ({total_edits} edit(s)):\n"
             + "\n".join(f"  {f}" for f in edited_files)
         )
     except Exception as exc:
         logger.debug("lsp_rename: error: %s", exc)
-        return _ok(_UNAVAILABLE_MSG)
+        return ok(_UNAVAILABLE_MSG)
 
 
 # ---------------------------------------------------------------------------

@@ -8,24 +8,30 @@ backward compatibility.
 from __future__ import annotations
 
 import logging
+import os
+import re as _re
+import shlex
+import subprocess
 from pathlib import Path
 from typing import Dict, Any, Optional
 
-# Import security constants
 from src.tools._security import (
     DANGEROUS_PATTERNS,
-    SAFE_COMMANDS,
-    TEST_COMPILE_COMMANDS,
-    RESTRICTED_COMMANDS,
-    RESTRICTED_ALLOWED_SUBCOMMANDS,
-    CODE_EXEC_INTERPRETERS,
-    CODE_EXEC_FLAGS,
-    TAR_EXTRACT_FLAGS,
-    TAR_CREATE_FLAGS,
-    GIT_SAFE_SUBCOMMANDS,
-    SED_WRITE_FLAGS,
+    _check_path_security,
+    is_path_allowed,
 )
 from src.tools._tool import tool
+from src.tools.bash_security import analyze_bash_command, BashRiskLevel
+from src.tools.sandbox import run_sandboxed as _run_sandboxed
+from src.tools._approval import is_tier3 as _is_tier3
+from src.tools.tools_config import is_autonomous as _is_autonomous
+from src.core.orchestration.approval_gate import (
+    triage_bash_risk as _triage_bash_risk,
+    register_bash_gate,
+    _bash_denied,
+)
+from src.core.orchestration.event_bus import get_event_bus as _get_event_bus
+from src.core.inference.model_tiers import get_model_tier as _get_model_tier
 
 _logger = logging.getLogger(__name__)
 
@@ -44,65 +50,42 @@ _BASH_STDOUT_MAX_TOKENS = 2_000  # ~8 KB of typical code at 1 tok ≈ 4 chars
 _BASH_STDERR_MAX_TOKENS = 600  # enough for a full Python traceback
 
 
-def _truncate_bash_output(stdout: str, stderr: str) -> tuple[str, str, bool, bool]:
-    """Cap bash stdout/stderr and append a notice when truncated.
-
-    Returns (stdout, stderr, stdout_was_truncated, stderr_was_truncated).
-
-    Truncation uses token budgets when ``src.core.inference.tokenizer`` is
-    available (tiktoken or the character-heuristic fallback).  Byte caps are
-    kept as a fast safety net for when the tokenizer cannot be imported.
-    """
-    try:
-        from src.core.inference.tokenizer import count_tokens
-
-        def _token_truncate(text: str, max_tokens: int, label: str) -> tuple[str, bool]:
-            if not text:
-                return text, False
-            tok = count_tokens(text)
-            if tok <= max_tokens:
-                return text, False
-            # Binary-search the char boundary that brings tokens under budget.
-            lo, hi = 0, len(text)
-            while hi - lo > 64:
-                mid = (lo + hi) // 2
-                if count_tokens(text[:mid]) < max_tokens:
-                    lo = mid
-                else:
-                    hi = mid
-            cut = lo
-            omitted_tokens = tok - count_tokens(text[:cut])
-            return (
-                text[:cut]
-                + f"\n... [{label} truncated: ~{omitted_tokens} tokens omitted, reason: size_limit]",
-                True,
-            )
-
-        stdout, stdout_cut = _token_truncate(stdout, _BASH_STDOUT_MAX_TOKENS, "output")
-        stderr, stderr_cut = _token_truncate(stderr, _BASH_STDERR_MAX_TOKENS, "stderr")
-        return stdout, stderr, stdout_cut, stderr_cut
-
-    except ImportError:
-        pass
-
-    # Byte-based fallback
-    stdout_cut = False
-    if len(stdout) > _BASH_STDOUT_MAX:
-        omitted = len(stdout) - _BASH_STDOUT_MAX
-        stdout = (
-            stdout[:_BASH_STDOUT_MAX]
-            + f"\n... [output truncated: {omitted} chars omitted, reason: size_limit]"
-        )
-        stdout_cut = True
-    stderr_cut = False
-    if len(stderr) > _BASH_STDERR_MAX:
-        omitted = len(stderr) - _BASH_STDERR_MAX
-        stderr = (
-            stderr[:_BASH_STDERR_MAX]
-            + f"\n... [stderr truncated: {omitted} chars omitted, reason: size_limit]"
-        )
-        stderr_cut = True
-    return stdout, stderr, stdout_cut, stderr_cut
+# Destructive-command patterns checked by _check_shell_flags()
+# (distinct from DANGEROUS_PATTERNS which checks shell metacharacters)
+_DESTRUCTIVE_CMD_PATTERNS = [
+    (
+        "rm",
+        ["-rf", "-r", "-f", "--recursive", "--force"],
+        "Use delete_file tool instead of rm -rf",
+    ),
+    ("dd", ["of=", "conv=notrunc"], "dd with output file is not allowed"),
+    ("mkfs", [], "Filesystem creation is not allowed"),
+    ("fdisk", [], "Partition editing is not allowed"),
+    ("parted", [], "Partition editing is not allowed"),
+    ("ssh", ["-i"], "Interactive SSH is not allowed; use ssh with key auth only"),
+    ("chmod", ["777"], "World-writable permissions (777) are not allowed"),
+    ("chown", [], "Ownership change is not allowed"),
+    ("killall", [], "killall is not allowed; use kill with specific PID"),
+    ("pkill", ["-f"], "Process killing by name is not allowed"),
+    ("reboot", [], "System reboot is not allowed"),
+    ("shutdown", [], "System shutdown is not allowed"),
+    ("init", [], "Init control is not allowed"),
+    ("halt", [], "System halt is not allowed"),
+    ("poweroff", [], "Power off is not allowed"),
+    ("mount", [], "Mount operations require approval"),
+    ("umount", [], "Unmount operations require approval"),
+    (":(){ :|:&};:", None, "Fork bomb detected"),
+    (
+        "curl",
+        ["-o", "--output"],
+        "File download requires approval; use web_tools instead",
+    ),
+    (
+        "wget",
+        ["-O", "--output-document"],
+        "File download requires approval; use web_tools instead",
+    ),
+]
 
 
 def _check_shell_flags(cmd_parts: list, first_cmd: str) -> Optional[Dict[str, Any]]:
@@ -113,40 +96,6 @@ def _check_shell_flags(cmd_parts: list, first_cmd: str) -> Optional[Dict[str, An
     """
     # Destructive-command patterns checked by this gate (distinct from the
     # module-level DANGEROUS_PATTERNS which checks shell metacharacters).
-    _DESTRUCTIVE_CMD_PATTERNS = [
-        (
-            "rm",
-            ["-rf", "-r", "-f", "--recursive", "--force"],
-            "Use delete_file tool instead of rm -rf",
-        ),
-        ("dd", ["of=", "conv=notrunc"], "dd with output file is not allowed"),
-        ("mkfs", [], "Filesystem creation is not allowed"),
-        ("fdisk", [], "Partition editing is not allowed"),
-        ("parted", [], "Partition editing is not allowed"),
-        ("ssh", ["-i"], "Interactive SSH is not allowed; use ssh with key auth only"),
-        ("chmod", ["777"], "World-writable permissions (777) are not allowed"),
-        ("chown", [], "Ownership change is not allowed"),
-        ("killall", [], "killall is not allowed; use kill with specific PID"),
-        ("pkill", ["-f"], "Process killing by name is not allowed"),
-        ("reboot", [], "System reboot is not allowed"),
-        ("shutdown", [], "System shutdown is not allowed"),
-        ("init", [], "Init control is not allowed"),
-        ("halt", [], "System halt is not allowed"),
-        ("poweroff", [], "Power off is not allowed"),
-        ("mount", [], "Mount operations require approval"),
-        ("umount", [], "Unmount operations require approval"),
-        (":(){:|:&};:", None, "Fork bomb detected"),
-        (
-            "curl",
-            ["-o", "--output"],
-            "File download requires approval; use web_tools instead",
-        ),
-        (
-            "wget",
-            ["-O", "--output-document"],
-            "File download requires approval; use web_tools instead",
-        ),
-    ]
 
     for cmd, flags, msg in _DESTRUCTIVE_CMD_PATTERNS:
         if first_cmd == cmd:
@@ -225,13 +174,9 @@ def bash(
     if workdir is _WORKDIR_DEFAULT:
         workdir = Path.cwd()
     workdir = Path(workdir)  # type: ignore[arg-type]
-    import logging as _logging
 
     if description:
         _logging.getLogger(__name__).info(f"bash: {description} | cmd={command!r}")
-    import subprocess
-    import shlex
-    import re as _re
 
     # Gate 1: Shell-operator / metacharacter block (DANGEROUS_PATTERNS).
     # Blocks &&, ||, ;, |, >, >>, <, $(, ` and destructive keywords on the
@@ -249,7 +194,6 @@ def bash(
     # ($(...), backtick substitution, pipe-to-shell, fork bombs, disk-wipe ops) that
     # DANGEROUS_PATTERNS may miss (e.g. creative whitespace, multi-arg tricks).
     try:
-        from src.tools.bash_security import analyze_bash_command, BashRiskLevel
 
         _risk_level, _risk_reasons = analyze_bash_command(command)
         if _risk_level == BashRiskLevel.BLOCKED:
@@ -367,7 +311,6 @@ def bash(
             return {"status": "error", "error": f"OS error: {e}"}
 
     try:
-        from src.tools.sandbox import run_sandboxed
 
         result = run_sandboxed(
             cmd_parts,
@@ -441,8 +384,6 @@ def bash_readonly(
     if workdir is _WORKDIR_DEFAULT:
         workdir = Path.cwd()
     workdir = Path(workdir)  # type: ignore[arg-type]
-    import shlex
-    import re as _re
 
     # Gate 1: Shell-operator / metacharacter block.
     _cmd_lower = _re.sub(r"\s+", " ", command).lower()
@@ -455,7 +396,6 @@ def bash_readonly(
 
     # Gate 2: AST-level bash security analysis.
     try:
-        from src.tools.bash_security import analyze_bash_command, BashRiskLevel
 
         _risk_level, _risk_reasons = analyze_bash_command(command)
         if _risk_level == BashRiskLevel.BLOCKED:
@@ -534,10 +474,8 @@ def bash_readonly(
 
     # Execute inside sandbox (network disabled) — prevents exfiltration even for
     # read-only commands. Falls back to plain subprocess when bwrap unavailable.
-    import subprocess
 
     try:
-        from src.tools.sandbox import run_sandboxed
 
         result = run_sandboxed(
             cmd_parts,
@@ -636,45 +574,23 @@ def _check_tier3_approval(command: str) -> Optional[Dict[str, Any]]:
 
     Returns approval result dict if command should be blocked, None if approved.
     """
-    try:
-        from src.tools._approval import is_tier3
-        from src.tools.tools_config import is_autonomous
+    if is_tier3(command) and not is_autonomous():
+        _tool_id = str(_uuid_t3.uuid4())[:8]
+        _gate_ev = register_bash_gate(_tool_id)
+        try:
+            get_event_bus().publish(
+                "bash.approval_required",
+                {"tool_id": _tool_id, "command": command},
+            )
+        except Exception:
+            pass
 
-        # register_bash_gate and _bash_denied are defined in approval_gate.py.
-        from src.core.orchestration.approval_gate import (
-            register_bash_gate,
-            _bash_denied,
-        )
-        from src.core.orchestration.event_bus import get_event_bus
-
-        if is_tier3(command) and not is_autonomous():
-            import uuid as _uuid_t3
-
-            _tool_id = str(_uuid_t3.uuid4())[:8]
-            _gate_ev = register_bash_gate(_tool_id)
-            try:
-                get_event_bus().publish(
-                    "bash.approval_required",
-                    {"tool_id": _tool_id, "command": command},
-                )
-            except Exception:
-                pass
-
-            _approved = _gate_ev.wait(timeout=120.0)
-            if not _approved or _tool_id in _bash_denied:
-                _bash_denied.discard(_tool_id)
-                return {"status": "denied", "output": "Bash command denied by user."}
-    except Exception as _gate_exc:
-        # Gate setup failed — block for safety
-        _logger.warning(
-            "bash: tier-3 approval gate failed unexpectedly; blocking command for safety. "
-            "Error: %s cmd=%r",
-            _gate_exc,
-            command,
-        )
-        return {
-            "status": "error",
-            "error": "Approval gate failure — command blocked for safety. Re-run to retry.",
-        }
-
+        _approved = _gate_ev.wait(timeout=120.0)
+        if not _approved or _tool_id in _bash_denied:
+            _bash_denied.discard(_tool_id)
+            return {
+                "status": "error",
+                "error": "Bash command was denied by approval gate",
+                "tool_id": _tool_id,
+            }
     return None

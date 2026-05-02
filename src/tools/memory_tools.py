@@ -136,10 +136,6 @@ def _get_user_tier_limits(tier: Optional[str] = None) -> int:
     return _USER_TIER_LIMITS[_DEFAULT_TIER]["max_chars"]
 
 
-# Memory file and limits
-_MEMORY_FILE = get_memory_path()
-
-
 @tool(tags=["coding", "planning", "review"], permission_kind=PermissionKind.MEMORY)
 def memory_save(
     content: str,
