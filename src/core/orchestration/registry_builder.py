@@ -10,7 +10,11 @@ requires editing the 4000-line orchestrator.
 
 from __future__ import annotations
 
+import logging
+
 from src.core.orchestration.tool_registry import ToolRegistry
+
+logger = logging.getLogger(__name__)
 
 
 def example_registry() -> ToolRegistry:
@@ -46,11 +50,11 @@ def example_registry() -> ToolRegistry:
                     "side_effects": ["write"],
                     "description": "edit_by_line_range(path, start_line, end_line, new_content) -> Replace lines in file",
                 }
-        except Exception:
-            pass
+        except AttributeError as exc:
+            logger.debug("registry_builder: edit_by_line_range override skipped: %s", exc)
         return reg
-    except Exception:
-        pass  # Fall through to manual registration below
+    except Exception as exc:
+        logger.warning("registry_builder: auto-discovery failed (%s); falling back to manual registration", exc)
 
     from src.tools import file_tools  # noqa: PLC0415
 

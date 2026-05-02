@@ -14,14 +14,12 @@ logger = logging.getLogger(__name__)
 
 def _extract_json_object(text: str) -> Optional[Dict[str, Any]]:
     """Extract and parse a JSON object with 'name' and 'arguments' keys."""
-    import re as _re
-
     patterns = [
         r'\{[^}]*"name"\s*:\s*"[^"]+"\s*,\s*"arguments"\s*:\s*\{',
     ]
 
     for pattern in patterns:
-        match = _re.search(pattern, text)
+        match = re.search(pattern, text)
         if match:
             start = match.start()
             depth = 0
@@ -483,13 +481,11 @@ def _parse_qwen3_xml(text: str) -> Optional[Dict[str, Any]]:
     This parser extracts the tool name and arguments, converting arguments
     to JSON if they're a JSON string.
     """
-    import re as _re
-
     name_pattern = r"<name>\s*([A-Za-z_]\w*)\s*</name>"
     args_pattern = r"<arguments>\s*(.*?)\s*</arguments>"
 
-    name_match = _re.search(name_pattern, text, _re.DOTALL)
-    args_match = _re.search(args_pattern, text, _re.DOTALL)
+    name_match = re.search(name_pattern, text, re.DOTALL)
+    args_match = re.search(args_pattern, text, re.DOTALL)
 
     if not name_match:
         return None

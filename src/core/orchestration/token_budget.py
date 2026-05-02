@@ -4,14 +4,28 @@ Integrates with existing memory_update_node and distill_context.
 """
 
 import logging
+import threading
 from dataclasses import dataclass
 from typing import Optional
 
 logger = logging.getLogger(__name__)
 
 
+class _UsageRatioMixin:
+    """Mixin providing ``usage_ratio`` for dataclasses with used/max_tokens fields."""
+
+    used_tokens: int
+    max_tokens: int
+
+    @property
+    def usage_ratio(self) -> float:
+        if self.max_tokens <= 0:
+            return 0.0
+        return self.used_tokens / self.max_tokens
+
+
 @dataclass
-class TokenBudget:
+class TokenBudget(_UsageRatioMixin):
     """Tracks token usage and compaction history."""
 
     used_tokens: int
@@ -22,12 +36,6 @@ class TokenBudget:
     current_turn: int = 0
     prompt_tokens: int = 0
     completion_tokens: int = 0
-
-    @property
-    def usage_ratio(self) -> float:
-        if self.max_tokens <= 0:
-            return 0.0
-        return self.used_tokens / self.max_tokens
 
     @property
     def should_warn(self) -> bool:
@@ -58,6 +66,7 @@ class TokenBudgetMonitor:
     """
 
     _instance = None
+    _instance_lock = threading.Lock()
 
     def __init__(
         self,
@@ -73,7 +82,9 @@ class TokenBudgetMonitor:
     @classmethod
     def get_instance(cls) -> "TokenBudgetMonitor":
         if cls._instance is None:
-            cls._instance = cls()
+            with cls._instance_lock:
+                if cls._instance is None:
+                    cls._instance = cls()
         return cls._instance
 
     def get_budget(self, session_id: str) -> TokenBudget:

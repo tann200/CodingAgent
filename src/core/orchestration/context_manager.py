@@ -31,6 +31,7 @@ from src.core.memory.auto_compactor import (
 from src.core.orchestration.token_budget import (
     TokenBudgetMonitor,
     TokenBudget,
+    _UsageRatioMixin,
 )
 
 logger = logging.getLogger(__name__)
@@ -47,19 +48,13 @@ class ContextLayer:
 
 
 @dataclass
-class ContextBudget:
+class ContextBudget(_UsageRatioMixin):
     """Tracks context budget for a session."""
 
     session_id: str
     max_tokens: int
     used_tokens: int
     layers: list[ContextLayer]
-
-    @property
-    def usage_ratio(self) -> float:
-        if self.max_tokens <= 0:
-            return 0.0
-        return self.used_tokens / self.max_tokens
 
     @property
     def remaining_tokens(self) -> int:
