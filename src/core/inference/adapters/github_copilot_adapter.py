@@ -36,6 +36,12 @@ import logging
 import threading
 from typing import Any, Dict, List, Optional, Union
 
+from src.core.inference.adapters.github_copilot_auth import (
+    clear_token,
+    is_authenticated,
+    load_enterprise_url,
+    load_token,
+)
 from src.core.inference.adapters.openai_compat_adapter import OpenAICompatibleAdapter
 
 _logger = logging.getLogger(__name__)
@@ -74,8 +80,6 @@ class GithubCopilotAdapter(OpenAICompatibleAdapter):
         **kwargs,
     ):
         # Determine base URL — may be overridden for GitHub Enterprise
-        from src.core.inference.adapters.github_copilot_auth import load_enterprise_url
-
         enterprise = load_enterprise_url()
         base_url = (
             f"https://copilot-api.{enterprise}" if enterprise else COPILOT_BASE_URL
@@ -128,8 +132,6 @@ class GithubCopilotAdapter(OpenAICompatibleAdapter):
         and model on ``self`` in ``_chat_internal()`` before delegating to the
         base class, then reading them back here.
         """
-        from src.core.inference.adapters.github_copilot_auth import load_token
-
         token = load_token()
         if not token:
             raise RuntimeError(
@@ -215,10 +217,6 @@ class GithubCopilotAdapter(OpenAICompatibleAdapter):
                     "github_copilot_adapter: 401 Unauthorized — clearing stale token"
                 )
                 try:
-                    from src.core.inference.adapters.github_copilot_auth import (
-                        clear_token,
-                    )
-
                     clear_token()
                 except Exception:
                     pass
@@ -253,8 +251,6 @@ class GithubCopilotAdapter(OpenAICompatibleAdapter):
         Returns empty list (not an error) when unauthenticated so startup health
         checks don't produce spurious warnings.
         """
-        from src.core.inference.adapters.github_copilot_auth import is_authenticated
-
         if not is_authenticated():
             return {"models": []}
         # Base class handles {"data": [...]} and {"models": [...]} response shapes.
@@ -273,8 +269,6 @@ class GithubCopilotAdapter(OpenAICompatibleAdapter):
 
     def validate_connection(self) -> bool:
         """Return True if a token is stored (no network call at startup)."""
-        from src.core.inference.adapters.github_copilot_auth import is_authenticated
-
         return is_authenticated()
 
 

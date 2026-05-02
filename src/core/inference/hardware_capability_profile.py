@@ -7,6 +7,7 @@ Primary target: rtx5070ti-16g (16GB VRAM, 64GB RAM, 6-core 5600X).
 from __future__ import annotations
 
 import logging
+import os
 import platform
 import re
 import subprocess
@@ -206,8 +207,6 @@ def _detect_ram() -> float:
 def _detect_cpu_cores() -> tuple[int, int]:
     """Detect CPU cores and threads."""
     try:
-        import os
-
         cores = os.cpu_count() or 4
         return cores, cores * 2
     except Exception:

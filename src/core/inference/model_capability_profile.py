@@ -203,10 +203,6 @@ def get_model_profile(model_name: str, context_window: int = 0) -> ModelProfile:
         kv = 1.2
         weights = 8.0
     elif tier == ModelTier.MEDIUM:
-        params = 14
-        kv = 1.2
-        weights = 8.0
-    elif tier == ModelTier.MEDIUM:
         params = 27
         kv = 1.6
         weights = 14.0

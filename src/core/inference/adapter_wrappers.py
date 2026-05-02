@@ -2,6 +2,11 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 from time import time
 
+try:
+    from src.core.inference.telemetry import publish_model_response as _publish_model_response
+except Exception:
+    _publish_model_response = None  # type: ignore
+
 
 class AdapterWrapper:
     """Wrap existing adapters (which may provide chat/generate) into a common generate() API.
@@ -42,12 +47,8 @@ class AdapterWrapper:
         try:
             if self.event_bus is not None:
                 try:
-                    from src.core.inference.telemetry import publish_model_response
-                except Exception:
-                    publish_model_response = None
-                try:
-                    if publish_model_response:
-                        publish_model_response(
+                    if _publish_model_response:
+                        _publish_model_response(
                             self.event_bus,
                             str(out.get("provider") or "unknown"),
                             str(out.get("model") or "unknown"),

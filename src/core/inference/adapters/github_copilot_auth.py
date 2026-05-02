@@ -42,6 +42,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
 import stat
 import tempfile
 import threading
@@ -136,8 +137,6 @@ def _auth_json_path() -> Path:
         if not new_path.exists() and old_path.exists():
             try:
                 new_path.parent.mkdir(parents=True, exist_ok=True)
-                import shutil
-
                 shutil.copy2(old_path, new_path)
                 new_path.chmod(0o600)
                 _logger.info("Migrated auth.json from %s to %s", old_path, new_path)
@@ -513,8 +512,8 @@ def _load_token_impl() -> Optional[str]:
             )
             return access
 
-        domain = entry.get("enterpriseUrl") or "github.com"
         enterprise_url = entry.get("enterpriseUrl") or None
+        domain = enterprise_url or "github.com"
         _logger.info(
             "github_copilot_auth: access token expires in %ds — refreshing",
             max(0, expires - now),

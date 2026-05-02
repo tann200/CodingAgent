@@ -218,6 +218,40 @@ def classify_exception(exc: BaseException) -> ErrorCode:
     return ErrorCode.UNKNOWN
 
 
+_ERROR_CODE_LABELS: dict[str, str] = {
+    ErrorCode.TOOL_PERMISSION_DENIED: "Permission denied",
+    ErrorCode.TOOL_TIMEOUT: "Tool timed out",
+    ErrorCode.TOOL_SANDBOX_BLOCKED: "Sandbox blocked",
+    ErrorCode.TOOL_WORKSPACE_ESCAPE: "Path outside workspace",
+    ErrorCode.TOOL_SSRF_BLOCKED: "SSRF blocked",
+    ErrorCode.TOOL_NOT_FOUND: "Tool not found",
+    ErrorCode.TOOL_INVALID_ARGS: "Invalid tool arguments",
+    ErrorCode.TOOL_EXECUTION_FAILED: "Tool execution failed",
+    ErrorCode.LLM_CONTEXT_OVERFLOW: "Context window full",
+    ErrorCode.LLM_RATE_LIMITED: "Rate limited — retrying",
+    ErrorCode.LLM_CONNECTION_FAILED: "Provider unreachable",
+    ErrorCode.LLM_INVALID_RESPONSE: "Invalid LLM response",
+    ErrorCode.LLM_CANCELLED: "Cancelled",
+    ErrorCode.LLM_BUDGET_EXCEEDED: "Token budget exceeded",
+    ErrorCode.LLM_MAX_TURNS_REACHED: "Turn limit reached",
+    ErrorCode.PLAN_INVALID: "Invalid plan",
+    ErrorCode.PLAN_MAX_RETRIES: "Planning max retries",
+    ErrorCode.PLAN_NO_TOOLS_MATCH: "No matching tools",
+    ErrorCode.PLAN_DOOM_LOOP: "Loop detected",
+    ErrorCode.PLAN_VALIDATION_FAILED: "Plan validation failed",
+    ErrorCode.MEMORY_INJECTION_BLOCKED: "Memory injection blocked",
+    ErrorCode.MEMORY_WRITE_CONFLICT: "Memory write conflict",
+    ErrorCode.MEMORY_COMPACTION_FAILED: "Memory compaction failed",
+    ErrorCode.MEMORY_NOT_FOUND: "Memory not found",
+    ErrorCode.DELEGATION_DEPTH_EXCEEDED: "Delegation depth exceeded",
+    ErrorCode.DELEGATION_TIMEOUT: "Delegation timed out",
+    ErrorCode.DELEGATION_FAILED: "Delegation failed",
+    ErrorCode.SYSTEM_PARSE_FAILURE: "Parse failure",
+    ErrorCode.SYSTEM_VALIDATION_ERROR: "Validation error",
+    ErrorCode.UNKNOWN: "Unknown error",
+}
+
+
 def error_code_label(code: ErrorCode) -> str:
     """Return a short human-readable label for display in the TUI or logs.
 
@@ -226,39 +260,7 @@ def error_code_label(code: ErrorCode) -> str:
         error_code_label(ErrorCode.LLM_RATE_LIMITED)   → "Rate limited"
         error_code_label(ErrorCode.TOOL_TIMEOUT)        → "Tool timed out"
     """
-    _LABELS: dict[str, str] = {
-        ErrorCode.TOOL_PERMISSION_DENIED: "Permission denied",
-        ErrorCode.TOOL_TIMEOUT: "Tool timed out",
-        ErrorCode.TOOL_SANDBOX_BLOCKED: "Sandbox blocked",
-        ErrorCode.TOOL_WORKSPACE_ESCAPE: "Path outside workspace",
-        ErrorCode.TOOL_SSRF_BLOCKED: "SSRF blocked",
-        ErrorCode.TOOL_NOT_FOUND: "Tool not found",
-        ErrorCode.TOOL_INVALID_ARGS: "Invalid tool arguments",
-        ErrorCode.TOOL_EXECUTION_FAILED: "Tool execution failed",
-        ErrorCode.LLM_CONTEXT_OVERFLOW: "Context window full",
-        ErrorCode.LLM_RATE_LIMITED: "Rate limited — retrying",
-        ErrorCode.LLM_CONNECTION_FAILED: "Provider unreachable",
-        ErrorCode.LLM_INVALID_RESPONSE: "Invalid LLM response",
-        ErrorCode.LLM_CANCELLED: "Cancelled",
-        ErrorCode.LLM_BUDGET_EXCEEDED: "Token budget exceeded",
-        ErrorCode.LLM_MAX_TURNS_REACHED: "Turn limit reached",
-        ErrorCode.PLAN_INVALID: "Invalid plan",
-        ErrorCode.PLAN_MAX_RETRIES: "Planning max retries",
-        ErrorCode.PLAN_NO_TOOLS_MATCH: "No matching tools",
-        ErrorCode.PLAN_DOOM_LOOP: "Loop detected",
-        ErrorCode.PLAN_VALIDATION_FAILED: "Plan validation failed",
-        ErrorCode.MEMORY_INJECTION_BLOCKED: "Memory injection blocked",
-        ErrorCode.MEMORY_WRITE_CONFLICT: "Memory write conflict",
-        ErrorCode.MEMORY_COMPACTION_FAILED: "Memory compaction failed",
-        ErrorCode.MEMORY_NOT_FOUND: "Memory not found",
-        ErrorCode.DELEGATION_DEPTH_EXCEEDED: "Delegation depth exceeded",
-        ErrorCode.DELEGATION_TIMEOUT: "Delegation timed out",
-        ErrorCode.DELEGATION_FAILED: "Delegation failed",
-        ErrorCode.SYSTEM_PARSE_FAILURE: "Parse failure",
-        ErrorCode.SYSTEM_VALIDATION_ERROR: "Validation error",
-        ErrorCode.UNKNOWN: "Unknown error",
-    }
-    return _LABELS.get(code, code.value)
+    return _ERROR_CODE_LABELS.get(code, code.value)
 
 
 # ---------------------------------------------------------------------------

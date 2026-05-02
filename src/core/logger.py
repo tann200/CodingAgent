@@ -448,7 +448,6 @@ class _GUILoggingHandler(logging.Handler):
             self._local.active = False
 
 
-_installed_handler = False
 _install_handler_lock = Lock()
 
 
@@ -457,7 +456,6 @@ def install_stdlib_handler(level: int = logging.INFO) -> None:
 
     Idempotent: calling multiple times will not add duplicate handlers.
     """
-    global _installed_handler
     with _install_handler_lock:
         root = logging.getLogger()
         # Check if handler already installed (by attribute)
@@ -470,7 +468,6 @@ def install_stdlib_handler(level: int = logging.INFO) -> None:
         fmt = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
         handler.setFormatter(fmt)
         root.addHandler(handler)
-        _installed_handler = True
 
 
 # expose install function at module level

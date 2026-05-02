@@ -34,6 +34,8 @@ import logging
 import os
 from typing import Any, Dict, List, Optional
 
+import requests
+
 from src.core.inference.adapters.openai_compat_adapter import OpenAICompatibleAdapter
 from src.core.utils.strings import valid_str as _valid_str, extract_str as _extract_str
 
@@ -208,7 +210,6 @@ class AnthropicAdapter(OpenAICompatibleAdapter):
 
     def get_models_from_api(self) -> Dict[str, Any]:
         """List available Anthropic models."""
-        import requests  # local import to stay consistent with rest of codebase
 
         if not self.api_key:
             return {
@@ -281,7 +282,6 @@ class AnthropicAdapter(OpenAICompatibleAdapter):
 
     def validate_connection(self) -> bool:
         """Return True if the API key is present and the models endpoint responds."""
-        import requests  # local import
 
         if not self.api_key:
             return False

@@ -81,11 +81,6 @@ def _get_workspace_config_paths() -> List[Path]:
 
     cwd = Path.cwd()
     candidate = cwd / ctx_name
-
-    # Use agent_context_path() for consistent behavior
-    if candidate.exists():
-        return [candidate / "config.json", candidate / "config.local.json"]
-
     return [candidate / "config.json", candidate / "config.local.json"]
 
 
@@ -122,7 +117,7 @@ def load_merged_config(working_dir: Optional[Path] = None) -> Dict[str, Any]:
 
                 ctx_name = get_context_dir_name()
             except Exception:
-                ctx_name = ctx_name = ".codingAgent"
+                ctx_name = ".codingAgent"
             wd = Path(working_dir)
             candidate = wd / ctx_name
             if candidate.exists():

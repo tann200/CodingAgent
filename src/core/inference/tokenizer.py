@@ -69,27 +69,30 @@ def _get_hf_tokenizer(model_hint: Optional[str]) -> Optional[Any]:
     try:
         from transformers import AutoTokenizer  # type: ignore[import]
 
-        tokenizer = AutoTokenizer.from_pretrained(
-            f"models/{model_hint}",  # Local model path
-            local_files_only=True,
-        )
-        _HF_TOKENIZERS[m] = tokenizer
-        return tokenizer
+        try:
+            tokenizer = AutoTokenizer.from_pretrained(
+                f"models/{model_hint}",  # Local model path
+                local_files_only=True,
+            )
+            _HF_TOKENIZERS[m] = tokenizer
+            return tokenizer
+        except Exception:
+            pass
+
+        # Try from HuggingFace Hub (requires internet)
+        try:
+            tokenizer = AutoTokenizer.from_pretrained(
+                _hf_model_name(model_hint),
+                trust_remote_code=True,
+            )
+            _HF_TOKENIZERS[m] = tokenizer
+            return tokenizer
+        except Exception:
+            pass
     except Exception:
         pass
 
-    # Try from HuggingFace Hub (requires internet)
-    try:
-        from transformers import AutoTokenizer  # type: ignore[import]
-
-        tokenizer = AutoTokenizer.from_pretrained(
-            _hf_model_name(model_hint),
-            trust_remote_code=True,
-        )
-        _HF_TOKENIZERS[m] = tokenizer
-        return tokenizer
-    except Exception:
-        return None
+    return None
 
 
 def _hf_model_name(model_hint: str) -> str:
@@ -210,11 +213,4 @@ def clear_tokenizer_cache(model_hint: Optional[str] = None) -> None:
         if m in _HF_TOKENIZERS:
             del _HF_TOKENIZERS[m]
     else:
-        _HF_TOKENIZERS.clear()
-
-
-# Periodic cleanup: clear cache if it grows too large
-def _check_cache_size():
-    """Internal: clear cache if it exceeds reasonable size."""
-    if len(_HF_TOKENIZERS) > 10:  # Arbitrary limit
         _HF_TOKENIZERS.clear()
