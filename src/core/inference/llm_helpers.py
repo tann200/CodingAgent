@@ -1,10 +1,16 @@
 import asyncio
 import logging
+import os
 from typing import Any, Mapping
 
 from src.core.inference.llm_manager import call_model
 
 logger = logging.getLogger(__name__)
+
+# G12: opt-in token streaming via env var.
+# When true, perception_node and inference_loop fallback pass stream=True
+# so _consume_sse_stream publishes llm.token events per chunk.
+_STREAMING_ENABLED: bool = os.getenv("CODING_AGENT_STREAM_TOKENS", "").lower() in ("1", "true", "yes")
 
 
 async def _await_llm_task(
@@ -78,7 +84,7 @@ async def call_model_with_timeout(
                 messages,
                 provider=provider,
                 model=model,
-                stream=False,
+                stream=_STREAMING_ENABLED,
                 format_json=False,
                 tools=None,
                 session_id=state.get("session_id"),

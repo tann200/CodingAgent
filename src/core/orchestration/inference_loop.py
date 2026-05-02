@@ -259,6 +259,12 @@ def run_agent_once_impl(
     """
     Invokes the LangGraph cognitive pipeline to execute the task.
     """
+    # G12: opt-in token streaming — mirrors llm_helpers._STREAMING_ENABLED
+    try:
+        from src.core.inference.llm_helpers import _STREAMING_ENABLED as _streaming_enabled
+    except Exception:
+        _streaming_enabled = False
+
     # Store cancel_event on orchestrator instance so nodes can access it via getattr
     orch.cancel_event = cancel_event
 
@@ -1032,7 +1038,7 @@ def run_agent_once_impl(
                     messages_for_model,
                     provider=provider_name,
                     model=model_name,
-                    stream=False,
+                    stream=_streaming_enabled,
                     format_json=False,
                 )
                 try:

@@ -9,6 +9,7 @@ from src.core.inference.llm_manager import (
     CircuitBreaker,
     get_circuit_breaker,
     _CIRCUIT_BREAKERS,
+    _consume_sse_stream,
 )
 from src.core.orchestration.event_bus import EventBus
 from src.core.user_prefs import UserPrefs
@@ -178,3 +179,35 @@ class TestCircuitBreaker:
         cb.record_success()
         assert cb._failure_count == 0
         assert cb.state == CircuitBreaker.CLOSED
+
+def test_consume_sse_stream_publishes_llm_token_alias(monkeypatch):
+    from src.core.inference.llm_manager import _consume_sse_stream
+    class FakeResponse:
+        def iter_lines(self):
+            yield b'data: {"choices": [{"delta": {"content": "Hel"}}]}'
+            yield b'data: {"choices": [{"delta": {"content": "lo"}}]}'
+            yield b'data: [DONE]'
+
+    bus = EventBus()
+    published = []
+
+    for event_name in ("model.token", "llm.token", "response.stream_end"):
+        def make_handler(en):
+            return lambda payload: published.append((en, payload))
+        bus.subscribe(event_name, make_handler(event_name))
+
+    monkeypatch.setattr(
+        "src.core.orchestration.event_bus.get_event_bus",
+        lambda: bus,
+        raising=False,
+    )
+
+    result = _consume_sse_stream(FakeResponse(), model="test-model")
+
+    assert result == "Hello"
+    llm_events = [p for e, p in published if e == "llm.token"]
+    model_events = [p for e, p in published if e == "model.token"]
+    assert llm_events
+    assert model_events
+    assert any(ev.get("partial") is True and ev.get("text") == "Hel" for ev in llm_events)
+    assert any(ev.get("partial") is False and ev.get("full") == "Hello" for ev in llm_events)

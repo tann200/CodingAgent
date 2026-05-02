@@ -6,7 +6,10 @@ import asyncio
 import json
 import logging
 import threading
-from typing import AsyncGenerator, Dict, Optional
+import time
+import uuid
+from enum import Enum
+from typing import AsyncGenerator, Dict, List, Optional, Any
 
 import uvicorn
 import os
@@ -143,6 +146,7 @@ class ServerEventBusAdapter:
             "mcp.server.status",
             "workflow.step",
             "llm.response",
+            "llm.token",
             "session.created",
             "session.updated",
             # Relay perception corrective prompts to clients
@@ -249,6 +253,141 @@ class SessionCreateRequest(BaseModel):
 class SessionResponse(BaseModel):
     session_id: str
     status: str = "created"
+
+
+# ---------------------------------------------------------------------------
+# Task execution models and in-process registry
+# ---------------------------------------------------------------------------
+
+
+class TaskStatus(str, Enum):
+    ACCEPTED = "accepted"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class TaskCreateRequest(BaseModel):
+    task: str
+    session_id: Optional[str] = None
+    working_dir: Optional[str] = None
+    model: Optional[str] = None
+
+
+class TaskStatusResponse(BaseModel):
+    task_id: str
+    session_id: str
+    status: TaskStatus
+    result: Optional[str] = None
+    error: Optional[str] = None
+    started_at: Optional[float] = None
+    finished_at: Optional[float] = None
+
+
+# In-process task registry: task_id -> dict with status/result/cancel_event
+_TASK_REGISTRY: Dict[str, Dict[str, Any]] = {}
+_TASK_REGISTRY_LOCK = threading.Lock()
+
+
+def _get_or_create_orchestrator(working_dir: Optional[str], model: Optional[str]):
+    """Return a lightweight Orchestrator for ad-hoc task execution.
+
+    Import is deferred so the server stays importable without all heavy deps
+    when used in tests.
+    """
+    from src.core.orchestration.orchestrator import Orchestrator  # type: ignore[import]
+
+    kwargs: Dict[str, Any] = {}
+    if working_dir:
+        kwargs["working_dir"] = working_dir
+    if model:
+        kwargs["model"] = model
+    return Orchestrator(**kwargs)
+
+
+def _run_task_thread(
+    task_id: str,
+    session_id: str,
+    task: str,
+    working_dir: Optional[str],
+    model: Optional[str],
+    cancel_event: threading.Event,
+    bus: Optional[EventBus],
+) -> None:
+    """Execute a task in a background thread and update the registry."""
+    with _TASK_REGISTRY_LOCK:
+        rec = _TASK_REGISTRY.get(task_id)
+        if rec is None:
+            return
+        rec["status"] = TaskStatus.RUNNING
+        rec["started_at"] = time.time()
+
+    if bus:
+        try:
+            bus.publish("agent.start", {"task_id": task_id, "session_id": session_id, "task": task[:200]})
+        except Exception:
+            pass
+
+    result_text: Optional[str] = None
+    error_text: Optional[str] = None
+    try:
+        orch = _get_or_create_orchestrator(working_dir, model)
+        # Wire EventBus so task events flow to SSE/WS clients
+        if bus:
+            try:
+                orch.event_bus = bus
+            except Exception:
+                pass
+
+        messages = [{"role": "user", "content": task}]
+        tools = getattr(orch, "tools", {}) or {}
+        try:
+            tools = orch.get_tools_for_role("default")
+        except Exception:
+            pass
+
+        result = orch.run_agent_once(
+            system_prompt_name=None,
+            messages=messages,
+            tools=tools,
+            cancel_event=cancel_event,
+        )
+        if isinstance(result, dict):
+            result_text = result.get("assistant_message") or result.get("result") or str(result)
+            if not result.get("ok", True):
+                error_text = result.get("error")
+        else:
+            result_text = str(result)
+    except Exception as exc:
+        error_text = str(exc)
+        logger.exception("Task %s failed: %s", task_id, exc)
+
+    final_status = TaskStatus.FAILED if error_text else TaskStatus.COMPLETED
+    if cancel_event.is_set():
+        final_status = TaskStatus.CANCELLED
+
+    with _TASK_REGISTRY_LOCK:
+        rec = _TASK_REGISTRY.get(task_id, {})
+        rec["status"] = final_status
+        rec["result"] = result_text
+        rec["error"] = error_text
+        rec["finished_at"] = time.time()
+
+    if bus:
+        try:
+            bus.publish(
+                "agent.end",
+                {
+                    "task_id": task_id,
+                    "session_id": session_id,
+                    "status": final_status.value,
+                    "result": (result_text or "")[:500],
+                    "error": error_text,
+                },
+            )
+        except Exception:
+            pass
 
 
 # Create FastAPI app
@@ -731,19 +870,20 @@ async def websocket_session_events(session_id: str, websocket: WebSocket):
 
     # Derive initial subscription list
     default_event_types = [
-        "agent.start",
-        "agent.end",
-        "tool.start",
-        "tool.end",
-        "mcp.server.status",
-        "workflow.step",
-        "llm.response",
-        "session.created",
-        "session.updated",
-        "perception.corrective_prompt",
-        "error",
-        "log",
-    ]
+            "agent.start",
+            "agent.end",
+            "tool.start",
+            "tool.end",
+            "mcp.server.status",
+            "workflow.step",
+            "llm.response",
+            "llm.token",
+            "session.created",
+            "session.updated",
+            "perception.corrective_prompt",
+            "error",
+            "log",
+        ]
 
     if events_param is None:
         initial_events = default_event_types
@@ -1000,6 +1140,128 @@ async def websocket_session_events(session_id: str, websocket: WebSocket):
                 event_bus.unsubscribe(ev, h)
             except Exception:
                 pass
+
+
+# ---------------------------------------------------------------------------
+# Task execution endpoints (G8)
+# ---------------------------------------------------------------------------
+
+
+@app.post("/task", response_model=TaskStatusResponse, status_code=202)
+async def submit_task(request_body: TaskCreateRequest):
+    """Submit a task for asynchronous execution.
+
+    Returns immediately with task_id and status=accepted.  The orchestrator
+    runs in a background thread and publishes agent.start / agent.end events
+    to the EventBus so SSE/WS clients receive live updates.
+
+    Poll GET /task/{task_id} for the result.
+    """
+    task_id = str(uuid.uuid4())
+    session_id = request_body.session_id or f"session-{task_id[:8]}"
+    cancel_event = threading.Event()
+
+    rec: Dict[str, Any] = {
+        "task_id": task_id,
+        "session_id": session_id,
+        "status": TaskStatus.ACCEPTED,
+        "result": None,
+        "error": None,
+        "started_at": None,
+        "finished_at": None,
+        "cancel_event": cancel_event,
+    }
+    with _TASK_REGISTRY_LOCK:
+        _TASK_REGISTRY[task_id] = rec
+
+    if event_bus:
+        try:
+            event_bus.publish(
+                "session.created",
+                {"session_id": session_id, "task_id": task_id},
+            )
+        except Exception:
+            pass
+
+    thread = threading.Thread(
+        target=_run_task_thread,
+        args=(task_id, session_id, request_body.task, request_body.working_dir, request_body.model, cancel_event, event_bus),
+        daemon=True,
+        name=f"task-{task_id[:8]}",
+    )
+    thread.start()
+
+    return TaskStatusResponse(
+        task_id=task_id,
+        session_id=session_id,
+        status=TaskStatus.ACCEPTED,
+    )
+
+
+@app.get("/task/{task_id}", response_model=TaskStatusResponse)
+async def get_task_status(task_id: str):
+    """Return the current status and result of a submitted task."""
+    with _TASK_REGISTRY_LOCK:
+        rec = _TASK_REGISTRY.get(task_id)
+    if rec is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return TaskStatusResponse(
+        task_id=rec["task_id"],
+        session_id=rec["session_id"],
+        status=rec["status"],
+        result=rec.get("result"),
+        error=rec.get("error"),
+        started_at=rec.get("started_at"),
+        finished_at=rec.get("finished_at"),
+    )
+
+
+@app.post("/task/{task_id}/cancel", response_model=TaskStatusResponse)
+async def cancel_task(task_id: str):
+    """Signal a running task to cancel.
+
+    Sets the cancel_event that run_agent_once_impl checks between steps.
+    Returns the current task record — status will transition to cancelled
+    once the running step completes.
+    """
+    with _TASK_REGISTRY_LOCK:
+        rec = _TASK_REGISTRY.get(task_id)
+    if rec is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    cancel_event: threading.Event = rec.get("cancel_event")
+    if cancel_event:
+        cancel_event.set()
+    return TaskStatusResponse(
+        task_id=rec["task_id"],
+        session_id=rec["session_id"],
+        status=rec["status"],
+        result=rec.get("result"),
+        error=rec.get("error"),
+        started_at=rec.get("started_at"),
+        finished_at=rec.get("finished_at"),
+    )
+
+
+@app.get("/tasks", response_model=List[TaskStatusResponse])
+async def list_tasks(limit: int = 50):
+    """List recent tasks (newest first, capped at limit)."""
+    with _TASK_REGISTRY_LOCK:
+        items = list(_TASK_REGISTRY.values())
+    # Sort by started_at descending (None last)
+    items.sort(key=lambda r: r.get("started_at") or 0.0, reverse=True)
+    items = items[:max(1, limit)]
+    return [
+        TaskStatusResponse(
+            task_id=r["task_id"],
+            session_id=r["session_id"],
+            status=r["status"],
+            result=r.get("result"),
+            error=r.get("error"),
+            started_at=r.get("started_at"),
+            finished_at=r.get("finished_at"),
+        )
+        for r in items
+    ]
 
 
 def run_server(host: str = "127.0.0.1", port: int = 8000):

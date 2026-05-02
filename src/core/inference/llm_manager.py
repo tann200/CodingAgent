@@ -1865,9 +1865,12 @@ def _consume_sse_stream(raw_response: Any, model: Optional[str] = None) -> str:
                                     bus.publish(
                                         "model.token", {"text": before, "partial": True}
                                     )
+                                    bus.publish(
+                                        "llm.token", {"text": before, "partial": True, "is_reasoning": False}
+                                    )
                                 except Exception:
                                     pass
-                                accumulated.append(before)
+                            accumulated.append(before)
                             if "</think>" in rest:
                                 think_part, _, after = rest.partition("</think>")
                                 _inside_think = False
@@ -1933,6 +1936,9 @@ def _consume_sse_stream(raw_response: Any, model: Optional[str] = None) -> str:
                                 bus.publish(
                                     "model.token", {"text": token_text, "partial": True}
                                 )
+                                bus.publish(
+                                    "llm.token", {"text": token_text, "partial": True, "is_reasoning": False}
+                                )
                             except Exception:
                                 pass
             except (json.JSONDecodeError, KeyError, IndexError):
@@ -1946,6 +1952,7 @@ def _consume_sse_stream(raw_response: Any, model: Optional[str] = None) -> str:
             bus.publish(
                 "model.token", {"text": "", "partial": False, "full": full_text}
             )
+            bus.publish("llm.token", {"text": "", "partial": False, "full": full_text})
             bus.publish("response.stream_end", {"full_text": full_text})
         except Exception:
             pass

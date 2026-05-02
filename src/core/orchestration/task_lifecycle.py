@@ -454,6 +454,19 @@ def get_tools_for_role_impl(orch, role: str) -> List[Dict[str, Any]]:
             raise ValueError(
                 f"toolset {toolset_name!r} matched too few registered tools"
             )
+        # G9: Append any MCP tools (origin="mcp") not already in the list so
+        # dynamically-discovered MCP tools are always available to the LLM.
+        try:
+            all_tools = orch.tool_registry.tools
+            for n, entry in all_tools.items():
+                if entry.get("origin") == "mcp" and not any(
+                    x["name"] == n for x in filtered
+                ):
+                    filtered.append(
+                        {"name": n, "description": entry.get("description", "")}
+                    )
+        except Exception:
+            pass
         return filtered
     except Exception as _e:
         # SCAN-4 fix: log a warning so operators can detect toolset misconfiguration.
@@ -463,7 +476,19 @@ def get_tools_for_role_impl(orch, role: str) -> List[Dict[str, Any]]:
             f"get_tools_for_role({role!r}): toolset lookup failed ({_e}); "
             "falling back to full tool registry"
         )
-        return [
+        full = [
             {"name": n, "description": m.get("description", "")}
             for n, m in orch.tool_registry.tools.items()
         ]
+        # G9: also include MCP tools in the full fallback
+        try:
+            for n, entry in orch.tool_registry.tools.items():
+                if entry.get("origin") == "mcp" and not any(
+                    x["name"] == n for x in full
+                ):
+                    full.append(
+                        {"name": n, "description": entry.get("description", "")}
+                    )
+        except Exception:
+            pass
+        return full

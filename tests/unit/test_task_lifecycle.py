@@ -449,3 +449,62 @@ class TestGetToolsForRoleImpl:
         for item in result:
             assert "name" in item
             assert "description" in item
+
+
+# ---------------------------------------------------------------------------
+# G9: MCP tool routing
+# ---------------------------------------------------------------------------
+
+
+class TestGetToolsForRoleMcp:
+    """Verify that get_tools_for_role_impl includes MCP tools (origin=mcp)."""
+
+    def _orch_with_tools(self, tools_dict):
+        orch = MagicMock()
+        reg = MagicMock()
+        reg.tools = tools_dict
+        orch.tool_registry = reg
+        return orch
+
+    def test_mcp_tools_included_in_filtered_list(self):
+        from src.core.orchestration.task_lifecycle import get_tools_for_role_impl
+
+        tools = {
+            "read_file": {"description": "reads"},
+            "git__commit": {"description": "commit changes", "origin": "mcp"},
+            "git__push": {"description": "push remote", "origin": "mcp"},
+        }
+        orch = self._orch_with_tools(tools)
+
+        # Patch the loader that get_tools_for_role_impl actually calls
+        with patch(
+            "src.tools.toolsets.loader.get_toolset_for_role",
+            return_value="operational",
+        ), patch(
+            "src.tools.toolsets.loader.get_tools_for_toolset",
+            return_value=["read_file"],
+        ):
+            result = get_tools_for_role_impl(orch, "operational")
+
+        names = [r["name"] for r in result]
+        assert "git__commit" in names
+        assert "git__push" in names
+
+    def test_mcp_tools_included_in_fallback(self):
+        from src.core.orchestration.task_lifecycle import get_tools_for_role_impl
+
+        tools = {
+            "bash": {"description": "run bash"},
+            "mcp__srv__tool1": {"description": "mcp tool", "origin": "mcp"},
+        }
+        orch = self._orch_with_tools(tools)
+
+        # Force fallback by making toolset lookup raise
+        with patch(
+            "src.tools.toolsets.loader.get_tools_for_toolset",
+            side_effect=ValueError("no toolset"),
+        ):
+            result = get_tools_for_role_impl(orch, "unknown_role")
+
+        names = [r["name"] for r in result]
+        assert "mcp__srv__tool1" in names

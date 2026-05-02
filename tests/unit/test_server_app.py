@@ -1,6 +1,7 @@
 """Unit tests for the HTTP/SSE server component (Gap 2 implementation)."""
 
 import pytest
+import threading
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from src.server.app import ServerEventBusAdapter, app
@@ -185,3 +186,144 @@ class TestServerApp:
         good = base64.b64encode(b"user:pass").decode("ascii")
         resp3 = test_client.get("/metrics", headers={"Authorization": f"Basic {good}"})
         assert resp3.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# G8 — Task execution endpoint tests
+# ---------------------------------------------------------------------------
+
+
+class TestTaskEndpoints:
+    """Tests for POST /task, GET /task/{id}, POST /task/{id}/cancel, GET /tasks."""
+
+    @pytest.fixture(autouse=True)
+    def _clear_registry(self):
+        """Ensure a clean task registry for each test."""
+        import src.server.app as app_module
+        with app_module._TASK_REGISTRY_LOCK:
+            app_module._TASK_REGISTRY.clear()
+        yield
+        with app_module._TASK_REGISTRY_LOCK:
+            app_module._TASK_REGISTRY.clear()
+
+    def test_submit_task_returns_202(self, test_client):
+        """POST /task returns 202 Accepted with a task_id."""
+        from unittest.mock import patch, MagicMock
+        import src.server.app as app_module
+
+        dummy_orch = MagicMock()
+        dummy_orch.get_tools_for_role.return_value = {}
+        dummy_orch.run_agent_once.return_value = {"ok": True, "assistant_message": "Done"}
+
+        with patch.object(app_module, "_get_or_create_orchestrator", return_value=dummy_orch):
+            resp = test_client.post("/task", json={"task": "hello world"})
+
+        assert resp.status_code == 202
+        body = resp.json()
+        assert "task_id" in body
+        assert body["status"] == "accepted"
+        assert "session_id" in body
+
+    def test_get_task_status_not_found(self, test_client):
+        """GET /task/{unknown} returns 404."""
+        resp = test_client.get("/task/does-not-exist")
+        assert resp.status_code == 404
+
+    def test_get_task_status_after_submit(self, test_client):
+        """GET /task/{id} returns the task record."""
+        from unittest.mock import patch, MagicMock
+        import src.server.app as app_module
+        import time
+
+        done = threading.Event()
+
+        def slow_run(*args, **kwargs):
+            done.wait(timeout=5)
+            return {"ok": True, "assistant_message": "finished"}
+
+        dummy_orch = MagicMock()
+        dummy_orch.get_tools_for_role.return_value = {}
+        dummy_orch.run_agent_once.side_effect = slow_run
+
+        with patch.object(app_module, "_get_or_create_orchestrator", return_value=dummy_orch):
+            resp = test_client.post("/task", json={"task": "test task"})
+
+        task_id = resp.json()["task_id"]
+        # Status should be accepted or running before the task completes
+        status_resp = test_client.get(f"/task/{task_id}")
+        assert status_resp.status_code == 200
+        assert status_resp.json()["status"] in ("accepted", "running")
+        # Let task complete
+        done.set()
+        time.sleep(0.2)
+        status_resp2 = test_client.get(f"/task/{task_id}")
+        assert status_resp2.json()["status"] == "completed"
+        assert status_resp2.json()["result"] == "finished"
+
+    def test_cancel_task(self, test_client):
+        """POST /task/{id}/cancel sets cancel_event and returns the record."""
+        from unittest.mock import patch, MagicMock
+        import src.server.app as app_module
+
+        dummy_orch = MagicMock()
+        dummy_orch.get_tools_for_role.return_value = {}
+        dummy_orch.run_agent_once.return_value = {"ok": True, "assistant_message": "x"}
+
+        with patch.object(app_module, "_get_or_create_orchestrator", return_value=dummy_orch):
+            resp = test_client.post("/task", json={"task": "cancel me"})
+
+        task_id = resp.json()["task_id"]
+        cancel_resp = test_client.post(f"/task/{task_id}/cancel")
+        assert cancel_resp.status_code == 200
+        # cancel_event must be set in registry
+        with app_module._TASK_REGISTRY_LOCK:
+            rec = app_module._TASK_REGISTRY[task_id]
+        assert rec["cancel_event"].is_set()
+
+    def test_cancel_unknown_task(self, test_client):
+        """POST /task/{unknown}/cancel returns 404."""
+        resp = test_client.post("/task/no-such-task/cancel")
+        assert resp.status_code == 404
+
+    def test_list_tasks_empty(self, test_client):
+        """GET /tasks returns empty list when no tasks submitted."""
+        resp = test_client.get("/tasks")
+        assert resp.status_code == 200
+        assert resp.json() == []
+
+    def test_list_tasks_shows_submitted(self, test_client):
+        """GET /tasks lists submitted tasks."""
+        from unittest.mock import patch, MagicMock
+        import src.server.app as app_module
+
+        dummy_orch = MagicMock()
+        dummy_orch.get_tools_for_role.return_value = {}
+        dummy_orch.run_agent_once.return_value = {"ok": True, "assistant_message": "ok"}
+
+        with patch.object(app_module, "_get_or_create_orchestrator", return_value=dummy_orch):
+            test_client.post("/task", json={"task": "task A"})
+            test_client.post("/task", json={"task": "task B"})
+
+        resp = test_client.get("/tasks")
+        assert resp.status_code == 200
+        assert len(resp.json()) == 2
+
+    def test_task_failed_on_orchestrator_error(self, test_client):
+        """Task transitions to failed when orchestrator raises."""
+        from unittest.mock import patch, MagicMock
+        import src.server.app as app_module
+        import time
+
+        dummy_orch = MagicMock()
+        dummy_orch.get_tools_for_role.return_value = {}
+        dummy_orch.run_agent_once.side_effect = RuntimeError("boom")
+
+        with patch.object(app_module, "_get_or_create_orchestrator", return_value=dummy_orch):
+            resp = test_client.post("/task", json={"task": "fail me"})
+
+        task_id = resp.json()["task_id"]
+        time.sleep(0.3)
+        status_resp = test_client.get(f"/task/{task_id}")
+        body = status_resp.json()
+        assert body["status"] == "failed"
+        assert "boom" in (body["error"] or "")

@@ -54,3 +54,47 @@ async def test_call_model_with_timeout_cancelled_error_propagates():
     assert isinstance(early, dict)
     assert early.get("errors") == ["canceled"]
     assert resp is None
+
+
+@pytest.mark.asyncio
+async def test_call_model_with_timeout_honors_streaming_flag(monkeypatch):
+    from src.core.inference.llm_helpers import call_model_with_timeout
+    import src.core.inference.llm_helpers as llm_helpers
+
+    # Force streaming enabled
+    monkeypatch.setattr(llm_helpers, "_STREAMING_ENABLED", True)
+
+    captured_kwargs = {}
+
+    async def _mock_call(messages, **kwargs):
+        captured_kwargs.update(kwargs)
+        return {"ok": True}
+
+    state = {"history": [], "rounds": 0, "session_id": "s3"}
+    await call_model_with_timeout(
+        messages=[{"role": "user", "content": "test"}],
+        provider=None,
+        model="m",
+        state=state,
+        orchestrator=None,
+        llm_kwargs={},
+        call_model_fn=_mock_call,
+    )
+
+    assert captured_kwargs.get("stream") is True
+
+    # Force streaming disabled
+    monkeypatch.setattr(llm_helpers, "_STREAMING_ENABLED", False)
+    captured_kwargs.clear()
+
+    await call_model_with_timeout(
+        messages=[{"role": "user", "content": "test"}],
+        provider=None,
+        model="m",
+        state=state,
+        orchestrator=None,
+        llm_kwargs={},
+        call_model_fn=_mock_call,
+    )
+
+    assert captured_kwargs.get("stream") is False
