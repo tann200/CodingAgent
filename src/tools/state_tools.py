@@ -41,13 +41,14 @@ def create_state_checkpoint(
     checkpoint_dir = agent_context_path(wd) / "checkpoints"
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    now = datetime.now()
+    timestamp = now.strftime("%Y%m%d_%H%M%S_%f")
     checkpoint_id = f"checkpoint_{timestamp}"
     checkpoint_path = checkpoint_dir / f"{checkpoint_id}.json"
 
     checkpoint_data = {
         "checkpoint_id": checkpoint_id,
-        "created_at": datetime.now().isoformat(),
+        "created_at": now.isoformat(),
         "current_task": current_task,
         "tool_call_history": tool_call_history,
         "modified_files": modified_files,

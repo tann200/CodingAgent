@@ -44,10 +44,12 @@ _MEMORY_TIER_LIMITS = {
 }
 
 # USER memory separate bounds (per hermes-agent dual-store pattern)
+# All tiers share the same limit; differentiate here when per-tier limits are needed.
+_USER_MAX_CHARS = 1375
 _USER_TIER_LIMITS = {
-    "lite": {"max_chars": 1375},
-    "standard": {"max_chars": 1375},
-    "full": {"max_chars": 1375},
+    "lite": {"max_chars": _USER_MAX_CHARS},
+    "standard": {"max_chars": _USER_MAX_CHARS},
+    "full": {"max_chars": _USER_MAX_CHARS},
 }
 
 # Default to standard tier if unable to determine

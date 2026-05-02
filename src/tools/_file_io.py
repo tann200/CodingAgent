@@ -35,11 +35,16 @@ _WRITE_HARD_LINE_LIMIT = 500
 _WRITE_WARN_LINE_LIMIT = 200
 
 
-# WorkspaceGuard: import from shared location
+# WorkspaceGuard: import from shared location; fall back to a no-op stub so
+# call-sites work even if _workspace_guard is absent.
 try:
     from src.tools._workspace_guard import WorkspaceGuard  # type: ignore[assignment]
 except ImportError:
-    pass
+    class WorkspaceGuard:  # type: ignore[no-redef]
+        """No-op stub used when _workspace_guard is unavailable."""
+
+        def is_protected(self, path) -> bool:
+            return False
 
 
 def _check_project_deny_write(abs_path: Path, workdir: Path) -> None:

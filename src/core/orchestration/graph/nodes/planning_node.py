@@ -7,6 +7,7 @@ import tempfile
 import threading
 import os
 import shutil
+from datetime import datetime
 from pathlib import Path
 from typing import Mapping, Dict, Any, Optional
 
@@ -36,10 +37,8 @@ def _plan_is_resumable(
         return False
     saved_at_str = data.get("saved_at", "")
     try:
-        from datetime import datetime as _dt
-
-        saved_dt = _dt.fromisoformat(saved_at_str)
-        age_seconds = (_dt.now() - saved_dt).total_seconds()
+        saved_dt = datetime.fromisoformat(saved_at_str)
+        age_seconds = (datetime.now() - saved_dt).total_seconds()
         if age_seconds > _PLAN_RESUME_TTL_SECONDS:
             logger.info(
                 f"planning_node: saved plan is {age_seconds:.0f}s old "
@@ -125,8 +124,6 @@ def _load_last_plan(workdir: str) -> Dict[str, Any]:
 
 def _save_last_plan(workdir: str, plan: list, task: str, step: int = 0) -> None:
     """Save the current plan to JSON file for cross-session persistence."""
-    from datetime import datetime
-
     plan_path = _get_last_plan_path(workdir)
     try:
         plan_path.parent.mkdir(parents=True, exist_ok=True)

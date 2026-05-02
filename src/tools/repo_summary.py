@@ -5,6 +5,16 @@ Automatic Repo Summary - Generates quick overview of repository structure.
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 
+# Canonical exclude-dirs set — import from repo_analysis_tools when available;
+# fall back to an inline definition to avoid a hard dependency.
+try:
+    from src.tools.repo_analysis_tools import _EXCLUDE_DIRS
+except Exception:
+    _EXCLUDE_DIRS: frozenset[str] = frozenset({  # type: ignore[assignment]
+        ".venv", "venv", "__pycache__", ".git", "node_modules",
+        ".mypy_cache", ".pytest_cache", "dist", "build", "target",
+    })
+
 try:
     from src.tools.tools_config import agent_context_path
 except Exception:
@@ -29,10 +39,9 @@ def detect_framework(workdir: str) -> Optional[str]:
     }
 
     # Scan Python files for imports, excluding virtual envs and caches
-    _FW_EXCLUDE = {".venv", "venv", "__pycache__", ".git", "node_modules"}
     py_files = [
         f for f in workdir_path.rglob("*.py")
-        if not any(part in _FW_EXCLUDE for part in f.parts)
+        if not any(part in _EXCLUDE_DIRS for part in f.parts)
     ]
     for py_file in py_files[:20]:  # Limit scanning
         try:
@@ -70,7 +79,6 @@ def detect_languages(workdir: str) -> List[str]:
     }
 
     # Single-pass directory scan instead of one rglob per extension (performance fix)
-    _EXCLUDE_DIRS = {".venv", "venv", "__pycache__", ".git", "node_modules"}
     for f in workdir_path.rglob("*"):
         if f.is_file() and not any(part in _EXCLUDE_DIRS for part in f.parts):
             lang = extensions.get(f.suffix.lower())

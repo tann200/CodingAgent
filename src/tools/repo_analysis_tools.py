@@ -14,7 +14,7 @@ except Exception:
     agent_context_path = None
 
 
-_EXCLUDE_DIRS = {
+_EXCLUDE_DIRS: frozenset[str] = frozenset({
     ".venv",
     "venv",
     "__pycache__",
@@ -25,7 +25,7 @@ _EXCLUDE_DIRS = {
     "dist",
     "build",
     "target",
-}
+})
 
 
 @tool(tags=["review"])
