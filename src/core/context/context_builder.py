@@ -703,6 +703,155 @@ class ContextBuilder:
             pass
         return ""
 
+    # ------------------------------------------------------------------
+    # _build_static_system_prefix helper methods
+    # ------------------------------------------------------------------
+
+    def _build_model_constraints_block(
+        self, model_tier: Optional[str], tools: list
+    ) -> str:
+        """Return the <model_constraints> block for NANO/SMALL tiers, or ''."""
+        tier_str = (model_tier or "").lower()
+        if tier_str not in ("nano", "small"):
+            return ""
+        try:
+            if _ModelTier is None or _get_plan_step_limit is None:
+                raise ImportError("model_tiers unavailable")
+            _p1e_tier_enum = _ModelTier(tier_str) if tier_str else None
+            _p1e_step_limit = (
+                _get_plan_step_limit(_p1e_tier_enum) if _p1e_tier_enum else 6
+            )
+            _p1e_tool_count = len(tools)
+            _p1e_ctx_tokens = 0
+            if _get_context_budget is not None:
+                try:
+                    _p1e_ctx_tokens = _get_context_budget(model_tier=tier_str)
+                except Exception:
+                    pass
+            _p1e_lines = [
+                f"Tier: {tier_str.upper()} | Context: {_p1e_ctx_tokens:,} tokens | Tools: {_p1e_tool_count} available",
+                f"Max plan steps: {_p1e_step_limit} | Output format: YAML tool calls only (no JSON, no prose before tool call)",
+                "Not available: parallel tool calls, subagent delegation, extended reasoning",
+            ]
+            return (
+                "<model_constraints>\n"
+                + "\n".join(_p1e_lines)
+                + "\n</model_constraints>"
+            )
+        except Exception:
+            return ""
+
+    def _build_instruction_files_block(self) -> str:
+        """Return <project_instructions> block from ancestor .md files, or ''."""
+        try:
+            if _discover_instruction_files is None or _render_instruction_files is None:
+                raise ImportError("instruction_files unavailable")
+            _workdir = self._agent_context_dir.parent
+            _instr_files = _discover_instruction_files(_workdir)
+            if _instr_files:
+                _instr_block = _render_instruction_files(_instr_files)
+                if _instr_block:
+                    return f"<project_instructions>\n{_instr_block}\n</project_instructions>"
+        except Exception:
+            pass
+        return ""
+
+    def _build_project_instructions_block(self) -> str:
+        """Return <project_config_instructions> block from config.json, or ''."""
+        try:
+            if _load_project_instructions is None:
+                raise ImportError("instruction_loader unavailable")
+            _proj_instructions = _load_project_instructions(self._agent_context_dir.parent)
+            if _proj_instructions:
+                _proj_block = "\n".join(f"- {instr}" for instr in _proj_instructions)
+                return f"<project_config_instructions>\n{_proj_block}\n</project_config_instructions>"
+        except Exception:
+            pass
+        return ""
+
+    def _build_output_format_block(
+        self, use_native_tools: bool, is_simple_mode: bool, tier_str: str
+    ) -> str:
+        """Return the <output_format> block appropriate to the model tier."""
+        if use_native_tools:
+            return (
+                "<output_format>\n"
+                "You MUST think step-by-step. Write your internal reasoning inside <think> tags.\n"
+                "You have access to native tools. Use the native JSON function calling API.\n"
+                "Do NOT output markdown code blocks for tool calls.\n"
+                "IMPORTANT: Call tools using the native function calling format.\n"
+                "After executing a tool, your response will include the tool's result.\n"
+                "If the tool result completes the user's task, do NOT make more tool calls.\n"
+                "Simply summarize the result or indicate task completion.\n"
+                "Only call another tool if the result requires follow-up action.\n"
+                "</output_format>"
+            )
+        elif is_simple_mode:
+            return (
+                "<output_format>\n"
+                "STRICT RULE: Output EXACTLY ONE tool call per response, no exceptions.\n"
+                "Use the YAML tool format in a fenced code block:\n"
+                "```yaml\n"
+                "name: the_tool_name\n"
+                "arguments:\n"
+                "  arg_name: arg_value\n"
+                "```\n"
+                "Do NOT output more than one yaml block. Do NOT chain tool calls.\n"
+                "After the tool result is returned, you may call one more tool if needed.\n"
+                "</output_format>"
+            )
+        elif tier_str == "small":
+            # GAP-SMALL-1: simplified output format for small models
+            return (
+                "<output_format>\n"
+                "Output ONLY the YAML tool call. No explanation, no extra text.\n"
+                "```yaml\n"
+                "name: tool_name\n"
+                "arguments:\n"
+                "  arg: value\n"
+                "```\n"
+                "</output_format>"
+            )
+        return ""
+
+    def _build_thinking_guidance_block(
+        self, model_tier: Optional[str], provider_capabilities: Optional[Dict], model_name: str
+    ) -> str:
+        """Return the <model_guidance> block for reasoning models, or ''."""
+        tier_str = (model_tier or "").lower()
+        caps = provider_capabilities or {}
+        _is_reasoning_model = False
+        try:
+            if _is_reasoning_model is None:
+                raise ImportError("thinking_utils unavailable")
+            _active_model = caps.get("model", "")
+            _is_reasoning_model = bool(
+                _active_model and _is_reasoning_model(_active_model)
+            )
+        except Exception:
+            pass
+        _partial = self._select_prompt_partial(
+            model_tier, provider_capabilities, _is_reasoning_model
+        )
+        if _partial:
+            return f"<model_guidance>\n{_partial}\n</model_guidance>"
+        return ""
+
+    def _build_thinking_mode_block(
+        self, tier_str: str, _is_reasoning_model: bool
+    ) -> str:
+        """Return the <thinking_mode> block for frontier/large/reasoning models, or ''."""
+        if tier_str in ("frontier", "large") or _is_reasoning_model:
+            return (
+                "<thinking_mode>\n"
+                "Before every tool call, briefly state:\n"
+                "1. What you expect this call to return.\n"
+                "2. What you will do if it fails or returns unexpected output.\n"
+                "This reflection is mandatory — do not skip it.\n"
+                "</thinking_mode>"
+            )
+        return ""
+
     def _build_static_system_prefix(
         self,
         role_name: str,
@@ -765,188 +914,73 @@ class ContextBuilder:
         # --- Build the static prefix (expensive path) ---
         parts: List[str] = []
 
-        # GAP-SMALL-2 / GAP-FRONTIER-2: select tier-appropriate role prompt for
-        # the operational role so that small models get a stripped-down prompt
-        # and frontier models get exhaustive instructions.
-        # OP-1: Also check for per-provider variant (e.g. operational-gemma4).
         tier_str = (model_tier or "").lower()
+
+        # Role prompt (tier-appropriate)
         role_content = self._select_role_for_tier(role_name, tier_str, model_name)
         parts.append(f"<identity>\n{self._sanitize_text(self.soul)}\n</identity>")
         parts.append(f"<role>\n{self._sanitize_text(role_content)}\n</role>")
 
-        # P1-E: Model constraints block for NANO/SMALL tiers.
-        # Injects a concise <model_constraints> block that tells small models
-        # their tier, tool count, step limit, and required output format so they
-        # don't try to use tools / format features they don't have.
-        if tier_str in ("nano", "small"):
-            try:
-                if _ModelTier is None or _get_plan_step_limit is None:
-                    raise ImportError("model_tiers unavailable")
-                _p1e_tier_enum = _ModelTier(tier_str) if tier_str else None
-                _p1e_step_limit = (
-                    _get_plan_step_limit(_p1e_tier_enum) if _p1e_tier_enum else 6
-                )
-                _p1e_tool_count = len(tools)  # already pruned
-                _p1e_ctx_tokens = 0
-                if _get_context_budget is not None:
-                    try:
-                        _p1e_ctx_tokens = _get_context_budget(model_tier=tier_str)
-                    except Exception:
-                        pass
-                _p1e_lines = [
-                    f"Tier: {tier_str.upper()} | Context: {_p1e_ctx_tokens:,} tokens | Tools: {_p1e_tool_count} available",
-                    f"Max plan steps: {_p1e_step_limit} | Output format: YAML tool calls only (no JSON, no prose before tool call)",
-                    "Not available: parallel tool calls, subagent delegation, extended reasoning",
-                ]
-                parts.append(
-                    "<model_constraints>\n"
-                    + "\n".join(_p1e_lines)
-                    + "\n</model_constraints>"
-                )
-            except Exception:
-                pass
+        # Model constraints block (NANO/SMALL)
+        _mc = self._build_model_constraints_block(model_tier, tools)
+        if _mc:
+            parts.append(_mc)
 
-        # CP-11: Ancestor instruction file injection.
-        try:
-            if _discover_instruction_files is None or _render_instruction_files is None:
-                raise ImportError("instruction_files unavailable")
-            _workdir = self._agent_context_dir.parent
-            _instr_files = _discover_instruction_files(_workdir)
-            if _instr_files:
-                _instr_block = _render_instruction_files(_instr_files)
-                if _instr_block:
-                    parts.append(
-                        f"<project_instructions>\n{_instr_block}\n</project_instructions>"
-                    )
-        except Exception:
-            pass
+        # Ancestor instruction files
+        _ifb = self._build_instruction_files_block()
+        if _ifb:
+            parts.append(_ifb)
 
-        # OP-5: Per-project instructions from .agent-context/config.json.
-        # These come after CP-11 file instructions so they take higher precedence.
-        # Injected inside the static prefix so they are cached with the rest.
-        try:
-            if _load_project_instructions is None:
-                raise ImportError("instruction_loader unavailable")
-            # pass a Path object as the loader expects a Path-like cwd
-            _proj_instructions = _load_project_instructions(self._agent_context_dir.parent)
-            if _proj_instructions:
-                _proj_block = "\n".join(f"- {instr}" for instr in _proj_instructions)
-                parts.append(
-                    f"<project_config_instructions>\n{_proj_block}\n"
-                    "</project_config_instructions>"
-                )
-        except Exception:
-            pass
+        # Per-project instructions from config.json
+        _pib = self._build_project_instructions_block()
+        if _pib:
+            parts.append(_pib)
 
-        # Dynamic boundary sentinel — Anthropic adapter splits here.
+        # Dynamic boundary sentinel
         parts.append(SYSTEM_PROMPT_DYNAMIC_BOUNDARY)
 
+        # Active skills
         if active_skills:
             skill_contents = [
                 self._sanitize_text(sc)
                 for sn in active_skills
-                if (sc := self.get_skill(sn))  # walrus: bind skill content and filter empties in one pass
+                if (sc := self.get_skill(sn))
             ]
             if skill_contents:
                 parts.append(
                     f"<active_skills>\n{chr(10).join(skill_contents)}\n</active_skills>"
                 )
 
-        # tools already pruned above; render descriptions for the tier.
+        # Tools (pruned + rendered for tier)
         tools_text = self._render_tools_for_tier(tools, model_tier)
         parts.append(f"<available_tools>\n{tools_text}\n</available_tools>")
 
-        # S1-B: prompt partial.
-        _is_reasoning_model = False
+        # Prompt partial / thinking guidance (reasoning models)
+        _pg = self._build_thinking_guidance_block(
+            model_tier, provider_capabilities, model_name
+        )
+        if _pg:
+            parts.append(_pg)
+
+        # Thinking mode block (frontier/large/reasoning)
+        caps = provider_capabilities or {}
+        _is_rm = False
         try:
-            if _is_reasoning_model is None:
-                raise ImportError("thinking_utils unavailable")
-            _active_model = caps.get("model", "")
-            _is_reasoning_model = bool(
-                _active_model and _is_reasoning_model(_active_model)
-            )
+            if _is_reasoning_model is not None:
+                _active_model = caps.get("model", "")
+                _is_rm = bool(
+                    _active_model and _is_reasoning_model(_active_model)
+                )
         except Exception:
             pass
-        _partial = self._select_prompt_partial(
-            model_tier, provider_capabilities, _is_reasoning_model
+        _tm = self._build_thinking_mode_block(tier_str, _is_rm)
+        if _tm:
+            parts.append(_tm)
+
+        # Output format
+        format_instr = self._build_output_format_block(
+            use_native_tools, is_simple_mode, tier_str
         )
-        if _partial:
-            parts.append(f"<model_guidance>\n{_partial}\n</model_guidance>")
-
-        # GAP-FRONTIER-7: inject structured thinking gate for reasoning models and
-        # frontier models that support extended thinking (FRONTIER + LARGE tiers).
-        # This adds ~50 tokens but significantly improves tool-call accuracy on
-        # complex tasks by forcing the model to plan before acting.
-        if tier_str in ("frontier", "large") or _is_reasoning_model:
-            parts.append(
-                "<thinking_mode>\n"
-                "Before every tool call, briefly state:\n"
-                "1. What you expect this call to return.\n"
-                "2. What you will do if it fails or returns unexpected output.\n"
-                "This reflection is mandatory — do not skip it.\n"
-                "</thinking_mode>"
-            )
-
-        # Output format instruction.
-        if use_native_tools:
-            format_instr = (
-                "<output_format>\n"
-                "You MUST think step-by-step. Write your internal reasoning inside <think> tags.\n"
-                "You have access to native tools. Use the native JSON function calling API.\n"
-                "Do NOT output markdown code blocks for tool calls.\n"
-                "IMPORTANT: Call tools using the native function calling format.\n"
-                "After executing a tool, your response will include the tool's result.\n"
-                "If the tool result completes the user's task, do NOT make more tool calls.\n"
-                "Simply summarize the result or indicate task completion.\n"
-                "Only call another tool if the result requires follow-up action.\n"
-                "</output_format>"
-            )
-        elif is_simple_mode:
-            format_instr = (
-                "<output_format>\n"
-                "STRICT RULE: Output EXACTLY ONE tool call per response, no exceptions.\n"
-                "Use the YAML tool format in a fenced code block:\n"
-                "```yaml\n"
-                "name: the_tool_name\n"
-                "arguments:\n"
-                "  arg_name: arg_value\n"
-                "```\n"
-                "Do NOT output more than one yaml block. Do NOT chain tool calls.\n"
-                "After the tool result is returned, you may call one more tool if needed.\n"
-                "</output_format>"
-            )
-        elif tier_str == "small":
-            # GAP-SMALL-1: simplified output format for small models — only STATUS: line required.
-            format_instr = (
-                "<output_format>\n"
-                "Use the YAML tool format in a fenced code block:\n"
-                "```yaml\n"
-                "name: the_tool_name\n"
-                "arguments:\n"
-                "  arg_name: arg_value\n"
-                "```\n"
-                "Make ONE tool call per response. After the tool result, write:\n"
-                "STATUS: complete | partial | failed\n"
-                "</output_format>"
-            )
-        else:
-            format_instr = (
-                "<output_format>\n"
-                "You MUST think step-by-step. Write your internal reasoning inside <think> tags.\n"
-                "To execute an action, you MUST use the provided markdown YAML tool format.\n"
-                "Format your tool calls exactly like this using a fenced code block:\n"
-                "```yaml\n"
-                "name: the_tool_name\n"
-                "arguments:\n"
-                "  arg_name: arg_value\n"
-                "```\n"
-                "IMPORTANT: Use markdown YAML format (not XML). Do not use <tool> tags.\n"
-                "After executing a tool, your response will include the tool's result.\n"
-                "If the tool result completes the user's task, do NOT make more tool calls.\n"
-                "Simply summarize the result or indicate task completion.\n"
-                "Only call another tool if the result requires follow-up action.\n"
-                "</output_format>"
-            )
         parts.append(format_instr)
 
         result = "\n\n".join(parts)

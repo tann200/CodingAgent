@@ -239,17 +239,65 @@ class _FileLock:
         except Exception:
             self._fcntl = None
 
+    def _parse_lockfile(self, data: str):
+        """Return (pid, host, ts, same_host, too_old) from lockfile contents."""
+        m = re.search(r"pid=\s*(\d+)", data)
+        hostm = re.search(r"host=([\w\-\.]+)", data)
+        tsm = re.search(r"ts=(\d+)", data)
+        pid = int(m.group(1)) if m else None
+        host = hostm.group(1) if hostm else None
+        ts = int(tsm.group(1)) if tsm else None
+
+        if socket is not None:
+            same_host = (host == socket.gethostname())
+        else:
+            same_host = False
+
+        stale_ttl = int(os.environ.get("TODO_LOCK_STALE_TTL", "300"))
+        too_old = (
+            ts is not None
+            and (int(time.time() * 1000) - ts) / 1000.0 > stale_ttl
+        )
+        return pid, host, ts, same_host, too_old
+
+    def _try_reclaim(self, pid, same_host, too_old) -> bool:
+        """Attempt to reclaim a stale lock. Returns True if reclaimed."""
+        allow_nfs_env = os.environ.get("TODO_ALLOW_STALE_RECLAIM_ON_NFS", "").lower()
+        allow_nfs = allow_nfs_env in ("1", "true", "yes")
+        try:
+            is_nfs = _is_network_filesystem(self.lock_path)
+        except Exception:
+            is_nfs = False
+        if is_nfs and not allow_nfs:
+            logger.warning(
+                "Refusing to reclaim stale lockfile %s on network filesystem (pid %s). "
+                "Set TODO_ALLOW_STALE_RECLAIM_ON_NFS=1 to override",
+                self.lock_path, pid,
+            )
+            return False
+        try:
+            os.unlink(str(self.lock_path))
+            _inc_lock_metric("stale_reclaims")
+            logger.warning(
+                "Removed stale lockfile %s (pid %s not running)",
+                self.lock_path, pid,
+            )
+            return True
+        except Exception:
+            _inc_lock_metric("stale_reclaim_failures")
+            logger.exception("Failed to remove stale lockfile %s", self.lock_path)
+            return False
+
     def __enter__(self):
         # Ensure parent dir exists
         self.lock_path.parent.mkdir(parents=True, exist_ok=True)
         start = time.time()
+
         if self._fcntl is not None:
             # Use flock on an open file descriptor
             self._fp = open(self.lock_path, "a+")
             while True:
                 try:
-                    # Use fileno() to satisfy static type checkers which expect
-                    # an integer file descriptor for fcntl.flock.
                     if self._fp is None:
                         raise TimeoutError("Invalid file handle for flock")
                     self._fcntl.flock(self._fp.fileno(), self._fcntl.LOCK_EX)
@@ -262,18 +310,13 @@ class _FileLock:
 
         # Fallback: create an exclusive lockfile using O_EXCL
         flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
-        # Fallback retry loop — simple fixed sleep between attempts to avoid
-        # tight busy-wait loops. This keeps behavior close to the original
-        # implementation (time.sleep(0.05)) while allowing quick retries.
         while True:
             try:
-                # Will raise FileExistsError if another holder exists
                 self._fd = os.open(str(self.lock_path), flags)
                 # Write diagnostic info into the lockfile: PID and timestamp
                 try:
                     hostname = socket.gethostname()
                     info = f"pid={os.getpid()} ts={int(time.time() * 1000)} host={hostname}\n"
-                    # Include a small stack fragment for debugging
                     try:
                         stack = traceback.format_stack(limit=5)
                         info += "".join(stack)
@@ -281,190 +324,59 @@ class _FileLock:
                         pass
                     os.write(self._fd, info.encode("utf-8"))
                 except Exception:
-                    # Diagnostics are best-effort
                     pass
                 _inc_lock_metric("fallback_acquisitions")
                 logger.debug(
                     "Acquired fallback lockfile %s (pid=%s)",
-                    self.lock_path,
-                    os.getpid(),
+                    self.lock_path, os.getpid(),
                 )
                 return self
             except FileExistsError:
-                # Read lockfile contents for diagnostics and attempt to reclaim
-                # stale lockfiles when the owning PID is not running.
+                # Lockfile exists — try to reclaim if stale
                 try:
                     if self.lock_path.exists():
                         try:
                             data = self.lock_path.read_text(encoding="utf-8")
                             logger.debug(
                                 "Lockfile %s exists, contents:\n%s",
-                                self.lock_path,
-                                data,
+                                self.lock_path, data,
                             )
-                            # Parse pid if present and check whether the process exists
-                            try:
-                                m = re.search(r"pid=\s*(\d+)", data)
-                                hostm = re.search(r"host=([\w\-\.]+)", data)
-                                tsm = re.search(r"ts=(\d+)", data)
-                                existing_pid = int(m.group(1)) if m else None
-                                existing_host = hostm.group(1) if hostm else None
-                                existing_ts = int(tsm.group(1)) if tsm else None
+                            pid, host, ts, same_host, too_old = self._parse_lockfile(data)
+                            if pid is not None:
                                 try:
-                                    # If the lock was written by a different host, only
-                                    # consider reclaiming it if it is older than TTL.
-                                    # Evaluate TTL at runtime so tests can adjust via env var
-                                    stale_ttl = int(
-                                        os.environ.get("TODO_LOCK_STALE_TTL", "300")
-                                    )
-                                    same_host = (
-                                        existing_host == socket.gethostname()
-                                        if socket is not None
-                                        else False
-                                    )
-                                    too_old = (
-                                        existing_ts is not None
-                                        and (int(time.time() * 1000) - existing_ts)
-                                        / 1000.0
-                                        > stale_ttl
-                                    )
-                                    logger.debug(
-                                        "Parsed lockfile: pid=%s host=%s ts=%s same_host=%s too_old=%s",
-                                        existing_pid,
-                                        existing_host,
-                                        existing_ts,
-                                        same_host,
-                                        too_old,
-                                    )
-
-                                    if existing_pid is not None:
-                                        try:
-                                            os.kill(existing_pid, 0)
-                                            # Process exists; do not reclaim
-                                            pass
-                                        except OSError as e:
-                                            # errno.ESRCH -> no such process, errno.EPERM -> no permission
-                                            try:
-                                                if (
-                                                    getattr(e, "errno", None)
-                                                    == errno.ESRCH
-                                                ):
-                                                    # PID not present — if same host reclaim immediately,
-                                                    # otherwise reclaim only if too_old
-                                                    if same_host or too_old:
-                                                        # Do not attempt to reclaim locks on network
-                                                        # filesystems unless explicitly allowed via env var.
-                                                        try:
-                                                            is_nfs = (
-                                                                _is_network_filesystem(
-                                                                    self.lock_path
-                                                                )
-                                                            )
-                                                        except Exception:
-                                                            is_nfs = False
-                                                        allow_nfs = os.environ.get(
-                                                            "TODO_ALLOW_STALE_RECLAIM_ON_NFS",
-                                                            "",
-                                                        ).lower() in (
-                                                            "1",
-                                                            "true",
-                                                            "yes",
-                                                        )
-                                                        if is_nfs and not allow_nfs:
-                                                            logger.warning(
-                                                                "Refusing to reclaim stale lockfile %s on network filesystem (pid %s). Set TODO_ALLOW_STALE_RECLAIM_ON_NFS=1 to override",
-                                                                self.lock_path,
-                                                                existing_pid,
-                                                            )
-                                                            # Treat as active; allow caller to retry until timeout
-                                                            pass
-                                                        else:
-                                                            try:
-                                                                os.unlink(
-                                                                    str(self.lock_path)
-                                                                )
-                                                                _inc_lock_metric(
-                                                                    "stale_reclaims"
-                                                                )
-                                                                logger.warning(
-                                                                    "Removed stale lockfile %s (pid %s not running)",
-                                                                    self.lock_path,
-                                                                    existing_pid,
-                                                                )
-                                                                continue
-                                                            except Exception:
-                                                                _inc_lock_metric(
-                                                                    "stale_reclaim_failures"
-                                                                )
-                                                                logger.exception(
-                                                                    "Failed to remove stale lockfile %s",
-                                                                    self.lock_path,
-                                                                )
-                                                elif (
-                                                    getattr(e, "errno", None)
-                                                    == errno.EPERM
-                                                ):
-                                                    # Process exists but we cannot signal it; treat as active
-                                                    pass
-                                                else:
-                                                    # Unknown OSError: be conservative and treat as active
-                                                    pass
-                                            except Exception:
-                                                # If errno handling fails, fallback to conservative behavior
-                                                pass
-                                    else:
-                                        # No pid parsed; if timestamp too old, attempt reclaim
-                                        if existing_ts is not None and too_old:
-                                            try:
-                                                # As above, be conservative on network filesystems
-                                                try:
-                                                    is_nfs = _is_network_filesystem(
-                                                        self.lock_path
-                                                    )
-                                                except Exception:
-                                                    is_nfs = False
-                                                allow_nfs = os.environ.get(
-                                                    "TODO_ALLOW_STALE_RECLAIM_ON_NFS",
-                                                    "",
-                                                ).lower() in ("1", "true", "yes")
-                                                if is_nfs and not allow_nfs:
-                                                    logger.warning(
-                                                        "Refusing to reclaim stale lockfile %s on network filesystem (no pid). Set TODO_ALLOW_STALE_RECLAIM_ON_NFS=1 to override",
-                                                        self.lock_path,
-                                                    )
-                                                    pass
-                                                else:
-                                                    os.unlink(str(self.lock_path))
-                                                    _inc_lock_metric("stale_reclaims")
-                                                    logger.warning(
-                                                        "Removed stale lockfile %s (no pid, too old)",
-                                                        self.lock_path,
-                                                    )
-                                                    continue
-                                            except Exception:
-                                                _inc_lock_metric(
-                                                    "stale_reclaim_failures"
-                                                )
-                                                logger.exception(
-                                                    "Failed to remove stale lockfile %s",
-                                                    self.lock_path,
-                                                )
-                                except PermissionError:
-                                    # PID exists but cannot be signalled; treat as active
+                                    os.kill(pid, 0)
+                                    # Process exists; check if on network fs
+                                    if same_host or too_old:
+                                        if self._try_reclaim(pid, same_host, too_old):
+                                            continue
+                                    # Active lock — treat as held
                                     pass
-                            except Exception:
-                                # Parsing diagnostics must not fail the lock acquisition
-                                pass
+                                except OSError as e:
+                                    if getattr(e, "errno", None) == errno.ESRCH:
+                                        # PID not present — reclaim
+                                        if same_host or too_old:
+                                            if self._try_reclaim(pid, same_host, too_old):
+                                                continue
+                                    elif getattr(e, "errno", None) == errno.EPERM:
+                                        # No permission to signal — treat as active
+                                        pass
+                                    else:
+                                        # Unknown error — be conservative
+                                        pass
+                            else:
+                                # No pid parsed; reclaim if too old
+                                if ts is not None and too_old:
+                                    if self._try_reclaim(None, False, too_old):
+                                        continue
+                        except PermissionError:
+                            # PID exists but cannot be signalled; treat as active
+                            pass
                         except Exception:
-                            logger.debug(
-                                "Lockfile %s exists but could not be read",
-                                self.lock_path,
-                            )
+                            # Parsing diagnostics must not fail lock acquisition
+                            pass
                 except Exception:
                     pass
-
-                # If we've exceeded the timeout, raise. Otherwise sleep a
-                # short fixed duration before retrying.
+                # If we've exceeded the timeout, raise. Otherwise sleep before retrying.
                 if time.time() - start >= self.timeout:
                     _inc_lock_metric("fallback_acquire_timeouts")
                     raise TimeoutError(f"Timeout acquiring lock {self.lock_path}")
