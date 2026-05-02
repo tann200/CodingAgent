@@ -101,7 +101,7 @@ try:
 except Exception:
     _get_permission_context = None  # type: ignore[assignment]
 
-logger = logging.getLogger(__name__)
+# F-83: single logger; removed duplicate `logger = logging.getLogger(__name__)` at old line 104.
 
 # ---------------------------------------------------------------------------
 # Tool-kind and primary-argument helpers (used by _gate2c_permission_table)
@@ -430,7 +430,7 @@ class PermissionGateway:
                 return self._gate5_user_approval(name, args)
 
         except Exception as _e:
-            logger.warning("Gate 2c permission policy check failed (fail-open): %s", _e)  # policy failures must never block tool execution
+            _logger.warning("Gate 2c permission policy check failed (fail-open): %s", _e)  # policy failures must never block tool execution
 
         return PermissionResult(allowed=True)
 
@@ -515,7 +515,7 @@ class PermissionGateway:
             action = tbl.check(kind_str, primary_arg)
 
             if action == "allow":
-                logger.debug(
+                _logger.debug(
                     "permission_table: pre-approved %s %r via allow rule",
                     name,
                     primary_arg,
@@ -523,7 +523,7 @@ class PermissionGateway:
                 return PermissionResult(allowed=True)
 
             if action == "deny":
-                logger.debug(
+                _logger.debug(
                     "permission_table: blocked %s %r via deny rule", name, primary_arg
                 )
                 return PermissionResult(
@@ -587,7 +587,7 @@ class PermissionGateway:
                     resolved.relative_to(wd)  # raises ValueError if outside
                 except ValueError:
                     # Path escapes workspace — require user approval via Gate 5.
-                    logger.info(
+                    _logger.info(
                         "gate2d: tool %r targets external path %r (workspace: %s) — prompting",
                         name,
                         raw,

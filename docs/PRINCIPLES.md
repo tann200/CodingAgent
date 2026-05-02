@@ -116,10 +116,10 @@ These are known gaps against the principles above, prioritised for implementatio
 
 | # | Gap | Priority |
 |---|-----|----------|
-| G6 | Windows GPU detection missing in `hardware_capability_profile.py` | P2 |
+| G6 | ~~Windows GPU detection missing in `hardware_capability_profile.py`~~ **Resolved** `a46f756` — `_detect_vram_windows()`, `GlobalMemoryStatusEx` | P2 |
 | G7 | No container/namespace sandbox — bash_security patterns are the only barrier | P2 |
 | G8 | WebSocket session endpoint not implemented | P2 |
 | G9 | MCP tool registry integration with orchestrator routing incomplete | P2 |
 | G10 | Evaluation suite minimal — no golden-set regression, no pass@k | P2 |
-| G11 | `bash_security.py` patterns assume Unix shell syntax — no PowerShell equivalent | P3 |
+| G11 | ~~`bash_security.py` patterns assume Unix shell syntax — no PowerShell equivalent~~ **Resolved** `a46f756` — `analyze_powershell_command()` + `_PS_BLOCKED_PATTERNS` | P3 |
 | G12 | Streaming diff preview (character-by-character) not implemented | P3 |

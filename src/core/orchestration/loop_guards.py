@@ -67,6 +67,7 @@ MODIFYING_TOOLS: Set[str] = {
     "edit_file_atomic",  # SEC-2: sync with WRITE_TOOLS_REQUIRING_READ in orchestrator
     "edit_by_line_range",
     "apply_patch",
+    "multiedit",         # F-88: was missing; also modifies files
     "write_file",
     "delete_file",
     "rename_file",  # SEC-2: sync with WRITE_TOOLS_REQUIRING_READ in orchestrator

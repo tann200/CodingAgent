@@ -85,6 +85,8 @@ class TokenBudgetMonitor:
             with cls._instance_lock:
                 if cls._instance is None:
                     cls._instance = cls()
+                    # F-82: mark singleton so callers can detect re-use.
+                    cls._instance._is_singleton = True
         return cls._instance
 
     def get_budget(self, session_id: str) -> TokenBudget:

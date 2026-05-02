@@ -23,6 +23,13 @@ from typing import Any, Dict, cast, Optional
 
 logger = logging.getLogger(__name__)
 
+# F-81: named constants for approval timeout and thread pool size.
+APPROVAL_TIMEOUT_SECONDS: float = 120.0
+TOOL_EXECUTOR_MAX_WORKERS: int = 4
+
+# F-89: module-level constant for tool output truncation limit.
+TOOL_OUTPUT_MAX_CHARS: int = 8_000
+
 # Re-import constants used inside execute_tool body.
 # These names are also bound in orchestrator.py for backward-compat patching.
 from src.core.orchestration.tool_constants import (  # noqa: E402
@@ -376,7 +383,7 @@ def execute_tool_impl(orch: Any, tool_call: Dict[str, Any]) -> Dict[str, Any]:
                 # the full timeout window.  Only affects non-autonomous mode (approval
                 # required).  Ensure ThreadPoolExecutor max_workers > 1 if multiple
                 # concurrent tool approvals are possible, to avoid pool exhaustion.
-                granted = _t4_ev.wait(timeout=120.0)
+                granted = _t4_ev.wait(timeout=APPROVAL_TIMEOUT_SECONDS)
                 if not granted or _t4_id in _tool_denied:
                     _tool_denied.discard(_t4_id)
                     return {
@@ -683,7 +690,7 @@ def execute_tool_impl(orch: Any, tool_call: Dict[str, Any]) -> Dict[str, Any]:
                 if _tex is None:
                     # BUG-FIX #2: increased from 2 to 4 to prevent pool exhaustion
                     # when multiple concurrent tool approvals are pending
-                    _tex = _cf.ThreadPoolExecutor(max_workers=4)
+                    _tex = _cf.ThreadPoolExecutor(max_workers=TOOL_EXECUTOR_MAX_WORKERS)
                     orch._tool_executor = _tex
                 # Capture current context so ContextVars (correlation id etc.) are
                 # available in the tool thread.
@@ -735,33 +742,33 @@ def execute_tool_impl(orch: Any, tool_call: Dict[str, Any]) -> Dict[str, Any]:
         # excessive context window tokens. Cap string values at 8000 chars and
         # inject a truncation notice so the LLM knows content was cut.
         # Mirrors opencode's Truncate.output() strategy.
-        _TOOL_OUTPUT_MAX_CHARS = 8000
+        # F-89: use module-level TOOL_OUTPUT_MAX_CHARS constant.
         if isinstance(res, dict):
             # Copy once before any mutation — avoids repeated copies inside the loop.
             if any(
-                isinstance(_v, str) and len(_v) > _TOOL_OUTPUT_MAX_CHARS
+                isinstance(_v, str) and len(_v) > TOOL_OUTPUT_MAX_CHARS
                 for _v in res.values()
             ):
                 res = dict(res)
                 for _k, _v in list(res.items()):
-                    if isinstance(_v, str) and len(_v) > _TOOL_OUTPUT_MAX_CHARS:
+                    if isinstance(_v, str) and len(_v) > TOOL_OUTPUT_MAX_CHARS:
                         res[_k] = (
-                            _v[:_TOOL_OUTPUT_MAX_CHARS]
-                            + f"\n... [truncated: {len(_v) - _TOOL_OUTPUT_MAX_CHARS} chars omitted]"
+                            _v[:TOOL_OUTPUT_MAX_CHARS]
+                            + f"\n... [truncated: {len(_v) - TOOL_OUTPUT_MAX_CHARS} chars omitted]"
                         )
             # Also truncate nested result.content (common for read_file)
             _inner = res.get("result")
             if isinstance(_inner, dict) and any(
-                isinstance(_v, str) and len(_v) > _TOOL_OUTPUT_MAX_CHARS
+                isinstance(_v, str) and len(_v) > TOOL_OUTPUT_MAX_CHARS
                 for _v in _inner.values()
             ):
                 _inner = dict(_inner)
                 res["result"] = _inner
                 for _k, _v in list(_inner.items()):
-                    if isinstance(_v, str) and len(_v) > _TOOL_OUTPUT_MAX_CHARS:
+                    if isinstance(_v, str) and len(_v) > TOOL_OUTPUT_MAX_CHARS:
                         _inner[_k] = (
-                            _v[:_TOOL_OUTPUT_MAX_CHARS]
-                            + f"\n... [truncated: {len(_v) - _TOOL_OUTPUT_MAX_CHARS} chars omitted]"
+                            _v[:TOOL_OUTPUT_MAX_CHARS]
+                            + f"\n... [truncated: {len(_v) - TOOL_OUTPUT_MAX_CHARS} chars omitted]"
                         )
 
         # (O4: set_role handler removed — role_tools not registered; runtime role
@@ -1096,13 +1103,14 @@ def execute_tool_impl(orch: Any, tool_call: Dict[str, Any]) -> Dict[str, Any]:
         except Exception:
             pass  # never block execution
 
-        # SPAWN-W1: Reset ContextVar on exception path to prevent leak.
+        # SPAWN-W1: Reset ContextVar on exception path to prevent leak (F-74).
+        # _orch_token is initialised to None at the top of the try block, so it
+        # is always defined here — no need for locals().get().
         try:
-            _tok = locals().get("_orch_token")
-            if _tok is not None:
+            if _orch_token is not None:
                 from src.tools.subagent_tools import _PARENT_ORCHESTRATOR_VAR
 
-                _PARENT_ORCHESTRATOR_VAR.reset(_tok)
+                _PARENT_ORCHESTRATOR_VAR.reset(_orch_token)
         except Exception:
             pass
 

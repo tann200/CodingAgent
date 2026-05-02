@@ -290,9 +290,8 @@ def run_agent_once_impl(
         try:
             _sid = getattr(orch, "_current_task_id", None)
             try:
-                import threading as _thr
 
-                _tname = _thr.current_thread().name
+                _tname = _threading.current_thread().name
             except Exception:
                 _tname = "unknown"
             guilogger.debug(
@@ -589,8 +588,10 @@ def run_agent_once_impl(
 
         try:
             # Allow multiple graph rounds to consume multi-turn tool sequences (bounded)
-            # STRICT: Max 5 tool calls per task (loop safeguard)
-            max_rounds = 5
+            # F-71: single named constant; guard below uses >= so it fires at exactly
+            # MAX_TOOL_LOOP_ITERATIONS, not one beyond it.
+            MAX_TOOL_LOOP_ITERATIONS: int = 5
+            max_rounds = MAX_TOOL_LOOP_ITERATIONS
             current_state = initial_state
 
             # Loop safeguard: track iterations for no-progress detection
@@ -616,7 +617,6 @@ def run_agent_once_impl(
                 try:
                     asyncio.get_running_loop()
                     # Running loop detected — submit to the reused executor (P2 fix)
-                    import contextvars as _cv
 
                     _ctx = _cv.copy_context()
                     future = _graph_executor.submit(_ctx.run, _run_graph, current_state)
@@ -697,10 +697,10 @@ def run_agent_once_impl(
                 # Increment iteration counter and check for infinite loop
                 loop_iteration += 1
 
-                # STRICT LIMIT: Never allow more than 5 tool call iterations
-                if loop_iteration > 5:
+                # STRICT LIMIT: Never allow more than MAX_TOOL_LOOP_ITERATIONS tool call iterations
+                if loop_iteration >= MAX_TOOL_LOOP_ITERATIONS:
                     guilogger.error(
-                        f"inference_loop: TOOL LOOP LIMIT EXCEEDED - {loop_iteration} iterations (max 5)"
+                        f"inference_loop: TOOL LOOP LIMIT EXCEEDED - {loop_iteration} iterations (max {MAX_TOOL_LOOP_ITERATIONS})"
                     )
                     final_state = final_state or {}
                     final_state["errors"] = list(final_state.get("errors", [])) + [
@@ -716,7 +716,7 @@ def run_agent_once_impl(
                     last_assistant_tracker["last"] = last_assistant
 
                 guilogger.info(
-                    f"inference_loop: iteration {loop_iteration}/5, "
+                    f"inference_loop: iteration {loop_iteration}/{MAX_TOOL_LOOP_ITERATIONS}, "
                     f"history length={len(final_state.get('history', []))}"
                 )
 
@@ -958,9 +958,8 @@ def run_agent_once_impl(
             try:
                 _sid = getattr(orch, "_current_task_id", None)
                 try:
-                    import threading as _thr
 
-                    _tname = _thr.current_thread().name
+                    _tname = _threading.current_thread().name
                 except Exception:
                     _tname = "unknown"
                 guilogger.debug(
@@ -1039,7 +1038,6 @@ def run_agent_once_impl(
                 try:
                     asyncio.get_running_loop()
                     # Already inside an event loop — submit to thread executor.
-                    import contextvars as _cv
 
                     _ctx = _cv.copy_context()
                     _fb_executor = getattr(orch, "_graph_executor", None)
