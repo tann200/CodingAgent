@@ -238,3 +238,59 @@ def memory_save(
         }
     except Exception as exc:
         return {"status": "error", "error": str(exc)}
+
+
+@tool(tags=["coding", "planning", "review", "debugging"], permission_kind=PermissionKind.MEMORY)
+def record_mistake(
+    summary: str,
+    context: Optional[str] = None,
+    tool_name: Optional[str] = None,
+    agent_state: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Record a mistake or lesson learned into the cross-session learning index.
+
+    Mistakes recorded here are surfaced as ranked hints at the start of future
+    sessions that handle similar tasks, preventing repeated errors.
+
+    Call this when you:
+    - Made an incorrect assumption that caused a test failure or wrong output.
+    - Used the wrong tool or wrong arguments and had to retry.
+    - Discovered an important constraint (e.g. "write_file rejects binary paths").
+    - Completed a difficult subtask and want to preserve the key insight.
+
+    Args:
+        summary: One-sentence description of the mistake or lesson (max 200 chars).
+        context: Optional extended detail — root cause, correct approach, etc.
+        tool_name: Optional name of the tool that was misused (e.g. "bash", "write_file").
+        agent_state: Optional agent state dict (used to resolve session_id).
+
+    Returns:
+        Status dictionary.
+    """
+    summary = summary.strip()
+    if not summary:
+        return {"status": "error", "error": "summary cannot be empty"}
+    if len(summary) > 200:
+        summary = summary[:200]
+
+    try:
+        from src.core.memory.session_store import get_session_store
+
+        session_id = None
+        if agent_state:
+            session_id = agent_state.get("session_id") or agent_state.get("id")
+        store = get_session_store()
+        store.add_mistake(
+            session_id=session_id or "unknown",
+            summary=summary,
+            context=context,
+            tool=tool_name,
+        )
+        return {
+            "status": "ok",
+            "recorded": summary,
+            "tool": tool_name,
+        }
+    except Exception as exc:
+        logger.warning("record_mistake: failed to persist — %s", exc)
+        return {"status": "error", "error": str(exc)}
