@@ -577,6 +577,11 @@ class SqliteSessionStore:
         ).fetchall()
         return [{"plan": r["plan"], "status": r["status"]} for r in rows]
 
+    # Error types that are transient / expected and should NOT be promoted to mistakes.
+    _TRANSIENT_ERROR_TYPES: frozenset = frozenset(
+        {"timeout", "permission_denied", "user_denied", "cancelled", "rate_limit"}
+    )
+
     def add_error(
         self,
         session_id: str,
@@ -595,6 +600,18 @@ class SqliteSessionStore:
             "INSERT INTO errors (session_id, error_type, error_message, context) VALUES (?, ?, ?, ?)",
             (sid, error_type, error_message, ctx),
         )
+        # Learning loop: auto-promote non-transient errors to the mistakes table
+        # so they are available for cross-session FTS retrieval.
+        if error_type not in self._TRANSIENT_ERROR_TYPES:
+            try:
+                self.add_mistake(
+                    session_id=sid,
+                    summary=f"{error_type}: {error_message[:100]}",
+                    context=error_message[:400],
+                    tool=None,
+                )
+            except Exception:
+                pass  # never let mistake recording block error recording
 
     def get_errors(self, session_id: str) -> List[Dict[str, Any]]:
         conn = self._get_connection()

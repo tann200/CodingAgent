@@ -142,6 +142,17 @@ async def debug_node(state: StateLike, config: Any) -> Dict[str, Any]:
                 error_message=error_summary[:500],
                 context={"attempt": current_attempt + 1},
             )
+            # Learning loop: record as a cross-session mistake so future tasks
+            # can avoid the same pattern.  Summary is kept short (≤120 chars)
+            # so FTS tokenisation is effective.
+            if hasattr(orchestrator.session_store, "add_mistake"):
+                _mistake_summary = f"{error_type}: {error_summary[:100]}"
+                orchestrator.session_store.add_mistake(
+                    session_id=_sid or "unknown",
+                    summary=_mistake_summary,
+                    context=error_summary[:400],
+                    tool=None,  # debug_node doesn't know the specific tool
+                )
     except Exception:
         pass  # never block execution
 

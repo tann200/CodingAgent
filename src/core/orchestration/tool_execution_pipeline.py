@@ -1081,6 +1081,21 @@ def execute_tool_impl(orch: Any, tool_call: Dict[str, Any]) -> Dict[str, Any]:
         # GAP 1: Sync session state after tool error
         orch._sync_session_state()
 
+        # Learning loop: record unrecovered tool exceptions as cross-session
+        # mistakes so future tasks can avoid the same failure pattern.
+        try:
+            _store = getattr(orch, "session_store", None)
+            if _store is not None and hasattr(_store, "add_mistake"):
+                _mistake_summary = f"tool {name} raised {type(e).__name__}: {str(e)[:100]}"
+                _store.add_mistake(
+                    session_id=getattr(orch, "_current_task_id", None) or "unknown",
+                    summary=_mistake_summary,
+                    context=str(e)[:400],
+                    tool=name,
+                )
+        except Exception:
+            pass  # never block execution
+
         # SPAWN-W1: Reset ContextVar on exception path to prevent leak.
         try:
             _tok = locals().get("_orch_token")
