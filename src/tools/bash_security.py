@@ -187,3 +187,131 @@ def is_dangerous(cmd: str) -> bool:
     """Convenience: return True if *cmd* requires approval."""
     level, _ = analyze_bash_command(cmd)
     return level in (BashRiskLevel.DANGEROUS, BashRiskLevel.BLOCKED)
+
+
+# ---------------------------------------------------------------------------
+# PowerShell security analysis (G11)
+# ---------------------------------------------------------------------------
+
+# PowerShell commands / patterns that must always be BLOCKED.
+_PS_BLOCKED_PATTERNS: List[Tuple[re.Pattern, str]] = [
+    # Dynamic execution — equivalent of eval/exec in bash
+    (re.compile(r"\bInvoke-Expression\b", re.I), "Invoke-Expression (dynamic exec)"),
+    (re.compile(r"\biex\b", re.I), "iex (Invoke-Expression alias)"),
+    (re.compile(r"\b&\s*\(", re.I), "call operator with expression &(…)"),
+    # Download and execute
+    (
+        re.compile(r"\bInvoke-WebRequest\b.*\|\s*(iex|Invoke-Expression)\b", re.I),
+        "download-and-exec via Invoke-WebRequest",
+    ),
+    (
+        re.compile(r"\bStart-BitsTransfer\b.*\|\s*(iex|Invoke-Expression)\b", re.I),
+        "download-and-exec via Start-BitsTransfer",
+    ),
+    # Encoded command (common obfuscation vector)
+    (re.compile(r"-Enc(odedCommand)?\b", re.I), "encoded command (-EncodedCommand)"),
+    # Pipe to PowerShell itself
+    (re.compile(r"\|\s*powershell\b", re.I), "pipe to powershell"),
+    # Bypass execution policy
+    (
+        re.compile(r"-ExecutionPolicy\s+Bypass\b", re.I),
+        "execution policy bypass",
+    ),
+    # Disk/format operations
+    (re.compile(r"\bFormat-Volume\b", re.I), "Format-Volume (destructive)"),
+    (re.compile(r"\bClear-Disk\b", re.I), "Clear-Disk (destructive)"),
+    # .NET reflection-based exec
+    (
+        re.compile(r"\[System\.Reflection\b", re.I),
+        "reflection-based dynamic exec",
+    ),
+]
+
+# PowerShell commands that are DANGEROUS (require approval).
+_PS_DANGEROUS_PATTERNS: List[Tuple[re.Pattern, str]] = [
+    # Privilege elevation
+    (re.compile(r"\bStart-Process\b.*-Verb\s+RunAs\b", re.I), "RunAs (UAC elevation)"),
+    # Remote / network
+    (re.compile(r"\bInvoke-WebRequest\b", re.I), "Invoke-WebRequest (network)"),
+    (re.compile(r"\bInvoke-RestMethod\b", re.I), "Invoke-RestMethod (network)"),
+    (re.compile(r"\bStart-BitsTransfer\b", re.I), "Start-BitsTransfer (network)"),
+    (re.compile(r"\bNew-PSSession\b", re.I), "New-PSSession (remote shell)"),
+    (re.compile(r"\bEnter-PSSession\b", re.I), "Enter-PSSession (remote shell)"),
+    (re.compile(r"\bInvoke-Command\b.*-ComputerName\b", re.I), "Invoke-Command remote"),
+    # Recursive / forced deletion
+    (
+        re.compile(r"\bRemove-Item\b.*(-Recurse|-Force)\b", re.I),
+        "Remove-Item -Recurse/-Force",
+    ),
+    (re.compile(r"\brd\b.*\/s\b", re.I), "rd /s (recursive delete, cmd.exe compat)"),
+    # Service / scheduled task management
+    (re.compile(r"\bNew-Service\b|\bSet-Service\b|\bRemove-Service\b", re.I), "service management"),
+    (
+        re.compile(r"\bRegister-ScheduledTask\b|\bUnregister-ScheduledTask\b", re.I),
+        "scheduled task management",
+    ),
+    # Registry writes
+    (re.compile(r"\bSet-ItemProperty\b.*HKLM:\b", re.I), "HKLM registry write"),
+    (re.compile(r"\bNew-Item\b.*HKLM:\b", re.I), "HKLM registry write"),
+    # Package installation
+    (re.compile(r"\bInstall-Package\b|\bInstall-Module\b", re.I), "package installation"),
+    (re.compile(r"\bwinget\s+install\b", re.I), "winget install"),
+    (re.compile(r"\bchoco\s+install\b", re.I), "choco install"),
+    # ACL / permission changes
+    (re.compile(r"\bSet-Acl\b", re.I), "Set-Acl (permission change)"),
+    # Process termination
+    (re.compile(r"\bStop-Process\b|\bKill\b", re.I), "Stop-Process/Kill"),
+]
+
+
+@lru_cache(maxsize=256)
+def _analyze_powershell_command_cached(cmd: str) -> _CacheResult:
+    """Cached PowerShell risk analysis. Returns immutable (level, reasons) tuple."""
+    reasons: List[str] = []
+
+    # Pass 1 — BLOCKED
+    for pattern, reason in _PS_BLOCKED_PATTERNS:
+        if pattern.search(cmd):
+            return BashRiskLevel.BLOCKED, (reason,)
+
+    # Pass 2 — DANGEROUS
+    for pattern, reason in _PS_DANGEROUS_PATTERNS:
+        if pattern.search(cmd):
+            reasons.append(reason)
+
+    if reasons:
+        return BashRiskLevel.DANGEROUS, tuple(reasons)
+
+    return BashRiskLevel.SAFE, ()
+
+
+def analyze_powershell_command(cmd: str) -> Tuple[BashRiskLevel, List[str]]:
+    """Analyse a PowerShell command string and return ``(risk_level, reasons)``.
+
+    Mirrors ``analyze_bash_command`` but uses PowerShell-aware patterns (G11):
+    - Blocked: Invoke-Expression / iex, encoded commands, download-and-exec,
+      execution policy bypass, destructive disk ops, reflection-based exec.
+    - Dangerous: network cmdlets, remote sessions, Remove-Item -Recurse,
+      service / scheduled-task / registry management, package managers.
+
+    Note: ``shlex.split`` is not used here as PowerShell quoting rules differ
+    from POSIX; pattern matching is applied directly against the raw string.
+    """
+    level, reasons_tuple = _analyze_powershell_command_cached(cmd)
+    return level, list(reasons_tuple)
+
+
+def analyze_command(cmd: str, shell: str = "bash") -> Tuple[BashRiskLevel, List[str]]:
+    """Dispatcher: route to the appropriate analyser based on *shell*.
+
+    Args:
+        cmd:   The command string to analyse.
+        shell: One of ``"bash"`` (default, covers sh/zsh/fish), ``"powershell"``
+               or ``"pwsh"``.
+
+    Returns:
+        ``(BashRiskLevel, [reason, …])`` — same contract as the per-shell functions.
+    """
+    if shell.lower() in ("powershell", "pwsh"):
+        return analyze_powershell_command(cmd)
+    return analyze_bash_command(cmd)

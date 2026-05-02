@@ -126,7 +126,7 @@ HARDWARE_PROFILES: dict[str, HardwareProfile] = {
 
 
 def _detect_vram_nvidia() -> float:
-    """Detect VRAM on Linux NVIDIA GPUs via nvidia-smi."""
+    """Detect VRAM on Linux/Windows NVIDIA GPUs via nvidia-smi."""
     try:
         result = subprocess.run(
             ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
@@ -140,6 +140,55 @@ def _detect_vram_nvidia() -> float:
     except (subprocess.TimeoutExpired, FileNotFoundError, ValueError) as e:
         logger.debug(f"nvidia-smi detection failed: {e}")
     return 0
+
+
+def _detect_vram_windows() -> float:
+    """Detect VRAM on Windows via WMI or PowerShell fallback (G6).
+
+    Tries three strategies in order:
+    1. ``wmi`` Python package (optional, fastest).
+    2. PowerShell ``Get-CimInstance Win32_VideoController`` (no extra deps).
+    3. ``nvidia-smi`` via ``_detect_vram_nvidia()`` (covers NVIDIA on Windows too).
+    """
+    # Strategy 1: wmi package
+    try:
+        import wmi  # type: ignore[import]
+
+        c = wmi.WMI()
+        vram_bytes = max(
+            (int(v.AdapterRAM or 0) for v in c.Win32_VideoController()), default=0
+        )
+        if vram_bytes > 0:
+            return vram_bytes / (1024**3)
+    except Exception as e:
+        logger.debug(f"wmi VRAM detection failed: {e}")
+
+    # Strategy 2: PowerShell CIM
+    try:
+        ps_cmd = (
+            "Get-CimInstance Win32_VideoController | "
+            "Select-Object -ExpandProperty AdapterRAM"
+        )
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", ps_cmd],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            # May return multiple lines if multiple GPUs; take the max
+            values = [
+                int(line.strip())
+                for line in result.stdout.strip().split("\n")
+                if line.strip().isdigit()
+            ]
+            if values:
+                return max(values) / (1024**3)
+    except Exception as e:
+        logger.debug(f"PowerShell VRAM detection failed: {e}")
+
+    # Strategy 3: nvidia-smi (works on Windows too)
+    return _detect_vram_nvidia()
 
 
 def _detect_vram_metal() -> float:
@@ -178,27 +227,26 @@ def _detect_ram() -> float:
                         kb = int(re.search(r"\d+", line).group())  # type: ignore
                         return kb / (1024**2)
         else:
+            # Windows — use GlobalMemoryStatusEx (supports >4 GB via ULONGLONG fields).
             import ctypes
 
-            kernel32 = ctypes.windll.kernel32
-            c_ulong = ctypes.c_ulong
-
-            class MEMORYSTATUS(ctypes.Structure):
+            class MEMORYSTATUSEX(ctypes.Structure):
                 _fields_ = [
-                    ("dwLength", c_ulong),
-                    ("dwMemoryLoad", c_ulong),
-                    ("dwTotalPhys", c_ulong),
-                    ("dwAvailPhys", c_ulong),
-                    ("dwTotalPageFile", c_ulong),
-                    ("dwAvailPageFile", c_ulong),
-                    ("dwTotalVirtual", c_ulong),
-                    ("dwAvailVirtual", c_ulong),
+                    ("dwLength", ctypes.c_ulong),
+                    ("dwMemoryLoad", ctypes.c_ulong),
+                    ("ullTotalPhys", ctypes.c_ulonglong),
+                    ("ullAvailPhys", ctypes.c_ulonglong),
+                    ("ullTotalPageFile", ctypes.c_ulonglong),
+                    ("ullAvailPageFile", ctypes.c_ulonglong),
+                    ("ullTotalVirtual", ctypes.c_ulonglong),
+                    ("ullAvailVirtual", ctypes.c_ulonglong),
+                    ("sullAvailExtendedVirtual", ctypes.c_ulonglong),
                 ]
 
-            stat = MEMORYSTATUS()
-            stat.dwLength = ctypes.sizeof(MEMORYSTATUS)
-            kernel32.GlobalMemoryStatus(ctypes.byref(stat))
-            return stat.dwTotalPhys / (1024**3)
+            stat = MEMORYSTATUSEX()
+            stat.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
+            ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat))  # type: ignore[attr-defined]
+            return stat.ullTotalPhys / (1024**3)
     except Exception as e:
         logger.debug(f"RAM detection failed: {e}")
     return 0
@@ -236,6 +284,35 @@ def _detect_gpu_name() -> str:
             )
             if result.returncode == 0:
                 return result.stdout.strip()
+        elif platform.system() == "Windows":
+            # Try nvidia-smi first (fastest for NVIDIA)
+            try:
+                result = subprocess.run(
+                    ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+                if result.returncode == 0 and result.stdout.strip():
+                    return result.stdout.strip().split("\n")[0]
+            except Exception:
+                pass
+            # Fallback: PowerShell CIM
+            try:
+                ps_cmd = (
+                    "Get-CimInstance Win32_VideoController | "
+                    "Select-Object -First 1 -ExpandProperty Name"
+                )
+                result = subprocess.run(
+                    ["powershell", "-NoProfile", "-Command", ps_cmd],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                if result.returncode == 0 and result.stdout.strip():
+                    return result.stdout.strip()
+            except Exception:
+                pass
     except Exception:
         pass
     return ""
@@ -253,6 +330,9 @@ def detect_hardware() -> HardwareProfile:
         vram_gb = _detect_vram_nvidia()
         if vram_gb == 0:
             vram_gb = _detect_vram_metal()  # Fallback to unified memory detection
+    elif os_name == "windows":
+        # G6: Windows GPU detection via WMI / PowerShell / nvidia-smi
+        vram_gb = _detect_vram_windows()
 
     # Detect RAM
     ram_gb = _detect_ram()
