@@ -4,6 +4,7 @@ import logging
 import math
 import json
 import re
+import subprocess
 import threading
 from collections import OrderedDict
 from datetime import date as _date
@@ -23,6 +24,62 @@ except Exception:
     _hook_registry = None  # type: ignore[assignment]
     _HOOK_CONTEXT_BUILT = "context.built"
     _HAS_HOOKS = False
+
+# Lazy imports — guarded against circular-import and optional-dependency failures.
+try:
+    from src.core.inference.model_tiers import ModelTier, get_tool_limit as _get_tool_limit, get_plan_step_limit as _get_plan_step_limit
+    _ModelTier = ModelTier
+except Exception:
+    _ModelTier = None  # type: ignore[assignment]
+    _get_tool_limit = None  # type: ignore[assignment]
+    _get_plan_step_limit = None  # type: ignore[assignment]
+
+try:
+    from src.core.inference.provider_context import get_context_budget as _get_context_budget
+except Exception:
+    _get_context_budget = None  # type: ignore[assignment]
+
+try:
+    from src.core.indexing.vector_store import VectorStore as _VectorStore
+except Exception:
+    _VectorStore = None  # type: ignore[assignment]
+
+try:
+    from src.core.context.instruction_files import (
+        load_instruction_files as _load_instruction_files,
+        get_instruction_summary as _get_instruction_summary,
+        discover_instruction_files as _discover_instruction_files,
+        render_instruction_files as _render_instruction_files,
+    )
+except Exception:
+    _load_instruction_files = None  # type: ignore[assignment]
+    _get_instruction_summary = None  # type: ignore[assignment]
+    _discover_instruction_files = None  # type: ignore[assignment]
+    _render_instruction_files = None  # type: ignore[assignment]
+
+try:
+    from src.core.orchestration.instruction_loader import (
+        load_instructions as _load_instructions,
+        load_project_instructions as _load_project_instructions,
+    )
+except Exception:
+    _load_instructions = None  # type: ignore[assignment]
+    _load_project_instructions = None  # type: ignore[assignment]
+
+try:
+    from src.core.inference.thinking_utils import is_reasoning_model as _is_reasoning_model
+except Exception:
+    _is_reasoning_model = None  # type: ignore[assignment]
+
+try:
+    from src.core.inference.tokenizer import count_tokens as _count_tokens_mod
+except Exception:
+    _count_tokens_mod = None  # type: ignore[assignment]
+
+try:
+    from src.tools.tools_config import agent_context_path as _agent_context_path
+except Exception:
+    _agent_context_path = None  # type: ignore[assignment]
 
 # CP-12: Sentinel string that marks the boundary between the static (cacheable)
 # and dynamic (per-turn) portions of the system prompt.
@@ -52,11 +109,11 @@ _CORE_TOOL_NAMES: frozenset[str] = frozenset({
 # F10: Import dynamic token budget helper (lazy — avoids circular imports at module load).
 def _default_max_tokens() -> int:
     try:
-        from src.core.inference.provider_context import get_context_budget
-
-        return get_context_budget()
+        if _get_context_budget is not None:
+            return _get_context_budget()
     except Exception:
-        return 6000
+        pass
+    return 6000
 
 
 # Module-level caches keyed by absolute file path (NEW-20).
@@ -154,33 +211,22 @@ class ContextBuilder:
         if token_estimator is not None:
             self.token_estimator: Callable[[str], int] = token_estimator
         else:
-            try:
-                from src.core.inference.tokenizer import count_tokens as _ct
-
-                self.token_estimator = _ct
-            except Exception:
+            if _count_tokens_mod is not None:
+                self.token_estimator = _count_tokens_mod
+            else:
                 self.token_estimator = lambda s: math.ceil(len(s) / 3.5)
         # Resolve working directory — use provided path; do NOT fall back to
         # Path.cwd() because cwd is unreliable in async/subprocess contexts and
         # would silently look for agent-brain files in the wrong location.
         # Callers that do not have a working_dir should pass the repo root
         # explicitly (NEW-10 fix).
-        try:
-            from src.tools.tools_config import agent_context_path
-
+        if _agent_context_path is not None:
             if working_dir:
-                self._agent_context_dir = agent_context_path(Path(working_dir))
+                self._agent_context_dir = _agent_context_path(Path(working_dir))
             else:
-                # Fall back to the current working directory so that tests using
-                # monkeypatch.chdir() and callers without an explicit working_dir
-                # both resolve agent-context files relative to the active cwd.
-                self._agent_context_dir = agent_context_path(Path.cwd())
-        except Exception:
-            # Fallback: use agent_context_path which handles legacy dirs
-            if working_dir:
-                self._agent_context_dir = agent_context_path(Path(working_dir))
-            else:
-                self._agent_context_dir = agent_context_path(Path.cwd())
+                self._agent_context_dir = _agent_context_path(Path.cwd())
+        else:
+            self._agent_context_dir = Path(working_dir if working_dir else Path.cwd()) / _get_ctx_name()
 
         self._max_tokens: int = max_tokens
 
@@ -454,9 +500,9 @@ class ContextBuilder:
 
         # 1. VectorStore — episodic memories from prior sessions
         try:
-            from src.core.indexing.vector_store import VectorStore
-
-            _vs = VectorStore(workdir=str(self._agent_context_dir.parent))
+            if _VectorStore is None:
+                raise ImportError("VectorStore unavailable")
+            _vs = _VectorStore(workdir=str(self._agent_context_dir.parent))
             results = _vs.search_memories(query=task, limit=limit)
             for r in results:
                 text = r.get("text") or r.get("content") or str(r)
@@ -586,10 +632,10 @@ class ContextBuilder:
         Non-core tools are appended up to the tier limit, then dropped from the tail.
         """
         try:
-            from src.core.inference.model_tiers import ModelTier, get_tool_limit
-
-            tier = ModelTier(model_tier) if model_tier else ModelTier.MEDIUM
-            limit = get_tool_limit(tier)
+            if _ModelTier is None or _get_tool_limit is None:
+                raise ImportError("model_tiers unavailable")
+            tier = _ModelTier(model_tier) if model_tier else _ModelTier.MEDIUM
+            limit = _get_tool_limit(tier)
         except Exception:
             return tools  # no pruning if model_tiers unavailable
 
@@ -613,10 +659,10 @@ class ContextBuilder:
         MEDIUM+:    full description (unchanged behaviour).
         """
         try:
-            from src.core.inference.model_tiers import ModelTier
-
-            tier = ModelTier(model_tier) if model_tier else ModelTier.MEDIUM
-            is_minimal = tier == ModelTier.SMALL
+            if _ModelTier is None:
+                raise ImportError("model_tiers unavailable")
+            tier = _ModelTier(model_tier) if model_tier else _ModelTier.MEDIUM
+            is_minimal = tier == _ModelTier.SMALL
         except Exception:
             is_minimal = False
 
@@ -644,8 +690,6 @@ class ContextBuilder:
         stays cached within the same HEAD across multiple turns.
         """
         try:
-            import subprocess
-
             result = subprocess.run(
                 ["git", "rev-parse", "--short", "HEAD"],
                 cwd=working_dir,
@@ -736,23 +780,19 @@ class ContextBuilder:
         # don't try to use tools / format features they don't have.
         if tier_str in ("nano", "small"):
             try:
-                from src.core.inference.model_tiers import (
-                    ModelTier,
-                    get_plan_step_limit,
-                )
-
-                _p1e_tier_enum = ModelTier(tier_str) if tier_str else None
+                if _ModelTier is None or _get_plan_step_limit is None:
+                    raise ImportError("model_tiers unavailable")
+                _p1e_tier_enum = _ModelTier(tier_str) if tier_str else None
                 _p1e_step_limit = (
-                    get_plan_step_limit(_p1e_tier_enum) if _p1e_tier_enum else 6
+                    _get_plan_step_limit(_p1e_tier_enum) if _p1e_tier_enum else 6
                 )
                 _p1e_tool_count = len(tools)  # already pruned
                 _p1e_ctx_tokens = 0
-                try:
-                    from src.core.inference.provider_context import get_context_budget
-
-                    _p1e_ctx_tokens = get_context_budget(model_tier=tier_str)
-                except Exception:
-                    pass
+                if _get_context_budget is not None:
+                    try:
+                        _p1e_ctx_tokens = _get_context_budget(model_tier=tier_str)
+                    except Exception:
+                        pass
                 _p1e_lines = [
                     f"Tier: {tier_str.upper()} | Context: {_p1e_ctx_tokens:,} tokens | Tools: {_p1e_tool_count} available",
                     f"Max plan steps: {_p1e_step_limit} | Output format: YAML tool calls only (no JSON, no prose before tool call)",
@@ -768,15 +808,12 @@ class ContextBuilder:
 
         # CP-11: Ancestor instruction file injection.
         try:
-            from src.core.context.instruction_files import (
-                discover_instruction_files,
-                render_instruction_files,
-            )
-
+            if _discover_instruction_files is None or _render_instruction_files is None:
+                raise ImportError("instruction_files unavailable")
             _workdir = self._agent_context_dir.parent
-            _instr_files = discover_instruction_files(_workdir)
+            _instr_files = _discover_instruction_files(_workdir)
             if _instr_files:
-                _instr_block = render_instruction_files(_instr_files)
+                _instr_block = _render_instruction_files(_instr_files)
                 if _instr_block:
                     parts.append(
                         f"<project_instructions>\n{_instr_block}\n</project_instructions>"
@@ -788,13 +825,10 @@ class ContextBuilder:
         # These come after CP-11 file instructions so they take higher precedence.
         # Injected inside the static prefix so they are cached with the rest.
         try:
-            # Use the orchestration instruction loader (correct location for this helper).
-            from src.core.orchestration.instruction_loader import (
-                load_project_instructions as _gpi,
-            )
-
+            if _load_project_instructions is None:
+                raise ImportError("instruction_loader unavailable")
             # pass a Path object as the loader expects a Path-like cwd
-            _proj_instructions = _gpi(self._agent_context_dir.parent)
+            _proj_instructions = _load_project_instructions(self._agent_context_dir.parent)
             if _proj_instructions:
                 _proj_block = "\n".join(f"- {instr}" for instr in _proj_instructions)
                 parts.append(
@@ -825,22 +859,19 @@ class ContextBuilder:
         # S1-B: prompt partial.
         _is_reasoning_model = False
         try:
-            try:
-                from src.core.inference.thinking_utils import is_reasoning_model
-
-                _active_model = caps.get("model", "")
-                _is_reasoning_model = bool(
-                    _active_model and is_reasoning_model(_active_model)
-                )
-            except Exception:
-                pass
-            _partial = self._select_prompt_partial(
-                model_tier, provider_capabilities, _is_reasoning_model
+            if _is_reasoning_model is None:
+                raise ImportError("thinking_utils unavailable")
+            _active_model = caps.get("model", "")
+            _is_reasoning_model = bool(
+                _active_model and _is_reasoning_model(_active_model)
             )
-            if _partial:
-                parts.append(f"<model_guidance>\n{_partial}\n</model_guidance>")
         except Exception:
             pass
+        _partial = self._select_prompt_partial(
+            model_tier, provider_capabilities, _is_reasoning_model
+        )
+        if _partial:
+            parts.append(f"<model_guidance>\n{_partial}\n</model_guidance>")
 
         # GAP-FRONTIER-7: inject structured thinking gate for reasoning models and
         # frontier models that support extended thinking (FRONTIER + LARGE tiers).
@@ -955,17 +986,16 @@ class ContextBuilder:
         # pass them to _build_static_system_prefix for correct cache-key derivation.
         _is_simple_mode = False
         try:
-            from src.core.inference.model_tiers import (
-                ModelTier,
-                is_simple_mode as _check_simple,
+            if _ModelTier is None or _get_tool_limit is None:
+                raise ImportError("model_tiers unavailable")
+            _tier_val = _ModelTier(model_tier) if model_tier else None
+            _is_simple_mode = (
+                _get_tool_limit(_tier_val) == 0 if _tier_val else False
             )
-
-            _tier_val = ModelTier(model_tier) if model_tier else None
-            _is_simple_mode = _check_simple(_tier_val) if _tier_val else False
 
             # GAP-SMALL-3: SMALL models on providers without proven parallel tool
             # support also use simple_mode (one tool per response).
-            if not _is_simple_mode and _tier_val == ModelTier.SMALL:
+            if not _is_simple_mode and _tier_val == _ModelTier.SMALL:
                 _caps_local = provider_capabilities or {}
                 if not _caps_local.get("provider_supports_parallel_tools", True):
                     _is_simple_mode = True
