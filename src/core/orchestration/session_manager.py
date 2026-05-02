@@ -31,6 +31,8 @@ import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, List, Optional, Set
 
+from src.core.utils.strings import valid_str as _valid_str, extract_str as _extract_str
+
 guilogger = logging.getLogger("codingagent")
 
 if TYPE_CHECKING:
@@ -327,68 +329,6 @@ class SessionManager:
 
             provider_name = ""
             model_name = ""
-
-            # Single guarded import for shared string helpers with a safe
-            # fallback to avoid circular imports in tests.
-            try:
-                from src.core.utils.strings import (
-                    valid_str as _valid_impl,
-                    extract_str as _extract_impl,
-                )
-
-                def _valid_str(x: Any) -> bool:
-                    try:
-                        return bool(_valid_impl(x))
-                    except Exception:
-                        return (
-                            isinstance(x, str)
-                            and bool(x.strip())
-                            and ("MagicMock" not in x)
-                        )
-
-                def _extract_str(candidate: Any) -> Optional[str]:
-                    try:
-                        v = _extract_impl(candidate)
-                        if isinstance(v, str):
-                            s = v.strip()
-                            return s if _valid_str(s) else None
-                        return None
-                    except Exception:
-                        # fall through to manual extraction below
-                        pass
-
-            except Exception:
-
-                def _valid_str(x: Any) -> bool:
-                    return (
-                        isinstance(x, str)
-                        and bool(x.strip())
-                        and ("MagicMock" not in x)
-                    )
-
-                def _extract_str(candidate: Any) -> Optional[str]:
-                    if candidate is None:
-                        return None
-                    if isinstance(candidate, str):
-                        s = candidate.strip()
-                        return s if _valid_str(s) else None
-                    if isinstance(candidate, dict):
-                        for key in (
-                            "provider_name",
-                            "name",
-                            "id",
-                            "key",
-                            "model",
-                            "default_model",
-                            "type",
-                        ):
-                            val = candidate.get(key)
-                            if isinstance(val, str):
-                                s = val.strip()
-                                if _valid_str(s):
-                                    return s
-                        return None
-                    return None
 
             # If caller did not provide an adapter, attempt a conservative
             # fallback to ProviderManager.get_active_adapter() so callers that

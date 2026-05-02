@@ -83,15 +83,14 @@ def _create_backend(workdir: Optional[str] = None, backend: Optional[str] = None
 
 
 def get_session_store(workdir: Optional[str] = None, backend: Optional[str] = None):
-    """Factory: return an instance of the selected session store backend.
+    """Factory: return a session store for the selected backend.
 
-    Defaults to JsonlSessionStore. When ``backend=="sqlite"`` and the
-    SqliteSessionStore implementation is available this will return a
-    SqliteSessionStore instance.
-    """
-    """Return a SessionStore wrapper by default (when backend is not
-    explicitly provided). If *backend* is supplied explicitly, return the raw
-    backend implementation instance (JsonlSessionStore or SqliteSessionStore).
+    Returns a :class:`SessionStore` wrapper by default (when *backend* is not
+    explicitly provided).  If *backend* is supplied explicitly, returns the raw
+    backend implementation instance (JsonlSessionStore or SqliteSessionStore)
+    so callers that intentionally request a specific backend receive the
+    concrete type.  Defaults to JsonlSessionStore; when ``backend=="sqlite"``
+    and SqliteSessionStore is available, returns a SqliteSessionStore instance.
     """
 
     def _instantiate_raw(wd: Optional[str], explicit: Optional[str] = None):

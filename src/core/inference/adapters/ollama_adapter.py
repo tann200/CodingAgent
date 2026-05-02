@@ -80,6 +80,7 @@ except Exception:
 
 from src.core.inference.llm_client import LLMClient
 from src.core.inference.telemetry import with_telemetry
+from src.core.utils.strings import valid_str as _valid_str, extract_str as _extract_str
 
 _logger = logging.getLogger(__name__)
 
@@ -147,25 +148,6 @@ class OllamaAdapter(LLMClient):
         )
         # models: prefer explicit models arg, then provider.models from config, otherwise empty list
         # Guarded import for shared validator to avoid circular imports in tests.
-        try:
-            from src.core.utils.strings import valid_str as _vs  # type: ignore[import]
-
-            def _valid_str(x: Any) -> bool:  # type: ignore[misc]
-                try:
-                    return bool(_vs(x))
-                except Exception:
-                    return (
-                        isinstance(x, str) and bool(x.strip()) and "MagicMock" not in x
-                    )
-        except Exception:
-
-            def _valid_str(x: Any) -> bool:  # type: ignore[misc]
-                return (
-                    isinstance(x, str)
-                    and bool(str(x).strip())
-                    and ("MagicMock" not in str(x))
-                )
-
         if models is not None:
             # accept list[str] or list[dict], extract string ids conservatively
             out = []
@@ -309,25 +291,6 @@ class OllamaAdapter(LLMClient):
         # Accept both [{'name':...},...] and ['name', ...] shapes from adapters/tests
         raw = api_models.get("models", []) or []
         # Guarded import for shared validator to avoid circular imports in tests.
-        try:
-            from src.core.utils.strings import valid_str as _vs  # type: ignore[import]
-
-            def _valid_str(x: Any) -> bool:  # type: ignore[misc]
-                try:
-                    return bool(_vs(x))
-                except Exception:
-                    return (
-                        isinstance(x, str) and bool(x.strip()) and "MagicMock" not in x
-                    )
-        except Exception:
-
-            def _valid_str(x: Any) -> bool:  # type: ignore[misc]
-                return (
-                    isinstance(x, str)
-                    and bool(str(x).strip())
-                    and ("MagicMock" not in str(x))
-                )
-
         normalized = []
         for m in raw:
             if isinstance(m, dict):

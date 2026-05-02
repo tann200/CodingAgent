@@ -516,8 +516,6 @@ class ContextBuilder:
         6. Tier: NANO/SMALL → local-small.md, MEDIUM → local-medium.md
         7. Default → default.txt
         """
-        import re
-
         if is_reasoning:
             partial = self._load_prompt_partial("beast.txt")
             if partial:
@@ -823,7 +821,6 @@ class ContextBuilder:
         # S1-B: prompt partial.
         _is_reasoning_model = False
         try:
-            _is_reasoning_model = False
             try:
                 from src.core.inference.thinking_utils import is_reasoning_model
 

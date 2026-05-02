@@ -5,6 +5,7 @@ import json
 import logging
 import re
 import tempfile
+import traceback
 import os
 import shutil
 from pathlib import Path
@@ -158,8 +159,6 @@ class SymbolGraph:
                     self.graph_path,
                 )
             except Exception:
-                import traceback
-
                 logger.debug(
                     "symbol_graph: atomic_write_json unavailable or failed for %s; falling back\n%s",
                     self.graph_path,
@@ -186,8 +185,6 @@ class SymbolGraph:
                     try:
                         shutil.move(tmp_path, str(self.graph_path))
                     except Exception:
-                        import traceback
-
                         logger.debug(
                             "symbol_graph: mkstemp fallback failed for %s; final fallback to write_text\n%s",
                             self.graph_path,

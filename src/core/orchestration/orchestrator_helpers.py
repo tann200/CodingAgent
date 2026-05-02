@@ -21,6 +21,7 @@ import shutil
 from typing import Any, Dict
 
 from src.core.logger import logger as guilogger
+from src.core.utils.strings import valid_str as _valid_str, extract_str as _extract_str
 
 logger = logging.getLogger(__name__)
 
@@ -79,37 +80,9 @@ def _publish_active_config_impl(orch: Any) -> None:
                     _extract_str as _pc_extract,
                 )
             except Exception:
-                # Safe local fallbacks mirroring the shared heuristics
-                def _pc_valid(x: Any) -> bool:
-                    return (
-                        isinstance(x, str)
-                        and bool(x.strip())
-                        and ("MagicMock" not in x)
-                    )
-
-                def _pc_extract(candidate: Any) -> Any:
-                    if candidate is None:
-                        return None
-                    if isinstance(candidate, dict):
-                        for key in (
-                            "provider_name",
-                            "name",
-                            "id",
-                            "key",
-                            "model",
-                            "default_model",
-                            "type",
-                        ):
-                            val = candidate.get(key)
-                            if isinstance(val, str):
-                                s = val.strip()
-                                if _pc_valid(s):
-                                    return s
-                        return None
-                    if isinstance(candidate, str):
-                        s = candidate.strip()
-                        return s if _pc_valid(s) else None
-                    return None
+                # Fall back to the module-level canonical helpers already imported.
+                _pc_valid = _valid_str
+                _pc_extract = _extract_str
 
             # Only inspect adapter attributes when provider/model are not
             # already resolved to concrete values.
@@ -182,21 +155,7 @@ def _publish_active_config_impl(orch: Any) -> None:
                 ms = getattr(adapter, "models", None)
                 if isinstance(ms, list):
                     # filter in place using the existing validator
-                    try:
-                        from src.core.utils.strings import valid_str as _vs2
-
-                        def _valid_str2(x: Any) -> bool:
-                            return _vs2(x)
-                    except Exception:
-
-                        def _valid_str2(x: Any) -> bool:
-                            return (
-                                isinstance(x, str)
-                                and bool(x.strip())
-                                and ("MagicMock" not in x)
-                            )
-
-                    available_models = [str(m).strip() for m in ms if _valid_str2(m)]
+                    available_models = [str(m).strip() for m in ms if _valid_str(m)]
                 else:
                     try:
                         from src.core.utils.strings import valid_str as _vs3

@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
+from src.core.utils.strings import valid_str as _valid_str, extract_str as _extract_str  # noqa: F401 (re-exported)
+
 
 # S6-B: Provider family → prompt partial selection
 _PROVIDER_FAMILY_MAP: Dict[str, str] = {
@@ -45,48 +47,6 @@ def _map_provider_family_impl(raw_name: str) -> str:
     return "default"
 
 
-def _valid_str(x: Any) -> bool:
-    # Prefer centralised helpers when available to keep heuristics consistent.
-    try:
-        from src.core.utils.strings import valid_str as _vs
-
-        return _vs(x)
-    except Exception:
-        if not isinstance(x, str):
-            return False
-        s = x.strip()
-        return bool(s) and "MagicMock" not in s
-
-
-def _extract_str(candidate: Any) -> Optional[str]:
-    """Extract a concrete string from various candidate types.
-
-    Handles dicts (checking common keys) and plain strings. Returns None
-    when no concrete string is found.
-    """
-    try:
-        from src.core.utils.strings import extract_str as _es
-
-        return _es(candidate)
-    except Exception:
-        if candidate is None:
-            return None
-        if isinstance(candidate, dict):
-            for key in (
-                "name",
-                "id",
-                "model",
-                "provider_name",
-                "type",
-                "default_model",
-            ):
-                val = candidate.get(key)
-                if _valid_str(val):
-                    return str(val).strip()
-            return None
-        if _valid_str(candidate):
-            return str(candidate).strip()
-        return None
 
 
 def get_provider_capabilities_impl(orch: Any) -> Dict[str, Any]:
@@ -193,3 +153,118 @@ def get_provider_capabilities_impl(orch: Any) -> Dict[str, Any]:
     except Exception:
         pass
     return capabilities
+
+
+def resolve_provider_capabilities(orchestrator: Any) -> Dict[str, Any]:
+    """Full 3-tier provider capabilities resolution used by all graph nodes.
+
+    Tier 1: orchestrator.get_provider_capabilities() — authoritative if present.
+    Tier 2: ProviderManager.get_provider_capabilities(adapter) — manager fallback.
+    Tier 3: Direct adapter attribute inspection — last resort, no network probes.
+
+    Returns a dict with keys: supports_native_tools, provider_family, model,
+    provider_name, provider_supports_parallel_tools, supports_function_call,
+    supports_streaming.
+    """
+    provider_capabilities: Dict[str, Any] = {}
+    try:
+        caps: Dict[str, Any] = {}
+
+        # Tier 1: orchestrator-level (authoritative)
+        try:
+            if (
+                orchestrator
+                and hasattr(orchestrator, "get_provider_capabilities")
+                and callable(getattr(orchestrator, "get_provider_capabilities"))
+            ):
+                _rc = orchestrator.get_provider_capabilities()
+                if isinstance(_rc, dict) and _rc:
+                    caps = dict(_rc)
+        except Exception:
+            caps = {}
+
+        # Tier 2: ProviderManager fallback
+        if not caps:
+            try:
+                from src.core.inference.llm_manager import get_provider_manager as _gpm
+
+                _pm = _gpm()
+                adapter = getattr(orchestrator, "_adapter", None)
+                _rc = _pm.get_provider_capabilities(adapter)
+                if isinstance(_rc, dict) and _rc:
+                    caps = dict(_rc)
+            except Exception:
+                caps = caps or {}
+
+        # Tier 3: Adapter attribute inspection
+        if not caps and orchestrator and getattr(orchestrator, "_adapter", None):
+            adapter = orchestrator._adapter
+            try:
+                prov_attr = getattr(adapter, "provider", None)
+            except Exception:
+                prov_attr = None
+            provider_name = _extract_str(prov_attr) or _extract_str(
+                getattr(adapter, "name", None)
+            )
+
+            # model: prefer default_model, then first entry of models list
+            model = _extract_str(getattr(adapter, "default_model", None))
+            if not model:
+                try:
+                    models_attr = getattr(adapter, "models", None)
+                    if isinstance(models_attr, (list, tuple)):
+                        for m in models_attr:
+                            mm = _extract_str(m)
+                            if mm:
+                                model = mm
+                                break
+                    else:
+                        model = _extract_str(models_attr)
+                except Exception:
+                    model = None
+
+            supports_native_tools = False
+            try:
+                if isinstance(prov_attr, dict):
+                    supports_native_tools = bool(
+                        prov_attr.get("supports_native_tools", False)
+                    )
+                else:
+                    supports_native_tools = bool(
+                        getattr(adapter, "supports_native_tools", False)
+                    )
+            except Exception:
+                supports_native_tools = False
+
+            provider_family = _map_provider_family_impl(provider_name or "")
+            caps = {
+                "supports_native_tools": supports_native_tools,
+                "provider_family": provider_family,
+                "model": model,
+                "provider_name": provider_name or "",
+            }
+
+        # Sanitize and build final result
+        _pname = _extract_str(
+            caps.get("provider_name") or caps.get("provider") or caps.get("name")
+        )
+        _model = _extract_str(caps.get("model") or caps.get("default_model"))
+        _pf = caps.get("provider_family") if _valid_str(caps.get("provider_family") or "") else None
+        if not _pf and _pname:
+            _pf = _map_provider_family_impl(_pname)
+        _pf = _pf or "default"
+
+        provider_capabilities = {
+            "supports_native_tools": bool(caps.get("supports_native_tools", False)),
+            "provider_family": _pf,
+            "model": _model,
+            "provider_name": _pname or "",
+            "provider_supports_parallel_tools": bool(
+                caps.get("provider_supports_parallel_tools", False)
+            ),
+            "supports_function_call": bool(caps.get("supports_function_call", False)),
+            "supports_streaming": bool(caps.get("supports_streaming", False)),
+        }
+    except Exception:
+        provider_capabilities = {}
+    return provider_capabilities

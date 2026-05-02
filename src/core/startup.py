@@ -11,6 +11,7 @@ from typing import Any, Dict
 
 from src.core.inference.llm_manager import get_provider_manager
 from src.core.logger import logger as guilogger
+from src.core.utils.strings import valid_str as _valid_str, extract_str as _extract_str
 
 
 async def provider_health_check(timeout: float = 5.0) -> Dict[str, Dict[str, Any]]:
@@ -23,41 +24,6 @@ async def provider_health_check(timeout: float = 5.0) -> Dict[str, Dict[str, Any
         await pm.initialize()
 
     results: Dict[str, Dict[str, Any]] = {}
-
-    # Shared conservative string helpers (guarded import to avoid circular deps in tests)
-    try:
-        from src.core.utils.strings import (
-            valid_str as _valid_str,
-            extract_str as _extract_str,
-        )
-    except Exception:
-
-        def _valid_str(x: Any) -> bool:
-            try:
-                return isinstance(x, str) and bool(x.strip()) and "MagicMock" not in x
-            except Exception:
-                return False
-
-        def _extract_str(candidate: Any) -> str | None:
-            if candidate is None:
-                return None
-            if isinstance(candidate, dict):
-                for k in (
-                    "provider_name",
-                    "name",
-                    "id",
-                    "key",
-                    "model",
-                    "default_model",
-                    "type",
-                ):
-                    val = candidate.get(k)
-                    if isinstance(val, str) and _valid_str(val):
-                        return val.strip()
-                return None
-            if isinstance(candidate, str) and _valid_str(candidate):
-                return candidate.strip()
-            return None
 
     for key in pm.list_providers():
         adapter = pm.get_provider(key)
@@ -72,16 +38,6 @@ async def provider_health_check(timeout: float = 5.0) -> Dict[str, Dict[str, Any
             )
 
             # Conservative validators to avoid consuming test MagicMock placeholders
-            def _valid_str(x: Any) -> bool:
-                try:
-                    from src.core.utils.strings import valid_str as _vs
-
-                    return _vs(x)
-                except Exception:
-                    return (
-                        isinstance(x, str) and bool(x.strip()) and "MagicMock" not in x
-                    )
-
             def _extract_name(p: Any) -> str:
                 if isinstance(p, str):
                     return p

@@ -17,6 +17,7 @@ from src.core.inference.llm_manager import get_provider_manager, _providers_json
 from src.core.logger import logger as guilogger
 from src.core.orchestration.event_bus import get_event_bus
 from src.core.user_prefs import UserPrefs
+from src.core.utils.strings import valid_str as _valid_str, extract_str as _extract_str
 import json
 import time
 import threading
@@ -78,29 +79,7 @@ class SettingsPanelController:
             resp = prov.get_models_from_api()
             models = []
             # Sanitise probe results: accept only concrete non-empty strings and
-            # filter out test placeholders like 'MagicMock'. Guarded import to
-            # avoid circular imports in tests.
-            try:
-                from src.core.utils.strings import valid_str as _vs
-
-                def _valid_str(x: object) -> bool:
-                    try:
-                        return bool(_vs(x))
-                    except Exception:
-                        return (
-                            isinstance(x, str)
-                            and bool(x.strip())
-                            and ("MagicMock" not in x)
-                        )
-            except Exception:
-
-                def _valid_str(x: object) -> bool:
-                    return (
-                        isinstance(x, str)
-                        and bool(x.strip())
-                        and ("MagicMock" not in x)
-                    )
-
+            # filter out test placeholders like 'MagicMock'.
             if isinstance(resp, dict):
                 for m in resp.get("models", []):
                     fid = None

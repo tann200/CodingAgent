@@ -10,8 +10,10 @@ Design goals for tests:
 """
 
 import asyncio
+import contextvars
 import traceback
 import functools
+import importlib
 import os
 import tempfile
 import shutil
@@ -81,17 +83,12 @@ except Exception:
         caller awaits the result of run_in_executor.
         """
         try:
-            import contextvars as _contextvars
-            import functools as _functools
-            import inspect as _inspect
-            import asyncio as _asyncio
-
-            ctx = _contextvars.copy_context()
+            ctx = contextvars.copy_context()
 
             def _worker() -> T:
                 rv = fn(*args)
-                if _inspect.isawaitable(rv):
-                    return _asyncio.run(rv)  # type: ignore[return-value]
+                if inspect.isawaitable(rv):
+                    return asyncio.run(rv)  # type: ignore[return-value]
                 return rv  # type: ignore[return-value]
 
             sel_executor = executor
@@ -106,7 +103,7 @@ except Exception:
                 except Exception:
                     sel_executor = None
 
-            fn_partial = _functools.partial(ctx.run, _worker)
+            fn_partial = functools.partial(ctx.run, _worker)
             return loop.run_in_executor(sel_executor, fn_partial)
         except Exception:
             # Last-resort fallback: direct run_in_executor without context copy
@@ -120,6 +117,8 @@ except Exception:
 
 # Simple in-memory caches (protected by RLock for thread safety - C8 fix)
 import threading as _threading
+
+from src.core.utils.strings import valid_str as _valid_str, extract_str as _extract_str
 
 # Gap 3: Plugin hooks — lazy import so the registry is not required at import time.
 try:
@@ -266,7 +265,6 @@ def _get_models_for_provider_key(provider_key: str) -> List[str]:
     - providers.json static listing (normalized via normalize_models_for_provider)
     Returns an empty list when none found.
     """
-    out: List[str] = []
     try:
         # 1) module-level cache (RLock-protected)
         now = time.time()
@@ -298,24 +296,6 @@ def _get_models_for_provider_key(provider_key: str) -> List[str]:
                 except Exception:
                     resp = None
                 if isinstance(resp, dict):
-                    # Guarded sanitisation: accept only concrete strings and
-                    # normalise LM Studio ids when appropriate. This prevents
-                    # test double placeholders (MagicMock) from leaking into
-                    # cached model lists.
-                    try:
-                        from src.core.utils.strings import valid_str as _vs
-
-                        def _valid_str(x: Any) -> bool:
-                            return _vs(x)
-                    except Exception:
-
-                        def _valid_str(x: Any) -> bool:
-                            return (
-                                isinstance(x, str)
-                                and bool(x.strip())
-                                and "MagicMock" not in x
-                            )
-
                     models = []
                     for m in resp.get("models", []):
                         fid = None
@@ -362,7 +342,7 @@ def _get_models_for_provider_key(provider_key: str) -> List[str]:
             pass
     except Exception:
         pass
-    return out
+    return []
 
 
 def normalize_models_for_provider(provider: Dict[str, Any]) -> List[str]:
@@ -376,20 +356,6 @@ def normalize_models_for_provider(provider: Dict[str, Any]) -> List[str]:
         return out
     ptype = str(provider.get("type") or "").lower()
     models_field = provider.get("models") or []
-
-    # Guarded import for shared validator to avoid circular imports in tests.
-    try:
-        from src.core.utils.strings import valid_str as _vs
-
-        def _valid_str(x: Any) -> bool:
-            try:
-                return bool(_vs(x))
-            except Exception:
-                return isinstance(x, str) and bool(x.strip()) and ("MagicMock" not in x)
-    except Exception:
-
-        def _valid_str(x: Any) -> bool:
-            return isinstance(x, str) and bool(x.strip()) and ("MagicMock" not in x)
 
     if isinstance(models_field, list):
         for m in models_field:
@@ -611,10 +577,6 @@ def save_provider(
         # Path.write_text behaviour as a last resort so callers get the file
         # created when possible.
         try:
-            import tempfile
-            import os
-            import shutil
-
             fd = None
             tmp = None
             try:
@@ -693,6 +655,12 @@ def lm_post_stream_compatible(
     return post_stream_compatible(
         url, json_data=json_data, headers=headers, timeout=timeout
     )
+
+
+def _camelize(s: str) -> str:
+    """Convert a snake_case or hyphenated string to CamelCase."""
+    parts = [x for x in s.replace("_", " ").split() if x]
+    return "".join(part.title() for part in parts)
 
 
 # --- ProviderManager ---
@@ -787,17 +755,6 @@ class ProviderManager:
 
             if not adapter:
                 return capabilities
-
-            # Helpers — be conservative and avoid consuming MagicMock placeholders
-            def _valid_str(x: Any) -> bool:
-                try:
-                    from src.core.utils.strings import valid_str as _vs
-
-                    return _vs(x)
-                except Exception:
-                    return (
-                        isinstance(x, str) and bool(x.strip()) and "MagicMock" not in x
-                    )
 
             def _extract_from_provider_attr(val: Any) -> tuple[str, str]:
                 # returns (name, type)
@@ -1083,8 +1040,6 @@ class ProviderManager:
                 ptype = str(p.get("type") or "ollama").strip().lower().replace("-", "_")
                 module_name = f"src.core.inference.adapters.{ptype}_adapter"
                 try:
-                    import importlib
-
                     mod = importlib.import_module(module_name)
                 except Exception as e:
                     guilogger.error(
@@ -1094,10 +1049,6 @@ class ProviderManager:
                     continue
 
                 # Resolve Adapter class by convention: CamelCase type + 'Adapter' or 'Adapter'
-                def _camelize(s: str) -> str:
-                    parts = [x for x in s.replace("_", " ").split() if x]
-                    return "".join(part.title() for part in parts)
-
                 class_name = _camelize(ptype) + "Adapter"
                 AdapterCls = getattr(mod, class_name, None) or getattr(
                     mod, "Adapter", None
@@ -1258,27 +1209,6 @@ class ProviderManager:
                         models_list = []
                         # Validate and sanitise probe results: only accept
                         # concrete non-empty strings (filter MagicMock placeholders)
-                        try:
-                            from src.core.utils.strings import valid_str as _vs
-
-                            def _valid_str(x: Any) -> bool:
-                                try:
-                                    return bool(_vs(x))
-                                except Exception:
-                                    return (
-                                        isinstance(x, str)
-                                        and bool(x.strip())
-                                        and ("MagicMock" not in x)
-                                    )
-                        except Exception:
-
-                            def _valid_str(x: Any) -> bool:
-                                return (
-                                    isinstance(x, str)
-                                    and bool(x.strip())
-                                    and ("MagicMock" not in x)
-                                )
-
                         if isinstance(resp, dict):
                             for m in resp.get("models", []):
                                 fid = None
@@ -1584,8 +1514,6 @@ async def _call_model_internal(
                 )
                 # Load adapter module and try sensible instantiation fallbacks.
                 try:
-                    import importlib
-
                     mod = importlib.import_module(
                         f"src.core.inference.adapters.{ptype}_adapter"
                     )

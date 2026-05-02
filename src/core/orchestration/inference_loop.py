@@ -21,6 +21,7 @@ from src.core.orchestration.event_bus import new_correlation_id
 from src.core.orchestration.tool_result_formatter import (
     format_tool_result as _format_tool_result,
 )
+from src.core.utils.strings import valid_str as _valid_str, extract_str as _extract_str
 
 
 # ---------------------------------------------------------------------------
@@ -58,38 +59,6 @@ def _compute_default_max_turns(orch) -> int:
         if not model:
             if adapter is None:
                 return 50
-            try:
-                from src.core.utils.strings import extract_str as _extract_str
-            except Exception:
-
-                def _valid_str(x: object) -> bool:
-                    return (
-                        isinstance(x, str)
-                        and bool(x.strip())
-                        and ("MagicMock" not in x)
-                    )
-
-                def _extract_str(candidate: object) -> str | None:
-                    if candidate is None:
-                        return None
-                    if isinstance(candidate, dict):
-                        for key in (
-                            "provider_name",
-                            "name",
-                            "id",
-                            "key",
-                            "model",
-                            "default_model",
-                            "type",
-                        ):
-                            val = candidate.get(key)
-                            if isinstance(val, str) and _valid_str(val):
-                                return val.strip()
-                        return None
-                    if isinstance(candidate, str) and _valid_str(candidate):
-                        return candidate.strip()
-                    return None
-
             # Inspect adapter.models / adapter.default_model for a valid model
             try:
                 if hasattr(adapter, "models") and adapter.models:
@@ -185,37 +154,6 @@ def _resolve_provider_and_model(orch) -> tuple[Optional[str], Optional[str]]:
     Returns (provider_name or None, model_name or None).
     """
     try:
-        try:
-            from src.core.utils.strings import (
-                valid_str as _valid_str,
-                extract_str as _extract_str,
-            )
-        except Exception:
-
-            def _valid_str(x: object) -> bool:
-                return isinstance(x, str) and bool(x.strip()) and ("MagicMock" not in x)
-
-            def _extract_str(candidate: object) -> str | None:
-                if candidate is None:
-                    return None
-                if isinstance(candidate, dict):
-                    for key in (
-                        "provider_name",
-                        "name",
-                        "id",
-                        "key",
-                        "model",
-                        "default_model",
-                        "type",
-                    ):
-                        val = candidate.get(key)
-                        if isinstance(val, str) and _valid_str(val):
-                            return val.strip()
-                    return None
-                if isinstance(candidate, str) and _valid_str(candidate):
-                    return candidate.strip()
-                return None
-
         caps: dict = {}
 
         # 1) orchestrator-level

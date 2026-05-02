@@ -1,4 +1,6 @@
 import concurrent.futures
+import asyncio
+import inspect
 import json
 import logging
 import traceback
@@ -65,8 +67,6 @@ def _call_llm_sync(messages: list, format_json: bool = False, **kwargs) -> str:
     distillation, title generation) use a lightweight model rather than
     burning the main frontier model's token budget.
     """
-    import asyncio
-    import inspect
     from src.core.inference.llm_manager import call_model
 
     # SM-1: inject small_model when not explicitly overridden by caller

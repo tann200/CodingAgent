@@ -37,6 +37,7 @@ import os
 from typing import Any, Dict, List, Optional
 
 from src.core.inference.adapters.openai_compat_adapter import OpenAICompatibleAdapter
+from src.core.utils.strings import valid_str as _valid_str, extract_str as _extract_str
 
 _logger = logging.getLogger(__name__)
 
@@ -98,25 +99,6 @@ class LiteLLMAdapter(OpenAICompatibleAdapter):
             api_key = os.environ.get("LITELLM_API_KEY") or None
 
         # Sanitize incoming models list to avoid leaking MagicMock placeholders
-        try:
-            from src.core.utils.strings import valid_str as _vs
-
-            def _valid_str(x: Any) -> bool:
-                try:
-                    return bool(_vs(x))
-                except Exception:
-                    return (
-                        isinstance(x, str) and bool(x.strip()) and "MagicMock" not in x
-                    )
-        except Exception:
-
-            def _valid_str(x: Any) -> bool:
-                return (
-                    isinstance(x, str)
-                    and bool(str(x).strip())
-                    and ("MagicMock" not in str(x))
-                )
-
         resolved_models: List[str] = []
         if models:
             for m in models:
