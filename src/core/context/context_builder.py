@@ -395,6 +395,40 @@ class ContextBuilder:
         """
         return self._read_text_cached(self._agent_context_dir / "preferences.md")
 
+    def _get_past_mistakes(self, task_description: str, limit: int = 4) -> Optional[str]:
+        """Query the SQLite mistakes FTS5 table for past mistakes relevant to
+        *task_description*.  Returns a formatted block string or None when no
+        relevant mistakes are found or the store is unavailable.
+
+        This implements the cross-session learning loop: the agent sees past
+        mistakes surfaced by BM25 similarity before it starts work, so it can
+        avoid repeating them.
+        """
+        try:
+            from src.core.memory.sqlite_session_store import SqliteSessionStore
+
+            db_path = self._agent_context_dir / "session.db"
+            if not db_path.exists():
+                return None
+            store = SqliteSessionStore(str(db_path))
+            # Use first 120 chars of task as the FTS query — enough signal,
+            # avoids FTS5 special-character issues with long queries.
+            query = task_description[:120].strip()
+            if not query:
+                return None
+            results = store.search_mistakes(query, limit=limit)
+            if not results:
+                return None
+            lines = ["Past mistakes to avoid (retrieved by similarity):"]
+            for r in results:
+                tool_tag = f" [{r['tool']}]" if r.get("tool") else ""
+                lines.append(f"- {r['summary']}{tool_tag}")
+                if r.get("context"):
+                    lines.append(f"  context: {str(r['context'])[:200]}")
+            return "\n".join(lines)
+        except Exception:
+            return None
+
     def _get_summary_cache(self) -> Dict:
         """Get file_summaries.json with module-level mtime caching."""
         return self._read_json_cached(self._agent_context_dir / "file_summaries.json")
@@ -1112,6 +1146,20 @@ class ContextBuilder:
                 )
         except Exception:
             pass  # never fail prompt building due to missing preferences.md
+
+        # 1d. Past mistakes — cross-session BM25 retrieval from mistakes_fts.
+        #     Surfaces relevant past errors before the agent starts work so it
+        #     can avoid repeating them.  Injected only at task start (no active
+        #     tool results) to avoid polluting mid-execution context.
+        try:
+            if not has_tool_results and safe_task_description:
+                past_mistakes = self._get_past_mistakes(safe_task_description)
+                if past_mistakes:
+                    dynamic_parts.append(
+                        f"<past_mistakes>\n{past_mistakes}\n</past_mistakes>"
+                    )
+        except Exception:
+            pass  # never fail prompt building due to mistake retrieval errors
 
         # 1b. Repository Intelligence block (if any retrieved snippets provided)
         # Step 8: If a ContextController is available, run enforce_budget() to drop or

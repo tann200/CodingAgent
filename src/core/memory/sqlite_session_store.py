@@ -149,7 +149,7 @@ class SqliteSessionStore:
                 )
         return self._writer_conn
 
-    _SCHEMA_VERSION = 2
+    _SCHEMA_VERSION = 3
 
     def get_schema_version(self) -> int:
         """Return the schema version for compatibility with other stores."""
@@ -201,6 +201,14 @@ class SqliteSessionStore:
                     session_id TEXT NOT NULL,
                     decision TEXT NOT NULL,
                     rationale TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE TABLE IF NOT EXISTS mistakes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL,
+                    summary TEXT NOT NULL,
+                    context TEXT,
+                    tool TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
                 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -270,6 +278,10 @@ class SqliteSessionStore:
             self._migrate_v2(conn)
             current_version = 2
 
+        if current_version < 3 and self._SCHEMA_VERSION >= 3:
+            self._migrate_v3(conn)
+            current_version = 3
+
         conn.execute(
             "UPDATE schema_meta SET value = ? WHERE key = 'schema_version'",
             (str(self._SCHEMA_VERSION),),
@@ -299,6 +311,38 @@ class SqliteSessionStore:
         except Exception as e:
             logger.warning(f"SqliteSessionStore: v2 migration failed: {e}")
 
+    def _migrate_v3(self, conn: sqlite3.Connection) -> None:
+        """Migration from v2 to v3: Add mistakes table and FTS index."""
+        try:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS mistakes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL,
+                    summary TEXT NOT NULL,
+                    context TEXT,
+                    tool TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+            conn.execute("""
+                CREATE VIRTUAL TABLE IF NOT EXISTS mistakes_fts USING fts5(
+                    session_id,
+                    summary,
+                    context,
+                    tool,
+                    tokenize='porter unicode61'
+                );
+            """)
+            conn.execute("""
+                CREATE TRIGGER IF NOT EXISTS mistakes_ai AFTER INSERT ON mistakes BEGIN
+                    INSERT INTO mistakes_fts (session_id, summary, context, tool)
+                    VALUES (new.session_id, new.summary, new.context, new.tool);
+                END;
+            """)
+            logger.debug("SqliteSessionStore: v3 migration complete")
+        except Exception as e:
+            logger.warning(f"SqliteSessionStore: v3 migration failed: {e}")
+
     def _ensure_fts_index(self, conn: sqlite3.Connection) -> None:
         """Create and maintain FTS5 full-text search index."""
         try:
@@ -307,6 +351,13 @@ class SqliteSessionStore:
                     session_id,
                     role,
                     content,
+                    tokenize='porter unicode61'
+                );
+                CREATE VIRTUAL TABLE IF NOT EXISTS mistakes_fts USING fts5(
+                    session_id,
+                    summary,
+                    context,
+                    tool,
                     tokenize='porter unicode61'
                 );
             """)
@@ -324,6 +375,13 @@ class SqliteSessionStore:
                         SELECT rowid FROM messages_fts WHERE session_id = old.session_id 
                         AND content = old.content LIMIT 1
                     );
+                END;
+            """)
+
+            conn.execute("""
+                CREATE TRIGGER IF NOT EXISTS mistakes_ai AFTER INSERT ON mistakes BEGIN
+                    INSERT INTO mistakes_fts (session_id, summary, context, tool)
+                    VALUES (new.session_id, new.summary, new.context, new.tool);
                 END;
             """)
 
@@ -593,6 +651,103 @@ class SqliteSessionStore:
             }
             for r in rows
         ]
+
+    # ------------------------------------------------------------------
+    # Mistake retrieval (learning loop — FTS5 BM25)
+    # ------------------------------------------------------------------
+
+    def add_mistake(
+        self,
+        session_id: str,
+        summary: str,
+        context: Optional[str] = None,
+        tool: Optional[str] = None,
+    ) -> None:
+        """Record a mistake for cross-session retrieval.
+
+        Args:
+            session_id: Current session identifier.
+            summary:    Short description of what went wrong (used for FTS).
+            context:    Optional surrounding context (e.g. tool args, error message).
+            tool:       Optional tool name that produced the error.
+        """
+        self._execute_write(
+            "INSERT INTO mistakes (session_id, summary, context, tool) VALUES (?, ?, ?, ?)",
+            (session_id or "unknown", summary, context or "", tool or ""),
+        )
+
+    def search_mistakes(self, query: str, limit: int = 5) -> List[Dict[str, Any]]:
+        """Return up to *limit* past mistakes whose summary/context matches *query*.
+
+        Uses FTS5 BM25 ranking when available; falls back to LIKE when not.
+        Results are cross-session — this is intentionally workspace-global so
+        the agent can learn from mistakes made in earlier sessions.
+
+        Args:
+            query: Natural-language query (e.g. the current task description).
+            limit: Maximum number of results to return.
+
+        Returns:
+            List of dicts with keys: ``summary``, ``context``, ``tool``, ``ts``.
+        """
+        try:
+            conn = self._get_connection()
+            # Build an OR query from individual tokens so partial matches rank
+            # instead of requiring all words to be present (FTS5 implicit AND).
+            # Strip FTS5 special characters to avoid syntax errors.
+            import re as _re
+            tokens = _re.sub(r'[^\w\s]', ' ', query).split()
+            if not tokens:
+                return []
+            fts_query = " OR ".join(tokens[:20])  # cap to 20 tokens
+            rows = conn.execute(
+                """
+                SELECT m.summary, m.context, m.tool, m.created_at
+                FROM mistakes_fts fts
+                JOIN mistakes m ON m.rowid = fts.rowid
+                WHERE mistakes_fts MATCH ?
+                ORDER BY rank
+                LIMIT ?
+                """,
+                (fts_query, limit),
+            ).fetchall()
+            return [
+                {
+                    "summary": r["summary"],
+                    "context": r["context"],
+                    "tool": r["tool"],
+                    "ts": r["created_at"],
+                }
+                for r in rows
+            ]
+        except Exception:
+            pass
+
+        # Fallback: LIKE search on summary
+        try:
+            conn = self._get_connection()
+            like_term = f"%{query[:80]}%"
+            rows = conn.execute(
+                """
+                SELECT summary, context, tool, created_at
+                FROM mistakes
+                WHERE summary LIKE ?
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (like_term, limit),
+            ).fetchall()
+            return [
+                {
+                    "summary": r["summary"],
+                    "context": r["context"],
+                    "tool": r["tool"],
+                    "ts": r["created_at"],
+                }
+                for r in rows
+            ]
+        except Exception:
+            return []
 
     def _write_with_retry(
         self,
