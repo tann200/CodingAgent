@@ -13,6 +13,12 @@ from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
+try:
+    from src.tools.tools_config import get_context_dir_name as _get_ctx_dir_name
+except Exception:
+    def _get_ctx_dir_name() -> str:  # type: ignore[misc]
+        return ".codingAgent"
+
 # Multi-language support
 INDEX_VERSION = "3.0"  # Multi-language indexing version
 
@@ -213,7 +219,7 @@ def parse_python_file(path: Path) -> Dict[str, Any]:
 
 def _load_index_metadata(base_path: Path) -> Dict[str, Any]:
     """Load existing index metadata for incremental updates."""
-    meta_path = base_path / ".codingAgent" / "repo_index_meta.json"
+    meta_path = base_path / _get_ctx_dir_name() / "repo_index_meta.json"
     if meta_path.exists():
         try:
             with open(meta_path, "r") as f:
@@ -225,7 +231,7 @@ def _load_index_metadata(base_path: Path) -> Dict[str, Any]:
 
 def _save_index_metadata(base_path: Path, metadata: Dict[str, Any]) -> None:
     """Save index metadata for incremental updates."""
-    meta_path = base_path / ".codingAgent" / "repo_index_meta.json"
+    meta_path = base_path / _get_ctx_dir_name() / "repo_index_meta.json"
     meta_path.parent.mkdir(parents=True, exist_ok=True)
 
     # Prefer central atomic writer; fall back to mkstemp + os.replace
@@ -307,7 +313,7 @@ def index_repository(workdir: str, incremental: bool = True) -> Dict[str, Any]:
 
     # Load existing index for incremental updates
     existing_index: Dict[str, Any] = {"files": [], "symbols": []}
-    index_path = base_path / ".codingAgent" / "repo_index.json"
+    index_path = base_path / _get_ctx_dir_name() / "repo_index.json"
     if index_path.exists():
         try:
             with open(index_path, "r") as f:
@@ -459,8 +465,8 @@ def index_repository(workdir: str, incremental: bool = True) -> Dict[str, Any]:
 def get_index_stats(workdir: str) -> Dict[str, Any]:
     """Get statistics about the current index."""
     base_path = Path(workdir)
-    meta_path = base_path / ".codingAgent" / "repo_index_meta.json"
-    index_path = base_path / ".codingAgent" / "repo_index.json"
+    meta_path = base_path / _get_ctx_dir_name() / "repo_index_meta.json"
+    index_path = base_path / _get_ctx_dir_name() / "repo_index.json"
 
     stats = {
         "index_exists": index_path.exists(),
@@ -525,7 +531,7 @@ def get_symbols_for_task(
     and optionally ``start_line`` / ``docstring``.
     """
     try:
-        index_path = Path(workdir) / ".codingAgent" / "repo_index.json"
+        index_path = Path(workdir) / _get_ctx_dir_name() / "repo_index.json"
         if not index_path.exists():
             # RA-VOL22-1: Log explicitly so developers can distinguish "no matches"
             # from "index not yet built" when fast-path tasks return empty symbols.

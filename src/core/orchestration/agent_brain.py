@@ -11,6 +11,11 @@ import re
 import logging
 import threading
 
+try:
+    import yaml as _yaml
+except ImportError:
+    _yaml = None  # type: ignore[assignment]
+
 logger = logging.getLogger(__name__)
 
 
@@ -31,10 +36,9 @@ def _parse_front_matter(text: str) -> Optional[dict]:
         return None
     body = m.group(1)
     try:
-        import yaml
-
-        data = yaml.safe_load(body)
-        return data if isinstance(data, dict) else None
+        if _yaml is not None:
+            data = _yaml.safe_load(body)
+            return data if isinstance(data, dict) else None
     except Exception:
         pass
     out = {}
@@ -269,15 +273,6 @@ class AgentBrainManager:
 def get_agent_brain_manager() -> AgentBrainManager:
     """Get the singleton AgentBrainManager instance."""
     return AgentBrainManager()
-
-
-# Backward compatibility: keep old function signatures working
-def _repo_root_old() -> Path:
-    return Path(__file__).parents[3]
-
-
-def _agent_brain_dir_old() -> Path:
-    return _repo_root_old() / "agent-brain"
 
 
 def _load_core_component(filename: str) -> str:

@@ -12,6 +12,11 @@ from typing import Any, Dict, List, Optional, TYPE_CHECKING
 if TYPE_CHECKING:
     from src.core.orchestration.orchestrator import Orchestrator
 
+try:
+    from src.tools.git_tools import git_diff as _git_diff
+except Exception:
+    _git_diff = None  # type: ignore[assignment]
+
 logger = logging.getLogger(__name__)
 
 
@@ -53,8 +58,14 @@ class SkillsCommand(Command):
         if args:
             return f"Skill details for '{args}' not implemented. Use /skills to list available."
 
-        lines = ["**Available Skills:**", "- (skill listing not implemented)"]
-        return "\n".join(lines)
+        try:
+            from src.core.orchestration.agent_brain import get_agent_brain_manager
+            summary = get_agent_brain_manager().list_skills_summary()
+            if summary:
+                return f"**Available Skills:**\n{summary}"
+        except Exception:
+            pass
+        return "**Available Skills:**\n- (no skills loaded)"
 
 
 class SessionCommand(Command):
@@ -142,7 +153,7 @@ class UndoCommand(Command):
             lines.append("Usage: `/undo <snapshot_id>` to restore a snapshot.")
             return "\n".join(lines)
 
-        snapshot_id = arg if arg else None
+        snapshot_id = arg
         result = rm.rollback(snapshot_id)
 
         if result.get("status") == "success":
@@ -169,10 +180,11 @@ class DiffCommand(Command):
         if not workdir:
             return "No working directory set."
 
-        from src.tools.git_tools import git_diff
+        if _git_diff is None:
+            return "git_diff tool not available."
 
         staged = "staged" in args.lower() or "-s" in args
-        result = git_diff(workdir=str(workdir), staged=staged)
+        result = _git_diff(workdir=str(workdir), staged=staged)
 
         if result.get("status") == "ok":
             diff_text = result.get("diff", "")

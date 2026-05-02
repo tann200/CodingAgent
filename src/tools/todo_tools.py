@@ -27,6 +27,9 @@ logger = logging.getLogger(__name__)
 _TODO_FILENAME = "TODO.md"
 _TODO_JSON_FILENAME = "todo.json"
 
+# Number of rolling backups kept per todo file.
+_BACKUP_KEEP: int = 5
+
 # TTL (seconds) after which a lockfile from another host may be considered stale
 # and eligible for reclaim. Can be overridden via environment variable
 # TODO_LOCK_STALE_TTL (seconds).
@@ -556,8 +559,6 @@ def _save_todo(workdir: str, steps: List[Dict[str, Any]]) -> None:
     md_path = _todo_path(workdir)
 
     # Backup policy: keep this many recent backups per file
-    _BACKUP_KEEP = 5
-
     def _prune_backups(target: Path, keep: int = _BACKUP_KEEP) -> None:
         try:
             pattern = f"{target.name}.bak.*"
@@ -698,6 +699,50 @@ def _get_orchestrator() -> Optional[Any]:
         return None
 
 
+def _coerce_step_id(
+    step_id: Any, current: List[Dict[str, Any]]
+) -> "tuple[int, Optional[Dict[str, Any]]]":
+    """Coerce *step_id* to int and validate it against *current*.
+
+    Returns ``(int_id, None)`` on success or ``(-1, error_dict)`` on failure.
+    """
+    try:
+        sid = int(step_id)
+    except (TypeError, ValueError):
+        return -1, {
+            "status": "error",
+            "error": f"step_id must be an integer, got {step_id!r}",
+        }
+    if sid < 0 or sid >= len(current):
+        return -1, {
+            "status": "error",
+            "error": f"step_id {sid} out of range (0-{len(current) - 1})",
+        }
+    return sid, None
+
+
+def _invalidate_context_builder(abs_path: str) -> None:
+    """Best-effort ContextBuilder cache invalidation for a single path.
+
+    Tries targeted ``invalidate_path`` first; falls back to ``clear_cache``.
+    Never raises.
+    """
+    try:
+        from src.core.context.context_builder import ContextBuilder
+
+        try:
+            ContextBuilder.invalidate_path(abs_path)
+        except Exception:
+            try:
+                ContextBuilder.clear_cache()
+            except Exception:
+                _inc_rbw_metric("rbw_invalidate_failures")
+                logger.exception("ContextBuilder.clear_cache() failed")
+    except Exception:
+        _inc_rbw_metric("rbw_missing_orch")
+        logger.debug("ContextBuilder not available for RBW invalidation")
+
+
 def _notify_rbw_after_write(workdir: str) -> None:
     """Best-effort: update orchestrator RBW state and invalidate cached paths.
 
@@ -707,8 +752,6 @@ def _notify_rbw_after_write(workdir: str) -> None:
         _inc_rbw_metric("rbw_notify_attempts")
         try:
             if _metrics is not None:
-                # Record an example sample (developer-facing diagnostic). The
-                # value is synthetic here; replace with real latency if measured.
                 _metrics.record_histogram("rbw.notify_event_ms", 1.0)
         except Exception:
             pass
@@ -726,23 +769,7 @@ def _notify_rbw_after_write(workdir: str) -> None:
                 _inc_rbw_metric("rbw_notify_failures")
                 logger.exception("Failed to update orchestrator._session_read_files")
 
-        # Invalidate ContextBuilder caches for these paths if available
-        try:
-            from src.core.context.context_builder import ContextBuilder
-
-            try:
-                ContextBuilder.invalidate_path(abs_md)
-            except Exception:
-                # Fallback to clearing whole cache if targeted invalidation missing
-                try:
-                    ContextBuilder.clear_cache()
-                except Exception:
-                    _inc_rbw_metric("rbw_invalidate_failures")
-                    logger.exception("ContextBuilder.clear_cache() failed")
-        except Exception:
-            # ContextBuilder not available — ignore but count as missing orchestrator path
-            _inc_rbw_metric("rbw_missing_orch")
-            logger.debug("ContextBuilder not available for RBW invalidation")
+        _invalidate_context_builder(abs_md)
     except Exception:
         _inc_rbw_metric("rbw_notify_failures")
         logger.exception("_notify_rbw_after_write failed")
@@ -775,21 +802,7 @@ def notify_rbw(workdir: str, orchestrator: Optional[Any] = None) -> None:
                     "notify_rbw: failed to update orchestrator._session_read_files"
                 )
 
-            # Invalidate ContextBuilder caches for these paths if available
-            try:
-                from src.core.context.context_builder import ContextBuilder
-
-                try:
-                    ContextBuilder.invalidate_path(abs_md)
-                except Exception:
-                    try:
-                        ContextBuilder.clear_cache()
-                    except Exception:
-                        _inc_rbw_metric("rbw_invalidate_failures")
-                        logger.exception("ContextBuilder.clear_cache() failed")
-            except Exception:
-                _inc_rbw_metric("rbw_missing_orch")
-                logger.debug("ContextBuilder not available for RBW invalidation")
+            _invalidate_context_builder(abs_md)
             return
 
         # No explicit orchestrator provided — fall back to ContextVar-based notifier
@@ -961,24 +974,15 @@ def manage_todo(
                     "status": "error",
                     "error": "step_id is required for check action",
                 }
-            try:
-                step_id = int(step_id)
-            except (TypeError, ValueError):
-                return {
-                    "status": "error",
-                    "error": f"step_id must be an integer, got {step_id!r}",
-                }
             current = _load_todo_json(workdir)
             if not current:
                 return {
                     "status": "error",
                     "error": "No TODO list found. Create one first.",
                 }
-            if step_id < 0 or step_id >= len(current):
-                return {
-                    "status": "error",
-                    "error": f"step_id {step_id} out of range (0-{len(current) - 1})",
-                }
+            step_id, _err = _coerce_step_id(step_id, current)
+            if _err:
+                return _err
             # D-04: Idempotency guard — no-op if step is already done
             if current[step_id].get("status") == "done" or current[step_id].get("done"):
                 done_count = sum(1 for s in current if s.get("done"))
@@ -1026,21 +1030,15 @@ def manage_todo(
                     "status": "error",
                     "error": "step_id and description required for update",
                 }
-            try:
-                step_id = int(step_id)
-            except (TypeError, ValueError):
-                return {
-                    "status": "error",
-                    "error": f"step_id must be an integer, got {step_id!r}",
-                }
             current = _load_todo_json(workdir)
             if not current:
                 return {
                     "status": "error",
                     "error": "No TODO list found. Create one first.",
                 }
-            if step_id < 0 or step_id >= len(current):
-                return {"status": "error", "error": f"step_id {step_id} out of range"}
+            step_id, _err = _coerce_step_id(step_id, current)
+            if _err:
+                return _err
             current[step_id]["description"] = description
             _save_todo(workdir, current)
             try:
@@ -1097,18 +1095,9 @@ def manage_todo(
                     "status": "error",
                     "error": "No TODO list found. Create one first.",
                 }
-            try:
-                step_id = int(step_id)
-            except (TypeError, ValueError):
-                return {
-                    "status": "error",
-                    "error": f"step_id must be an integer, got {step_id!r}",
-                }
-            if step_id < 0 or step_id >= len(current):
-                return {
-                    "status": "error",
-                    "error": f"step_id {step_id} out of range (0-{len(current) - 1})",
-                }
+            step_id, _err = _coerce_step_id(step_id, current)
+            if _err:
+                return _err
             # Only one step can be in_progress at a time
             active = [
                 i for i, s in enumerate(current) if s.get("status") == "in_progress"
@@ -1154,18 +1143,9 @@ def manage_todo(
                     "status": "error",
                     "error": "No TODO list found. Create one first.",
                 }
-            try:
-                step_id = int(step_id)
-            except (TypeError, ValueError):
-                return {
-                    "status": "error",
-                    "error": f"step_id must be an integer, got {step_id!r}",
-                }
-            if step_id < 0 or step_id >= len(current):
-                return {
-                    "status": "error",
-                    "error": f"step_id {step_id} out of range (0-{len(current) - 1})",
-                }
+            step_id, _err = _coerce_step_id(step_id, current)
+            if _err:
+                return _err
             current[step_id]["status"] = "blocked"
             current[step_id]["blocked_reason"] = description or reason or ""
             _save_todo(workdir, current)
@@ -1192,18 +1172,9 @@ def manage_todo(
                     "status": "error",
                     "error": "No TODO list found. Create one first.",
                 }
-            try:
-                step_id = int(step_id)
-            except (TypeError, ValueError):
-                return {
-                    "status": "error",
-                    "error": f"step_id must be an integer, got {step_id!r}",
-                }
-            if step_id < 0 or step_id >= len(current):
-                return {
-                    "status": "error",
-                    "error": f"step_id {step_id} out of range (0-{len(current) - 1})",
-                }
+            step_id, _err = _coerce_step_id(step_id, current)
+            if _err:
+                return _err
             # D-04: Idempotency guard — no-op if step is already verified
             if current[step_id].get("status") == "verified":
                 done_count = sum(
