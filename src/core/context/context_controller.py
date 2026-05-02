@@ -17,6 +17,12 @@ class ContextController:
     LARGE_FILE_THRESHOLD = 500
     SUMMARY_TARGET_LINES = 100
 
+    # Budget fractions for each context category (F-63: named constants).
+    _BUDGET_RELEVANT_FILES = 0.08
+    _BUDGET_BUGS_FOUND = 0.05
+    _BUDGET_RESEARCH = 0.06
+    _BUDGET_OTHER = 0.03
+
     def __init__(
         self,
         max_tokens: int = DEFAULT_MAX_TOKENS,
@@ -26,10 +32,10 @@ class ContextController:
         self.max_context_tokens = max_context_tokens or max_tokens
 
         self._context_budget = {
-            "relevant_files": math.ceil(0.08 * max_tokens),
-            "bugs_found": math.ceil(0.05 * max_tokens),
-            "research": math.ceil(0.06 * max_tokens),
-            "other": math.ceil(0.03 * max_tokens),
+            "relevant_files": math.ceil(self._BUDGET_RELEVANT_FILES * max_tokens),
+            "bugs_found": math.ceil(self._BUDGET_BUGS_FOUND * max_tokens),
+            "research": math.ceil(self._BUDGET_RESEARCH * max_tokens),
+            "other": math.ceil(self._BUDGET_OTHER * max_tokens),
         }
         self._used_tokens = 0
 

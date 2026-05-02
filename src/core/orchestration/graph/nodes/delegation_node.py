@@ -8,6 +8,8 @@ from src.tools.subagent_tools import delegate_task_async
 
 logger = logging.getLogger(__name__)
 
+# F-67: named constant for file write-lock acquisition timeout.
+_WRITE_LOCK_TIMEOUT_SECONDS = 30.0
 # Role classifications for PRSW
 READ_ONLY_ROLES = {"scout", "researcher", "reviewer"}
 WRITE_ROLES = {"coder", "tester"}
@@ -38,7 +40,7 @@ async def _execute_delegation_with_locks(
         else:  # write
             for f in files:
                 success = await lock_manager.acquire_write_async(
-                    f, agent_id, timeout=30.0
+                    f, agent_id, timeout=_WRITE_LOCK_TIMEOUT_SECONDS
                 )
                 if not success:
                     return {

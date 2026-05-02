@@ -1,5 +1,6 @@
 """Utility functions for retrying file writes with exponential backoff."""
 
+import json
 import os
 import shutil
 import tempfile
@@ -116,8 +117,6 @@ def atomic_write_json(
         try:
             try:
                 with os.fdopen(fd, "w", encoding="utf-8") as f:
-                    import json
-
                     json.dump(data, f, indent=2)
             except Exception:
                 try:
@@ -139,8 +138,6 @@ def atomic_write_json(
                     )
                     try:
                         with open(filepath, "w", encoding="utf-8") as f:
-                            import json
-
                             json.dump(data, f, indent=2)
                     except Exception:
                         log.exception(

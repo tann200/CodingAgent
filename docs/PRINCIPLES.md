@@ -100,17 +100,22 @@ It is the authoritative reference for any architectural decisions.
 
 ---
 
+## Resolved Gaps
+
+| # | Gap | Resolved in |
+|---|-----|-------------|
+| G1 | Learning loop not closed — `MistakeMemory`/`TrajectoryLogger` data not injected into prompts | `6bc3e24`, `2f753a1` — SQLite FTS5 `mistakes` table; `<past_mistakes>` block in `build_prompt()`; auto-promotion in `add_error`; wired in `debug_node` and `tool_execution_pipeline` |
+| G2 | `uv.lock` missing — builds are not reproducible | `83cb799` — migrated to `uv`; `uv.lock` (84 packages) committed |
+| G3 | `python = ">=3.11,<3.12"` upper bound too tight — must support 3.12+ | `83cb799` — `requires-python = ">=3.11"` (no upper bound) |
+| G4 | `anthropic`, `lancedb`, `tiktoken` not declared as dependencies — silent import failures | `83cb799` — optional extras `[anthropic]`, `[vector]`, `[tokenizer]` in `pyproject.toml` |
+| G5 | Legacy context dirs (`.agent-context/`, `.localAgent/`, `.agent/`) still written to | `b787708` — `agent_context_path()` is sole resolver; all fallbacks removed across 30+ files |
+
 ## Open Gaps (as of 2026-05-02)
 
 These are known gaps against the principles above, prioritised for implementation:
 
 | # | Gap | Priority |
 |---|-----|----------|
-| G1 | Learning loop not closed — `MistakeMemory`/`TrajectoryLogger` data not injected into prompts | P0 |
-| G2 | `uv.lock` missing — builds are not reproducible | P0 |
-| G3 | `python = ">=3.11,<3.12"` upper bound too tight — must support 3.12+ | P1 |
-| G4 | `anthropic`, `lancedb`, `tiktoken` not declared as dependencies — silent import failures | P1 |
-| G5 | Legacy context dirs (`.agent-context/`, `.localAgent/`, `.agent/`) still written to | P1 |
 | G6 | Windows GPU detection missing in `hardware_capability_profile.py` | P2 |
 | G7 | No container/namespace sandbox — bash_security patterns are the only barrier | P2 |
 | G8 | WebSocket session endpoint not implemented | P2 |

@@ -23,6 +23,12 @@ from src.core.orchestration.loop_guards import (
 from src.core.orchestration.event_bus import run_with_correlation
 from src.core.utils.strings import valid_str as _valid_str, extract_str as _extract_str
 
+# F-59: hoist manage_todo import to module level (was inline inside plan-step loop).
+try:
+    from src.tools.todo_tools import manage_todo as _manage_todo
+except ImportError:
+    _manage_todo = None  # type: ignore[assignment]
+
 from src.core.orchestration.graph.nodes.node_utils import span_node as _span_node
 
 
@@ -1191,13 +1197,12 @@ Generate the appropriate tool call to complete this step. Respond with ONLY a to
         # Check off the completed step in TODO.md
         if execution_ok:
             try:
-                from src.tools.todo_tools import manage_todo
-
-                manage_todo(
-                    action="check",
-                    workdir=str(state.get("working_dir", ".")),
-                    step_id=current_step,
-                )
+                if _manage_todo is not None:
+                    _manage_todo(
+                        action="check",
+                        workdir=str(state.get("working_dir", ".")),
+                        step_id=current_step,
+                    )
                 # manage_todo performs RBW/session notifications itself; no-op here
             except Exception:
                 pass

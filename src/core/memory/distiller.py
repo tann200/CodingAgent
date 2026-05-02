@@ -15,12 +15,22 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+# Optional fast tokenizer — falls back to char heuristic when unavailable (F-57).
+try:
+    from src.core.inference.tokenizer import count_messages_tokens as _count_tokens
+except Exception:
+    _count_tokens = None  # type: ignore[assignment]
+
 # HR-1 fix: module-level singleton executor so _call_llm_sync does not create a new
 # ThreadPoolExecutor per invocation.  Creating one per call means that on LLM timeout
 # the worker thread is leaked (asyncio.run() cannot be preempted, and future.cancel()
 # has no effect on an already-started task).  A persistent singleton avoids the
 # thread-creation overhead and keeps the leaked-thread count bounded to 1.
 _DISTILLER_LLM_EXECUTOR: concurrent.futures.ThreadPoolExecutor | None = None
+
+# F-66: named constant for executor future timeout (configurable via
+# distiller_llm_timeout_seconds in agent config).
+_DISTILLER_LLM_TIMEOUT_SECONDS = 120
 
 
 def _get_distiller_executor() -> concurrent.futures.ThreadPoolExecutor:
@@ -37,18 +47,51 @@ def _get_distiller_executor() -> concurrent.futures.ThreadPoolExecutor:
 _KEEP_RECENT = 6
 
 
+def _atomic_write_text(path: Path, text: str) -> None:
+    """Write *text* to *path* atomically using mkstemp → os.replace. (F-62)"""
+    directory = str(path.parent)
+    fd, tmp_path = tempfile.mkstemp(dir=directory, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+        try:
+            os.replace(tmp_path, str(path))
+        except Exception:
+            shutil.move(tmp_path, str(path))
+    except Exception:
+        try:
+            os.close(fd)
+        except Exception:
+            pass
+        raise
+
+
+def _atomic_write_json(path: Path, data: Any) -> None:
+    """Write *data* as JSON to *path* atomically, preferring io_utils. (F-62)"""
+    try:
+        from src.core.io_utils import atomic_write_json as _io_awj
+
+        ok = _io_awj(path, data, logger=logger)
+        if ok:
+            return
+    except Exception:
+        pass
+    # Fallback: mkstemp → os.replace
+    _atomic_write_text(path, json.dumps(data, indent=2, ensure_ascii=False))
+
+
 def _estimate_tokens(messages: List[Dict[str, str]]) -> int:
     """Token estimate using tiktoken when available, else char heuristic.
 
     D-06/S0-A: delegates to ``count_messages_tokens`` for accurate counting.
     """
-    try:
-        from src.core.inference.tokenizer import count_messages_tokens
-
-        return count_messages_tokens(messages)
-    except Exception:
-        total_chars = sum(len(str(m.get("content", ""))) for m in messages)
-        return max(1, int(total_chars / 3.5))
+    if _count_tokens is not None:
+        try:
+            return _count_tokens(messages)
+        except Exception:
+            pass
+    total_chars = sum(len(str(m.get("content", ""))) for m in messages)
+    return max(1, int(total_chars / 3.5))
 
 
 def _call_llm_sync(messages: list, format_json: bool = False, **kwargs) -> str:
@@ -107,7 +150,7 @@ def _call_llm_sync(messages: list, format_json: bool = False, **kwargs) -> str:
             _ctx = _cv.copy_context()
             future = _pool.submit(_ctx.run, asyncio.run, candidate)
             try:
-                resp = future.result(timeout=120)
+                resp = future.result(timeout=_DISTILLER_LLM_TIMEOUT_SECONDS)
             except Exception as thread_err:
                 logger.error(f"_call_llm_sync: thread executor failed: {thread_err}")
                 future.cancel()
@@ -271,30 +314,10 @@ def distill_context(
                     cp_path = agent_context / "compaction_checkpoint.md"
                     try:
                         cp_path.parent.mkdir(parents=True, exist_ok=True)
-                        # Use mkstemp -> replace to avoid partial files for .md
-                        fd, tmp_path = tempfile.mkstemp(
-                            dir=str(cp_path.parent), suffix=".tmp"
+                        _atomic_write_text(cp_path, summary)
+                        logger.info(
+                            f"distill_context: compaction checkpoint written to {cp_path}"
                         )
-                        try:
-                            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                                f.write(summary)
-                            try:
-                                os.replace(tmp_path, str(cp_path))
-                            except Exception:
-                                shutil.move(tmp_path, str(cp_path))
-                        except Exception as _we:
-                            logger.warning(
-                                f"distill_context: failed to write checkpoint: {_we}"
-                            )
-                            try:
-                                if os.path.exists(tmp_path):
-                                    os.unlink(tmp_path)
-                            except Exception:
-                                pass
-                        else:
-                            logger.info(
-                                f"distill_context: compaction checkpoint written to {cp_path}"
-                            )
                     except Exception as _we:
                         logger.warning(
                             f"distill_context: failed to write checkpoint: {_we}"
@@ -487,33 +510,13 @@ def distill_context(
                 for err in errors:
                     lines.append(f"- {err}")
 
-            # Write TASK_STATE.md atomically using mkstemp -> replace
+            # Write TASK_STATE.md atomically (F-62: use _atomic_write_text helper).
             task_state_path.parent.mkdir(parents=True, exist_ok=True)
             content_text = "\n".join(lines)
-            fd = None
-            tmp_path = None
             try:
-                fd, tmp_path = tempfile.mkstemp(
-                    dir=str(task_state_path.parent), suffix=".tmp"
-                )
-                with os.fdopen(fd, "w", encoding="utf-8") as f:
-                    f.write(content_text)
-                try:
-                    os.replace(tmp_path, str(task_state_path))
-                except Exception:
-                    shutil.move(tmp_path, str(task_state_path))
+                _atomic_write_text(task_state_path, content_text)
             except Exception:
                 logger.exception("Failed to write TASK_STATE.md to %s", task_state_path)
-                try:
-                    if fd is not None:
-                        os.close(fd)
-                except Exception:
-                    pass
-                try:
-                    if tmp_path and os.path.exists(tmp_path):
-                        os.unlink(tmp_path)
-                except Exception:
-                    pass
         except Exception as e:
             logger.error(f"Failed to write TASK_STATE.md: {e}")
 
@@ -538,54 +541,11 @@ def distill_context(
                     )
                 mem_path = _agent_ctx / "repo_memory.json"
                 mem_path.parent.mkdir(parents=True, exist_ok=True)
-                # Prefer atomic_write_json when available
+                # F-62: use _atomic_write_json helper (DRY).
                 try:
-                    from src.core.io_utils import atomic_write_json
-
-                    logger.debug(
-                        "distill_context: attempting atomic_write_json for %s", mem_path
-                    )
-                    ok = atomic_write_json(mem_path, repo_memory, logger=logger)
-                    if not ok:
-                        logger.warning(
-                            "distill_context: atomic_write_json returned False for %s; falling back to mkstemp",
-                            mem_path,
-                        )
-                        fd, tmp_path = tempfile.mkstemp(
-                            dir=str(mem_path.parent), suffix=".tmp"
-                        )
-                        try:
-                            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                                json.dump(repo_memory, f, indent=2)
-                            try:
-                                os.replace(tmp_path, str(mem_path))
-                            except Exception:
-                                shutil.move(tmp_path, str(mem_path))
-                        except Exception:
-                            logger.exception(
-                                "Failed fallback write of repo_memory.json to %s",
-                                mem_path,
-                            )
+                    _atomic_write_json(mem_path, repo_memory)
                 except Exception:
-                    logger.debug(
-                        "distill_context: atomic_write_json unavailable or failed for %s; falling back\n%s",
-                        mem_path,
-                        traceback.format_exc(),
-                    )
-                    fd, tmp_path = tempfile.mkstemp(
-                        dir=str(mem_path.parent), suffix=".tmp"
-                    )
-                    try:
-                        with os.fdopen(fd, "w", encoding="utf-8") as f:
-                            json.dump(repo_memory, f, indent=2)
-                        try:
-                            os.replace(tmp_path, str(mem_path))
-                        except Exception:
-                            shutil.move(tmp_path, str(mem_path))
-                    except Exception:
-                        logger.exception(
-                            "Failed to write repo_memory.json to %s", mem_path
-                        )
+                    logger.exception("Failed to write repo_memory.json to %s", mem_path)
 
                 # Build a lightweight file summary cache for large files to speed prompt building
                 try:
@@ -609,51 +569,8 @@ def distill_context(
                                 continue
                     try:
                         summary_path.parent.mkdir(parents=True, exist_ok=True)
-                        try:
-                            from src.core.io_utils import atomic_write_json
-
-                            logger.debug(
-                                "distill_context: attempting atomic_write_json for %s",
-                                summary_path,
-                            )
-                            ok = atomic_write_json(
-                                summary_path, summaries, logger=logger
-                            )
-                            if not ok:
-                                logger.warning(
-                                    "distill_context: atomic_write_json returned False for %s; falling back to mkstemp",
-                                    summary_path,
-                                )
-                                fd, tmp_path = tempfile.mkstemp(
-                                    dir=str(summary_path.parent), suffix=".tmp"
-                                )
-                                try:
-                                    with os.fdopen(fd, "w", encoding="utf-8") as f:
-                                        json.dump(summaries, f, indent=2)
-                                    try:
-                                        os.replace(tmp_path, str(summary_path))
-                                    except Exception:
-                                        shutil.move(tmp_path, str(summary_path))
-                                except Exception:
-                                    pass
-                        except Exception:
-                            logger.debug(
-                                "distill_context: atomic_write_json unavailable or failed for %s; falling back\n%s",
-                                summary_path,
-                                traceback.format_exc(),
-                            )
-                            fd, tmp_path = tempfile.mkstemp(
-                                dir=str(summary_path.parent), suffix=".tmp"
-                            )
-                            try:
-                                with os.fdopen(fd, "w", encoding="utf-8") as f:
-                                    json.dump(summaries, f, indent=2)
-                                try:
-                                    os.replace(tmp_path, str(summary_path))
-                                except Exception:
-                                    shutil.move(tmp_path, str(summary_path))
-                            except Exception:
-                                pass
+                        # F-62: use _atomic_write_json helper (DRY).
+                        _atomic_write_json(summary_path, summaries)
                     except Exception:
                         pass
                 except Exception:
