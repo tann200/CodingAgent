@@ -5,6 +5,7 @@ import tempfile
 import os
 import shutil
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
 logger = logging.getLogger(__name__)
@@ -73,8 +74,6 @@ class PlanDAG:
     @classmethod
     def from_todo_json(cls, todo_json_path: str) -> Optional["PlanDAG"]:
         """Load DAG from existing todo.json file."""
-        from pathlib import Path
-
         path = Path(todo_json_path)
         if not path.exists():
             return None
@@ -111,8 +110,6 @@ class PlanDAG:
         cls, todo_path: str, todo_json_path: str
     ) -> Optional["PlanDAG"]:
         """Load DAG from TODO.md, with fallback to todo.json."""
-        from pathlib import Path
-
         todo_md = Path(todo_path)
         todo_json = Path(todo_json_path)
 
@@ -226,8 +223,6 @@ class PlanDAG:
 
     def sync_to_files(self, todo_path: str, todo_json_path: str):
         """Bidirectional sync: writes both TODO.md and todo.json."""
-        from pathlib import Path
-
         # Delegate to the centralized todo_tools persistence logic which
         # provides atomic replace, backups, restore-on-failure and RBW
         # notifications. Keep a best-effort fallback to the previous

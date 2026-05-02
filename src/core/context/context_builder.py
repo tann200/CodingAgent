@@ -3,8 +3,10 @@ from typing import Callable, Dict, List, Optional, Tuple
 import logging
 import math
 import json
+import re
 import threading
 from collections import OrderedDict
+from datetime import date as _date
 from pathlib import Path
 
 from src.core.memory.frozen_snapshot import get_memory_for_prompt
@@ -30,6 +32,21 @@ except Exception:
 # prompt prefix is eligible for Anthropic's prompt caching.  Other providers
 # ignore the sentinel (it is stripped before the prompt reaches the model).
 SYSTEM_PROMPT_DYNAMIC_BOUNDARY = "__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__"
+
+# Tools always retained when pruning supplementary tools from the context.
+_CORE_TOOL_NAMES: frozenset[str] = frozenset({
+    "read_file",
+    "write_file",
+    "edit_file",
+    "edit_file_atomic",
+    "edit_by_line_range",
+    "bash",
+    "bash_readonly",
+    "grep",
+    "glob",
+    "search_code",
+    "list_directory",
+})
 
 
 # F10: Import dynamic token budget helper (lazy — avoids circular imports at module load).
@@ -74,9 +91,7 @@ _DYNAMIC_ENV_CACHE: Dict[Tuple, str] = {}
 
 def _today_iso() -> str:
     """Return today's date as YYYY-MM-DD (local time)."""
-    from datetime import date
-
-    return date.today().isoformat()
+    return _date.today().isoformat()
 
 
 class ContextBuilder:
@@ -580,21 +595,8 @@ class ContextBuilder:
             return tools
 
         # Separate core tools (always kept) from supplementary tools
-        _CORE_NAMES = {
-            "read_file",
-            "write_file",
-            "edit_file",
-            "edit_file_atomic",
-            "edit_by_line_range",
-            "bash",
-            "bash_readonly",
-            "grep",
-            "glob",
-            "search_code",
-            "list_directory",
-        }
-        core = [t for t in tools if t.get("name") in _CORE_NAMES]
-        supplementary = [t for t in tools if t.get("name") not in _CORE_NAMES]
+        core = [t for t in tools if t.get("name") in _CORE_TOOL_NAMES]
+        supplementary = [t for t in tools if t.get("name") not in _CORE_TOOL_NAMES]
 
         # Fill up to limit: core first, then supplementary
         selected = core + supplementary

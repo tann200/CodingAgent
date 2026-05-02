@@ -4,6 +4,7 @@ import json
 import logging
 import re
 import tempfile
+import traceback
 import os
 import shutil
 from pathlib import Path
@@ -240,8 +241,6 @@ def _save_index_metadata(base_path: Path, metadata: Dict[str, Any]) -> None:
                 meta_path,
             )
         except Exception:
-            import traceback
-
             logger.debug(
                 "repo_indexer: atomic_write_json unavailable or failed for %s; falling back\n%s",
                 meta_path,
@@ -266,8 +265,6 @@ def _save_index_metadata(base_path: Path, metadata: Dict[str, Any]) -> None:
                 try:
                     shutil.move(tmp_path, str(meta_path))
                 except Exception:
-                    import traceback
-
                     logger.debug(
                         "repo_indexer: mkstemp fallback failed for %s; final fallback to write_text\n%s",
                         meta_path,

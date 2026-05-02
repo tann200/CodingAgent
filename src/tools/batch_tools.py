@@ -22,6 +22,8 @@ Usage by the orchestrator:
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
+import contextvars as _cv
 import logging
 import threading
 from typing import Any, Dict, List, Optional
@@ -110,13 +112,9 @@ def batch(calls: List[Dict[str, Any]]) -> Dict[str, Any]:
 
         if loop is not None and loop.is_running():
             # Inside an async context — run in thread pool to avoid deadlock
-            import concurrent.futures
-
             # MED-2 fix: cap thread count to avoid spawning hundreds of threads for
             # large batches; an unbounded pool can exhaust OS thread limits.
             _max_workers = min(len(calls), 16)
-            import contextvars as _cv
-
             _ctx = _cv.copy_context()
             with concurrent.futures.ThreadPoolExecutor(
                 max_workers=_max_workers

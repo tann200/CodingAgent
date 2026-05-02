@@ -2,6 +2,7 @@ from typing import Dict, Any, Optional
 from pathlib import Path
 import difflib
 
+from src.tools import file_tools
 from src.tools._path_utils import safe_resolve as _safe_resolve
 from src.tools._tool import tool
 
@@ -80,8 +81,6 @@ def apply_patch(
     if workdir is None:
         workdir = Path.cwd()
     try:
-        from src.tools import file_tools
-
         return file_tools.edit_file(path=path, patch=patch, workdir=workdir)
     except Exception as e:
         return {"status": "error", "error": str(e)}
@@ -96,8 +95,6 @@ def edit_code_block(
     block_to_find must appear exactly once — ambiguous matches are rejected.
     """
     try:
-        from src.tools import file_tools
-
         workdir_path = Path(workdir)
 
         # C1: Path safety — use _safe_resolve to prevent path traversal

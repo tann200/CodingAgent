@@ -41,26 +41,6 @@ _LANG_PATTERNS: Dict[str, Dict[str, re.Pattern]] = {
             re.MULTILINE,
         ),
     },
-    ".tsx": {  # same as .ts
-        "function": re.compile(
-            r"(?:^|\s)(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*[<(]",
-            re.MULTILINE,
-        ),
-        "class": re.compile(
-            r"(?:^|\s)(?:export\s+)?(?:abstract\s+)?class\s+([A-Za-z_$][A-Za-z0-9_$]*)",
-            re.MULTILINE,
-        ),
-    },
-    ".jsx": {  # same as .js
-        "function": re.compile(
-            r"(?:^|\s)(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(",
-            re.MULTILINE,
-        ),
-        "class": re.compile(
-            r"(?:^|\s)(?:export\s+)?class\s+([A-Za-z_$][A-Za-z0-9_$]*)",
-            re.MULTILINE,
-        ),
-    },
     # Go
     ".go": {
         "function": re.compile(
@@ -92,6 +72,9 @@ _LANG_PATTERNS: Dict[str, Dict[str, re.Pattern]] = {
         ),
     },
 }
+# .tsx and .jsx share the same patterns as .ts and .js respectively.
+_LANG_PATTERNS[".tsx"] = _LANG_PATTERNS[".ts"]
+_LANG_PATTERNS[".jsx"] = _LANG_PATTERNS[".js"]
 
 # All supported suffixes (Python handled separately via AST)
 _SUPPORTED_SUFFIXES = {".py"} | set(_LANG_PATTERNS.keys())

@@ -228,5 +228,3 @@ def get_context_controller(max_tokens: int = 6000) -> ContextController:
     """Get context controller with percentage-based budgets."""
     return ContextController(max_tokens=max_tokens)
 
-
-ContextController.get_relevant_snippets = ContextController.extract_relevant_snippets  # type: ignore[attr-defined]
