@@ -1,3 +1,4 @@
+from langchain_core.runnables import RunnableConfig
 import asyncio
 import hashlib
 import logging
@@ -12,7 +13,7 @@ from src.core.utils.strings import valid_str as _valid_str, extract_str as _extr
 logger = logging.getLogger(__name__)
 
 
-async def replan_node(state: StateLike, config: Any) -> Dict[str, Any]:
+async def replan_node(state: StateLike, config: RunnableConfig) -> Dict[str, Any]:
     """
     Replan Node: Handles patch size violations by splitting oversized steps.
     When a patch exceeds 200 lines, this node prompts the LLM to rewrite

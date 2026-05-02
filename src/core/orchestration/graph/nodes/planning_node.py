@@ -1,3 +1,4 @@
+from langchain_core.runnables import RunnableConfig
 import asyncio
 import json
 import logging
@@ -106,7 +107,7 @@ def _get_last_plan_path(workdir: str) -> Path:
 
         return agent_context_path(Path(workdir)) / "last_plan.json"
     except Exception:
-        return Path(workdir) / ".agent-context" / "last_plan.json"
+        return Path(workdir) / ".codingAgent" / "last_plan.json"
 
 
 def _load_last_plan(workdir: str) -> Dict[str, Any]:
@@ -187,7 +188,7 @@ def _save_last_plan(workdir: str, plan: list, task: str, step: int = 0) -> None:
         logger.warning("planning_node: failed to save last plan: %s", e)
 
 
-async def planning_node(state: StateLike, config: Any) -> Dict[str, Any]:
+async def planning_node(state: StateLike, config: RunnableConfig) -> Dict[str, Any]:
     """
     Planning Layer: Converts perception outputs into a structured plan.
     Uses the 'strategic' role from ContextBuilder (loaded from agent-brain).
@@ -196,7 +197,7 @@ async def planning_node(state: StateLike, config: Any) -> Dict[str, Any]:
         return await _planning_node_impl(state, config)
 
 
-async def _planning_node_impl(state: Mapping[str, Any], config: Any) -> Dict[str, Any]:  # noqa: C901
+async def _planning_node_impl(state: Mapping[str, Any], config: RunnableConfig) -> Dict[str, Any]:  # noqa: C901
     # P1-2: Increment inner planning-loop counter FIRST so all return paths carry it
     plan_attempts = int(state.get("plan_attempts") or 0) + 1
 

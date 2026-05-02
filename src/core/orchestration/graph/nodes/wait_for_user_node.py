@@ -1,3 +1,4 @@
+from langchain_core.runnables import RunnableConfig
 """
 wait_for_user_node.py - Suspends graph until user confirms preview or approves plan.
 
@@ -18,7 +19,7 @@ from src.core.orchestration.graph.state import StateLike
 logger = logging.getLogger(__name__)
 
 
-async def wait_for_user_node(state: StateLike, config: Any) -> Dict[str, Any]:
+async def wait_for_user_node(state: StateLike, config: RunnableConfig) -> Dict[str, Any]:
     """
     Suspend graph execution until user confirms or rejects preview / approves plan.
 

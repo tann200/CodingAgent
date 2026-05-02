@@ -1,3 +1,4 @@
+from langchain_core.runnables import RunnableConfig
 import asyncio
 import json
 import logging
@@ -14,7 +15,7 @@ def _failed(r: dict) -> bool:
     return isinstance(r, dict) and r.get("status") == "fail"
 
 
-async def evaluation_node(state: StateLike, config: Any) -> Dict[str, Any]:
+async def evaluation_node(state: StateLike, config: RunnableConfig) -> Dict[str, Any]:
     """
     Evaluation Node: Post-verification review to decide if task goal is fully met.
     Reviews overall state including verification results, plan completion, and errors.

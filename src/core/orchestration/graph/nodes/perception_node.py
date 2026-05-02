@@ -1,3 +1,4 @@
+from langchain_core.runnables import RunnableConfig
 import asyncio
 import json
 import logging
@@ -1083,7 +1084,7 @@ def _build_perception_messages(
     return messages
 
 
-async def perception_node(state: StateLike, config: Any) -> Dict[str, Any]:
+async def perception_node(state: StateLike, config: RunnableConfig) -> Dict[str, Any]:
     """
     Perception Layer: Responsible for generating the next action or thought.
     Uses the 'operational' role from ContextBuilder (loaded from agent-brain).

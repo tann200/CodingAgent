@@ -1,3 +1,4 @@
+from langchain_core.runnables import RunnableConfig
 import logging
 import os
 import threading
@@ -199,7 +200,7 @@ def clear_repo_summary_cache(working_dir: str | None = None) -> None:
                 )
 
 
-async def analysis_node(state: StateLike, config: Any) -> Dict[str, Any]:
+async def analysis_node(state: StateLike, config: RunnableConfig) -> Dict[str, Any]:
     """
     Analysis Layer: Explores the repository to gather relevant context before planning.
     Uses repository intelligence tools to find relevant files, symbols, and dependencies.

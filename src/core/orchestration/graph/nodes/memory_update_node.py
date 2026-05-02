@@ -1,3 +1,4 @@
+from langchain_core.runnables import RunnableConfig
 import asyncio
 import atexit
 import logging
@@ -31,7 +32,7 @@ _executor = ThreadPoolExecutor(max_workers=4)
 atexit.register(_executor.shutdown, wait=True)
 
 
-async def memory_update_node(state: StateLike, config: Any) -> Dict[str, Any]:
+async def memory_update_node(state: StateLike, config: RunnableConfig) -> Dict[str, Any]:
     """
     Memory Update Layer: Persists distilled context and triggers advanced memory features.
     Memory operations are parallelized for performance.

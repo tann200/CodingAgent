@@ -1,3 +1,4 @@
+from langchain_core.runnables import RunnableConfig
 import logging
 import re
 from typing import Dict, Any, List, Optional, Set
@@ -197,7 +198,7 @@ def validate_plan(
     }
 
 
-async def plan_validator_node(state: StateLike, config: Any) -> Dict[str, Any]:
+async def plan_validator_node(state: StateLike, config: RunnableConfig) -> Dict[str, Any]:
     """
     Plan Validator Node: Validates plans before execution.
 

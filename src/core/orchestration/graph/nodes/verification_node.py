@@ -1,3 +1,4 @@
+from langchain_core.runnables import RunnableConfig
 import logging
 from pathlib import Path
 from typing import Any, Dict, Mapping
@@ -49,7 +50,7 @@ _WRITE_TOOLS_ALWAYS_VERIFY = {
 }
 
 
-async def verification_node(state: StateLike, config: Any) -> Dict[str, Any]:
+async def verification_node(state: StateLike, config: RunnableConfig) -> Dict[str, Any]:
     """
     Verification Layer: Run tests / linters / syntax checks on proposed edits.
     Also validates file deletions to ensure files are actually deleted.

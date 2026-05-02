@@ -14,6 +14,7 @@ Their results are merged into a single analyst_findings block.
 """
 
 from __future__ import annotations
+from langchain_core.runnables import RunnableConfig
 import asyncio
 import logging
 from typing import Dict, Any, List
@@ -71,7 +72,7 @@ def _merge_findings(results: List[str]) -> str:
     return "\n\n".join(merged_parts) if merged_parts else ""
 
 
-async def analyst_delegation_node(state: StateLike, config: Any) -> Dict[str, Any]:
+async def analyst_delegation_node(state: StateLike, config: RunnableConfig) -> Dict[str, Any]:
     """
     #56 + GAP-FRONTIER-3: Early delegation phase — spawns analyst subagent(s) before planning.
 

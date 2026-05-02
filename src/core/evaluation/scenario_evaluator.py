@@ -7,6 +7,7 @@ similar to SWE-bench style evaluations.
 
 import json
 import logging
+import math
 import shlex
 import subprocess
 import tempfile
@@ -354,3 +355,94 @@ def run_benchmark(
     summary = evaluator.get_summary(results)
 
     return summary
+
+
+# ---------------------------------------------------------------------------
+# G10: pass@k — unbiased estimator (Chen et al. 2021, HumanEval paper)
+# ---------------------------------------------------------------------------
+
+def pass_at_k(n: int, c: int, k: int) -> float:
+    """Unbiased estimator for pass@k.
+
+    Given *n* independent samples of a scenario, *c* of which passed, return
+    the probability that at least one of *k* randomly chosen samples passes.
+
+    Formula:  pass@k = 1 - C(n-c, k) / C(n, k)
+
+    Args:
+        n: total number of attempts.
+        c: number of passing attempts (c <= n).
+        k: number of samples to consider (k <= n).
+
+    Returns:
+        Estimated probability in [0, 1].
+
+    Raises:
+        ValueError: if k > n or c > n or any argument is negative.
+    """
+    if n < 0 or c < 0 or k < 0:
+        raise ValueError(f"n, c, k must be non-negative; got n={n}, c={c}, k={k}")
+    if c > n:
+        raise ValueError(f"c ({c}) cannot exceed n ({n})")
+    if k > n:
+        raise ValueError(f"k ({k}) cannot exceed n ({n})")
+    if k == 0:
+        return 0.0
+    if n == 0:
+        return 0.0
+    # Use log-space to avoid overflow for large n.
+    # log C(n-c, k) = log_comb(n-c, k); log C(n, k) = log_comb(n, k)
+    if n - c < k:
+        # Fewer failures than k — at least one pass is guaranteed.
+        return 1.0
+    log_numerator = math.lgamma(n - c + 1) - math.lgamma(k + 1) - math.lgamma(n - c - k + 1)
+    log_denominator = math.lgamma(n + 1) - math.lgamma(k + 1) - math.lgamma(n - k + 1)
+    return float(1.0 - math.exp(log_numerator - log_denominator))
+
+
+def run_pass_at_k(
+    scenario: "Scenario",
+    agent_factory: Callable[[], Any],
+    n: int,
+    k: int,
+    workdir: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Run *scenario* n times and return pass@k alongside raw counts.
+
+    Each run gets its own isolated temporary directory so side-effects from
+    one attempt cannot influence the next.
+
+    Args:
+        scenario: The scenario to evaluate.
+        agent_factory: Callable that returns a fresh agent for each attempt.
+        n: Total number of independent attempts.
+        k: k for the pass@k estimate (must be <= n).
+        workdir: Optional parent directory for temporary run directories.
+
+    Returns:
+        dict with keys ``n``, ``c`` (passes), ``k``, ``pass_at_k``,
+        ``results`` (list of ScenarioResult).
+    """
+    if k > n:
+        raise ValueError(f"k ({k}) must be <= n ({n})")
+
+    base = Path(workdir) if workdir else Path(tempfile.mkdtemp())
+    results: List["ScenarioResult"] = []
+
+    for attempt in range(n):
+        attempt_dir = base / f"{scenario.name}_attempt_{attempt}"
+        attempt_dir.mkdir(parents=True, exist_ok=True)
+        evaluator = ScenarioEvaluator(workdir=str(attempt_dir))
+        result = evaluator.run_scenario(scenario, agent_factory)
+        results.append(result)
+
+    c = sum(1 for r in results if r.status == "pass")
+    return {
+        "scenario": scenario.name,
+        "n": n,
+        "c": c,
+        "k": k,
+        "pass_at_k": pass_at_k(n, c, k),
+        "results": results,
+    }
+

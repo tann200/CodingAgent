@@ -120,6 +120,6 @@ These are known gaps against the principles above, prioritised for implementatio
 | G7 | No container/namespace sandbox — bash_security patterns are the only barrier | P2 |
 | G8 | WebSocket session endpoint not implemented | P2 |
 | G9 | MCP tool registry integration with orchestrator routing incomplete | P2 |
-| G10 | Evaluation suite minimal — no golden-set regression, no pass@k | P2 |
+| G10 | ~~Evaluation suite minimal — no golden-set regression, no pass@k~~ **Resolved** — `pass_at_k()` estimator (Chen et al. unbiased), `run_pass_at_k()`, 10-scenario golden set (`tests/fixtures/golden_scenarios.json`), 26 regression tests | P2 |
 | G11 | ~~`bash_security.py` patterns assume Unix shell syntax — no PowerShell equivalent~~ **Resolved** `a46f756` — `analyze_powershell_command()` + `_PS_BLOCKED_PATTERNS` | P3 |
 | G12 | Streaming diff preview (character-by-character) not implemented | P3 |

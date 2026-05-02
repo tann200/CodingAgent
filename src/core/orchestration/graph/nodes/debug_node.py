@@ -1,3 +1,4 @@
+from langchain_core.runnables import RunnableConfig
 import asyncio
 import logging
 import threading
@@ -39,7 +40,7 @@ TYPE_GUIDANCE = {
 }
 
 
-async def debug_node(state: StateLike, config: Any) -> Dict[str, Any]:
+async def debug_node(state: StateLike, config: RunnableConfig) -> Dict[str, Any]:
     """
     Debug Node: Analyzes verification failures and attempts to fix issues.
     Uses the 'debugger' role from ContextBuilder (loaded from agent-brain).

@@ -1,3 +1,4 @@
+from langchain_core.runnables import RunnableConfig
 import asyncio
 import json
 import logging
@@ -212,7 +213,7 @@ async def _execute_tool_with_locks(
             lock_manager.reset_cancel()
 
 
-async def execution_node(state: StateLike, config: Any) -> Dict[str, Any]:
+async def execution_node(state: StateLike, config: RunnableConfig) -> Dict[str, Any]:
     """
     Execution Layer: Programmatically enforces Operational Workflows.
     Uses the 'operational' role from ContextBuilder (loaded from agent-brain).
@@ -222,7 +223,7 @@ async def execution_node(state: StateLike, config: Any) -> Dict[str, Any]:
         return await _execution_node_impl(state, config)
 
 
-async def _execution_node_impl(state: Mapping[str, Any], config: Any) -> Dict[str, Any]:  # noqa: C901
+async def _execution_node_impl(state: Mapping[str, Any], config: RunnableConfig) -> Dict[str, Any]:  # noqa: C901
     # Validate state invariants at node entry (D-02: non-fatal, logs on issues)
     validate_state(state)
 

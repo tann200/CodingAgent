@@ -1,3 +1,4 @@
+from langchain_core.runnables import RunnableConfig
 import logging
 from pathlib import Path
 from typing import Dict, Any, List
@@ -7,7 +8,7 @@ from src.core.orchestration.graph.state import StateLike
 logger = logging.getLogger(__name__)
 
 
-async def step_controller_node(state: StateLike, config: Any) -> Dict[str, Any]:
+async def step_controller_node(state: StateLike, config: RunnableConfig) -> Dict[str, Any]:
     """
     Step Controller: Enforces single-step execution from the plan.
     Validates that the current step matches the planned action.

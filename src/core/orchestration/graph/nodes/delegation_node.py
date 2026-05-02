@@ -1,3 +1,4 @@
+from langchain_core.runnables import RunnableConfig
 import asyncio
 import logging
 from typing import Mapping, Dict, Any, Optional, Tuple
@@ -126,7 +127,7 @@ async def _execute_delegation_with_locks(
             lock_manager.reset_cancel()
 
 
-async def delegation_node(state: StateLike, config: Any) -> Dict[str, Any]:
+async def delegation_node(state: StateLike, config: RunnableConfig) -> Dict[str, Any]:
     """
     Delegation Layer: Spawns subagents for independent tasks that can run in parallel.
 
