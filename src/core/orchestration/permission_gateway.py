@@ -266,6 +266,13 @@ class PermissionGateway:
         if result.blocked:
             return result
 
+        # Gate 2d — External directory: prompt user when a file tool targets a
+        # path outside the workspace root.  Mirrors opencode's
+        # assertExternalDirectoryEffect / external_directory permission.
+        result = self._gate2d_external_directory(name, args)
+        if result.blocked:
+            return result
+
         needs_gate, result = self._gate3_permission_level(name, args)
         if result.blocked:
             return result
@@ -535,6 +542,68 @@ class PermissionGateway:
             pass  # table failures must never block tool execution
 
         return None  # no matching rule — proceed to gate5
+
+    # File-touching tool names whose path args should be checked for external-directory access.
+    _FILE_TOOLS: frozenset = frozenset(
+        {
+            "read_file", "read_file_chunk", "read_file_bytes",
+            "write_file", "edit_file", "edit_file_atomic", "multiedit",
+            "delete_file", "rename_file", "list_dir", "glob_files",
+        }
+    )
+
+    def _gate2d_external_directory(self, name: str, args: Dict[str, Any]) -> PermissionResult:
+        """Gate 2d: Prompt for user approval when a file tool targets a path
+        outside the current workspace root.
+
+        Mirrors opencode's assertExternalDirectoryEffect / external_directory
+        permission.  Internal tools that don't touch the filesystem are skipped.
+        If the path is inside the workspace the gate passes immediately (no
+        prompt).  If outside, Gate 5 (interactive approval) is triggered so the
+        user can allow once, always, or reject.
+
+        Non-fatal: any exception causes the gate to pass so a mis-configured
+        orchestrator never silently blocks legitimate workspace-internal calls.
+        """
+        try:
+            if name not in self._FILE_TOOLS:
+                return PermissionResult(allowed=True)
+
+            workdir = getattr(self._orch, "working_dir", None)
+            if not workdir:
+                return PermissionResult(allowed=True)
+
+            from pathlib import Path as _Path
+
+            wd = _Path(workdir).resolve()
+
+            # Collect all path-like args; any one escaping workspace triggers the gate.
+            _path_keys = ("path", "src_path", "dst_path", "new_path", "old_path", "src", "dst")
+            paths_to_check = [str(args[k]) for k in _path_keys if k in args and args[k]]
+
+            for raw in paths_to_check:
+                try:
+                    resolved = _Path(raw).resolve()
+                    resolved.relative_to(wd)  # raises ValueError if outside
+                except ValueError:
+                    # Path escapes workspace — require user approval via Gate 5.
+                    logger.info(
+                        "gate2d: tool %r targets external path %r (workspace: %s) — prompting",
+                        name,
+                        raw,
+                        wd,
+                    )
+                    result = self._gate5_user_approval(
+                        name,
+                        {**args, "_external_path_context": raw},
+                    )
+                    return result
+                except Exception:
+                    pass  # unresolvable paths — let the tool itself report the error
+        except Exception:
+            pass
+
+        return PermissionResult(allowed=True)
 
     def _gate5_user_approval(self, name: str, args: Dict[str, Any]) -> PermissionResult:
         """Gate 5: Interactive user-approval prompt (skipped in autonomous mode)."""

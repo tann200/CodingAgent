@@ -32,6 +32,15 @@ _logger = logging.getLogger(__name__)
 _EDIT_NET_CHANGE_WARN = 200  # edit_file warns on large net-line changes
 
 
+def _is_in_workspace(path: Path, workdir: Path) -> bool:
+    """Return True iff *path* is strictly inside *workdir* (no escaping via ..)."""
+    try:
+        path.resolve().relative_to(workdir.resolve())
+        return True
+    except ValueError:
+        return False
+
+
 # WorkspaceGuard: import from shared location; the module handles its own fallback.
 from src.tools._workspace_guard import WorkspaceGuard  # type: ignore[assignment]
 

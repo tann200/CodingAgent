@@ -43,6 +43,19 @@ from src.core.orchestration.event_bus import get_event_bus as _get_event_bus
 from src.tools.formatter import run_formatter as _run_formatter
 
 
+def _is_in_workspace(path: Path, workdir: Path) -> bool:
+    """Return True iff *path* is strictly inside *workdir* (no escaping via ..).
+
+    Mirrors opencode's Instance.containsPath() — pure path-prefix check,
+    no OS sandbox involved.
+    """
+    try:
+        path.resolve().relative_to(workdir.resolve())
+        return True
+    except ValueError:
+        return False
+
+
 def _check_project_deny_write(abs_path: Path, workdir: Path) -> None:
     """Raise PermissionError if *abs_path* matches a project config deny_write pattern.
 
