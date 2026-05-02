@@ -3,10 +3,7 @@ import hashlib
 import json
 import logging
 import re
-import tempfile
-import traceback
 import os
-import shutil
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 from datetime import datetime
@@ -18,6 +15,11 @@ try:
 except Exception:
     def _get_ctx_dir_name() -> str:  # type: ignore[misc]
         return ".codingAgent"
+
+try:
+    from src.core.io_utils import atomic_write_json as _atomic_write_json
+except Exception:
+    _atomic_write_json = None  # type: ignore[assignment]
 
 # Multi-language support
 INDEX_VERSION = "3.0"  # Multi-language indexing version
@@ -222,7 +224,7 @@ def _load_index_metadata(base_path: Path) -> Dict[str, Any]:
     meta_path = base_path / _get_ctx_dir_name() / "repo_index_meta.json"
     if meta_path.exists():
         try:
-            with open(meta_path, "r") as f:
+            with open(meta_path, "r", encoding="utf-8") as f:
                 return json.load(f)
         except Exception:
             pass
@@ -234,66 +236,15 @@ def _save_index_metadata(base_path: Path, metadata: Dict[str, Any]) -> None:
     meta_path = base_path / _get_ctx_dir_name() / "repo_index_meta.json"
     meta_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Prefer central atomic writer; fall back to mkstemp + os.replace
-    try:
+    if _atomic_write_json is not None:
+        if not _atomic_write_json(meta_path, metadata, logger=logger):
+            logger.warning("repo_indexer: failed to write metadata to %s", meta_path)
+    else:
         try:
-            from src.core.io_utils import atomic_write_json
-
-            ok = atomic_write_json(meta_path, metadata, logger=logger)
-            if ok:
-                return
-            logger.warning(
-                "repo_indexer: atomic_write_json returned False for %s; falling back",
-                meta_path,
-            )
+            meta_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
         except Exception:
-            logger.debug(
-                "repo_indexer: atomic_write_json unavailable or failed for %s; falling back\n%s",
-                meta_path,
-                traceback.format_exc(),
-            )
+            logger.exception("repo_indexer: failed to write metadata to %s", meta_path)
 
-        fd, tmp_path = tempfile.mkstemp(dir=str(meta_path.parent), suffix=".tmp")
-        try:
-            try:
-                with os.fdopen(fd, "w", encoding="utf-8") as f:
-                    json.dump(metadata, f, indent=2)
-            except Exception:
-                try:
-                    os.close(fd)
-                except Exception:
-                    pass
-                raise
-
-            try:
-                os.replace(tmp_path, str(meta_path))
-            except Exception:
-                try:
-                    shutil.move(tmp_path, str(meta_path))
-                except Exception:
-                    logger.debug(
-                        "repo_indexer: mkstemp fallback failed for %s; final fallback to write_text\n%s",
-                        meta_path,
-                        traceback.format_exc(),
-                    )
-                    try:
-                        meta_path.write_text(
-                            json.dumps(metadata, indent=2), encoding="utf-8"
-                        )
-                    except Exception:
-                        logger.exception(
-                            "repo_indexer: failed to write metadata to %s", meta_path
-                        )
-        except Exception as e:
-            logger.error("repo_indexer: failed to save metadata %s: %s", meta_path, e)
-            try:
-                if os.path.exists(tmp_path):
-                    os.unlink(tmp_path)
-            except Exception:
-                pass
-    except Exception:
-        # Keep function non-raising; errors logged above.
-        pass
 
 
 def index_repository(workdir: str, incremental: bool = True) -> Dict[str, Any]:
@@ -316,7 +267,7 @@ def index_repository(workdir: str, incremental: bool = True) -> Dict[str, Any]:
     index_path = base_path / _get_ctx_dir_name() / "repo_index.json"
     if index_path.exists():
         try:
-            with open(index_path, "r") as f:
+            with open(index_path, "r", encoding="utf-8") as f:
                 existing_index = json.load(f)
         except Exception:
             pass
@@ -443,7 +394,7 @@ def index_repository(workdir: str, incremental: bool = True) -> Dict[str, Any]:
 
     # Save updated index
     index_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(index_path, "w") as f:
+    with open(index_path, "w", encoding="utf-8") as f:
         json.dump(repo_index, f, indent=2)
 
     # Save metadata for next incremental update
@@ -479,7 +430,7 @@ def get_index_stats(workdir: str) -> Dict[str, Any]:
 
     if meta_path.exists():
         try:
-            with open(meta_path, "r") as f:
+            with open(meta_path, "r", encoding="utf-8") as f:
                 meta = json.load(f)
                 stats["last_indexed"] = meta.get("last_indexed")
                 stats["index_version"] = meta.get("index_version")
@@ -491,7 +442,7 @@ def get_index_stats(workdir: str) -> Dict[str, Any]:
 
     if index_path.exists():
         try:
-            with open(index_path, "r") as f:
+            with open(index_path, "r", encoding="utf-8") as f:
                 idx = json.load(f)
                 stats["indexed_files"] = len(idx.get("files", []))
                 stats["indexed_symbols"] = len(idx.get("symbols", []))

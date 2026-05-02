@@ -88,6 +88,21 @@ _CACHE_LOCK = threading.Lock()
 _STATIC_PROMPT_CACHE: Dict[Tuple, str] = {}
 _DYNAMIC_ENV_CACHE: Dict[Tuple, str] = {}
 
+# Token / character thresholds
+_SYSTEM_OVERHEAD_TOKENS: int = 2100  # reserved for system prompt overhead in token budget
+_MIN_TASK_STATE_CHARS: int = 60      # min chars before injecting task-state block
+_MIN_TODO_CHARS: int = 20            # min chars before injecting todo block
+_MIN_PREFS_CHARS: int = 10           # min chars before injecting preferences block
+
+
+def _get_ctx_name() -> str:
+    """Return the configured context-dir name, defaulting to '.codingAgent'."""
+    try:
+        from src.tools.tools_config import get_context_dir_name
+        return get_context_dir_name()
+    except Exception:
+        return ".codingAgent"
+
 
 def _today_iso() -> str:
     """Return today's date as YYYY-MM-DD (local time)."""
@@ -167,8 +182,6 @@ class ContextBuilder:
             else:
                 self._agent_context_dir = agent_context_path(Path.cwd())
 
-        # Token usage tracking for TokenBudgetMonitor
-        self._last_token_count: int = 0
         self._max_tokens: int = max_tokens
 
         # Load identity and role prompts from agent-brain
@@ -209,12 +222,7 @@ class ContextBuilder:
         # built-in skills of the same name, enabling per-project customisation.
         # Respect configured context-dir name when looking for workspace skills,
         # but fall back to legacy names for compatibility.
-        try:
-            from src.tools.tools_config import get_context_dir_name
-
-            ctx_name = get_context_dir_name()
-        except Exception:
-            ctx_name = ".codingAgent"
+        ctx_name = _get_ctx_name()
 
         _workspace_skill_dirs = [
             self._agent_context_dir.parent / ctx_name / "skills",
@@ -411,13 +419,7 @@ class ContextBuilder:
         if removed_any:
             try:
                 cwd = Path.cwd()
-                try:
-                    from src.tools.tools_config import get_context_dir_name
-
-                    ctx_name = get_context_dir_name()
-                except Exception:
-                    ctx_name = ".codingAgent"
-
+                ctx_name = _get_ctx_name()
                 ac = cwd / ctx_name
                 if ac.exists():
                     logp = ac / "context_sanitization.log"
@@ -809,7 +811,7 @@ class ContextBuilder:
             skill_contents = [
                 self._sanitize_text(sc)
                 for sn in active_skills
-                if (sc := self.get_skill(sn))
+                if (sc := self.get_skill(sn))  # walrus: bind skill content and filter empties in one pass
             ]
             if skill_contents:
                 parts.append(
@@ -941,8 +943,8 @@ class ContextBuilder:
         # Token budgeting: reserve space for static system + tags overhead,
         # give remaining budget to conversation history.
         conversation_quota = max(
-            0, max_tokens - 2100
-        )  # ~2100 tokens for system overhead
+            0, max_tokens - _SYSTEM_OVERHEAD_TOKENS
+        )  # reserve tokens for system overhead
 
         built_messages: List[Dict[str, str]] = []
 
@@ -1016,7 +1018,7 @@ class ContextBuilder:
                 not has_tool_results  # Only inject when NOT in active execution
                 and ts_content
                 and ts_content.strip() != _empty.strip()
-                and len(ts_content) > 60
+                and len(ts_content) > _MIN_TASK_STATE_CHARS
             ):
                 dynamic_parts.append(
                     f"<session_summary>\n{ts_content}\n</session_summary>"
@@ -1029,7 +1031,7 @@ class ContextBuilder:
         #     updated by execution_node). It takes precedence over TASK_STATE.md for step status.
         try:
             todo_content = self._get_todo_content()
-            if todo_content and len(todo_content) > 20:
+            if todo_content and len(todo_content) > _MIN_TODO_CHARS:
                 dynamic_parts.append(
                     f"<task_progress>\n{todo_content}\n</task_progress>"
                 )
@@ -1040,7 +1042,7 @@ class ContextBuilder:
         #    User preferences, working style, explicit instructions for this project.
         try:
             prefs_content = self._get_preferences_content()
-            if prefs_content and len(prefs_content) > 10:
+            if prefs_content and len(prefs_content) > _MIN_PREFS_CHARS:
                 dynamic_parts.append(
                     f"<user_preferences>\n{prefs_content}\n</user_preferences>"
                 )
@@ -1284,7 +1286,7 @@ class ContextBuilder:
                                 "tool_name": tool_name,
                                 "status": status,
                                 "_pruned": True,
-                                "_note": "Full output pruned (stale — >3 turns ago). Use read_file to re-fetch if needed.",
+                                "_note": f"Full output pruned (stale — >{stale_after_turns} turns ago). Use read_file to re-fetch if needed.",
                             }
                         }
                     )
@@ -1368,60 +1370,6 @@ class ContextBuilder:
                     else ""
                 )  # Should already fit, but defensive
         else:
-            # Content already fits within the budget for content + marker, so no truncation needed and no marker added.
-            return text
+             # Content already fits within the budget for content + marker, so no truncation needed and no marker added.
+             return text
 
-    def _build_system_message(
-        self, tag: str, raw_content: str, total_quota: int
-    ) -> Dict[str, str]:
-        # We need the final message to be <= total_quota
-        # Format: <tag>\n{content}\n</tag>
-        # If content needs truncation, format: <tag>\n{content}\n\n[TRUNCATED]\n</tag>
-
-        # 1. Check if it fits without truncation
-        ideal_full_msg = f"<{tag}>\n{raw_content}\n</{tag}>"
-        if self.token_estimator(ideal_full_msg) <= total_quota:
-            return {"role": "system", "content": ideal_full_msg}
-
-        # 2. It doesn't fit. We need to truncate.
-        # Construct the minimal wrapper with the marker to see how much budget we have for the content.
-        wrapper_with_marker = f"<{tag}>\n\n\n[TRUNCATED]\n</{tag}>"
-        wrapper_tokens = self.token_estimator(wrapper_with_marker)
-
-        if total_quota <= wrapper_tokens:
-            # We don't even have enough budget for the tags and the marker.
-            # P1-D fix: binary-search instead of O(N) char-by-char loop.
-            truncated_msg = self._truncate_to_token_budget(ideal_full_msg, total_quota)
-            return {"role": "system", "content": truncated_msg}
-
-        # 3. We have budget for the wrapper + marker + some content.
-        content_budget = total_quota - wrapper_tokens
-
-        # Heuristic starting point for content truncation
-        approx_chars_per_token = (
-            len(raw_content) / self.token_estimator(raw_content)
-            if self.token_estimator(raw_content) > 0
-            else 4
-        )
-        target_char_limit = max(0, int(content_budget * approx_chars_per_token))
-
-        truncated_content = raw_content[:target_char_limit]
-
-        # P1-D fix: binary-search fine-tune instead of O(N) char-by-char loop.
-        # We search on raw_content directly, using content_budget as the constraint.
-        truncated_content = self._truncate_to_token_budget(
-            truncated_content, content_budget
-        )
-
-        return {
-            "role": "system",
-            "content": f"<{tag}>\n{truncated_content}\n\n[TRUNCATED]\n</{tag}>",
-        }
-
-    def get_token_usage(self) -> tuple[int, int]:
-        """Return (used, max) for TokenBudgetMonitor."""
-        return self._last_token_count, self._max_tokens
-
-    def update_token_count(self, count: int):
-        """Update the last token count after building context."""
-        self._last_token_count = count

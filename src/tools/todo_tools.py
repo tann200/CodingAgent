@@ -5,10 +5,16 @@ Manages a human-readable TODO.md file at .agent-context/TODO.md so the user
 can see task progress in real time and the agent can track which steps are done.
 """
 
+import errno
 import json
 import logging
 import os
+import re
+import socket
+import subprocess
+import sys
 import time
+import traceback
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 import threading
@@ -56,8 +62,6 @@ def _inc_lock_metric(key: str) -> None:
         # Metrics must never interfere with normal operation. Log debug output
         # and include the traceback using traceback.format_exc() (lint-friendly).
         try:
-            import traceback
-
             logger.debug(
                 "Failed to increment lock metric %s: %s\n%s",
                 key,
@@ -97,8 +101,6 @@ def _inc_rbw_metric(key: str) -> None:
                 _rbw_metrics[key] += 1
     except Exception as e:
         try:
-            import traceback
-
             logger.debug(
                 "Failed to increment rbw metric %s: %s\n%s",
                 key,
@@ -144,10 +146,6 @@ def _is_network_filesystem(path: Path) -> bool:
     False (treat as local filesystem).
     """
     try:
-        import sys
-        import subprocess
-        import re
-
         p = Path(path).resolve()
         path_str = str(p)
 
@@ -273,14 +271,10 @@ class _FileLock:
                 self._fd = os.open(str(self.lock_path), flags)
                 # Write diagnostic info into the lockfile: PID and timestamp
                 try:
-                    import socket
-
                     hostname = socket.gethostname()
                     info = f"pid={os.getpid()} ts={int(time.time() * 1000)} host={hostname}\n"
-                    # Include a small stack fragment for debugging; don't import traceback at module import time
+                    # Include a small stack fragment for debugging
                     try:
-                        import traceback
-
                         stack = traceback.format_stack(limit=5)
                         info += "".join(stack)
                     except Exception:
@@ -310,8 +304,6 @@ class _FileLock:
                             )
                             # Parse pid if present and check whether the process exists
                             try:
-                                import re
-
                                 m = re.search(r"pid=\s*(\d+)", data)
                                 hostm = re.search(r"host=([\w\-\.]+)", data)
                                 tsm = re.search(r"ts=(\d+)", data)
@@ -325,14 +317,6 @@ class _FileLock:
                                     stale_ttl = int(
                                         os.environ.get("TODO_LOCK_STALE_TTL", "300")
                                     )
-                                    # socket may not have been imported earlier in this
-                                    # code path (we import it when creating lockfiles),
-                                    # so import locally here.
-                                    try:
-                                        import socket
-                                    except Exception:
-                                        socket = None
-
                                     same_host = (
                                         existing_host == socket.gethostname()
                                         if socket is not None
@@ -361,8 +345,6 @@ class _FileLock:
                                         except OSError as e:
                                             # errno.ESRCH -> no such process, errno.EPERM -> no permission
                                             try:
-                                                import errno
-
                                                 if (
                                                     getattr(e, "errno", None)
                                                     == errno.ESRCH
@@ -959,7 +941,7 @@ def manage_todo(
                 _notify_rbw_after_write(workdir)
             except Exception:
                 pass
-            logger.info(f"manage_todo: created TODO with {len(new_steps)} steps")
+            logger.info("manage_todo: created TODO with %d steps", len(new_steps))
             return {
                 "status": "ok",
                 "action": "created",
@@ -1244,5 +1226,5 @@ def manage_todo(
         return {"status": "error", "error": f"Unhandled action '{action}'"}
 
     except Exception as e:
-        logger.error(f"manage_todo: failed: {e}")
+        logger.error("manage_todo: failed: %s", e)
         return {"status": "error", "error": str(e)}

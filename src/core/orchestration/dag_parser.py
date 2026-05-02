@@ -8,6 +8,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
+try:
+    from src.tools.todo_tools import _load_todo_json, _lock_path, _FileLock, _save_todo
+except ImportError:
+    _load_todo_json = None  # type: ignore[assignment]
+    _lock_path = None  # type: ignore[assignment]
+    _FileLock = None  # type: ignore[assignment]
+    _save_todo = None  # type: ignore[assignment]
+
 logger = logging.getLogger(__name__)
 
 
@@ -81,8 +89,6 @@ class PlanDAG:
         try:
             # Prefer lock-aware loader from todo_tools to avoid races with writers
             try:
-                from src.tools.todo_tools import _load_todo_json
-
                 todo_data = _load_todo_json(str(path.parent.parent))
             except Exception:
                 todo_data = json.loads(path.read_text())
@@ -119,8 +125,6 @@ class PlanDAG:
         try:
             # Read under the same lock when possible to avoid races
             try:
-                from src.tools.todo_tools import _lock_path, _FileLock
-
                 lockp = _lock_path(str(todo_md.parent.parent))
                 with _FileLock(lockp, timeout=1.0):
                     content = todo_md.read_text()
@@ -229,8 +233,6 @@ class PlanDAG:
         # simple-write behaviour for environments where todo_tools isn't
         # importable (tests, partial runtimes).
         try:
-            from src.tools.todo_tools import _save_todo
-
             todo_md = Path(todo_path)
             todo_json = Path(todo_json_path)
             todo_md.parent.mkdir(parents=True, exist_ok=True)

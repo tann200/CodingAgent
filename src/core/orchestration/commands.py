@@ -6,6 +6,7 @@ slash commands like /help, /skills, /session, /history, etc.
 
 import re
 import logging
+import threading
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
@@ -348,6 +349,7 @@ class CommandRegistry:
 
 # Module-level singleton
 _command_registry: Optional[CommandRegistry] = None
+_registry_lock = threading.Lock()
 
 
 def get_command_registry(
@@ -357,5 +359,7 @@ def get_command_registry(
     """Get the command registry singleton."""
     global _command_registry
     if _command_registry is None:
-        _command_registry = CommandRegistry(orchestrator, rollback_manager)
+        with _registry_lock:
+            if _command_registry is None:
+                _command_registry = CommandRegistry(orchestrator, rollback_manager)
     return _command_registry

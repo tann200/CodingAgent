@@ -203,21 +203,6 @@ class AgentBrainManager:
             return ""
         return "\n".join(lines)
 
-    def get_role_with_topics(self, role_name: str) -> Dict[str, str]:
-        """Get role content and P2P topic for the role."""
-        role = self.get_role(role_name)
-        if not role:
-            return {}
-
-        topics = {
-            "scout": "agent.scout.broadcast",
-            "researcher": "agent.researcher.broadcast",
-            "reviewer": "agent.reviewer.broadcast",
-            "tester": "agent.tester.broadcast",
-        }
-
-        return {"content": role, "p2p_topic": topics.get(role_name, "")}
-
     def compile_system_prompt(self, role_name: str = "operational") -> str:
         """Compile a full system prompt with role, SOUL, LAWS, and available skills."""
         role_content = self.get_role(role_name)

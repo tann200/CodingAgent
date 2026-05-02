@@ -17,16 +17,17 @@ import hashlib
 import logging
 import json
 import re
-import traceback
-import tempfile
-import os
-import shutil
 from collections import OrderedDict
 from pathlib import Path
 
 from src.tools.tools_config import agent_context_path
 
 logger = logging.getLogger(__name__)
+
+try:
+    from src.core.io_utils import atomic_write_json as _atomic_write_json
+except Exception:
+    _atomic_write_json = None  # type: ignore[assignment]
 
 
 # v2 Phase 3: LRU cache for embeddings (RAM optimization)
@@ -128,75 +129,13 @@ class VectorStore:
         try:
             symbols_path = base / "symbols.json"
             symbols_path.parent.mkdir(parents=True, exist_ok=True)
-            try:
-                from src.core.io_utils import atomic_write_json
-
-                logger.debug(
-                    "VectorStore: attempting atomic_write_json for %s", symbols_path
-                )
-                ok = atomic_write_json(symbols_path, symbols, logger=logger)
-                if ok:
-                    logger.debug(
-                        "VectorStore: atomic_write_json succeeded for %s", symbols_path
-                    )
-                else:
+            if _atomic_write_json is not None:
+                if not _atomic_write_json(symbols_path, symbols, logger=logger):
                     logger.warning(
-                        "VectorStore: atomic_write_json returned False for %s; falling back",
-                        symbols_path,
-                    )
-                    # mkstemp -> replace fallback
-                    fd, tmp_path = tempfile.mkstemp(
-                        dir=str(symbols_path.parent), suffix=".tmp"
-                    )
-                    try:
-                        try:
-                            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                                json.dump(symbols, f, indent=2)
-                        except Exception:
-                            try:
-                                os.close(fd)
-                            except Exception:
-                                pass
-                            raise
-
-                        try:
-                            os.replace(tmp_path, str(symbols_path))
-                        except Exception:
-                            shutil.move(tmp_path, str(symbols_path))
-                    except Exception:
-                        logger.exception(
-                            "VectorStore: failed to write symbols.json to %s",
-                            symbols_path,
-                        )
-            except Exception:
-                logger.debug(
-                    "VectorStore: atomic_write_json unavailable or failed for %s; falling back\n%s",
-                    symbols_path,
-                    traceback.format_exc(),
-                )
-                # mkstemp fallback when atomic_write_json is not available
-                fd, tmp_path = tempfile.mkstemp(
-                    dir=str(symbols_path.parent), suffix=".tmp"
-                )
-                try:
-                    try:
-                        with os.fdopen(fd, "w", encoding="utf-8") as f:
-                            json.dump(symbols, f, indent=2)
-                    except Exception:
-                        try:
-                            os.close(fd)
-                        except Exception:
-                            pass
-                        raise
-
-                    try:
-                        os.replace(tmp_path, str(symbols_path))
-                    except Exception:
-                        shutil.move(tmp_path, str(symbols_path))
-                except Exception:
-                    logger.exception(
                         "VectorStore: failed to write symbols.json to %s", symbols_path
                     )
+            else:
+                symbols_path.write_text(json.dumps(symbols, indent=2), encoding="utf-8")
         except Exception:
             logger.exception("Failed to write vectorstore symbols.json")
 

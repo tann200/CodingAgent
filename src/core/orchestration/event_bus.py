@@ -19,12 +19,17 @@ Correlation IDs (#26):
 
 from __future__ import annotations
 
+import asyncio
+import atexit
+import contextvars
+import functools
+import inspect
 import logging
 import threading
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from contextvars import ContextVar
 from typing import Any, Callable, Dict, List, Optional, Set, TypeVar, Awaitable
-import asyncio
 
 from dataclasses import dataclass, field
 from enum import IntEnum
@@ -80,11 +85,6 @@ def run_with_correlation(
         result = await run_with_correlation(loop, None, my_sync_fn, arg1, arg2)
     """
     # Local imports to avoid import-time cycles and keep the function test-friendly.
-    import contextvars
-    import functools
-    import inspect
-    import asyncio
-
     ctx = contextvars.copy_context()
 
     # Wrap the user's callable so that if it returns an awaitable (a coroutine
@@ -385,10 +385,6 @@ def _get_shared_executor():
     global _shared_executor
     if _shared_executor is not None:
         return _shared_executor
-    # Local imports to avoid import-time cycles in tests.
-    from concurrent.futures import ThreadPoolExecutor
-    import atexit
-
     _shared_executor = ThreadPoolExecutor(thread_name_prefix="coding_agent_worker")
     atexit.register(_shared_executor.shutdown, wait=True)
     return _shared_executor

@@ -4,15 +4,17 @@ import hashlib
 import json
 import logging
 import re
-import tempfile
-import traceback
 import os
-import shutil
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
+
+try:
+    from src.core.io_utils import atomic_write_json as _atomic_write_json
+except Exception:
+    _atomic_write_json = None  # type: ignore[assignment]
 
 # ---------------------------------------------------------------------------
 # Multi-language regex patterns (#36)
@@ -103,7 +105,7 @@ class SymbolGraph:
         """Load existing symbol graph or create new."""
         if self.graph_path.exists():
             try:
-                with open(self.graph_path, "r") as f:
+                with open(self.graph_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
                     self.nodes = data.get("nodes", {})
                     self.edges = data.get("edges", [])
@@ -131,68 +133,19 @@ class SymbolGraph:
         }
 
         try:
-            try:
-                from src.core.io_utils import atomic_write_json
-
-                ok = atomic_write_json(self.graph_path, payload, logger=logger)
-                if ok:
-                    return
-                logger.warning(
-                    "symbol_graph: atomic_write_json returned False for %s; falling back",
-                    self.graph_path,
+            if _atomic_write_json is not None:
+                if not _atomic_write_json(self.graph_path, payload, logger=logger):
+                    logger.warning(
+                        "symbol_graph: failed to write graph to %s", self.graph_path
+                    )
+            else:
+                self.graph_path.write_text(
+                    json.dumps(payload, indent=2), encoding="utf-8"
                 )
-            except Exception:
-                logger.debug(
-                    "symbol_graph: atomic_write_json unavailable or failed for %s; falling back\n%s",
-                    self.graph_path,
-                    traceback.format_exc(),
-                )
-
-            fd, tmp_path = tempfile.mkstemp(
-                dir=str(self.graph_path.parent), suffix=".tmp"
-            )
-            try:
-                try:
-                    with os.fdopen(fd, "w", encoding="utf-8") as f:
-                        json.dump(payload, f, indent=2)
-                except Exception:
-                    try:
-                        os.close(fd)
-                    except Exception:
-                        pass
-                    raise
-
-                try:
-                    os.replace(tmp_path, str(self.graph_path))
-                except Exception:
-                    try:
-                        shutil.move(tmp_path, str(self.graph_path))
-                    except Exception:
-                        logger.debug(
-                            "symbol_graph: mkstemp fallback failed for %s; final fallback to write_text\n%s",
-                            self.graph_path,
-                            traceback.format_exc(),
-                        )
-                        try:
-                            self.graph_path.write_text(
-                                json.dumps(payload, indent=2), encoding="utf-8"
-                            )
-                        except Exception:
-                            logger.exception(
-                                "symbol_graph: failed to write graph to %s",
-                                self.graph_path,
-                            )
-            except Exception as e:
-                logger.error(
-                    "symbol_graph: failed to save graph %s: %s", self.graph_path, e
-                )
-                try:
-                    if os.path.exists(tmp_path):
-                        os.unlink(tmp_path)
-                except Exception:
-                    pass
         except Exception:
-            pass
+            logger.exception(
+                "symbol_graph: failed to save graph %s", self.graph_path
+            )
 
     def _get_file_hash(self, path: Path) -> str:
         """Get hash of file content."""
@@ -269,7 +222,7 @@ class SymbolGraph:
                 "docstring": "",
             }
         except Exception as e:
-            logger.warning(f"Failed to parse {path}: {e}")
+            logger.warning("Failed to parse %s: %s", path, e)
             return {"classes": [], "functions": [], "imports": [], "docstring": ""}
 
     def _parse_file(self, path: Path) -> Dict[str, Any]:
@@ -330,7 +283,7 @@ class SymbolGraph:
 
             return symbols
         except Exception as e:
-            logger.warning(f"Failed to parse {path}: {e}")
+            logger.warning("Failed to parse %s: %s", path, e)
             return {"classes": [], "functions": [], "imports": [], "docstring": ""}
 
     def update_file(self, path: str):
@@ -342,10 +295,10 @@ class SymbolGraph:
         current_hash = self._get_file_hash(p)
 
         if str(p) in self.file_hashes and self.file_hashes[str(p)] == current_hash:
-            logger.debug(f"File unchanged: {path}")
+            logger.debug("File unchanged: %s", path)
             return
 
-        logger.info(f"Updating symbol graph for: {path}")
+        logger.info("Updating symbol graph for: %s", path)
         symbols = (
             self._parse_file(p) if p.suffix == ".py" else self._parse_file_regex(p)
         )
@@ -473,7 +426,7 @@ class SymbolGraph:
         """Full rebuild of the symbol index."""
         root = Path(root_path) if root_path else self.workdir
 
-        logger.info(f"Rebuilding symbol graph from {root}")
+        logger.info("Rebuilding symbol graph from %s", root)
         self._init_empty()
 
         for path in root.rglob("*"):
@@ -483,7 +436,7 @@ class SymbolGraph:
                 continue
             self.update_file(str(path))
 
-        logger.info(f"Symbol graph rebuilt: {len(self.nodes)} files indexed")
+        logger.info("Symbol graph rebuilt: %s files indexed", len(self.nodes))
 
 
 class IncrementalIndexer:

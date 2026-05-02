@@ -167,40 +167,6 @@ class ContextController:
 
         return snippets[:5]
 
-    def add_p2p_context(
-        self, source: str, payload: Dict[str, Any], priority: str = "normal"
-    ) -> bool:
-        """Add P2P broadcast payload with strict budget enforcement."""
-        payload_str = json.dumps(payload)
-        payload_tokens = math.ceil(len(payload_str) / 4)
-
-        budget = self._context_budget.get(source, math.ceil(0.03 * self.max_tokens))
-        if self._used_tokens + payload_tokens > budget:
-            if priority == "high":
-                return self._add_truncated(source, payload, budget - self._used_tokens)
-            return False
-
-        self._used_tokens += payload_tokens
-        return True
-
-    def _add_truncated(self, source: str, payload: Dict, max_tokens: int) -> bool:
-        """Truncate payload to fit remaining budget."""
-        max_chars = max_tokens * 4
-
-        if "files" in payload:
-            files = payload["files"]
-            truncated = []
-            for f in files:
-                if len(json.dumps({"files": truncated + [f]})) <= max_chars:
-                    truncated.append(f)
-                else:
-                    break
-            payload["files"] = truncated
-            payload["truncated"] = True
-            payload["files_dropped"] = len(files) - len(truncated)
-
-        return True
-
     def get_budget_status(self) -> Dict[str, Any]:
         """Get current budget status."""
         return {
