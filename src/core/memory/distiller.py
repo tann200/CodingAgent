@@ -266,7 +266,7 @@ def distill_context(
 
                         agent_context = agent_context_path(working_dir)
                     except Exception:
-                        agent_context = working_dir / ".agent-context"
+                        agent_context = working_dir / ".codingAgent"
 
                     cp_path = agent_context / "compaction_checkpoint.md"
                     try:
@@ -422,7 +422,7 @@ def distill_context(
 
                 agent_context = agent_context_path(working_dir)
             except Exception:
-                agent_context = working_dir / ".agent-context"
+                agent_context = working_dir / ".codingAgent"
 
             task_state_path = agent_context / "TASK_STATE.md"
             lines = [
@@ -525,7 +525,7 @@ def distill_context(
 
                 _agent_ctx = agent_context_path(working_dir)
             except Exception:
-                _agent_ctx = working_dir / ".agent-context"
+                _agent_ctx = working_dir / ".codingAgent"
 
             index_path = _agent_ctx / "repo_index.json"
             if index_path.exists():

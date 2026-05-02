@@ -77,7 +77,7 @@ def _get_pending_dir() -> Path:
             return get_agent_context_dir() / "event_pending"
         except Exception:
             # Final legacy fallback.
-            return Path(".agent-context") / "events" / "pending"
+            return Path(".codingAgent") / "events" / "pending"
 
 
 def set_pending_dir(path: Path) -> None:

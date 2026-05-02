@@ -236,7 +236,7 @@ def _get_cached_repo_summary(workdir: str) -> Optional[Dict[str, Any]]:
         cache_dir = (
             Path(agent_context_path(workdir))
             if agent_context_path is not None
-            else Path(workdir) / ".agent-context"
+            else Path(workdir) / ".codingAgent"
         )
         cache_path = cache_dir / "repo_summary_cache.json"
         if not cache_path.exists():
@@ -260,7 +260,7 @@ def _save_repo_summary_cache(workdir: str, summary: Dict[str, Any]) -> None:
         cache_dir = (
             Path(agent_context_path(workdir))
             if agent_context_path is not None
-            else Path(workdir) / ".agent-context"
+            else Path(workdir) / ".codingAgent"
         )
         cache_dir.mkdir(parents=True, exist_ok=True)
         cache_path = cache_dir / "repo_summary_cache.json"

@@ -100,7 +100,7 @@ class SessionLifecycleManager:
 
             self.snapshot_dir = agent_context_path(self.workdir) / "snapshots"
         except Exception:
-            self.snapshot_dir = self.workdir / ".agent-context" / "snapshots"
+            self.snapshot_dir = self.workdir / ".codingAgent" / "snapshots"
         self.snapshot_dir.mkdir(parents=True, exist_ok=True)
 
         self._shutdown_hooks: Dict[str, Callable[[str], None]] = {}

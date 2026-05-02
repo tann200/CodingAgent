@@ -259,6 +259,7 @@ class MCPStdioServer:
                             "__pycache__",
                             ".venv",
                             "node_modules",
+                            ".codingAgent",
                             ".agent-context",
                         }
                         _MAX_DEPTH = 8

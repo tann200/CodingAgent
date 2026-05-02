@@ -19,19 +19,14 @@ logger = logging.getLogger(__name__)
 
 
 def _resolve_agent_context_dir(orch: Any) -> Path:
-    """Resolve the per-workspace agent context directory for the orchestrator.
-
-    Prefer src.tools.tools_config.agent_context_path when available; fall back
-    to the legacy ".agent-context" directory next to orch.working_dir.
-    """
-    # Guard: orch.working_dir may be a string or Path; callers should ensure it's set
+    """Resolve the per-workspace agent context directory for the orchestrator."""
     wd = Path(orch.working_dir)
     try:
         from src.tools.tools_config import agent_context_path
 
         return agent_context_path(wd)
     except Exception:
-        return wd / ".agent-context"
+        return wd / ".codingAgent"
 
 
 def _read_execution_trace_impl(orch: Any) -> list:

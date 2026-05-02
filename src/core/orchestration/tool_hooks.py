@@ -116,11 +116,8 @@ def _load_hook_config(working_dir: Optional[Path]) -> _HookConfig:
             # is not importable.
             import os as _os
 
-            ctx_name = _os.getenv("CODINGAGENT_CONTEXT_DIR") or ".agent-context"
+            ctx_name = _os.getenv("CODINGAGENT_CONTEXT_DIR") or ".codingAgent"
             stub_dir = working_dir / ctx_name / "hooks"
-            if not stub_dir.exists():
-                # Legacy location
-                stub_dir = working_dir / ".agent" / "hooks"
         _sh_map = (
             ("pre_tool", stub_dir / "pre_tool.sh"),
             ("post_tool", stub_dir / "post_tool.sh"),
@@ -143,15 +140,11 @@ def _workspace_hooks_path(working_dir: Optional[Path]) -> Optional[Path]:
     except Exception:
         import os as _os
 
-        ctx = _os.getenv("CODINGAGENT_CONTEXT_DIR") or ".agent-context"
+        ctx = _os.getenv("CODINGAGENT_CONTEXT_DIR") or ".codingAgent"
 
     candidate = working_dir / ctx / "hooks.json"
     if candidate.exists():
         return candidate
-    # Legacy fallback when workspace uses .agent
-    legacy = working_dir / ".agent" / "hooks.json"
-    if legacy.exists():
-        return legacy
     return candidate
 
 

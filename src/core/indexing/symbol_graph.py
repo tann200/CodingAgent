@@ -16,6 +16,11 @@ try:
 except Exception:
     _atomic_write_json = None  # type: ignore[assignment]
 
+try:
+    from src.tools.tools_config import agent_context_path as _agent_context_path
+except Exception:
+    _agent_context_path = None  # type: ignore[assignment]
+
 # ---------------------------------------------------------------------------
 # Multi-language regex patterns (#36)
 # Each entry maps suffix → {"function": pattern, "class": pattern}
@@ -82,6 +87,7 @@ _LANG_PATTERNS[".jsx"] = _LANG_PATTERNS[".js"]
 _SUPPORTED_SUFFIXES = {".py"} | set(_LANG_PATTERNS.keys())
 
 _SKIP_DIRS = {
+    ".codingAgent",
     ".agent-context",
     "__pycache__",
     ".git",
@@ -98,7 +104,12 @@ class SymbolGraph:
 
     def __init__(self, workdir: Optional[str] = None):
         self.workdir = Path(workdir) if workdir else Path.cwd()
-        self.graph_path = self.workdir / ".agent-context" / "symbol_graph.json"
+        ctx = (
+            _agent_context_path(self.workdir)
+            if _agent_context_path is not None
+            else self.workdir / ".codingAgent"
+        )
+        self.graph_path = Path(ctx) / "symbol_graph.json"
         self._load_graph()
 
     def _load_graph(self):

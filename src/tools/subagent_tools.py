@@ -20,29 +20,16 @@ from src.tools._tool import tool, PermissionKind
 
 
 def _get_agent_context_dir(workdir_path: Path) -> Path:
-    """Return the configured agent-context directory for workdir_path.
-
-    Import and call src.tools.tools_config.agent_context_path at call-time so
-    tests that reconfigure or reset the tools_config module are respected. If
-    the import or call fails, fall back to the legacy workdir/.agent-context.
-    """
+    """Return the canonical agent-context directory for workdir_path (.codingAgent)."""
     try:
-        # Import inside the function so tests can monkeypatch or reconfigure
-        # tools_config between test cases without leaving a stale reference.
         from src.tools.tools_config import agent_context_path as _acp
 
-        try:
-            resolved = _acp(Path(workdir_path))
-            if resolved:
-                return resolved
-        except Exception:
-            # Fall through to legacy fallback
-            pass
+        resolved = _acp(Path(workdir_path))
+        if resolved:
+            return resolved
     except Exception:
-        # tools_config not importable — fall back conservatively
         pass
-
-    return Path(workdir_path) / ".agent-context"
+    return Path(workdir_path) / ".codingAgent"
 
 
 def _atomic_write_json(target: Path, obj: dict, logger=None) -> bool:

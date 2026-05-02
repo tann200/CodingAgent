@@ -747,7 +747,7 @@ class SqliteSessionStore:
             except Exception:
                 ac_dir = (
                     getattr(self, "_agent_context_dir", None)
-                    or self.workdir / ".agent-context"
+                    or self.workdir / ".codingAgent"
                 )
 
             dest = Path(ac_dir) / "decisions.json"
@@ -833,7 +833,7 @@ class SqliteSessionStore:
                 path = (
                     Path(
                         getattr(self, "_agent_context_dir", None)
-                        or self.workdir / ".agent-context"
+                        or self.workdir / ".codingAgent"
                     )
                     / "decisions.json"
                 )

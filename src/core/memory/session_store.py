@@ -189,7 +189,7 @@ class SessionStore:
 
             _agent_ctx = agent_context_path(self._workdir)
         except Exception:
-            _agent_ctx = self._workdir / ".agent-context"
+            _agent_ctx = self._workdir / ".codingAgent"
 
         # Store the resolved directory for reuse throughout the instance.
         self._agent_context_dir = _agent_ctx
@@ -557,7 +557,7 @@ class SessionStore:
         try:
             out = (
                 getattr(self, "_agent_context_dir", None)
-                or self._workdir / ".agent-context"
+                or self._workdir / ".codingAgent"
             )
             out = Path(out) / "decisions.json"
             if out.exists():

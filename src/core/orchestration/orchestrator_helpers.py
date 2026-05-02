@@ -269,13 +269,9 @@ def begin_step_transaction_impl(orch: Any) -> str:
     try:
         start_ts = time.time()
         if getattr(orch, "working_dir", None):
-            try:
-                from src.tools.tools_config import agent_context_path
+            from src.tools.tools_config import agent_context_path
 
-                agent_context_dir = agent_context_path(orch.working_dir)
-            except Exception:
-                agent_context_dir = orch.working_dir / ".agent-context"
-                agent_context_dir.mkdir(parents=True, exist_ok=True)
+            agent_context_dir = agent_context_path(orch.working_dir)
             timings_path = agent_context_dir / "timings.json"
             entry = {
                 "phase": "begin_step_transaction",
@@ -409,8 +405,7 @@ def _ensure_working_dir_impl(orch: Any) -> None:
 
             agent_context_dir = agent_context_path(orch.working_dir)
         except Exception:
-            # Fallback if tools_config cannot be imported for any reason
-            agent_context_dir = orch.working_dir / ".agent-context"
+            agent_context_dir = orch.working_dir / ".codingAgent"
             agent_context_dir.mkdir(parents=True, exist_ok=True)
 
         task_state_path = agent_context_dir / "TASK_STATE.md"
@@ -516,8 +511,7 @@ def _ensure_working_dir_impl(orch: Any) -> None:
 
                 agent_context_dir = agent_context_path(orch.working_dir)
             except Exception:
-                # Fallback to legacy name when tools_config is unavailable
-                agent_context_dir = orch.working_dir / ".agent-context"
+                agent_context_dir = orch.working_dir / ".codingAgent"
                 agent_context_dir.mkdir(parents=True, exist_ok=True)
             timings_path = agent_context_dir / "timings.json"
             entry = {
@@ -610,7 +604,7 @@ def _background_model_check_impl(orch: Any) -> None:
 
                     agent_context_dir = agent_context_path(orch.working_dir)
                 except Exception:
-                    agent_context_dir = orch.working_dir / ".agent-context"
+                    agent_context_dir = orch.working_dir / ".codingAgent"
                     agent_context_dir.mkdir(parents=True, exist_ok=True)
 
                 timings_path = agent_context_dir / "timings.json"

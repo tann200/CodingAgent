@@ -103,7 +103,7 @@ def analyze_repository(workdir: str) -> Dict[str, Any]:
         ctx = (
             agent_context_path(workdir_path)
             if agent_context_path is not None
-            else workdir_path / ".agent-context"
+            else workdir_path / ".codingAgent"
         )
         repo_memory_path = Path(ctx) / "repo_memory.json"
         repo_memory_path.parent.mkdir(parents=True, exist_ok=True)

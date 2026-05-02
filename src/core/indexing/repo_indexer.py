@@ -284,6 +284,7 @@ def index_repository(workdir: str, incremental: bool = True) -> Dict[str, Any]:
         "build",
         "dist",
         ".venv",
+        ".codingAgent",
         ".agent-context",
     }
 

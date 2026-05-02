@@ -94,17 +94,8 @@ def _write_permission_audit(
 
             audit_dir = get_audit_dir(wd)
         except Exception:
-            # Fallback conservative behaviour mirroring historical expectations.
-            candidate_a = wd / ".agent"
-            candidate_b = wd / ".agent-context"
-
-            if candidate_a.exists():
-                audit_dir = candidate_a
-            elif candidate_b.exists():
-                audit_dir = candidate_b
-            else:
-                audit_dir = candidate_a
-                audit_dir.mkdir(parents=True, exist_ok=True)
+            audit_dir = wd / ".codingAgent"
+            audit_dir.mkdir(parents=True, exist_ok=True)
 
         audit_path = audit_dir / "permission_audit.jsonl"
         audit_path.parent.mkdir(parents=True, exist_ok=True)

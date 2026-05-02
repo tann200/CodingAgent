@@ -212,10 +212,14 @@ def watch_project_settings(
     import threading
 
     base = Path(workdir)
+    try:
+        from src.tools.tools_config import agent_context_path
+        ctx = agent_context_path(base)
+    except Exception:
+        ctx = base / ".codingAgent"
     settings_files = [
-        base / ".agent-context" / "settings.json",
-        base / ".agent-context" / "settings.local.json",
-        base / ".agent" / "settings.json",
+        ctx / "settings.json",
+        ctx / "settings.local.json",
     ]
 
     def _poll():

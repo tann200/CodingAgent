@@ -161,12 +161,12 @@ class VectorStore:
         # Ensure in-memory cache populated (lazy load from disk)
         if not getattr(self, "_symbols", None):
             try:
-                path = (
-                    Path(self.workdir)
-                    / ".agent-context"
-                    / "vectorstore"
-                    / "symbols.json"
-                )
+                try:
+                    from src.tools.tools_config import agent_context_path
+                    ctx = agent_context_path(Path(self.workdir))
+                except Exception:
+                    ctx = Path(self.workdir) / ".codingAgent"
+                path = ctx / "vectorstore" / "symbols.json"
                 if path.exists():
                     self._symbols = json.loads(path.read_text())
                 else:

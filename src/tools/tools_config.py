@@ -220,23 +220,10 @@ def agent_context_path(workdir: Path) -> Path:
     with _config_lock:
         ctx_dir = _CONTEXT_DIR  # Defaults to .codingAgent
 
-    # Priority order:
-    # 1. Configured directory (e.g., .codingAgent) if it exists
-    # 2. Legacy .agent-context (backward compatibility)
-    # 3. Legacy .agent (backward compatibility)
-    # 4. Create configured directory (.codingAgent) as default
+    # Always use the configured directory (.codingAgent by default).
+    # Legacy directories (.agent-context, .agent) are no longer created or
+    # returned — all state is written to .codingAgent only.
     configured = workdir / ctx_dir
-    legacy_a = workdir / ".agent-context"
-    legacy_b = workdir / ".agent"
-
-    if configured.exists():
-        return configured  # 1. Use configured
-    if legacy_a.exists():
-        return legacy_a  # 2. Fallback to legacy .agent-context
-    if legacy_b.exists():
-        return legacy_b  # 3. Fallback to legacy .agent
-
-    # Nothing exists yet — create .codingAgent as default
     configured.mkdir(parents=True, exist_ok=True)
     return configured
 

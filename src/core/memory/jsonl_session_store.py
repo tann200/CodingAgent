@@ -8,7 +8,7 @@ Design goals
 - **Append-only**: writes go only to the end of a ``.jsonl`` file; no UPDATE
   or DELETE.  This makes crash-safety trivial — a partial final line is simply
   ignored on read.
-- **Single-file per session**: ``{workdir}/.agent-context/sessions/{session_id}.jsonl``
+- **Single-file per session**: ``{workdir}/.codingAgent/sessions/{session_id}.jsonl``
 - **Rotation at 256 KB**: when a session file exceeds ``_ROTATION_BYTES`` the
   current file is renamed to ``{session_id}.{n}.jsonl`` and a fresh file
   is opened.  Reads reconstruct the full history by scanning all rotated files
@@ -82,7 +82,7 @@ class JsonlSessionStore:
     ----------
     workdir:
         Project root directory.  Session files are written to
-        ``{workdir}/.agent-context/sessions/``.
+        ``{workdir}/.codingAgent/sessions/``.
     rotation_bytes:
         Rotate the JSONL file when it grows beyond this size.
         Default: 256 KB (``_ROTATION_BYTES``).
@@ -94,20 +94,9 @@ class JsonlSessionStore:
         rotation_bytes: int = _ROTATION_BYTES,
     ) -> None:
         self._workdir = Path(workdir) if workdir else Path.cwd()
-        # Do not call tools_config.agent_context_path at init-time to avoid
-        # implicitly creating directories during tests. Prefer existing legacy
-        # directories for reads; resolve the canonical path at write-time only.
-        legacy_a = self._workdir / ".agent-context"
-        legacy_b = self._workdir / ".agent"
-        if legacy_a.exists():
-            self._agent_context_dir = legacy_a
-        elif legacy_b.exists():
-            self._agent_context_dir = legacy_b
-        else:
-            # Unresolved yet; write-time operations will call the canonical
-            # resolver which may create directories. We keep None to signal
-            # that resolution has not happened.
-            self._agent_context_dir = None
+        # Defer canonical path resolution to first write-time call of
+        # _get_sessions_dir(). Avoids creating directories during tests.
+        self._agent_context_dir = None
         self._rotation_bytes = rotation_bytes
         # Per-session locks: session_id → threading.Lock
         self._locks: Dict[str, threading.Lock] = {}
@@ -120,30 +109,18 @@ class JsonlSessionStore:
     def _get_sessions_dir(self) -> Path:
         """Resolve and return the sessions directory.
 
-        Preference order for reads: existing legacy dirs (".agent-context", ".agent").
-        If none exist, attempt to call tools_config.agent_context_path at
-        call-time — this may create the canonical directory when a write is
-        about to happen. The resolved value is cached on the instance so
-        subsequent calls reuse the same path.
+        Always uses the canonical .codingAgent directory. Resolved value is
+        cached on the instance so subsequent calls reuse the same path.
         """
         if getattr(self, "_sessions_dir", None) is not None:
             return self._sessions_dir
 
-        # Check legacy locations first
-        legacy_a = self._workdir / ".agent-context"
-        legacy_b = self._workdir / ".agent"
-        if legacy_a.exists():
-            ac = legacy_a
-        elif legacy_b.exists():
-            ac = legacy_b
-        else:
-            # Call the canonical resolver at call-time. It may create dirs.
-            try:
-                from src.tools.tools_config import agent_context_path
+        try:
+            from src.tools.tools_config import agent_context_path
 
-                ac = agent_context_path(self._workdir)
-            except Exception:
-                ac = self._workdir / ".agent-context"
+            ac = agent_context_path(self._workdir)
+        except Exception:
+            ac = self._workdir / ".codingAgent"
 
         self._agent_context_dir = ac
         self._sessions_dir = ac / "sessions"
@@ -782,17 +759,15 @@ class JsonlSessionStore:
     # ------------------------------------------------------------------
 
     def _decisions_path(self) -> Path:
-        # Use resolved agent-context directory when available; fall back to
-        # legacy workdir/.agent-context for older workspaces.
         d = Path(
             getattr(self, "_agent_context_dir", None)
-            or self._workdir / ".agent-context"
+            or self._workdir / ".codingAgent"
         )
         return d / "decisions.json"
 
     def write_decisions_json(self, limit: int = 50) -> None:
         """Collect recent decisions across all sessions and atomically write
-        them to ``{workdir}/.agent-context/decisions.json``.
+        them to ``{workdir}/.codingAgent/decisions.json``.
 
         The most recent decisions are selected by timestamp and the result is a
         list of decision objects with keys: session_id, decision, rationale, ts.
@@ -822,7 +797,7 @@ class JsonlSessionStore:
         except Exception:
             ac_dir = (
                 getattr(self, "_agent_context_dir", None)
-                or self._workdir / ".agent-context"
+                or self._workdir / ".codingAgent"
             )
 
         path = Path(ac_dir) / "decisions.json"

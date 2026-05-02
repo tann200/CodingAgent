@@ -339,10 +339,8 @@ def _run_validate_config(workdir: Optional[str]) -> int:
 
         ctx_name = os.getenv("CODINGAGENT_CONTEXT_DIR") or ".codingAgent"
 
-    # Build a list of candidate context directories to search. Prefer the
-    # configured directory, but allow legacy names so this command works in
-    # older workspaces created before the canonical name change.
-    candidates = [base / ctx_name, base / ".agent-context", base / ".agent"]
+    # Only the canonical .codingAgent directory is used; legacy dirs are no longer created.
+    candidates = [base / ctx_name]
 
     settings_files = []
     for cand in candidates:

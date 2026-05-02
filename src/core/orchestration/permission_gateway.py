@@ -380,7 +380,7 @@ class PermissionGateway:
                             _agent_context_path(_Path(_wd)) / "permissions.json"
                         )
                     except Exception:
-                        _proj_path = _Path(_wd) / ".agent-context" / "permissions.json"
+                        _proj_path = _Path(_wd) / ".codingAgent" / "permissions.json"
                     if _proj_path.exists():
                         _proj_policy = _PermissionPolicy.load(_proj_path)
                         if len(_proj_policy) > 0:

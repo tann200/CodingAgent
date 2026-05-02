@@ -126,21 +126,10 @@ def load_merged_config(working_dir: Optional[Path] = None) -> Dict[str, Any]:
                     candidate / "config.local.json",
                 ]
             else:
-                legacy_found = False
-                for legacy_name in (".agent-context", ".agent"):
-                    legacy = wd / legacy_name
-                    if legacy.exists():
-                        workspace_paths = [
-                            legacy / "config.json",
-                            legacy / "config.local.json",
-                        ]
-                        legacy_found = True
-                        break
-                if not legacy_found:
-                    workspace_paths = [
-                        candidate / "config.json",
-                        candidate / "config.local.json",
-                    ]
+                workspace_paths = [
+                    candidate / "config.json",
+                    candidate / "config.local.json",
+                ]
     paths.extend(workspace_paths)
     skipped = []
 
@@ -187,7 +176,7 @@ def get_agent_config_path() -> Path:
     try:
         return get_agent_context_dir()
     except Exception:
-        return Path.cwd() / ".agent-context"
+        return Path.cwd() / ".codingAgent"
 
 
 # Global config cache
@@ -310,9 +299,13 @@ def get_small_model(working_dir: Optional[Path] = None) -> Optional[str]:
       2. active provider small_model entry in providers.json
       3. None
     """
-    # 1. workspace override
+    # 1. workspace override — check canonical .codingAgent config
     if working_dir is not None:
-        agent_dir = Path(working_dir) / ".agent"
+        try:
+            from src.tools.tools_config import agent_context_path
+            agent_dir = agent_context_path(Path(working_dir))
+        except Exception:
+            agent_dir = Path(working_dir) / ".codingAgent"
         cfg: Dict[str, Any] = {}
         for p in (agent_dir / "config.json", agent_dir / "config.local.json"):
             if p.exists():
@@ -428,7 +421,7 @@ class ConfigWatcher:
         except Exception:
             return
 
-        watch_dir = Path(self._working_dir) / ".agent"
+        watch_dir = Path(self._working_dir) / ".codingAgent"
         # If the directory doesn't exist, still call watchfiles.watch so that
         # tests that inject a fake module (or real watchfiles) can still drive
         # the loop.

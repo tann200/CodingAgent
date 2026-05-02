@@ -257,7 +257,8 @@ def summarize_structure_detailed(workdir: Any = None) -> Dict[str, Any]:
     try:
         for p in root.rglob("*"):
             if (
-                ".agent-context" in str(p)
+                ".codingAgent" in str(p)
+                or ".agent-context" in str(p)
                 or "__pycache__" in str(p)
                 or ".venv" in str(p)
             ):

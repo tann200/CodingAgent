@@ -36,7 +36,7 @@ class TrajectoryLogger:
         ctx = (
             agent_context_path(self.workdir)
             if agent_context_path is not None
-            else self.workdir / ".agent-context"
+            else self.workdir / ".codingAgent"
         )
         self.context_dir = Path(ctx)
         self.trajectory_dir = self.context_dir / "trajectories"

@@ -57,8 +57,7 @@ class RollbackManager:
 
             self.snapshot_dir = agent_context_path(self.workdir) / "snapshots"
         except Exception:
-            # Fall back to legacy location
-            self.snapshot_dir = self.workdir / ".agent-context" / "snapshots"
+            self.snapshot_dir = self.workdir / ".codingAgent" / "snapshots"
         self.snapshot_dir.mkdir(parents=True, exist_ok=True)
         self.current_snapshot: Optional[str] = None
         self.snapshots: Dict[str, List[FileSnapshot]] = {}

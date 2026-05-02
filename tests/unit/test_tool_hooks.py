@@ -65,7 +65,7 @@ def test_no_hooks_always_allowed(tmp_path):
 
 def test_pre_hook_exit_0_allowed(tmp_path):
     _write(
-        tmp_path / ".agent" / "hooks.json",
+        tmp_path / ".codingAgent" / "hooks.json",
         {
             "pre_tool": [
                 {"match": "*", "cmd": f"{sys.executable} -c 'import sys; sys.exit(0)'"}
@@ -84,7 +84,7 @@ def test_pre_hook_exit_0_allowed(tmp_path):
 
 def test_pre_hook_exit_nonzero_denied(tmp_path):
     _write(
-        tmp_path / ".agent" / "hooks.json",
+        tmp_path / ".codingAgent" / "hooks.json",
         {
             "pre_tool": [
                 {
@@ -107,7 +107,7 @@ def test_pre_hook_exit_nonzero_denied(tmp_path):
 
 def test_wildcard_match(tmp_path):
     _write(
-        tmp_path / ".agent" / "hooks.json",
+        tmp_path / ".codingAgent" / "hooks.json",
         {
             "pre_tool": [
                 {"match": "*", "cmd": f"{sys.executable} -c 'import sys; sys.exit(1)'"}
@@ -126,7 +126,7 @@ def test_wildcard_match(tmp_path):
 
 def test_specific_match(tmp_path):
     _write(
-        tmp_path / ".agent" / "hooks.json",
+        tmp_path / ".codingAgent" / "hooks.json",
         {
             "pre_tool": [
                 {
@@ -154,7 +154,7 @@ def test_pre_hook_timeout_failopen(tmp_path):
     tool_hooks._PRE_HOOK_TIMEOUT = 0.05
     try:
         _write(
-            tmp_path / ".agent" / "hooks.json",
+            tmp_path / ".codingAgent" / "hooks.json",
             {
                 "pre_tool": [
                     {
@@ -178,7 +178,7 @@ def test_pre_hook_timeout_failopen(tmp_path):
 
 def test_post_hook_never_raises(tmp_path):
     _write(
-        tmp_path / ".agent" / "hooks.json",
+        tmp_path / ".codingAgent" / "hooks.json",
         {
             "post_tool": [
                 {"match": "*", "cmd": f"{sys.executable} -c 'import sys; sys.exit(1)'"}
@@ -198,7 +198,7 @@ def test_post_hook_never_raises(tmp_path):
 def test_tool_name_env_var(tmp_path):
     sentinel = tmp_path / "tool_name.txt"
     _write(
-        tmp_path / ".agent" / "hooks.json",
+        tmp_path / ".codingAgent" / "hooks.json",
         {
             "pre_tool": [
                 {
@@ -221,7 +221,7 @@ def test_tool_name_env_var(tmp_path):
 def test_tool_args_json_env_var(tmp_path):
     sentinel = tmp_path / "args.json"
     _write(
-        tmp_path / ".agent" / "hooks.json",
+        tmp_path / ".codingAgent" / "hooks.json",
         {
             "pre_tool": [
                 {
@@ -286,7 +286,7 @@ def test_workspace_hooks_also_active(tmp_path, monkeypatch):
         },
     )
     _write(
-        tmp_path / ".agent" / "hooks.json",
+        tmp_path / ".codingAgent" / "hooks.json",
         {
             "pre_tool": [
                 {
@@ -324,7 +324,7 @@ def test_reload_clears_cache(tmp_path):
 
 
 def test_broken_hooks_json_ignored(tmp_path):
-    hooks_path = tmp_path / ".agent" / "hooks.json"
+    hooks_path = tmp_path / ".codingAgent" / "hooks.json"
     hooks_path.parent.mkdir(parents=True)
     hooks_path.write_text("NOT VALID JSON {{{{", encoding="utf-8")
     r = _runner(tmp_path)
@@ -355,7 +355,7 @@ def test_pre_tool_sh_stub_auto_wired(tmp_path):
     when no hooks.json exists (the stub is auto-wired as a wildcard hook)."""
     import sys
 
-    stub_dir = tmp_path / ".agent" / "hooks"
+    stub_dir = tmp_path / ".codingAgent" / "hooks"
     stub_dir.mkdir(parents=True)
     stub = stub_dir / "pre_tool.sh"
     stub.write_text(
@@ -378,7 +378,7 @@ def test_pre_tool_sh_stub_auto_wired(tmp_path):
 
 
 def test_post_tool_sh_stub_fire_and_forget(tmp_path):
-    stub_dir = tmp_path / ".agent" / "hooks"
+    stub_dir = tmp_path / ".codingAgent" / "hooks"
     stub_dir.mkdir(parents=True)
     stub = stub_dir / "post_tool.sh"
     stub.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
@@ -401,7 +401,7 @@ def test_stub_not_wired_when_hooks_json_exists(tmp_path):
     import sys
     import json as _json
 
-    hooks_path = tmp_path / ".agent" / "hooks.json"
+    hooks_path = tmp_path / ".codingAgent" / "hooks.json"
     hooks_path.parent.mkdir(parents=True, exist_ok=True)
     hooks_path.write_text(
         _json.dumps(
@@ -416,7 +416,7 @@ def test_stub_not_wired_when_hooks_json_exists(tmp_path):
         ),
         encoding="utf-8",
     )
-    stub_dir = tmp_path / ".agent" / "hooks"
+    stub_dir = tmp_path / ".codingAgent" / "hooks"
     stub_dir.mkdir(exist_ok=True)
     stub = stub_dir / "pre_tool.sh"
     stub.write_text(

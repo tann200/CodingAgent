@@ -55,7 +55,7 @@ def _default_db_path() -> Path:
 
             return agent_context_path(Path.cwd()) / _DEFAULT_DB_NAME
         except Exception:
-            return Path(".agent-context") / _DEFAULT_DB_NAME
+            return Path(".codingAgent") / _DEFAULT_DB_NAME
 
 
 _CREATE_TABLE_SQL = """

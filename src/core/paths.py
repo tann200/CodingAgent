@@ -121,39 +121,21 @@ def _legacy_coding_agent_dir() -> Path:
 
 
 def get_agent_context_dir() -> Path:
-    """Return the agent context directory.
+    """Return the agent context directory for the current working directory.
 
-    This is the directory where agent-specific state is stored.
-
-    Priority order for the directory name:
-      1. `src.tools.tools_config.get_context_dir_name()` (default: .codingAgent)
-      2. `CODINGAGENT_CONTEXT_DIR` environment variable
-
-    For backwards compatibility, if the chosen directory does not exist but
-    one of the legacy directories (".agent-context", ".agent") exists in the
-    current working directory, that existing directory is returned instead.
-    The returned path is guaranteed to exist (created if necessary).
+    Always returns (and creates if necessary) the configured canonical
+    directory — `.codingAgent` by default.  Legacy directories such as
+    `.agent-context` and `.agent` are no longer consulted; all state is
+    stored in `.codingAgent` only.
 
     Use `agent_context_path()` from tools_config for explicit workdir support.
     """
     try:
-        from src.tools.tools_config import get_context_dir_name
+        from src.tools.tools_config import agent_context_path
 
-        ctx_dir_name = get_context_dir_name()
+        return agent_context_path(Path.cwd())
     except Exception:
         ctx_dir_name = os.getenv("CODINGAGENT_CONTEXT_DIR") or ".codingAgent"
-
-    cwd = Path.cwd()
-    candidate = cwd / ctx_dir_name
-
-    if candidate.exists():
+        candidate = Path.cwd() / ctx_dir_name
+        candidate.mkdir(parents=True, exist_ok=True)
         return candidate
-
-    # Backwards compatibility: prefer existing legacy directories if present.
-    for legacy in (cwd / ".agent-context", cwd / ".agent"):
-        if legacy.exists():
-            return legacy
-
-    # Otherwise create the configured candidate and return it.
-    candidate.mkdir(parents=True, exist_ok=True)
-    return candidate

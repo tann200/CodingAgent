@@ -58,32 +58,15 @@ def start_new_task_impl(orch) -> str:
 
             canonical_ctx = Path(agent_context_path(_wd))
         except Exception:
-            # Fallback to legacy name when tools_config isn't importable
-            canonical_ctx = _wd / ".agent-context"
+            canonical_ctx = _wd / ".codingAgent"
 
-        # Also consider legacy/alternate context directories to ensure tests
-        # that expect legacy ".agent-context" paths are satisfied even when
-        # a configured directory (e.g. ".localAgent") exists on disk.
-        legacy_a = _wd / ".agent-context"
-        legacy_b = _wd / ".agent"
-
-        # Build an ordered, deduplicated list of candidate context dirs to seed
-        dirs_to_seed: list[Path] = []
-        for d in (canonical_ctx, legacy_a, legacy_b):
-            if d not in dirs_to_seed:
-                dirs_to_seed.append(d)
-
-        _internal_files: list[Path] = []
-        for ctx in dirs_to_seed:
-            _internal_files.extend(
-                [
-                    ctx / "TODO.md",
-                    ctx / "todo.json",
-                    ctx / "PLAN.md",
-                    ctx / "state.json",
-                    ctx / "TASK_STATE.md",
-                ]
-            )
+        _internal_files: list[Path] = [
+            canonical_ctx / "TODO.md",
+            canonical_ctx / "todo.json",
+            canonical_ctx / "PLAN.md",
+            canonical_ctx / "state.json",
+            canonical_ctx / "TASK_STATE.md",
+        ]
 
         for _f in _internal_files:
             # Use resolved absolute paths to match test expectations (realpath)
@@ -133,7 +116,7 @@ def start_new_task_impl(orch) -> str:
                 agent_context_path(Path(orch.working_dir)) / "compaction_checkpoint.md"
             )
         except Exception:
-            _cp = Path(orch.working_dir) / ".agent-context" / "compaction_checkpoint.md"
+            _cp = Path(orch.working_dir) / ".codingAgent" / "compaction_checkpoint.md"
         if _cp.exists():
             _cp.unlink()
     except Exception:
@@ -166,7 +149,7 @@ def start_new_task_impl(orch) -> str:
             manage_todo(action="clear", workdir=str(orch.working_dir))
             guilogger.info("start_new_task: cleared TODO via manage_todo")
         except Exception:
-            _agent_ctx = Path(orch.working_dir) / ".agent-context"
+            _agent_ctx = Path(orch.working_dir) / ".codingAgent"
             _p = _agent_ctx / "TODO.md"
             if _p.exists():
                 try:
@@ -183,7 +166,7 @@ def start_new_task_impl(orch) -> str:
 
                 _agent_ctx = agent_context_path(Path(orch.working_dir))
             except Exception:
-                _agent_ctx = Path(orch.working_dir) / ".agent-context"
+                _agent_ctx = Path(orch.working_dir) / ".codingAgent"
             _ts = _agent_ctx / "TASK_STATE.md"
             if _ts.exists():
                 _ts.unlink()
