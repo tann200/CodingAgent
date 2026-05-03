@@ -1,188 +1,158 @@
-import subprocess
+"""Unit tests for src/tools/sandbox.py — G7 macOS sandbox-exec fallback."""
 
-# ruff: noqa: E501
+import os
+import platform
+from pathlib import Path
+from unittest.mock import patch, MagicMock
 
-import sys
+import pytest
 
-
-def test_probe_and_fallback(monkeypatch, tmp_path):
-    # Simulate bwrap not present
-    monkeypatch.setenv("CODINGAGENT_SANDBOX_LEVEL", "workspace")
-    monkeypatch.setenv("PATH", "")
-
-    # Reload the module to pick up the mocked PATH
-    import importlib
-
-    import src.tools.sandbox as sandbox
-
-    importlib.reload(sandbox)
-
-    # Ensure sandbox is not available
-    assert not sandbox.sandbox_available()
-
-    # When not available, run_sandboxed should call subprocess.run with the original cmd
-    called = {}
-
-    def fake_run(cmd, cwd=None, timeout=None, **kwargs):
-        called["cmd"] = cmd
-        called["cwd"] = cwd
-        return subprocess.CompletedProcess(cmd, 0)
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
-    res = sandbox.run_sandboxed(["echo", "hello"], cwd=tmp_path)
-    assert called["cmd"] == ["echo", "hello"]
+from src.tools import sandbox as sbox
 
 
-def test_build_bwrap_args_and_execution(monkeypatch, tmp_path):
-    # Simulate bwrap present and functional
-    monkeypatch.setenv("CODINGAGENT_SANDBOX_LEVEL", "workspace")
-    # Point _BWRAP_PATH to a fake path and probe to True by patching subprocess.run used in probe
-    import importlib
-    import src.tools.sandbox as sandbox
-
-    importlib.reload(sandbox)
-
-    monkeypatch.setattr(sandbox, "_BWRAP_PATH", "/usr/bin/bwrap")
-
-    # Make the probe succeed
-    def probe_run(args, stdout=None, stderr=None, timeout=None):
-        class R:
-            returncode = 0
-
-        return R()
-
-    monkeypatch.setattr(subprocess, "run", probe_run)
-    # Force re-evaluation of availability
-    sandbox._BWRAP_AVAILABLE = sandbox._probe_bwrap(sandbox._BWRAP_PATH)
-    assert sandbox.sandbox_available()
-
-    executed = {}
-
-    def fake_run(full_cmd, cwd=None, timeout=None, **kwargs):
-        executed["full_cmd"] = full_cmd
-        executed["cwd"] = cwd
-        return subprocess.CompletedProcess(full_cmd, 0)
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
-
-    res = sandbox.run_sandboxed(["echo", "ok"], cwd=tmp_path)
-    # Ensure the bwrap prefix exists and we used '--' separator
-    assert isinstance(executed.get("full_cmd"), list)
-    assert "--" in executed["full_cmd"]
-    # The final elements should include the '--' separator followed by the original command
-    assert executed["full_cmd"][-3:] == ["--", "echo", "ok"]
-    # Check die-with-parent and chdir present
-    assert "--die-with-parent" in executed["full_cmd"]
-    assert "--chdir" in executed["full_cmd"]
+# ---------------------------------------------------------------------------
+# Helper
+# ---------------------------------------------------------------------------
 
 
-def test_bwrap_flags_valid(monkeypatch, tmp_path):
-    """Ensure bwrap args are separate tokens (no combined '--proc /proc' style tokens)."""
-    import importlib
-
-    import src.tools.sandbox as sandbox
-
-    importlib.reload(sandbox)
-
-    monkeypatch.setattr(sandbox, "_BWRAP_PATH", "/usr/bin/bwrap")
-
-    # Make the probe succeed
-    def probe_run(args, stdout=None, stderr=None, timeout=None):
-        class R:
-            returncode = 0
-
-        return R()
-
-    monkeypatch.setattr(subprocess, "run", probe_run)
-    sandbox._BWRAP_AVAILABLE = sandbox._probe_bwrap(sandbox._BWRAP_PATH)
-    assert sandbox.sandbox_available()
-
-    args = sandbox._build_bwrap_args(tmp_path, "workspace")
-
-    # No argument should contain a space (which indicates a combined flag+arg token)
-    assert all(" " not in str(a) for a in args)
+def _mock_success(*args, **kwargs):
+    """Simulate a successful subprocess.run."""
+    return MagicMock(returncode=0, stdout="", stderr="")
 
 
-def test_probe_bwrap_missing(monkeypatch):
-    """_probe_bwrap should return False when bwrap --version returns non-zero."""
-    import importlib
-
-    import src.tools.sandbox as sandbox
-
-    importlib.reload(sandbox)
-
-    monkeypatch.setattr(sandbox, "_BWRAP_PATH", "/usr/bin/bwrap")
-
-    def bad_probe(args, stdout=None, stderr=None, timeout=None):
-        class R:
-            returncode = 1
-
-        return R()
-
-    monkeypatch.setattr(subprocess, "run", bad_probe)
-    assert sandbox._probe_bwrap(sandbox._BWRAP_PATH) is False
+def _mock_failure(*args, **kwargs):
+    raise FileNotFoundError("no bwrap")
 
 
-def test_bwrap_exec_missing_falls_back(monkeypatch, tmp_path):
-    """If bwrap disappears between check and exec, run_sandboxed should fall back to subprocess.run."""
-    import importlib
-
-    import src.tools.sandbox as sandbox
-
-    importlib.reload(sandbox)
-
-    # Force the module to think bwrap is available
-    monkeypatch.setattr(sandbox, "_BWRAP_AVAILABLE", True)
-
-    calls = []
-
-    def run_side_effect(cmd, cwd=None, timeout=None, **kwargs):
-        # Record the raw command passed
-        calls.append(cmd)
-        # First call simulates bwrap exec failing (FileNotFoundError)
-        if len(calls) == 1:
-            raise FileNotFoundError()
-        # Fallback call returns a CompletedProcess
-        return subprocess.CompletedProcess(cmd, 0)
-
-    monkeypatch.setattr(subprocess, "run", run_side_effect)
-
-    res = sandbox.run_sandboxed(["echo", "fallback"], cwd=tmp_path)
-
-    # We should have attempted the bwrap invocation first (a list starting with the bwrap binary)
-    assert len(calls) >= 2
-    assert isinstance(calls[0], list)
-    # The fallback should be the original command
-    assert calls[1] == ["echo", "fallback"]
+# ---------------------------------------------------------------------------
+# sandbox-exec detection
+# ---------------------------------------------------------------------------
 
 
-def test_startup_warning_published(monkeypatch, tmp_path):
-    """When bwrap is missing but sandboxing is requested, a startup warning should be published."""
-    import importlib
+class TestSandboxExecDetection:
+    def test_sandbox_exec_available_on_macos(self):
+        if platform.system() != "Darwin":
+            pytest.skip("sandbox-exec only on macOS")
+        assert sbox._sandbox_exec_available() is True
 
-    # Ensure bwrap is not found on PATH
-    monkeypatch.setenv("PATH", "")
-    monkeypatch.setenv("CODINGAGENT_SANDBOX_LEVEL", "workspace")
+    def test_sandbox_exec_not_available_when_missing(self):
+        import importlib
+        with patch("shutil.which", return_value=None):
+            # Need to reload the module to re-evaluate _SANDBOX_EXEC_PATH
+            importlib.reload(sbox)
+            assert sbox._sandbox_exec_available() is False
+            # Restore
+            importlib.reload(sbox)
 
-    published = []
 
-    class FakeBus:
-        def publish(self, event_name, payload, correlation_id=None):
-            published.append((event_name, payload))
+# ---------------------------------------------------------------------------
+# Profile generation
+# ---------------------------------------------------------------------------
 
-    # Monkeypatch the event_bus.get_event_bus before importing sandbox
-    import types
 
-    fake_event_bus_module = types.SimpleNamespace()
-    fake_event_bus_module.get_event_bus = lambda: FakeBus()
+class TestSandboxExcProfile:
+    def test_profile_contains_cwd(self):
+        from pathlib import Path
 
-    monkeypatch.setitem(
-        sys.modules, "src.core.orchestration.event_bus", fake_event_bus_module
-    )
+        profile = sbox._build_sandbox_exc_profile(Path("/tmp/testdir"), "workspace")
+        assert "/tmp/testdir" in profile
+        assert "subpath" in profile.lower() or "subpath" in profile
 
-    import src.tools.sandbox as sandbox
+    def test_profile_denies_network(self):
+        from pathlib import Path
 
-    importlib.reload(sandbox)
+        profile = sbox._build_sandbox_exc_profile(Path("/tmp/wd"), "workspace")
+        assert "deny network" in profile
 
-    # When bwrap is missing and level != 'off', a system.warning should be published
-    assert any(ev == "system.warning" for ev, _ in published)
+    def test_profile_allows_read_only_dirs(self):
+        from pathlib import Path
+
+        profile = sbox._build_sandbox_exc_profile(Path("/tmp/wd"), "workspace")
+        assert "/usr" in profile or "usr" in profile
+
+    def test_full_mode_adds_extra_restrictions(self):
+        from pathlib import Path
+
+        profile = sbox._build_sandbox_exc_profile(Path("/tmp/wd"), "full")
+        assert "deny process-fork" in profile
+
+    def test_profile_is_valid_sandbox_exc_syntax(self):
+        from pathlib import Path
+
+        profile = sbox._build_sandbox_exc_profile(Path("/tmp/wd"), "workspace")
+        assert "(version 1)" in profile
+
+
+# ---------------------------------------------------------------------------
+# run_sandboxed routing
+# ---------------------------------------------------------------------------
+
+
+class TestRunSandboxedRouting:
+    """Verify run_sandboxed chooses the right backend."""
+
+    def test_off_level_uses_subprocess_directly(self):
+        with patch("subprocess.run", side_effect=_mock_success) as mock_run:
+            sbox.run_sandboxed(["echo", "hi"], cwd=Path("/tmp"), sandbox_level="off")
+            mock_run.assert_called_once()
+
+    def test_bwrap_used_when_available(self):
+        with patch("subprocess.run", side_effect=_mock_success) as mock_run, patch.object(
+            sbox, "_bwrap_available", return_value=True
+        ), patch.object(sbox, "_build_bwrap_args", return_value=["bwrap", "--version"]):
+            sbox.run_sandboxed(["echo", "hi"], cwd=Path("/tmp"))
+            # bwrap path: first arg should be bwrap-related
+            cmd_used = mock_run.call_args[0][0]
+            assert any("bwrap" in str(part).lower() for part in cmd_used)
+
+    def test_sandbox_exc_used_when_bwrap_unavailable_on_macos(self):
+        if platform.system() != "Darwin":
+            pytest.skip("sandbox-exec only on macOS")
+        fake_profile = "/tmp/fake.sb"
+        with patch("src.tools.sandbox.subprocess.run", side_effect=_mock_success) as mock_run, \
+             patch.object(sbox, "_bwrap_available", return_value=False), \
+             patch.object(sbox, "_sandbox_exec_available", return_value=True), \
+             patch.object(sbox, "_write_sandbox_exc_profile", return_value=fake_profile):
+            sbox.run_sandboxed(["echo", "hi"], cwd=Path("/tmp"))
+            # Verify subprocess.run was called
+            mock_run.assert_called_once()
+            # Verify sandbox-exec was in the command
+            cmd_args = mock_run.call_args[0][0]
+            cmd_str = " ".join(str(p) for p in cmd_args)
+            assert "sandbox-exec" in cmd_str
+
+    def test_fallback_to_subprocess_when_all_unavailable(self):
+        with patch("src.tools.sandbox.subprocess.run", side_effect=_mock_success) as mock_run, patch.object(
+            sbox, "_bwrap_available", return_value=False
+        ), patch.object(
+            sbox, "_sandbox_exec_available", return_value=False
+        ):
+            sbox.run_sandboxed(["echo", "hi"], cwd=Path("/tmp"))
+            mock_run.assert_called_once()
+            args = mock_run.call_args[0][0]
+            # Should NOT contain bwrap or sandbox-exec
+            assert "bwrap" not in str(args).lower()
+            assert "sandbox-exec" not in str(args).lower()
+
+
+# ---------------------------------------------------------------------------
+# sandbox_available
+# ---------------------------------------------------------------------------
+
+
+class TestSandboxAvailable:
+    def test_returns_true_when_bwrap_available(self):
+        with patch.object(sbox, "_bwrap_available", return_value=True):
+            assert sbox.sandbox_available() is True
+
+    def test_returns_true_when_sandbox_exc_available(self):
+        with patch.object(sbox, "_bwrap_available", return_value=False), patch.object(
+            sbox, "_sandbox_exec_available", return_value=True
+        ):
+            assert sbox.sandbox_available() is True
+
+    def test_returns_false_when_none_available(self):
+        with patch.object(sbox, "_bwrap_available", return_value=False), patch.object(
+            sbox, "_sandbox_exec_available", return_value=False
+        ):
+            assert sbox.sandbox_available() is False

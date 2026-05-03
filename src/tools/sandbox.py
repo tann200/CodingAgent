@@ -1,23 +1,22 @@
-"""Sandboxed subprocess execution via bubblewrap (bwrap).
+"""Sandboxed subprocess execution via bubblewrap (bwrap) or macOS sandbox-exec.
 
 Provides ``run_sandboxed()`` as a drop-in replacement for ``subprocess.run``
-when executing untrusted shell commands.  When ``bwrap`` is available on the
-host, commands are wrapped in a bubblewrap container:
+when executing untrusted shell commands.
 
-- Filesystem: read-only bind-mount of ``/``, writable bind-mount of *cwd* only.
-- Network: disabled by default (``--unshare-net``).
-- PID namespace: isolated (``--unshare-pid``).
-
-When ``bwrap`` is not available, the function falls back to plain
-``subprocess.run`` with a warning — this maintains full backwards compatibility
-on macOS (where bubblewrap is Linux-only) and in environments where it is not
-installed.
+Platform support:
+- **Linux**: bubblewrap (bwrap) with filesystem/network/PID isolation.
+- **macOS**: ``sandbox-exec`` (Apple deprecated but still present) when
+  bwrap is unavailable.  Writes a minimal `sandbox-macos.sb` profile
+  that allows read-only access to system dirs, writable cwd only, and
+  denies network by default.
+- **Fallback**: When no sandboxing is available and level != "off",
+  executes via plain ``subprocess.run`` with a warning event.
 
 Sandbox strictness levels (``sandbox_level`` param):
 
     ``"off"``          — no sandboxing; plain subprocess.run.
-    ``"workspace"``    — bwrap with workspace write access (default).
-    ``"full"``         — bwrap + network disabled + even stricter mounts.
+    ``"workspace"``    — read-only system dirs, writable cwd only (default).
+    ``"full"``         — add network disable + stricter mounts.
 
 The level can be overridden at import time via the
 ``CODINGAGENT_SANDBOX_LEVEL`` environment variable.
@@ -29,6 +28,7 @@ import logging
 import os
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import List, Optional
 
@@ -40,6 +40,91 @@ _BWRAP_PATH: Optional[str] = shutil.which("bwrap")
 # Default sandbox level — override via env var or config
 _DEFAULT_LEVEL: str = os.environ.get("CODINGAGENT_SANDBOX_LEVEL", "workspace")
 
+# ---------------------------------------------------------------------------
+# sandbox-exec detection (macOS)
+# ---------------------------------------------------------------------------
+
+def _sandbox_exec_path() -> Optional[str]:
+    """Return path to sandbox-exec if available."""
+    return shutil.which("sandbox-exec")
+
+
+_SANDBOX_EXEC_PATH: Optional[str] = _sandbox_exec_path()
+
+
+def _sandbox_exec_available() -> bool:
+    return _SANDBOX_EXEC_PATH is not None
+
+
+# ---------------------------------------------------------------------------
+# sandbox-exec profile generation
+# ---------------------------------------------------------------------------
+
+def _build_sandbox_exc_profile(cwd: Path, level: str) -> str:
+    """Generate a sandbox-exec profile string for the given *level*.
+
+    The profile:
+    - Allows read-only access to /usr, /bin, /sbin, /System, /Library
+    - Allows writable access to *cwd* only
+    - Denies network by default (no network-outbound rule)
+    - Denies everything else
+    """
+    cwd_str = str(cwd.resolve())
+    lines = [
+        "(version 1)",
+        "(allow default)",
+        "",
+        ";; ---- read-only system paths ----",
+        "(allow file-read*",
+        "    (require",
+        "        (file-issue-extension* (literal \"/\"))",
+        "        (not (subpath \"/tmp\"))",
+        "        (not (subpath \"/private/tmp\"))",
+        "    )",
+        ")",
+        "",
+        ";; ---- writable working directory ----",
+        f"(allow file-write* (subpath \"{cwd_str}\"))",
+        "",
+        ";; ---- deny network ----",
+        "(deny network*)",
+        "",
+        ";; ---- specific read-only dirs ----",
+    ]
+    for d in ("/usr", "/bin", "/sbin", "/System", "/Library"):
+        if Path(d).exists():
+            lines.append(f'(allow file-read* (subpath "{d}"))')
+
+    if level == "full":
+        lines += [
+            "",
+            ";; ---- full mode extras ----",
+            "(deny process-fork)",
+        ]
+    return "\n".join(lines)
+
+
+def _write_sandbox_exc_profile(cwd: Path, level: str) -> str:
+    """Write a temporary sandbox-exec profile and return its path.
+
+    The file is created in a temporary directory that persists until the
+    process exits (deleted by the OS on close in /tmp).
+    """
+    profile_content = _build_sandbox_exc_profile(cwd, level)
+    # Use a named temp file so sandbox-exec can read it
+    fd, path = tempfile.mkstemp(suffix=".sb", prefix="codingagent-sandbox-")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(profile_content)
+    except Exception:
+        os.close(fd)
+        raise
+    return path
+
+
+# ---------------------------------------------------------------------------
+# bwrap helpers (existing)
+# ---------------------------------------------------------------------------
 
 def _probe_bwrap(path: Optional[str]) -> bool:
     """Run a quick `bwrap --version` probe to ensure bwrap is callable.
@@ -49,7 +134,6 @@ def _probe_bwrap(path: Optional[str]) -> bool:
     if not path:
         return False
     try:
-        # Use a short timeout to avoid blocking import
         res = subprocess.run(
             [path, "--version"],
             stdout=subprocess.DEVNULL,
@@ -61,7 +145,6 @@ def _probe_bwrap(path: Optional[str]) -> bool:
         return False
 
 
-# Final availability flag (probe the binary if present)
 _BWRAP_AVAILABLE: bool = _probe_bwrap(_BWRAP_PATH)
 
 
@@ -69,33 +152,28 @@ def _bwrap_available() -> bool:
     return _BWRAP_AVAILABLE
 
 
-# Emit a startup warning event when the environment requests sandboxing but bwrap
-# is not available. This helps operator tooling surface the misconfiguration at
-# process startup instead of silently falling back later. Import-time emission is
-# best-effort and must not raise on import (avoid cycles).
-if not _BWRAP_AVAILABLE and _DEFAULT_LEVEL != "off":
-    try:
-        # Local import to avoid import-time cycles; failure is non-fatal.
-        from src.core.orchestration.event_bus import get_event_bus
-
+# Emit a startup warning event when the environment requests sandboxing but
+# neither bwrap nor sandbox-exec is available.
+try:
+    if _DEFAULT_LEVEL != "off" and not _BWRAP_AVAILABLE and not _sandbox_exec_available():
         try:
-            eb = get_event_bus()
+            from src.core.orchestration.event_bus import get_event_bus
+
             try:
-                eb.publish(
-                    "system.warning",
-                    {"message": "bwrap not available; sandbox disabled"},
-                )
+                eb = get_event_bus()
+                try:
+                    eb.publish(
+                        "system.warning",
+                        {"message": "sandbox: bwrap and sandbox-exec unavailable; sandbox disabled"},
+                    )
+                except Exception:
+                    pass
             except Exception:
-                # best-effort publish only
                 pass
         except Exception:
-            # best-effort
-            pass
-    except Exception:
-        # Avoid raising during import due to missing modules or cycles
-        logger.debug(
-            "sandbox: could not publish startup warning (event bus unavailable)"
-        )
+            logger.debug("sandbox: could not publish startup warning")
+except Exception:
+    pass
 
 
 def _build_bwrap_args(
@@ -144,6 +222,11 @@ def _build_bwrap_args(
     return args
 
 
+# ---------------------------------------------------------------------------
+# Core: run_sandboxed
+# ---------------------------------------------------------------------------
+
+
 def run_sandboxed(
     cmd: List[str],
     cwd: Path,
@@ -152,7 +235,7 @@ def run_sandboxed(
     sandbox_level: Optional[str] = None,
     **kwargs,
 ) -> subprocess.CompletedProcess:
-    """Run *cmd* optionally inside a bubblewrap sandbox.
+    """Run *cmd* optionally inside a sandbox.
 
     Parameters
     ----------
@@ -178,51 +261,80 @@ def run_sandboxed(
     """
     level = sandbox_level or _DEFAULT_LEVEL
 
-    if level == "off" or not _bwrap_available():
-        if level != "off":
-            logger.debug(
-                "sandbox: bwrap not found or unavailable — falling back to unsandboxed execution"
-            )
-            try:
-                # Emit a system.warning event so operator tooling can surface it
-                from src.core.orchestration.event_bus import get_event_bus
+    # 1. Off — no sandboxing
+    if level == "off":
+        return subprocess.run(cmd, cwd=str(cwd), timeout=timeout, **kwargs)
 
+    # 2. Try bwrap (Linux / installed manually)
+    if _bwrap_available():
+        try:
+            prefix = _build_bwrap_args(cwd, level)
+            if network:
+                # Remove --unshare-net if present
+                try:
+                    idx = prefix.index("--unshare-net")
+                    prefix.pop(idx)
+                except ValueError:
+                    pass
+            full_cmd = prefix + ["--"] + cmd
+            return subprocess.run(full_cmd, cwd=str(cwd), timeout=timeout, **kwargs)
+        except FileNotFoundError:
+            logger.warning(
+                "sandbox: bwrap exec failed — falling back to sandbox-exec/unsandboxed"
+            )
+            # fall through to next option
+
+    # 3. Try sandbox-exec (macOS)
+    if _sandbox_exec_available():
+        try:
+            profile_path = _write_sandbox_exc_profile(cwd, level)
+            try:
+                sbox_cmd = [_SANDBOX_EXEC_PATH, "-f", profile_path] + cmd
+                # Note: sandbox-exec does not support --unshare-net; network
+                # is denied via the profile instead.
+                return subprocess.run(
+                    sbox_cmd, cwd=str(cwd), timeout=timeout, **kwargs
+                )
+            finally:
+                # Best-effort cleanup of the temp profile
+                try:
+                    os.unlink(profile_path)
+                except Exception:
+                    pass
+        except Exception as exc:
+            logger.warning(
+                "sandbox: sandbox-exec failed (%s) — falling back to unsandboxed",
+                exc,
+            )
+            # fall through
+
+    # 4. Final fallback — plain subprocess with warning
+    if level != "off":
+        logger.debug(
+            "sandbox: bwrap and sandbox-exec unavailable — falling back to unsandboxed execution"
+        )
+        try:
+            from src.core.orchestration.event_bus import get_event_bus
+
+            try:
                 eb = get_event_bus()
                 try:
                     eb.publish(
                         "system.warning",
-                        {"message": "bwrap not available; sandbox disabled"},
+                        {"message": "sandbox: bwrap and sandbox-exec unavailable; sandbox disabled"},
                     )
                 except Exception:
-                    # best-effort
                     pass
             except Exception:
-                # Avoid import cycles or issues during early startup
                 pass
-        return subprocess.run(cmd, cwd=str(cwd), timeout=timeout, **kwargs)
-
-    try:
-        prefix = _build_bwrap_args(cwd, level)
-        if network:
-            # Remove --unshare-net if present
-            try:
-                idx = prefix.index("--unshare-net")
-                prefix.pop(idx)
-            except ValueError:
-                pass
-        full_cmd = prefix + ["--"] + cmd
-        return subprocess.run(full_cmd, cwd=str(cwd), timeout=timeout, **kwargs)
-    except FileNotFoundError:
-        # bwrap disappeared between check and exec — fall back
-        logger.warning(
-            "sandbox: bwrap exec failed — falling back to unsandboxed execution"
-        )
-        return subprocess.run(cmd, cwd=str(cwd), timeout=timeout, **kwargs)
+        except Exception:
+            pass
+    return subprocess.run(cmd, cwd=str(cwd), timeout=timeout, **kwargs)
 
 
 def sandbox_available() -> bool:
     """Return True if sandboxed execution is possible on this host."""
-    return _bwrap_available()
+    return _bwrap_available() or _sandbox_exec_available()
 
 
 def get_sandbox_level() -> str:

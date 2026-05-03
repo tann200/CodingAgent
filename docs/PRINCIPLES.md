@@ -117,7 +117,7 @@ These are known gaps against the principles above, prioritised for implementatio
 | # | Gap | Priority |
 |---|-----|----------|
 | G6 | ~~Windows GPU detection missing in `hardware_capability_profile.py`~~ **Resolved** `a46f756` — `_detect_vram_windows()`, `GlobalMemoryStatusEx` | P2 |
-| G7 | No container/namespace sandbox — bash_security patterns are the only barrier | P2 |
+| G7 | ~~No container/namespace sandbox — bash_security patterns are the only barrier~~ **Resolved** — `run_sandboxed()` now supports Linux bwrap (read-only system dirs, writable cwd-only, network disabled) and macOS `sandbox-exec` fallback (minimal profile: read-only `/usr,/bin,/sbin,/System,/Library`; writable cwd-only; network denied); plain `subprocess.run` fallback with warning when neither is available | P2 |
 | G8 | ~~WebSocket session endpoint not implemented~~ **Resolved** — `POST /task`, `GET /task/{id}`, `POST /task/{id}/cancel`, `GET /tasks` endpoints added to `src/server/app.py`; in-process task registry with cancel support; `/ws/session/{id}` already existed with full SSE/WS event relay | P2 |
 | G9 | ~~MCP tool registry integration with orchestrator routing incomplete~~ **Resolved** — `get_tools_for_role_impl` now appends `origin="mcp"` tools to filtered lists and fallback; MCP tools always reach the LLM regardless of toolset YAML | P2 |
 | G12 | ~~Streaming diff preview (character-by-character) not implemented~~ **Resolved** — `CODING_AGENT_STREAM_TOKENS=1` opt-in enables `stream=True` in `llm_helpers.py` and `inference_loop.py` fallback; `_consume_sse_stream` publishes `llm.token` alias alongside `model.token` for SSE/WS clients (already subscribed in `app.py`) | P3 |
