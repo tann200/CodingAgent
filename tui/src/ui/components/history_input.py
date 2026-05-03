@@ -8,6 +8,7 @@ from textual import events
 from ..logging import get_logger
 
 logger = get_logger("input")
+logger.propagate = False  # prevent double-logging to console panel
 
 ESC_DOUBLE_TAP_MS = 500
 PASTE_LINE_THRESHOLD = 3
@@ -75,7 +76,7 @@ class HistoryInput(Input):
             + self.value[self.cursor_position :]
         )
         self.cursor_position += len(tag)
-        logger.info(f"Large paste captured: {line_count} lines, {len(text)} chars")
+        logger.debug(f"Large paste captured: {line_count} lines, {len(text)} chars")
 
         if len(text) > PASTE_LARGE_CHAR_LIMIT:
             self.notify(
@@ -116,7 +117,7 @@ class HistoryInput(Input):
         if event.key == "escape":
             now = time.monotonic()
             if (now - self._last_esc_time) < (ESC_DOUBLE_TAP_MS / 1000.0):
-                logger.info("Double-Esc interrupt triggered")
+                logger.debug("Double-Esc interrupt triggered")
                 self.post_message(self.InterruptSignal())
                 self._last_esc_time = 0.0
                 event.prevent_default()
