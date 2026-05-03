@@ -5,7 +5,7 @@ S1-A: Provides ``ModelTier`` and ``classify_model()`` so that nodes and
 based on the size of the active model.
 
 Tiers:
-- SMALL    7–14B / 16K     — YAML tools, full pipeline, 20-tool limit
+- SMALL    7–14B / 16K     — JSON tools, full pipeline, 20-tool limit
 - MEDIUM   14–70B / 32K  — JSON tools, full pipeline, 35-tool limit
 - LARGE    >70B / 64K      — JSON tools, parallel calls, 50-tool limit
 - FRONTIER Cloud frontier     — JSON tools, parallel calls, 60-tool limit
@@ -173,7 +173,7 @@ def supports_native_tools(tier: ModelTier) -> bool:
 
 
 def is_simple_mode(tier: ModelTier) -> bool:
-    """Return True if the tier should use simple_mode (YAML, single tool/message)."""
+    """Return True if the tier should use simple_mode (single tool/message)."""
     return tier == ModelTier.SMALL
 
 

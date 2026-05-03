@@ -26,18 +26,15 @@ from typing import Dict, Any
 from src.tools._path_utils import safe_resolve as _safe_resolve
 from src.tools._tool import tool, PermissionKind
 from src.tools._diff_gate import (
-    pop_review_rejection as _pop_review_rejection,
-    push_review_required as _push_review_required,
+    pop_preview_rejection as _pop_preview_rejection,
+    register_preview_gate as _register_preview_gate,
 )
 from src.tools._workspace_guard import WorkspaceGuard  # type: ignore[assignment]
 from src.tools._lint_verify import verify_candidate_content as _verify_write_candidate
-from src.tools._security import is_path_allowed as _is_path_allowed
 from src.tools.guardrails import (
     check_read_before_write as _check_read_before_write,
     mark_file_read as _mark_file_read,
 )
-from src.tools.tools_config import requires_review_confirmation as _requires_review
-from src.core.config_loader import get_project_deny_write_patterns as _get_deny_patterns
 from src.core.context.context_builder import ContextBuilder as _ContextBuilder
 from src.core.orchestration.event_bus import get_event_bus as _get_event_bus
 from src.tools.formatter import run_formatter as _run_formatter

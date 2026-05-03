@@ -339,7 +339,11 @@ class SystemPromptBuilder:
             lines.append(f"  provider: {ctx.provider_id}")
         cwd = ctx.cwd or Path.cwd()
         lines.append(f"  working_directory: {cwd}")
-        lines.append(f"  platform: {platform.system().lower()}")
+        _platform = platform.system().lower()
+        lines.append(f"  platform: {_platform}")
+        _os_info = cls._get_os_info()
+        if _os_info:
+            lines.append(f"  os: {_os_info}")
         lines.append(f"  date: {date.today().isoformat()}")
         git_branch = cls._get_git_branch(cwd)
         if git_branch:
@@ -362,6 +366,53 @@ class SystemPromptBuilder:
             )
             if result.returncode == 0:
                 return result.stdout.strip()
+        except Exception:
+            pass
+        return ""
+
+    @staticmethod
+    def _get_os_info() -> str:
+        """Return OS release/version string for darwin/linux/windows."""
+        import subprocess
+
+        try:
+            _plat = platform.system().lower()
+            if _plat == "darwin":
+                result = subprocess.run(
+                    ["sw_vers", "-productVersion"],
+                    capture_output=True,
+                    text=True,
+                    timeout=3,
+                )
+                if result.returncode == 0:
+                    return f"macOS {result.stdout.strip()}"
+            elif _plat == "linux":
+                result = subprocess.run(
+                    ["lsb_release", "-ds"],
+                    capture_output=True,
+                    text=True,
+                    timeout=3,
+                )
+                if result.returncode != 0:
+                    result = subprocess.run(
+                        ["cat", "/etc/os-release"],
+                        capture_output=True,
+                        text=True,
+                        timeout=3,
+                    )
+                if result.returncode == 0:
+                    for line in result.stdout.splitlines():
+                        if line.startswith("PRETTY_NAME="):
+                            return line.split("=", 1)[1].strip().strip('"')
+            elif _plat == "windows":
+                result = subprocess.run(
+                    ["cmd", "/c", "ver"],
+                    capture_output=True,
+                    text=True,
+                    timeout=3,
+                )
+                if result.returncode == 0:
+                    return result.stdout.strip()
         except Exception:
             pass
         return ""

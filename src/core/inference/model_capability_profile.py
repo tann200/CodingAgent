@@ -48,7 +48,7 @@ class ModelProfile:
     tool_limit: int = 20
     max_turns: int = 30
     thinking_mode: ThinkingMode = ThinkingMode.AUTO
-    native_tool_format: str = "json"  # json, xml, yaml
+    native_tool_format: str = "json"  # json, xml
 
     weights_gb: Optional[float] = None  # Computed from params + quantization
     safe_context_tokens: Optional[int] = None  # VRAM-constrained context

@@ -331,7 +331,7 @@ def _summarize_messages(messages: list[dict]) -> str:
     assistant_count = sum(1 for m in messages if m.get("role") == "assistant")
     tool_count = sum(1 for m in messages if m.get("role") == "tool")
 
-    # Collect tool names from YAML/JSON tool-call patterns in content
+    # Collect tool names from JSON tool-call patterns in content
     tool_name_set: set[str] = set()
     _tool_name_re = re.compile(r'(?:name|tool_name|tool):\s*["\']?([A-Za-z_]\w*)["\']?')
     for msg in messages:

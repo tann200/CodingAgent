@@ -347,18 +347,18 @@ async def frontier_loop_node(
             # Object format (e.g., from some providers)
             tool_calls = getattr(response, "tool_calls", None) or []
 
-        # Try YAML fallback if no native tool calls
+# Try JSON/Qwen3 XML fallback if no native tool calls
         if not tool_calls and content_text:
-            # Fallback: try parsing JSON/YAML tool blocks from text. Wrap the
+            # Fallback: try parsing JSON/Qwen3 XML tool blocks from text. Wrap the
             # whole parse sequence in a try/except so any parsing error is
             # contained and does not abort the node.
             try:
-                # First strip thinking blocks (LM Studio style: <think>...</think>)
+                # First strip thinking blocks (LM Studio style: )
                 content_for_parse = content_text
                 import re
 
                 content_for_parse = re.sub(
-                    r"<think>.*?</think>", "", content_text, flags=re.DOTALL
+                    r"", "", content_text, flags=re.DOTALL
                 ).strip()
                 content_for_parse = re.sub(
                     r"<\|channel\|>thought.*?<\|/channel\|>",
@@ -376,7 +376,7 @@ async def frontier_loop_node(
                     ):
                         tool_calls = [parsed]
                         logger.info(
-                            "frontier_loop_node: parsed YAML tool call: %r",
+                            "frontier_loop_node: parsed tool call: %r",
                             parsed.get("name"),
                         )
             except Exception as exc:
@@ -389,7 +389,7 @@ async def frontier_loop_node(
 
         # ---- No tool calls → task done (natural language reply) ----------
         if not tool_calls:
-            # Debug: log content preview to help diagnose why YAML wasn't parsed
+            # Debug: log content preview to help diagnose why tool wasn't parsed
             content_preview = (content_text or "")[:200]
             logger.info(
                 "frontier_loop_node: no tool calls in turn %d — task complete. "

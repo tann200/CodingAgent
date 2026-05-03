@@ -14,6 +14,13 @@ from pathlib import Path  # noqa: F401, E402
 
 from src.tools._path_utils import safe_resolve  # noqa: F401, E402
 
+# Eagerly import list_files (list_dir) so that auto-discovery via dir(module)
+# can find it.  Previously this was fully lazy (via __getattr__), which meant
+# build_registry().discover("src.tools.file_tools") would not register list_files
+# because dir(file_tools) omits lazy attributes.  The lazy path still serves as
+# a cache for subsequent attribute accesses.
+from src.tools._file_io import list_dir  # noqa: F401, E402
+
 
 # Lazy import map for re-exports. We intentionally avoid importing the
 # authoritative implementation modules at import time to prevent import-time

@@ -764,7 +764,7 @@ class ContextBuilder:
                     pass
             _p1e_lines = [
                 f"Tier: {tier_str.upper()} | Context: {_p1e_ctx_tokens:,} tokens | Tools: {_p1e_tool_count} available",
-                f"Max plan steps: {_p1e_step_limit} | Output format: YAML tool calls only (no JSON, no prose before tool call)",
+                f"Max plan steps: {_p1e_step_limit} | Output format: JSON function call (required, no YAML)",
                 "Not available: parallel tool calls, subagent delegation, extended reasoning",
             ]
             return (
@@ -824,13 +824,9 @@ class ContextBuilder:
             return (
                 "<output_format>\n"
                 "STRICT RULE: Output EXACTLY ONE tool call per response, no exceptions.\n"
-                "Use the YAML tool format in a fenced code block:\n"
-                "```yaml\n"
-                "name: the_tool_name\n"
-                "arguments:\n"
-                "  arg_name: arg_value\n"
-                "```\n"
-                "Do NOT output more than one yaml block. Do NOT chain tool calls.\n"
+                "Use the JSON function calling format:\n"
+                "{\"name\": \"the_tool_name\", \"arguments\": {\"arg_name\": \"arg_value\"}}\n"
+                "Do NOT output more than one tool call. Do NOT chain tool calls.\n"
                 "After the tool result is returned, you may call one more tool if needed.\n"
                 "</output_format>"
             )
@@ -838,12 +834,8 @@ class ContextBuilder:
             # GAP-SMALL-1: simplified output format for small models
             return (
                 "<output_format>\n"
-                "Output ONLY the YAML tool call. No explanation, no extra text.\n"
-                "```yaml\n"
-                "name: tool_name\n"
-                "arguments:\n"
-                "  arg: value\n"
-                "```\n"
+                "Output ONLY the JSON function call. No explanation, no extra text.\n"
+                "{\"name\": \"tool_name\", \"arguments\": {\"arg\": \"value\"}}\n"
                 "</output_format>"
             )
         return ""
@@ -1103,7 +1095,7 @@ class ContextBuilder:
         # CRITICAL FIX: Only inject session summary at the START of a task (empty conversation)
         # or when the task is truly complete. During active execution (tool results present),
         # injecting TASK_STATE.md causes the model to output JSON state tracker instead of
-        # continuing with YAML tool calls. This breaks multi-turn execution.
+        # continuing with JSON function calls. This breaks multi-turn execution.
         try:
             has_tool_results = any(
                 m.get("role") == "user"
@@ -1296,12 +1288,12 @@ class ContextBuilder:
             and truncated_conversation[0].get("role") == "assistant"
         ):
             # Insert task as user message before the assistant messages
-            prompt_content = f"<task>\n{safe_task_description}\n</task>\n<context>\nToday's date: {_today_iso()}\n</context>\n\nExecute the next action using the YAML tool format."
+            prompt_content = f"<task>\n{safe_task_description}\n</task>\n<context>\nToday's date: {_today_iso()}\n</context>\n\nExecute the next action using JSON function calling format."
             # Insert at index 1 (after system message)
             built_messages.insert(1, {"role": "user", "content": prompt_content})
         # Final check: is the last message Assistant or is the list missing User?
         elif not built_messages or built_messages[-1].get("role") != "user":
-            prompt_content = f"<task>\n{safe_task_description}\n</task>\n<context>\nToday's date: {_today_iso()}\n</context>\n\nExecute the next action using the YAML tool format."
+            prompt_content = f"<task>\n{safe_task_description}\n</task>\n<context>\nToday's date: {_today_iso()}\n</context>\n\nExecute the next action using JSON function calling format."
             built_messages.append({"role": "user", "content": prompt_content})
         else:
             # If the last message is already User, we can either wrap it in <task>
@@ -1309,7 +1301,7 @@ class ContextBuilder:
             last_msg = built_messages[-1]
             if "<task>" not in last_msg.get("content", ""):
                 last_msg["content"] = (
-                    f"<task>\n{last_msg['content']}\n</task>\n\nExecute the next action using the YAML tool format."
+                    f"<task>\n{last_msg['content']}\n</task>\n\nExecute the next action using JSON function calling format."
                 )
 
         # Gap 3: HOOK_CONTEXT_BUILT — lets plugins inspect/log the final prompt.

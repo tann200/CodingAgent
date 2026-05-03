@@ -908,10 +908,11 @@ def run_agent_once_impl(
         history = final_state.get("history", []) if final_state else []
         work_summary = _generate_work_summary(final_state, history)
 
-        # Build assistant_message: prefer tool result over raw YAML tool call
+        # Build assistant_message: prefer tool result over raw tool call
         last_assistant = assistant_msgs[-1] if assistant_msgs else ""
 
         # If last assistant message is just a tool call and we have results, show formatted result.
+        # LM Studio/Qwen models prefix the block with  — strip it first.
         # YAML blocks may start with ```yaml or bare "name:" (no fences).
         # LM Studio/Qwen models prefix the block with <think>...</think> — strip it first.
         _last_stripped = re.sub(

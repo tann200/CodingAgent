@@ -175,46 +175,39 @@ def _prune_tool_outputs(history: list) -> tuple:
 
 # P1-D: Graduated corrective prompts helper.
 # Selects a corrective prompt variant based on the number of consecutive empty/no-tool
-# responses (attempt) and model tier. The truncated_yaml path is a special-case that
-# instructs the model to emit a minimal tool call.
+# responses (attempt) and model tier.
 def _select_corrective_prompt(
-    attempt: int = 1, model_tier: str | None = None, truncated_yaml: bool = False
+    attempt: int = 1, model_tier: str | None = None
 ) -> str:
     try:
         att = int(attempt or 1)
     except Exception:
         att = 1
-    # Truncated YAML gets a concise, explicit prompt.
-    if truncated_yaml:
-        return (
-            "\n\n<system_reminder>\n"
-            "Your response may have been cut off because the context window is full. "
-            "Please output a minimal YAML tool call — include the tool name and at most 1-2 arguments. "
-            "Keep the response brief (under 50 tokens). No analysis or preamble.\n"
-            "```yaml\nname: tool_name\narguments:\n  key: value\n```\n"
-            "</system_reminder>\n"
-        )
     # Graduated prompts: gentle -> specific -> critical
     prompts = [
         # 1st attempt: gentle reminder and fallback to 'respond' tool
         (
             "\n\n<system_reminder>\n"
-            "Please provide a valid YAML tool call for your next action. Avoid empty responses or thinking-only blocks.\n"
+            "Please provide a valid JSON function call for your next action using the format: "
+            "{\"name\": \"tool_name\", \"arguments\": {\"arg\": \"value\"}}. "
+            "Avoid empty responses or thinking-only blocks.\n"
             "If you cannot determine the next action, you may use the 'respond' tool to explain what you need.\n"
             "</system_reminder>\n"
         ),
         # 2nd attempt: prescriptive example and formatting guidance
         (
             "\n\n<system_reminder>\n"
-            "Please output a valid YAML tool call block now. Use the YAML format below and keep it concise (name and at most 1-2 arguments). No analysis or preamble.\n"
-            "```yaml\nname: tool_name\narguments:\n  key: value\n```\n"
+            "Please output a valid JSON function call now. Use the format below and keep it concise "
+            "(name and at most 1-2 arguments). No analysis or preamble.\n"
+            "{\"name\": \"tool_name\", \"arguments\": {\"key\": \"value\"}}\n"
             "</system_reminder>\n"
         ),
         # 3rd+ attempt: firmer guidance while remaining polite
         (
             "\n\n<system_reminder>\n"
-            "Important: Please provide a valid YAML tool call block. "
-            "Format:\n```yaml\nname: tool_name\narguments:\n  key: value\n```\n"
+            "Important: Please provide a valid JSON function call block. "
+            "Format:\n"
+            "{\"name\": \"tool_name\", \"arguments\": {\"key\": \"value\"}}\n"
             "Avoid thinking-only responses or empty outputs.\n"
             "</system_reminder>\n"
         ),
@@ -297,29 +290,6 @@ def _parse_native_tool_call_from_resp(resp: Any) -> dict | None:
     return None
 
 
-def _parse_yaml_tool_call_from_content(content: str) -> dict | None:
-    """Attempt to parse a YAML tool block from content.
-
-    Tries thinking-stripped content first, then falls back to raw content.
-    """
-    if not content:
-        return None
-    try:
-        try:
-            from src.core.inference.thinking_utils import strip_thinking as _st
-
-            _stripped_for_parse = _st(content)
-            if _stripped_for_parse:
-                parsed = parse_tool_block(_stripped_for_parse)
-                if parsed:
-                    return parsed
-        except Exception:
-            pass
-        return parse_tool_block(content)
-    except Exception:
-        return None
-
-
 def _detect_prompt_injection(tool_call: dict | None, state: Mapping[str, Any]) -> bool:
     """Detect if a parsed tool_call mirrors a prior user message (prompt injection).
 
@@ -354,7 +324,6 @@ def _handle_no_tool_or_empty_response(
     content: str,
     content_stripped: str,
     thinking_only: bool,
-    _is_truncated_yaml: bool,
     state: Mapping[str, Any],
     orchestrator: Any,
     _model_tier_str: str | None,
@@ -365,7 +334,7 @@ def _handle_no_tool_or_empty_response(
     when a corrective prompt should be issued. Returns None to indicate
     perception_node should continue normal execution.
     """
-    if not (content_stripped or thinking_only or _is_truncated_yaml):
+    if not (content_stripped or thinking_only):
         return None
 
     empty_response_count = int(state.get("empty_response_count") or 0) + 1
@@ -400,13 +369,12 @@ def _handle_no_tool_or_empty_response(
     corrective_prompt = _select_corrective_prompt(
         attempt=empty_response_count,
         model_tier=_model_tier_str,
-        truncated_yaml=bool(_is_truncated_yaml),
     )
     new_messages = [
         {"role": "assistant", "content": content or ""},
         {
             "role": "user",
-            "content": corrective_prompt + "\n\nProvide a valid YAML tool call now.",
+            "content": corrective_prompt + "\n\nProvide a valid JSON function call now.",
         },
     ]
     try:
@@ -414,8 +382,7 @@ def _handle_no_tool_or_empty_response(
             evt = {
                 "session_id": state.get("session_id"),
                 "attempt": empty_response_count,
-                "reason": "truncated_yaml" if _is_truncated_yaml else "no_tool",
-                "truncated_yaml": bool(_is_truncated_yaml),
+                "reason": "no_tool",
                 "model_tier": _model_tier_str,
             }
             try:
@@ -860,10 +827,10 @@ def _run_auto_compaction(
 
 def _parse_tool_call_and_flags(
     resp: Any, content: str, state: Mapping[str, Any]
-) -> tuple[dict | None, str, bool, bool, str]:
+) -> tuple[dict | None, str, bool, str]:
     """Parse tool call from response/content and compute helper flags.
 
-    Returns (tool_call, content_stripped, thinking_only, is_truncated_yaml, content_no_thinking)
+    Returns (tool_call, content_stripped, thinking_only, content_no_thinking)
     """
     # Normalize content
     content_stripped = content.strip() if content else ""
@@ -890,17 +857,15 @@ def _parse_tool_call_and_flags(
 
     tool_call = None
     try:
-        # Prefer native provider tool_calls first
         tool_call = _parse_native_tool_call_from_resp(resp)
 
-        # Fallback to YAML parsing when appropriate
         if (
             not tool_call
             and content
             and "tool_execution_result" not in content
             and '"tool_execution_result"' not in content
         ):
-            tool_call = _parse_yaml_tool_call_from_content(content)
+            tool_call = parse_tool_block(content)
         elif not tool_call:
             logger.info(
                 "perception_node: skipping parse_tool_block because content contains tool_execution_result"
@@ -917,23 +882,10 @@ def _parse_tool_call_and_flags(
     except Exception:
         tool_call = None
 
-    # Detect truncated YAML: model started a ```yaml block but couldn't complete it.
-    _is_truncated_yaml = bool(
-        tool_call is None
-        and content_stripped
-        and not thinking_only
-        and "```yaml" in content_stripped
-        and not any(
-            sig in content_stripped.lower()
-            for sig in ("status: complete", "task is complete", "result:")
-        )
-    )
-
     return (
         tool_call,
         content_stripped,
         thinking_only,
-        _is_truncated_yaml,
         content_no_thinking,
     )
 
@@ -1925,7 +1877,6 @@ async def _perception_node_impl(
         tool_call,
         content_stripped,
         thinking_only,
-        _is_truncated_yaml,
         _content_no_thinking,
     ) = _parse_tool_call_and_flags(resp, content, state)
 
@@ -1937,7 +1888,6 @@ async def _perception_node_impl(
                 content,
                 content_stripped,
                 thinking_only,
-                _is_truncated_yaml,
                 state,
                 orchestrator,
                 _model_tier_str,

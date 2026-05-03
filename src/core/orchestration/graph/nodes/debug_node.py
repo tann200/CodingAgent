@@ -165,7 +165,7 @@ Error details: {error_summary}
 
 Guidance: {TYPE_GUIDANCE[error_type]}
 
-Generate a YAML tool call to fix the issue. Use edit_file, write_file, or bash as appropriate."""
+Generate a JSON function call to fix the issue. Use edit_file, write_file, or bash as appropriate."""
 
     try:
         builder = ContextBuilder(working_dir=state.get("working_dir"))

@@ -346,7 +346,7 @@ async def _execution_node_impl(state: Mapping[str, Any], config: RunnableConfig)
 Working directory: {state.get("working_dir")}
 Original task: {original_task or state.get("task")}
 
-Generate the appropriate tool call to complete this step. Respond with ONLY a tool call in the required YAML format."""
+Generate the appropriate tool call to complete this step. Respond with ONLY a JSON function call (no YAML)."""
 
             from src.core.orchestration.provider_capabilities import resolve_provider_capabilities as _resolve_pc
             provider_capabilities = _resolve_pc(orchestrator)
