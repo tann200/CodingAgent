@@ -1,15 +1,7 @@
 """tool_execution_pipeline.py — Phase C extraction.
 
-Contains the full implementation of Orchestrator.execute_tool as a
-module-level function ``execute_tool_impl(orch, tool_call)``.
-
-The ``Orchestrator.execute_tool`` method is a thin 2-line delegate that calls
-this function, keeping the public API unchanged while reducing orchestrator.py
-by ~920 lines.
-
-All ``self.*`` accesses are preserved verbatim — they are simply accessed via
-the ``orch`` parameter instead of ``self``, so every existing test that patches
-orchestrator attributes/methods continues to work without change.
+Contains the implementation of ``Orchestrator.execute_tool`` as the module-level
+function ``execute_tool_impl(orch, tool_call)``.
 """
 
 from __future__ import annotations
@@ -19,28 +11,56 @@ import json
 import logging
 import uuid
 from pathlib import Path
-from typing import Any, Dict, cast, Optional
+from typing import Any, Dict, Optional, cast
 
 logger = logging.getLogger(__name__)
 
-# F-81: named constants for approval timeout and thread pool size.
 APPROVAL_TIMEOUT_SECONDS: float = 120.0
 TOOL_EXECUTOR_MAX_WORKERS: int = 4
-
-# F-89: module-level constant for tool output truncation limit.
 TOOL_OUTPUT_MAX_CHARS: int = 8_000
 
-# Re-import constants used inside execute_tool body.
-# These names are also bound in orchestrator.py for backward-compat patching.
+
+def _truncate_result_strings(result: dict) -> dict:
+    """Truncate overly large string fields in tool results."""
+    if not isinstance(result, dict):
+        return result
+
+    if any(
+        isinstance(v, str) and len(v) > TOOL_OUTPUT_MAX_CHARS for v in result.values()
+    ):
+        result = dict(result)
+        for k, v in list(result.items()):
+            if isinstance(v, str) and len(v) > TOOL_OUTPUT_MAX_CHARS:
+                result[k] = (
+                    v[:TOOL_OUTPUT_MAX_CHARS]
+                    + f"\n... [truncated: {len(v) - TOOL_OUTPUT_MAX_CHARS} chars omitted]"
+                )
+
+    inner = result.get("result")
+    if isinstance(inner, dict):
+        if any(
+            isinstance(v, str) and len(v) > TOOL_OUTPUT_MAX_CHARS
+            for v in inner.values()
+        ):
+            inner = dict(inner)
+            result["result"] = inner
+            for k, v in list(inner.items()):
+                if isinstance(v, str) and len(v) > TOOL_OUTPUT_MAX_CHARS:
+                    inner[k] = (
+                        v[:TOOL_OUTPUT_MAX_CHARS]
+                        + f"\n... [truncated: {len(v) - TOOL_OUTPUT_MAX_CHARS} chars omitted]"
+                    )
+
+    return result
+
+
 from src.core.orchestration.tool_constants import (  # noqa: E402
-    WRITE_TOOLS_REQUIRING_READ,
     DRY_RUN_BLOCKED_TOOLS,
     PERMISSION_REQUIRED_TOOLS,
-    PERM_ORDER as _PERM_ORDER,
+    WRITE_TOOLS_REQUIRING_READ,
     _write_permission_audit,
 )
 
-# pydantic ValidationError: safe alias in case pydantic is absent
 try:
     import importlib as _il
 
@@ -49,14 +69,14 @@ try:
 except Exception:
 
     class ValidationError(Exception):  # type: ignore[no-redef]
-        """Fallback ValidationError when pydantic is not installed."""
-
         pass
 
 
-# tool_contracts: optional dependency
 try:
-    from src.core.orchestration.tool_contracts import get_tool_contract, ToolContract  # type: ignore[attr-defined]
+    from src.core.orchestration.tool_contracts import (  # type: ignore[attr-defined]
+        ToolContract,
+        get_tool_contract,
+    )
 except ImportError:
 
     def get_tool_contract(name: str) -> Any:  # type: ignore[misc]
@@ -69,18 +89,31 @@ except ImportError:
 
 
 try:
-    from src.core.orchestration.approval_gate import register_tool_gate, _tool_denied
+    from src.core.orchestration.approval_gate import (
+        _tool_denied,
+        discard_tool_denied,
+        is_tool_denied,
+        register_tool_gate,
+    )
 except Exception:
 
     def register_tool_gate(tool_id: str) -> Any:  # type: ignore[misc]
         return None
 
+    def is_tool_denied(tool_id: str) -> bool:  # type: ignore[misc]
+        return False
+
+    def discard_tool_denied(tool_id: str) -> None:  # type: ignore[misc]
+        pass
+
     _tool_denied: set = set()
+
 
 try:
     from src.core.logger import logger as guilogger  # type: ignore[assignment]
 except Exception:
     guilogger = logger  # type: ignore[assignment]
+
 
 try:
     from src.core.orchestration.tool_result_formatter import (
@@ -92,155 +125,127 @@ except Exception:
         return str(result)
 
 
-def execute_tool_impl(orch: Any, tool_call: Dict[str, Any]) -> Dict[str, Any]:
-    """Full implementation of Orchestrator.execute_tool.
+def _check_read_before_write(
+    orch: Any,
+    name: str,
+    args: dict,
+    workspace_guard_tools: frozenset,
+) -> Optional[Dict[str, Any]]:
+    """Enforce read-before-write for write tools."""
+    if name not in workspace_guard_tools:
+        return None
 
-    Parameters
-    ----------
-    orch:
-        The ``Orchestrator`` instance (``self`` in the original method).
-    tool_call:
-        The tool-call dict as passed to ``Orchestrator.execute_tool``.
-    """
-    name_raw = tool_call.get("name")
-    if not isinstance(name_raw, str):
-        return {"ok": False, "error": "Tool name must be a string."}
-    # Normalise tool name aliases so the LLM can use short forms
-    try:
-        from src.tools.tools_config import TOOL_ALIASES
-
-        name = TOOL_ALIASES.get(name_raw, name_raw)
-    except Exception:
-        name = name_raw
-    args = dict(tool_call.get("arguments", {}))
-
-    # F4: Strip LLM-injected user_approved to prevent WorkspaceGuard bypass.
-    # user_approved is enforced at the orchestrator / UI level, not via LLM arguments.
-    args.pop("user_approved", None)
-
-    # UX-3: Dry-run mode — intercept write/destructive tools and return a
-    # preview dict instead of executing.  The intercepted call is also
-    # appended to orch._dry_run_log so run_agent_once() can surface the
-    # full list in the result under "dry_run_intercepted".
-    if getattr(orch, "_dry_run", False) and name in DRY_RUN_BLOCKED_TOOLS:
-        entry = {"status": "dry_run", "would_call": name, "args": args}
-        try:
-            if not hasattr(orch, "_dry_run_log"):
-                orch._dry_run_log = getattr(orch, "_dry_run_log", [])  # type: ignore[attr-defined]
-            orch._dry_run_log.append(entry)
-        except Exception:
-            pass
-        return entry
-
-    # GAP 2: Generate unique tool call ID for ACP compliance
-    tool_call_id = f"call_{uuid.uuid4().hex[:8]}"
-
-    # Hard Rule Enforcement: Read before Edit for write tools
     path_arg = args.get("path") or args.get("file_path") or args.get("src_path")
-    if path_arg and name in WRITE_TOOLS_REQUIRING_READ:
-        try:
-            target = Path(orch.working_dir or ".") / path_arg
-            resolved_path = str(target.resolve())
-            # Only enforce read-before-write on pre-existing files.
-            # Brand-new files have no prior content to protect.
-            if target.exists() and resolved_path not in orch._session_read_files:
-                # P0-B fix: always inject a "history" entry so the LLM receives
-                # the correction signal.  Previously this returned a bare dict with
-                # no "history" key, creating a silent micro-loop where the LLM
-                # retried the write indefinitely without ever seeing an error message.
-                err_msg = (
-                    f"Security/Logic violation: You must read '{path_arg}' "
-                    f"before writing to it. Use read_file first to inspect "
-                    f"the current content."
-                )
-                return {
-                    "ok": False,
-                    "error": err_msg,
-                    "history": [
-                        {
-                            "role": "user",
-                            "content": json.dumps(
-                                {
-                                    "tool_execution_result": {
-                                        "ok": False,
-                                        "error": err_msg,
-                                    }
-                                }
-                            ),
-                        }
-                    ],
-                    "last_result": {"ok": False, "error": err_msg},
-                    "next_action": None,
-                }
-        except Exception:
-            pass
+    if not path_arg:
+        return None
 
-    # GAP-S2: Workspace scope guard — block writes to files outside the plan's
-    # affected_files set.  Only active when:
-    #   (a) the tool is a write-family tool, AND
-    #   (b) _affected_files is non-empty (i.e. a plan has been produced), AND
-    #   (c) the target path is NOT in the allowed set.
-    # When _affected_files is empty/None the guard is inactive (pre-plan fast-path).
-    if path_arg and name in WRITE_TOOLS_REQUIRING_READ:
-        try:
-            _af = getattr(orch, "_affected_files", None) or []
-            if _af:
-                # Normalise a path to a workdir-relative form for comparison.
-                # Strategy: strip the workdir prefix first (preserving the leading
-                # slash while comparing), then strip any remaining leading slashes.
-                _workdir = str(orch.working_dir or ".").rstrip("/\\")
-
-                def _norm(p: str) -> str:
-                    p = str(p)
-                    # Strip workdir prefix (absolute or relative match).
-                    if p.startswith(_workdir + "/") or p.startswith(_workdir + "\\"):
-                        p = p[len(_workdir) + 1 :]
-                    elif p.lstrip("/\\").startswith(_workdir.lstrip("/\\") + "/"):
-                        # Handle mismatched leading-slash forms
-                        _stripped = p.lstrip("/\\")
-                        _wd_rel = _workdir.lstrip("/\\")
-                        p = _stripped[len(_wd_rel) + 1 :]
-                    # Strip any remaining leading separators.
-                    return p.lstrip("/\\")
-
-                _target_norm = _norm(path_arg)
-                # Build a set of normalised allowed paths for O(1) lookup.
-                _af_set = {_norm(str(_f)) for _f in _af}
-                if _target_norm not in _af_set:
-                    # Publish scope violation event for observability.
-                    try:
-                        from src.core.orchestration.event_bus import get_event_bus
-
-                        get_event_bus().publish(
-                            "scope.violation",
+    try:
+        target = Path(orch.working_dir or ".") / path_arg
+        resolved_path = str(target.resolve())
+        if target.exists() and resolved_path not in orch._session_read_files:
+            err_msg = (
+                f"Security/Logic violation: You must read '{path_arg}' "
+                "before writing to it. Use read_file first to inspect "
+                "the current content."
+            )
+            return {
+                "ok": False,
+                "error": err_msg,
+                "history": [
+                    {
+                        "role": "user",
+                        "content": json.dumps(
                             {
-                                "tool": name,
-                                "path": path_arg,
-                                "allowed": list(_af_set),
-                            },
-                        )
-                    except Exception:
-                        pass
-                    return {
-                        "ok": False,
-                        "error": (
-                            f"File '{path_arg}' is outside the task scope. "
-                            f"The current plan authorises writes to: {sorted(_af_set)}. "
-                            "Use ask_user to confirm expanding the scope."
+                                "tool_execution_result": {
+                                    "ok": False,
+                                    "error": err_msg,
+                                }
+                            }
                         ),
                     }
-        except Exception:
-            pass  # scope guard must never block on internal errors
+                ],
+                "last_result": {"ok": False, "error": err_msg},
+                "next_action": None,
+            }
+    except Exception:
+        pass
+    return None
 
-    # P4-4: Block write tools when plan mode is active (plan not yet approved).
-    # _plan_mode_approved is set by execution_node from AgentState before each call.
+
+def _check_workspace_scope_guard(
+    orch: Any,
+    name: str,
+    args: dict,
+    workspace_guard_tools: frozenset,
+) -> Optional[Dict[str, Any]]:
+    """Block writes to files outside the plan's affected_files set."""
+    if name not in workspace_guard_tools:
+        return None
+
+    path_arg = args.get("path") or args.get("file_path") or args.get("src_path")
+    if not path_arg:
+        return None
+
+    try:
+        affected_files = getattr(orch, "_affected_files", None) or []
+        if not affected_files:
+            return None
+
+        workdir = str(orch.working_dir or ".").rstrip("/\\")
+
+        def _norm(p: str) -> str:
+            p = str(p)
+            if p.startswith(workdir + "/") or p.startswith(workdir + "\\"):
+                p = p[len(workdir) + 1 :]
+            elif p.lstrip("/\\").startswith(workdir.lstrip("/\\") + "/"):
+                stripped = p.lstrip("/\\")
+                wd_rel = workdir.lstrip("/\\")
+                p = stripped[len(wd_rel) + 1 :]
+            return p.lstrip("/\\")
+
+        target_norm = _norm(path_arg)
+        affected_set = {_norm(str(item)) for item in affected_files}
+
+        if target_norm not in affected_set:
+            try:
+                from src.core.orchestration.event_bus import get_event_bus
+
+                get_event_bus().publish(
+                    "scope.violation",
+                    {
+                        "tool": name,
+                        "path": path_arg,
+                        "allowed": list(affected_set),
+                    },
+                )
+            except Exception:
+                pass
+            return {
+                "ok": False,
+                "error": (
+                    f"File '{path_arg}' is outside the task scope. "
+                    f"The current plan authorises writes to: {sorted(affected_set)}. "
+                    "Use ask_user to confirm expanding the scope."
+                ),
+            }
+    except Exception:
+        pass
+    return None
+
+
+def _check_plan_mode_guard(orch: Any, name: str) -> Optional[Dict[str, Any]]:
+    """Block write tools when plan mode is active and not yet approved."""
     try:
         from src.core.orchestration.plan_mode import PlanMode
 
-        _pm = getattr(orch, "plan_mode", None)
-        if _pm and getattr(_pm, "enabled", False) and name in PlanMode.BLOCKED_TOOLS:
-            _approved = getattr(orch, "_plan_mode_approved", None)
-            if _approved is not True:
+        plan_mode = getattr(orch, "plan_mode", None)
+        if (
+            plan_mode
+            and getattr(plan_mode, "enabled", False)
+            and name in PlanMode.BLOCKED_TOOLS
+        ):
+            approved = getattr(orch, "_plan_mode_approved", None)
+            if approved is not True:
                 return {
                     "ok": False,
                     "error": (
@@ -249,159 +254,189 @@ def execute_tool_impl(orch: Any, tool_call: Dict[str, Any]) -> Dict[str, Any]:
                     ),
                 }
     except Exception:
-        pass  # never block on import/logic errors
+        pass
+    return None
 
-    # Explore Mode guard: when active, only analyst read-only tools are permitted.
-    # Rejects any write/exec/delegation tool with a clear error message.
-    if getattr(orch, "explore_mode", False):
-        try:
-            from src.core.orchestration.role_config import is_tool_allowed_for_role
 
-            if not is_tool_allowed_for_role(name, "analyst"):
-                return {
-                    "ok": False,
-                    "error": (
-                        f"Explore mode is active: tool '{name}' is not permitted. "
-                        "Only read-only exploration tools (read_file, glob, grep, "
-                        "find_symbol, bash, etc.) are allowed in explore mode."
-                    ),
-                }
-        except Exception:
-            pass  # never block on import errors
+def _check_explore_mode_guard(orch: Any, name: str) -> Optional[Dict[str, Any]]:
+    """Block non-read-only tools when explore mode is active."""
+    if not getattr(orch, "explore_mode", False):
+        return None
 
-    # TASK-01: PermissionLevel-driven gate.
-    # DANGER and PROMPT tools require explicit user approval unless the agent
-    # is running in autonomous mode (--autonomous / is_autonomous()).
-    # The legacy PERMISSION_REQUIRED_TOOLS set is kept for backward compat
-    # but the gate now also fires for any tool classified as DANGER/PROMPT.
-    #
-    # Workdir-confinement bypass: bash, run_tests, delete_file, and ask_user
-    # are auto-approved when the operation is confined to the project working
-    # directory (or has no filesystem side-effects like ask_user).
-    _WORKDIR_BYPASS_TOOLS = {
-        "bash",
-        "run_tests",
-        "delete_file",
-        "run_bash",
-        "ask_user",
-    }
-    _workdir_confined = False
-    if name in _WORKDIR_BYPASS_TOOLS:
-        try:
-            from src.core.orchestration.permission_gateway import (
-                _is_workdir_confined,
-            )
+    try:
+        from src.core.orchestration.role_config import is_tool_allowed_for_role
 
-            _workdir_confined = _is_workdir_confined(name, args, orch.working_dir)
-        except Exception:
-            pass
+        if not is_tool_allowed_for_role(name, "analyst"):
+            return {
+                "ok": False,
+                "error": (
+                    f"Explore mode is active: tool '{name}' is not permitted. "
+                    "Only read-only exploration tools (read_file, glob, grep, "
+                    "find_symbol, bash, etc.) are allowed in explore mode."
+                ),
+            }
+    except Exception:
+        pass
+    return None
 
-    _needs_gate = (not _workdir_confined) and (name in PERMISSION_REQUIRED_TOOLS)
-    if not _needs_gate:
-        # Also gate tools classified as DANGER or PROMPT by PermissionLevel,
-        # regardless of workdir confinement.
-        try:
-            from src.tools.tools_config import get_tool_permission, PermissionLevel
 
-            _perm = get_tool_permission(name)
-            if _perm in (PermissionLevel.DANGER, PermissionLevel.PROMPT):
-                _needs_gate = True
-        except Exception:
-            pass  # never block on import errors
-
-    # TASK-20: Active permission mode check.
-    # When --permission-mode is set, block any tool whose required level is
-    # more permissive than the active mode.  Ordering (least → most permissive):
-    #   READ_ONLY < WORKSPACE_WRITE < DANGER < PROMPT < ALLOW
+def _check_permission_mode_guard(orch: Any, name: str) -> Optional[Dict[str, Any]]:
+    """Block tools that exceed the active permission mode."""
     try:
         from src.tools.tools_config import (
+            PermissionLevel,
             get_active_permission_mode,
             get_tool_permission,
-            PermissionLevel,
         )
 
-        _active_mode = get_active_permission_mode()
-        if _active_mode is not None:
-            _tool_perm = get_tool_permission(name)
-            _active_rank = _PERM_ORDER.get(_active_mode.value, 99)
-            _tool_rank = _PERM_ORDER.get(_tool_perm.value, 99)
-            # Block if the tool requires more privilege than the active mode allows.
-            # READ_ONLY mode (rank=0) only allows rank-0 (READ_ONLY) tools.
-            if _tool_rank > _active_rank:
+        active_mode = get_active_permission_mode()
+        if active_mode is not None:
+            tool_perm = get_tool_permission(name)
+            active_rank = {
+                PermissionLevel.READ_ONLY: 0,
+                PermissionLevel.WORKSPACE_WRITE: 1,
+                PermissionLevel.DANGER: 2,
+                PermissionLevel.PROMPT: 3,
+                PermissionLevel.ALLOW: 4,
+            }.get(active_mode, 4)
+            tool_rank = {
+                PermissionLevel.READ_ONLY: 0,
+                PermissionLevel.WORKSPACE_WRITE: 1,
+                PermissionLevel.DANGER: 2,
+                PermissionLevel.PROMPT: 3,
+                PermissionLevel.ALLOW: 4,
+            }.get(tool_perm, 4)
+            if tool_rank > active_rank:
                 return {
                     "ok": False,
                     "error": (
-                        f"Tool '{name}' requires '{_tool_perm.value}' permission "
-                        f"but active permission mode is '{_active_mode.value}'."
+                        f"Tool '{name}' requires '{tool_perm.value}' permission "
+                        f"but active permission mode is '{active_mode.value}'."
                     ),
                 }
     except Exception:
-        pass  # never block on import errors
+        pass
+    return None
 
-    if _needs_gate:
-        # Skip gate entirely when running autonomously
-        _autonomous = False
+
+def _check_workdir_confinement(orch: Any, name: str, args: dict) -> bool:
+    """Return True when the tool call still needs explicit approval."""
+    if name == "ask_user":
+        return False
+
+    needs_gate = name in PERMISSION_REQUIRED_TOOLS
+    try:
+        from src.tools.tools_config import PermissionLevel, get_tool_permission
+
+        tool_perm = get_tool_permission(name)
+        if tool_perm in (PermissionLevel.DANGER, PermissionLevel.PROMPT):
+            needs_gate = True
+    except Exception:
+        pass
+
+    workdir = getattr(orch, "working_dir", None)
+    if workdir is None:
+        return needs_gate
+
+    try:
+        workdir_path = Path(workdir).resolve()
+    except Exception:
+        return needs_gate
+
+    def _inside(path_value: Any) -> bool:
         try:
-            from src.tools.tools_config import is_autonomous
+            resolved = Path(path_value).resolve()
+            return resolved == workdir_path or str(resolved).startswith(
+                str(workdir_path) + "/"
+            )
+        except Exception:
+            return False
 
-            _autonomous = is_autonomous()
+    if name in ("bash", "run_tests", "run_bash"):
+        if _inside(args.get("workdir", workdir_path)):
+            return False
+        return True
+
+    if name == "delete_file":
+        path_arg = args.get("path") or args.get("file_path")
+        if path_arg and _inside(workdir_path / str(path_arg)):
+            return False
+        return True
+
+    return needs_gate
+
+
+def execute_tool_impl(orch: Any, tool_call: Dict[str, Any]) -> Dict[str, Any]:
+    """Module-level implementation of ``Orchestrator.execute_tool``."""
+    name_raw = tool_call.get("name")
+    if not isinstance(name_raw, str):
+        return {"ok": False, "error": "Tool name must be a string."}
+
+    name = name_raw
+    args = tool_call.get("arguments") or {}
+    if not isinstance(args, dict):
+        return {"ok": False, "error": "Tool arguments must be a mapping."}
+
+    if getattr(orch, "_dry_run", False) and name in DRY_RUN_BLOCKED_TOOLS:
+        entry = {"tool": name, "args": args}
+        try:
+            orch._dry_run_log.append(entry)
         except Exception:
             pass
+        return {"status": "dry_run", "would_call": name, "args": args}
 
-        if not _autonomous:
-            try:
-                # TUI-04: use module-level gate registry so each tool call gets its
-                # own tool_id and the TUI can target the correct approval request.
-                _t4_id = f"{uuid.uuid4().hex[:8]}"
-                _t4_ev = register_tool_gate(_t4_id)
-                # SPAWN-W5: For delegate_task, also fire the specialized spawn event
-                # so the TUI can show a spawn-specific confirmation dialog.
-                if name == "delegate_task":
-                    try:
-                        orch.event_bus.publish(
-                            "spawn.permission_required",
-                            {
-                                "tool": name,
-                                "role": args.get("role", ""),
-                                "task": str(args.get("subtask_description", ""))[:200],
-                                "tool_id": _t4_id,
-                            },
-                        )
-                    except Exception:
-                        pass
-                orch.event_bus.publish(
-                    "tool.permission_required",
-                    {
-                        "tool": name,
-                        "args": {k: str(v)[:200] for k, v in args.items() if k != "content"},
-                        "tool_id": _t4_id,
-                    },
-                )
-                # PERF-VOL23-2: _t4_ev is a threading.Event; .wait(120) blocks the
-                # calling thread for up to 2 minutes.  When execute_tool_impl runs
-                # inside a ThreadPoolExecutor worker this ties up that worker slot for
-                # the full timeout window.  Only affects non-autonomous mode (approval
-                # required).  Ensure ThreadPoolExecutor max_workers > 1 if multiple
-                # concurrent tool approvals are possible, to avoid pool exhaustion.
-                granted = _t4_ev.wait(timeout=APPROVAL_TIMEOUT_SECONDS)
-                if not granted or _t4_id in _tool_denied:
-                    _tool_denied.discard(_t4_id)
-                    return {
-                        "ok": False,
-                        "error": f"Tool '{name}' was denied by the user.",
-                    }
-            except Exception as _perm_exc:
-                guilogger.warning(f"Permission gate error for '{name}': {_perm_exc}")
+    path_arg = args.get("path") or args.get("file_path") or args.get("src_path")
+    tool_call_id = uuid.uuid4().hex[:8]
 
-    # SPAWN-W2: allowed_tools enforcement in delegated context.
-    # When an active_agent is set (delegated execution), reject tools that are
-    # outside the AgentDefinition.allowed_tools allowlist or inside denied_tools.
+    read_guard = _check_read_before_write(orch, name, args, WRITE_TOOLS_REQUIRING_READ)
+    if read_guard is not None:
+        return read_guard
+
+    scope_guard = _check_workspace_scope_guard(
+        orch, name, args, WRITE_TOOLS_REQUIRING_READ
+    )
+    if scope_guard is not None:
+        return scope_guard
+
+    plan_guard = _check_plan_mode_guard(orch, name)
+    if plan_guard is not None:
+        return plan_guard
+
+    explore_guard = _check_explore_mode_guard(orch, name)
+    if explore_guard is not None:
+        return explore_guard
+
+    permission_mode_guard = _check_permission_mode_guard(orch, name)
+    if permission_mode_guard is not None:
+        return permission_mode_guard
+
     try:
-        _active_agent_spawn = getattr(orch, "active_agent", None)
-        if (
-            _active_agent_spawn is not None
-            and not _active_agent_spawn.is_tool_permitted(name)
-        ):
+        preflight = orch.preflight_check(tool_call)
+    except Exception:
+        preflight = {"ok": True}
+    if isinstance(preflight, dict) and not preflight.get("ok", True):
+        if preflight.get("error") == "tool_not_found":
+            return {
+                "ok": False,
+                "error": f"Tool '{name}' not found.",
+                "details": preflight.get("message"),
+                "suggestions": preflight.get("suggestions", []),
+            }
+        return {
+            "ok": False,
+            "error": preflight.get("message")
+            or preflight.get("error")
+            or "preflight_failed",
+        }
+
+    name = tool_call.get("name", name)
+    tool = orch.tool_registry.get(name)
+    if not tool:
+        return {"ok": False, "error": f"Tool '{name}' not found."}
+
+    try:
+        active_agent = getattr(orch, "active_agent", None)
+        if active_agent is not None and not active_agent.is_tool_permitted(name):
             _write_permission_audit(
                 orch.working_dir, name, args, "deny", "spawn_allowed_tools"
             )
@@ -409,35 +444,16 @@ def execute_tool_impl(orch: Any, tool_call: Dict[str, Any]) -> Dict[str, Any]:
                 "ok": False,
                 "error": (
                     f"Tool '{name}' is not permitted for the active delegated agent "
-                    f"(allowed_tools restriction). Check the agent's allowed_tools list."
+                    "(allowed_tools restriction). Check the agent's allowed_tools list."
                 ),
             }
     except Exception:
         pass
 
-    # PERM-W4: Per-agent permission override.
-    # When the orchestrator has an active_agent with permission_rules, merge them
-    # with the global policy and apply the combined result.
-    try:
-        _active_agent = getattr(orch, "active_agent", None)
-        if _active_agent is not None:
-            _global_policy = getattr(orch, "permission_policy", None)
-            _merged_policy = _active_agent.get_merged_policy(_global_policy)
-            if _merged_policy is not None and _merged_policy.is_denied(name):
-                _write_permission_audit(
-                    orch.working_dir, name, args, "deny", "agent_permission_rules"
-                )
-                return {
-                    "ok": False,
-                    "error": (
-                        f"Tool '{name}' is denied by the active agent's permission rules."
-                    ),
-                }
-    except Exception:
-        pass  # never block on import/logic errors
+    agent_override = _check_agent_permission_override(orch, name, args)
+    if agent_override is not None:
+        return agent_override
 
-    # PERM-W5: Permission audit log — record allow decision for tools that
-    # passed all gates.  Deny decisions are recorded above and in the gate block.
     try:
         _write_permission_audit(
             orch.working_dir, name, args, "allow", "passed_all_gates"
@@ -445,602 +461,225 @@ def execute_tool_impl(orch: Any, tool_call: Dict[str, Any]) -> Dict[str, Any]:
     except Exception:
         pass
 
-    # Publish tool.execute.start AFTER all gate checks so the TUI is only
-    # notified about tools that have actually been approved and will run.
-    # (GAP 2: ACP sessionUpdate schema)
+    needs_gate = _check_workdir_confinement(orch, name, args)
+    permission_gate = _run_permission_gate(orch, name, args, tool_call_id, needs_gate)
+    if permission_gate is not None:
+        return permission_gate
+
     try:
         orch.event_bus.publish(
             "tool.execute.start",
             {
-                "sessionUpdate": "tool_call_update",
-                "toolCallId": tool_call_id,
-                "title": name,
-                "status": "in_progress",
-                "rawInput": args,
-                "workdir": str(orch.working_dir),
+                "tool": name,
+                "args": {k: str(v)[:200] for k, v in args.items() if k != "content"},
+                "tool_call_id": tool_call_id,
             },
         )
     except Exception:
         pass
 
-    tool = orch.tool_registry.get(name)
-    if not tool or not tool.get("fn"):
-        return {"ok": False, "error": f"Tool '{name}' not found or has no callable."}
-
     try:
-        import inspect
-
-        sig = inspect.signature(tool["fn"])
-        if "workdir" in sig.parameters:
-            args["workdir"] = Path(orch.working_dir or ".")
-
-        # SPAWN-W1: Expose this orchestrator as the parent context for tools that
-        # spawn subagents (delegate_task).  Uses a ContextVar so the reference is
-        # scoped to this call stack and doesn't leak across threads.
-        try:
-            from src.tools.subagent_tools import _PARENT_ORCHESTRATOR_VAR
-
-            _orch_token = _PARENT_ORCHESTRATOR_VAR.set(orch)
-        except Exception:
-            _orch_token = None
-
-        # Role enforcement: if orchestrator has current_role, restrict certain tools
-        current_role = getattr(orch, "current_role", None)
-        if current_role:
-            from src.core.orchestration.role_config import is_tool_allowed_for_role
-
-            if not is_tool_allowed_for_role(name, current_role):
+        contract = get_tool_contract(name)
+        if contract is not None:
+            try:
+                validated = contract.model_validate(args)
+            except ValidationError as ve:
+                return {
+                    "ok": False,
+                    "error": f"Tool call failed contract validation: {ve}",
+                }
+            if hasattr(validated, "model_dump"):
+                args = validated.model_dump()
+            elif isinstance(validated, dict):
+                args = validated
+            else:
                 try:
-                    if _orch_token is not None:
-                        from src.tools.subagent_tools import (
-                            _PARENT_ORCHESTRATOR_VAR,
-                        )
-
-                        _PARENT_ORCHESTRATOR_VAR.reset(_orch_token)
+                    args = dict(validated)
                 except Exception:
                     pass
-                return {
-                    "ok": False,
-                    "error": f"Tool '{name}' is not permitted for role '{current_role}'",
-                }
+    except Exception:
+        pass
 
-        # Sandbox validation for write operations — C2 fix: validate the NEW content
-        # being written, not the pre-existing file.  The previous approach copied the
-        # workspace to a temp dir and ran ast.parse on the OLD file, which always passed.
-        # Now we extract the new content from the tool args and parse it directly.
-        # HR-2/MC-3 fix: extend to JS/TS using `node --check` (syntax only, no eval).
+    path_arg = args.get("path") or args.get("file_path") or args.get("src_path")
+
+    try:
         if "write" in tool.get("side_effects", []) and path_arg:
-            try:
-                new_content: str | None = args.get("content")
-                if new_content and isinstance(new_content, str):
-                    if path_arg.endswith(".py"):
-                        import ast as _ast
+            new_content = args.get("content")
+            if new_content and isinstance(new_content, str):
+                if str(path_arg).endswith(".py"):
+                    import ast as _ast
 
-                        try:
-                            _ast.parse(new_content)
-                        except SyntaxError as _syn:
-                            return {
-                                "ok": False,
-                                "error": f"Sandbox validation error: new content has a syntax error at line {_syn.lineno}: {_syn.msg}",
-                            }
-                    elif path_arg.endswith(
-                        (".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx")
-                    ):
-                        # HR-2/MC-3: use Node.js --check flag for JS/TS syntax validation.
-                        # node --check parses without executing — safe and fast (~50 ms).
-                        # Falls back silently if Node is not installed.
-                        import subprocess as _sp
-                        import tempfile as _tf
+                    try:
+                        _ast.parse(new_content)
+                    except SyntaxError as syn:
+                        return {
+                            "ok": False,
+                            "error": (
+                                "Sandbox validation error: new content has a syntax "
+                                f"error at line {syn.lineno}: {syn.msg}"
+                            ),
+                        }
+                elif str(path_arg).endswith(
+                    (".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx")
+                ):
+                    import subprocess as _sp
+                    import tempfile as _tf
 
-                        try:
-                            _node = _sp.run(
-                                ["node", "--version"],
-                                capture_output=True,
-                                timeout=3,
-                            )
-                            if _node.returncode == 0:
-                                # MED-4 fix: initialize _tmp_path before the try block
-                                # so the finally cleanup never raises NameError.
-                                _tmp_path = None
-                                with _tf.NamedTemporaryFile(
-                                    suffix=".js",
-                                    mode="w",
-                                    delete=False,
-                                    encoding="utf-8",
-                                ) as _tmp:
-                                    _tmp.write(new_content)
-                                    _tmp_path = _tmp.name
+                    try:
+                        node = _sp.run(
+                            ["node", "--version"],
+                            capture_output=True,
+                            timeout=3,
+                        )
+                        if node.returncode == 0:
+                            tmp_path = None
+                            with _tf.NamedTemporaryFile(
+                                suffix=".js",
+                                mode="w",
+                                delete=False,
+                                encoding="utf-8",
+                            ) as tmp:
+                                tmp.write(new_content)
+                                tmp_path = tmp.name
+                            try:
+                                check = _sp.run(
+                                    ["node", "--check", tmp_path],
+                                    capture_output=True,
+                                    text=True,
+                                    timeout=10,
+                                )
+                                if check.returncode != 0:
+                                    err = (
+                                        check.stderr or check.stdout or "syntax error"
+                                    ).strip()
+                                    return {
+                                        "ok": False,
+                                        "error": (
+                                            "Sandbox validation error: JS/TS syntax "
+                                            f"error: {err[:300]}"
+                                        ),
+                                    }
+                            finally:
                                 try:
-                                    _check = _sp.run(
-                                        ["node", "--check", _tmp_path],
-                                        capture_output=True,
-                                        text=True,
-                                        timeout=10,
-                                    )
-                                    if _check.returncode != 0:
-                                        _err = (
-                                            _check.stderr
-                                            or _check.stdout
-                                            or "syntax error"
-                                        ).strip()
-                                        return {
-                                            "ok": False,
-                                            "error": f"Sandbox validation error: JS/TS syntax error: {_err[:300]}",
-                                        }
-                                finally:
-                                    try:
-                                        import os as _os
+                                    import os as _os
 
-                                        if _tmp_path:
-                                            _os.unlink(_tmp_path)
-                                    except Exception:
-                                        pass
-                        except (FileNotFoundError, _sp.TimeoutExpired):
-                            pass  # node not installed or timed out — allow write
-            except Exception as e:
-                # Fail-closed — do not allow writes if validation itself crashes.
-                guilogger.error(f"Sandbox validation failed (fail-closed): {e}")
-                return {
-                    "ok": False,
-                    "error": f"Sandbox validation aborted: {str(e)}. "
-                    f"Write operation blocked for safety.",
-                }
+                                    if tmp_path:
+                                        _os.unlink(tmp_path)
+                                except Exception:
+                                    pass
+                    except (FileNotFoundError, _sp.TimeoutExpired):
+                        pass
+    except Exception as e:
+        guilogger.error(f"Sandbox validation failed (fail-closed): {e}")
+        return {
+            "ok": False,
+            "error": f"Sandbox validation aborted: {str(e)}. Write operation blocked for safety.",
+        }
 
-        # Step B: Snapshot files before write operations for automated rollback.
-        # If a step-level transaction is active, accumulate into it (multi-file
-        # atomicity). Otherwise create an individual per-write snapshot.
-        if "write" in tool.get("side_effects", []) and path_arg:
-            try:
-                if orch._step_snapshot_id:
-                    # Append to the step-level atomic snapshot
-                    orch.rollback_manager.append_to_snapshot(
-                        orch._step_snapshot_id, path_arg
-                    )
-                    orch._current_snapshot_id = orch._step_snapshot_id
-                    guilogger.debug(
-                        f"File added to step snapshot {orch._step_snapshot_id}: {path_arg}"
-                    )
-                else:
-                    # No active transaction — fall back to per-write snapshot
-                    orch._current_snapshot_id = orch.rollback_manager.snapshot_files(
-                        [path_arg], snapshot_id=None
-                    )
-                    guilogger.debug(
-                        f"Individual snapshot created before write: {path_arg}"
-                    )
-            except Exception as snap_err:
-                guilogger.warning(f"Snapshot failed (non-blocking): {snap_err}")
-
-        # Track files read for read-before-edit enforcement
-        if name == "read_file" and path_arg:
-            try:
-                resolved = str((Path(orch.working_dir or ".") / path_arg).resolve())
-                orch._session_read_files.add(resolved)
-            except Exception:
-                pass
-
-        # T9: Tool Timeout Protection — C1 fix: use ThreadPoolExecutor so timeouts
-        # work in any thread (SIGALRM only worked in the main thread, which meant all
-        # timeouts were silently disabled when the agent ran from the TUI daemon thread).
-        timeout_seconds = orch._get_tool_timeout(name)
-
-        # Expose orchestrator to batch tool via thread-local so it can dispatch
-        # sub-calls back through execute_tool. Only set when actually calling batch.
-        if name == "batch":
-            try:
-                from src.tools.batch_tools import set_batch_orchestrator
-
-                set_batch_orchestrator(orch)
-            except Exception:
-                pass
-
-        # Pre-tool hooks: user-configured shell scripts that can deny the call.
+    if "write" in tool.get("side_effects", []) and path_arg:
         try:
-            _hook_runner = getattr(orch, "_tool_hook_runner", None)
-            if _hook_runner is None:
-                from src.core.orchestration.tool_hooks import ToolHookRunner
+            if getattr(orch, "_step_snapshot_id", None):
+                orch.rollback_manager.append_to_snapshot(
+                    orch._step_snapshot_id, path_arg
+                )
+                orch._current_snapshot_id = orch._step_snapshot_id
+            else:
+                orch._current_snapshot_id = orch.rollback_manager.snapshot_files(
+                    [path_arg], snapshot_id=None
+                )
+        except Exception as snap_err:
+            guilogger.warning(f"Snapshot failed (non-blocking): {snap_err}")
 
-                _hook_runner = ToolHookRunner(working_dir=orch.working_dir)
-                orch._tool_hook_runner = _hook_runner
-            _hook_result = _hook_runner.run_pre(name, args)
-            if not _hook_result.allowed:
-                return {
-                    "ok": False,
-                    "error": f"Pre-tool hook denied '{name}': {_hook_result.reason}",
-                }
+    if name == "batch":
+        try:
+            from src.tools.batch_tools import set_batch_orchestrator
+
+            set_batch_orchestrator(orch)
         except Exception:
-            pass  # never block on hook infrastructure errors
+            pass
+
+    try:
+        hook_runner = getattr(orch, "_tool_hook_runner", None)
+        if hook_runner is None:
+            from src.core.orchestration.tool_hooks import ToolHookRunner
+
+            hook_runner = ToolHookRunner(working_dir=orch.working_dir)
+            orch._tool_hook_runner = hook_runner
+        hook_result = hook_runner.run_pre(name, args)
+        if not hook_result.allowed:
+            return {
+                "ok": False,
+                "error": f"Pre-tool hook denied '{name}': {hook_result.reason}",
+            }
+    except Exception:
+        pass
+
+    orch_token = None
+    try:
+        from src.tools.subagent_tools import _PARENT_ORCHESTRATOR_VAR
+
+        orch_token = _PARENT_ORCHESTRATOR_VAR.set(orch)
+    except Exception:
+        orch_token = None
+
+    timeout_seconds = orch._get_tool_timeout(name)
+
+    try:
+        import concurrent.futures as _cf
+        import contextvars as _contextvars
+        import inspect as _inspect
+
+        def _run_tool_callable(fn: Any, kwargs: dict) -> Any:
+            rv = fn(**kwargs)
+            if _inspect.isawaitable(rv):
+                import asyncio as _asyncio
+                from typing import Coroutine
+
+                return _asyncio.run(cast(Coroutine[Any, Any, Any], rv))
+            return rv
 
         try:
-            import concurrent.futures as _cf
-            import contextvars as _contextvars
-            import inspect as _inspect
-
-            def _run_tool_callable(fn, kwargs):
-                """Run the tool callable in the worker thread, normalising async fns.
-
-                If the callable returns an awaitable, run it to completion using
-                asyncio.run() since we're inside a worker thread.
-                """
-                try:
-                    rv = fn(**kwargs)
-                    if _inspect.isawaitable(rv):
-                        import asyncio as _asyncio
-                        from typing import Coroutine
-
-                        # Pyright expects a Coroutine for asyncio.run(); runtime
-                        # awaitables that are not explicitly typed as Coroutine
-                        # can be cast to satisfy the type-checker without
-                        # changing runtime behaviour. If pyright still complains
-                        # about the argument type, ignore that specific error at
-                        # the call site (type: ignore[arg-type]) as this is a
-                        # type-checker-only concern and the runtime behaviour is
-                        # unchanged.
-                        # type: ignore[arg-type]
-                        return _asyncio.run(cast(Coroutine[Any, Any, Any], rv))
-                    return rv
-                except Exception:
-                    # Let the executor capture the exception for the caller to observe
-                    raise
-
             if timeout_seconds > 0:
-                # HR-3 fix: reuse the long-lived _tool_executor instead of
-                # creating a new ThreadPoolExecutor per call (~5 ms savings each).
-                _tex = getattr(orch, "_tool_executor", None)
-                if _tex is None:
-                    # BUG-FIX #2: increased from 2 to 4 to prevent pool exhaustion
-                    # when multiple concurrent tool approvals are pending
-                    _tex = _cf.ThreadPoolExecutor(max_workers=TOOL_EXECUTOR_MAX_WORKERS)
-                    orch._tool_executor = _tex
-                # Capture current context so ContextVars (correlation id etc.) are
-                # available in the tool thread.
+                tool_executor = getattr(orch, "_tool_executor", None)
+                if tool_executor is None:
+                    tool_executor = _cf.ThreadPoolExecutor(
+                        max_workers=TOOL_EXECUTOR_MAX_WORKERS
+                    )
+                    orch._tool_executor = tool_executor
                 try:
                     ctx = _contextvars.copy_context()
-                    _future = _tex.submit(ctx.run, _run_tool_callable, tool["fn"], args)
+                    future = tool_executor.submit(
+                        ctx.run, _run_tool_callable, tool["fn"], args
+                    )
                 except Exception:
-                    # Fallback: submit without explicit ctx.run
-                    _future = _tex.submit(_run_tool_callable, tool["fn"], args)
+                    future = tool_executor.submit(_run_tool_callable, tool["fn"], args)
                 try:
-                    res = _future.result(timeout=timeout_seconds)
+                    res = future.result(timeout=timeout_seconds)
                 except _cf.TimeoutError:
-                    _future.cancel()
+                    future.cancel()
                     raise TimeoutError(
                         f"Tool '{name}' timed out after {timeout_seconds} seconds"
                     )
             else:
-                # No timeout: run synchronously in this thread and normalise async
                 res = _run_tool_callable(tool["fn"], args)
-        except TimeoutError:
-            guilogger.warning(f"Tool '{name}' timed out after {timeout_seconds}s")
-            # SPAWN-W1: Reset ContextVar on early return paths too.
+        finally:
             try:
-                if _orch_token is not None:
+                if orch_token is not None:
                     from src.tools.subagent_tools import _PARENT_ORCHESTRATOR_VAR
 
-                    _PARENT_ORCHESTRATOR_VAR.reset(_orch_token)
+                    _PARENT_ORCHESTRATOR_VAR.reset(orch_token)
             except Exception:
                 pass
-            return {
-                "ok": False,
-                "error": f"Tool execution timed out after {timeout_seconds} seconds. "
-                f"Consider breaking down the task into smaller steps.",
-            }
-
-        # SPAWN-W1: Reset the parent orchestrator ContextVar after the tool returns.
-        try:
-            if _orch_token is not None:
-                from src.tools.subagent_tools import _PARENT_ORCHESTRATOR_VAR
-
-                _PARENT_ORCHESTRATOR_VAR.reset(_orch_token)
-        except Exception:
-            pass
-
-        # Normalize the result to a dict contract
-        res = orch._normalize_tool_result(res)
-
-        # Tool output truncation: prevent individual tool results from consuming
-        # excessive context window tokens. Cap string values at 8000 chars and
-        # inject a truncation notice so the LLM knows content was cut.
-        # Mirrors opencode's Truncate.output() strategy.
-        # F-89: use module-level TOOL_OUTPUT_MAX_CHARS constant.
-        if isinstance(res, dict):
-            # Copy once before any mutation — avoids repeated copies inside the loop.
-            if any(
-                isinstance(_v, str) and len(_v) > TOOL_OUTPUT_MAX_CHARS
-                for _v in res.values()
-            ):
-                res = dict(res)
-                for _k, _v in list(res.items()):
-                    if isinstance(_v, str) and len(_v) > TOOL_OUTPUT_MAX_CHARS:
-                        res[_k] = (
-                            _v[:TOOL_OUTPUT_MAX_CHARS]
-                            + f"\n... [truncated: {len(_v) - TOOL_OUTPUT_MAX_CHARS} chars omitted]"
-                        )
-            # Also truncate nested result.content (common for read_file)
-            _inner = res.get("result")
-            if isinstance(_inner, dict) and any(
-                isinstance(_v, str) and len(_v) > TOOL_OUTPUT_MAX_CHARS
-                for _v in _inner.values()
-            ):
-                _inner = dict(_inner)
-                res["result"] = _inner
-                for _k, _v in list(_inner.items()):
-                    if isinstance(_v, str) and len(_v) > TOOL_OUTPUT_MAX_CHARS:
-                        _inner[_k] = (
-                            _v[:TOOL_OUTPUT_MAX_CHARS]
-                            + f"\n... [truncated: {len(_v) - TOOL_OUTPUT_MAX_CHARS} chars omitted]"
-                        )
-
-        # (O4: set_role handler removed — role_tools not registered; runtime role
-        # changes via tool calls are disallowed)
-
-        # ORCH-W4: plan_enter / plan_exit mode transitions.
-        # If the tool signals an agent_mode change, update the orchestrator attribute so
-        # perception_node picks it up on the next system-prompt rebuild.
-        if (
-            name in ("plan_enter", "plan_exit")
-            and isinstance(res, dict)
-            and res.get("ok")
-        ):
-            _new_mode = res.get("agent_mode", "execution")
-            setattr(orch, "_agent_mode", _new_mode)
-            try:
-                orch.event_bus.publish(
-                    "agent.mode_changed",
-                    {"mode": _new_mode, "tool": name},
-                )
-            except Exception:
-                pass
-
-            # ORCH-W4 plan_exit handoff: when the LLM submits plan steps via
-            # plan_exit(steps=[...]), stash them on the orchestrator so
-            # execution_node can propagate them into state["current_plan"] and
-            # set state["plan_mode_approved"] = True.
-            if name == "plan_exit" and res.get("steps"):
-                setattr(orch, "_committed_plan_steps", res["steps"])
-                setattr(orch, "_plan_mode_approved", True)
-                try:
-                    orch.event_bus.publish(
-                        "agent.plan_committed",
-                        {"step_count": len(res["steps"]), "tool": name},
-                    )
-                except Exception:
-                    pass
-
-        # Post-tool hooks: fire-and-forget, exit code ignored.
-        try:
-            _hook_runner = getattr(orch, "_tool_hook_runner", None)
-            if _hook_runner is not None:
-                _hook_runner.run_post(name, args, res)
-        except Exception:
-            pass
-
-        # Validate tool contract if registered. If validation fails, return an error to the caller.
-        try:
-            schema = get_tool_contract(name)
-            if schema and isinstance(res, dict):
-                # schema is a pydantic model class; validate either full res or res.get('result')
-                try:
-                    schema.model_validate(res)
-                except ValidationError:
-                    try:
-                        schema.model_validate(res.get("result") or {})
-                    except ValidationError as ve:
-                        return {
-                            "ok": False,
-                            "error": f"Tool result failed contract validation: {ve}",
-                        }
-
-            else:
-                # Validate general ToolContract wrapper for additional safety
-                try:
-                    ToolContract.model_validate(
-                        {"tool": name, "args": args, "result": res}
-                    )
-                except ValidationError as ve:
-                    return {
-                        "ok": False,
-                        "error": f"Tool result failed contract validation: {ve}",
-                    }
-
-            # Telemetry: record invocation counts and latency (best-effort)
-            try:
-                import time as _time
-
-                # Telemetry data for usage tracking
-                # (call_info reserved for future telemetry use)
-                _ts = _time.time()
-
-                # F17: Accumulate in memory — flushed to usage.json at end of run_agent_once()
-                orch._usage_buffer[name] = orch._usage_buffer.get(name, 0) + 1
-                orch.cost_tracker.record_tool_call(name)
-
-                # Telemetry: publish event for tool invocation (GAP 2: ACP schema)
-                try:
-                    orch.event_bus.publish(
-                        "tool.invoked",
-                        {
-                            "sessionUpdate": "tool_call_update",
-                            "toolCallId": tool_call_id,
-                            "title": name,
-                            "status": "invoked",
-                            "timestamp": _ts,
-                            "workdir": str(orch.working_dir),
-                        },
-                    )
-                except Exception:
-                    pass
-
-                # Trace appending moved to workflow_nodes.py execution_node to avoid duplicates
-                # orch._append_execution_trace(call_info)
-            except Exception:
-                pass
-        except Exception:
-            # If pydantic is missing or other issues occur, continue without strict validation
-            pass
-
-        # Track state for session rules
-        if res.get("status") == "ok" or res.get("ok") is True:
-            if name in ["read_file", "fs.read"]:
-                try:
-                    resolved_path = str(
-                        (Path(orch.working_dir or ".") / (path_arg or "")).resolve()  # type: ignore[operator]
-                    )
-                    orch._session_read_files.add(resolved_path)
-                except Exception:
-                    pass
-            elif "write" in tool.get("side_effects", []):
-                try:
-                    resolved_path = str(
-                        (Path(orch.working_dir or ".") / (path_arg or "")).resolve()  # type: ignore[operator]
-                    )
-                    orch._session_modified_files.add(resolved_path)
-                    # Publish file.modified event for UI dashboard
-                    try:
-                        orch.event_bus.publish(
-                            "file.modified",
-                            {
-                                "path": resolved_path,
-                                "tool": name,
-                                "workdir": str(orch.working_dir),
-                            },
-                        )
-                    except Exception:
-                        pass
-                except Exception:
-                    pass
-            elif name == "delete_file" and path_arg:
-                try:
-                    resolved_path = str(
-                        (Path(orch.working_dir or ".") / path_arg).resolve()
-                    )
-                    # Publish file.deleted event for UI dashboard
-                    try:
-                        orch.event_bus.publish(
-                            "file.deleted",
-                            {
-                                "path": resolved_path,
-                                "workdir": str(orch.working_dir),
-                            },
-                        )
-                    except Exception:
-                        pass
-                except Exception:
-                    pass
-
-        # Append execution trace for loop detection and auditing
-        try:
-            entry = {
-                "tool": name,
-                "args": orch._normalize_args(args),
-                "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                "result_ok": bool(res.get("status") == "ok" or res.get("ok") is True),
-            }
-            try:
-                orch._append_execution_trace(entry)
-            except Exception:
-                pass
-        except Exception:
-            pass
-
-        # Publish tool.execute.finish event (GAP 2: ACP sessionUpdate schema)
-        try:
-            formatted = _format_tool_result(res, name)
-            orch.event_bus.publish(
-                "tool.execute.finish",
-                {
-                    "sessionUpdate": "tool_call_update",
-                    "toolCallId": tool_call_id,
-                    "title": name,
-                    "status": "completed",
-                    "content": [{"type": "text", "text": formatted}],
-                    "rawOutput": res,
-                    "workdir": str(orch.working_dir),
-                },
-            )
-        except Exception:
-            pass
-
-        # Phase 4: Publish token budget status for UI dashboard
-        try:
-            if hasattr(orch, "token_monitor"):
-                budget = orch.token_monitor.get_budget(
-                    session_id=getattr(orch, "_current_task_id", "default")
-                )
-                orch.event_bus.publish(
-                    "token.budget.update",
-                    {
-                        "used_tokens": budget.used_tokens,
-                        "max_tokens": budget.max_tokens,
-                        "usage_ratio": budget.usage_ratio,
-                        "session_id": getattr(orch, "_current_task_id", "default"),
-                    },
-                )
-                # TUI-09: also publish canonical token.budget event used by TUI sidebar
-                _used = budget.used_tokens
-                _limit = budget.max_tokens or 32_768
-                _pct = min(100, int(_used / _limit * 100)) if _limit else 0
-                orch.event_bus.publish(
-                    "token.budget",
-                    {
-                        "used": _used,
-                        "limit": _limit,
-                        "percent": _pct,
-                        "warning": _pct >= 80,
-                    },
-                )
-        except Exception:
-            pass
-
-        # Phase 3: Publish preview mode events for UI dashboard
-        try:
-            if hasattr(orch, "preview_service") and hasattr(
-                orch, "_pending_preview_id"
-            ):
-                if orch._pending_preview_id:
-                    orch.event_bus.publish(
-                        "preview.pending",
-                        {"preview_id": orch._pending_preview_id},
-                    )
-        except Exception:
-            pass
-
-        # Step B: Log tool call to SessionStore
-        try:
-            _safe_args = {
-                k: str(v) if isinstance(v, Path) else v for k, v in args.items()
-            }
-            # Coerce None → explicit sentinel for clarity; log thread so we can
-            # correlate background-worker writes in diagnostics/CI artifacts.
-            _sid = getattr(orch, "_current_task_id", None)
-            try:
-                import threading as _thr
-
-                _thread_name = _thr.current_thread().name
-            except Exception:
-                _thread_name = "unknown"
-            logger.debug(
-                "tool_execution: recording tool_call (session=%r, tool=%s, thread=%s)",
-                _sid,
-                name,
-                _thread_name,
-            )
-            orch.session_store.add_tool_call(
-                session_id=_sid,
-                tool_name=name,
-                args=_safe_args,
-                result=res,
-                success=True,
-            )
-        except Exception:
-            pass  # non-fatal
-
-        # GAP 1: Sync session state after tool execution
-        orch._sync_session_state()
-
-        return {"ok": True, "result": res}
+    except TimeoutError:
+        guilogger.warning(f"Tool '{name}' timed out after {timeout_seconds}s")
+        return {
+            "ok": False,
+            "error": (
+                f"Tool execution timed out after {timeout_seconds} seconds. "
+                "Consider breaking down the task into smaller steps."
+            ),
+        }
     except Exception as e:
-        # Publish tool.execute.error event for UI dashboard (GAP 2: ACP schema)
         try:
             orch.event_bus.publish(
                 "tool.execute.error",
@@ -1057,71 +696,357 @@ def execute_tool_impl(orch: Any, tool_call: Dict[str, Any]) -> Dict[str, Any]:
         except Exception:
             pass
 
-        # Log failed tool call to SessionStore
         try:
-            _safe_args = {
+            safe_args = {
                 k: str(v) if isinstance(v, Path) else v for k, v in args.items()
             }
-            _sid = getattr(orch, "_current_task_id", None)
-            try:
-                import threading as _thr
-
-                _thread_name = _thr.current_thread().name
-            except Exception:
-                _thread_name = "unknown"
-            logger.debug(
-                "tool_execution (error path): recording tool_call (session=%r, tool=%s, thread=%s)",
-                _sid,
-                name,
-                _thread_name,
-            )
             orch.session_store.add_tool_call(
-                session_id=_sid,
+                session_id=getattr(orch, "_current_task_id", None),
                 tool_name=name,
-                args=_safe_args,
+                args=safe_args,
                 result={"error": str(e)},
                 success=False,
             )
         except Exception:
-            pass  # non-fatal
+            pass
 
-        # GAP 1: Sync session state after tool error
-        orch._sync_session_state()
-
-        # Learning loop: record unrecovered tool exceptions as cross-session
-        # mistakes so future tasks can avoid the same failure pattern.
         try:
-            _store = getattr(orch, "session_store", None)
-            if _store is not None and hasattr(_store, "add_mistake"):
-                _mistake_summary = f"tool {name} raised {type(e).__name__}: {str(e)[:100]}"
-                _store.add_mistake(
+            orch._sync_session_state()
+        except Exception:
+            pass
+
+        try:
+            store = getattr(orch, "session_store", None)
+            if store is not None and hasattr(store, "add_mistake"):
+                store.add_mistake(
                     session_id=getattr(orch, "_current_task_id", None) or "unknown",
-                    summary=_mistake_summary,
+                    summary=f"tool {name} raised {type(e).__name__}: {str(e)[:100]}",
                     context=str(e)[:400],
                     tool=name,
                 )
         except Exception:
-            pass  # never block execution
-
-        # SPAWN-W1: Reset ContextVar on exception path to prevent leak (F-74).
-        # _orch_token is initialised to None at the top of the try block, so it
-        # is always defined here — no need for locals().get().
-        try:
-            if _orch_token is not None:
-                from src.tools.subagent_tools import _PARENT_ORCHESTRATOR_VAR
-
-                _PARENT_ORCHESTRATOR_VAR.reset(_orch_token)
-        except Exception:
             pass
 
-        # TASK-REL-1: classify the exception and include the typed error code in
-        # the result so callers / nodes can set state["last_error_code"] without
-        # having to re-parse the string.
         try:
             from src.core.errors import classify_exception as _classify
 
-            _error_code = _classify(e).value
+            error_code = _classify(e).value
         except Exception:
-            _error_code = "system.unknown"
+            error_code = "system.unknown"
 
-        return {"ok": False, "error": str(e), "error_code": _error_code}
+        return {"ok": False, "error": str(e), "error_code": error_code}
+
+    res = orch._normalize_tool_result(res)
+    res = _truncate_result_strings(res)
+
+    if name in ("plan_enter", "plan_exit") and isinstance(res, dict) and res.get("ok"):
+        new_mode = res.get("agent_mode", "execution")
+        setattr(orch, "_agent_mode", new_mode)
+        try:
+            orch.event_bus.publish(
+                "agent.mode_changed",
+                {"mode": new_mode, "tool": name},
+            )
+        except Exception:
+            pass
+        if name == "plan_exit" and res.get("steps"):
+            setattr(orch, "_committed_plan_steps", res["steps"])
+            setattr(orch, "_plan_mode_approved", True)
+            try:
+                orch.event_bus.publish(
+                    "agent.plan_committed",
+                    {"step_count": len(res["steps"]), "tool": name},
+                )
+            except Exception:
+                pass
+
+    try:
+        hook_runner = getattr(orch, "_tool_hook_runner", None)
+        if hook_runner is not None:
+            hook_runner.run_post(name, args, res)
+    except Exception:
+        pass
+
+    try:
+        schema = get_tool_contract(name)
+        if schema and isinstance(res, dict):
+            try:
+                schema.model_validate(res)
+            except ValidationError:
+                try:
+                    schema.model_validate(res.get("result") or {})
+                except ValidationError as ve:
+                    return {
+                        "ok": False,
+                        "error": f"Tool result failed contract validation: {ve}",
+                    }
+        else:
+            try:
+                ToolContract.model_validate({"tool": name, "args": args, "result": res})
+            except ValidationError as ve:
+                return {
+                    "ok": False,
+                    "error": f"Tool result failed contract validation: {ve}",
+                }
+    except Exception:
+        pass
+
+    try:
+        import time as _time
+
+        ts = _time.time()
+        orch._usage_buffer[name] = orch._usage_buffer.get(name, 0) + 1
+        orch.cost_tracker.record_tool_call(name)
+        try:
+            orch.event_bus.publish(
+                "tool.invoked",
+                {
+                    "sessionUpdate": "tool_call_update",
+                    "toolCallId": tool_call_id,
+                    "title": name,
+                    "status": "invoked",
+                    "timestamp": ts,
+                    "workdir": str(orch.working_dir),
+                },
+            )
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+    if res.get("status") == "ok" or res.get("ok") is True:
+        if name in ["read_file", "fs.read"] and path_arg:
+            try:
+                resolved_path = str(
+                    (Path(orch.working_dir or ".") / path_arg).resolve()
+                )
+                orch._session_read_files.add(resolved_path)
+            except Exception:
+                pass
+        elif "write" in tool.get("side_effects", []) and path_arg:
+            try:
+                resolved_path = str(
+                    (Path(orch.working_dir or ".") / path_arg).resolve()
+                )
+                orch._session_modified_files.add(resolved_path)
+                try:
+                    orch.event_bus.publish(
+                        "file.modified",
+                        {
+                            "path": resolved_path,
+                            "tool": name,
+                            "workdir": str(orch.working_dir),
+                        },
+                    )
+                except Exception:
+                    pass
+            except Exception:
+                pass
+        elif name == "delete_file" and path_arg:
+            try:
+                resolved_path = str(
+                    (Path(orch.working_dir or ".") / path_arg).resolve()
+                )
+                try:
+                    orch.event_bus.publish(
+                        "file.deleted",
+                        {
+                            "path": resolved_path,
+                            "workdir": str(orch.working_dir),
+                        },
+                    )
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
+    try:
+        orch._append_execution_trace(
+            {
+                "tool": name,
+                "args": orch._normalize_args(args),
+                "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                "result_ok": bool(res.get("status") == "ok" or res.get("ok") is True),
+            }
+        )
+    except Exception:
+        pass
+
+    try:
+        formatted = _format_tool_result(res, name)
+        orch.event_bus.publish(
+            "tool.execute.finish",
+            {
+                "sessionUpdate": "tool_call_update",
+                "toolCallId": tool_call_id,
+                "title": name,
+                "status": "completed",
+                "content": [{"type": "text", "text": formatted}],
+                "rawOutput": res,
+                "workdir": str(orch.working_dir),
+            },
+        )
+    except Exception:
+        pass
+
+    try:
+        if hasattr(orch, "token_monitor"):
+            budget = orch.token_monitor.get_budget(
+                session_id=getattr(orch, "_current_task_id", "default")
+            )
+            orch.event_bus.publish(
+                "token.budget.update",
+                {
+                    "used_tokens": budget.used_tokens,
+                    "max_tokens": budget.max_tokens,
+                    "usage_ratio": budget.usage_ratio,
+                    "session_id": getattr(orch, "_current_task_id", "default"),
+                },
+            )
+            used = budget.used_tokens
+            limit = budget.max_tokens or 32_768
+            pct = min(100, int(used / limit * 100)) if limit else 0
+            orch.event_bus.publish(
+                "token.budget",
+                {
+                    "used": used,
+                    "limit": limit,
+                    "percent": pct,
+                    "warning": pct >= 80,
+                },
+            )
+    except Exception:
+        pass
+
+    try:
+        if hasattr(orch, "preview_service") and getattr(
+            orch, "_pending_preview_id", None
+        ):
+            orch.event_bus.publish(
+                "preview.pending",
+                {"preview_id": orch._pending_preview_id},
+            )
+    except Exception:
+        pass
+
+    try:
+        safe_args = {k: str(v) if isinstance(v, Path) else v for k, v in args.items()}
+        orch.session_store.add_tool_call(
+            session_id=getattr(orch, "_current_task_id", None),
+            tool_name=name,
+            args=safe_args,
+            result=res,
+            success=True,
+        )
+    except Exception:
+        pass
+
+    try:
+        orch._sync_session_state()
+    except Exception:
+        pass
+
+    return {"ok": True, "result": res}
+
+
+def _check_agent_permission_override(
+    orch: Any,
+    name: str,
+    args: dict,
+) -> Optional[Dict[str, Any]]:
+    """Apply per-agent permission rules; returns error dict if denied."""
+    try:
+        active_agent = getattr(orch, "active_agent", None)
+        if active_agent is not None:
+            global_policy = getattr(orch, "permission_policy", None)
+            merged_policy = active_agent.get_merged_policy(global_policy)
+            if merged_policy is not None and merged_policy.is_denied(name):
+                _write_permission_audit(
+                    orch.working_dir, name, args, "deny", "agent_permission_rules"
+                )
+                return {
+                    "ok": False,
+                    "error": (
+                        f"Tool '{name}' is denied by the active agent's permission rules."
+                    ),
+                }
+    except Exception:
+        pass
+    return None
+
+
+def _run_permission_gate(
+    orch: Any,
+    name: str,
+    args: dict,
+    tool_call_id: str,
+    needs_gate: bool,
+) -> Optional[Dict[str, Any]]:
+    """Run the approval gate when needed."""
+    if not needs_gate:
+        return None
+
+    autonomous = False
+    try:
+        from src.tools.tools_config import is_autonomous
+
+        autonomous = is_autonomous()
+    except Exception:
+        pass
+
+    if autonomous:
+        return None
+
+    gate_event = None
+    try:
+        gate_event = register_tool_gate(tool_call_id)
+        if name == "delegate_task":
+            try:
+                orch.event_bus.publish(
+                    "spawn.permission_required",
+                    {
+                        "tool": name,
+                        "role": args.get("role", ""),
+                        "task": str(args.get("subtask_description", ""))[:200],
+                        "tool_id": tool_call_id,
+                    },
+                )
+            except Exception:
+                pass
+        orch.event_bus.publish(
+            "tool.permission_required",
+            {
+                "tool": name,
+                "args": {k: str(v)[:200] for k, v in args.items() if k != "content"},
+                "tool_id": tool_call_id,
+            },
+        )
+    except Exception as perm_exc:
+        guilogger.warning(f"Permission gate error for '{name}': {perm_exc}")
+        return None
+
+    granted = True
+    try:
+        if gate_event is not None and hasattr(gate_event, "wait"):
+            granted = gate_event.wait(timeout=APPROVAL_TIMEOUT_SECONDS)
+    except Exception:
+        granted = False
+
+    denied = False
+    try:
+        denied = is_tool_denied(tool_call_id)
+    except Exception:
+        denied = False
+
+    if not granted or denied:
+        try:
+            discard_tool_denied(tool_call_id)
+        except Exception:
+            pass
+        return {"ok": False, "error": f"Tool '{name}' was denied by the user."}
+
+    try:
+        discard_tool_denied(tool_call_id)
+    except Exception:
+        pass
+    return None

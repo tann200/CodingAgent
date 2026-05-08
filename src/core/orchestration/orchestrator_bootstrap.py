@@ -244,38 +244,13 @@ def _init_infrastructure(orch: Any, message_max_tokens: Optional[int]) -> None:
 
 
 def _init_providers(orch: Any) -> None:
-    """Select and activate the LLM provider adapter; publish startup events."""
+    """Select and activate the LLM provider adapter."""
     pm = None
     try:
         pm = get_provider_manager()
         if pm:
-            # Set the event_bus BEFORE scheduling initialize().
-            if getattr(pm, "_event_bus", None) is None:
-                pm.set_event_bus(orch.event_bus)
-            else:
-                orch.event_bus = getattr(pm, "_event_bus")
-            _ensure_provider_manager_initialized_sync()
-
-            # Pick default adapter if none provided
-            if orch._adapter is None:
-                providers = pm.list_providers()
-                guilogger.info(f"Orchestrator init: available providers: {providers}")
-                if providers:
-                    active_name = None
-                    try:
-                        active_name = pm.get_active_provider_name()
-                    except Exception:
-                        pass
-                    if active_name and active_name in providers:
-                        name = active_name
-                    elif "lm_studio" in providers:
-                        name = "lm_studio"
-                    else:
-                        name = providers[0]
-                    orch._adapter = pm.get_provider(name)
-                    guilogger.info(
-                        f"Orchestrator init: picked adapter: {name}, adapter: {orch._adapter}"
-                    )
+            _wire_provider_manager(orch, pm)
+            _select_default_adapter(orch, pm)
             # HANG-FIX: _publish_active_config must be called explicitly when _adapter
             # is set directly (not through the adapter property setter) so that
             # model_tier and other capability-derived fields are populated before
@@ -292,6 +267,49 @@ def _init_providers(orch: Any) -> None:
     except Exception:
         pass
 
+    _publish_startup_events(orch, pm)
+
+
+def _wire_provider_manager(orch: Any, pm: Any) -> None:
+    """Attach the orchestrator event bus to the provider manager and initialize it."""
+    if getattr(pm, "_event_bus", None) is None:
+        pm.set_event_bus(orch.event_bus)
+    else:
+        orch.event_bus = getattr(pm, "_event_bus")
+    _ensure_provider_manager_initialized_sync()
+
+
+def _select_default_adapter(orch: Any, pm: Any) -> None:
+    """Pick the default adapter when the orchestrator has not been given one."""
+    if orch._adapter is not None:
+        return
+
+    providers = pm.list_providers()
+    guilogger.info(f"Orchestrator init: available providers: {providers}")
+    if not providers:
+        return
+
+    active_name = None
+    try:
+        active_name = pm.get_active_provider_name()
+    except Exception:
+        pass
+
+    if active_name and active_name in providers:
+        name = active_name
+    elif "lm_studio" in providers:
+        name = "lm_studio"
+    else:
+        name = providers[0]
+
+    orch._adapter = pm.get_provider(name)
+    guilogger.info(
+        f"Orchestrator init: picked adapter: {name}, adapter: {orch._adapter}"
+    )
+
+
+def _publish_startup_events(orch: Any, pm: Any) -> None:
+    """Publish orchestrator startup events to the active event buses."""
     try:
         payload = {"time": time.time(), "working_dir": str(orch.working_dir)}
         try:
@@ -311,13 +329,8 @@ def _init_providers(orch: Any) -> None:
         pass
 
 
-# ---------------------------------------------------------------------------
-# Phase 3 — Event-bus subscriptions
-# ---------------------------------------------------------------------------
-
-
-def _init_event_subscriptions(orch: Any) -> None:
-    """Register all event-bus subscribers (provider, session, permission, bash)."""
+def _register_provider_event_subscriptions(orch: Any) -> None:
+    """Register provider-related event subscriptions."""
 
     def _on_provider_config_missing(payload: Any) -> None:
         guilogger.warning(f"Orchestrator detected missing provider config: {payload}")
@@ -401,12 +414,13 @@ def _init_event_subscriptions(orch: Any) -> None:
     except Exception:
         pass
 
-    # GAP 1: Respond to session.request_state with session.hydrated
+
+def _register_session_hydration_subscription(orch: Any) -> None:
+    """Register the session state hydration subscription."""
+
     def _on_session_request_state(payload: Any) -> None:
         try:
-            session_id = (
-                payload.get("session_id") if isinstance(payload, dict) else None
-            )
+            session_id = payload.get("session_id") if isinstance(payload, dict) else None
             history = []
             try:
                 if hasattr(orch, "msg_mgr") and orch.msg_mgr:
@@ -431,7 +445,10 @@ def _init_event_subscriptions(orch: Any) -> None:
     except Exception:
         pass
 
-    # Scheduler distillation requests: run compaction/distillation in background
+
+def _register_scheduler_distill_subscription(orch: Any) -> None:
+    """Register the scheduler-triggered background distillation subscription."""
+
     def _on_scheduler_distill_request(payload: Any) -> None:
         # Run distillation in a background thread so the EventBus publisher
         # is non-blocking. The handler must fail softly.
@@ -589,7 +606,15 @@ def _init_event_subscriptions(orch: Any) -> None:
     except Exception:
         pass
 
-    # Permission gate subscriptions
+
+# ---------------------------------------------------------------------------
+# Phase 3 — Event-bus subscriptions
+# ---------------------------------------------------------------------------
+
+
+def _register_permission_gate_subscriptions(orch: Any) -> None:
+    """Register tool-permission gate event subscriptions."""
+
     def _on_tool_permission_granted(payload: Any) -> None:
         _tid = str(payload.get("tool_id", "")) if isinstance(payload, dict) else ""
         if _tid:
@@ -634,7 +659,10 @@ def _init_event_subscriptions(orch: Any) -> None:
     except Exception:
         pass
 
-    # TUI-03: subscribe to bash approval responses from the TUI
+
+def _register_bash_approval_subscriptions(orch: Any) -> None:
+    """Register bash approval event subscriptions from the TUI."""
+
     def _on_bash_approval_granted(payload: dict) -> None:
         resolve_bash_gate(str(payload.get("tool_id", "")), approved=True)
 
@@ -646,6 +674,16 @@ def _init_event_subscriptions(orch: Any) -> None:
         orch.event_bus.subscribe("bash.approval_denied", _on_bash_approval_denied)
     except Exception:
         pass
+
+
+def _init_event_subscriptions(orch: Any) -> None:
+    """Register all event-bus subscribers (provider, session, permission, bash)."""
+
+    _register_provider_event_subscriptions(orch)
+    _register_session_hydration_subscription(orch)
+    _register_scheduler_distill_subscription(orch)
+    _register_permission_gate_subscriptions(orch)
+    _register_bash_approval_subscriptions(orch)
 
 
 # ---------------------------------------------------------------------------

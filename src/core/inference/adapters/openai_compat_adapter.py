@@ -23,7 +23,7 @@ import requests
 
 from src.core.inference.llm_client import LLMClient
 from src.core.inference.telemetry import with_telemetry
-from src.core.utils.strings import valid_str as _valid_str, extract_str as _extract_str
+from src.core.utils.strings import valid_str as _valid_str
 
 _logger = logging.getLogger(__name__)
 

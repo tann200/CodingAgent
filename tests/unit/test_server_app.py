@@ -1,5 +1,6 @@
 """Unit tests for the HTTP/SSE server component (Gap 2 implementation)."""
 
+import asyncio
 import pytest
 import threading
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -54,6 +55,38 @@ class TestServerEventBusAdapter:
             mock_gen.return_value = AsyncMock()
             # Just verify the method exists
             assert hasattr(sse_adapter, "event_generator")
+
+    @pytest.mark.asyncio
+    async def test_same_session_clients_do_not_unsubscribe_each_other(self):
+        """Closing one SSE stream must not remove another same-session stream's handlers."""
+        from src.core.orchestration.event_bus import EventBus
+
+        bus = EventBus()
+        adapter = ServerEventBusAdapter(bus)
+
+        gen1 = adapter.event_generator("s1")
+        gen2 = adapter.event_generator("s1")
+
+        fut1 = asyncio.create_task(gen1.__anext__())
+        fut2 = asyncio.create_task(gen2.__anext__())
+        await asyncio.sleep(0.01)
+
+        fut1.cancel()
+        try:
+            await fut1
+        except asyncio.CancelledError:
+            pass
+        await gen1.aclose()
+        await asyncio.sleep(0.01)
+
+        bus.publish("agent.start", {"session_id": "s1", "msg": "ok"})
+
+        res2 = await asyncio.wait_for(fut2, timeout=1.0)
+        assert "agent.start" in res2
+        try:
+            await gen2.aclose()
+        except Exception:
+            pass
 
 
 class TestServerApp:
@@ -187,6 +220,71 @@ class TestServerApp:
         resp3 = test_client.get("/metrics", headers={"Authorization": f"Basic {good}"})
         assert resp3.status_code == 200
 
+    def test_register_event_bus_is_idempotent_for_same_bus(self):
+        import src.server.app as app_module
+
+        bus = MagicMock()
+        bus.subscribe = MagicMock()
+        bus.unsubscribe = MagicMock()
+
+        original_bus = app_module.event_bus
+        original_adapter = app_module.sse_adapter
+        original_registered = app_module._REGISTERED_CORRECTIVE_BUS
+        try:
+            app_module.event_bus = None
+            app_module.sse_adapter = None
+            app_module._REGISTERED_CORRECTIVE_BUS = None
+
+            app_module.register_event_bus(bus)
+            first_adapter = app_module.sse_adapter
+            app_module.register_event_bus(bus)
+
+            assert app_module.sse_adapter is first_adapter
+            bus.subscribe.assert_called_once_with(
+                "perception.corrective_prompt",
+                app_module._on_perception_corrective,
+            )
+            bus.unsubscribe.assert_not_called()
+        finally:
+            app_module.event_bus = original_bus
+            app_module.sse_adapter = original_adapter
+            app_module._REGISTERED_CORRECTIVE_BUS = original_registered
+
+    def test_register_event_bus_unsubscribes_previous_bus_before_switch(self):
+        import src.server.app as app_module
+
+        bus_a = MagicMock()
+        bus_a.subscribe = MagicMock()
+        bus_a.unsubscribe = MagicMock()
+        bus_b = MagicMock()
+        bus_b.subscribe = MagicMock()
+        bus_b.unsubscribe = MagicMock()
+
+        original_bus = app_module.event_bus
+        original_adapter = app_module.sse_adapter
+        original_registered = app_module._REGISTERED_CORRECTIVE_BUS
+        try:
+            app_module.event_bus = None
+            app_module.sse_adapter = None
+            app_module._REGISTERED_CORRECTIVE_BUS = None
+
+            app_module.register_event_bus(bus_a)
+            app_module.register_event_bus(bus_b)
+
+            bus_a.unsubscribe.assert_called_once_with(
+                "perception.corrective_prompt",
+                app_module._on_perception_corrective,
+            )
+            bus_b.subscribe.assert_called_once_with(
+                "perception.corrective_prompt",
+                app_module._on_perception_corrective,
+            )
+            assert app_module.event_bus is bus_b
+        finally:
+            app_module.event_bus = original_bus
+            app_module.sse_adapter = original_adapter
+            app_module._REGISTERED_CORRECTIVE_BUS = original_registered
+
 
 # ---------------------------------------------------------------------------
 # G8 — Task execution endpoint tests
@@ -200,6 +298,7 @@ class TestTaskEndpoints:
     def _clear_registry(self):
         """Ensure a clean task registry for each test."""
         import src.server.app as app_module
+
         with app_module._TASK_REGISTRY_LOCK:
             app_module._TASK_REGISTRY.clear()
         yield
@@ -213,9 +312,14 @@ class TestTaskEndpoints:
 
         dummy_orch = MagicMock()
         dummy_orch.get_tools_for_role.return_value = {}
-        dummy_orch.run_agent_once.return_value = {"ok": True, "assistant_message": "Done"}
+        dummy_orch.run_agent_once.return_value = {
+            "ok": True,
+            "assistant_message": "Done",
+        }
 
-        with patch.object(app_module, "_get_or_create_orchestrator", return_value=dummy_orch):
+        with patch.object(
+            app_module, "_get_or_create_orchestrator", return_value=dummy_orch
+        ):
             resp = test_client.post("/task", json={"task": "hello world"})
 
         assert resp.status_code == 202
@@ -245,7 +349,9 @@ class TestTaskEndpoints:
         dummy_orch.get_tools_for_role.return_value = {}
         dummy_orch.run_agent_once.side_effect = slow_run
 
-        with patch.object(app_module, "_get_or_create_orchestrator", return_value=dummy_orch):
+        with patch.object(
+            app_module, "_get_or_create_orchestrator", return_value=dummy_orch
+        ):
             resp = test_client.post("/task", json={"task": "test task"})
 
         task_id = resp.json()["task_id"]
@@ -269,7 +375,9 @@ class TestTaskEndpoints:
         dummy_orch.get_tools_for_role.return_value = {}
         dummy_orch.run_agent_once.return_value = {"ok": True, "assistant_message": "x"}
 
-        with patch.object(app_module, "_get_or_create_orchestrator", return_value=dummy_orch):
+        with patch.object(
+            app_module, "_get_or_create_orchestrator", return_value=dummy_orch
+        ):
             resp = test_client.post("/task", json={"task": "cancel me"})
 
         task_id = resp.json()["task_id"]
@@ -300,7 +408,9 @@ class TestTaskEndpoints:
         dummy_orch.get_tools_for_role.return_value = {}
         dummy_orch.run_agent_once.return_value = {"ok": True, "assistant_message": "ok"}
 
-        with patch.object(app_module, "_get_or_create_orchestrator", return_value=dummy_orch):
+        with patch.object(
+            app_module, "_get_or_create_orchestrator", return_value=dummy_orch
+        ):
             test_client.post("/task", json={"task": "task A"})
             test_client.post("/task", json={"task": "task B"})
 
@@ -318,7 +428,9 @@ class TestTaskEndpoints:
         dummy_orch.get_tools_for_role.return_value = {}
         dummy_orch.run_agent_once.side_effect = RuntimeError("boom")
 
-        with patch.object(app_module, "_get_or_create_orchestrator", return_value=dummy_orch):
+        with patch.object(
+            app_module, "_get_or_create_orchestrator", return_value=dummy_orch
+        ):
             resp = test_client.post("/task", json={"task": "fail me"})
 
         task_id = resp.json()["task_id"]
@@ -327,3 +439,81 @@ class TestTaskEndpoints:
         body = status_resp.json()
         assert body["status"] == "failed"
         assert "boom" in (body["error"] or "")
+
+    def test_task_endpoints_require_admin_token_when_configured(
+        self, monkeypatch, test_client
+    ):
+        """Task HTTP endpoints must enforce CODING_AGENT_ADMIN_TOKEN when set."""
+        monkeypatch.setenv("CODING_AGENT_ADMIN_TOKEN", "secret-token")
+
+        resp = test_client.post("/task", json={"task": "hello"})
+        assert resp.status_code == 401
+
+        resp = test_client.get("/tasks")
+        assert resp.status_code == 401
+
+        resp = test_client.get("/task/does-not-exist")
+        assert resp.status_code == 401
+
+        resp = test_client.post("/task/no-such-task/cancel")
+        assert resp.status_code == 401
+
+    def test_task_endpoints_allow_valid_admin_token(self, monkeypatch, test_client):
+        """Task HTTP endpoints should accept a valid bearer token."""
+        from unittest.mock import MagicMock, patch
+        import src.server.app as app_module
+
+        monkeypatch.setenv("CODING_AGENT_ADMIN_TOKEN", "secret-token")
+        headers = {"Authorization": "Bearer secret-token"}
+
+        dummy_orch = MagicMock()
+        dummy_orch.get_tools_for_role.return_value = {}
+        dummy_orch.run_agent_once.return_value = {
+            "ok": True,
+            "assistant_message": "Done",
+        }
+
+        with patch.object(
+            app_module, "_get_or_create_orchestrator", return_value=dummy_orch
+        ):
+            resp = test_client.post(
+                "/task", json={"task": "hello world"}, headers=headers
+            )
+
+        assert resp.status_code == 202
+        task_id = resp.json()["task_id"]
+
+        status_resp = test_client.get(f"/task/{task_id}", headers=headers)
+        assert status_resp.status_code == 200
+
+        list_resp = test_client.get("/tasks", headers=headers)
+        assert list_resp.status_code == 200
+
+        cancel_resp = test_client.post(f"/task/{task_id}/cancel", headers=headers)
+        assert cancel_resp.status_code == 200
+
+
+class TestServerAuthProtectedEndpoints:
+    def test_session_events_requires_admin_token_when_configured(
+        self, monkeypatch, test_client
+    ):
+        monkeypatch.setenv("CODING_AGENT_ADMIN_TOKEN", "secret-token")
+        resp = test_client.get("/session/test-session/events")
+        assert resp.status_code == 401
+
+    @patch("src.server.app.sse_adapter")
+    def test_session_events_allows_valid_admin_token(
+        self, mock_sse_adapter, monkeypatch, test_client
+    ):
+        monkeypatch.setenv("CODING_AGENT_ADMIN_TOKEN", "secret-token")
+
+        async def mock_event_gen():
+            yield 'data: {"event": "test", "data": {}}\n\n'
+
+        mock_sse_adapter.event_generator.return_value = mock_event_gen()
+
+        resp = test_client.get(
+            "/session/test-session/events",
+            headers={"Authorization": "Bearer secret-token"},
+        )
+        assert resp.status_code == 200

@@ -35,7 +35,6 @@ from .components import (
     BashBlock,
     TodoListWidget,
 )
-from .components.inline_tool import TOOL_RENDER_MAP, FALLBACK_RENDER  # TASK-TUI-1
 from .settings import SettingsStore
 from .logging import get_logger
 from .bus import (
@@ -342,11 +341,11 @@ def _render_todo_block(args: dict, result_text: str) -> str:
 
     # manage_todo: parse markdown result text for checkbox lines
     md_lines = result_text.strip().splitlines()
-    todo_lines = [l for l in md_lines if l.strip().startswith("- [")]
+    todo_lines = [line for line in md_lines if line.strip().startswith("- [")]
     if todo_lines:
         lines = ["[bold]# Todos[/]"]
-        for l in todo_lines:
-            stripped = l.strip()
+        for line in todo_lines:
+            stripped = line.strip()
             if stripped.startswith("- [x]") or stripped.startswith("- [X]"):
                 text = stripped[6:].strip()
                 lines.append(f"  [#22c55e]✓[/] {text}")
@@ -1023,52 +1022,8 @@ class AgentApp(App[None]):
 
     @on(RequestSystemSettings)
     def handle_request_system_settings(self, _: RequestSystemSettings) -> None:
-        """Load providers.json and post SystemSettingsLoaded so the palette
-        and settings screen have access to the configured providers/models."""
-        import json
-        from pathlib import Path as _Path
-
-        providers: list = []
-        try:
-            # Resolve providers.json relative to this file's package root
-            # __file__ = tui/src/ui/app.py → parents[3] = project root
-            cfg = _Path(__file__).parents[3] / "src" / "config" / "providers.json"
-            if not cfg.exists():
-                cfg = _Path("src/config/providers.json")
-            if cfg.exists():
-                raw = json.loads(cfg.read_text(encoding="utf-8"))
-                # providers.json is a top-level list
-                entries = raw if isinstance(raw, list) else (raw.get("providers") or [])
-                for p in entries:
-                    if not isinstance(p, dict):
-                        continue
-                    providers.append(
-                        {
-                            "name": p.get("name") or p.get("type") or "",
-                            "type": p.get("type") or "",
-                            "models": p.get("models") or [],
-                            "active": p.get("active", False),
-                            "base_url": p.get("base_url") or "",
-                        }
-                    )
-        except Exception as exc:
-            logger.warning(
-                f"handle_request_system_settings: failed to load providers.json: {exc}"
-            )
-
-        settings_dict = {
-            "theme": self._settings.get("theme", "textual-dark"),
-            "context_window": self._settings.get("context_window", 32000),
-            "active_mode": self._settings.get("active_mode", "lead_architect"),
-            "default_provider": self._settings.get("default_provider", "none"),
-            "default_model": self._settings.get("default_model", "none"),
-        }
-        self.post_message(
-            SystemSettingsLoaded(
-                settings_dict=settings_dict,
-                available_providers=providers,
-            )
-        )
+        """Delegate system settings hydration to the bridge-owned startup path."""
+        self._bridge._publish_system_settings()
 
     @on(SystemSettingsLoaded)
     def handle_system_settings(self, event: SystemSettingsLoaded) -> None:
@@ -1476,12 +1431,9 @@ class AgentApp(App[None]):
         if event.tool_id and event.tool_id in self._tool_widgets:
             w = self._tool_widgets.pop(event.tool_id)
             self.call_later(
-                lambda widget=w,
-                ic=ok_icon,
-                col=color,
-                r=result_display,
-                lbl=label,
-                s=sep: (widget.update(f"[bold {col}]{lbl}[/]{s}{r}"))
+                lambda widget=w, ic=ok_icon, col=color, r=result_display, lbl=label, s=sep: (
+                    widget.update(f"[bold {col}]{lbl}[/]{s}{r}")
+                )
             )
         else:
             widget = Static(
@@ -1552,14 +1504,18 @@ class AgentApp(App[None]):
     @on(SubagentStartEvent)
     def handle_subagent_start(self, event: SubagentStartEvent) -> None:
         logger.info(f"Subagent start: {event.role}  id={event.child_session_id}")
-        widget = SubagentProgress(event.role, event.task, event.child_session_id)
+        widget = self._subagent_widgets.get(event.child_session_id)
+        if widget is None:
+            widget = SubagentProgress(event.role, event.task, event.child_session_id)
+            if event.child_session_id:
+                self._subagent_widgets[event.child_session_id] = widget
+            self._sched_chat_widget(widget)
         try:
             active = len(self._subagent_widgets)
             self.query_one("#sb_subagent_status", Static).update(f"{active} running")
         except Exception:
             pass
         self._update_subagent_footer()
-        self._sched_chat_widget(widget)
 
     @on(SubagentFinishEvent)
     def handle_subagent_finish(self, event: SubagentFinishEvent) -> None:
@@ -2556,14 +2512,24 @@ class AgentApp(App[None]):
                 q = args.lower()
                 for p in providers:
                     pname = p.get("name", "").lower()
-                    if q == pname or pname.startswith(q) or q in pname:
+                    ptype = str(p.get("type") or "").lower()
+                    pid = str(p.get("id") or p.get("type") or p.get("name") or "")
+                    pid = pid.lower().replace("-", "_").replace(" ", "_")
+                    if (
+                        q == pname
+                        or q == ptype
+                        or q == pid
+                        or pname.startswith(q)
+                        or q in pname
+                    ):
                         target = p
                         break
             if target is None:
                 self.notify(f"Provider not found: {args}", severity="warning")
                 return
             pname = target.get("name", args)
-            pid = pname.lower().replace(" ", "_")
+            pid = target.get("id") or target.get("type") or pname
+            pid = str(pid).lower().replace("-", "_").replace(" ", "_")
             role = self.active_role
             self._settings.set(f"{role}_provider", pid)
             self._settings.set("default_provider", pid)
@@ -2607,15 +2573,13 @@ class AgentApp(App[None]):
                 idx = int(args) - 1
                 if 0 <= idx < len(all_models):
                     target_model = all_models[idx]["model"]
-                    target_provider = (
-                        all_models[idx]["provider_name"].lower().replace(" ", "_")
-                    )
+                    target_provider = all_models[idx].get("provider_id")
             else:
                 q = args.lower()
                 for m in all_models:
                     if q == m["model"].lower() or q in m["model"].lower():
                         target_model = m["model"]
-                        target_provider = m["provider_name"].lower().replace(" ", "_")
+                        target_provider = m.get("provider_id")
                         break
             if target_model is None:
                 target_model = args
@@ -2649,9 +2613,7 @@ class AgentApp(App[None]):
         """S3-C: /mcp [list|add <name> <cmd…>|status] — manage MCP servers."""
         try:
             _cl = _load_config_loader_module()
-            get_mcp_config = _cl.get_mcp_config
             get_mcp_servers = _cl.get_mcp_servers
-            load_merged_config = _cl.load_merged_config
             from pathlib import Path as _Path
             import json as _json
 
@@ -3330,7 +3292,6 @@ class AgentApp(App[None]):
             try:
                 _lm = _load_llm_manager_module()
                 canonical_provider = _lm.canonical_provider
-                get_provider_manager = _lm.get_provider_manager
 
                 norm_req = canonical_provider(event.provider_id)
                 orch = getattr(self._bridge, "_orchestrator", None)

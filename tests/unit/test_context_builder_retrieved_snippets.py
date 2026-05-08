@@ -32,3 +32,37 @@ def test_context_builder_uses_summary_cache(tmp_path):
     system = msgs[0]["content"]
     assert "SHORT SUMMARY FROM CACHE" in system
     assert "RAW LONG FILE CONTENT" not in system
+
+
+def test_context_builder_filters_retrieved_snippets_through_context_controller(
+    tmp_path,
+):
+    ac = tmp_path / ".codingAgent"
+    ac.mkdir(parents=True, exist_ok=True)
+
+    builder = ContextBuilder(working_dir=str(tmp_path))
+    retrieved = [
+        {"file_path": "src/keep.py", "snippet": "keep content"},
+        {"file_path": "src/drop.py", "snippet": "drop content"},
+    ]
+
+    class _FakeController:
+        def enforce_budget(self, file_descs, conversation, system_prompt):
+            assert {d["path"] for d in file_descs} == {"src/keep.py", "src/drop.py"}
+            assert conversation == []
+            assert isinstance(system_prompt, str)
+            return ([{"path": "src/keep.py"}], [{"path": "src/drop.py"}])
+
+    msgs = builder.build_prompt(
+        role_name="assistant",
+        active_skills=[],
+        task_description="Do task",
+        tools=[],
+        conversation=[],
+        retrieved_snippets=retrieved,
+        context_controller=_FakeController(),
+    )
+
+    system = msgs[0]["content"]
+    assert "keep content" in system
+    assert "drop content" not in system

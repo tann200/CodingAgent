@@ -19,7 +19,6 @@ import os
 import shutil
 import subprocess
 import tempfile
-from fnmatch import fnmatch as _fnmatch
 from pathlib import Path
 from typing import Dict, Any
 
@@ -35,9 +34,33 @@ from src.tools.guardrails import (
     check_read_before_write as _check_read_before_write,
     mark_file_read as _mark_file_read,
 )
-from src.core.context.context_builder import ContextBuilder as _ContextBuilder
 from src.core.orchestration.event_bus import get_event_bus as _get_event_bus
 from src.tools.formatter import run_formatter as _run_formatter
+from src.tools._diff_gate import _publish_diff_preview
+
+_logger = logging.getLogger(__name__)
+_get_bus = _get_event_bus
+
+_WRITE_HARD_LINE_LIMIT = 500
+_WRITE_WARN_LINE_LIMIT = 200
+_READ_FILE_MAX_LINE = 2_000
+_READ_FILE_MAX_CHARS = 100_000
+
+
+def get_project_deny_write_patterns(workdir: str) -> list[str]:
+    try:
+        from src.tools.tools_config import agent_context_path
+
+        config_path = agent_context_path(Path(workdir)) / "config.json"
+        if not config_path.exists():
+            return []
+        import json
+
+        data = json.loads(config_path.read_text(encoding="utf-8"))
+        patterns = data.get("deny_write") or []
+        return [str(pattern) for pattern in patterns if pattern]
+    except Exception:
+        return []
 
 
 def _is_in_workspace(path: Path, workdir: Path) -> bool:
@@ -63,7 +86,6 @@ def _check_project_deny_write(abs_path: Path, workdir: Path) -> None:
     """
 
     try:
-
         patterns = get_project_deny_write_patterns(str(workdir))
         if not patterns:
             return
@@ -84,8 +106,6 @@ def _check_project_deny_write(abs_path: Path, workdir: Path) -> None:
         pass  # non-fatal — don't let config errors prevent writes
 
 
-from src.tools._lint_verify import verify_candidate_content as _verify_write_candidate
-
 _OS_JUNK = frozenset(
     {
         ".DS_Store",
@@ -99,61 +119,14 @@ _OS_JUNK = frozenset(
 )
 
 
-@tool(
-    side_effects=["write"], tags=["coding"], permission_kind=PermissionKind.WRITE_FILE
-)
-def write_file(
-    path: str,
-    content: str,
-    workdir: Path | None = None,
-    user_approved: bool = False,
-) -> Dict[str, Any]:
-    """Write content to a file. Returns diff in result for TUI display."""
-    if workdir is None:
-        workdir = Path.cwd()
-    # Phase 4.3: WorkspaceGuard integration - check protected files
-    guard = WorkspaceGuard()
-    guard_result = guard.guard_operation("write_file", path, user_approved)
-    if guard_result.get("status") == "error":
-        return {"path": path, "status": "error", "error": guard_result.get("error")}
+def _generate_write_diff(
+    p: Path, original_content: str, content: str
+) -> tuple[str, int, int]:
+    """Generate a unified diff for a write_file operation.
 
-    # GAP-S1: Read-before-write guardrail
-    try:
-
-        rbw = check_read_before_write(path)
-        if rbw:
-            return {"path": path, "status": "error", **rbw}
-    except Exception:
-        pass
-
-
-    p = _safe_resolve(path, workdir)
-
-    # OP-5: Apply project-level deny_write patterns from .agent-context/config.json.
-    try:
-        _check_project_deny_write(p, workdir)
-    except PermissionError as _pe:
-        return {"path": path, "status": "error", "error": str(_pe)}
-
-    p.parent.mkdir(parents=True, exist_ok=True)
-
-    # Read original content BEFORE modification for diff generation
-    original_content = ""
-    if p.exists():
-        original_content = p.read_text(encoding="utf-8")
-
-    # D-04: Idempotency guard — skip write when content is identical
-    if original_content == content:
-        return {
-            "path": str(p),
-            "status": "no_change",
-            "diff": "",
-            "lines_added": 0,
-            "lines_removed": 0,
-            "is_new_file": False,
-        }
-
-    # Generate unified diff BEFORE writing so preview shows what *will* change (F14 fix)
+    Returns (diff, lines_added, lines_removed).
+    Handles both file updates and new file creation.
+    """
     original_lines = original_content.splitlines() if original_content else []
     new_lines = content.splitlines()
 
@@ -185,6 +158,66 @@ def write_file(
         lines_added = len(new_lines)
         lines_removed = 0
 
+    return diff, lines_added, lines_removed
+
+
+@tool(
+    side_effects=["write"], tags=["coding"], permission_kind=PermissionKind.WRITE_FILE
+)
+def write_file(
+    path: str,
+    content: str,
+    workdir: Path | None = None,
+    user_approved: bool = False,
+) -> Dict[str, Any]:
+    """Write content to a file. Returns diff in result for TUI display."""
+    if workdir is None:
+        workdir = Path.cwd()
+    # Phase 4.3: WorkspaceGuard integration - check protected files
+    guard = WorkspaceGuard()
+    guard_result = guard.guard_operation("write_file", path, user_approved)
+    if guard_result.get("status") == "error":
+        return {"path": path, "status": "error", "error": guard_result.get("error")}
+
+    # GAP-S1: Read-before-write guardrail
+    try:
+        rbw = _check_read_before_write(path)
+        if rbw:
+            return {"path": path, "status": "error", **rbw}
+    except Exception:
+        pass
+
+    p = _safe_resolve(path, workdir)
+
+    # OP-5: Apply project-level deny_write patterns from .agent-context/config.json.
+    try:
+        _check_project_deny_write(p, workdir)
+    except PermissionError as _pe:
+        return {"path": path, "status": "error", "error": str(_pe)}
+
+    p.parent.mkdir(parents=True, exist_ok=True)
+
+    # Read original content BEFORE modification for diff generation
+    original_content = ""
+    if p.exists():
+        original_content = p.read_text(encoding="utf-8")
+
+    # D-04: Idempotency guard — skip write when content is identical
+    if original_content == content:
+        return {
+            "path": str(p),
+            "status": "no_change",
+            "diff": "",
+            "lines_added": 0,
+            "lines_removed": 0,
+            "is_new_file": False,
+        }
+
+    # Generate unified diff BEFORE writing so preview shows what *will* change (F14 fix)
+    diff, lines_added, lines_removed = _generate_write_diff(
+        p, original_content, content
+    )
+
     # GAP-S3: Hard file-size guard — block BEFORE writing (guard must run pre-write)
     if lines_added > _WRITE_HARD_LINE_LIMIT:
         return {
@@ -215,13 +248,11 @@ def write_file(
 
             _has_sub = _get_bus().has_subscribers("file.diff.preview")
             if _has_sub:
-                _gate_ev = register_preview_gate(_path_key)
+                _gate_ev = _register_preview_gate(_path_key)
                 _publish_diff_preview(_path_key, diff, is_new_file=_is_new)
                 _gate_ev.wait(timeout=300.0)
                 # Use helpers to check/clear rejection state atomically
-                from src.tools._diff_gate import pop_preview_rejection
-
-                _was_rejected = pop_preview_rejection(_path_key)
+                _was_rejected = _pop_preview_rejection(_path_key)
                 if _was_rejected:
                     return {
                         "path": str(p),
@@ -286,14 +317,6 @@ def write_file(
         _logger.exception("write_file atomic write failed for %s", p)
         return {"path": str(p), "status": "error", "error": str(_mk_exc)}
 
-    # MEM-1: Invalidate context cache entry so the next ContextBuilder instantiation
-    # re-reads from disk rather than serving the pre-write cached content.
-    try:
-
-        _CB.invalidate_path(str(p))
-    except Exception:
-        pass  # Never block a write on cache invalidation failure
-
     result: Dict[str, Any] = {
         "path": str(p),
         "status": "ok",
@@ -304,7 +327,6 @@ def write_file(
     }
     # S2-C: Auto-formatter — run after write; failures are warnings only.
     try:
-
         _formatted = _run_formatter(str(p))
         if _formatted:
             result["formatted"] = True
@@ -356,8 +378,7 @@ def read_file(
 
     # GAP-S1: Mark file as read for guardrail enforcement
     try:
-
-        mark_file_read(str(p.resolve()))
+        _mark_file_read(str(p.resolve()))
     except Exception:
         pass
 
@@ -437,8 +458,7 @@ def delete_file(
 
     # Read-before-write guardrail: deletion is destructive
     try:
-
-        rbw = check_read_before_write(path)
+        rbw = _check_read_before_write(path)
         if rbw:
             return {"path": path, "status": "error", **rbw}
     except Exception:
@@ -533,8 +553,7 @@ def rename_file(
 
     # Read-before-write guardrail: rename is destructive on the source file
     try:
-
-        rbw = check_read_before_write(resolved_src)
+        rbw = _check_read_before_write(resolved_src)
         if rbw:
             return {"status": "error", **rbw}
     except Exception:
@@ -570,8 +589,7 @@ def read_file_chunk(
     content = raw.decode("utf-8", errors="replace")
     # GAP-S1: Mark file as read for guardrail enforcement
     try:
-
-        mark_file_read(str(p.resolve()))
+        _mark_file_read(str(p.resolve()))
     except Exception:
         pass
     return {
@@ -616,7 +634,7 @@ def glob(pattern: str, workdir: Path | None = None) -> Dict[str, Any]:
                 # Path resolved to outside base — skip silently (prevents path traversal exfiltration)
                 continue
         total_found = len(matches)
-        truncated = total_found > LIMIT
+        truncated = total_found > _GLOB_RESULT_LIMIT
         # Sort by modification time descending (most recently modified first),
         # matching claw-code-main Rust glob_search behaviour.
         matches.sort(
@@ -625,7 +643,7 @@ def glob(pattern: str, workdir: Path | None = None) -> Dict[str, Any]:
             ),
             reverse=True,
         )
-        matches = matches[:LIMIT]
+        matches = matches[:_GLOB_RESULT_LIMIT]
         result: Dict[str, Any] = {
             "status": "ok",
             "pattern": pattern,

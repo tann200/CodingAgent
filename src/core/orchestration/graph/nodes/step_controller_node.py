@@ -43,6 +43,13 @@ async def step_controller_node(state: StateLike, config: RunnableConfig) -> Dict
 
     # H2: Track per-step retry counts so should_after_step_controller can cap retries.
     step_retry_counts: dict = dict(state.get("step_retry_counts") or {})
+    # Normalize legacy int keys to str so all readers (which use str(key)) never miss entries.
+    for _k in list(step_retry_counts):
+        if not isinstance(_k, str):
+            try:
+                step_retry_counts[str(_k)] = step_retry_counts.pop(_k)
+            except Exception:
+                pass
     step_key = str(current_step)
     last_result = state.get("last_result")
     step_failed = bool(

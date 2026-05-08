@@ -1,17 +1,60 @@
 from __future__ import annotations
-import os
 import sqlite3
-import shutil
 import json
 import logging
 import traceback
-import tempfile
 import threading
 import uuid
 
 # ruff: noqa: E501
 from pathlib import Path
 from typing import Any, Dict, List, Optional, cast
+
+from src.core.memory.sqlite_store_schema import (
+    fts_creation_script,
+    fts_trigger_statements,
+    schema_creation_script,
+    schema_version_from_row,
+    serialise_snapshot_rows,
+)
+from src.core.memory.sqlite_store_session_ops import (
+    copy_missing_snapshot_rows,
+    copy_session_rows,
+    copy_session_snapshots,
+    delete_rows_after_snapshot,
+    group_snapshot_rows,
+    keep_messages_delete_specs,
+    restore_snapshot_rows,
+)
+from src.core.memory.sqlite_store_sidecar import (
+    build_decision_records,
+    build_write_failure_payload,
+    read_decisions_sidecar,
+    resolve_agent_context_dir,
+    write_json_sidecar_with_fallback,
+)
+from src.core.memory.sqlite_store_queries import (
+    base_summary,
+    build_fts_mistake_query,
+    build_like_search_params,
+    build_like_search_sql,
+    build_mistake_like_search_params,
+    build_mistake_like_search_sql,
+    build_mistake_search_params,
+    build_mistake_search_sql,
+    build_message_search_params,
+    build_message_search_sql,
+    build_recent_decisions_params,
+    build_recent_decisions_sql,
+    count_summary_fields,
+    extract_session_ids,
+    map_child_session_rows,
+    map_error_rows,
+    map_like_search_rows,
+    map_mistake_rows,
+    map_search_rows,
+    map_tool_call_rows,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -79,13 +122,21 @@ class SqliteSessionStore:
         if ac is not None:
             ac_path = Path(ac)
         else:
-            # Use agent_context_path() for consistent behavior
-            try:
-                from src.tools.tools_config import agent_context_path
-
-                ac_path = agent_context_path(self.workdir)
-            except Exception:
-                ac_path = agent_context_path(self.workdir)
+            legacy_agent_context = self.workdir / ".agent-context"
+            legacy_agent = self.workdir / ".agent"
+            if legacy_agent_context.exists():
+                ac_path = legacy_agent_context
+            elif legacy_agent.exists():
+                ac_path = legacy_agent
+            else:
+                # Use agent_context_path() when available; otherwise fall back to
+                # the canonical on-disk default instead of referencing an unbound
+                # import target in the failure branch.
+                try:
+                    from src.tools.tools_config import agent_context_path
+                    ac_path = agent_context_path(self.workdir)
+                except Exception:
+                    ac_path = self.workdir / ".codingAgent"
 
         # Cache resolved values
         self._agent_context_dir = ac_path
@@ -164,86 +215,7 @@ class SqliteSessionStore:
         _ = self._resolve_db_path()
         conn = self._get_writer_connection()
         try:
-            conn.executescript("""
-                CREATE TABLE IF NOT EXISTS messages (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    session_id TEXT NOT NULL,
-                    role TEXT NOT NULL,
-                    content TEXT NOT NULL,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                );
-                CREATE TABLE IF NOT EXISTS tool_calls (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    session_id TEXT NOT NULL,
-                    tool_name TEXT NOT NULL,
-                    args TEXT NOT NULL,
-                    result TEXT,
-                    success INTEGER DEFAULT 1,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                );
-                CREATE TABLE IF NOT EXISTS errors (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    session_id TEXT NOT NULL,
-                    error_type TEXT,
-                    error_message TEXT,
-                    context TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                );
-                CREATE TABLE IF NOT EXISTS plans (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    session_id TEXT NOT NULL,
-                    plan TEXT NOT NULL,
-                    status TEXT DEFAULT 'active',
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                );
-                CREATE TABLE IF NOT EXISTS decisions (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    session_id TEXT NOT NULL,
-                    decision TEXT NOT NULL,
-                    rationale TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                );
-                CREATE TABLE IF NOT EXISTS mistakes (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    session_id TEXT NOT NULL,
-                    summary TEXT NOT NULL,
-                    context TEXT,
-                    tool TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                );
-                CREATE TABLE IF NOT EXISTS schema_meta (
-                    key TEXT PRIMARY KEY,
-                    value TEXT NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS session_children (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    parent_session_id TEXT NOT NULL,
-                    child_session_id TEXT NOT NULL,
-                    role TEXT,
-                    task TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                );
-                CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);
-                CREATE INDEX IF NOT EXISTS idx_tool_calls_session ON tool_calls(session_id);
-                CREATE INDEX IF NOT EXISTS idx_errors_session ON errors(session_id);
-                CREATE INDEX IF NOT EXISTS idx_children_parent ON session_children(parent_session_id);
-                CREATE TABLE IF NOT EXISTS session_snapshots (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    session_id TEXT NOT NULL,
-                    snapshot_id TEXT NOT NULL,
-                    state_json TEXT NOT NULL,
-                    role TEXT,
-                    task TEXT,
-                    saved_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                );
-                CREATE TABLE IF NOT EXISTS session_snapshot_rows (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    snapshot_id TEXT NOT NULL,
-                    table_name TEXT NOT NULL,
-                    rows_json TEXT NOT NULL,
-                    saved_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                );
-            """)
+            conn.executescript(schema_creation_script())
 
             conn.execute(
                 "INSERT OR IGNORE INTO schema_meta (key, value) VALUES ('schema_version', ?)",
@@ -263,7 +235,7 @@ class SqliteSessionStore:
             row = conn.execute(
                 "SELECT value FROM schema_meta WHERE key = 'schema_version'"
             ).fetchone()
-            current_version = int(row["value"]) if row else 1
+            current_version = schema_version_from_row(row)
         except Exception:
             current_version = 1
 
@@ -294,7 +266,8 @@ class SqliteSessionStore:
     def _migrate_v2(self, conn: sqlite3.Connection) -> None:
         """Migration from v1 to v2: Add session_children table if not exists."""
         try:
-            conn.execute("""
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS session_children (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     parent_session_id TEXT NOT NULL,
@@ -303,10 +276,13 @@ class SqliteSessionStore:
                     task TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
-            """)
-            conn.execute("""
+            """
+            )
+            conn.execute(
+                """
                 CREATE INDEX IF NOT EXISTS idx_children_parent ON session_children(parent_session_id);
-            """)
+            """
+            )
             logger.debug("SqliteSessionStore: v2 migration complete")
         except Exception as e:
             logger.warning(f"SqliteSessionStore: v2 migration failed: {e}")
@@ -314,7 +290,8 @@ class SqliteSessionStore:
     def _migrate_v3(self, conn: sqlite3.Connection) -> None:
         """Migration from v2 to v3: Add mistakes table and FTS index."""
         try:
-            conn.execute("""
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS mistakes (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     session_id TEXT NOT NULL,
@@ -323,8 +300,10 @@ class SqliteSessionStore:
                     tool TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
-            """)
-            conn.execute("""
+            """
+            )
+            conn.execute(
+                """
                 CREATE VIRTUAL TABLE IF NOT EXISTS mistakes_fts USING fts5(
                     session_id,
                     summary,
@@ -332,13 +311,16 @@ class SqliteSessionStore:
                     tool,
                     tokenize='porter unicode61'
                 );
-            """)
-            conn.execute("""
+            """
+            )
+            conn.execute(
+                """
                 CREATE TRIGGER IF NOT EXISTS mistakes_ai AFTER INSERT ON mistakes BEGIN
                     INSERT INTO mistakes_fts (session_id, summary, context, tool)
                     VALUES (new.session_id, new.summary, new.context, new.tool);
                 END;
-            """)
+            """
+            )
             logger.debug("SqliteSessionStore: v3 migration complete")
         except Exception as e:
             logger.warning(f"SqliteSessionStore: v3 migration failed: {e}")
@@ -346,44 +328,9 @@ class SqliteSessionStore:
     def _ensure_fts_index(self, conn: sqlite3.Connection) -> None:
         """Create and maintain FTS5 full-text search index."""
         try:
-            conn.executescript("""
-                CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
-                    session_id,
-                    role,
-                    content,
-                    tokenize='porter unicode61'
-                );
-                CREATE VIRTUAL TABLE IF NOT EXISTS mistakes_fts USING fts5(
-                    session_id,
-                    summary,
-                    context,
-                    tool,
-                    tokenize='porter unicode61'
-                );
-            """)
-
-            conn.execute("""
-                CREATE TRIGGER IF NOT EXISTS messages_ai AFTER INSERT ON messages BEGIN
-                    INSERT INTO messages_fts (session_id, role, content)
-                    VALUES (new.session_id, new.role, new.content);
-                END;
-            """)
-
-            conn.execute("""
-                CREATE TRIGGER IF NOT EXISTS messages_ad AFTER DELETE ON messages BEGIN
-                    DELETE FROM messages_fts WHERE rowid IN (
-                        SELECT rowid FROM messages_fts WHERE session_id = old.session_id 
-                        AND content = old.content LIMIT 1
-                    );
-                END;
-            """)
-
-            conn.execute("""
-                CREATE TRIGGER IF NOT EXISTS mistakes_ai AFTER INSERT ON mistakes BEGIN
-                    INSERT INTO mistakes_fts (session_id, summary, context, tool)
-                    VALUES (new.session_id, new.summary, new.context, new.tool);
-                END;
-            """)
+            conn.executescript(fts_creation_script())
+            for statement in fts_trigger_statements():
+                conn.execute(statement)
 
             conn.commit()
             logger.debug("SqliteSessionStore: FTS5 index ready")
@@ -442,39 +389,19 @@ class SqliteSessionStore:
         conn = self._get_connection()
 
         try:
-            if session_id:
-                sql = """
-                    SELECT m.session_id, m.role, m.content, rank
-                    FROM messages_fts fts
-                    JOIN messages m ON m.rowid = fts.rowid
-                    WHERE messages_fts MATCH ?
-                      AND m.session_id = ?
-                    ORDER BY rank
-                    LIMIT ?
-                """
-                rows = conn.execute(sql, (query, session_id, limit)).fetchall()
-            else:
-                sql = """
-                    SELECT m.session_id, m.role, m.content, rank
-                    FROM messages_fts fts
-                    JOIN messages m ON m.rowid = fts.rowid
-                    WHERE messages_fts MATCH ?
-                    ORDER BY rank
-                    LIMIT ?
-                """
-                rows = conn.execute(sql, (query, limit)).fetchall()
+            sql, _ = build_message_search_sql(session_id=session_id)
+            params = build_message_search_params(
+                query=query,
+                limit=limit,
+                session_id=session_id,
+            )
+            rows = conn.execute(sql, params).fetchall()
 
-            return [
-                {
-                    "session_id": r["session_id"],
-                    "role": r["role"],
-                    "content": r["content"],
-                    "rank": r["rank"],
-                }
-                for r in rows
-            ]
+            return map_search_rows(rows)
         except Exception as e:
-            logger.warning(f"SqliteSessionStore: FTS search error: {e}; falling back to LIKE search")
+            logger.warning(
+                f"SqliteSessionStore: FTS search error: {e}; falling back to LIKE search"
+            )
             return self._search_fallback(query, session_id=session_id, limit=limit)
 
     def _search_fallback(
@@ -485,31 +412,15 @@ class SqliteSessionStore:
     ) -> List[Dict[str, Any]]:
         """Fallback LIKE-based search when FTS is unavailable."""
         conn = self._get_connection()
-        pattern = f"%{query}%"
+        sql = build_like_search_sql(session_id=session_id)
+        params = build_like_search_params(
+            query=query,
+            limit=limit,
+            session_id=session_id,
+        )
+        rows = conn.execute(sql, params).fetchall()
 
-        if session_id:
-            sql = """
-                SELECT session_id, role, content
-                FROM messages
-                WHERE session_id = ? AND content LIKE ?
-                ORDER BY created_at DESC
-                LIMIT ?
-            """
-            rows = conn.execute(sql, (session_id, pattern, limit)).fetchall()
-        else:
-            sql = """
-                SELECT session_id, role, content
-                FROM messages
-                WHERE content LIKE ?
-                ORDER BY created_at DESC
-                LIMIT ?
-            """
-            rows = conn.execute(sql, (pattern, limit)).fetchall()
-
-        return [
-            {"session_id": r["session_id"], "role": r["role"], "content": r["content"]}
-            for r in rows
-        ]
+        return map_like_search_rows(rows)
 
     def add_tool_call(
         self,
@@ -539,25 +450,7 @@ class SqliteSessionStore:
             "SELECT tool_name, args, result, success FROM tool_calls WHERE session_id=? ORDER BY created_at",
             (session_id or "unknown",),
         ).fetchall()
-        out: List[Dict[str, Any]] = []
-        for r in rows:
-            try:
-                args = json.loads(r["args"]) if r["args"] is not None else None
-            except Exception:
-                args = r["args"]
-            try:
-                res = json.loads(r["result"]) if r["result"] is not None else None
-            except Exception:
-                res = r["result"]
-            out.append(
-                {
-                    "tool_name": r["tool_name"],
-                    "args": args,
-                    "result": res,
-                    "success": bool(r["success"] or 0),
-                }
-            )
-        return out
+        return map_tool_call_rows(rows)
 
     def add_plan(self, session_id: str, plan: Any, status: str = "active") -> None:
         sid = session_id or "unknown"
@@ -619,21 +512,7 @@ class SqliteSessionStore:
             "SELECT error_type, error_message, context FROM errors WHERE session_id=? ORDER BY created_at",
             (session_id or "unknown",),
         ).fetchall()
-        out = []
-        for r in rows:
-            ctx = r["context"]
-            try:
-                ctx = json.loads(ctx) if ctx is not None else None
-            except Exception:
-                pass
-            out.append(
-                {
-                    "error_type": r["error_type"],
-                    "error_message": r["error_message"],
-                    "context": ctx,
-                }
-            )
-        return out
+        return map_error_rows(rows)
 
     def add_decision(
         self, session_id: str, decision: str, rationale: Optional[str] = None
@@ -712,57 +591,25 @@ class SqliteSessionStore:
             # Build an OR query from individual tokens so partial matches rank
             # instead of requiring all words to be present (FTS5 implicit AND).
             # Strip FTS5 special characters to avoid syntax errors.
-            import re as _re
-            tokens = _re.sub(r'[^\w\s]', ' ', query).split()
-            if not tokens:
+            fts_query = build_fts_mistake_query(query)
+            if not fts_query:
                 return []
-            fts_query = " OR ".join(tokens[:20])  # cap to 20 tokens
             rows = conn.execute(
-                """
-                SELECT m.summary, m.context, m.tool, m.created_at
-                FROM mistakes_fts fts
-                JOIN mistakes m ON m.rowid = fts.rowid
-                WHERE mistakes_fts MATCH ?
-                ORDER BY rank
-                LIMIT ?
-                """,
-                (fts_query, limit),
+                build_mistake_search_sql(),
+                build_mistake_search_params(fts_query=fts_query, limit=limit),
             ).fetchall()
-            return [
-                {
-                    "summary": r["summary"],
-                    "context": r["context"],
-                    "tool": r["tool"],
-                    "ts": r["created_at"],
-                }
-                for r in rows
-            ]
+            return map_mistake_rows(rows)
         except Exception:
             pass
 
         # Fallback: LIKE search on summary
         try:
             conn = self._get_connection()
-            like_term = f"%{query[:80]}%"
             rows = conn.execute(
-                """
-                SELECT summary, context, tool, created_at
-                FROM mistakes
-                WHERE summary LIKE ?
-                ORDER BY created_at DESC
-                LIMIT ?
-                """,
-                (like_term, limit),
+                build_mistake_like_search_sql(),
+                build_mistake_like_search_params(query=query, limit=limit),
             ).fetchall()
-            return [
-                {
-                    "summary": r["summary"],
-                    "context": r["context"],
-                    "tool": r["tool"],
-                    "ts": r["created_at"],
-                }
-                for r in rows
-            ]
+            return map_mistake_rows(rows)
         except Exception:
             return []
 
@@ -812,78 +659,34 @@ class SqliteSessionStore:
 
             ts = int(time.time() * 1000)
             sid = session_id or "unknown"
-
-            try:
-                from src.tools.tools_config import agent_context_path
-
-                diag_dir = agent_context_path(self.workdir)
-            except Exception:
-                diag_dir = self.workdir / ".codingAgent"
-
+            diag_dir = resolve_agent_context_dir(
+                workdir=self.workdir,
+                agent_context_dir=getattr(self, "_agent_context_dir", None),
+            )
             diag_dir.mkdir(parents=True, exist_ok=True)
             diag_path = diag_dir / f"session_store_write_failure_{ts}_{sid}.json"
 
             last_err = getattr(self, "_write_last_error", exc)
-            payload = {
-                "db_path": str(self.db_path)
-                if getattr(self, "db_path", None) is not None
-                else None,
-                "session_id": sid,
-                "attempts": getattr(self, "_write_retry_attempts", 5),
-                "last_error": (
+            payload = build_write_failure_payload(
+                db_path=getattr(self, "db_path", None),
+                session_id=sid,
+                attempts=getattr(self, "_write_retry_attempts", 5),
+                last_error=(
                     "SQLITE_BUSY/LOCKED"
                     if isinstance(last_err, sqlite3.OperationalError)
                     and "lock" in str(last_err).lower()
                     else str(last_err)
                 ),
-                "sql": getattr(self, "_write_last_sql", "UNKNOWN"),
-                "params": getattr(self, "_write_last_params", ()),
-                "ts": ts,
-            }
-            fd = None
-            tmp = None
-            try:
-                try:
-                    from src.core.io_utils import atomic_write_json
-
-                    ok = atomic_write_json(diag_path, payload, logger=logger)
-                    if ok:
-                        logger.debug(
-                            "SqliteSessionStore._write_with_retry: diagnostic atomic write succeeded: %s",
-                            diag_path,
-                        )
-                        return
-                except Exception as _e:
-                    import traceback as _traceback
-
-                    logger.debug(
-                        "SqliteSessionStore._write_with_retry: atomic_write_json unavailable for diagnostic, using fallback: %s\n%s",
-                        _e,
-                        _traceback.format_exc(),
-                    )
-
-                fd, tmp = tempfile.mkstemp(dir=str(diag_dir), suffix=".tmp")
-                with os.fdopen(fd, "w", encoding="utf-8") as f:
-                    fd = None
-                    json.dump(payload, f, ensure_ascii=False)
-                    try:
-                        f.flush()
-                        os.fsync(f.fileno())
-                    except Exception:
-                        pass
-                try:
-                    os.replace(tmp, str(diag_path))
-                except Exception:
-                    try:
-                        shutil.move(tmp, str(diag_path))
-                    except Exception:
-                        pass
-            finally:
-                try:
-                    if fd is not None:
-                        os.close(fd)
-                except Exception:
-                    pass
+                sql=getattr(self, "_write_last_sql", "UNKNOWN"),
+                params=getattr(self, "_write_last_params", ()),
+                ts=ts,
+            )
+            write_json_sidecar_with_fallback(
+                dest=diag_path,
+                payload=payload,
+                logger=logger,
+                debug_prefix="SqliteSessionStore._write_with_retry: diagnostic",
+            )
         except Exception:
             pass
 
@@ -895,80 +698,25 @@ class SqliteSessionStore:
         try:
             conn = self._get_connection()
             cur = conn.execute(
-                "SELECT session_id, decision, rationale, created_at FROM decisions ORDER BY created_at DESC LIMIT ?",
-                (int(limit),),
+                build_recent_decisions_sql(),
+                build_recent_decisions_params(limit),
             )
             rows = cur.fetchall()
-            decisions: List[Dict[str, Any]] = []
-            for r in rows:
-                decisions.append(
-                    {
-                        "session_id": r["session_id"],
-                        "decision": r["decision"],
-                        "rationale": r["rationale"],
-                        "ts": r["created_at"],
-                    }
-                )
+            decisions = build_decision_records(rows)
 
             # For writes prefer the canonical agent-context resolver. This may
             # create the canonical directory and is appropriate at write-time.
-            try:
-                from src.tools.tools_config import agent_context_path
-
-                ac_dir = agent_context_path(self.workdir)
-            except Exception:
-                ac_dir = (
-                    getattr(self, "_agent_context_dir", None)
-                    or self.workdir / ".codingAgent"
-                )
-
+            ac_dir = resolve_agent_context_dir(
+                workdir=self.workdir,
+                agent_context_dir=getattr(self, "_agent_context_dir", None),
+            )
             dest = Path(ac_dir) / "decisions.json"
-            try:
-                from src.core.io_utils import atomic_write_json
-
-                ok = atomic_write_json(dest, decisions, logger=logger)
-                if not ok:
-                    logger.warning(
-                        "SqliteSessionStore.write_decisions_json: atomic_write_json returned False, falling back"
-                    )
-                else:
-                    logger.debug(
-                        "SqliteSessionStore.write_decisions_json: atomic write succeeded: %s",
-                        dest,
-                    )
-                    return
-            except Exception:
-                logger.debug(
-                    "SqliteSessionStore.write_decisions_json: atomic_write_json unavailable, using fallback\n%s",
-                    traceback.format_exc(),
-                )
-                # Best-effort fallback to older tempfile strategy
-                fd = None
-                tmp = None
-                try:
-                    dest.parent.mkdir(parents=True, exist_ok=True)
-                    fd, tmp = tempfile.mkstemp(dir=str(dest.parent), suffix=".tmp")
-                    with os.fdopen(fd, "w", encoding="utf-8") as f:
-                        fd = None
-                        json.dump(decisions, f, ensure_ascii=False)
-                        try:
-                            f.flush()
-                            os.fsync(f.fileno())
-                        except Exception:
-                            pass
-                    try:
-                        os.replace(tmp, str(dest))
-                    except Exception:
-                        try:
-                            shutil.move(tmp, str(dest))
-                        except Exception:
-                            pass
-                finally:
-                    try:
-                        if fd is not None:
-                            os.close(fd)
-                    except Exception:
-                        pass
+            write_json_sidecar_with_fallback(
+                dest=dest,
+                payload=decisions,
+                logger=logger,
+                debug_prefix="SqliteSessionStore.write_decisions_json",
+            )
         except Exception:
             # Best-effort: do not propagate failures
             logger.debug(
@@ -984,37 +732,22 @@ class SqliteSessionStore:
         try:
             conn = self._get_connection()
             cur = conn.execute(
-                "SELECT session_id, decision, rationale, created_at FROM decisions ORDER BY created_at DESC LIMIT ?",
-                (int(max_entries),),
+                build_recent_decisions_sql(),
+                build_recent_decisions_params(max_entries),
             )
             rows = cur.fetchall()
-            decisions: List[Dict[str, Any]] = []
-            for r in rows:
-                decisions.append(
-                    {
-                        "session_id": r["session_id"],
-                        "decision": r["decision"],
-                        "rationale": r["rationale"],
-                        "ts": r["created_at"],
-                    }
-                )
-            return decisions
+            return build_decision_records(rows)
         except Exception:
             # Fallback to sidecar file
             try:
-                path = (
-                    Path(
-                        getattr(self, "_agent_context_dir", None)
-                        or self.workdir / ".codingAgent"
-                    )
-                    / "decisions.json"
+                path = resolve_agent_context_dir(
+                    workdir=self.workdir,
+                    agent_context_dir=getattr(self, "_agent_context_dir", None),
                 )
-                if not path.exists():
-                    return []
-                data = json.loads(path.read_text(encoding="utf-8"))
-                if not isinstance(data, list):
-                    return []
-                return data[: max(0, int(max_entries))]
+                return read_decisions_sidecar(
+                    path=Path(path) / "decisions.json",
+                    max_entries=max_entries,
+                )
             except Exception:
                 return []
 
@@ -1036,15 +769,7 @@ class SqliteSessionStore:
             "SELECT parent_session_id, child_session_id, role, task FROM session_children WHERE parent_session_id=? ORDER BY created_at",
             (parent_session_id or "unknown",),
         ).fetchall()
-        return [
-            {
-                "parent_session_id": r["parent_session_id"],
-                "child_session_id": r["child_session_id"],
-                "role": r["role"],
-                "task": r["task"],
-            }
-            for r in rows
-        ]
+        return map_child_session_rows(rows)
 
     def get_session_tree(self, session_id: str) -> Dict[str, Any]:
         # Build parent->children map by scanning session_children
@@ -1072,7 +797,7 @@ class SqliteSessionStore:
         state_json: str,
         role: Optional[str] = None,
         task: Optional[str] = None,
-    ) -> str:
+    ) -> Optional[str]:
         """Create a durable snapshot capturing both a sidecar state and a
         row-level copy of session rows across the mutable tables.
 
@@ -1113,16 +838,7 @@ class SqliteSessionStore:
                             f"SELECT * FROM {tbl} WHERE session_id=? ORDER BY created_at",
                             (sid,),
                         ).fetchall()
-                        # Convert sqlite3.Row to serialisable dicts excluding the
-                        # primary key (id) and the session_id column so the
-                        # snapshot can be restored into the same session_id.
-                        serialised: List[Dict[str, Any]] = []
-                        for r in rows:
-                            d = dict(r)
-                            # Remove primary key and session_id columns if present
-                            d.pop("id", None)
-                            d.pop("session_id", None)
-                            serialised.append(d)
+                        serialised = serialise_snapshot_rows(rows)
                         wconn.execute(
                             "INSERT INTO session_snapshot_rows (snapshot_id, table_name, rows_json) VALUES (?, ?, ?)",
                             (snap_id, tbl, json.dumps(serialised, ensure_ascii=False)),
@@ -1137,7 +853,7 @@ class SqliteSessionStore:
                     wconn.rollback()
                 except Exception:
                     pass
-                raise
+                return None
 
         return snap_id
 
@@ -1156,7 +872,7 @@ class SqliteSessionStore:
         rows = conn.execute(
             "SELECT DISTINCT session_id FROM (SELECT session_id FROM messages UNION SELECT session_id FROM tool_calls UNION SELECT session_id FROM errors UNION SELECT session_id FROM plans UNION SELECT session_id FROM decisions)"
         ).fetchall()
-        return sorted({r[0] for r in rows if r[0] is not None})
+        return extract_session_ids(rows)
 
     def delete_session(self, session_id: str) -> int:
         # Delete rows in all tables for the session; return total deleted rows
@@ -1200,90 +916,11 @@ class SqliteSessionStore:
         with self._lock:
             conn = self._get_writer_connection()
             try:
-                # Copy messages (preserve created_at ordering)
-                rows = conn.execute(
-                    "SELECT role, content, created_at FROM messages WHERE session_id=? ORDER BY created_at",
-                    (sid,),
-                ).fetchall()
-                for r in rows:
-                    conn.execute(
-                        "INSERT INTO messages (session_id, role, content, created_at) VALUES (?, ?, ?, ?)",
-                        (new_id, r["role"], r["content"], r["created_at"]),
-                    )
-
-                # Copy tool_calls
-                rows = conn.execute(
-                    "SELECT tool_name, args, result, success, created_at FROM tool_calls WHERE session_id=? ORDER BY created_at",
-                    (sid,),
-                ).fetchall()
-                for r in rows:
-                    conn.execute(
-                        "INSERT INTO tool_calls (session_id, tool_name, args, result, success, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-                        (
-                            new_id,
-                            r["tool_name"],
-                            r["args"],
-                            r["result"],
-                            r["success"],
-                            r["created_at"],
-                        ),
-                    )
-
-                # Copy errors
-                rows = conn.execute(
-                    "SELECT error_type, error_message, context, created_at FROM errors WHERE session_id=? ORDER BY created_at",
-                    (sid,),
-                ).fetchall()
-                for r in rows:
-                    conn.execute(
-                        "INSERT INTO errors (session_id, error_type, error_message, context, created_at) VALUES (?, ?, ?, ?, ?)",
-                        (
-                            new_id,
-                            r["error_type"],
-                            r["error_message"],
-                            r["context"],
-                            r["created_at"],
-                        ),
-                    )
-
-                # Copy plans
-                rows = conn.execute(
-                    "SELECT plan, status, created_at FROM plans WHERE session_id=? ORDER BY created_at",
-                    (sid,),
-                ).fetchall()
-                for r in rows:
-                    conn.execute(
-                        "INSERT INTO plans (session_id, plan, status, created_at) VALUES (?, ?, ?, ?)",
-                        (new_id, r["plan"], r["status"], r["created_at"]),
-                    )
-
-                # Copy decisions
-                rows = conn.execute(
-                    "SELECT decision, rationale, created_at FROM decisions WHERE session_id=? ORDER BY created_at",
-                    (sid,),
-                ).fetchall()
-                for r in rows:
-                    conn.execute(
-                        "INSERT INTO decisions (session_id, decision, rationale, created_at) VALUES (?, ?, ?, ?)",
-                        (new_id, r["decision"], r["rationale"], r["created_at"]),
-                    )
-
-                # Copy session_children where this session is the parent
-                rows = conn.execute(
-                    "SELECT child_session_id, role, task, created_at FROM session_children WHERE parent_session_id=? ORDER BY created_at",
-                    (sid,),
-                ).fetchall()
-                for r in rows:
-                    conn.execute(
-                        "INSERT INTO session_children (parent_session_id, child_session_id, role, task, created_at) VALUES (?, ?, ?, ?, ?)",
-                        (
-                            new_id,
-                            r["child_session_id"],
-                            r["role"],
-                            r["task"],
-                            r["created_at"],
-                        ),
-                    )
+                copy_session_rows(
+                    conn=conn,
+                    source_session_id=sid,
+                    dest_session_id=new_id,
+                )
 
                 # Copy snapshots (preserve snapshot_id) and ensure the
                 # associated row-level snapshot data is available for the
@@ -1292,56 +929,18 @@ class SqliteSessionStore:
                 # fork can use the same row-level data. To be defensive we
                 # also insert any missing session_snapshot_rows rows (avoids
                 # surprising gaps if the rows were stored separately).
-                rows = conn.execute(
-                    "SELECT snapshot_id, state_json, role, task, saved_at FROM session_snapshots WHERE session_id=? ORDER BY saved_at",
-                    (sid,),
-                ).fetchall()
-
-                snapshot_ids = []
-                for r in rows:
-                    snapshot_ids.append(r["snapshot_id"])
-                    conn.execute(
-                        "INSERT INTO session_snapshots (session_id, snapshot_id, state_json, role, task, saved_at) VALUES (?, ?, ?, ?, ?, ?)",
-                        (
-                            new_id,
-                            r["snapshot_id"],
-                            r["state_json"],
-                            r["role"],
-                            r["task"],
-                            r["saved_at"],
-                        ),
-                    )
+                snapshot_ids = copy_session_snapshots(
+                    conn=conn,
+                    source_session_id=sid,
+                    dest_session_id=new_id,
+                )
 
                 # Copy any missing session_snapshot_rows for the snapshot ids we
                 # just attached to the fork. We check for an existing identical
                 # (snapshot_id, table_name, rows_json) row before inserting to
                 # avoid creating duplicates.
                 try:
-                    for snap in snapshot_ids:
-                        srows = conn.execute(
-                            "SELECT table_name, rows_json, saved_at FROM session_snapshot_rows WHERE snapshot_id=?",
-                            (snap,),
-                        ).fetchall()
-                        for sr in srows:
-                            try:
-                                exists = conn.execute(
-                                    "SELECT 1 FROM session_snapshot_rows WHERE snapshot_id=? AND table_name=? AND rows_json=? LIMIT 1",
-                                    (snap, sr["table_name"], sr["rows_json"]),
-                                ).fetchone()
-                                if exists:
-                                    continue
-                                conn.execute(
-                                    "INSERT INTO session_snapshot_rows (snapshot_id, table_name, rows_json, saved_at) VALUES (?, ?, ?, ?)",
-                                    (
-                                        snap,
-                                        sr["table_name"],
-                                        sr["rows_json"],
-                                        sr["saved_at"],
-                                    ),
-                                )
-                            except Exception:
-                                # Best-effort: skip problematic snapshot rows
-                                continue
+                    copy_missing_snapshot_rows(conn=conn, snapshot_ids=snapshot_ids)
                 except Exception:
                     # Best-effort: if the snapshot rows query fails, ignore
                     pass
@@ -1426,62 +1025,12 @@ class SqliteSessionStore:
                             except Exception:
                                 pass
 
-                            # Group rows by table_name
-                            by_table: Dict[str, List[str]] = {}
-                            for r in rows:
-                                tbl = r[0]
-                                js = r[1]
-                                by_table.setdefault(tbl, []).append(js)
-
-                            for tbl, js_list in by_table.items():
-                                try:
-                                    # Delete existing session rows for this table
-                                    if tbl == "session_children":
-                                        cur = wconn.execute(
-                                            "DELETE FROM session_children WHERE parent_session_id=?",
-                                            (sid,),
-                                        )
-                                    else:
-                                        cur = wconn.execute(
-                                            f"DELETE FROM {tbl} WHERE session_id=?",
-                                            (sid,),
-                                        )
-                                    # Attempt to capture rowcount where supported
-                                    if cur is not None:
-                                        try:
-                                            deleted[tbl] = cur.rowcount  # type: ignore[index]
-                                        except Exception:
-                                            pass
-                                except Exception:
-                                    pass
-
-                                # Insert the snapshot rows back
-                                for js in js_list:
-                                    try:
-                                        items = json.loads(js)
-                                        for item in items:
-                                            # Ensure the session-identifying column
-                                            # is present and set to the target session.
-                                            if tbl == "session_children":
-                                                item["parent_session_id"] = sid
-                                            else:
-                                                item["session_id"] = sid
-
-                                            cols = list(item.keys())
-                                            vals = [item[c] for c in cols]
-                                            placeholders = ",".join(["?" for _ in cols])
-                                            col_list = ",".join(cols)
-                                            try:
-                                                wconn.execute(
-                                                    f"INSERT INTO {tbl} ({col_list}) VALUES ({placeholders})",
-                                                    tuple(vals),
-                                                )
-                                            except Exception:
-                                                # If a column mismatch occurs or insert fails,
-                                                # skip the row (best-effort restore)
-                                                pass
-                                    except Exception:
-                                        pass
+                            deleted = restore_snapshot_rows(
+                                conn=wconn,
+                                session_id=sid,
+                                grouped_rows=group_snapshot_rows(rows),
+                                initial_deleted=deleted,
+                            )
 
                             # Optionally remove snapshots created after this snap
                             try:
@@ -1518,25 +1067,11 @@ class SqliteSessionStore:
                             wconn.execute("BEGIN")
                         except Exception:
                             pass
-                        tables = (
-                            "tool_calls",
-                            "errors",
-                            "plans",
-                            "decisions",
+                        deleted = delete_rows_after_snapshot(
+                            conn=wconn,
+                            session_id=sid,
+                            saved_at=saved_at,
                         )
-                        for tbl in tables:
-                            try:
-                                cur = wconn.execute(
-                                    f"DELETE FROM {tbl} WHERE session_id=? AND datetime(created_at) > datetime(?)",
-                                    (sid, saved_at),
-                                )
-                                deleted[tbl] = (
-                                    cur.rowcount
-                                    if cur is not None and cur.rowcount is not None
-                                    else 0
-                                )
-                            except Exception:
-                                pass
                         wconn.commit()
                     except Exception:
                         try:
@@ -1569,13 +1104,7 @@ class SqliteSessionStore:
         with self._lock:
             conn = self._get_writer_connection()
             try:
-                tables = [
-                    ("messages", not keep_messages),
-                    ("tool_calls", True),
-                    ("errors", True),
-                    ("plans", True),
-                    ("decisions", True),
-                ]
+                tables = keep_messages_delete_specs(keep_messages)
                 for tbl, should_delete in tables:
                     if not should_delete:
                         continue
@@ -1622,57 +1151,17 @@ class SqliteSessionStore:
     def get_session_summary(self, session_id: str) -> Dict[str, Any]:
         sid = session_id or "unknown"
         conn = self._get_connection()
-        summary = {
-            "session_id": sid,
-            "messages": 0,
-            "message_count": 0,
-            "tool_calls": 0,
-            "tool_call_count": 0,
-            "errors": 0,
-            "error_count": 0,
-            "plans": 0,
-            "decisions": 0,
-        }
-        try:
-            row = conn.execute(
-                "SELECT COUNT(*) FROM messages WHERE session_id=?", (sid,)
-            ).fetchone()
-            summary["messages"] = int(row[0]) if row else 0
-            summary["message_count"] = int(row[0]) if row else 0
-        except Exception:
-            pass
-        try:
-            row = conn.execute(
-                "SELECT COUNT(*) FROM tool_calls WHERE session_id=?", (sid,)
-            ).fetchone()
-            c = int(row[0]) if row else 0
-            summary["tool_calls"] = c
-            summary["tool_call_count"] = c
-        except Exception:
-            pass
-        try:
-            row = conn.execute(
-                "SELECT COUNT(*) FROM errors WHERE session_id=?", (sid,)
-            ).fetchone()
-            c = int(row[0]) if row else 0
-            summary["errors"] = c
-            summary["error_count"] = c
-        except Exception:
-            pass
-        try:
-            row = conn.execute(
-                "SELECT COUNT(*) FROM plans WHERE session_id=?", (sid,)
-            ).fetchone()
-            summary["plans"] = int(row[0]) if row else 0
-        except Exception:
-            pass
-        try:
-            row = conn.execute(
-                "SELECT COUNT(*) FROM decisions WHERE session_id=?", (sid,)
-            ).fetchone()
-            summary["decisions"] = int(row[0]) if row else 0
-        except Exception:
-            pass
+        summary = base_summary(sid)
+        for table_name, primary_key, secondary_key in count_summary_fields():
+            try:
+                row = conn.execute(
+                    f"SELECT COUNT(*) FROM {table_name} WHERE session_id=?", (sid,)
+                ).fetchone()
+                count = int(row[0]) if row else 0
+                summary[primary_key] = count
+                summary[secondary_key] = count
+            except Exception:
+                pass
         return summary
 
     def close(self) -> None:

@@ -17,6 +17,18 @@ from pathlib import Path
 
 from src.core.paths import get_sessions_dir
 from src.tools._tool import tool, PermissionKind
+from src.tools.subagent_payloads import (
+    build_delegate_result_text,
+    build_child_session_file_path,
+    build_subagent_initial_state,
+    build_subagent_manifest,
+    build_subagent_roles_payload,
+    build_subagent_session_payload,
+    canonicalize_subagent_role,
+    compute_effective_tool_policy,
+    extract_child_session_messages,
+    select_dispatch_result_content,
+)
 
 
 def _get_agent_context_dir(workdir_path: Path) -> Path:
@@ -33,89 +45,13 @@ def _get_agent_context_dir(workdir_path: Path) -> Path:
 
 
 def _atomic_write_json(target: Path, obj: dict, logger=None) -> bool:
-    """Module-level atomic JSON writer wrapper.
+    """Module-level alias for src.core.io_utils.atomic_write_json.
 
-    Attempts to call src.core.io_utils.atomic_write_json at call-time so tests
-    can monkeypatch tools_config or io_utils between runs. Falls back to a
-    local mkstemp+replace implementation when the central helper is
-    unavailable.
+    Deferred import at call-time preserves test monkeypatching ability.
     """
-    import tempfile as _tempfile
-    import os as _os
-    import json as _json
-    import logging as _logging
+    from src.core.io_utils import atomic_write_json as _central
 
-    if logger is None:
-        logger = _logging.getLogger(__name__)
-
-    try:
-        from src.core.io_utils import atomic_write_json as _central
-
-        try:
-            ok = _central(target, obj, logger=logger)
-            return bool(ok)
-        except Exception as _e:
-            import traceback as _traceback
-
-            logger.debug(
-                "_atomic_write_json: central atomic_write_json failed, falling back: %s\n%s",
-                _e,
-                _traceback.format_exc(),
-            )
-    except Exception as _e:
-        import traceback as _traceback
-
-        logger.debug(
-            "_atomic_write_json: central atomic_write_json not available, using local fallback: %s\n%s",
-            _e,
-            _traceback.format_exc(),
-        )
-
-    # Local fallback
-    try:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        _fd, _tmp = _tempfile.mkstemp(dir=str(target.parent), suffix=".tmp")
-        try:
-            with _os.fdopen(_fd, "w", encoding="utf-8") as _f:
-                _json.dump(obj, _f, ensure_ascii=False, indent=2)
-                _f.flush()
-                try:
-                    _os.fsync(_f.fileno())
-                except Exception:
-                    pass
-            _os.replace(_tmp, str(target))
-        except Exception:
-            try:
-                _os.unlink(_tmp)
-            except Exception:
-                pass
-            raise
-        try:
-            st = target.stat()
-            logger.info(
-                "delegate_task: manifest written: %s (%d bytes)", target, st.st_size
-            )
-        except Exception:
-            logger.info("delegate_task: manifest written: %s", target)
-        return True
-    except Exception as _aw:
-        logger.warning("delegate_task: atomic manifest write failed: %s", _aw)
-        try:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(_json.dumps(obj, indent=2), encoding="utf-8")
-            try:
-                st = target.stat()
-                logger.info(
-                    "delegate_task: manifest written (fallback): %s (%d bytes)",
-                    target,
-                    st.st_size,
-                )
-            except Exception:
-                logger.info("delegate_task: manifest written (fallback): %s", target)
-            return True
-        except Exception as _fb:
-            logger.error("delegate_task: manifest write failed (fallback): %s", _fb)
-            return False
+    return _central(target, obj, logger=logger)
 
 
 try:
@@ -141,12 +77,6 @@ _PARENT_ORCHESTRATOR_VAR: ContextVar[Any] = ContextVar(
 # Subprocess inheritance is not supported — subprocesses start at depth 0.
 _DELEGATION_DEPTH_VAR: ContextVar[int] = ContextVar("_delegation_depth", default=0)
 _MAX_DELEGATION_DEPTH = 3
-
-# Lazy imports — degrade gracefully when src.core is not available
-try:
-    from src.core.orchestration.graph_factory import GraphFactory
-except ImportError:
-    GraphFactory = None
 
 try:
     from src.core.orchestration.agent_brain import get_agent_brain_manager
@@ -192,6 +122,21 @@ except ImportError:
 
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_subagent_graph(*, orchestrator: Any = None, model: Optional[str] = None):
+    """Resolve the canonical compiled graph for a subagent run.
+
+    Role validation and role-specific tool policy happen outside graph selection.
+    All subagent executions should enter through the same tier-aware compiled
+    graph path as the main orchestrator.
+    """
+    from src.core.orchestration.graph.builder import get_compiled_graph_for_orchestrator
+
+    return get_compiled_graph_for_orchestrator(
+        orchestrator=orchestrator,
+        model=model,
+    )
 
 
 def _build_valid_roles() -> set:
@@ -382,62 +327,33 @@ def delegate_task(
     )
 
     try:
-        # 1. Resolve the appropriate graph based on the role
-        if GraphFactory is None:
-            return "Error: GraphFactory is not available (src.core not importable)"
-        graph = GraphFactory.get_graph(role)
-
-        if graph is None:
-            return f"Error: Could not create graph for role '{role}'"
-
-        # 2. Setup the isolated initial state
-        # Map legacy role names to canonical so AgentBrainManager finds the right prompts
-        _legacy_to_canonical = {
-            "researcher": "analyst",
-            "coder": "operational",
-            "planner": "strategic",
-            "reviewer": "reviewer",
-            # canonical names pass through unchanged
-            "analyst": "analyst",
-            "operational": "operational",
-            "strategic": "strategic",
-            "debugger": "debugger",
-        }
-        canonical_role = _legacy_to_canonical.get(role, role)
+        # 1. Setup the isolated initial state
+        # Map legacy role names to canonical so AgentBrainManager finds the right prompts.
+        canonical_role = canonicalize_subagent_role(role)
         if get_agent_brain_manager is None:
             return "Error: AgentBrainManager is not available (src.core not importable)"
         brain = get_agent_brain_manager()
         system_prompt = brain.compile_system_prompt(canonical_role)
 
         # SPAWN-W2: Resolve allowed_tools from explicit param or AgentDefinition registry.
-        _effective_allowed: Optional[set] = None
-        _effective_denied: set = set()
-        if allowed_tools is not None:
-            _effective_allowed = set(allowed_tools)
-        else:
+        _registry_allowed: Optional[set] = None
+        _registry_denied: set = set()
+        if allowed_tools is None:
             try:
                 from src.core.orchestration.agent_types import get_agent_registry
 
                 _agent_def = get_agent_registry().get(canonical_role)
                 if _agent_def is not None:
-                    _effective_allowed = (
-                        _agent_def.allowed_tools
-                    )  # may be None (no restriction)
-                    _effective_denied = _agent_def.denied_tools or set()
+                    _registry_allowed = _agent_def.allowed_tools
+                    _registry_denied = _agent_def.denied_tools or set()
             except Exception:
                 pass
 
-        # CP-1: Structural recursion prevention — subagents must never be able
-        # to spawn further subagents via delegate_task (or its async variant).
-        # The depth-env-var check is belt-and-suspenders; this denylist ensures
-        # the tool is structurally absent from every subagent's toolset.
-        _effective_denied = _effective_denied | {"delegate_task", "delegate_task_async"}
-        if _effective_allowed is not None:
-            # Also strip from allowlist if it was explicitly included
-            _effective_allowed = _effective_allowed - {
-                "delegate_task",
-                "delegate_task_async",
-            }
+        _effective_allowed, _effective_denied = compute_effective_tool_policy(
+            explicit_allowed_tools=allowed_tools,
+            registry_allowed_tools=_registry_allowed,
+            registry_denied_tools=_registry_denied,
+        )
 
         # Create role-aware orchestrator for tool restriction enforcement
         subagent_orchestrator = SubagentOrchestrator(
@@ -492,67 +408,29 @@ def delegate_task(
             except Exception:
                 pass
 
-        initial_state = {
-            "task": subtask_description,
-            "session_id": child_session_id,
-            "working_dir": str(workdir_path),
-            "history": [],
-            "system_prompt": system_prompt,
-            "rounds": 0,
-            "errors": [],
-            "verified_reads": [],
-            "next_action": None,
-            "current_plan": [],
-            "current_step": 0,
-            "last_result": None,
-            "plan_validation": None,
-            "verification_result": None,
-            "evaluation_result": None,
-            "delegations": [],
-            "delegation_results": None,
-            "current_role": subagent_orchestrator.current_role,  # Pass role to state
-            # SPAWN-W1: Track delegation hierarchy
-            "parent_session_id": parent_session_id,
-            "delegation_depth": depth + 1,
-            # SM-1: Per-subagent model override (may be None = use provider default)
-            "override_model": _override_model,
-        }
+        initial_state = build_subagent_initial_state(
+            subtask_description=subtask_description,
+            child_session_id=child_session_id,
+            working_dir=str(workdir_path),
+            system_prompt=system_prompt,
+            current_role=subagent_orchestrator.current_role,
+            parent_session_id=parent_session_id,
+            delegation_depth=depth + 1,
+            override_model=_override_model,
+            resumed_state=_resumed_state,
+        )
 
-        # TASK-ID-1: Merge resumed state on top of defaults when task_id was provided
-        # and a prior snapshot exists.  Fields like history, current_plan, current_step
-        # are restored; the task description is refreshed from the caller in case it was
-        # updated.  Non-state fields (session_id, delegation_depth) are always reset.
-        if _resumed_state:
-            _preserve = (
-                "history",
-                "current_plan",
-                "current_step",
-                "verified_reads",
-                "files_read",
-                "plan_validation",
-                "verification_result",
-                "evaluation_result",
-                "plan_mode_approved",
-                "affected_files",
-                "model_tier",
-            )
-            for _k in _preserve:
-                if _k in _resumed_state and _resumed_state[_k] is not None:
-                    initial_state[_k] = _resumed_state[_k]
-            # Always keep fresh values for these fields
-            initial_state["task"] = subtask_description
-            initial_state["session_id"] = child_session_id
-            initial_state["delegation_depth"] = depth + 1
-
-        # SPAWN-W1: Use the full compiled LangGraph pipeline when a parent orchestrator
-        # is available (real execution context), otherwise fall back to GraphFactory mini-graph.
-        # The parent orchestrator is passed as-is so the child has full tool access.
+        # SPAWN-W1: Always resolve graphs through the canonical tier-aware builder.
+        # When a parent orchestrator exists, inherit its active execution context.
+        # Otherwise, resolve against the isolated subagent orchestrator.
         _use_full_pipeline = parent_orchestrator is not None
+        _active_orchestrator = subagent_orchestrator
         if _use_full_pipeline:
             try:
-                from src.core.orchestration.graph.builder import _get_compiled_graph
-
-                graph = _get_compiled_graph()
+                graph = _resolve_subagent_graph(
+                    orchestrator=parent_orchestrator,
+                    model=_override_model,
+                )
                 # Set active_agent on parent orchestrator to enforce allowed_tools
                 if _effective_allowed is not None or _effective_denied:
                     from src.core.orchestration.agent_types import AgentDefinition
@@ -571,9 +449,16 @@ def delegate_task(
                     "SPAWN-W1: Failed to use full pipeline: %s; falling back", _e
                 )
                 _use_full_pipeline = False
-                _active_orchestrator = subagent_orchestrator
-        else:
-            _active_orchestrator = subagent_orchestrator
+        if not _use_full_pipeline:
+            try:
+                graph = _resolve_subagent_graph(
+                    orchestrator=subagent_orchestrator,
+                    model=_override_model,
+                )
+            except Exception as _e:
+                return f"Error: Could not create graph for role '{role}': {_e}"
+            if graph is None:
+                return f"Error: Could not create graph for role '{role}'"
 
         # 3. Execute the subagent synchronously (blocking until done).
         # Always run in a dedicated thread so we never conflict with an existing event loop.
@@ -610,15 +495,14 @@ def delegate_task(
 
         try:
             _manifest_dir.mkdir(parents=True, exist_ok=True)
-            _manifest = {
-                "child_session_id": child_session_id,
-                "parent_session_id": parent_session_id,
-                "role": canonical_role,
-                "task": subtask_description,
-                "working_dir": str(workdir_path),
-                "spawned_at": _time.time(),
-                "status": "running",
-            }
+            _manifest = build_subagent_manifest(
+                child_session_id=child_session_id,
+                parent_session_id=parent_session_id,
+                canonical_role=canonical_role,
+                task=subtask_description,
+                working_dir=str(workdir_path),
+                spawned_at=_time.time(),
+            )
             _manifest_path = _manifest_dir / f"subagent_{child_session_id}.json"
             if not _atomic_write_json(_manifest_path, _manifest):
                 _manifest_path = None
@@ -659,9 +543,13 @@ def delegate_task(
             import contextvars as _cv
 
             # BUG-FIX: ContextVar.set must be called directly, not via ctx.run()
-            # Set depth in parent context before copying
-            _DELEGATION_DEPTH_VAR.set(depth + 1)
-            _child_ctx = _cv.copy_context()
+            # Set depth in parent context before copying, then reset it so repeated
+            # top-level delegate_task calls do not leak depth into later work/tests.
+            _depth_token = _DELEGATION_DEPTH_VAR.set(depth + 1)
+            try:
+                _child_ctx = _cv.copy_context()
+            finally:
+                _DELEGATION_DEPTH_VAR.reset(_depth_token)
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
                 # Ensure ContextVars (delegation depth, parent orchestrator, etc.)
                 # are visible inside the worker thread by submitting ctx.run.
@@ -691,35 +579,20 @@ def delegate_task(
             try:
                 _sessions_dir = get_sessions_dir()
                 _sessions_dir.mkdir(parents=True, exist_ok=True)
-                _child_msgs: list = []
-                try:
-                    # AgentState may expose history or messages
-                    _child_msgs = list(final_state.get("history") or [])
-                    if not _child_msgs:
-                        _raw = final_state.get("messages") or []
-                        for _m in _raw:
-                            if hasattr(_m, "type") and hasattr(_m, "content"):
-                                _child_msgs.append(
-                                    {
-                                        "role": getattr(_m, "type", "unknown"),
-                                        "content": str(_m.content),
-                                    }
-                                )
-                except Exception:
-                    pass
-                _session_payload = {
-                    "version": 1,
-                    "session_id": child_session_id,
-                    "parent_session_id": parent_session_id,
-                    "timestamp": _time.time(),
-                    "task_name": subtask_description[:80],
-                    "role": canonical_role,
-                    "message_count": len(_child_msgs),
-                    "messages": _child_msgs,
-                    "working_dir": str(workdir_path),
-                    "ok": True,
-                }
-                _sp = _sessions_dir / f"session_{child_session_id}.json"
+                _child_msgs = extract_child_session_messages(final_state)
+                _session_payload = build_subagent_session_payload(
+                    child_session_id=child_session_id,
+                    parent_session_id=parent_session_id,
+                    task_name=subtask_description,
+                    canonical_role=canonical_role,
+                    working_dir=str(workdir_path),
+                    timestamp=_time.time(),
+                    messages=_child_msgs,
+                    ok=True,
+                )
+                _sp = Path(
+                    build_child_session_file_path(str(_sessions_dir), child_session_id)
+                )
                 try:
                     ok = _atomic_write_json(_sp, _session_payload, logger=logger)
                     if not ok:
@@ -761,30 +634,7 @@ def delegate_task(
                         if DispatchResultEvent is not None and hasattr(
                             _pbus, "publish_dispatch_result"
                         ):
-                            # Ensure we summarise the final_state consistently; fall
-                            # back to the derived `summary` variable computed below
-                            # when _summary isn't defined (older code paths).
-                            _content = None
-                            try:
-                                _content = final_state.get("work_summary")
-                            except Exception:
-                                _content = None
-                            if not _content:
-                                # Try the last assistant message or last_result
-                                _content = None
-                                try:
-                                    hs = final_state.get("history") or []
-                                    for m in reversed(hs):
-                                        if (
-                                            isinstance(m, dict)
-                                            and m.get("role") == "assistant"
-                                        ):
-                                            _content = m.get("content")
-                                            break
-                                except Exception:
-                                    _content = None
-                            if not _content:
-                                _content = ""
+                            _content = select_dispatch_result_content(final_state)
                             _result_event = DispatchResultEvent(
                                 session_id=child_session_id,
                                 content=_content,
@@ -828,21 +678,21 @@ def delegate_task(
             try:
                 _sessions_dir = get_sessions_dir()
                 _sessions_dir.mkdir(parents=True, exist_ok=True)
-                _session_payload = {
-                    "version": 1,
-                    "session_id": child_session_id,
-                    "parent_session_id": parent_session_id,
-                    "timestamp": _time.time(),
-                    "task_name": subtask_description[:80],
-                    "role": canonical_role,
-                    "message_count": 0,
-                    "messages": [],
-                    "working_dir": str(workdir_path),
-                    "ok": False,
-                    "error": str(_subagent_err),
-                }
+                _session_payload = build_subagent_session_payload(
+                    child_session_id=child_session_id,
+                    parent_session_id=parent_session_id,
+                    task_name=subtask_description,
+                    canonical_role=canonical_role,
+                    working_dir=str(workdir_path),
+                    timestamp=_time.time(),
+                    messages=[],
+                    ok=False,
+                    error=str(_subagent_err),
+                )
 
-                _sp = _sessions_dir / f"session_{child_session_id}.json"
+                _sp = Path(
+                    build_child_session_file_path(str(_sessions_dir), child_session_id)
+                )
                 try:
                     ok = _atomic_write_json(_sp, _session_payload, logger=logger)
                     if not ok:
@@ -933,61 +783,11 @@ def delegate_task(
                 logger.debug("delegate_task: state persistence failed: %s", _ps_err)
 
         # 4. Extract and summarize the result
-        if isinstance(final_state, dict):
-            last_result = final_state.get("last_result", {})
-            history = final_state.get("history", [])
-            task = final_state.get("task", "")
-            errors = final_state.get("errors", [])
-
-            # Check for errors during execution
-            if errors:
-                error_summary = "\n".join(errors[:5])  # Limit to 5 errors
-                return f"Subagent [{role}] completed with errors:\n{error_summary}"
-
-            # Pull the last assistant message as the summary of work done
-            summary = "Subagent completed execution."
-            for msg in reversed(history):
-                if isinstance(msg, dict):
-                    role_val = msg.get("role")
-                    content = msg.get("content")
-                    if role_val == "assistant" and content:
-                        summary = content
-                        break
-
-            # Format a clean result
-            result_parts = [
-                f"## Subagent [{role}] Execution Complete",
-                "",
-                f"**Task:** {task[:200]}..."
-                if len(task) > 200
-                else f"**Task:** {task}",
-                "",
-                f"**Summary:** {summary[:500]}..."
-                if len(summary) > 500
-                else f"**Summary:** {summary}",
-            ]
-
-            if last_result:
-                if isinstance(last_result, dict):
-                    status = last_result.get("status", "unknown")
-                    result_parts.append(f"**Status:** {status}")
-
-                    # Include file operations info
-                    if last_result.get("file"):
-                        result_parts.append(f"**File:** {last_result.get('file')}")
-
-                    error = last_result.get("error")
-                    if error:
-                        result_parts.append(f"**Error:** {error}")
-                else:
-                    result_parts.append(f"**Result:** {str(last_result)[:200]}")
-
-            # SPAWN-W3: Append child_session_id to result so callers can reference it.
-            result_parts.append(f"**child_session_id:** {child_session_id}")
-            return "\n".join(result_parts)
-
-        else:
-            return f"Subagent [{role}] finished with unexpected result type: {type(final_state)}"
+        return build_delegate_result_text(
+            role=role,
+            child_session_id=child_session_id,
+            final_state=final_state,
+        )
 
     except Exception as e:
         logger.error(f"delegate_task: subagent failed: {e}")
@@ -1002,39 +802,7 @@ def list_subagent_roles() -> Dict[str, Any]:
     Returns:
         Dictionary of available roles and descriptions
     """
-    roles = {
-        "analyst": {
-            "description": "Deep research and repository analysis",
-            "best_for": "Exploring codebase, finding patterns, understanding architecture",
-            "aliases": ["researcher"],
-        },
-        "operational": {
-            "description": "Code implementation and refactoring",
-            "best_for": "Writing new code, implementing features, editing files",
-            "aliases": ["coder"],
-        },
-        "strategic": {
-            "description": "Task decomposition and planning",
-            "best_for": "Breaking down complex tasks, creating execution plans",
-            "aliases": ["planner"],
-        },
-        "reviewer": {
-            "description": "Code review and verification",
-            "best_for": "Reviewing patches, checking for issues, verifying changes",
-            "aliases": [],
-        },
-        "debugger": {
-            "description": "Root-cause analysis and bug fixing",
-            "best_for": "Diagnosing failures, analysing tracebacks, producing fixes",
-            "aliases": [],
-        },
-    }
-
-    return {
-        "status": "ok",
-        "available_roles": roles,
-        "note": "Pass the canonical role name (e.g. 'analyst') or any alias to delegate_task.",
-    }
+    return build_subagent_roles_payload()
 
 
 async def delegate_task_async(

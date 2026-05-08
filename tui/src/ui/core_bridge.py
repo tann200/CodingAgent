@@ -23,6 +23,8 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
+from ._core_paths_loader import get_data_dir
+
 if TYPE_CHECKING:
     from src.ui.app import AgentApp
 
@@ -39,10 +41,6 @@ except Exception:
 
 
 logger = get_logger("bridge")
-
-
-# Cross-platform config directory — prefer core.paths.get_data_dir() when available
-from ._core_paths_loader import get_data_dir
 
 
 _AGENT_DIR = get_data_dir()
@@ -274,6 +272,7 @@ class AgentBridge:
 
     def setup_subscriptions(self) -> None:
         """Subscribe to every event in §4.5."""
+        self._subscribe("system.settings", self._on_system_settings)
         # provider / model
         self._subscribe("orchestrator.startup", self._on_orchestrator_startup)
         self._subscribe("provider.status.changed", self._on_provider_status)
@@ -529,6 +528,29 @@ class AgentBridge:
 
         # Warn the user if the active provider is GitHub Copilot but has no token.
         self._check_provider_auth_on_startup()
+
+    def _on_system_settings(self, payload: dict) -> None:
+        from src.ui.bus import SystemSettingsLoaded
+
+        providers = payload.get("providers")
+        if not isinstance(providers, list):
+            providers = []
+
+        settings = {
+            "active_mode": payload.get("active_mode", "lead_architect"),
+            "theme": payload.get("theme", "textual-dark"),
+            "context_window": payload.get("context_window", 32768),
+            "default_provider": payload.get("default_provider", "none"),
+            "default_model": payload.get("default_model", "none"),
+            "autonomous_mode": payload.get("autonomous_mode", False),
+            "max_turns": payload.get("max_turns", 50),
+        }
+        self._post(
+            SystemSettingsLoaded(
+                settings_dict=settings,
+                available_providers=providers,
+            )
+        )
 
     def _publish_active_provider_status(self) -> None:
         """Read providers.json and immediately fire a provider status event for
@@ -968,15 +990,13 @@ class AgentBridge:
         the actual loaded context length (e.g. LM Studio /api/v0/models)."""
         ctx = payload.get("context_window", 0)
         if ctx and ctx > 0:
-            # LIVE-CTX: Propagate the live context length to provider_context so
-            # get_context_budget() (and perception_node) use the real value
-            # fetched from the models endpoint rather than the static file value.
+            provider_id = payload.get("provider", "")
             try:
                 from src.core.inference.provider_context import (  # type: ignore[import]
                     set_active_context_length,
                 )
 
-                set_active_context_length(int(ctx))
+                set_active_context_length(int(ctx), provider_id=provider_id)
             except Exception:
                 pass
             try:

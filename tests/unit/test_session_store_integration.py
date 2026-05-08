@@ -3,6 +3,7 @@ Integration tests for SessionStore wiring in Orchestrator, planning_node, and de
 """
 
 import json
+import builtins
 from src.core.memory.sqlite_session_store import SqliteSessionStore as SessionStore
 
 # ruff: noqa: E501
@@ -45,6 +46,23 @@ class TestSessionStoreDirectAPI:
 
     def test_db_file_created(self, tmp_path):
         SessionStore(workdir=str(tmp_path))
+        assert (tmp_path / ".codingAgent" / "session.db").exists()
+
+    def test_db_file_created_when_tools_config_import_fails(
+        self, tmp_path, monkeypatch
+    ):
+        real_import = builtins.__import__
+
+        def _fake_import(name, globals=None, locals=None, fromlist=(), level=0):
+            if name == "src.tools.tools_config":
+                raise ImportError("tools_config unavailable")
+            return real_import(name, globals, locals, fromlist, level)
+
+        monkeypatch.setattr(builtins, "__import__", _fake_import)
+
+        store = SessionStore(workdir=str(tmp_path))
+
+        assert store._resolve_db_path() == tmp_path / ".codingAgent" / "session.db"
         assert (tmp_path / ".codingAgent" / "session.db").exists()
 
     def test_separate_sessions_isolated(self, tmp_path):

@@ -11,6 +11,7 @@ the public method signature and return type are unchanged.
 from __future__ import annotations
 
 import asyncio
+import contextvars as _cv
 import json
 import re
 import threading as _threading
@@ -21,7 +22,56 @@ from src.core.orchestration.event_bus import new_correlation_id
 from src.core.orchestration.tool_result_formatter import (
     format_tool_result as _format_tool_result,
 )
-from src.core.utils.strings import valid_str as _valid_str, extract_str as _extract_str
+from src.core.inference.provider_utils import (
+    resolve_provider_and_model as _resolve_provider_and_model,
+)
+from src.tools.subagent_payloads import build_graph_state_base
+
+
+def _build_assistant_message(
+    assistant_msgs: list,
+    tool_results: list,
+    last_tool_name: str | None,
+) -> str:
+    """Build the assistant message from tool results or raw assistant text.
+
+    If the last assistant message is a tool call and we have results,
+    format each result using the appropriate formatter.
+    Otherwise, return the raw last assistant message.
+    """
+    if not assistant_msgs:
+        return ""
+
+    last_assistant = assistant_msgs[-1]
+
+    # YAML blocks may start with ```yaml or bare "name:" (no fences).
+    # LM Studio/Qwen models prefix the block with <think>...</think> — strip it first.
+    _last_stripped = re.sub(
+        r"<think>.*?</think>", "", last_assistant, flags=re.DOTALL
+    ).strip()
+
+    _is_tool_call_msg = (
+        not last_assistant
+        or _last_stripped.startswith("name:")
+        or _last_stripped.startswith("```yaml")
+        or _last_stripped.startswith("```\nname:")
+        or (_last_stripped.startswith("```") and "name:" in _last_stripped)
+    )
+
+    if tool_results and _is_tool_call_msg:
+        assistant_message = ""
+        for i, result in enumerate(tool_results):
+            tool_name = None
+            if i == len(tool_results) - 1 and last_tool_name:
+                tool_name = last_tool_name
+            formatted = _format_tool_result(result, tool_name)
+            if formatted:
+                if assistant_message and not assistant_message.endswith("\n"):
+                    assistant_message += "\n"
+                assistant_message += formatted + "\n"
+        return assistant_message.strip()
+    else:
+        return last_assistant
 
 
 # ---------------------------------------------------------------------------
@@ -32,7 +82,7 @@ from src.core.utils.strings import valid_str as _valid_str, extract_str as _extr
 def _compute_default_max_turns(orch) -> int:
     """Return the tier-appropriate default max_turns for the active model.
 
-    GAP-9: SMALL models (e.g. Gemma 4 E4B) exhaust context in ~25 turns.
+    SMALL models (e.g. Gemma 4 E4B) exhaust context in ~25 turns.
     FRONTIER models (Gemma 4 31B/26B, Claude, GPT-4o) support 80-turn runs.
     Falls back to 50 if the model cannot be classified.
 
@@ -42,43 +92,13 @@ def _compute_default_max_turns(orch) -> int:
     try:
         from src.core.inference.model_tiers import classify_model, get_max_turns
 
-        # Prefer the consolidated resolver which applies the shared
+        # Use the consolidated resolver which applies the shared
         # sanitisation heuristics (orch.get_provider_capabilities /
         # ProviderManager / adapter attributes).
-        model = None
-        try:
-            _, model = _resolve_provider_and_model(orch)
-        except Exception:
-            model = None
-
-        adapter = getattr(orch, "adapter", None) or getattr(orch, "_adapter", None)
-
-        # If the resolver didn't yield a model, fall back to inspecting the
-        # adapter attributes conservatively (no network probes). Use the
-        # central extract_str helper when available.
+        _, model = _resolve_provider_and_model(orch)
         if not model:
-            if adapter is None:
-                return 50
-            # Inspect adapter.models / adapter.default_model for a valid model
-            try:
-                if hasattr(adapter, "models") and adapter.models:
-                    models_attr = getattr(adapter, "models", None)
-                    if isinstance(models_attr, (list, tuple)):
-                        for m in models_attr:
-                            mm = _extract_str(m)
-                            if mm:
-                                model = mm
-                                break
-                    else:
-                        model = _extract_str(models_attr)
-                elif hasattr(adapter, "default_model") and adapter.default_model:
-                    model = _extract_str(getattr(adapter, "default_model", None))
-            except Exception:
-                model = None
-
-            if not model:
-                return 50
-
+            return 50
+        adapter = getattr(orch, "_adapter", None) or getattr(orch, "adapter", None)
         ctx_window = int(getattr(adapter, "context_window", 0) or 0)
         tier = classify_model(model, ctx_window)
         return get_max_turns(tier)
@@ -86,6 +106,431 @@ def _compute_default_max_turns(orch) -> int:
         return 50
 
 
+def _run_graph_round_sync(graph: Any, orch: Any, state_to_run: Dict[str, Any]) -> Dict[str, Any]:
+    """Run one graph round synchronously for the provided state."""
+    return asyncio.run(
+        graph.ainvoke(
+            state_to_run,
+            {
+                "configurable": {"orchestrator": orch},
+                "recursion_limit": 50,
+            },
+        )
+    )
+
+
+def _execute_graph_round(
+    *,
+    graph: Any,
+    orch: Any,
+    graph_executor: Any,
+    current_state: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Execute one graph round, reusing the orchestrator graph executor when needed."""
+    try:
+        asyncio.get_running_loop()
+        _ctx = _cv.copy_context()
+        future = graph_executor.submit(
+            _ctx.run,
+            _run_graph_round_sync,
+            graph,
+            orch,
+            current_state,
+        )
+        return future.result()
+    except RuntimeError:
+        return _run_graph_round_sync(graph, orch, current_state)
+
+
+def _analyze_round_result(final_state: Dict[str, Any]) -> Dict[str, Any]:
+    """Inspect one completed graph round and report loop-control signals."""
+    last_assistant = ""
+    assistant_msgs = [
+        m["content"]
+        for m in final_state.get("history", [])
+        if m.get("role") == "assistant"
+    ]
+    if assistant_msgs:
+        last_assistant = assistant_msgs[-1]
+
+    try:
+        from src.core.orchestration.tool_parser import parse_tool_block as _parse_tool_block
+
+        has_tool_block = True if _parse_tool_block(last_assistant) else False
+        if has_tool_block:
+            guilogger.debug(
+                "inference_loop: tool block detected in last assistant message"
+            )
+        else:
+            guilogger.debug(
+                f"inference_loop: no tool block in last assistant message (length={len(last_assistant)})"
+            )
+    except Exception as e:
+        guilogger.warning(f"inference_loop: tool block check failed: {e}")
+        has_tool_block = False
+
+    history = final_state.get("history", [])
+    last_assistant_idx = None
+    for idx in range(len(history) - 1, -1, -1):
+        if (
+            history[idx].get("role") == "assistant"
+            and history[idx].get("content") == last_assistant
+        ):
+            last_assistant_idx = idx
+            break
+
+    handled = False
+    if last_assistant_idx is not None:
+        for later in history[last_assistant_idx + 1 :]:
+            if "tool_execution_result" in (later.get("content") or ""):
+                handled = True
+                break
+
+    return {
+        "last_assistant": last_assistant,
+        "has_tool_block": has_tool_block,
+        "handled": handled,
+    }
+
+
+def _prepare_next_round_state(
+    *,
+    final_state: Dict[str, Any],
+    current_state: Dict[str, Any],
+    orch: Any,
+    cancel_event: Any,
+) -> Dict[str, Any]:
+    """Prepare the next graph-round state while preserving execution context."""
+    _next_history = final_state.get("history", [])
+    if _next_history and _next_history[-1].get("role") == "assistant":
+        _next_history = list(_next_history) + [
+            {
+                "role": "user",
+                "content": (
+                    "Continue. If the task is already complete, "
+                    "output STATUS: complete with no tool call."
+                ),
+            }
+        ]
+
+    _prev_working_dir = current_state.get("working_dir")
+    _prev_system_prompt = current_state.get("system_prompt")
+    return {
+        **final_state,
+        # Fields that must be explicitly reset / refreshed each round:
+        "history": _next_history,
+        "verified_reads": final_state.get("verified_reads")
+        or list(orch._session_read_files),
+        "next_action": None,
+        "last_result": None,
+        "errors": [],
+        # Execution context fields — keep stable from initial invocation
+        "working_dir": _prev_working_dir or final_state.get("working_dir"),
+        "system_prompt": _prev_system_prompt or final_state.get("system_prompt"),
+        "deterministic": getattr(orch, "deterministic", False),
+        "seed": getattr(orch, "seed", None),
+        "cancel_event": cancel_event,
+        # Cooldown / read-tracking dicts must not be None
+        "tool_last_used": final_state.get("tool_last_used") or {},
+        "files_read": final_state.get("files_read") or {},
+        "step_retry_counts": final_state.get("step_retry_counts") or {},
+    }
+
+
+def _build_loop_exit_response(
+    *,
+    final_state: Dict[str, Any],
+    cancel_event: Any,
+) -> Optional[Dict[str, Any]]:
+    """Build early-return payloads for cancellation and loop-detected exits."""
+    if cancel_event and hasattr(cancel_event, "is_set") and cancel_event.is_set():
+        guilogger.info("Orchestrator: Task was canceled, returning cancel response")
+        return {
+            "assistant_message": "[yellow]⚠ Task canceled by user.[/yellow]",
+            "canceled": True,
+        }
+
+    if final_state:
+        errors = final_state.get("errors", [])
+        if any(e.startswith("infinite_loop") for e in errors):
+            error_type = next(
+                (e for e in errors if e.startswith("infinite_loop")),
+                "infinite_loop",
+            )
+            guilogger.error(f"inference_loop: terminated due to {error_type}")
+
+            if error_type == "infinite_loop_tool_limit":
+                msg = (
+                    "[red]⚠ Task stopped: Maximum tool call limit (5) reached.[/red]\n\n"
+                    "The agent made too many tool calls without completing the task. "
+                    "Try providing more specific instructions or breaking down the task."
+                )
+            else:
+                msg = (
+                    "[red]⚠ Task stopped: The agent entered an infinite loop and was terminated.[/red]\n\n"
+                    "This may indicate the model is having trouble generating valid tool calls. "
+                    "Try providing more specific instructions or a simpler task."
+                )
+
+            return {
+                "assistant_message": msg,
+                "loop_detected": True,
+                "error_type": error_type,
+                "final_state": final_state,
+            }
+
+    return None
+
+
+def _sync_msg_mgr_with_final_history(orch: Any, final_state: Dict[str, Any]) -> None:
+    """Append only new graph-produced turns into the MessageManager."""
+    if not final_state or "history" not in final_state:
+        return
+
+    msg_count_before = len(orch.msg_mgr.messages)
+    if len(final_state["history"]) <= msg_count_before:
+        return
+
+    new_turns = final_state["history"][msg_count_before:]
+    for turn in new_turns:
+        orch.msg_mgr.append(turn["role"], turn["content"])
+
+
+def _extract_assistant_and_tool_results(
+    final_state: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Extract assistant messages and parsed tool results from final history."""
+    assistant_msgs = [
+        m["content"] for m in final_state.get("history", []) if m["role"] == "assistant"
+    ]
+    tool_results = []
+    last_tool_name = None
+
+    for i, m in enumerate(final_state.get("history", [])):
+        is_tool_result = m.get("role") == "tool" or (
+            m.get("role") == "user"
+            and "tool_execution_result" in (m.get("content") or "")
+        )
+        if not is_tool_result:
+            continue
+
+        content = m.get("content", "")
+        tool_name = None
+        if i > 0:
+            prev_msg = final_state["history"][i - 1]
+            if prev_msg.get("role") == "assistant":
+                try:
+                    from src.core.orchestration.tool_parser import parse_tool_block
+
+                    parsed = parse_tool_block(prev_msg.get("content", ""))
+                    if parsed and parsed.get("name"):
+                        tool_name = parsed["name"]
+                except Exception:
+                    pass
+
+        if "tool_execution_result" in content:
+            try:
+                data = json.loads(content)
+                if isinstance(data, dict) and "tool_execution_result" in data:
+                    ter = data["tool_execution_result"]
+                    if isinstance(ter, dict) and "result" in ter:
+                        result = ter["result"]
+                    elif isinstance(ter, dict):
+                        result = ter
+                    else:
+                        result = ter
+                    tool_results.append(result)
+                    if tool_name:
+                        last_tool_name = tool_name
+                elif isinstance(data, dict) and "result" in data:
+                    tool_results.append(data["result"])
+                    if tool_name:
+                        last_tool_name = tool_name
+                elif isinstance(data, dict) and data.get("ok"):
+                    tool_results.append(data)
+                    if tool_name:
+                        last_tool_name = tool_name
+            except (json.JSONDecodeError, TypeError):
+                tool_results.append(content)
+        elif content:
+            tool_results.append(content)
+
+    return {
+        "assistant_msgs": assistant_msgs,
+        "tool_results": tool_results,
+        "last_tool_name": last_tool_name,
+    }
+
+
+def _build_success_response(orch: Any, final_state: Dict[str, Any]) -> Dict[str, Any]:
+    """Build the successful run_agent_once response from final graph state."""
+    if final_state:
+        guilogger.info(
+            f"Final state verified reads: {final_state.get('verified_reads')}"
+        )
+
+    _sync_msg_mgr_with_final_history(orch, final_state)
+
+    extracted = _extract_assistant_and_tool_results(final_state)
+    assistant_msgs = extracted["assistant_msgs"]
+    tool_results = extracted["tool_results"]
+    last_tool_name = extracted["last_tool_name"]
+
+    guilogger.info(
+        f"Graph execution completed in {final_state.get('rounds', 0) if final_state else 0} rounds"
+        if final_state
+        else "Graph execution completed"
+    )
+
+    history = final_state.get("history", []) if final_state else []
+    work_summary = _generate_work_summary(final_state, history)
+    assistant_message = _build_assistant_message(
+        assistant_msgs, tool_results, last_tool_name
+    )
+
+    delegation_results = final_state.get("delegation_results") if final_state else None
+    if delegation_results:
+        guilogger.info(
+            f"run_agent_once: delegation_results keys={list(delegation_results.keys())}"
+        )
+
+    orch.cost_tracker.flush(task_id=getattr(orch, "_current_task_id", ""))
+    orch.flush_execution_trace()
+
+    if assistant_message:
+        try:
+            _sid = getattr(orch, "_current_task_id", None)
+            try:
+                _tname = _threading.current_thread().name
+            except Exception:
+                _tname = "unknown"
+            guilogger.debug(
+                "inference_loop: add_message (session=%r, role=%s, thread=%s)",
+                _sid,
+                "assistant",
+                _tname,
+            )
+            orch.session_store.add_message(
+                session_id=_sid,
+                role="assistant",
+                content=assistant_message.strip(),
+            )
+        except Exception:
+            pass
+
+    return {
+        "assistant_message": assistant_message.strip(),
+        "work_summary": work_summary,
+        "delegation_results": delegation_results or {},
+        "dry_run_intercepted": list(getattr(orch, "_dry_run_log", [])),
+    }
+
+
+def _call_model_fallback_sync(
+    *,
+    orch: Any,
+    prompt: str,
+    full_system_prompt: str,
+    streaming_enabled: bool,
+) -> Any:
+    """Call the model directly as a best-effort fallback after graph failure."""
+    from src.core.inference.llm_manager import call_model
+
+    provider_name = None
+    model_name = None
+    try:
+        provider_name, model_name = _resolve_provider_and_model(orch)
+    except Exception:
+        provider_name, model_name = None, None
+
+    messages_for_model = [
+        {"role": "system", "content": full_system_prompt},
+        {"role": "user", "content": prompt},
+    ]
+    try:
+        _call_coro = call_model(
+            messages_for_model,
+            provider=provider_name,
+            model=model_name,
+            stream=streaming_enabled,
+            format_json=False,
+        )
+        try:
+            asyncio.get_running_loop()
+
+            _ctx = _cv.copy_context()
+            _fb_executor = getattr(orch, "_graph_executor", None)
+            if _fb_executor is not None:
+                return _fb_executor.submit(_ctx.run, asyncio.run, _call_coro).result()
+
+            import concurrent.futures as _cf_fb
+
+            with _cf_fb.ThreadPoolExecutor(max_workers=1) as _ex:
+                return _ex.submit(_ctx.run, asyncio.run, _call_coro).result()
+        except RuntimeError:
+            return asyncio.run(_call_coro)
+    except Exception:
+        return None
+
+
+def _extract_fallback_response_content(resp: Any) -> str:
+    """Extract assistant content from a direct call_model fallback response."""
+    content = ""
+    if isinstance(resp, dict):
+        _choices = resp.get("choices")
+        if _choices and len(_choices) > 0:
+            ch = _choices[0].get("message") if isinstance(_choices[0], dict) else None
+        else:
+            ch = resp.get("message")
+        if isinstance(ch, str):
+            content = ch
+        elif isinstance(ch, dict):
+            content = ch.get("content") or ""
+    return content
+
+
+def _build_graph_failure_response(
+    *,
+    orch: Any,
+    error: Exception,
+    prompt: str,
+    full_system_prompt: str,
+    streaming_enabled: bool,
+) -> Dict[str, Any]:
+    """Build the fallback response after graph execution fails."""
+    guilogger.error(f"Graph execution failed: {error}")
+    orch.msg_mgr.append("user", f"Error during tool execution: {error}")
+
+    try:
+        resp = _call_model_fallback_sync(
+            orch=orch,
+            prompt=prompt,
+            full_system_prompt=full_system_prompt,
+            streaming_enabled=streaming_enabled,
+        )
+        content = _extract_fallback_response_content(resp)
+
+        if content:
+            try:
+                orch.msg_mgr.append("assistant", content)
+            except Exception:
+                pass
+
+        orch.cost_tracker.flush(task_id=getattr(orch, "_current_task_id", ""))
+        orch.flush_execution_trace()
+        return {
+            "assistant_message": content if content else "",
+            "error": "graph_failed",
+            "exception": str(error),
+        }
+    except Exception:
+        orch.cost_tracker.flush(task_id=getattr(orch, "_current_task_id", ""))
+        orch.flush_execution_trace()
+        return {"error": "graph_failed", "exception": str(error)}
+
+
+# ---------------------------------------------------------------------------
+# run_agent_once_impl
 # ---------------------------------------------------------------------------
 # _generate_work_summary — copied verbatim from orchestrator.py
 # ---------------------------------------------------------------------------
@@ -143,106 +588,7 @@ def _generate_work_summary(
     return " | ".join(summary_parts) if summary_parts else ""
 
 
-def _resolve_provider_and_model(orch) -> tuple[Optional[str], Optional[str]]:
-    """Resolve provider and model conservatively for fallback LLM calls.
-
-    Resolution priority:
-      1) orch.get_provider_capabilities()
-      2) ProviderManager.get_provider_capabilities(orch._adapter)
-      3) Inspect orch._adapter / orch.adapter attributes (no network probes)
-
-    Returns (provider_name or None, model_name or None).
-    """
-    try:
-        caps: dict = {}
-
-        # 1) orchestrator-level
-        try:
-            if hasattr(orch, "get_provider_capabilities") and callable(
-                getattr(orch, "get_provider_capabilities")
-            ):
-                _rc = orch.get_provider_capabilities()
-                if isinstance(_rc, dict) and _rc:
-                    caps = dict(_rc)
-        except Exception:
-            caps = {}
-
-        # 2) ProviderManager fallback
-        if not caps:
-            try:
-                from src.core.inference.llm_manager import (
-                    get_provider_manager as _gpm,
-                )
-
-                _pm = _gpm()
-                adapter = getattr(orch, "_adapter", None)
-                _rc = _pm.get_provider_capabilities(adapter)
-                if isinstance(_rc, dict) and _rc:
-                    caps = dict(_rc)
-            except Exception:
-                caps = caps or {}
-
-        # 3) Adapter-only fallback (no probes)
-        if not caps:
-            adapter = getattr(orch, "_adapter", None) or getattr(orch, "adapter", None)
-            if adapter:
-                try:
-                    prov_attr = getattr(adapter, "provider", None)
-                except Exception:
-                    prov_attr = None
-                provider_name = None
-                try:
-                    provider_name = _extract_str(prov_attr)
-                except Exception:
-                    provider_name = None
-                if not provider_name:
-                    try:
-                        provider_name = _extract_str(getattr(adapter, "name", None))
-                    except Exception:
-                        provider_name = None
-
-                model = None
-                try:
-                    model = _extract_str(getattr(adapter, "default_model", None))
-                except Exception:
-                    model = None
-                if not model:
-                    try:
-                        models_attr = getattr(adapter, "models", None)
-                        if isinstance(models_attr, (list, tuple)):
-                            for m in models_attr:
-                                mm = _extract_str(m)
-                                if mm:
-                                    model = mm
-                                    break
-                        else:
-                            model = _extract_str(models_attr)
-                    except Exception:
-                        model = None
-
-                caps = {
-                    "provider_name": provider_name or "",
-                    "model": model,
-                }
-
-        # Sanitize final values
-        provider = None
-        model = None
-        try:
-            provider = _extract_str(
-                caps.get("provider_name") or caps.get("provider") or caps.get("name")
-            )
-        except Exception:
-            provider = None
-        try:
-            model = _extract_str(caps.get("model") or caps.get("default_model"))
-        except Exception:
-            model = None
-
-        return provider, model
-    except Exception:
-        return None, None
-
+# _resolve_provider_and_model imported from src.core.inference.provider_utils
 
 # ---------------------------------------------------------------------------
 # run_agent_once_impl
@@ -261,7 +607,9 @@ def run_agent_once_impl(
     """
     # G12: opt-in token streaming — mirrors llm_helpers._STREAMING_ENABLED
     try:
-        from src.core.inference.llm_helpers import _STREAMING_ENABLED as _streaming_enabled
+        from src.core.inference.llm_helpers import (
+            _STREAMING_ENABLED as _streaming_enabled,
+        )
     except Exception:
         _streaming_enabled = False
 
@@ -296,7 +644,6 @@ def run_agent_once_impl(
         try:
             _sid = getattr(orch, "_current_task_id", None)
             try:
-
                 _tname = _threading.current_thread().name
             except Exception:
                 _tname = "unknown"
@@ -339,7 +686,9 @@ def run_agent_once_impl(
         orch._session_title_thread = _t_thread
 
     from src.core.orchestration.agent_brain import load_system_prompt
-    from src.core.orchestration.graph.builder import _get_compiled_graph
+    from src.core.orchestration.graph.builder import (
+        get_compiled_graph_for_orchestrator,
+    )
 
     # 1. Prepare Initial State
     # Ensure current model routing is published in case tests replace the event_bus after instantiation
@@ -365,7 +714,12 @@ def run_agent_once_impl(
             model_name = active_models[0] if active_models else ""
             ctx_len = active_adapter.get_loaded_context_length(model_name)
             if ctx_len and ctx_len > 0:
-                set_active_context_length(ctx_len)
+                active_provider = ""
+                try:
+                    active_provider = pm.get_active_provider_name() or ""
+                except Exception:
+                    pass
+                set_active_context_length(ctx_len, provider_id=active_provider)
     except Exception:
         pass
 
@@ -390,22 +744,16 @@ def run_agent_once_impl(
         pass
 
     initial_state = {
-        "task": prompt,
-        "session_id": orch._current_task_id,
-        "history": orch.msg_mgr.messages,
-        "verified_reads": list(orch._session_read_files),
-        "next_action": None,
-        "last_result": None,
-        "rounds": 0,
-        "working_dir": str(orch.working_dir),
-        "system_prompt": full_system_prompt,
-        "errors": [],
-        # delegation tracking
-        "delegations": [],
-        "delegation_results": None,
-        # planning fields
-        "current_plan": [],
-        "current_step": 0,
+        **build_graph_state_base(
+            task=prompt,
+            session_id=orch._current_task_id,
+            working_dir=str(orch.working_dir),
+            system_prompt=full_system_prompt,
+            history=orch.msg_mgr.messages,
+            verified_reads=list(orch._session_read_files),
+            parent_session_id=None,
+            delegation_depth=0,
+        ),
         # deterministic hints for nodes
         "deterministic": getattr(orch, "deterministic", False),
         "cancel_event": cancel_event,
@@ -537,7 +885,7 @@ def run_agent_once_impl(
 
     # 2. Compile and Run Graph — P1 fix: use module-level cached graph so compilation
     # happens once per process instead of once per run_agent_once() call.
-    graph = _get_compiled_graph()
+    graph = get_compiled_graph_for_orchestrator(orchestrator=orch)
 
     # TASK-12: max_turns guard — enforce before invoking the graph so runaway
     # tasks cannot exceed the configured turn budget regardless of graph state.
@@ -579,19 +927,6 @@ def run_agent_once_impl(
 
         _graph_executor = orch._graph_executor
 
-        # We use the same safe asyncio execution logic
-        def _run_graph(state_to_run):
-            # Run the langgraph for the provided state and return the resulting state
-            return asyncio.run(
-                graph.ainvoke(
-                    state_to_run,
-                    {
-                        "configurable": {"orchestrator": orch},
-                        "recursion_limit": 50,
-                    },
-                )
-            )
-
         try:
             # Allow multiple graph rounds to consume multi-turn tool sequences (bounded)
             # F-71: single named constant; guard below uses >= so it fires at exactly
@@ -620,15 +955,12 @@ def run_agent_once_impl(
                     f"Starting graph round {round_idx} (iteration {loop_iteration})"
                 )
 
-                try:
-                    asyncio.get_running_loop()
-                    # Running loop detected — submit to the reused executor (P2 fix)
-
-                    _ctx = _cv.copy_context()
-                    future = _graph_executor.submit(_ctx.run, _run_graph, current_state)
-                    next_state = future.result()
-                except RuntimeError:
-                    next_state = _run_graph(current_state)
+                next_state = _execute_graph_round(
+                    graph=graph,
+                    orch=orch,
+                    graph_executor=_graph_executor,
+                    current_state=current_state,
+                )
 
                 guilogger.info(
                     f"Graph round {round_idx}: next_state keys: {list(next_state.keys()) if next_state else 'None'}"
@@ -637,58 +969,10 @@ def run_agent_once_impl(
                 # If nothing changed (no new assistant turn) or no next action, stop early
                 final_state = next_state
 
-                # Determine last assistant content produced in this run
-                assistant_msgs = [
-                    m["content"]
-                    for m in final_state.get("history", [])
-                    if m.get("role") == "assistant"
-                ]
-                last_assistant = assistant_msgs[-1] if assistant_msgs else ""
-
-                # Determine whether the assistant suggested a tool that still needs execution.
-                # If the assistant message contains a tool block but a 'tool' role entry with
-                # execution results exists after that assistant message, consider it handled.
-                try:
-                    from src.core.orchestration.tool_parser import (
-                        parse_tool_block as _parse_tool_block,
-                    )
-
-                    has_tool_block = (
-                        True if _parse_tool_block(last_assistant) else False
-                    )
-                    if has_tool_block:
-                        guilogger.debug(
-                            "inference_loop: tool block detected in last assistant message"
-                        )
-                    else:
-                        guilogger.debug(
-                            f"inference_loop: no tool block in last assistant message (length={len(last_assistant)})"
-                        )
-                except Exception as e:
-                    guilogger.warning(f"inference_loop: tool block check failed: {e}")
-                    has_tool_block = False
-
-                # Find index of last assistant message in the full history
-                history = final_state.get("history", [])
-                last_assistant_idx = None
-                for idx in range(len(history) - 1, -1, -1):
-                    if (
-                        history[idx].get("role") == "assistant"
-                        and history[idx].get("content") == last_assistant
-                    ):
-                        last_assistant_idx = idx
-                        break
-
-                handled = False
-                if last_assistant_idx is not None:
-                    # Check if there's an execution result after this assistant msg.
-                    # execution_node stores results with role="user" (not "tool"), so we
-                    # match on content alone — any message containing "tool_execution_result"
-                    # means the tool was already executed and we should stop looping.
-                    for later in history[last_assistant_idx + 1 :]:
-                        if "tool_execution_result" in (later.get("content") or ""):
-                            handled = True
-                            break
+                round_result = _analyze_round_result(final_state)
+                last_assistant = round_result["last_assistant"]
+                has_tool_block = bool(round_result["has_tool_block"])
+                handled = bool(round_result["handled"])
 
                 # If there's no unhandled tool block, we're done
                 if not has_tool_block or handled:
@@ -726,269 +1010,29 @@ def run_agent_once_impl(
                     f"history length={len(final_state.get('history', []))}"
                 )
 
-                # Prepare next iteration: feed the graph with the new history and verified reads
-                _next_history = final_state.get("history", [])
-                # Guard: OpenAI-compatible APIs require the last message to be 'user'.
-                # If history ends with an assistant message (no tool result following),
-                # inject a bridging user message to prevent consecutive-assistant violations.
-                if _next_history and _next_history[-1].get("role") == "assistant":
-                    _next_history = list(_next_history) + [
-                        {
-                            "role": "user",
-                            "content": (
-                                "Continue. If the task is already complete, "
-                                "output STATUS: complete with no tool call."
-                            ),
-                        }
-                    ]
                 # SCAN3-1 fix: preserve ALL state from the completed round and
                 # only override the fields that must reset for the next round.
                 # Prior hand-rolled reconstruction silently discarded wave state,
                 # analysis results, loop counters, delegation state, and more.
-                _prev_working_dir = current_state.get("working_dir")
-                _prev_system_prompt = current_state.get("system_prompt")
-                current_state = {
-                    **final_state,
-                    # Fields that must be explicitly reset / refreshed each round:
-                    "history": _next_history,
-                    "verified_reads": final_state.get("verified_reads")
-                    or list(orch._session_read_files),
-                    "next_action": None,
-                    "last_result": None,
-                    "errors": [],
-                    # Execution context fields — keep stable from initial invocation
-                    "working_dir": _prev_working_dir or final_state.get("working_dir"),
-                    "system_prompt": _prev_system_prompt
-                    or final_state.get("system_prompt"),
-                    "deterministic": getattr(orch, "deterministic", False),
-                    "seed": getattr(orch, "seed", None),
-                    "cancel_event": cancel_event,
-                    # Cooldown / read-tracking dicts must not be None
-                    "tool_last_used": final_state.get("tool_last_used") or {},
-                    "files_read": final_state.get("files_read") or {},
-                    "step_retry_counts": final_state.get("step_retry_counts") or {},
-                }
+                current_state = _prepare_next_round_state(
+                    final_state=final_state,
+                    current_state=current_state,
+                    orch=orch,
+                    cancel_event=cancel_event,
+                )
         finally:
             # MED-5 fix: _graph_executor is now instance-level and shut down in
             # close() — do NOT shut it down here or subsequent calls will fail.
             pass
 
-        # Check if we broke out due to cancellation
-        if cancel_event and hasattr(cancel_event, "is_set") and cancel_event.is_set():
-            guilogger.info("Orchestrator: Task was canceled, returning cancel response")
-            return {
-                "assistant_message": "[yellow]⚠ Task canceled by user.[/yellow]",
-                "canceled": True,
-            }
-
-        # Check if we exited due to loop detection
-        if final_state:
-            errors = final_state.get("errors", [])
-            if any(e.startswith("infinite_loop") for e in errors):
-                error_type = next(
-                    (e for e in errors if e.startswith("infinite_loop")),
-                    "infinite_loop",
-                )
-                guilogger.error(f"inference_loop: terminated due to {error_type}")
-
-                if error_type == "infinite_loop_tool_limit":
-                    msg = (
-                        "[red]⚠ Task stopped: Maximum tool call limit (5) reached.[/red]\n\n"
-                        "The agent made too many tool calls without completing the task. "
-                        "Try providing more specific instructions or breaking down the task."
-                    )
-                else:
-                    msg = (
-                        "[red]⚠ Task stopped: The agent entered an infinite loop and was terminated.[/red]\n\n"
-                        "This may indicate the model is having trouble generating valid tool calls. "
-                        "Try providing more specific instructions or a simpler task."
-                    )
-
-                return {
-                    "assistant_message": msg,
-                    "loop_detected": True,
-                    "error_type": error_type,
-                    "final_state": final_state,
-                }
-
-        # Debug: check why verified_reads might be empty
-        if final_state:
-            guilogger.info(
-                f"Final state verified reads: {final_state.get('verified_reads')}"
-            )
-
-        # 3. Synchronize MessageManager with graph history
-        # The graph history contains new turns added by nodes via operator.add reducer
-        if final_state and "history" in final_state:
-            # Only append messages that are new since last sync
-            msg_count_before = len(orch.msg_mgr.messages)
-            if len(final_state["history"]) > msg_count_before:
-                new_turns = final_state["history"][msg_count_before:]
-                for turn in new_turns:
-                    orch.msg_mgr.append(turn["role"], turn["content"])
-
-        # Session tracking: verified_reads are already propagated by lower-level
-        # components (execute_tool/manage_todo). Avoid duplicate adds here to
-        # reduce redundant RBW notifications.
-
-        # Construct final response
-        assistant_msgs = []
-        tool_results = []
-        last_tool_name = None
-        if final_state and "history" in final_state:
-            assistant_msgs = [
-                m["content"] for m in final_state["history"] if m["role"] == "assistant"
-            ]
-            # Extract tool results for display with tool name.
-            # execution_node stores results with role="user", not "tool".
-            # Accept either role as long as content contains "tool_execution_result".
-            for i, m in enumerate(final_state["history"]):
-                is_tool_result = m.get("role") == "tool" or (
-                    m.get("role") == "user"
-                    and "tool_execution_result" in (m.get("content") or "")
-                )
-                if is_tool_result:
-                    content = m.get("content", "")
-                    # Try to find the tool name from preceding assistant message
-                    tool_name = None
-                    if i > 0:
-                        prev_msg = final_state["history"][i - 1]
-                        if prev_msg.get("role") == "assistant":
-                            try:
-                                from src.core.orchestration.tool_parser import (
-                                    parse_tool_block,
-                                )
-
-                                parsed = parse_tool_block(prev_msg.get("content", ""))
-                                if parsed and parsed.get("name"):
-                                    tool_name = parsed["name"]
-                            except Exception:
-                                pass
-
-                    # Extract the result from tool_execution_result wrapper.
-                    # execution_node wraps: {"tool_execution_result": {"ok": True, "result": {...}}}
-                    # We want the inner "result" dict for formatting.
-                    if "tool_execution_result" in content:
-                        try:
-                            data = json.loads(content)
-                            # Unwrap the outer "tool_execution_result" envelope first
-                            if (
-                                isinstance(data, dict)
-                                and "tool_execution_result" in data
-                            ):
-                                ter = data["tool_execution_result"]
-                                if isinstance(ter, dict) and "result" in ter:
-                                    result = ter["result"]
-                                elif isinstance(ter, dict):
-                                    result = ter
-                                else:
-                                    result = ter
-                                tool_results.append(result)
-                                if tool_name:
-                                    last_tool_name = tool_name
-                            # Legacy flat format: {"result": {...}}
-                            elif isinstance(data, dict) and "result" in data:
-                                tool_results.append(data["result"])
-                                if tool_name:
-                                    last_tool_name = tool_name
-                            elif isinstance(data, dict) and data.get("ok"):
-                                tool_results.append(data)
-                                if tool_name:
-                                    last_tool_name = tool_name
-                        except (json.JSONDecodeError, TypeError):
-                            tool_results.append(content)
-                    elif content:
-                        tool_results.append(content)
-        guilogger.info(
-            f"Graph execution completed in {final_state.get('rounds', 0) if final_state else 0} rounds"
-            if final_state
-            else "Graph execution completed"
+        loop_exit_response = _build_loop_exit_response(
+            final_state=final_state,
+            cancel_event=cancel_event,
         )
+        if loop_exit_response is not None:
+            return loop_exit_response
 
-        history = final_state.get("history", []) if final_state else []
-        work_summary = _generate_work_summary(final_state, history)
-
-        # Build assistant_message: prefer tool result over raw tool call
-        last_assistant = assistant_msgs[-1] if assistant_msgs else ""
-
-        # If last assistant message is just a tool call and we have results, show formatted result.
-        # LM Studio/Qwen models prefix the block with  — strip it first.
-        # YAML blocks may start with ```yaml or bare "name:" (no fences).
-        # LM Studio/Qwen models prefix the block with <think>...</think> — strip it first.
-        _last_stripped = re.sub(
-            r"<think>.*?</think>", "", last_assistant, flags=re.DOTALL
-        ).strip()
-        _is_tool_call_msg = (
-            not last_assistant
-            or _last_stripped.startswith("name:")
-            or _last_stripped.startswith("```yaml")
-            or _last_stripped.startswith("```\nname:")
-            or (_last_stripped.startswith("```") and "name:" in _last_stripped)
-        )
-        if tool_results and _is_tool_call_msg:
-            # Use enhanced formatting based on tool type
-            assistant_message = ""
-
-            # Format each tool result using the appropriate formatter
-            for i, result in enumerate(tool_results):
-                # Determine which tool this result belongs to
-                tool_name = None
-                if i == len(tool_results) - 1 and last_tool_name:
-                    tool_name = last_tool_name
-
-                formatted = _format_tool_result(result, tool_name)
-                if formatted:
-                    if assistant_message and not assistant_message.endswith("\n"):
-                        assistant_message += "\n"
-                    assistant_message += formatted + "\n"
-
-            assistant_message = assistant_message.strip()
-        else:
-            assistant_message = last_assistant
-
-        # OE4: Surface delegation_results so callers can read subagent outputs.
-        # Previously the delegation_node populated this field but it was never
-        # included in the return dict (fire-and-forget). Now callers can access it.
-        delegation_results = (
-            final_state.get("delegation_results") if final_state else None
-        )
-        if delegation_results:
-            guilogger.info(
-                f"run_agent_once: delegation_results keys={list(delegation_results.keys())}"
-            )
-
-        orch.cost_tracker.flush(task_id=getattr(orch, "_current_task_id", ""))
-        orch.flush_execution_trace()
-
-        # SES-W2: Persist assistant response to SessionStore transcript.
-        if assistant_message:
-            try:
-                _sid = getattr(orch, "_current_task_id", None)
-                try:
-
-                    _tname = _threading.current_thread().name
-                except Exception:
-                    _tname = "unknown"
-                guilogger.debug(
-                    "inference_loop: add_message (session=%r, role=%s, thread=%s)",
-                    _sid,
-                    "assistant",
-                    _tname,
-                )
-                orch.session_store.add_message(
-                    session_id=_sid,
-                    role="assistant",
-                    content=assistant_message.strip(),
-                )
-            except Exception:
-                pass
-
-        return {
-            "assistant_message": assistant_message.strip(),
-            "work_summary": work_summary,
-            "delegation_results": delegation_results or {},
-            "dry_run_intercepted": list(getattr(orch, "_dry_run_log", [])),
-        }
+        return _build_success_response(orch, final_state)
     except StopAsyncIteration:
         # This is expected when the graph finishes successfully.
         history = (
@@ -1008,94 +1052,10 @@ def run_agent_once_impl(
             "dry_run_intercepted": list(getattr(orch, "_dry_run_log", [])),
         }
     except Exception as e:
-        guilogger.error(f"Graph execution failed: {e}")
-        orch.msg_mgr.append("user", f"Error during tool execution: {e}")
-        # Fallback: attempt to call the LLM directly (synchronous) to produce an assistant message
-        try:
-            from src.core.inference.llm_manager import call_model
-
-            # Determine provider/model from the orchestrator capability view
-            # Prefer orch.get_provider_capabilities() when available so we
-            # consistently use ProviderManager-derived values. Fall back to
-            # legacy adapter inspection when necessary.
-            provider_name = None
-            model_name = None
-            # Use centralised resolver to keep heuristics consistent and small.
-            try:
-                provider_name, model_name = _resolve_provider_and_model(orch)
-            except Exception:
-                provider_name, model_name = None, None
-
-            messages_for_model = [
-                {"role": "system", "content": full_system_prompt},
-                {"role": "user", "content": prompt},
-            ]
-            try:
-                # OE-VOL23-1: asyncio.run() raises RuntimeError if called from
-                # within an already-running event loop.  Mirror the guard used
-                # at line ~394: try get_running_loop() first and submit via the
-                # reused executor if a loop is active.
-                _call_coro = call_model(
-                    messages_for_model,
-                    provider=provider_name,
-                    model=model_name,
-                    stream=_streaming_enabled,
-                    format_json=False,
-                )
-                try:
-                    asyncio.get_running_loop()
-                    # Already inside an event loop — submit to thread executor.
-
-                    _ctx = _cv.copy_context()
-                    _fb_executor = getattr(orch, "_graph_executor", None)
-                    if _fb_executor is not None:
-                        resp = _fb_executor.submit(
-                            _ctx.run, asyncio.run, _call_coro
-                        ).result()
-                    else:
-                        import concurrent.futures as _cf_fb
-
-                        with _cf_fb.ThreadPoolExecutor(max_workers=1) as _ex:
-                            resp = _ex.submit(
-                                _ctx.run, asyncio.run, _call_coro
-                            ).result()
-                except RuntimeError:
-                    # No running loop — safe to call asyncio.run() directly.
-                    resp = asyncio.run(_call_coro)
-            except Exception:
-                resp = None
-
-            content = ""
-            if isinstance(resp, dict):
-                _choices = resp.get("choices")
-                if _choices and len(_choices) > 0:
-                    ch = (
-                        _choices[0].get("message")
-                        if isinstance(_choices[0], dict)
-                        else None
-                    )
-                else:
-                    ch = resp.get("message")
-                if isinstance(ch, str):
-                    content = ch
-                elif isinstance(ch, dict):
-                    content = ch.get("content") or ""
-
-            # Append assistant message if available
-            if content:
-                try:
-                    orch.msg_mgr.append("assistant", content)
-                except Exception:
-                    pass
-
-            orch.cost_tracker.flush(task_id=getattr(orch, "_current_task_id", ""))
-            orch.flush_execution_trace()
-            return {
-                "assistant_message": content if content else "",
-                "error": "graph_failed",
-                "exception": str(e),
-            }
-        except Exception:
-            orch.cost_tracker.flush(task_id=getattr(orch, "_current_task_id", ""))
-            orch.flush_execution_trace()
-            return {"error": "graph_failed", "exception": str(e)}
+        return _build_graph_failure_response(
+            orch=orch,
+            error=e,
+            prompt=prompt,
+            full_system_prompt=full_system_prompt,
+            streaming_enabled=_streaming_enabled,
+        )

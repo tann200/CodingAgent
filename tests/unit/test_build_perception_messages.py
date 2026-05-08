@@ -8,8 +8,10 @@ from src.core.orchestration.graph.nodes.perception_node import (
 class DummyBuilder:
     def __init__(self, base_messages):
         self._base = base_messages
+        self.last_kwargs = None
 
     def build_prompt(self, **kwargs):
+        self.last_kwargs = dict(kwargs)
         # Return a shallow copy so tests can inspect mutations
         return [dict(m) for m in self._base]
 
@@ -61,6 +63,7 @@ def test_build_perception_messages_injections(tmp_path, monkeypatch):
 
     # Assert prior memories injected
     assert any("PRIOR_MEMORIES" in m.get("content", "") for m in messages)
+    assert builder.last_kwargs["include_prior_context"] is False
     # Assert recent decisions injected
     assert any("Recent task decisions" in m.get("content", "") for m in messages)
     # Assert max_steps template appended (match either test stub or real template)

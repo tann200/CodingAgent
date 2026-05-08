@@ -102,13 +102,13 @@ def _atomic_write(data: list) -> None:
             "config_writer: atomic_write_json returned False for %s; falling back",
             CONFIG_PATH,
         )
-    except Exception:
+    except Exception as exc:
         import traceback as _traceback
 
         logger.debug(
             "config_writer: atomic_write_json unavailable or failed for %s; falling back: %s\n%s",
             CONFIG_PATH,
-            _e if " _e" in locals() else None,
+            exc,
             _traceback.format_exc(),
         )
 

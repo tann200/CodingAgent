@@ -30,6 +30,8 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from src.tools._tool import ok
+
 logger = logging.getLogger(__name__)
 
 _UNAVAILABLE_MSG = (
@@ -55,7 +57,6 @@ def _get_manager(working_dir: Optional[str] = None):
     return get_lsp_manager(workspace=root)
 
 
-from src.tools._tool import ok, err
 
 
 # ---------------------------------------------------------------------------

@@ -46,12 +46,16 @@ import logging
 from typing import Any, Dict, cast
 
 from src.core.orchestration.graph.state import StateLike
+from src.core.orchestration.graph.nodes.tool_output_truncation import (
+    TOOL_LARGE_TEXT_FIELDS,
+    TOOL_OUTPUT_MAX_BYTES,
+    truncate_tool_output,
+)
 from src.core.orchestration.graph.nodes.node_utils import (
     _resolve_orchestrator,
     _notify_provider_limit,
 )
 from src.core.orchestration.tool_parser import parse_tool_block
-from src.core.utils.strings import valid_str as _valid_str, extract_str as _extract_str
 
 logger = logging.getLogger(__name__)
 
@@ -62,8 +66,8 @@ logger = logging.getLogger(__name__)
 _MAX_FRONTIER_TURNS = 20
 
 # OP-9: Cap per-tool output that enters conversation history.
-_TOOL_OUTPUT_MAX_BYTES = 50_000
-_TOOL_LARGE_TEXT_FIELDS = ("output", "content", "diff", "text", "stdout", "stderr")
+_TOOL_OUTPUT_MAX_BYTES = TOOL_OUTPUT_MAX_BYTES
+_TOOL_LARGE_TEXT_FIELDS = TOOL_LARGE_TEXT_FIELDS
 
 
 # Expose a module-level call_model proxy so tests can patch
@@ -85,34 +89,7 @@ async def call_model(*args, **kwargs):
 
 def _truncate_tool_output(res: dict) -> dict:
     """Cap any large text fields in a tool result before it enters history."""
-    try:
-        serialized = json.dumps(res, default=str)
-    except Exception:
-        return res
-    if len(serialized.encode("utf-8", errors="replace")) <= _TOOL_OUTPUT_MAX_BYTES:
-        return res
-    truncated = dict(res)
-    for field in _TOOL_LARGE_TEXT_FIELDS:
-        val = truncated.get(field)
-        if not isinstance(val, str) or len(val) < 500:
-            continue
-        try:
-            current_size = len(
-                json.dumps(truncated, default=str).encode("utf-8", errors="replace")
-            )
-        except Exception:
-            break
-        if current_size <= _TOOL_OUTPUT_MAX_BYTES:
-            break
-        excess = current_size - _TOOL_OUTPUT_MAX_BYTES
-        new_len = max(200, len(val) - excess - 80)
-        omitted = len(val) - new_len
-        truncated[field] = (
-            val[:new_len]
-            + f"\n…[frontier_loop: {omitted} chars truncated — output exceeded 50 KB limit]"
-        )
-        truncated["_output_truncated"] = True
-    return truncated
+    return truncate_tool_output(res, marker_label="frontier_loop")
 
 
 def _extract_content_text(response: Any) -> str:
@@ -184,7 +161,7 @@ async def frontier_loop_node(
     """
     orchestrator = _resolve_orchestrator(state, config)
     task: str = state.get("task") or ""
-    history: list = list(state.get("conversation_history") or [])
+    history: list = list(state.get("history") or [])
     tool_call_count: int = int(state.get("tool_call_count") or 0)
     max_tool_calls: int = int(state.get("max_tool_calls") or 30)
     model_tier: str = (state.get("model_tier") or "frontier").lower()
@@ -257,7 +234,10 @@ async def frontier_loop_node(
             # Provider capabilities (optional) — may help ContextBuilder pick provider-specific
             # prompt partials. Use canonical resolution to avoid leaking MagicMock
             # placeholders and to centralise provider/model discovery.
-            from src.core.orchestration.provider_capabilities import resolve_provider_capabilities as _resolve_pc
+            from src.core.orchestration.provider_capabilities import (
+                resolve_provider_capabilities as _resolve_pc,
+            )
+
             provider_caps = _resolve_pc(orchestrator)
 
             # build_prompt is CPU / I/O bound; run it in an executor while propagating
@@ -347,7 +327,7 @@ async def frontier_loop_node(
             # Object format (e.g., from some providers)
             tool_calls = getattr(response, "tool_calls", None) or []
 
-# Try JSON/Qwen3 XML fallback if no native tool calls
+        # Try JSON/Qwen3 XML fallback if no native tool calls
         if not tool_calls and content_text:
             # Fallback: try parsing JSON/Qwen3 XML tool blocks from text. Wrap the
             # whole parse sequence in a try/except so any parsing error is
@@ -451,7 +431,7 @@ async def frontier_loop_node(
                 )
                 # Persist state and signal wait_for_user via state flag
                 return {
-                    "conversation_history": history,
+                    "history": history,
                     "tool_call_count": tool_call_count,
                     "last_result": last_result,
                     "errors": errors,
@@ -560,7 +540,7 @@ async def frontier_loop_node(
         pass
 
     return {
-        "conversation_history": history,
+        "history": history,
         "tool_call_count": tool_call_count,
         "last_result": last_result,
         "errors": errors,

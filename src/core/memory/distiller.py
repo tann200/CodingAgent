@@ -3,11 +3,9 @@ import asyncio
 import inspect
 import json
 import logging
-import traceback
 import re
 import tempfile
 import os
-import shutil
 from typing import Any, Dict, List, Optional
 from pathlib import Path
 
@@ -33,6 +31,40 @@ _DISTILLER_LLM_EXECUTOR: concurrent.futures.ThreadPoolExecutor | None = None
 _DISTILLER_LLM_TIMEOUT_SECONDS = 120
 
 
+def _atomic_write_text(target: Path, content: str) -> bool:
+    """Best-effort atomic text write with local fallback."""
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=str(target.parent), suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(content)
+                try:
+                    f.flush()
+                    os.fsync(f.fileno())
+                except Exception:
+                    pass
+            os.replace(tmp, str(target))
+            return True
+        except Exception:
+            try:
+                os.unlink(tmp)
+            except Exception:
+                pass
+            raise
+    except Exception:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+        return True
+
+
+def _atomic_write_json(target: Path, payload: Any) -> bool:
+    """Best-effort atomic JSON write via the shared core helper."""
+    from src.core.io_utils import atomic_write_json
+
+    return atomic_write_json(target, payload, logger=logger)
+
+
 def _get_distiller_executor() -> concurrent.futures.ThreadPoolExecutor:
     global _DISTILLER_LLM_EXECUTOR
     if _DISTILLER_LLM_EXECUTOR is None:
@@ -42,42 +74,10 @@ def _get_distiller_executor() -> concurrent.futures.ThreadPoolExecutor:
     return _DISTILLER_LLM_EXECUTOR
 
 
-# TASK-07: Number of recent messages to keep after compaction so the agent
-# retains immediate context alongside the summary.
+# TASK-07: Number of recent messages to keep after compaction so the agent# retains immediate context alongside the summary.
 _KEEP_RECENT = 6
 
 
-def _atomic_write_text(path: Path, text: str) -> None:
-    """Write *text* to *path* atomically using mkstemp → os.replace. (F-62)"""
-    directory = str(path.parent)
-    fd, tmp_path = tempfile.mkstemp(dir=directory, suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(text)
-        try:
-            os.replace(tmp_path, str(path))
-        except Exception:
-            shutil.move(tmp_path, str(path))
-    except Exception:
-        try:
-            os.close(fd)
-        except Exception:
-            pass
-        raise
-
-
-def _atomic_write_json(path: Path, data: Any) -> None:
-    """Write *data* as JSON to *path* atomically, preferring io_utils. (F-62)"""
-    try:
-        from src.core.io_utils import atomic_write_json as _io_awj
-
-        ok = _io_awj(path, data, logger=logger)
-        if ok:
-            return
-    except Exception:
-        pass
-    # Fallback: mkstemp → os.replace
-    _atomic_write_text(path, json.dumps(data, indent=2, ensure_ascii=False))
 
 
 def _estimate_tokens(messages: List[Dict[str, str]]) -> int:

@@ -338,12 +338,12 @@ class TestSettingsPanelAtomicProvidersJsonWrite:
         source = src_path.read_text()
         # The new code should use os.replace; old cfg_path.write_text should be gone from the write path
         # (it may still appear in read path or elsewhere — check it's not in the write block)
-        assert "os.replace" in source, (
-            "Atomic write via os.replace not found in settings_panel.py"
-        )
-        assert "tempfile.mkstemp" in source, (
-            "tempfile.mkstemp not found in settings_panel.py"
-        )
+        assert (
+            "os.replace" in source
+        ), "Atomic write via os.replace not found in settings_panel.py"
+        assert (
+            "tempfile.mkstemp" in source
+        ), "tempfile.mkstemp not found in settings_panel.py"
 
 
 # ---------------------------------------------------------------------------
@@ -462,9 +462,9 @@ class TestDistillerCheckpointWriteAndSchemaValidation:
 
         mock_cmp.assert_called_once()
         cp_path = tmp_path / ".codingAgent" / "compaction_checkpoint.md"
-        assert cp_path.exists(), (
-            "compaction_checkpoint.md should be written at 50+ messages"
-        )
+        assert (
+            cp_path.exists()
+        ), "compaction_checkpoint.md should be written at 50+ messages"
 
     def test_schema_validation_rejects_missing_keys(self, tmp_path):
         """distill_context should return {} when LLM output is missing required keys."""
@@ -669,6 +669,19 @@ class TestWaveCoordinatorSkipsExhaustedRetrySteps:
                 all_in_wave_complete = False
                 break
 
-        assert all_in_wave_complete, (
-            "Wave should be complete when failed step exhausted retries"
+        assert (
+            all_in_wave_complete
+        ), "Wave should be complete when failed step exhausted retries"
+
+
+class TestStepRetryKeyNormalization:
+    def test_increment_step_retry_count_canonicalizes_to_string_keys(self):
+        from src.core.orchestration.graph.nodes.execution_helpers import (
+            increment_step_retry_count,
         )
+
+        state = {"step_retry_counts": {1: 2, "2": 1, "bad": "x"}}
+
+        result = increment_step_retry_count(state, 1)
+
+        assert result == {"1": 3, "2": 1}

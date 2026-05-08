@@ -1,6 +1,4 @@
-from langchain_core.runnables import RunnableConfig
-"""
-wait_for_user_node.py - Suspends graph until user confirms preview or approves plan.
+"""wait_for_user_node.py - Suspends graph until user confirms preview or approves plan.
 
 CRITICAL: This node uses asyncio.Event to properly suspend LangGraph.
 The node awaits confirmation from the TUI before returning.
@@ -13,6 +11,8 @@ Two suspension modes:
 import asyncio
 import logging
 from typing import Any, Dict
+
+from langchain_core.runnables import RunnableConfig
 
 from src.core.orchestration.graph.state import StateLike
 

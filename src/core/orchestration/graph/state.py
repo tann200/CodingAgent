@@ -10,7 +10,6 @@ from typing import (
     Mapping,
     TYPE_CHECKING,
 )
-import operator
 
 # Import the authoritative PlanDAG from dag_parser — state.py previously had
 # an incompatible duplicate dataclass definition (different fields) which

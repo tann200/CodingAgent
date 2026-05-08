@@ -17,7 +17,7 @@ from src.core.inference.llm_manager import get_provider_manager, _providers_json
 from src.core.logger import logger as guilogger
 from src.core.orchestration.event_bus import get_event_bus
 from src.core.user_prefs import UserPrefs
-from src.core.utils.strings import valid_str as _valid_str, extract_str as _extract_str
+from src.core.utils.strings import valid_str as _valid_str
 import json
 import time
 import threading

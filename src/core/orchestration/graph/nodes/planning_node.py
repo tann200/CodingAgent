@@ -2,12 +2,8 @@ from langchain_core.runnables import RunnableConfig
 import asyncio
 import json
 import logging
-import traceback
 import re
-import tempfile
 import threading
-import os
-import shutil
 from datetime import datetime
 from pathlib import Path
 from typing import Mapping, Dict, Any, Optional
@@ -16,7 +12,27 @@ from src.core.orchestration.graph.state import StateLike
 from src.core.context.context_builder import ContextBuilder
 from src.core.inference.llm_manager import call_model
 from src.core.orchestration.graph.nodes.node_utils import _resolve_orchestrator
-from src.core.utils.strings import valid_str as _valid_str, extract_str as _extract_str
+from src.core.orchestration.graph.nodes.planning_fast_paths import (
+    _build_existing_plan_result as _build_existing_plan_result_impl,
+    _build_planning_early_response_result as _build_planning_early_response_result_impl,
+    _build_planning_error_result as _build_planning_error_result_impl,
+    _build_resumed_plan_result as _build_resumed_plan_result_impl,
+    _build_simple_next_action_plan_result as _build_simple_next_action_plan_result_impl,
+)
+from src.core.orchestration.graph.nodes.planning_prompt import (
+    _build_planning_task_description as _build_planning_task_description_impl,
+)
+from src.core.orchestration.graph.nodes.planning_result import (
+    _build_resolved_plan_result as _build_resolved_plan_result_impl,
+)
+from src.core.orchestration.graph.nodes.planning_helpers import (
+    get_last_plan_path,
+    hydrate_repo_context_from_index,
+    load_last_plan,
+    plan_is_resumable,
+    resolve_planning_orchestrator,
+    save_last_plan,
+)
 from src.core.orchestration.graph.nodes.node_utils import span_node as _span_node
 
 
@@ -32,23 +48,15 @@ def _plan_is_resumable(
     resume_session: bool = False,
 ) -> bool:
     """Return True if a saved plan should be resumed rather than regenerated."""
-    if resume_session:
-        return bool(data.get("plan"))
-    if data.get("task", "") != current_task:
-        return False
-    saved_at_str = data.get("saved_at", "")
-    try:
-        saved_dt = datetime.fromisoformat(saved_at_str)
-        age_seconds = (datetime.now() - saved_dt).total_seconds()
-        if age_seconds > _PLAN_RESUME_TTL_SECONDS:
-            logger.info(
-                f"planning_node: saved plan is {age_seconds:.0f}s old "
-                f"(> {_PLAN_RESUME_TTL_SECONDS}s TTL) — not resuming"
-            )
-            return False
-    except Exception:
-        return False
-    return True
+    return plan_is_resumable(
+        data=data,
+        current_task=current_task,
+        resume_ttl_seconds=_PLAN_RESUME_TTL_SECONDS,
+        logger=logger,
+        now_fn=datetime.now,
+        datetime_fromisoformat_fn=datetime.fromisoformat,
+        resume_session=resume_session,
+    )
 
 
 def _hydrate_repo_context_from_index(
@@ -59,133 +67,175 @@ def _hydrate_repo_context_from_index(
     planning_node already benefits from analysis_node output when available.
     This fallback only fills gaps when planning starts with weak repo context.
     """
-    indexed_symbols: list[dict[str, Any]] = []
-    hydrated_files = list(relevant_files)
-    hydrated_symbols = list(key_symbols)
-
-    if not working_dir or not task or (hydrated_files and hydrated_symbols):
-        return hydrated_files, hydrated_symbols, indexed_symbols
-
     try:
         from src.core.indexing.repo_indexer import get_symbols_for_task as _gst
-
-        indexed_symbols = list(_gst(working_dir, task, max_results=8) or [])
-        if indexed_symbols:
-            if not hydrated_files:
-                hydrated_files = list(
-                    dict.fromkeys(
-                        str(sym.get("file_path"))
-                        for sym in indexed_symbols
-                        if sym.get("file_path")
-                    )
-                )[:10]
-            if not hydrated_symbols:
-                hydrated_symbols = list(
-                    dict.fromkeys(
-                        str(sym.get("name"))
-                        for sym in indexed_symbols
-                        if sym.get("name")
-                    )
-                )[:10]
-            logger.info(
-                "planning_node: hydrated repo context from index (%d files, %d symbols)",
-                len(hydrated_files),
-                len(hydrated_symbols),
-            )
+        return hydrate_repo_context_from_index(
+            working_dir=working_dir,
+            task=task,
+            relevant_files=relevant_files,
+            key_symbols=key_symbols,
+            get_symbols_for_task_fn=_gst,
+            logger=logger,
+        )
     except Exception as exc:
         logger.debug(
             "planning_node: repo-context hydration failed (non-critical): %s", exc
         )
-
-    return hydrated_files, hydrated_symbols, indexed_symbols
+        return list(relevant_files), list(key_symbols), []
 
 
 def _get_last_plan_path(workdir: str) -> Path:
     """Get the path to the last plan JSON file."""
     try:
         from src.tools.tools_config import agent_context_path
-
-        return agent_context_path(Path(workdir)) / "last_plan.json"
     except Exception:
-        return Path(workdir) / ".codingAgent" / "last_plan.json"
+        agent_context_path = None
+    return get_last_plan_path(
+        workdir=workdir,
+        agent_context_path_fn=agent_context_path,
+    )
 
 
 def _load_last_plan(workdir: str) -> Dict[str, Any]:
     """Load the last plan from JSON file if it exists."""
-    plan_path = _get_last_plan_path(workdir)
-    if plan_path.exists():
-        try:
-            data = json.loads(plan_path.read_text())
-            logger.info(f"planning_node: loaded last plan from {plan_path}")
-            return data
-        except Exception as e:
-            logger.warning(f"planning_node: failed to load last plan: {e}")
-    return {}
+    return load_last_plan(
+        workdir=workdir,
+        get_last_plan_path_fn=_get_last_plan_path,
+        logger=logger,
+    )
 
 
 def _save_last_plan(workdir: str, plan: list, task: str, step: int = 0) -> None:
     """Save the current plan to JSON file for cross-session persistence."""
-    plan_path = _get_last_plan_path(workdir)
-    try:
-        plan_path.parent.mkdir(parents=True, exist_ok=True)
-        data = {
-            "plan": plan,
-            "task": task,
-            "current_step": step,
-            "working_dir": str(workdir),
-            "saved_at": datetime.now().isoformat(),
-        }
-        try:
-            from src.core.io_utils import atomic_write_json
+    save_last_plan(
+        workdir=workdir,
+        plan=plan,
+        task=task,
+        step=step,
+        get_last_plan_path_fn=_get_last_plan_path,
+        logger=logger,
+        now_fn=datetime.now,
+    )
 
-            logger.debug(
-                "planning_node: attempting atomic_write_json for %s", plan_path
-            )
-            ok = atomic_write_json(plan_path, data, logger=logger)
-            if ok:
-                logger.info("planning_node: saved plan to %s", plan_path)
-                return
-            logger.warning(
-                "planning_node: atomic_write_json returned False for %s; falling back",
-                plan_path,
-            )
-        except Exception:
-            logger.debug(
-                "planning_node: atomic_write_json unavailable or failed for %s; falling back\n%s",
-                plan_path,
-                traceback.format_exc(),
-            )
 
-        # mkstemp fallback
-        fd, tmp_path = tempfile.mkstemp(dir=str(plan_path.parent), suffix=".tmp")
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2)
-                try:
-                    f.flush()
-                    os.fsync(f.fileno())
-                except Exception:
-                    pass
-            try:
-                os.replace(tmp_path, str(plan_path))
-            except Exception:
-                try:
-                    shutil.move(tmp_path, str(plan_path))
-                except Exception:
-                    logger.warning(
-                        "planning_node: mkstemp fallback failed for %s; final fallback to write_text",
-                        plan_path,
-                    )
-                    plan_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
-        except Exception:
-            try:
-                if fd:
-                    os.close(fd)
-            except Exception:
-                pass
-            raise
-    except Exception as e:
-        logger.warning("planning_node: failed to save last plan: %s", e)
+def _build_planning_task_description(
+    *,
+    state: Mapping[str, Any],
+    task: str,
+    analysis_summary: str,
+    relevant_files: list[str],
+    key_symbols: list[str],
+    repo_lookup_symbols: list[dict[str, Any]],
+    plan_step_limit: int,
+) -> str:
+    """Compatibility wrapper around planning prompt/task-description assembly."""
+    return _build_planning_task_description_impl(
+        state=state,
+        task=task,
+        analysis_summary=analysis_summary,
+        relevant_files=relevant_files,
+        key_symbols=key_symbols,
+        repo_lookup_symbols=repo_lookup_symbols,
+        plan_step_limit=plan_step_limit,
+    )
+
+
+def _build_planning_error_result(
+    *,
+    current_plan: list,
+    current_step: int,
+    plan_attempts: int,
+    errors: list[str],
+) -> dict:
+    """Compatibility wrapper around the planning error payload builder."""
+    return _build_planning_error_result_impl(
+        current_plan=current_plan,
+        current_step=current_step,
+        plan_attempts=plan_attempts,
+        errors=errors,
+    )
+
+
+def _build_resumed_plan_result(
+    *,
+    loaded_plan: list,
+    loaded_step: int,
+    plan_attempts: int,
+) -> dict:
+    """Compatibility wrapper around the resumed-plan payload builder."""
+    return _build_resumed_plan_result_impl(
+        loaded_plan=loaded_plan,
+        loaded_step=loaded_step,
+        plan_attempts=plan_attempts,
+    )
+
+
+def _build_existing_plan_result(
+    *,
+    current_plan: list,
+    current_step: int,
+    step_description: str,
+    plan_attempts: int,
+) -> dict:
+    """Compatibility wrapper around the existing-plan payload builder."""
+    return _build_existing_plan_result_impl(
+        current_plan=current_plan,
+        current_step=current_step,
+        step_description=step_description,
+        plan_attempts=plan_attempts,
+    )
+
+
+def _build_simple_next_action_plan_result(
+    *,
+    current_plan: list,
+    current_step: int,
+    plan_attempts: int,
+) -> dict:
+    """Compatibility wrapper around the trivial one-step plan payload builder."""
+    return _build_simple_next_action_plan_result_impl(
+        current_plan=current_plan,
+        current_step=current_step,
+        plan_attempts=plan_attempts,
+    )
+
+
+def _build_planning_early_response_result(
+    *,
+    current_plan: list,
+    current_step: int,
+    plan_attempts: int,
+    early_resp: dict,
+) -> dict:
+    """Compatibility wrapper around the planning early-response payload builder."""
+    return _build_planning_early_response_result_impl(
+        current_plan=current_plan,
+        current_step=current_step,
+        plan_attempts=plan_attempts,
+        early_resp=early_resp,
+    )
+
+
+def _build_resolved_plan_result(
+    *,
+    current_plan: list,
+    current_step: int,
+    plan_attempts: int,
+    relevant_files: list[str],
+    key_symbols: list[str],
+    affected_files: list,
+    execution_waves: Any,
+) -> dict:
+    """Compatibility wrapper around resolved plan payload assembly."""
+    return _build_resolved_plan_result_impl(
+        current_plan=current_plan,
+        current_step=current_step,
+        plan_attempts=plan_attempts,
+        relevant_files=relevant_files,
+        key_symbols=key_symbols,
+        affected_files=affected_files,
+        execution_waves=execution_waves,
+    )
 
 
 async def planning_node(state: StateLike, config: RunnableConfig) -> Dict[str, Any]:
@@ -204,27 +254,16 @@ async def _planning_node_impl(state: Mapping[str, Any], config: RunnableConfig) 
     # P2-9: Reset plan_mode_approved so each fresh plan requires re-approval.
     # Without this, a stale True from a prior approval skips the gate on subsequent plan cycles.
 
-    # Validate orchestrator
-    try:
-        orchestrator = _resolve_orchestrator(state, config)
-        if orchestrator is None:
-            logger.error("planning_node: orchestrator is None")
-            return {
-                "current_plan": state.get("current_plan", []),
-                "current_step": state.get("current_step", 0),
-                "plan_attempts": plan_attempts,
-                "plan_mode_approved": None,
-                "errors": ["orchestrator not found"],
-            }
-    except Exception as e:
-        logger.error(f"planning_node: failed to get orchestrator: {e}")
-        return {
-            "current_plan": state.get("current_plan", []),
-            "current_step": state.get("current_step", 0),
-            "plan_attempts": plan_attempts,
-            "plan_mode_approved": None,
-            "errors": [f"config error: {e}"],
-        }
+    orchestrator, orchestrator_error = resolve_planning_orchestrator(
+        state=state,
+        config=config,
+        plan_attempts=plan_attempts,
+        resolve_orchestrator_fn=_resolve_orchestrator,
+        build_planning_error_result_fn=_build_planning_error_result,
+        logger=logger,
+    )
+    if orchestrator_error is not None:
+        return orchestrator_error
 
     # Treat state as a plain dict for flexible lookups
     s = dict(state)
@@ -265,14 +304,11 @@ async def _planning_node_impl(state: Mapping[str, Any], config: RunnableConfig) 
                 logger.info(
                     f"planning_node: resuming from saved plan with {len(loaded_plan)} steps"
                 )
-                return {
-                    "current_plan": loaded_plan,
-                    "current_step": loaded_step,
-                    "task_decomposed": True,
-                    "plan_resumed": True,
-                    "plan_attempts": plan_attempts,
-                    "plan_mode_approved": None,
-                }
+                return _build_resumed_plan_result(
+                    loaded_plan=loaded_plan,
+                    loaded_step=loaded_step,
+                    plan_attempts=plan_attempts,
+                )
 
     # If the perception already provided a next_action, try to build a simple plan
 
@@ -297,14 +333,12 @@ async def _planning_node_impl(state: Mapping[str, Any], config: RunnableConfig) 
         # "Task: Task: Task:..." prefix accumulation across debug/replan cycles.
         # The original task is preserved in state["task"] and state["original_task"].
         # The step description is communicated via state["step_description"] instead.
-        return {
-            "current_plan": current_plan,
-            "current_step": current_step,
-            "step_description": step_desc,
-            "task_decomposed": True,
-            "plan_attempts": plan_attempts,
-            "plan_mode_approved": None,
-        }
+        return _build_existing_plan_result(
+            current_plan=current_plan,
+            current_step=current_step,
+            step_description=step_desc,
+            plan_attempts=plan_attempts,
+        )
 
     next_action = s.get("next_action")
     if next_action:
@@ -317,12 +351,11 @@ async def _planning_node_impl(state: Mapping[str, Any], config: RunnableConfig) 
         current_step = 0
         # 4.4: Persist simple plan for cross-session persistence
         _save_last_plan(working_dir, current_plan, task, current_step)
-        return {
-            "current_plan": current_plan,
-            "current_step": current_step,
-            "plan_attempts": plan_attempts,
-            "plan_mode_approved": None,
-        }
+        return _build_simple_next_action_plan_result(
+            current_plan=current_plan,
+            current_step=current_step,
+            plan_attempts=plan_attempts,
+        )
 
     # Fallback: ask the model for a short plan (non-blocking best effort)
     try:
@@ -344,84 +377,6 @@ async def _planning_node_impl(state: Mapping[str, Any], config: RunnableConfig) 
             key_symbols,
         )
 
-        repo_context = ""
-        if relevant_files or key_symbols:
-            repo_context = "\n\nRepository Context:\n"
-            if relevant_files:
-                repo_context += f"- Relevant files: {', '.join(str(f) for f in relevant_files[:10])}\n"
-            if key_symbols:
-                # LOW-8 fix: renamed loop variable from `s` (which shadows the
-                # outer state dict alias) to `sym`.
-                repo_context += f"- Key symbols: {', '.join(str(sym) for sym in key_symbols[:10])}\n"
-            if analysis_summary and analysis_summary != "No analysis available":
-                repo_context += f"- Analysis: {analysis_summary}\n"
-
-        # #56: Inject analyst subagent deep-dive findings when available
-        analyst_findings = s.get("analyst_findings") or ""
-        analyst_context = ""
-        if analyst_findings:
-            analyst_context = f"\n\nAnalyst Findings:\n{analyst_findings}\n"
-            logger.info("planning_node: injecting analyst_findings into prompt")
-
-        # P3-1: Inject call graph and test map as structured JSON blocks
-        import json as _json
-
-        call_graph = s.get("call_graph")
-        test_map = s.get("test_map")
-        graph_context = ""
-        if call_graph:
-            graph_context += (
-                f"\n\nCall Graph (symbol → callers):\n"
-                f"```json\n{_json.dumps(call_graph, indent=2)}\n```"
-            )
-        if test_map:
-            graph_context += (
-                f"\n\nTest Map (module → test files):\n"
-                f"```json\n{_json.dumps(test_map, indent=2)}\n```"
-            )
-        if graph_context:
-            logger.info("planning_node: injecting call_graph/test_map into prompt")
-
-        # RA-1: Fallback symbol query when call_graph absent (fast-path skipped analysis)
-        if not call_graph and s.get("working_dir"):
-            try:
-                _symbols = repo_lookup_symbols
-                if not _symbols:
-                    from src.core.indexing.repo_indexer import get_symbols_for_task as _gst
-
-                    _symbols = _gst(s["working_dir"], task, max_results=5)
-                if _symbols:
-                    graph_context += (
-                        f"\n\n## Relevant Symbols\n"
-                        f"```json\n{_json.dumps(_symbols, indent=2)}\n```"
-                    )
-                    logger.info(
-                        f"planning_node: RA-1 injected {len(_symbols)} symbols from index"
-                    )
-            except Exception as _ra1_err:
-                logger.debug(
-                    f"planning_node: RA-1 symbol lookup failed (non-critical): {_ra1_err}"
-                )
-
-        # P4-5: Auto-suggest test steps when test_map identifies relevant test files.
-        test_hint = ""
-        if test_map and isinstance(test_map, dict):
-            test_files = []
-            for module, tests in test_map.items():
-                if isinstance(tests, list):
-                    test_files.extend(tests[:2])
-            if test_files:
-                unique_tests = list(dict.fromkeys(test_files))[:4]
-                test_hint = (
-                    f"\n\nTest Coverage Hint: The following test files are relevant to "
-                    f"the modules being modified. Consider adding a verification step "
-                    f"to run these tests after the implementation steps: "
-                    f"{', '.join(unique_tests)}"
-                )
-                logger.info(
-                    f"planning_node: injecting test hint ({len(unique_tests)} files)"
-                )
-
         # GAP-FRONTIER-6: Tier-dependent step limit — frontier models can plan more steps.
         _plan_step_limit = 8  # default (MEDIUM / unknown)
         try:
@@ -435,69 +390,15 @@ async def _planning_node_impl(state: Mapping[str, Any], config: RunnableConfig) 
         except Exception:
             pass
 
-        # MC-4 fix: Request structured JSON output with specific schema to eliminate
-        # 4-strategy parsing fragility. The LLM is more likely to produce consistent
-        # JSON when explicitly instructed with the expected format.
-        # P3-6: Few-shot DAG examples increase valid JSON DAG output rate.
-        full_task = f"""Task: {task}{repo_context}{analyst_context}{graph_context}{test_hint}
-
-Analyze the task and create a dependency graph of subtasks.
-
-Output format (JSON DAG):
-```json
-{{
-  "root_task": "Original task description",
-  "steps": [
-    {{
-      "step_id": "step_0",
-      "description": "Independent task that can run first",
-      "files": ["file1.py", "file2.py"],
-      "depends_on": []
-    }},
-    {{
-      "step_id": "step_1",
-      "description": "Task depending on step_0",
-      "files": ["file3.py"],
-      "depends_on": ["step_0"]
-    }}
-  ]
-}}
-```
-
-Rules:
-- Tasks modifying the SAME file must have dependency relationship
-- A task can start when ALL tasks in its `depends_on` list are complete
-- Identify the MAXIMUM parallelism possible
-- List all files affected by each step
-- Maximum {_plan_step_limit} steps total. If the task needs more, split it and delegate parts.
-
---- EXAMPLES ---
-
-Example 1 (sequential dependency):
-```json
-{{
-  "root_task": "Update authentication to use JWT",
-  "steps": [
-    {{"step_id": "step_0", "description": "Read auth/models.py to understand existing User model", "files": ["auth/models.py"], "depends_on": []}},
-    {{"step_id": "step_1", "description": "Add JWT token fields to User model", "files": ["auth/models.py"], "depends_on": ["step_0"]}},
-    {{"step_id": "step_2", "description": "Update login view to issue JWT tokens", "files": ["auth/views.py"], "depends_on": ["step_1"]}}
-  ]
-}}
-```
-
-Example 2 (parallel tasks):
-```json
-{{
-  "root_task": "Add input validation to registration and login forms",
-  "steps": [
-    {{"step_id": "step_0", "description": "Add email validation to registration form", "files": ["forms/register.py"], "depends_on": []}},
-    {{"step_id": "step_1", "description": "Add password strength check to registration form", "files": ["forms/register.py"], "depends_on": ["step_0"]}},
-    {{"step_id": "step_2", "description": "Add rate limiting to login form (independent)", "files": ["forms/login.py"], "depends_on": []}}
-  ]
-}}
-```
-
-Respond ONLY with valid JSON, no additional text."""
+        full_task = _build_planning_task_description(
+            state=s,
+            task=task,
+            analysis_summary=analysis_summary,
+            relevant_files=relevant_files,
+            key_symbols=key_symbols,
+            repo_lookup_symbols=repo_lookup_symbols,
+            plan_step_limit=_plan_step_limit,
+        )
 
         # Use strategic role from AgentBrainManager
         # Conservative provider/model resolution follows the canonical pattern:
@@ -518,6 +419,7 @@ Respond ONLY with valid JSON, no additional text."""
             max_tokens=3000,  # P5 fix: 1500 truncated complex multi-step plans
             provider_capabilities=provider_capabilities,
             model_tier=state.get("model_tier"),  # S1-B
+            model_name=provider_capabilities.get("model") or "",
         )
 
         cancel_event = state.get("cancel_event")
@@ -573,18 +475,12 @@ Respond ONLY with valid JSON, no additional text."""
             raise
         if early_resp is not None:
             # Propagate the early response shape into planning_node's return.
-            return {
-                "current_plan": current_plan,
-                "current_step": current_step,
-                "plan_attempts": plan_attempts,
-                "plan_mode_approved": None,
-                "errors": early_resp.get("errors") or [],
-                **(
-                    {"next_action": early_resp.get("next_action")}
-                    if early_resp.get("next_action")
-                    else {}
-                ),
-            }
+            return _build_planning_early_response_result(
+                current_plan=current_plan,
+                current_step=current_step,
+                plan_attempts=plan_attempts,
+                early_resp=early_resp,
+            )
 
         content = ""
         if isinstance(resp, dict):
@@ -717,19 +613,15 @@ Respond ONLY with valid JSON, no additional text."""
 
             dag = _convert_flat_to_dag(steps)
             waves = dag.topological_sort_waves() if dag.validate() else None
-            return {
-                "current_plan": steps,
-                "current_step": 0,
-                "task_decomposed": True,
-                "plan_dag": {"steps": steps},
-                "execution_waves": waves,
-                "current_wave": 0,
-                "plan_attempts": plan_attempts,
-                "plan_mode_approved": None,
-                "affected_files": _extract_affected_files(steps),
-                "relevant_files": relevant_files,
-                "key_symbols": key_symbols,
-            }
+            return _build_resolved_plan_result(
+                current_plan=steps,
+                current_step=0,
+                plan_attempts=plan_attempts,
+                relevant_files=relevant_files,
+                key_symbols=key_symbols,
+                affected_files=_extract_affected_files(steps),
+                execution_waves=waves,
+            )
     except Exception as e:
         logger.error(f"planning_node: plan generation failed: {e}")
 
@@ -743,37 +635,29 @@ Respond ONLY with valid JSON, no additional text."""
 
         dag = _convert_flat_to_dag(fallback_plan)
         waves = dag.topological_sort_waves() if dag.validate() else None
-        return {
-            "current_plan": fallback_plan,
-            "current_step": 0,
-            "task_decomposed": True,
-            "plan_dag": {"steps": fallback_plan},
-            "execution_waves": waves,
-            "current_wave": 0,
-            "plan_attempts": plan_attempts,
-            "plan_mode_approved": None,
-            "affected_files": _extract_affected_files(fallback_plan),
-            "relevant_files": relevant_files,
-            "key_symbols": key_symbols,
-        }
+        return _build_resolved_plan_result(
+            current_plan=fallback_plan,
+            current_step=0,
+            plan_attempts=plan_attempts,
+            relevant_files=relevant_files,
+            key_symbols=key_symbols,
+            affected_files=_extract_affected_files(fallback_plan),
+            execution_waves=waves,
+        )
 
     from src.core.orchestration.dag_parser import _convert_flat_to_dag
 
     dag = _convert_flat_to_dag(current_plan)
     waves = dag.topological_sort_waves() if dag.validate() else None
-    return {
-        "current_plan": current_plan,
-        "current_step": current_step,
-        "task_decomposed": True,
-        "plan_dag": {"steps": current_plan},
-        "execution_waves": waves,
-        "plan_attempts": plan_attempts,
-        "current_wave": 0,
-        "plan_mode_approved": None,  # P2-9: reset approval gate for each new plan cycle
-        "affected_files": _extract_affected_files(current_plan),
-        "relevant_files": relevant_files,
-        "key_symbols": key_symbols,
-    }
+    return _build_resolved_plan_result(
+        current_plan=current_plan,
+        current_step=current_step,
+        plan_attempts=plan_attempts,
+        relevant_files=relevant_files,
+        key_symbols=key_symbols,
+        affected_files=_extract_affected_files(current_plan),
+        execution_waves=waves,
+    )
 
 
 def _extract_affected_files(steps: list) -> list:
@@ -828,7 +712,6 @@ def _parse_plan_content(content: str) -> list:
         return []
 
     # Strategy 1: Try JSON array extraction
-    import json
 
     # Look for JSON array in content
     json_match = re.search(r"\[[\s\S]*\]", content)

@@ -118,6 +118,11 @@ def get_toolset_for_role(role: str) -> str:
     return canonical_to_toolset.get(canonical, "coding")
 
 
+def get_tools_for_role(role: str) -> List[str]:
+    """Return the tool names for the toolset selected for *role*."""
+    return get_tools_for_toolset(get_toolset_for_role(role))
+
+
 def clear_cache() -> None:
     """Invalidate the in-process toolset cache (useful after YAML edits)."""
     _cache.clear()

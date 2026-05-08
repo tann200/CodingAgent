@@ -4,7 +4,10 @@ Tests for ContextController — token budget enforcement for file context.
 
 
 # ruff: noqa: E501
-from src.core.context.context_controller import ContextController, create_context_controller
+from src.core.context.context_controller import (
+    ContextController,
+    create_context_controller,
+)
 
 
 class TestContextControllerInit:
@@ -71,7 +74,10 @@ class TestShouldSummarize:
 
     def test_exactly_at_threshold_not_summarized(self):
         cc = ContextController()
-        assert cc.should_summarize({"line_count": ContextController.LARGE_FILE_THRESHOLD}) is False
+        assert (
+            cc.should_summarize({"line_count": ContextController.LARGE_FILE_THRESHOLD})
+            is False
+        )
 
 
 class TestSummarizeFileContent:
@@ -120,6 +126,47 @@ class TestEnforceBudget:
         result = cc.enforce_budget([], [])
         assert isinstance(result, tuple)
         assert len(result) == 2
+
+    def test_budget_status_reflects_tokens_used_by_included_files(self):
+        cc = ContextController(max_context_tokens=1000)
+        files = [
+            {"path": "a.py", "line_count": 10, "estimated_tokens": 120},
+            {"path": "b.py", "line_count": 10, "estimated_tokens": 80},
+        ]
+
+        included, excluded = cc.enforce_budget(files, [])
+
+        assert len(included) == 2
+        assert len(excluded) == 0
+        status = cc.get_budget_status()
+        assert status["used_tokens"] == 200
+        assert status["max_tokens"] == 499
+        assert status["remaining_tokens"] == 299
+        assert status["usage_ratio"] == 200 / 499
+
+    def test_budget_status_uses_effective_available_budget_after_prompt_overhead(self):
+        cc = ContextController(max_context_tokens=1000)
+        conversation = [{"content": "x" * 200}]
+
+        cc.enforce_budget([], conversation, system_prompt="y" * 120)
+
+        status = cc.get_budget_status()
+        assert status["system_tokens"] == 30
+        assert status["conversation_tokens"] == 50
+        assert status["reserved_tokens"] == 500
+        assert status["max_tokens"] == 420
+        assert status["max_context_tokens"] == 1000
+        assert status["configured_max_tokens"] == 6000
+
+    def test_budget_status_clamps_remaining_tokens_at_zero(self):
+        cc = ContextController(max_context_tokens=400)
+
+        cc.enforce_budget([], [], system_prompt="z" * 200)
+
+        status = cc.get_budget_status()
+        assert status["max_tokens"] == 0
+        assert status["remaining_tokens"] == 0
+        assert status["usage_ratio"] == 0
 
 
 class TestGetRelevantSnippets:

@@ -44,6 +44,7 @@ _DEFAULT_LEVEL: str = os.environ.get("CODINGAGENT_SANDBOX_LEVEL", "workspace")
 # sandbox-exec detection (macOS)
 # ---------------------------------------------------------------------------
 
+
 def _sandbox_exec_path() -> Optional[str]:
     """Return path to sandbox-exec if available."""
     return shutil.which("sandbox-exec")
@@ -59,6 +60,7 @@ def _sandbox_exec_available() -> bool:
 # ---------------------------------------------------------------------------
 # sandbox-exec profile generation
 # ---------------------------------------------------------------------------
+
 
 def _build_sandbox_exc_profile(cwd: Path, level: str) -> str:
     """Generate a sandbox-exec profile string for the given *level*.
@@ -77,14 +79,14 @@ def _build_sandbox_exc_profile(cwd: Path, level: str) -> str:
         ";; ---- read-only system paths ----",
         "(allow file-read*",
         "    (require",
-        "        (file-issue-extension* (literal \"/\"))",
-        "        (not (subpath \"/tmp\"))",
-        "        (not (subpath \"/private/tmp\"))",
+        '        (file-issue-extension* (literal "/"))',
+        '        (not (subpath "/tmp"))',
+        '        (not (subpath "/private/tmp"))',
         "    )",
         ")",
         "",
         ";; ---- writable working directory ----",
-        f"(allow file-write* (subpath \"{cwd_str}\"))",
+        f'(allow file-write* (subpath "{cwd_str}"))',
         "",
         ";; ---- deny network ----",
         "(deny network*)",
@@ -126,6 +128,7 @@ def _write_sandbox_exc_profile(cwd: Path, level: str) -> str:
 # bwrap helpers (existing)
 # ---------------------------------------------------------------------------
 
+
 def _probe_bwrap(path: Optional[str]) -> bool:
     """Run a quick `bwrap --version` probe to ensure bwrap is callable.
 
@@ -155,7 +158,11 @@ def _bwrap_available() -> bool:
 # Emit a startup warning event when the environment requests sandboxing but
 # neither bwrap nor sandbox-exec is available.
 try:
-    if _DEFAULT_LEVEL != "off" and not _BWRAP_AVAILABLE and not _sandbox_exec_available():
+    if (
+        _DEFAULT_LEVEL != "off"
+        and not _BWRAP_AVAILABLE
+        and not _sandbox_exec_available()
+    ):
         try:
             from src.core.orchestration.event_bus import get_event_bus
 
@@ -164,7 +171,9 @@ try:
                 try:
                     eb.publish(
                         "system.warning",
-                        {"message": "sandbox: bwrap and sandbox-exec unavailable; sandbox disabled"},
+                        {
+                            "message": "sandbox: bwrap and sandbox-exec unavailable; sandbox disabled"
+                        },
                     )
                 except Exception:
                     pass
@@ -292,9 +301,23 @@ def run_sandboxed(
                 sbox_cmd = [_SANDBOX_EXEC_PATH, "-f", profile_path] + cmd
                 # Note: sandbox-exec does not support --unshare-net; network
                 # is denied via the profile instead.
-                return subprocess.run(
+                result = subprocess.run(
                     sbox_cmd, cwd=str(cwd), timeout=timeout, **kwargs
                 )
+                # macOS sandbox-exec can fail before the command starts if the
+                # generated profile uses unsupported syntax on the host version.
+                # In that case degrade to the documented plain-subprocess fallback
+                # instead of surfacing sandbox parser errors as command output.
+                _stderr = result.stderr or ""
+                if isinstance(_stderr, bytes):
+                    _stderr = _stderr.decode(errors="replace")
+                if result.returncode == 65 and "sandbox-exec:" in str(_stderr):
+                    logger.warning(
+                        "sandbox: sandbox-exec profile rejected (%s) — falling back to unsandboxed",
+                        str(_stderr).splitlines()[0] if _stderr else "unknown error",
+                    )
+                else:
+                    return result
             finally:
                 # Best-effort cleanup of the temp profile
                 try:
@@ -321,7 +344,9 @@ def run_sandboxed(
                 try:
                     eb.publish(
                         "system.warning",
-                        {"message": "sandbox: bwrap and sandbox-exec unavailable; sandbox disabled"},
+                        {
+                            "message": "sandbox: bwrap and sandbox-exec unavailable; sandbox disabled"
+                        },
                     )
                 except Exception:
                     pass

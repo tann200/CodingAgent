@@ -73,3 +73,45 @@ def test_handle_no_tool_emits_corrective_prompt_truncated_yaml():
             found = True
             break
     assert found, f"Truncated YAML corrective event not published: {events}"
+
+
+def test_maybe_return_content_after_no_tool_retry_returns_final_answer():
+    from src.core.orchestration.graph.nodes.perception_node import (
+        _maybe_return_content_after_no_tool_retry,
+    )
+
+    state = {"empty_response_count": 1, "history": [{"role": "user", "content": "hi"}]}
+
+    res = _maybe_return_content_after_no_tool_retry(
+        content_no_thinking="Here is the answer.",
+        state=state,
+        rounds_now=2,
+        turn_count=3,
+        model_tier_str="small",
+    )
+
+    assert isinstance(res, dict)
+    assert res["next_action"] is None
+    assert res["rounds"] == 3
+    assert res["turn_count"] == 3
+    assert res["empty_response_count"] == 0
+    assert res["model_tier"] == "small"
+    assert res["history"] == [{"role": "assistant", "content": "Here is the answer."}]
+
+
+def test_maybe_return_content_after_no_tool_retry_rejects_thinking_like_content():
+    from src.core.orchestration.graph.nodes.perception_node import (
+        _maybe_return_content_after_no_tool_retry,
+    )
+
+    state = {"empty_response_count": 1}
+
+    res = _maybe_return_content_after_no_tool_retry(
+        content_no_thinking="Let me think about this first, then I will proceed.",
+        state=state,
+        rounds_now=0,
+        turn_count=1,
+        model_tier_str=None,
+    )
+
+    assert res is None

@@ -3,7 +3,6 @@ from typing import Callable, Dict, List, Optional, Tuple
 import logging
 import math
 import json
-import re
 import subprocess
 import threading
 from collections import OrderedDict
@@ -11,6 +10,49 @@ from datetime import date as _date
 from pathlib import Path
 
 from src.core.memory.frozen_snapshot import get_memory_for_prompt
+from src.core.context.prompt_blocks import (
+    build_repository_intelligence_block,
+    build_session_context_blocks,
+    build_task_prompt_content,
+)
+from src.core.context.prompt_cache import (
+    compute_static_prompt_cache_key,
+    get_static_prompt_cache_entry,
+    store_static_prompt_cache_entry,
+)
+from src.core.context.message_assembly import (
+    append_task_message,
+    sanitize_conversation_messages,
+    truncate_conversation_to_quota,
+)
+from src.core.context.token_truncation import (
+    truncate_text_to_max_tokens,
+    truncate_to_token_budget,
+)
+from src.core.context.retrieved_snippets import (
+    build_context_controller_descriptors,
+    filter_retrieved_snippets_by_budget,
+)
+from src.core.context.sanitization import sanitize_prompt_text
+from src.core.context.tool_output_pruning import prune_stale_tool_outputs
+from src.core.context.agent_brain_loading import (
+    load_prompt_directory,
+    merge_workspace_skill_overrides,
+)
+from src.core.context.static_prompt_parts import (
+    MODEL_ID_PARTIAL_MAP,
+    build_static_system_parts as _build_static_system_parts_helper,
+    build_instruction_files_block as _build_instruction_files_block_helper,
+    build_model_constraints_block as _build_model_constraints_block_helper,
+    build_output_format_block as _build_output_format_block_helper,
+    build_project_instructions_block as _build_project_instructions_block_helper,
+    build_thinking_guidance_block as _build_thinking_guidance_block_helper,
+    build_thinking_mode_block as _build_thinking_mode_block_helper,
+    load_prompt_partial as _load_prompt_partial_helper,
+    prune_tools as _prune_tools_helper,
+    render_tools_for_tier as _render_tools_for_tier_helper,
+    select_prompt_partial as _select_prompt_partial_helper,
+)
 
 # Gap 3: Plugin hooks — lazy import so the registry is not required at import time.
 try:
@@ -27,7 +69,12 @@ except Exception:
 
 # Lazy imports — guarded against circular-import and optional-dependency failures.
 try:
-    from src.core.inference.model_tiers import ModelTier, get_tool_limit as _get_tool_limit, get_plan_step_limit as _get_plan_step_limit
+    from src.core.inference.model_tiers import (
+        ModelTier,
+        get_tool_limit as _get_tool_limit,
+        get_plan_step_limit as _get_plan_step_limit,
+    )
+
     _ModelTier = ModelTier
 except Exception:
     _ModelTier = None  # type: ignore[assignment]
@@ -35,7 +82,9 @@ except Exception:
     _get_plan_step_limit = None  # type: ignore[assignment]
 
 try:
-    from src.core.inference.provider_context import get_context_budget as _get_context_budget
+    from src.core.inference.provider_context import (
+        get_context_budget as _get_context_budget,
+    )
 except Exception:
     _get_context_budget = None  # type: ignore[assignment]
 
@@ -67,7 +116,9 @@ except Exception:
     _load_project_instructions = None  # type: ignore[assignment]
 
 try:
-    from src.core.inference.thinking_utils import is_reasoning_model as _is_reasoning_model
+    from src.core.inference.thinking_utils import (
+        is_reasoning_model as _is_reasoning_model,
+    )
 except Exception:
     _is_reasoning_model = None  # type: ignore[assignment]
 
@@ -91,19 +142,21 @@ except Exception:
 SYSTEM_PROMPT_DYNAMIC_BOUNDARY = "__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__"
 
 # Tools always retained when pruning supplementary tools from the context.
-_CORE_TOOL_NAMES: frozenset[str] = frozenset({
-    "read_file",
-    "write_file",
-    "edit_file",
-    "edit_file_atomic",
-    "edit_by_line_range",
-    "bash",
-    "bash_readonly",
-    "grep",
-    "glob",
-    "search_code",
-    "list_directory",
-})
+_CORE_TOOL_NAMES: frozenset[str] = frozenset(
+    {
+        "read_file",
+        "write_file",
+        "edit_file",
+        "edit_file_atomic",
+        "edit_by_line_range",
+        "bash",
+        "bash_readonly",
+        "grep",
+        "glob",
+        "search_code",
+        "list_directory",
+    }
+)
 
 
 # F10: Import dynamic token budget helper (lazy — avoids circular imports at module load).
@@ -132,7 +185,7 @@ _CACHE_LOCK = threading.Lock()
 #
 # Tier 1 — STATIC: SOUL.md + role + skills + tools + prompt partial.
 #   Key:   (role_name, active_skills_tuple, tools_hash, model_tier, provider_family,
-#            use_native_tools, is_simple_mode)
+#            provider_model, requested_model, use_native_tools, is_simple_mode)
 #   Value: str — the joined static prefix (everything before DYNAMIC_BOUNDARY).
 #   Lifetime: process-lifetime, cleared by ContextBuilder.clear_cache().
 #
@@ -146,16 +199,19 @@ _STATIC_PROMPT_CACHE: Dict[Tuple, str] = {}
 _DYNAMIC_ENV_CACHE: Dict[Tuple, str] = {}
 
 # Token / character thresholds
-_SYSTEM_OVERHEAD_TOKENS: int = 2100  # reserved for system prompt overhead in token budget
-_MIN_TASK_STATE_CHARS: int = 60      # min chars before injecting task-state block
-_MIN_TODO_CHARS: int = 20            # min chars before injecting todo block
-_MIN_PREFS_CHARS: int = 10           # min chars before injecting preferences block
+_SYSTEM_OVERHEAD_TOKENS: int = (
+    2100  # reserved for system prompt overhead in token budget
+)
+_MIN_TASK_STATE_CHARS: int = 60  # min chars before injecting task-state block
+_MIN_TODO_CHARS: int = 20  # min chars before injecting todo block
+_MIN_PREFS_CHARS: int = 10  # min chars before injecting preferences block
 
 
 def _get_ctx_name() -> str:
     """Return the configured context-dir name, defaulting to '.codingAgent'."""
     try:
         from src.tools.tools_config import get_context_dir_name
+
         return get_context_dir_name()
     except Exception:
         return ".codingAgent"
@@ -226,7 +282,9 @@ class ContextBuilder:
             else:
                 self._agent_context_dir = _agent_context_path(Path.cwd())
         else:
-            self._agent_context_dir = Path(working_dir if working_dir else Path.cwd()) / _get_ctx_name()
+            self._agent_context_dir = (
+                Path(working_dir if working_dir else Path.cwd()) / _get_ctx_name()
+            )
 
         self._max_tokens: int = max_tokens
 
@@ -247,20 +305,12 @@ class ContextBuilder:
         self.soul = self._read_text_cached(soul_path) or ""
 
         # Load all roles by name
-        self.roles: Dict[str, str] = {}
         roles_dir = config_root / "roles"
-        if roles_dir.exists():
-            for role_file in roles_dir.glob("*.md"):
-                role_name = role_file.stem  # filename without extension
-                self.roles[role_name] = self._read_text_cached(role_file) or ""
+        self.roles = load_prompt_directory(roles_dir, self._read_text_cached)
 
         # Load all skills by name — built-in first, then workspace overrides.
-        self.skills: Dict[str, str] = {}
         skills_dir = config_root / "skills"
-        if skills_dir.exists():
-            for skill_file in skills_dir.glob("*.md"):
-                skill_name = skill_file.stem
-                self.skills[skill_name] = self._read_text_cached(skill_file) or ""
+        self.skills = load_prompt_directory(skills_dir, self._read_text_cached)
 
         # GAP-NEW-2: workspace skill discovery.
         # Load user-supplied skills from the working directory so users can add
@@ -274,13 +324,11 @@ class ContextBuilder:
             self._agent_context_dir.parent / ctx_name / "skills",
             self._agent_context_dir.parent / ".claude" / "skills",
         ]
-        for _wsd in _workspace_skill_dirs:
-            if _wsd.exists():
-                for _wsf in _wsd.glob("*.md"):
-                    _wsn = _wsf.stem
-                    _content = self._read_text_cached(_wsf)
-                    if _content:
-                        self.skills[_wsn] = _content
+        self.skills = merge_workspace_skill_overrides(
+            self.skills,
+            _workspace_skill_dirs,
+            self._read_text_cached,
+        )
 
     def get_skill(self, skill_name: str) -> str:
         """Get skill content by name."""
@@ -395,7 +443,9 @@ class ContextBuilder:
         """
         return self._read_text_cached(self._agent_context_dir / "preferences.md")
 
-    def _get_past_mistakes(self, task_description: str, limit: int = 4) -> Optional[str]:
+    def _get_past_mistakes(
+        self, task_description: str, limit: int = 4
+    ) -> Optional[str]:
         """Query the SQLite mistakes FTS5 table for past mistakes relevant to
         *task_description*.  Returns a formatted block string or None when no
         relevant mistakes are found or the store is unavailable.
@@ -440,76 +490,7 @@ class ContextBuilder:
         - Remove top-level prompt-injection lines like "ignore all instructions".
         - Collapse long comment blocks (keep first/last few lines).
         """
-        if not text:
-            return text
-
-        # 1) Remove obvious prompt-injection lines
-        lines = text.splitlines()
-        cleaned_lines = []
-        removed_any = False
-        for ln in lines:
-            s = ln.strip().lower()
-            # heuristics for prompt-injection: match substrings anywhere
-            if (
-                "ignore all instructions" in s
-                or "do not follow" in s
-                or "disregard previous" in s
-                or "forget all previous" in s
-            ):
-                # skip this line
-                removed_any = True
-                continue
-            cleaned_lines.append(ln)
-        text = "\n".join(cleaned_lines)
-
-        # 4) Collapse very long comment blocks (consecutive comment lines > 20)
-        collapsed = []
-        comment_block = []
-        for ln in text.splitlines():
-            if ln.strip().startswith("#") or ln.strip().startswith("//"):
-                comment_block.append(ln)
-            else:
-                if len(comment_block) > 20:
-                    # keep first 3 and last 3
-                    collapsed.extend(comment_block[:3])
-                    collapsed.append(
-                        f"[COMMENT BLOCK TRUNCATED - {len(comment_block)} lines]"
-                    )
-                    collapsed.extend(comment_block[-3:])
-                    removed_any = True
-                else:
-                    collapsed.extend(comment_block)
-                comment_block = []
-                collapsed.append(ln)
-        # flush tail comment block
-        if comment_block:
-            if len(comment_block) > 20:
-                collapsed.extend(comment_block[:3])
-                collapsed.append(
-                    f"[COMMENT BLOCK TRUNCATED - {len(comment_block)} lines]"
-                )
-                collapsed.extend(comment_block[-3:])
-                removed_any = True
-            else:
-                collapsed.extend(comment_block)
-
-        sanitized = "\n".join(collapsed)
-
-        # Best-effort audit log for sanitization events
-        if removed_any:
-            try:
-                cwd = Path.cwd()
-                ctx_name = _get_ctx_name()
-                ac = cwd / ctx_name
-                if ac.exists():
-                    logp = ac / "context_sanitization.log"
-                    with open(logp, "a", encoding="utf-8") as f:
-                        f.write("SANITIZE: removed suspicious content\n")
-            except Exception:
-                # never fail sanitization due to logging issues
-                pass
-
-        return sanitized
+        return sanitize_prompt_text(text, get_context_dir_name=_get_ctx_name)
 
     # ------------------------------------------------------------------
     # S9-A: Cross-session memory injection
@@ -571,30 +552,15 @@ class ContextBuilder:
         S1-B: Used to inject provider/tier-specific guidance into the system prompt.
         Returns empty string when the file does not exist (silent no-op).
         """
-        path = self._TEMPLATES_DIR / filename
-        return self._read_text_cached(path) or ""
+        return _load_prompt_partial_helper(
+            filename,
+            self._TEMPLATES_DIR,
+            self._read_text_cached,
+        )
 
     # GAP-FRONTIER-1: model-ID → partial file mapping (checked before provider family).
     # Keys are regex patterns matched against the active model ID string.
-    _MODEL_ID_PARTIAL_MAP: List[Tuple[str, str]] = [
-        # Reasoning / frontier openai
-        (r"o1|o3|o4", "openai-reasoning.md"),
-        (r"gpt-4o|gpt-4\.5|gpt-4-turbo", "openai-frontier.md"),
-        # Anthropic — separate frontier vs small
-        (
-            r"claude-opus|claude-3-7|claude-sonnet-4-[5-9]|claude-3-5-sonnet",
-            "anthropic-frontier.md",
-        ),
-        (r"claude-haiku|claude-3-5-haiku|claude-3-haiku", "anthropic-small.md"),
-        # Gemini — frontier vs flash/nano
-        (r"gemini-2\.5-pro|gemini-pro|gemini-ultra", "gemini-frontier.md"),
-        (r"gemini-flash|gemini-nano|gemini-2\.0-flash", "gemini-small.md"),
-        # Gemma 4 — large (31B dense, 26B MoE) → frontier partial;
-        # edge (E2B, E4B) → small partial.
-        # 16GB VRAM target: 31B q4 (~15.5GB) and 26B MoE q4 (~13GB) both fit.
-        (r"gemma-4-31b|gemma-4-26b|gemma4:31b|gemma4:26b", "gemini-frontier.md"),
-        (r"gemma-4-e[24]b|gemma4:e[24]b|gemma4-e[24]b", "local-small.md"),
-    ]
+    _MODEL_ID_PARTIAL_MAP: List[Tuple[str, str]] = MODEL_ID_PARTIAL_MAP
 
     def _select_prompt_partial(
         self,
@@ -613,50 +579,13 @@ class ContextBuilder:
         6. Tier: NANO/SMALL → local-small.md, MEDIUM → local-medium.md
         7. Default → default.txt
         """
-        if is_reasoning:
-            partial = self._load_prompt_partial("beast.txt")
-            if partial:
-                return partial
-
-        caps = provider_capabilities or {}
-        # GAP-FRONTIER-1: try model-ID-specific partial first
-        active_model = caps.get("model", "").lower()
-        if active_model:
-            for pattern, filename in self._MODEL_ID_PARTIAL_MAP:
-                if re.search(pattern, active_model):
-                    partial = self._load_prompt_partial(filename)
-                    if partial:
-                        return partial
-                    break  # pattern matched but file absent — fall through
-
-        provider_family = caps.get("provider_family", "").lower()
-
-        if "anthropic" in provider_family:
-            partial = self._load_prompt_partial("anthropic.txt")
-            if partial:
-                return partial
-
-        if "gemini" in provider_family:
-            partial = self._load_prompt_partial("gemini.txt")
-            if partial:
-                return partial
-
-        if "openai" in provider_family or "openrouter" in provider_family:
-            partial = self._load_prompt_partial("openai.txt")
-            if partial:
-                return partial
-
-        tier = (model_tier or "").lower()
-        if tier == "small":
-            partial = self._load_prompt_partial("local-small.md")
-            if partial:
-                return partial
-        elif tier == "medium":
-            partial = self._load_prompt_partial("local-medium.md")
-            if partial:
-                return partial
-
-        return self._load_prompt_partial("default.txt")
+        return _select_prompt_partial_helper(
+            model_tier=model_tier,
+            provider_capabilities=provider_capabilities,
+            is_reasoning=is_reasoning,
+            load_partial=self._load_prompt_partial,
+            model_id_partial_map=self._MODEL_ID_PARTIAL_MAP,
+        )
 
     @staticmethod
     def _prune_tools(tools: List[Dict], model_tier: Optional[str]) -> List[Dict]:
@@ -665,24 +594,13 @@ class ContextBuilder:
         Core tools (read/write/edit/bash/grep/glob/search) are always kept first.
         Non-core tools are appended up to the tier limit, then dropped from the tail.
         """
-        try:
-            if _ModelTier is None or _get_tool_limit is None:
-                raise ImportError("model_tiers unavailable")
-            tier = _ModelTier(model_tier) if model_tier else _ModelTier.MEDIUM
-            limit = _get_tool_limit(tier)
-        except Exception:
-            return tools  # no pruning if model_tiers unavailable
-
-        if len(tools) <= limit:
-            return tools
-
-        # Separate core tools (always kept) from supplementary tools
-        core = [t for t in tools if t.get("name") in _CORE_TOOL_NAMES]
-        supplementary = [t for t in tools if t.get("name") not in _CORE_TOOL_NAMES]
-
-        # Fill up to limit: core first, then supplementary
-        selected = core + supplementary
-        return selected[:limit]
+        return _prune_tools_helper(
+            tools=tools,
+            model_tier=model_tier,
+            model_tier_enum=_ModelTier,
+            get_tool_limit=_get_tool_limit,
+            core_tool_names=tuple(_CORE_TOOL_NAMES),
+        )
 
     def _render_tools_for_tier(
         self, tools: List[Dict], model_tier: Optional[str]
@@ -692,24 +610,12 @@ class ContextBuilder:
         NANO/SMALL: name + first-sentence description only (minimal tokens).
         MEDIUM+:    full description (unchanged behaviour).
         """
-        try:
-            if _ModelTier is None:
-                raise ImportError("model_tiers unavailable")
-            tier = _ModelTier(model_tier) if model_tier else _ModelTier.MEDIUM
-            is_minimal = tier == _ModelTier.SMALL
-        except Exception:
-            is_minimal = False
-
-        lines = []
-        for tool in tools:
-            desc = self._sanitize_text(tool.get("description", ""))
-            if is_minimal:
-                # Keep only the first sentence to save tokens on tiny models.
-                first_sentence = desc.split(".")[0].strip()
-                if first_sentence:
-                    desc = first_sentence + "."
-            lines.append(f"name: {tool['name']}\ndescription: {desc}")
-        return "\n".join(lines) + "\n" if lines else ""
+        return _render_tools_for_tier_helper(
+            tools=tools,
+            model_tier=model_tier,
+            sanitize_text=self._sanitize_text,
+            model_tier_enum=_ModelTier,
+        )
 
     # ------------------------------------------------------------------
     # P3-A: Two-tier system prompt cache helpers
@@ -745,138 +651,63 @@ class ContextBuilder:
         self, model_tier: Optional[str], tools: list
     ) -> str:
         """Return the <model_constraints> block for NANO/SMALL tiers, or ''."""
-        tier_str = (model_tier or "").lower()
-        if tier_str not in ("nano", "small"):
-            return ""
-        try:
-            if _ModelTier is None or _get_plan_step_limit is None:
-                raise ImportError("model_tiers unavailable")
-            _p1e_tier_enum = _ModelTier(tier_str) if tier_str else None
-            _p1e_step_limit = (
-                _get_plan_step_limit(_p1e_tier_enum) if _p1e_tier_enum else 6
-            )
-            _p1e_tool_count = len(tools)
-            _p1e_ctx_tokens = 0
-            if _get_context_budget is not None:
-                try:
-                    _p1e_ctx_tokens = _get_context_budget(model_tier=tier_str)
-                except Exception:
-                    pass
-            _p1e_lines = [
-                f"Tier: {tier_str.upper()} | Context: {_p1e_ctx_tokens:,} tokens | Tools: {_p1e_tool_count} available",
-                f"Max plan steps: {_p1e_step_limit} | Output format: JSON function call (required, no YAML)",
-                "Not available: parallel tool calls, subagent delegation, extended reasoning",
-            ]
-            return (
-                "<model_constraints>\n"
-                + "\n".join(_p1e_lines)
-                + "\n</model_constraints>"
-            )
-        except Exception:
-            return ""
+        return _build_model_constraints_block_helper(
+            model_tier=model_tier,
+            tools=tools,
+            model_tier_enum=_ModelTier,
+            get_plan_step_limit=_get_plan_step_limit,
+            get_context_budget=_get_context_budget,
+        )
 
     def _build_instruction_files_block(self) -> str:
         """Return <project_instructions> block from ancestor .md files, or ''."""
-        try:
-            if _discover_instruction_files is None or _render_instruction_files is None:
-                raise ImportError("instruction_files unavailable")
-            _workdir = self._agent_context_dir.parent
-            _instr_files = _discover_instruction_files(_workdir)
-            if _instr_files:
-                _instr_block = _render_instruction_files(_instr_files)
-                if _instr_block:
-                    return f"<project_instructions>\n{_instr_block}\n</project_instructions>"
-        except Exception:
-            pass
-        return ""
+        return _build_instruction_files_block_helper(
+            workdir=self._agent_context_dir.parent,
+            discover_instruction_files=_discover_instruction_files,
+            render_instruction_files=_render_instruction_files,
+        )
 
     def _build_project_instructions_block(self) -> str:
         """Return <project_config_instructions> block from config.json, or ''."""
-        try:
-            if _load_project_instructions is None:
-                raise ImportError("instruction_loader unavailable")
-            _proj_instructions = _load_project_instructions(self._agent_context_dir.parent)
-            if _proj_instructions:
-                _proj_block = "\n".join(f"- {instr}" for instr in _proj_instructions)
-                return f"<project_config_instructions>\n{_proj_block}\n</project_config_instructions>"
-        except Exception:
-            pass
-        return ""
+        return _build_project_instructions_block_helper(
+            workdir=self._agent_context_dir.parent,
+            load_project_instructions=_load_project_instructions,
+        )
 
     def _build_output_format_block(
         self, use_native_tools: bool, is_simple_mode: bool, tier_str: str
     ) -> str:
         """Return the <output_format> block appropriate to the model tier."""
-        if use_native_tools:
-            return (
-                "<output_format>\n"
-                "You MUST think step-by-step. Write your internal reasoning inside <think> tags.\n"
-                "You have access to native tools. Use the native JSON function calling API.\n"
-                "Do NOT output markdown code blocks for tool calls.\n"
-                "IMPORTANT: Call tools using the native function calling format.\n"
-                "After executing a tool, your response will include the tool's result.\n"
-                "If the tool result completes the user's task, do NOT make more tool calls.\n"
-                "Simply summarize the result or indicate task completion.\n"
-                "Only call another tool if the result requires follow-up action.\n"
-                "</output_format>"
-            )
-        elif is_simple_mode:
-            return (
-                "<output_format>\n"
-                "STRICT RULE: Output EXACTLY ONE tool call per response, no exceptions.\n"
-                "Use the JSON function calling format:\n"
-                "{\"name\": \"the_tool_name\", \"arguments\": {\"arg_name\": \"arg_value\"}}\n"
-                "Do NOT output more than one tool call. Do NOT chain tool calls.\n"
-                "After the tool result is returned, you may call one more tool if needed.\n"
-                "</output_format>"
-            )
-        elif tier_str == "small":
-            # GAP-SMALL-1: simplified output format for small models
-            return (
-                "<output_format>\n"
-                "Output ONLY the JSON function call. No explanation, no extra text.\n"
-                "{\"name\": \"tool_name\", \"arguments\": {\"arg\": \"value\"}}\n"
-                "</output_format>"
-            )
-        return ""
+        return _build_output_format_block_helper(
+            use_native_tools=use_native_tools,
+            is_simple_mode=is_simple_mode,
+            tier_str=tier_str,
+        )
 
     def _build_thinking_guidance_block(
-        self, model_tier: Optional[str], provider_capabilities: Optional[Dict], model_name: str
+        self,
+        model_tier: Optional[str],
+        provider_capabilities: Optional[Dict],
+        model_name: str,
     ) -> str:
         """Return the <model_guidance> block for reasoning models, or ''."""
-        tier_str = (model_tier or "").lower()
-        caps = provider_capabilities or {}
-        _is_reasoning_model = False
-        try:
-            if _is_reasoning_model is None:
-                raise ImportError("thinking_utils unavailable")
-            _active_model = caps.get("model", "")
-            _is_reasoning_model = bool(
-                _active_model and _is_reasoning_model(_active_model)
-            )
-        except Exception:
-            pass
-        _partial = self._select_prompt_partial(
-            model_tier, provider_capabilities, _is_reasoning_model
+        return _build_thinking_guidance_block_helper(
+            model_tier=model_tier,
+            provider_capabilities=provider_capabilities,
+            is_reasoning_model_fn=_is_reasoning_model,
+            select_prompt_partial_fn=lambda mt, pc, ir: self._select_prompt_partial(
+                mt, pc, ir
+            ),
         )
-        if _partial:
-            return f"<model_guidance>\n{_partial}\n</model_guidance>"
-        return ""
 
     def _build_thinking_mode_block(
         self, tier_str: str, _is_reasoning_model: bool
     ) -> str:
         """Return the <thinking_mode> block for frontier/large/reasoning models, or ''."""
-        if tier_str in ("frontier", "large") or _is_reasoning_model:
-            return (
-                "<thinking_mode>\n"
-                "Before every tool call, briefly state:\n"
-                "1. What you expect this call to return.\n"
-                "2. What you will do if it fails or returns unexpected output.\n"
-                "This reflection is mandatory — do not skip it.\n"
-                "</thinking_mode>"
-            )
-        return ""
+        return _build_thinking_mode_block_helper(
+            tier_str=tier_str,
+            is_reasoning_model=_is_reasoning_model,
+        )
 
     def _build_static_system_prefix(
         self,
@@ -902,117 +733,230 @@ class ContextBuilder:
         # prune to the same set will share a cache entry.
         tools = self._prune_tools(tools, model_tier)
 
-        # Derive a compact key for the (pruned) tools list.
-        try:
-            tools_key = hash(
-                tuple(
-                    (t.get("name", ""), (t.get("description") or "")[:50])
-                    for t in tools
-                )
-            )
-        except Exception:
-            tools_key = 0
-
-        caps = provider_capabilities or {}
-        provider_family = caps.get("provider_family", "")
-        # OP-1: Include provider variant (e.g. "gemma4") in cache key so
-        # per-provider prompt variants are cached separately.
         provider_variant = self._get_provider_variant(model_name) or ""
-        cache_key: Tuple = (
-            role_name,
-            tuple(active_skills),
-            tools_key,
-            model_tier or "",
-            provider_family,
-            use_native_tools,
-            is_simple_mode,
-            provider_variant,
-            # Include working_dir so that different projects (or test tmp_paths)
-            # with different AGENTS.md / instruction files get separate cache entries.
-            str(self._agent_context_dir.parent),
+        cache_key: Tuple = compute_static_prompt_cache_key(
+            role_name=role_name,
+            active_skills=active_skills,
+            tools=tools,
+            model_tier=model_tier,
+            provider_capabilities=provider_capabilities,
+            model_name=model_name,
+            use_native_tools=use_native_tools,
+            is_simple_mode=is_simple_mode,
+            provider_variant=provider_variant,
+            working_dir=str(self._agent_context_dir.parent),
         )
 
         with _CACHE_LOCK:
-            cached = _STATIC_PROMPT_CACHE.get(cache_key)
+            cached = get_static_prompt_cache_entry(
+                cache=_STATIC_PROMPT_CACHE,
+                cache_key=cache_key,
+            )
         if cached is not None:
             return cached
 
-        # --- Build the static prefix (expensive path) ---
-        parts: List[str] = []
-
         tier_str = (model_tier or "").lower()
-
-        # Role prompt (tier-appropriate)
         role_content = self._select_role_for_tier(role_name, tier_str, model_name)
-        parts.append(f"<identity>\n{self._sanitize_text(self.soul)}\n</identity>")
-        parts.append(f"<role>\n{self._sanitize_text(role_content)}\n</role>")
-
-        # Model constraints block (NANO/SMALL)
-        _mc = self._build_model_constraints_block(model_tier, tools)
-        if _mc:
-            parts.append(_mc)
-
-        # Ancestor instruction files
-        _ifb = self._build_instruction_files_block()
-        if _ifb:
-            parts.append(_ifb)
-
-        # Per-project instructions from config.json
-        _pib = self._build_project_instructions_block()
-        if _pib:
-            parts.append(_pib)
-
-        # Dynamic boundary sentinel
-        parts.append(SYSTEM_PROMPT_DYNAMIC_BOUNDARY)
-
-        # Active skills
-        if active_skills:
-            skill_contents = [
-                self._sanitize_text(sc)
-                for sn in active_skills
-                if (sc := self.get_skill(sn))
-            ]
-            if skill_contents:
-                parts.append(
-                    f"<active_skills>\n{chr(10).join(skill_contents)}\n</active_skills>"
-                )
-
-        # Tools (pruned + rendered for tier)
-        tools_text = self._render_tools_for_tier(tools, model_tier)
-        parts.append(f"<available_tools>\n{tools_text}\n</available_tools>")
-
-        # Prompt partial / thinking guidance (reasoning models)
-        _pg = self._build_thinking_guidance_block(
-            model_tier, provider_capabilities, model_name
+        result = _build_static_system_parts_helper(
+            soul=self.soul,
+            role_content=role_content,
+            active_skills=active_skills,
+            get_skill=self.get_skill,
+            sanitize_text=self._sanitize_text,
+            system_prompt_dynamic_boundary=SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
+            tools=tools,
+            model_tier=model_tier,
+            provider_capabilities=provider_capabilities,
+            model_name=model_name,
+            use_native_tools=use_native_tools,
+            is_simple_mode=is_simple_mode,
+            build_model_constraints_block_fn=lambda mt, ts: self._build_model_constraints_block(
+                mt, ts
+            ),
+            build_instruction_files_block_fn=self._build_instruction_files_block,
+            build_project_instructions_block_fn=self._build_project_instructions_block,
+            render_tools_for_tier_fn=lambda ts, mt: self._render_tools_for_tier(ts, mt),
+            build_thinking_guidance_block_fn=lambda mt, pc, mn: self._build_thinking_guidance_block(
+                mt, pc, mn
+            ),
+            is_reasoning_model_fn=_is_reasoning_model,
+            build_thinking_mode_block_fn=lambda tier, is_rm: self._build_thinking_mode_block(
+                tier, is_rm
+            ),
+            build_output_format_block_fn=lambda unt, ism, tier: self._build_output_format_block(
+                unt, ism, tier
+            ),
         )
-        if _pg:
-            parts.append(_pg)
+        with _CACHE_LOCK:
+            store_static_prompt_cache_entry(
+                cache=_STATIC_PROMPT_CACHE,
+                cache_key=cache_key,
+                value=result,
+            )
+        return result
 
-        # Thinking mode block (frontier/large/reasoning)
-        caps = provider_capabilities or {}
-        _is_rm = False
-        try:
-            if _is_reasoning_model is not None:
-                _active_model = caps.get("model", "")
-                _is_rm = bool(
-                    _active_model and _is_reasoning_model(_active_model)
+    def _prepare_repository_context_block(
+        self,
+        *,
+        retrieved_snippets: Optional[List[Dict]],
+        context_controller,
+        conversation: List[Dict],
+        static_prefix: str,
+        dynamic_parts: List[str],
+    ) -> Tuple[Optional[List[Dict]], str]:
+        """Return budget-filtered retrieved snippets and the rendered repo block."""
+        if not retrieved_snippets:
+            return retrieved_snippets, ""
+
+        if context_controller is not None:
+            try:
+                _sys_text = static_prefix + "\n\n".join(dynamic_parts)
+                _file_descs = build_context_controller_descriptors(retrieved_snippets)
+                _included, _excluded = context_controller.enforce_budget(
+                    _file_descs, conversation, _sys_text
                 )
+                if _excluded:
+                    logging.getLogger(__name__).debug(
+                        "ContextController: excluded %d snippet(s) to fit budget",
+                        len(_excluded),
+                    )
+                retrieved_snippets = filter_retrieved_snippets_by_budget(
+                    retrieved_snippets,
+                    included_descriptors=_included,
+                )
+            except Exception:
+                pass  # never fail prompt build due to budget enforcement
+
+        if not retrieved_snippets:
+            return retrieved_snippets, ""
+
+        try:
+            summary_cache = self._get_summary_cache()
+            repo_block = build_repository_intelligence_block(
+                retrieved_snippets=retrieved_snippets,
+                summary_cache=summary_cache,
+                sanitize_text=self._sanitize_text,
+            )
+            return retrieved_snippets, repo_block or ""
+        except Exception:
+            return retrieved_snippets, ""
+
+    def _build_dynamic_prompt_parts(
+        self,
+        *,
+        conversation: List[Dict],
+        task_description: str,
+        static_prefix: str,
+        retrieved_snippets: Optional[List[Dict]],
+        context_controller,
+        include_prior_context: bool,
+    ) -> List[str]:
+        """Assemble the dynamic, per-turn sections appended after the static prefix."""
+        safe_task_description = self._sanitize_text(task_description)
+        dynamic_parts: List[str] = []
+
+        dynamic_parts.extend(
+            build_session_context_blocks(
+                conversation=conversation,
+                task_description=safe_task_description,
+                get_task_state_content=self._get_task_state_content,
+                get_todo_content=self._get_todo_content,
+                get_preferences_content=self._get_preferences_content,
+                get_past_mistakes=self._get_past_mistakes,
+                min_task_state_chars=_MIN_TASK_STATE_CHARS,
+                min_todo_chars=_MIN_TODO_CHARS,
+                min_prefs_chars=_MIN_PREFS_CHARS,
+            )
+        )
+
+        if include_prior_context:
+            try:
+                prior_context_block = self.inject_prior_session_memories(
+                    task=task_description,
+                    limit=3,
+                )
+                if prior_context_block:
+                    dynamic_parts.insert(0, prior_context_block)
+            except Exception:
+                pass
+
+        _, repo_block = self._prepare_repository_context_block(
+            retrieved_snippets=retrieved_snippets,
+            context_controller=context_controller,
+            conversation=conversation,
+            static_prefix=static_prefix,
+            dynamic_parts=dynamic_parts,
+        )
+        if repo_block:
+            dynamic_parts.append(repo_block)
+
+        # CP-10: LSP context injection — append workspace symbol context when
+        # the feature is enabled (config: lsp_context.enabled or env var
+        # CODINGAGENT_LSP_CONTEXT=1).  Returns an empty string when disabled
+        # or when the symbol index is absent, so this is always a no-op by
+        # default and never blocks prompt assembly.
+        try:
+            from src.core.indexing.lsp_context import (  # type: ignore[import]
+                get_lsp_context_block,
+            )
+
+            _lsp_block = get_lsp_context_block(workdir=self._agent_context_dir.parent)
+            if _lsp_block:
+                dynamic_parts.append(_lsp_block)
+        except Exception:
+            pass  # never fail prompt build due to LSP errors
+
+        return dynamic_parts
+
+    def _append_conversation_and_task_messages(
+        self,
+        *,
+        built_messages: List[Dict[str, str]],
+        conversation: List[Dict],
+        task_description: str,
+        conversation_quota: int,
+    ) -> List[Dict[str, str]]:
+        """Append filtered conversation history and the final task user message."""
+        pruned_conversation = self._prune_stale_tool_outputs(
+            list(conversation),
+            current_step_hint=task_description[:120] if task_description else None,
+        )
+
+        filtered_conv = sanitize_conversation_messages(
+            conversation=pruned_conversation,
+            sanitize_text=self._sanitize_text,
+        )
+
+        truncated_conversation = truncate_conversation_to_quota(
+            conversation=filtered_conv,
+            conversation_quota=conversation_quota,
+            token_estimator=self.token_estimator,
+        )
+
+        prompt_content = build_task_prompt_content(
+            self._sanitize_text(task_description), _today_iso()
+        )
+        return append_task_message(
+            built_messages=built_messages,
+            truncated_conversation=truncated_conversation,
+            task_prompt_content=prompt_content,
+        )
+
+    def _emit_context_built_hook(self, built_messages: List[Dict[str, str]]) -> None:
+        """Best-effort plugin hook fired after prompt assembly completes."""
+        if not (_HAS_HOOKS and _hook_registry is not None):
+            return
+        try:
+            _ctx_dir = getattr(self, "_agent_context_dir", None)
+            _hook_registry.call(
+                _HOOK_CONTEXT_BUILT,
+                {
+                    "messages": built_messages,
+                    "working_dir": str(_ctx_dir.parent) if _ctx_dir else "",
+                },
+            )
         except Exception:
             pass
-        _tm = self._build_thinking_mode_block(tier_str, _is_rm)
-        if _tm:
-            parts.append(_tm)
-
-        # Output format
-        format_instr = self._build_output_format_block(
-            use_native_tools, is_simple_mode, tier_str
-        )
-        parts.append(format_instr)
-
-        result = "\n\n".join(parts)
-        with _CACHE_LOCK:
-            _STATIC_PROMPT_CACHE[cache_key] = result
-        return result
 
     def build_prompt(
         self,
@@ -1027,6 +971,7 @@ class ContextBuilder:
         context_controller=None,
         model_tier: Optional[str] = None,
         model_name: Optional[str] = None,
+        include_prior_context: bool = True,
     ) -> List[Dict[str, str]]:
         # F10: Use dynamic token budget when max_tokens is not explicitly provided.
         if max_tokens is None:
@@ -1049,9 +994,7 @@ class ContextBuilder:
             if _ModelTier is None or _get_tool_limit is None:
                 raise ImportError("model_tiers unavailable")
             _tier_val = _ModelTier(model_tier) if model_tier else None
-            _is_simple_mode = (
-                _get_tool_limit(_tier_val) == 0 if _tier_val else False
-            )
+            _is_simple_mode = _get_tool_limit(_tier_val) == 0 if _tier_val else False
 
             # GAP-SMALL-3: SMALL models on providers without proven parallel tool
             # support also use simple_mode (one tool per response).
@@ -1084,156 +1027,14 @@ class ContextBuilder:
             model_name=model_name or "",
         )
 
-        # Dynamic parts (appended after the static prefix).
-        safe_task_description = self._sanitize_text(task_description)
-        dynamic_parts: List[str] = []
-
-        # 1a. Session summary — auto-injected from TASK_STATE.md so the agent
-        #     always has access to prior context without needing a tool call.
-        #     (Mirrors the compaction injection used by Claude Code / OpenCode.)
-        #
-        # CRITICAL FIX: Only inject session summary at the START of a task (empty conversation)
-        # or when the task is truly complete. During active execution (tool results present),
-        # injecting TASK_STATE.md causes the model to output JSON state tracker instead of
-        # continuing with JSON function calls. This breaks multi-turn execution.
-        try:
-            has_tool_results = any(
-                m.get("role") == "user"
-                and "tool_execution_result" in str(m.get("content", ""))
-                for m in conversation
-            )
-            ts_content = self._get_task_state_content()
-            _empty = "# Current Task\n\n# Completed Steps\n\n# Next Step"
-            if (
-                not has_tool_results  # Only inject when NOT in active execution
-                and ts_content
-                and ts_content.strip() != _empty.strip()
-                and len(ts_content) > _MIN_TASK_STATE_CHARS
-            ):
-                dynamic_parts.append(
-                    f"<session_summary>\n{ts_content}\n</session_summary>"
-                )
-        except Exception:
-            pass  # never fail prompt building due to missing TASK_STATE.md
-
-        # 1b. Task progress — auto-injected from TODO.md when it exists.
-        #     TODO.md is the authoritative, deterministic plan tracker (written by planning_node,
-        #     updated by execution_node). It takes precedence over TASK_STATE.md for step status.
-        try:
-            todo_content = self._get_todo_content()
-            if todo_content and len(todo_content) > _MIN_TODO_CHARS:
-                dynamic_parts.append(
-                    f"<task_progress>\n{todo_content}\n</task_progress>"
-                )
-        except Exception:
-            pass  # never fail prompt building due to missing TODO.md
-
-        # 1c. Project-specific user preferences — auto-injected from preferences.md
-        #    User preferences, working style, explicit instructions for this project.
-        try:
-            prefs_content = self._get_preferences_content()
-            if prefs_content and len(prefs_content) > _MIN_PREFS_CHARS:
-                dynamic_parts.append(
-                    f"<user_preferences>\n{prefs_content}\n</user_preferences>"
-                )
-        except Exception:
-            pass  # never fail prompt building due to missing preferences.md
-
-        # 1d. Past mistakes — cross-session BM25 retrieval from mistakes_fts.
-        #     Surfaces relevant past errors before the agent starts work so it
-        #     can avoid repeating them.  Injected only at task start (no active
-        #     tool results) to avoid polluting mid-execution context.
-        try:
-            if not has_tool_results and safe_task_description:
-                past_mistakes = self._get_past_mistakes(safe_task_description)
-                if past_mistakes:
-                    dynamic_parts.append(
-                        f"<past_mistakes>\n{past_mistakes}\n</past_mistakes>"
-                    )
-        except Exception:
-            pass  # never fail prompt building due to mistake retrieval errors
-
-        # 1b. Repository Intelligence block (if any retrieved snippets provided)
-        # Step 8: If a ContextController is available, run enforce_budget() to drop or
-        # summarize snippets that would overflow the available token budget.
-        if retrieved_snippets and context_controller is not None:
-            try:
-                # Convert snippet dicts to the file-descriptor format enforce_budget expects
-                _sys_text = static_prefix + "\n\n".join(dynamic_parts)
-                _file_descs = [
-                    {
-                        "path": s.get("file_path", ""),
-                        "content": s.get("snippet") or s.get("content") or "",
-                        "line_count": len(
-                            (s.get("snippet") or s.get("content") or "").splitlines()
-                        ),
-                        "estimated_tokens": max(
-                            1, len(s.get("snippet") or s.get("content") or "") // 4
-                        ),
-                    }
-                    for s in retrieved_snippets
-                ]
-                _included, _excluded = context_controller.enforce_budget(
-                    _file_descs, conversation, _sys_text
-                )
-                if _excluded:
-                    logging.getLogger(__name__).debug(
-                        f"ContextController: excluded {len(_excluded)} snippet(s) to fit budget"
-                    )
-                # Rebuild retrieved_snippets from included descriptors (preserve original keys)
-                _included_paths = {d["path"] for d in _included}
-                retrieved_snippets = [
-                    s
-                    for s in retrieved_snippets
-                    if s.get("file_path", "") in _included_paths
-                ]
-            except Exception:
-                pass  # never fail prompt build due to budget enforcement
-
-        repo_block = ""
-        if retrieved_snippets:
-            try:
-                # Use cached file summaries
-                summary_cache = self._get_summary_cache()
-
-                repo_entries = []
-                for snip in retrieved_snippets[:10]:
-                    # each snippet expected to be dict with keys: file_path, snippet, reason
-                    fp = snip.get("file_path")
-                    if fp and fp in summary_cache:
-                        entry_text = summary_cache.get(fp)
-                    else:
-                        entry_text = snip.get("snippet") or snip.get("content") or ""
-                    # sanitize entry
-                    entry_text = self._sanitize_text(str(entry_text))
-                    repo_entries.append(f"File: {fp or 'unknown'}\n{entry_text}\n---\n")
-
-                if repo_entries:
-                    repo_block = (
-                        "<repository_intelligence>\n"
-                        + "\n".join(repo_entries)
-                        + "\n</repository_intelligence>"
-                    )
-                    dynamic_parts.append(repo_block)
-            except Exception:
-                # best-effort: do not fail prompt build
-                pass
-
-        # CP-10: LSP context injection — append workspace symbol context when
-        # the feature is enabled (config: lsp_context.enabled or env var
-        # CODINGAGENT_LSP_CONTEXT=1).  Returns an empty string when disabled
-        # or when the symbol index is absent, so this is always a no-op by
-        # default and never blocks prompt assembly.
-        try:
-            from src.core.indexing.lsp_context import (  # type: ignore[import]
-                get_lsp_context_block,
-            )
-
-            _lsp_block = get_lsp_context_block(workdir=self._agent_context_dir.parent)
-            if _lsp_block:
-                dynamic_parts.append(_lsp_block)
-        except Exception:
-            pass  # never fail prompt build due to LSP errors
+        dynamic_parts = self._build_dynamic_prompt_parts(
+            conversation=conversation,
+            task_description=task_description,
+            static_prefix=static_prefix,
+            retrieved_snippets=retrieved_snippets,
+            context_controller=context_controller,
+            include_prior_context=include_prior_context,
+        )
 
         # Assemble final system message: static prefix + dynamic parts joined.
         if dynamic_parts:
@@ -1243,80 +1044,14 @@ class ContextBuilder:
 
         built_messages.append({"role": "system", "content": full_system})
 
-        # 2. Conversation Logic
-        # P3-B: Prune stale tool outputs before filtering to save context tokens.
-        pruned_conversation = self._prune_stale_tool_outputs(
-            list(conversation),
-            current_step_hint=task_description[:120] if task_description else None,
+        built_messages = self._append_conversation_and_task_messages(
+            built_messages=built_messages,
+            conversation=conversation,
+            task_description=task_description,
+            conversation_quota=conversation_quota,
         )
 
-        # Filter msg_mgr to only include User and Assistant messages (strip system prompts)
-        filtered_conv = [
-            {
-                "role": m.get("role"),
-                "content": self._sanitize_text(m.get("content", "")),
-            }
-            for m in pruned_conversation
-            if m.get("role") in ["user", "assistant"]
-        ]
-
-        truncated_conversation: List[Dict[str, str]] = []
-        if conversation_quota > 0 and filtered_conv:
-            total_conv_tokens = 0
-            for message in reversed(filtered_conv):
-                msg_json = json.dumps(message)
-                message_token_count = self.token_estimator(msg_json)
-
-                if total_conv_tokens + message_token_count <= conversation_quota:
-                    truncated_conversation.insert(0, message)
-                    total_conv_tokens += message_token_count
-                else:
-                    break
-
-        # 3. Task / Prompt Logic
-        # Ensure the last message is always USER for local model templates
-        # If the history ends in ASSISTANT, we must append a "Proceed" user message.
-        # If the history is empty, the task itself is the USER message.
-
-        # Add conversation
-        built_messages.extend(truncated_conversation)
-
-        # Ensure there's a user message after system for Qwen compatibility
-        # If conversation starts with assistant, insert task as user message first
-        if (
-            truncated_conversation
-            and truncated_conversation[0].get("role") == "assistant"
-        ):
-            # Insert task as user message before the assistant messages
-            prompt_content = f"<task>\n{safe_task_description}\n</task>\n<context>\nToday's date: {_today_iso()}\n</context>\n\nExecute the next action using JSON function calling format."
-            # Insert at index 1 (after system message)
-            built_messages.insert(1, {"role": "user", "content": prompt_content})
-        # Final check: is the last message Assistant or is the list missing User?
-        elif not built_messages or built_messages[-1].get("role") != "user":
-            prompt_content = f"<task>\n{safe_task_description}\n</task>\n<context>\nToday's date: {_today_iso()}\n</context>\n\nExecute the next action using JSON function calling format."
-            built_messages.append({"role": "user", "content": prompt_content})
-        else:
-            # If the last message is already User, we can either wrap it in <task>
-            # or just leave it. For continuity, let's wrap it if it doesn't have it.
-            last_msg = built_messages[-1]
-            if "<task>" not in last_msg.get("content", ""):
-                last_msg["content"] = (
-                    f"<task>\n{last_msg['content']}\n</task>\n\nExecute the next action using JSON function calling format."
-                )
-
-        # Gap 3: HOOK_CONTEXT_BUILT — lets plugins inspect/log the final prompt.
-        if _HAS_HOOKS and _hook_registry is not None:
-            try:
-                _ctx_dir = getattr(self, "_agent_context_dir", None)
-                _hook_registry.call(
-                    _HOOK_CONTEXT_BUILT,
-                    {
-                        "messages": built_messages,
-                        "working_dir": str(_ctx_dir.parent) if _ctx_dir else "",
-                    },
-                )
-            except Exception:
-                pass
+        self._emit_context_built_hook(built_messages)
 
         return built_messages
 
@@ -1330,150 +1065,22 @@ class ContextBuilder:
         current_step_hint: Optional[str] = None,
         stale_after_turns: int = 3,
     ) -> List[Dict]:
-        """Replace oversized tool results that are >stale_after_turns old with stubs.
-
-        P3-B: Keeps recent tool results verbatim (the last *stale_after_turns*
-        user messages that contain tool_execution_result are considered "recent").
-        Older tool result messages are replaced with a compact stub that preserves
-        the tool name + ok/error status but discards the full output.
-
-        The optional *current_step_hint* string is matched against the tool
-        result content: if the current plan step description appears in the
-        result, the message is kept verbatim regardless of age.
-
-        Non-tool-result user messages and all assistant messages are left
-        unchanged.
-        """
-        if not messages:
-            return messages
-
-        # Locate indices of all "tool result" user messages (newest-first).
-        tool_result_indices: List[int] = []
-        for i, msg in enumerate(messages):
-            if msg.get("role") == "user":
-                content = msg.get("content", "")
-                if "tool_execution_result" in str(content):
-                    tool_result_indices.append(i)
-
-        # The most recent stale_after_turns results are "recent" — keep them.
-        recent_indices: set = set(tool_result_indices[-stale_after_turns:])
-
-        pruned: List[Dict] = []
-        for i, msg in enumerate(messages):
-            if (
-                msg.get("role") == "user"
-                and i not in recent_indices
-                and "tool_execution_result" in str(msg.get("content", ""))
-            ):
-                # Old tool result: extract minimal info and replace with stub.
-                try:
-                    content_str = msg.get("content", "")
-                    data = (
-                        json.loads(content_str) if isinstance(content_str, str) else {}
-                    )
-                    res = data.get("tool_execution_result", {})
-                    tool_name = res.get("tool_name") or res.get("name") or "tool"
-                    is_ok = bool(res.get("ok") or res.get("status") == "ok")
-                    status = "ok" if is_ok else "error"
-
-                    # Keep if current step hint appears in the full content.
-                    if (
-                        current_step_hint
-                        and current_step_hint.lower() in str(content_str).lower()
-                    ):
-                        pruned.append(msg)
-                        continue
-
-                    stub = json.dumps(
-                        {
-                            "tool_execution_result": {
-                                "tool_name": tool_name,
-                                "status": status,
-                                "_pruned": True,
-                                "_note": f"Full output pruned (stale — >{stale_after_turns} turns ago). Use read_file to re-fetch if needed.",
-                            }
-                        }
-                    )
-                    pruned.append({"role": "user", "content": stub})
-                except Exception:
-                    # Never fail pruning: keep original on any error.
-                    pruned.append(msg)
-            else:
-                pruned.append(msg)
-
-        return pruned
+        return prune_stale_tool_outputs(
+            messages,
+            current_step_hint=current_step_hint,
+            stale_after_turns=stale_after_turns,
+        )
 
     def _truncate_to_token_budget(self, text: str, budget: int) -> str:
-        """Binary-search truncation: O(log N) tokeniser calls instead of O(N).
-
-        Finds the longest prefix of *text* whose token count is <= *budget*.
-        Falls back to empty string if even a single character exceeds the budget.
-        """
-        if self.token_estimator(text) <= budget:
-            return text
-        lo, hi = 0, len(text)
-        while lo < hi - 1:
-            mid = (lo + hi) // 2
-            if self.token_estimator(text[:mid]) <= budget:
-                lo = mid
-            else:
-                hi = mid
-        return text[:lo]
+        return truncate_to_token_budget(
+            text,
+            budget,
+            token_estimator=self.token_estimator,
+        )
 
     def _truncate_text(self, text: str, max_tokens: int) -> str:
-        # First, handle the base case: if text already fits, no truncation needed.
-        if self.token_estimator(text) <= max_tokens:
-            return text
-
-        marker = "\n\n[TRUNCATED]"
-        marker_tokens = self.token_estimator(marker)
-
-        # If max_tokens is too small to even fit the marker, return whatever fits.
-        if max_tokens < marker_tokens:
-            # P1-D fix: use binary search instead of char-by-char O(N) loop.
-            return self._truncate_to_token_budget(text, max_tokens)
-
-        # Now, we know there's enough space for at least the marker.
-        # Calculate budget for the actual content before the marker.
-        content_budget_for_truncation = max(0, max_tokens - marker_tokens)
-
-        truncated_text = text
-        original_text_tokens = self.token_estimator(text)
-
-        # Truncate content to fit content_budget_for_truncation
-        if original_text_tokens > content_budget_for_truncation:
-            # Heuristic starting point: slice to approximate char count, then
-            # P1-D fix: binary-search fine-tune instead of char-by-char O(N) loop.
-            approx_chars_per_token = (
-                len(text) / original_text_tokens if original_text_tokens > 0 else 4
-            )
-            target_char_limit = max(
-                0, int(content_budget_for_truncation * approx_chars_per_token)
-            )
-
-            if len(truncated_text) > target_char_limit:
-                truncated_text = truncated_text[:target_char_limit]
-
-            # P1-D fix: binary-search fine-tune instead of O(N) char-by-char loop.
-            truncated_text = self._truncate_to_token_budget(
-                truncated_text, content_budget_for_truncation
-            )
-
-            # If truncation actually occurred (original text was longer than what fits in content_budget_for_truncation)
-            # and we have space for the marker, add it.
-            if (
-                self.token_estimator(text) > self.token_estimator(truncated_text)
-                and self.token_estimator(truncated_text + marker) <= max_tokens
-            ):
-                return truncated_text + marker
-            else:
-                # If we couldn't fit the marker, or no effective truncation, just return the content within max_tokens
-                return (
-                    truncated_text
-                    if self.token_estimator(truncated_text) <= max_tokens
-                    else ""
-                )  # Should already fit, but defensive
-        else:
-             # Content already fits within the budget for content + marker, so no truncation needed and no marker added.
-             return text
-
+        return truncate_text_to_max_tokens(
+            text,
+            max_tokens,
+            token_estimator=self.token_estimator,
+        )

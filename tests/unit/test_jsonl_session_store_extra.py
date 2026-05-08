@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from unittest.mock import patch
 
 from src.core.memory.session_store import SessionStore
 from src.core.memory.jsonl_session_store import JsonlSessionStore
@@ -58,3 +59,20 @@ def test_write_with_retry_diagnostic_written(tmp_path: Path):
     assert len(files) >= 1
     data = json.loads(files[-1].read_text(encoding="utf-8"))
     assert data.get("session_id") == "s1"
+
+
+def test_save_snapshot_uses_fallback_aware_sidecar_writer(tmp_path: Path):
+    store = JsonlSessionStore(workdir=str(tmp_path))
+
+    with patch(
+        "src.core.memory.jsonl_sidecar_io.atomic_write_json",
+        return_value=False,
+        create=True,
+    ):
+        snap_id = store.save_snapshot("s1", '{"state": true}')
+
+    assert snap_id
+    snapshot_payload = store.get_snapshot("s1", snap_id)
+    assert snapshot_payload is not None
+    decoded = json.loads(snapshot_payload)
+    assert decoded["state_json"] == '{"state": true}'

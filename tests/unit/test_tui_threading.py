@@ -96,14 +96,20 @@ class TestHistoryLock:
     def test_sequential_prompts_preserve_user_messages(self):
         """User messages from sequential send_prompt calls appear in history."""
         bridge = _make_bridge()
-        # send_prompt launches a background thread; we just verify user messages
+
         bridge.send_prompt("msg0")
         time.sleep(0.15)
+
+        # Wait for first agent to complete (simulate by directly resetting flag)
+        # In real usage, _run_agent's finally block does this after completion
+        bridge._agent_running = False
+
         bridge.send_prompt("msg1")
         time.sleep(0.15)
+
         user_msgs = [text for role, text in bridge.history if role == "user"]
-        assert "msg0" in user_msgs
-        assert "msg1" in user_msgs
+        assert "msg0" in user_msgs, f"msg0 not in {user_msgs}"
+        assert "msg1" in user_msgs, f"msg1 not in {user_msgs}"
 
 
 # ---------------------------------------------------------------------------

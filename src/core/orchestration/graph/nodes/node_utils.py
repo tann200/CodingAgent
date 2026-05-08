@@ -148,6 +148,6 @@ def _notify_provider_limit(error_msg: str) -> None:
         try:
             from src.core.orchestration.event_bus import get_event_bus
 
-            bus = get_event_bus()
+            get_event_bus()
         except Exception as _eb_err:
             logger.debug("node_utils: event_bus publish failed: %s", _eb_err)

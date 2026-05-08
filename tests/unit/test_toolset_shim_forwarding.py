@@ -14,6 +14,20 @@ def test_invalidate_cache_forwards_to_canonical(monkeypatch):
     assert called["ok"] is True
 
 
+def test_load_toolset_for_model_forwards_to_canonical(monkeypatch):
+    ctl = importlib.import_module("src.config.toolsets.loader")
+
+    def fake_load_toolset_for_model(name, model):
+        return {"name": name, "model": model, "tools": ["json_tool"]}
+
+    monkeypatch.setattr(ctl, "load_toolset_for_model", fake_load_toolset_for_model)
+    shim = importlib.import_module("src.tools.toolsets.loader")
+
+    result = shim.load_toolset_for_model("coding", "gpt-4")
+
+    assert result == {"name": "coding", "model": "gpt-4", "tools": ["json_tool"]}
+
+
 def test_toolset_manager_delegates(monkeypatch):
     # Fake canonical ToolsetManager implementation and ensure shim delegates
     class FakeImpl:

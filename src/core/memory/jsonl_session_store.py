@@ -51,13 +51,20 @@ import logging
 import shutil
 import threading
 import uuid
-import tempfile
 import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from src.core.memory.file_lock import locked_file
+from src.core.memory.jsonl_sidecar_io import atomic_write_json_with_fallback
+from src.core.memory.jsonl_store_helpers import (
+    build_fork_destination_path,
+    build_snapshot_result_payload,
+    build_snapshot_sidecar_payload,
+    decode_snapshot_reference,
+    parse_session_id_from_jsonl_filename,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -313,13 +320,14 @@ class JsonlSessionStore:
                     f"fork_session: source session '{session_id}' does not exist"
                 )
             for src in src_files:
-                # Preserve rotation index in destination name
+                # Preserve rotation index in destination name.
                 sessions_dir = self._get_sessions_dir()
-                if src.name == f"{session_id}.jsonl":
-                    dest = sessions_dir / f"{new_session_id}.jsonl"
-                else:
-                    suffix = src.name[len(session_id) :]  # e.g. ".0.jsonl"
-                    dest = sessions_dir / f"{new_session_id}{suffix}"
+                dest = build_fork_destination_path(
+                    source_session_id=session_id,
+                    new_session_id=new_session_id,
+                    source_name=src.name,
+                    sessions_dir=sessions_dir,
+                )
                 try:
                     shutil.copy2(str(src), str(dest))
                     logger.debug(
@@ -357,9 +365,7 @@ class JsonlSessionStore:
             return
 
         try:
-            meta = json.loads(snap)
-            target_file = Path(meta["_file"])
-            target_offset = int(meta["_offset"])
+            target_file, target_offset = decode_snapshot_reference(snap)
         except Exception as exc:
             logger.warning(
                 "JsonlSessionStore.revert_session: bad snapshot metadata: %s", exc
@@ -401,8 +407,9 @@ class JsonlSessionStore:
         """Path to the sidecar file for a specific snapshot."""
         return self._snapshot_dir() / f"{session_id}.{snapshot_id}.json"
 
-    def save_snapshot(self, session_id: str, state_json: str) -> str:
-        """Persist a snapshot of *state_json* and return the snapshot ID.
+    def save_snapshot(self, session_id: str, state_json: str) -> Optional[str]:
+        """Persist a snapshot of *state_json* and return the snapshot ID, or
+        ``None`` if the sidecar file could not be written.
 
         Snapshots are stored in a separate sidecar file
         ``{sessions_dir}/snapshots/{session_id}.{snapshot_id}.json``.
@@ -413,7 +420,8 @@ class JsonlSessionStore:
         moment the snapshot is taken.  ``revert_session`` truncates the JSONL
         to that offset.
 
-        Returns the snapshot ID (a random UUID4 hex string).
+        Returns the snapshot ID (a random UUID4 hex string), or ``None`` on
+        persistence failure.
         """
         snapshot_id = uuid.uuid4().hex
 
@@ -427,28 +435,23 @@ class JsonlSessionStore:
         snap_dir = self._snapshot_dir()
         snap_dir.mkdir(parents=True, exist_ok=True)
         sidecar = self._snapshot_path(session_id, snapshot_id)
-        payload = {
-            "snapshot_id": snapshot_id,
-            "session_id": session_id,
-            "state_json": state_json,
-            "_file": str(active),
-            "_offset": offset,
-            "ts": _utc_now(),
-        }
-        # Write sidecar atomically using shared helper so readers never see
-        # partially-written JSON.
-        try:
-            from src.core.io_utils import atomic_write_json
-
-            ok = atomic_write_json(sidecar, payload, logger=logger)
-            if not ok:
-                logger.error(
-                    "JsonlSessionStore.save_snapshot: sidecar atomic write failed"
-                )
-        except Exception as exc:
+        payload = build_snapshot_sidecar_payload(
+            snapshot_id=snapshot_id,
+            session_id=session_id,
+            state_json=state_json,
+            active_file=active,
+            offset=offset,
+            timestamp=_utc_now(),
+        )
+        # Write sidecar atomically using the shared fallback-aware helper so a
+        # primary atomic writer failure does not silently produce an unusable
+        # snapshot id.
+        ok = atomic_write_json_with_fallback(sidecar, payload, logger=logger)
+        if not ok:
             logger.error(
-                "JsonlSessionStore.save_snapshot: sidecar write failed: %s", exc
+                "JsonlSessionStore.save_snapshot: sidecar write failed after fallback"
             )
+            return None
 
         return snapshot_id
 
@@ -464,13 +467,7 @@ class JsonlSessionStore:
             return None
         try:
             data = json.loads(sidecar.read_text(encoding="utf-8"))
-            return json.dumps(
-                {
-                    "state_json": data.get("state_json", ""),
-                    "_file": data.get("_file", ""),
-                    "_offset": data.get("_offset", 0),
-                }
-            )
+            return build_snapshot_result_payload(data)
         except Exception as exc:
             logger.warning(
                 "JsonlSessionStore.get_snapshot: failed to read sidecar: %s", exc
@@ -504,13 +501,7 @@ class JsonlSessionStore:
             return []
         seen: set[str] = set()
         for p in sessions_dir.glob("*.jsonl"):
-            # Parse session_id from filename: strip trailing .N.jsonl or .jsonl
-            name = p.stem  # e.g. "abc123" or "abc123.0"
-            if "." in name:
-                # Rotated file: "session_id.N"
-                sid = name.rsplit(".", 1)[0]
-            else:
-                sid = name
+            sid = parse_session_id_from_jsonl_filename(p.name)
             seen.add(sid)
         return sorted(seen)
 
@@ -606,50 +597,12 @@ class JsonlSessionStore:
                 "last_error": str(exc),
                 "ts": ts,
             }
-            fd = None
-            tmp = None
-            try:
-                try:
-                    from src.core.io_utils import atomic_write_json
-
-                    ok = atomic_write_json(diag_path, payload, logger=logger)
-                    if ok:
-                        logger.debug(
-                            "JsonlSessionStore._write_with_retry: diagnostic atomic write succeeded: %s",
-                            diag_path,
-                        )
-                        return
-                except Exception as _e:
-                    import traceback as _traceback
-
-                    logger.debug(
-                        "JsonlSessionStore._write_with_retry: atomic_write_json unavailable for diagnostic, using fallback: %s\n%s",
-                        _e,
-                        _traceback.format_exc(),
-                    )
-
-                fd, tmp = tempfile.mkstemp(dir=str(diag_dir), suffix=".tmp")
-                with os.fdopen(fd, "w", encoding="utf-8") as f:
-                    fd = None
-                    json.dump(payload, f, ensure_ascii=False)
-                    try:
-                        f.flush()
-                        os.fsync(f.fileno())
-                    except Exception:
-                        pass
-                try:
-                    os.replace(tmp, str(diag_path))
-                except Exception:
-                    try:
-                        shutil.move(tmp, str(diag_path))
-                    except Exception:
-                        pass
-            finally:
-                try:
-                    if fd is not None:
-                        os.close(fd)
-                except Exception:
-                    pass
+            ok = atomic_write_json_with_fallback(diag_path, payload, logger=logger)
+            if ok:
+                logger.debug(
+                    "JsonlSessionStore._write_with_retry: diagnostic atomic write succeeded: %s",
+                    diag_path,
+                )
         except Exception:
             pass
 
@@ -760,8 +713,7 @@ class JsonlSessionStore:
 
     def _decisions_path(self) -> Path:
         d = Path(
-            getattr(self, "_agent_context_dir", None)
-            or self._workdir / ".codingAgent"
+            getattr(self, "_agent_context_dir", None) or self._workdir / ".codingAgent"
         )
         return d / "decisions.json"
 
@@ -802,45 +754,11 @@ class JsonlSessionStore:
 
         path = Path(ac_dir) / "decisions.json"
         with self._decisions_lock:
-            # Attempt lazy import of the shared atomic writer. If it fails or
-            # returns False, fall back to the legacy mkstemp+replace path.
-            try:
-                from src.core.io_utils import atomic_write_json
-
-                ok = atomic_write_json(path, trimmed, logger=logger)
-            except Exception:
-                ok = False
-
+            ok = atomic_write_json_with_fallback(path, trimmed, logger=logger)
             if not ok:
-                tmp = None
-                fd = None
-                try:
-                    Path(path.parent).mkdir(parents=True, exist_ok=True)
-                    fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
-                    with os.fdopen(fd, "w", encoding="utf-8") as f:
-                        fd = None
-                        json.dump(trimmed, f, ensure_ascii=False)
-                        try:
-                            f.flush()
-                            os.fsync(f.fileno())
-                        except Exception:
-                            pass
-                    try:
-                        os.replace(tmp, str(path))
-                    except Exception:
-                        try:
-                            shutil.move(tmp, str(path))
-                        except Exception as exc:
-                            logger.error(
-                                "JsonlSessionStore.write_decisions_json: move failed: %s",
-                                exc,
-                            )
-                finally:
-                    try:
-                        if fd is not None:
-                            os.close(fd)
-                    except Exception:
-                        pass
+                logger.error(
+                    "JsonlSessionStore.write_decisions_json: fallback write failed"
+                )
 
     def read_recent_decisions(self, max_entries: int = 10) -> List[Dict[str, Any]]:
         """Read and return the recent decisions from the decisions.json
@@ -889,40 +807,7 @@ class JsonlSessionStore:
         # but fall back to the legacy mkstemp+replace approach on error.
         side = self._state_sidecar_path(session_id)
         payload = {"state": state, "role": role, "task": task, "ts": _utc_now()}
-        try:
-            from src.core.io_utils import atomic_write_json
-
-            ok = atomic_write_json(side, payload, logger=logger)
-        except Exception:
-            ok = False
-
-        if not ok:
-            tmp = None
-            fd = None
-            try:
-                Path(side.parent).mkdir(parents=True, exist_ok=True)
-                fd, tmp = tempfile.mkstemp(dir=str(side.parent), suffix=".tmp")
-                with os.fdopen(fd, "w", encoding="utf-8") as f:
-                    fd = None
-                    json.dump(payload, f, ensure_ascii=False)
-                    try:
-                        f.flush()
-                        os.fsync(f.fileno())
-                    except Exception:
-                        pass
-                try:
-                    os.replace(tmp, str(side))
-                except Exception:
-                    try:
-                        shutil.move(tmp, str(side))
-                    except Exception:
-                        pass
-            finally:
-                try:
-                    if fd is not None:
-                        os.close(fd)
-                except Exception:
-                    pass
+        atomic_write_json_with_fallback(side, payload, logger=logger)
 
     def load_session_state(self, session_id: str) -> Optional[dict]:
         # Prefer the sidecar when present

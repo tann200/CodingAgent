@@ -33,6 +33,12 @@ def load_toolset(name: str) -> Optional[Dict[str, Any]]:
     return getattr(loader, "load_toolset")(name)
 
 
+def load_toolset_for_model(name: str, model: Optional[str]) -> Optional[Dict[str, Any]]:
+    """Load a toolset using the canonical model-aware format selection helper."""
+    loader = _get_canonical_loader()
+    return getattr(loader, "load_toolset_for_model")(name, model)
+
+
 def get_tools_for_toolset(name: str) -> List[str]:
     loader = _get_canonical_loader()
     return getattr(loader, "get_tools_for_toolset")(name)

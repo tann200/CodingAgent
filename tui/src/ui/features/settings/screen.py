@@ -39,8 +39,13 @@ _GITHUB_COPILOT_PID = "github_copilot"
 _LOCAL_PROVIDER_TYPES = {"lm_studio", "ollama", "openai_compat", "local"}
 
 
-def _pid(name: str) -> str:
-    return name.lower().replace(" ", "_")
+def _provider_id(provider: dict) -> str:
+    return (
+        str(provider.get("id") or provider.get("type") or provider.get("name") or "")
+        .lower()
+        .replace("-", "_")
+        .replace(" ", "_")
+    )
 
 
 def _is_local_provider(p: dict) -> bool:
@@ -65,7 +70,7 @@ class SettingsScreen(ModalScreen):
             p for p in (settings_store.available_providers or []) if p.get("name")
         ]
         self._prov_models: dict[str, list[str]] = {
-            _pid(p["name"]): list(p.get("models", [])) for p in self._providers
+            _provider_id(p): list(p.get("models", [])) for p in self._providers
         }
         # Check Copilot auth state once at construction time (cheap — no network call)
         self._copilot_authenticated: bool = self._check_copilot_auth()
@@ -88,7 +93,7 @@ class SettingsScreen(ModalScreen):
 
     def _compose_inner(self):
         prov_options = [(_NO_PROVIDER, _NO_PROVIDER)] + [
-            (p["name"], _pid(p["name"])) for p in self._providers
+            (p["name"], _provider_id(p)) for p in self._providers
         ]
 
         with Vertical(id="settings_box"):
@@ -194,7 +199,7 @@ class SettingsScreen(ModalScreen):
                 if self._providers:
                     yield Label("API Keys / Provider Auth", classes="section_title")
                     for p in self._providers:
-                        pid = _pid(p["name"])
+                        pid = _provider_id(p)
                         if pid == _GITHUB_COPILOT_PID:
                             # GitHub Copilot uses OAuth device flow, not an API key
                             authenticated = self._copilot_authenticated
@@ -519,7 +524,7 @@ class SettingsScreen(ModalScreen):
 
         # API keys for cloud providers + base URLs for local providers
         for p in self._providers:
-            pid = _pid(p["name"])
+            pid = _provider_id(p)
             if _is_local_provider(p):
                 # Local providers: save an updated base URL if the user changed it
                 try:

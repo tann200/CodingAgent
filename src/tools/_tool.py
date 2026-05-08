@@ -139,6 +139,17 @@ class ToolDefinition:
             self._populate_role_enum(params)
         self._populate_toolset_enum(params)
 
+        schema = {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description
+                or (self.fn.__doc__ or "").strip().split("\n")[0],
+                "parameters": params,
+            },
+        }
+        if required:
+            schema["function"]["parameters"]["required"] = required
         return schema
 
     def _populate_skill_enum(self, params: dict) -> None:
@@ -185,19 +196,6 @@ class ToolDefinition:
                         pass
         except Exception:
             pass
-
-        schema = {
-            "type": "function",
-            "function": {
-                "name": self.name,
-                "description": self.description
-                or (self.fn.__doc__ or "").strip().split("\n")[0],
-                "parameters": params,
-            },
-        }
-        if required:
-            schema["function"]["parameters"]["required"] = required
-        return schema
 
 
 def tool(

@@ -11,20 +11,6 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 
-def pytest_configure(config):
-    # Register custom markers to avoid PyTestUnknownMarkWarning and ensure
-    # test authors can mark tests that need threads synchronised.
-    try:
-        config.addinivalue_line(
-            "markers",
-            "sync_threads: run threading.Thread targets synchronously for deterministic tests",
-        )
-    except Exception:
-        # Best-effort; not fatal in constrained test environments
-        pass
-    return
-
-
 def recv_json_ws_factory():
     """Return a recv helper for blocking TestClient WebSocket objects.
 
@@ -63,17 +49,42 @@ import pytest
 # that opt in via the fixture/marker become deterministic even when code
 # under test uses ThreadPoolExecutor.
 class _SyncThread:
-    def __init__(self, target=None, args=(), kwargs=None, daemon=None):
+    def __init__(
+        self,
+        group=None,
+        target=None,
+        name=None,
+        args=(),
+        kwargs=None,
+        *,
+        daemon=None,
+    ):
+        self.group = group
         self._target = target
+        self.name = name or "SyncThread"
         self._args = args or ()
         self._kwargs = kwargs or {}
+        self.daemon = daemon
+        self.ident = None
+        self._started = False
+        self._finished = False
 
     def start(self):
+        self._started = True
+        self.ident = 0
         if self._target:
-            self._target(*self._args, **self._kwargs)
+            try:
+                self._target(*self._args, **self._kwargs)
+            finally:
+                self._finished = True
+        else:
+            self._finished = True
 
     def join(self, timeout=None):
         return None
+
+    def is_alive(self):
+        return self._started and not self._finished
 
 
 class _SyncFuture:

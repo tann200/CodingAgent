@@ -8,7 +8,6 @@ from src.core.orchestration.graph.state import StateLike
 from src.core.context.context_builder import ContextBuilder
 from src.core.inference.llm_manager import call_model
 from src.core.orchestration.graph.nodes.node_utils import _resolve_orchestrator
-from src.core.utils.strings import valid_str as _valid_str, extract_str as _extract_str
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +91,7 @@ Respond ONLY with the JSON array, no other text."""
             max_tokens=2000,
             provider_capabilities=provider_capabilities,
             model_tier=state.get("model_tier"),  # S1-B
+            model_name=provider_capabilities.get("model") or "",
         )
 
         # WF-VOL21-1: Wrap LLM call with deadline guard (same pattern as planning_node).

@@ -8,30 +8,36 @@ backward compatibility.
 from __future__ import annotations
 
 import logging
-import os
 import re as _re
 import shlex
 import subprocess
+import uuid
 from pathlib import Path
 from typing import Dict, Any, Optional
 
 from src.tools._security import (
+    CODE_EXEC_FLAGS,
+    CODE_EXEC_INTERPRETERS,
     DANGEROUS_PATTERNS,
-    _check_path_security,
-    is_path_allowed,
+    GIT_SAFE_SUBCOMMANDS,
+    RESTRICTED_ALLOWED_SUBCOMMANDS,
+    RESTRICTED_COMMANDS,
+    SAFE_COMMANDS,
+    SED_WRITE_FLAGS,
+    TAR_CREATE_FLAGS,
+    TAR_EXTRACT_FLAGS,
+    TEST_COMPILE_COMMANDS,
 )
 from src.tools._tool import tool
 from src.tools.bash_security import analyze_bash_command, BashRiskLevel
-from src.tools.sandbox import run_sandboxed as _run_sandboxed
+from src.tools import sandbox as _sandbox
 from src.tools._approval import is_tier3 as _is_tier3
 from src.tools.tools_config import is_autonomous as _is_autonomous
 from src.core.orchestration.approval_gate import (
-    triage_bash_risk as _triage_bash_risk,
     register_bash_gate,
     _bash_denied,
 )
 from src.core.orchestration.event_bus import get_event_bus as _get_event_bus
-from src.core.inference.model_tiers import get_model_tier as _get_model_tier
 
 _logger = logging.getLogger(__name__)
 
@@ -154,6 +160,47 @@ def _check_shell_flags(cmd_parts: list, first_cmd: str) -> Optional[Dict[str, An
     return None
 
 
+def _truncate_bash_output(
+    stdout: str | bytes | None,
+    stderr: str | bytes | None,
+) -> tuple[str, str, bool, bool]:
+    stdout_text = (
+        stdout.decode(errors="replace") if isinstance(stdout, bytes) else (stdout or "")
+    )
+    stderr_text = (
+        stderr.decode(errors="replace") if isinstance(stderr, bytes) else (stderr or "")
+    )
+
+    stdout_cut = len(stdout_text) > _BASH_STDOUT_MAX
+    stderr_cut = len(stderr_text) > _BASH_STDERR_MAX
+
+    if stdout_cut:
+        stdout_text = stdout_text[:_BASH_STDOUT_MAX] + "\n... [stdout truncated]"
+    if stderr_cut:
+        stderr_text = stderr_text[:_BASH_STDERR_MAX] + "\n... [stderr truncated]"
+
+    return stdout_text, stderr_text, stdout_cut, stderr_cut
+
+
+def _matches_restricted_command(cmd_parts: list[str], command: str) -> bool:
+    """Return True when the command itself is a restricted command.
+
+    Matching against the full command string causes false positives when a file
+    path or argument merely contains a restricted word. Restriction checks should
+    key off the executable and its immediate subcommand shape instead.
+    """
+    if not cmd_parts:
+        return False
+
+    first = cmd_parts[0].lower()
+    second = cmd_parts[1].lower() if len(cmd_parts) > 1 else ""
+    prefixes = {first}
+    if second:
+        prefixes.add(f"{first} {second}")
+
+    return any(prefix in RESTRICTED_COMMANDS for prefix in prefixes)
+
+
 @tool(side_effects=["execute"], tags=["coding"])
 def bash(
     command: str,
@@ -176,7 +223,7 @@ def bash(
     workdir = Path(workdir)  # type: ignore[arg-type]
 
     if description:
-        _logging.getLogger(__name__).info(f"bash: {description} | cmd={command!r}")
+        _logger.info("bash: %s | cmd=%r", description, command)
 
     # Gate 1: Shell-operator / metacharacter block (DANGEROUS_PATTERNS).
     # Blocks &&, ||, ;, |, >, >>, <, $(, ` and destructive keywords on the
@@ -194,7 +241,6 @@ def bash(
     # ($(...), backtick substitution, pipe-to-shell, fork bombs, disk-wipe ops) that
     # DANGEROUS_PATTERNS may miss (e.g. creative whitespace, multi-arg tricks).
     try:
-
         _risk_level, _risk_reasons = analyze_bash_command(command)
         if _risk_level == BashRiskLevel.BLOCKED:
             return {
@@ -217,19 +263,16 @@ def bash(
 
     # Gate 2: Restricted-command check (tier-3 candidates are blocked unless in the
     # RESTRICTED_ALLOWED_SUBCOMMANDS list, e.g. "npm test").
-    for pattern in RESTRICTED_COMMANDS:
-        if pattern in cmd_lower:
-            allowed = any(
-                cmd_lower.startswith(ok) for ok in RESTRICTED_ALLOWED_SUBCOMMANDS
-            )
-            if not allowed:
-                return {
-                    "status": "error",
-                    "error": f"Command '{cmd_parts[0]}' requires user approval or sandboxed execution. "
-                    f"Restricted commands include: pip, npm install, curl, wget, apt, sudo. "
-                    f"Use safe alternatives or request user approval.",
-                    "requires_approval": True,
-                }
+    if _matches_restricted_command(cmd_parts, command):
+        allowed = any(cmd_lower.startswith(ok) for ok in RESTRICTED_ALLOWED_SUBCOMMANDS)
+        if not allowed:
+            return {
+                "status": "error",
+                "error": f"Command '{cmd_parts[0]}' requires user approval or sandboxed execution. "
+                f"Restricted commands include: pip, npm install, curl, wget, apt, sudo. "
+                f"Use safe alternatives or request user approval.",
+                "requires_approval": True,
+            }
 
     # Gate 3: Block inline code-execution flags (python3 -c, node -e, ruby -e, php -r).
     if first_cmd in CODE_EXEC_INTERPRETERS:
@@ -311,8 +354,7 @@ def bash(
             return {"status": "error", "error": f"OS error: {e}"}
 
     try:
-
-        result = run_sandboxed(
+        result = _sandbox.run_sandboxed(
             cmd_parts,
             cwd=Path(workdir),
             timeout=timeout_secs,
@@ -396,7 +438,6 @@ def bash_readonly(
 
     # Gate 2: AST-level bash security analysis.
     try:
-
         _risk_level, _risk_reasons = analyze_bash_command(command)
         if _risk_level == BashRiskLevel.BLOCKED:
             return {
@@ -415,16 +456,14 @@ def bash_readonly(
         return {"status": "error", "error": "Empty command"}
 
     first_cmd = cmd_parts[0].lower()
-    cmd_lower = _re.sub(r"\s+", " ", command).lower()
 
     # Gate 2: Restricted commands are never allowed in read-only mode.
-    for pattern in RESTRICTED_COMMANDS:
-        if pattern in cmd_lower:
-            return {
-                "status": "error",
-                "error": f"Command '{cmd_parts[0]}' is not allowed in read-only mode.",
-                "requires_approval": True,
-            }
+    if _matches_restricted_command(cmd_parts, command):
+        return {
+            "status": "error",
+            "error": f"Command '{cmd_parts[0]}' is not allowed in read-only mode.",
+            "requires_approval": True,
+        }
 
     # Gate 3: Only SAFE_COMMANDS (tier 1) — no test runners or compilers.
     # Git is handled separately via the subcommand allowlist (Gate 3b).
@@ -476,8 +515,7 @@ def bash_readonly(
     # read-only commands. Falls back to plain subprocess when bwrap unavailable.
 
     try:
-
-        result = run_sandboxed(
+        result = _sandbox.run_sandboxed(
             cmd_parts,
             cwd=Path(workdir),
             timeout=timeout_secs,
@@ -574,11 +612,11 @@ def _check_tier3_approval(command: str) -> Optional[Dict[str, Any]]:
 
     Returns approval result dict if command should be blocked, None if approved.
     """
-    if is_tier3(command) and not is_autonomous():
-        _tool_id = str(_uuid_t3.uuid4())[:8]
+    if _is_tier3(command) and not _is_autonomous():
+        _tool_id = str(uuid.uuid4())[:8]
         _gate_ev = register_bash_gate(_tool_id)
         try:
-            get_event_bus().publish(
+            _get_event_bus().publish(
                 "bash.approval_required",
                 {"tool_id": _tool_id, "command": command},
             )

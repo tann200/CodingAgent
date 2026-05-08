@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import logging
 import os
-import re
 import subprocess
 import tempfile
 from pathlib import Path
@@ -25,6 +24,8 @@ from src.tools._diff_gate import (
     _publish_diff_preview,
     register_preview_gate,
 )
+from src.tools._workspace_guard import WorkspaceGuard
+from src.tools._lint_verify import verify_candidate_content as _verify_new_content
 
 _logger = logging.getLogger(__name__)
 
@@ -40,9 +41,6 @@ def _is_in_workspace(path: Path, workdir: Path) -> bool:
     except ValueError:
         return False
 
-
-# WorkspaceGuard: import from shared location; the module handles its own fallback.
-from src.tools._workspace_guard import WorkspaceGuard  # type: ignore[assignment]
 
 
 def _fuzzy_find(content: str, target: str) -> Optional[str]:
@@ -104,8 +102,6 @@ def _fuzzy_find(content: str, target: str) -> Optional[str]:
 
     return None
 
-
-from src.tools._lint_verify import verify_candidate_content as _verify_new_content
 
 @tool(side_effects=["write"], tags=["coding"])
 def edit_file(

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -104,30 +105,54 @@ _PROVIDERS_SEARCH_PATHS = [
 # precedence over providers.json so that get_context_budget() reflects reality
 # rather than a static config value.
 _live_context_length: int = 0
+_live_context_provider: str = ""
+_context_lock = threading.Lock()
 
 
-def set_active_context_length(length: int) -> None:
+def set_active_context_length(length: int, provider_id: str = "") -> None:
     """Override the active context length with a live value from the models endpoint.
 
     Called by the TUI bridge (and any other subscriber of the
     ``provider.context_window`` event) as soon as the real loaded context length
     is known.  A value of 0 or negative clears the override so the file-based
     fallback is used again.
+
+    Args:
+        length:     Context window size in tokens.
+        provider_id: Identifier of the provider that reported this length, so
+                     callers can detect stale values from a previous provider.
     """
-    global _live_context_length
-    _live_context_length = max(0, int(length))
-    logger.debug(f"provider_context: live context length set to {_live_context_length}")
+    global _live_context_length, _live_context_provider
+    with _context_lock:
+        _live_context_length = max(0, int(length))
+        _live_context_provider = provider_id
+        logger.debug(
+            f"provider_context: live context length set to {_live_context_length} "
+            f"for provider '{provider_id}'"
+        )
 
 
-def _load_active_context_length() -> int:
+def _load_active_context_length(provider_id: str = "") -> int:
     """Return the context_length of the active provider, or a sensible default.
 
     Prefers the live value set by ``set_active_context_length()`` (populated
     from the models endpoint at runtime) over the static providers.json entry.
+
+    Args:
+        provider_id: Expected provider identifier.  If provided and does not
+                     match the stored provider, the live override is treated as
+                     stale and the file-based fallback is used.
     """
     # LIVE-CTX: prefer runtime value from models endpoint
-    if _live_context_length > 0:
-        return _live_context_length
+    with _context_lock:
+        if _live_context_length > 0:
+            if not provider_id or _live_context_provider == provider_id:
+                return _live_context_length
+            logger.debug(
+                f"provider_context: live context length was set by "
+                f"'{_live_context_provider}' but caller expects '{provider_id}'; "
+                f"falling back to providers.json"
+            )
 
     for path in _PROVIDERS_SEARCH_PATHS:
         if path.exists():

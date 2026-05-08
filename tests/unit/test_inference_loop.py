@@ -184,9 +184,9 @@ class TestRunAgentOnceImplCancelBeforeStart:
         cancel_event = threading.Event()
         cancel_event.set()
 
-        # _get_compiled_graph is imported inline, so patch the builder module directly
+        # Graph selection is imported inline, so patch the builder module directly
         with patch(
-            "src.core.orchestration.graph.builder._get_compiled_graph"
+            "src.core.orchestration.graph.builder.get_compiled_graph_for_orchestrator"
         ) as mock_graph:
             run_agent_once_impl(
                 orch,
@@ -210,7 +210,7 @@ class TestRunAgentOnceImplMaxTurns:
 
         orch = _make_orch()
 
-        # Patch _get_compiled_graph and config so we can reach the max_turns check
+        # Patch graph selection and config so we can reach the max_turns check
         with (
             patch(
                 "src.core.orchestration.inference_loop.load_system_prompt",
@@ -218,7 +218,7 @@ class TestRunAgentOnceImplMaxTurns:
                 create=True,
             ),
             patch(
-                "src.core.orchestration.graph.builder._get_compiled_graph",
+                "src.core.orchestration.graph.builder.get_compiled_graph_for_orchestrator",
                 create=True,
             ),
             patch("src.core.config_loader.get", return_value=1),
@@ -238,6 +238,28 @@ class TestRunAgentOnceImplMaxTurns:
                 )
         assert result.get("ok") is False
         assert "max_turns" in result.get("error", "")
+
+    def test_max_turns_guard_uses_tier_aware_graph_selector(self):
+        from src.core.orchestration.inference_loop import run_agent_once_impl
+
+        orch = _make_orch()
+
+        with (
+            patch(
+                "src.core.orchestration.graph.builder.get_compiled_graph_for_orchestrator",
+                return_value=MagicMock(),
+            ) as mock_graph,
+            patch("src.core.config_loader.get", return_value=0),
+        ):
+            run_agent_once_impl(
+                orch,
+                system_prompt_name=None,
+                messages=[{"role": "user", "content": "hi"}],
+                tools={},
+                cancel_event=None,
+            )
+
+        mock_graph.assert_called_once_with(orchestrator=orch)
 
     def test_max_turns_guard_does_not_block_normal_turn(self):
         """When turn_count < max_turns, the guard should not fire."""

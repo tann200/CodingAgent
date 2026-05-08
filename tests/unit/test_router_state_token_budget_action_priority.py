@@ -118,43 +118,16 @@ class TestRouterFunctionsDoNotMutateState:
 class TestMemorySyncRouterTerminatesOnComplete:
     def test_should_after_memory_sync_routes_to_end_when_complete(self):
         """should_after_memory_sync must return 'end' when evaluation_result=='complete'."""
-        # The function is defined inside compile_agent_graph so we cannot import it
-        # directly; we exercise it by inspecting the builder module.
-        # The easiest way is to compile the graph and trigger a run — instead we
-        # replicate the logic by calling compile_agent_graph and inspecting routing.
-        # For a unit test we inspect the routing function via the compiled graph internals.
-        # A simpler approach: patch the graph compilation and call the nested closure.
+        from src.core.orchestration.graph.builder import should_after_memory_sync
 
-        # Since should_after_memory_sync is a nested closure we test it indirectly
-        # by verifying graph compilation includes an "end" branch for memory_sync.
-        from src.core.orchestration.graph.builder import _reset_compiled_graph
-
-        _reset_compiled_graph()
-        from src.core.orchestration.graph.builder import _get_compiled_graph
-
-        graph = _get_compiled_graph()
-        # The graph should have memory_sync as a node
-        assert graph is not None
-
-        # Verify the routing by checking the conditional edges map includes END
-        # (LangGraph stores edge data in the compiled graph object)
-        _reset_compiled_graph()  # clean up
+        assert should_after_memory_sync({"evaluation_result": "complete"}) == "end"
 
     def test_memory_sync_end_branch_reachable(self):
-        """
-        Verify that when evaluation_result='complete', should_after_memory_sync
-        returns 'end'. We test the closure by compiling the graph and invoking it
-        through builder source inspection.
-        """
+        """Compiled graph should still expose the memory_sync -> END branch."""
         import inspect
         from src.core.orchestration.graph import builder
 
         src = inspect.getsource(builder)
-        # CF-4 fix: should_after_memory_sync must have an "end" literal return path
-        assert 'return "end"' in src or "return 'end'" in src, (
-            "should_after_memory_sync must have an 'end' return path (CF-4 fix)"
-        )
-        # And the conditional edges map must include 'end': END
         assert '"end": END' in src or "'end': END" in src, (
             "should_after_memory_sync edge map must include 'end': END"
         )
@@ -167,38 +140,33 @@ class TestMemorySyncRouterTerminatesOnComplete:
         Without this fix the graph looped: memory_sync → perception → memory_sync
         indefinitely for simple read-only tasks like "list all files".
         """
-        import inspect
-        from src.core.orchestration.graph import builder as builder_module
+        from src.core.orchestration.graph.builder import should_after_memory_sync
 
-        src = inspect.getsource(builder_module)
-        # The fast-path guard must be present
-        assert "fast-path task complete" in src or "fast-path" in src, (
-            "should_after_memory_sync must have fast-path completion guard"
-        )
-        # The guard must check for no plan + no next_action + execution_ok + rounds > 0
-        assert "not current_plan" in src, (
-            "fast-path guard must check for empty current_plan"
-        )
-        assert "not next_action" in src, (
-            "fast-path guard must check for no pending next_action"
-        )
-        assert "execution_ok" in src, "fast-path guard must check execution_ok"
+        state = {
+            "current_plan": [],
+            "next_action": None,
+            "last_result": {"ok": True},
+            "rounds": 1,
+        }
+        assert should_after_memory_sync(state) == "end"
 
     def test_memory_sync_does_not_loop_on_list_files_task(self):
         """
         Regression: 'list all files' task looped memory_sync→perception→memory_sync
         because evaluation_result was never set. Fast-path guard must break the cycle.
 
-        We verify the fix indirectly by ensuring the builder source has the guard.
+        We verify the fix directly through the exported router.
         """
-        import inspect
-        from src.core.orchestration.graph import builder as builder_module
+        from src.core.orchestration.graph.builder import should_after_memory_sync
 
-        src = inspect.getsource(builder_module)
-        # Guard must appear inside should_after_memory_sync context
-        assert "fast-path" in src, (
-            "Loop fix must be present: fast-path completion detection in should_after_memory_sync"
-        )
+        state = {
+            "task": "list all files",
+            "current_plan": [],
+            "next_action": None,
+            "last_result": {"ok": True, "status": "ok"},
+            "rounds": 2,
+        }
+        assert should_after_memory_sync(state) == "end"
 
 
 # ---------------------------------------------------------------------------

@@ -139,8 +139,9 @@ class SessionStoreProtocol(Protocol):
         """Roll back *session_id* to the state captured in *snapshot_id*."""
         ...
 
-    def save_snapshot(self, session_id: str, state_json: str) -> str:
-        """Persist a snapshot of *state_json* and return the snapshot ID."""
+    def save_snapshot(self, session_id: str, state_json: str) -> Optional[str]:
+        """Persist a snapshot of *state_json* and return the snapshot ID, or
+        ``None`` on persistence failure."""
         ...
 
     def get_snapshot(self, session_id: str, snapshot_id: str) -> Optional[str]:

@@ -48,7 +48,7 @@ class FrozenMemoryStore:
 
         # Track if loaded
         self._loaded = False
-        self._load_lock = threading.Lock()
+        self._load_lock = threading.RLock()
 
     def load_from_disk(self) -> None:
         """Load memory from disk and capture frozen snapshot.
@@ -169,9 +169,14 @@ def load_memory_snapshot() -> str:
 def get_memory_for_prompt() -> str:
     """Get the frozen memory snapshot for system prompt injection.
 
-    Returns the snapshot captured at session start.
+    Loads from disk on first call so the snapshot is populated without an
+    explicit ``load_memory_snapshot()`` call at session start.
+    Returns the snapshot captured at load time.
     """
-    return get_memory_store().get_frozen_snapshot()
+    store = get_memory_store()
+    if not store._loaded:
+        store.load_from_disk()
+    return store.get_frozen_snapshot()
 
 
 def get_memory_live_entries() -> List[str]:

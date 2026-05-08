@@ -4,9 +4,8 @@ Context Budget Controller - Manages context token limits to prevent overflow.
 This is critical for local LLM agents which have limited context windows.
 """
 
-import re
 import math
-import json
+import re
 from typing import List, Dict, Any, Tuple, Optional
 
 
@@ -16,6 +15,7 @@ class ContextController:
     DEFAULT_MAX_TOKENS = 6000
     LARGE_FILE_THRESHOLD = 500
     SUMMARY_TARGET_LINES = 100
+    _RESERVED_OVERHEAD_TOKENS = 500
 
     # Budget fractions for each context category (F-63: named constants).
     _BUDGET_RELEVANT_FILES = 0.08
@@ -38,6 +38,11 @@ class ContextController:
             "other": math.ceil(self._BUDGET_OTHER * max_tokens),
         }
         self._used_tokens = 0
+        self._last_system_tokens = 0
+        self._last_conversation_tokens = 0
+        self._last_available_tokens = max(
+            0, self.max_context_tokens - self._RESERVED_OVERHEAD_TOKENS
+        )
 
     def estimate_tokens(self, text: str) -> int:
         """Rough token estimation (4 chars per token)."""
@@ -104,9 +109,16 @@ class ContextController:
             for msg in conversation_history
         )
 
-        available_tokens = (
-            self.max_context_tokens - system_tokens - conversation_tokens - 500
+        available_tokens = max(
+            0,
+            self.max_context_tokens
+            - system_tokens
+            - conversation_tokens
+            - self._RESERVED_OVERHEAD_TOKENS,
         )
+        self._last_system_tokens = system_tokens
+        self._last_conversation_tokens = conversation_tokens
+        self._last_available_tokens = available_tokens
 
         sorted_files = sorted(files, key=lambda f: f.get("line_count", 0))
 
@@ -136,6 +148,7 @@ class ContextController:
                 included.append(file_info)
                 current_tokens += file_tokens
 
+        self._used_tokens = current_tokens
         return included, excluded
 
     def extract_relevant_snippets(
@@ -174,13 +187,25 @@ class ContextController:
         return snippets[:5]
 
     def get_budget_status(self) -> Dict[str, Any]:
-        """Get current budget status."""
+        """Get current status for the most recent enforced snippet budget.
+
+        ``max_tokens`` and ``usage_ratio`` reflect the effective file/snippet budget
+        after subtracting system prompt, conversation history, and fixed reserved
+        overhead from ``max_context_tokens``.
+        """
+        remaining_tokens = max(0, self._last_available_tokens - self._used_tokens)
         return {
-            "max_tokens": self.max_tokens,
+            "max_tokens": self._last_available_tokens,
+            "max_context_tokens": self.max_context_tokens,
+            "configured_max_tokens": self.max_tokens,
             "used_tokens": self._used_tokens,
+            "remaining_tokens": remaining_tokens,
+            "system_tokens": self._last_system_tokens,
+            "conversation_tokens": self._last_conversation_tokens,
+            "reserved_tokens": self._RESERVED_OVERHEAD_TOKENS,
             "budgets": self._context_budget,
-            "usage_ratio": self._used_tokens / self.max_tokens
-            if self.max_tokens > 0
+            "usage_ratio": self._used_tokens / self._last_available_tokens
+            if self._last_available_tokens > 0
             else 0,
         }
 
@@ -199,4 +224,3 @@ def create_context_controller(max_tokens: int = 6000) -> ContextController:
 def get_context_controller(max_tokens: int = 6000) -> ContextController:
     """Get context controller with percentage-based budgets."""
     return ContextController(max_tokens=max_tokens)
-

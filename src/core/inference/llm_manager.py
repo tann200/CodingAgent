@@ -11,12 +11,8 @@ Design goals for tests:
 
 import asyncio
 import contextvars
-import traceback
 import functools
-import importlib
 import os
-import tempfile
-import shutil
 import time
 from typing import (
     Any,
@@ -31,7 +27,6 @@ from typing import (
 from pathlib import Path
 import json
 import inspect
-import re
 
 # Prefer the central project logger so all components share the same logging pipeline.
 # If the central logger isn't importable (tests or early import), fall back to the standard
@@ -118,7 +113,75 @@ except Exception:
 # Simple in-memory caches (protected by RLock for thread safety - C8 fix)
 import threading as _threading
 
-from src.core.utils.strings import valid_str as _valid_str, extract_str as _extract_str
+from src.core.inference.model_cache import (
+    extract_models_from_api_response as _extract_models_from_api_response,
+    get_cached_models_if_fresh as _get_cached_models_if_fresh,
+    store_cached_models as _store_cached_models,
+)
+from src.core.inference.model_selection import (
+    canonical_provider as _select_canonical_provider,
+    load_provider as _load_provider_helper,
+    lmstudio_full_id as _normalize_lmstudio_full_id,
+    normalize_models_for_provider as _normalize_models_for_provider_helper,
+    resolve_requested_model as _resolve_requested_model_helper,
+    resolve_config_path as _resolve_config_path_helper,
+    save_provider as _save_provider_helper,
+    set_provider_active as _set_provider_active_helper,
+    select_model_name as _select_model_name,
+)
+from src.core.inference.call_postprocess import (
+    attempt_model_fallback as _attempt_model_fallback,
+    publish_llm_response_hook as _publish_llm_response_hook,
+    record_token_usage as _record_token_usage,
+    update_circuit_breaker_for_result as _update_circuit_breaker_for_result,
+)
+from src.core.inference.runtime_call import (
+    call_adapter_with_fallbacks as _call_adapter_with_fallbacks,
+    instantiate_runtime_adapter as _instantiate_runtime_adapter,
+    prepare_call_extra_args as _prepare_call_extra_args,
+    select_runtime_provider_config as _select_runtime_provider_config,
+)
+from src.core.inference.streaming import (
+    decode_sse_line as _decode_sse_line,
+    extract_stream_deltas as _extract_stream_deltas,
+    finalize_stream as _finalize_stream,
+    parse_sse_chunk as _parse_sse_chunk,
+    publish_stream_chunk as _publish_stream_chunk,
+    split_thinking_content as _split_thinking_content,
+)
+from src.core.inference.provider_discovery import (
+    get_active_models as _get_active_models_helper,
+    get_models_for_provider_key as _get_models_for_provider_key_helper,
+    get_models_from_provider_adapter as _get_models_from_provider_adapter,
+    get_models_from_provider_cache as _get_models_from_provider_cache,
+    get_models_from_provider_config as _get_models_from_provider_config,
+)
+from src.core.inference.provider_loading import (
+    attach_provider_metadata as _attach_provider_metadata,
+    cache_static_provider_models as _cache_static_provider_models,
+    instantiate_adapter as _instantiate_adapter,
+    load_registered_providers as _load_registered_providers,
+    load_provider_entries as _load_provider_entries,
+    resolve_adapter_class as _resolve_adapter_class,
+)
+from src.core.inference.provider_probe import (
+    cache_probed_models as _cache_probed_models,
+    determine_explicit_status as _determine_explicit_status,
+    probe_adapter_models as _probe_adapter_models,
+    publish_provider_probe_events as _publish_provider_probe_events,
+    publish_unknown_provider_status as _publish_unknown_provider_status,
+    run_provider_probe_cycle as _run_provider_probe_cycle,
+    should_probe_provider as _should_probe_provider,
+    validate_provider_connection as _validate_provider_connection,
+)
+from src.core.inference.provider_config import (
+    get_active_provider_name as _get_active_provider_name_helper,
+    canonical_provider_name as _canonical_provider_name,
+    normalize_provider_models as _normalize_provider_models,
+    resolve_providers_config_path as _resolve_providers_config_path,
+    set_provider_active_flag as _set_provider_active_flag,
+)
+from src.core.utils.strings import valid_str as _valid_str
 
 # Gap 3: Plugin hooks — lazy import so the registry is not required at import time.
 try:
@@ -151,23 +214,10 @@ def canonical_provider(name: Optional[str]) -> str:
     Only well-known LM Studio variants map to 'lm_studio'. Avoid substring matches
     so other provider names containing 'lm' are not misclassified.
     """
-    if not name:
-        return ""
-    s = str(name).strip().lower()
-    normalized = s.replace(" ", "_").replace("-", "_")
-    lm_variants = {"lm", "lm_studio", "lmstudio", "lm_studio"}
-    if normalized in lm_variants or normalized == "lmstudio":
-        return "lm_studio"
-    copilot_variants = {
-        "copilot",
-        "github_copilot",
-        "github-copilot",
-        "ghcopilot",
-        "github copilot",
-    }
-    if normalized in copilot_variants:
-        return "github_copilot"
-    return normalized
+    return _select_canonical_provider(
+        name,
+        canonical_provider_name_fn=_canonical_provider_name,
+    )
 
 
 def _set_provider_active(provider_type: str, active: bool) -> None:
@@ -177,82 +227,15 @@ def _set_provider_active(provider_type: str, active: bool) -> None:
     Used after OAuth login/logout to enable or disable a provider without
     requiring a full settings save cycle.
     """
-    cfg_path = resolve_config_path(None)
-    target_key = canonical_provider(provider_type)
-    with _providers_json_lock:
-        raw = json.loads(cfg_path.read_text(encoding="utf-8"))
-        providers = raw if isinstance(raw, list) else [raw]
-        for p in providers:
-            if canonical_provider(p.get("type") or p.get("name") or "") == target_key:
-                p["active"] = active
-                break
-        # Prefer the canonical atomic writer where available. Create parent
-        # directory immediately before attempting the write. If atomic write
-        # succeeds we are done; otherwise fall back to the legacy mkstemp+replace
-        # behaviour.
-        try:
-            cfg_path.parent.mkdir(parents=True, exist_ok=True)
-            # Lazy-import the canonical atomic writer to avoid import-time coupling
-            from src.core.io_utils import atomic_write_json
-
-            guilogger.debug(
-                "llm_manager: attempting atomic_write_json for %s", cfg_path
-            )
-            ok = atomic_write_json(cfg_path, providers, logger=guilogger)
-            if ok:
-                guilogger.debug(
-                    "llm_manager: atomic_write_json succeeded for %s", cfg_path
-                )
-                return
-            guilogger.warning(
-                "llm_manager: atomic_write_json returned False for %s; falling back",
-                cfg_path,
-            )
-        except Exception:
-            guilogger.debug(
-                "llm_manager: atomic_write_json unavailable or failed for %s; falling back\n%s",
-                cfg_path,
-                traceback.format_exc(),
-            )
-
-        # Fallback: legacy mkstemp + os.replace behaviour. Ensure data is
-        # flushed and fsynced to reduce risk of partial reads on crash.
-        fd = None
-        tmp = None
-        try:
-            fd, tmp = tempfile.mkstemp(dir=str(cfg_path.parent), suffix=".tmp")
-            try:
-                with os.fdopen(fd, "w", encoding="utf-8") as f:
-                    # clear fd so finally block doesn't try to close it twice
-                    fd = None
-                    json.dump(providers, f, indent=2)
-                    try:
-                        f.flush()
-                        os.fsync(f.fileno())
-                    except Exception:
-                        pass
-                try:
-                    os.replace(tmp, str(cfg_path))
-                except Exception:
-                    try:
-                        shutil.move(tmp, str(cfg_path))
-                    except Exception:
-                        raise
-            except Exception:
-                # ensure fd is closed on early failure
-                try:
-                    if fd is not None:
-                        os.close(fd)
-                except Exception:
-                    pass
-                raise
-        except Exception:
-            try:
-                if tmp and os.path.exists(tmp):
-                    os.unlink(tmp)
-            except Exception:
-                pass
-            raise
+    _set_provider_active_helper(
+        provider_type=provider_type,
+        active=active,
+        set_provider_active_flag_fn=_set_provider_active_flag,
+        resolve_config_path_fn=resolve_config_path,
+        canonical_provider_fn=canonical_provider,
+        lock=_providers_json_lock,
+        logger=guilogger,
+    )
 
 
 def _get_models_for_provider_key(provider_key: str) -> List[str]:
@@ -265,84 +248,25 @@ def _get_models_for_provider_key(provider_key: str) -> List[str]:
     - providers.json static listing (normalized via normalize_models_for_provider)
     Returns an empty list when none found.
     """
-    try:
-        # 1) module-level cache (RLock-protected)
-        now = time.time()
-        with _MODEL_CACHE_LOCK:
-            if (
-                provider_key in _MODEL_CACHE
-                and (now - _MODEL_CACHE_TIME.get(provider_key, 0)) < _CACHE_TTL
-            ):
-                return _MODEL_CACHE[provider_key]
-
-        mgr = _provider_manager
-        # 2) ProviderManager cache
-        try:
-            cached = mgr.get_cached_models(provider_key)
-            if cached:
-                # ensure LM Studio models are full ids
-                if provider_key == "lm_studio":
-                    return [_lmstudio_full_id(m) for m in cached]
-                return cached
-        except Exception:
-            pass
-
-        # 3) Adapter probe
-        try:
-            adapter = mgr.get_provider(provider_key)
-            if adapter and hasattr(adapter, "get_models_from_api"):
-                try:
-                    resp = adapter.get_models_from_api()
-                except Exception:
-                    resp = None
-                if isinstance(resp, dict):
-                    models = []
-                    for m in resp.get("models", []):
-                        fid = None
-                        if isinstance(m, dict):
-                            fid = (
-                                m.get("id")
-                                or m.get("key")
-                                or m.get("name")
-                                or m.get("model")
-                            )
-                        elif isinstance(m, str):
-                            fid = m
-                        if fid and _valid_str(fid):
-                            models.append(str(fid).strip())
-                    if models:
-                        if provider_key == "lm_studio":
-                            models = [_lmstudio_full_id(x) for x in models]
-                        with _MODEL_CACHE_LOCK:
-                            _MODEL_CACHE[provider_key] = models
-                            _MODEL_CACHE_TIME[provider_key] = time.time()
-                        return models
-        except Exception:
-            pass
-
-        # 4) fallback to providers.json static config
-        try:
-            raw = None
-            if getattr(mgr, "providers_config_path", None):
-                raw = load_provider(mgr.providers_config_path)
-            if raw is None:
-                raw = load_provider(None)
-            providers = (
-                raw
-                if isinstance(raw, list)
-                else ([raw] if isinstance(raw, dict) else [])
-            )
-            for p in providers:
-                key = (p.get("name") or p.get("type") or "").lower().replace(" ", "_")
-                if key == provider_key:
-                    models = normalize_models_for_provider(p)
-                    if models:
-                        return models
-        except Exception:
-            pass
-    except Exception:
-        pass
-    return []
+    return _get_models_for_provider_key_helper(
+        provider_key=provider_key,
+        manager=_provider_manager,
+        cache=_MODEL_CACHE,
+        cache_time=_MODEL_CACHE_TIME,
+        cache_lock=_MODEL_CACHE_LOCK,
+        cache_ttl=_CACHE_TTL,
+        now=time.time,
+        get_cached_models_if_fresh=_get_cached_models_if_fresh,
+        store_cached_models=_store_cached_models,
+        get_models_from_provider_cache_fn=_get_models_from_provider_cache,
+        get_models_from_provider_adapter_fn=_get_models_from_provider_adapter,
+        get_models_from_provider_config_fn=_get_models_from_provider_config,
+        extract_models_from_api_response=_extract_models_from_api_response,
+        normalize_lmstudio_models=lambda items: [_lmstudio_full_id(x) for x in items],
+        load_provider=load_provider,
+        normalize_models_for_provider=normalize_models_for_provider,
+        valid_str=_valid_str,
+    )
 
 
 def normalize_models_for_provider(provider: Dict[str, Any]) -> List[str]:
@@ -351,85 +275,31 @@ def normalize_models_for_provider(provider: Dict[str, Any]) -> List[str]:
     Ensures LM Studio model ids are converted to full ids and returns a list of
     strings suitable for caching and selection.
     """
-    out: List[str] = []
-    if not provider or not isinstance(provider, dict):
-        return out
-    ptype = str(provider.get("type") or "").lower()
-    models_field = provider.get("models") or []
-
-    if isinstance(models_field, list):
-        for m in models_field:
-            if isinstance(m, dict):
-                fid = m.get("id") or m.get("key") or m.get("name") or m.get("model")
-            elif isinstance(m, str):
-                fid = m
-            else:
-                continue
-            if not fid or not _valid_str(fid):
-                continue
-            fid_str = str(fid).strip()
-            # If provider type indicates some LM studio, normalize to full id
-            if "lm" in ptype or canonical_provider(provider.get("name")) == "lm_studio":
-                try:
-                    full = _lmstudio_full_id(fid_str)
-                    if _valid_str(full):
-                        out.append(full)
-                except Exception:
-                    out.append(fid_str)
-            else:
-                out.append(fid_str)
-    return out
+    return _normalize_models_for_provider_helper(
+        provider,
+        normalize_provider_models_fn=_normalize_provider_models,
+        valid_str_fn=_valid_str,
+        canonical_provider_fn=canonical_provider,
+        lmstudio_full_id_fn=_lmstudio_full_id,
+    )
 
 
 def resolve_config_path(path: Optional[str] = None) -> Path:
     """Return path to providers.json. Prefer explicit path, otherwise src/config/providers.json."""
-    if path:
-        return Path(path)
-    return Path(__file__).parents[2] / "config" / "providers.json"
+    return _resolve_config_path_helper(
+        path,
+        resolve_providers_config_path_fn=_resolve_providers_config_path,
+        current_file=__file__,
+    )
 
 
 def select_model_name(models: List[Any], requested: Optional[str]) -> Optional[str]:
-    if not models:
-        return None
-    names: List[str] = []
-    for m in models:
-        if isinstance(m, dict):
-            fid = m.get("id") or m.get("key") or m.get("name")
-            if fid:
-                names.append(str(fid))
-        elif isinstance(m, str):
-            names.append(m)
-    if requested:
-        if requested in names:
-            return requested
-        for n in names:
-            if n.endswith("/" + requested) or n.split("/")[-1] == requested:
-                return n
-        return None
-    return names[0] if names else None
+    return _select_model_name(models, requested)
 
 
 def _lmstudio_full_id(raw: str) -> str:
-    """Return a canonical LM Studio full id for a model string.
-
-    Heuristic:
-    - If already contains '/', assume it's a full id and return unchanged.
-    - If contains ':' like 'qwen3.5:9b', convert to 'vendor/name-suffix' where
-      vendor is the alphabetic prefix of the model name (e.g., 'qwen').
-    - Otherwise, return unchanged.
-    """
-    if not raw:
-        return raw
-    s = str(raw)
-    if "/" in s:
-        return s
-    if ":" in s:
-        left, right = s.split(":", 1)
-        # vendor = leading alpha characters from left
-        m = re.match(r"^([a-zA-Z]+)", left)
-        vendor = m.group(1) if m else left
-        return f"{vendor}/{left}-{right}"
-    return s
+    """Compatibility wrapper for LM Studio full-id normalization."""
+    return _normalize_lmstudio_full_id(raw)
 
 
 # Compatibility shims expected by adapters/tests
@@ -491,133 +361,23 @@ def load_provider(path: Optional[str] = None) -> Any:
     Accepts either an explicit path or uses resolve_config_path(None).
     Returns parsed JSON (dict or list) or None on error.
     """
-    try:
-        p = resolve_config_path(path)
-        text = None
-        try:
-            # try direct read (Path.read_text) to respect monkeypatching of open in tests
-            text = Path(p).read_text(encoding="utf-8")
-        except Exception:
-            try:
-                with open(p, "r", encoding="utf-8") as fh:
-                    text = fh.read()
-            except Exception:
-                return None
-        if not text:
-            return None
-        try:
-            return json.loads(text)
-        except Exception:
-            return None
-    except Exception:
-        return None
+    return _load_provider_helper(
+        path,
+        resolve_config_path_fn=resolve_config_path,
+    )
 
 
 def save_provider(
     data: Any, path: Optional[str] = None, initial_path: Optional[Path] = None
 ) -> bool:
     """Save provider config to disk. Accepts optional initial_path for compatibility."""
-    try:
-        target = None
-        if initial_path:
-            try:
-                target = Path(initial_path)
-            except Exception:
-                target = None
-        if target is None:
-            target = resolve_config_path(path)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        # Preserve array format: if file already holds an array and data is a single dict,
-        # wrap it so the file stays as [{...}] rather than reverting to {...}.
-        to_write = data
-        if isinstance(data, dict) and target.exists():
-            try:
-                existing = json.loads(target.read_text(encoding="utf-8"))
-                if isinstance(existing, list):
-                    # Replace provider with matching name, or append if new
-                    name = data.get("name")
-                    updated = [
-                        p
-                        if (not isinstance(p, dict) or p.get("name") != name)
-                        else data
-                        for p in existing
-                    ]
-                    if not any(
-                        isinstance(p, dict) and p.get("name") == name for p in existing
-                    ):
-                        updated.append(data)
-                    to_write = updated
-            except Exception:
-                pass
-        # Try canonical atomic writer first (lazy import). If it fails, fall
-        # back to the original write_text behaviour to preserve compatibility.
-        try:
-            from src.core.io_utils import atomic_write_json
-
-            guilogger.debug("llm_manager: attempting atomic_write_json for %s", target)
-            ok = atomic_write_json(target, to_write, logger=guilogger)
-            if ok:
-                guilogger.debug(
-                    "llm_manager: atomic_write_json succeeded for %s", target
-                )
-                return True
-            guilogger.warning(
-                "llm_manager: atomic_write_json returned False for %s; falling back to write_text",
-                target,
-            )
-        except Exception:
-            guilogger.debug(
-                "llm_manager: atomic_write_json unavailable or failed for %s; falling back\n%s",
-                target,
-                traceback.format_exc(),
-            )
-
-        # Fallback: write via unique-temp + atomic replace to avoid exposing
-        # partially-written JSON. If this fails, fall back to the original
-        # Path.write_text behaviour as a last resort so callers get the file
-        # created when possible.
-        try:
-            fd = None
-            tmp = None
-            try:
-                target.parent.mkdir(parents=True, exist_ok=True)
-                fd, tmp = tempfile.mkstemp(dir=str(target.parent), suffix=".tmp")
-                with os.fdopen(fd, "w", encoding="utf-8") as f:
-                    fd = None
-                    json.dump(to_write, f, ensure_ascii=False)
-                    try:
-                        f.flush()
-                        os.fsync(f.fileno())
-                    except Exception:
-                        pass
-                try:
-                    os.replace(tmp, str(target))
-                except Exception:
-                    try:
-                        shutil.move(tmp, str(target))
-                    except Exception:
-                        pass
-            finally:
-                try:
-                    if fd is not None:
-                        os.close(fd)
-                except Exception:
-                    pass
-            return True
-        except Exception:
-            # Last-resort fallback to preserve previous behaviour
-            try:
-                target.write_text(json.dumps(to_write), encoding="utf-8")
-                return True
-            except Exception:
-                guilogger.debug(
-                    "llm_manager: fallback write failed for %s\n%s",
-                    target,
-                    traceback.format_exc(),
-                )
-                return False
-    except Exception:
-        return False
+    return _save_provider_helper(
+        data,
+        path=path,
+        initial_path=initial_path,
+        resolve_config_path_fn=resolve_config_path,
+        logger=guilogger,
+    )
 
 
 # Backwards compatible aliases expected by adapters
@@ -668,6 +428,7 @@ class ProviderManager:
     def __init__(self, providers_config_path: Optional[str] = None):
         self._providers: Dict[str, Any] = {}
         self._initialized = False
+        self._init_lock = asyncio.Lock()
         self._models_cache: Dict[str, List[str]] = {}
         self._event_bus = None
         self.providers_config_path = providers_config_path
@@ -954,26 +715,7 @@ class ProviderManager:
         - adapter.default_model as single-entry list
         - empty list when none found
         """
-        try:
-            active = self.get_active_provider_name()
-            if not active:
-                return []
-            models = self.get_cached_models(active)
-            if models:
-                return models
-            adapter = self.get_provider(active)
-            if not adapter:
-                return []
-            if hasattr(adapter, "models") and getattr(adapter, "models"):
-                try:
-                    return list(getattr(adapter, "models"))
-                except Exception:
-                    pass
-            if hasattr(adapter, "default_model") and getattr(adapter, "default_model"):
-                return [str(getattr(adapter, "default_model"))]
-            return []
-        except Exception:
-            return []
+        return _get_active_models_helper(manager=self)
 
     def get_active_provider_name(self) -> Optional[str]:
         """Return the canonical key of the first provider marked active:true in providers.json.
@@ -981,375 +723,102 @@ class ProviderManager:
         Returns None if no provider is explicitly active (so callers can fall back).
         Thread-safe: reads providers.json under _providers_json_lock.
         """
-        try:
-            cfg_path = resolve_config_path(self.providers_config_path)
-            with _providers_json_lock:
-                raw = json.loads(cfg_path.read_text(encoding="utf-8"))
-            providers = (
-                raw
-                if isinstance(raw, list)
-                else ([raw] if isinstance(raw, dict) else [])
-            )
-            for p in providers:
-                if not isinstance(p, dict):
-                    continue
-                if p.get("active") is True:
-                    key = canonical_provider(p.get("name") or p.get("type") or "")
-                    if key:
-                        return key
-        except Exception:
-            pass
-        return None
+        return _get_active_provider_name_helper(
+            providers_config_path=self.providers_config_path,
+            resolve_config_path=resolve_config_path,
+            canonical_provider=canonical_provider,
+            lock=_providers_json_lock,
+        )
 
     async def initialize(self):
         if self._initialized:
             return
-        guilogger.info("ProviderManager.initialize: loading providers.json")
-        cfg = resolve_config_path(self.providers_config_path)
-        try:
-            if not cfg.exists():
-                # No providers.json present; publish missing event and mark initialized
-                if self._event_bus:
-                    try:
-                        self._event_bus.publish(
-                            "provider.config.missing", {"path": str(cfg)}
-                        )
-                    except Exception:
-                        pass
-                self._initialized = True
+        async with self._init_lock:
+            if self._initialized:
                 return
-
-            raw = json.loads(cfg.read_text(encoding="utf-8"))
-            providers = (
-                raw
-                if isinstance(raw, list)
-                else ([raw] if isinstance(raw, dict) else [])
-            )
-            for p in providers:
-                if not isinstance(p, dict):
-                    # Malformed provider entry is an error: surface to the user
-                    guilogger.error(
-                        f"ProviderManager.initialize: provider entry malformed, expected dict: {repr(p)[:200]}"
-                    )
-                    continue
-
-                # canonical provider key
-                key = canonical_provider(p.get("name") or p.get("type") or "")
-
-                # Load adapter module using the provider type; expect adapters to follow naming convention
-                ptype = str(p.get("type") or "ollama").strip().lower().replace("-", "_")
-                module_name = f"src.core.inference.adapters.{ptype}_adapter"
-                try:
-                    mod = importlib.import_module(module_name)
-                except Exception as e:
-                    guilogger.error(
-                        f'ProviderManager: adapter module import failed for type "{ptype}": {e}'
-                    )
-                    self._providers[key] = None
-                    continue
-
-                # Resolve Adapter class by convention: CamelCase type + 'Adapter' or 'Adapter'
-                class_name = _camelize(ptype) + "Adapter"
-                AdapterCls = getattr(mod, class_name, None) or getattr(
-                    mod, "Adapter", None
-                )
-                if AdapterCls is None:
-                    guilogger.error(
-                        f"ProviderManager: Adapter class not found in module {module_name}"
-                    )
-                    self._providers[key] = None
-                    continue
-
-                # Instantiate adapter in a simple, predictable way. Adapters may provide
-                # a factory `from_provider_config(provider_dict)` but otherwise accept
-                # structured named args or the provider dict as a last resort.
-                adapter = None
-                try:
-                    if hasattr(AdapterCls, "from_provider_config"):
+            guilogger.info("ProviderManager.initialize: loading providers.json")
+            cfg = resolve_config_path(self.providers_config_path)
+            try:
+                if not cfg.exists():
+                    # No providers.json present; publish missing event and mark initialized
+                    if self._event_bus:
                         try:
-                            adapter = AdapterCls.from_provider_config(p)
-                        except TypeError:
-                            adapter = AdapterCls.from_provider_config(**p)
-                    else:
-                        # First choice: prefer explicit named args adapters commonly support
-                        try:
-                            cfg_path = (
-                                str(self.providers_config_path)
-                                if self.providers_config_path
-                                else None
+                            self._event_bus.publish(
+                                "provider.config.missing", {"path": str(cfg)}
                             )
-                            adapter = AdapterCls(
-                                name=p.get("name"),
-                                config_path=cfg_path,
-                                base_url=p.get("base_url") or p.get("url"),
-                                api_key=p.get("api_key"),
-                                models=normalize_models_for_provider(p),
-                            )
-                        except TypeError:
-                            # Try passing provider dict or base_url as single arg
-                            try:
-                                adapter = AdapterCls(p)
-                            except Exception:
-                                try:
-                                    adapter = AdapterCls(
-                                        p.get("base_url") or p.get("url")
-                                    )
-                                except Exception:
-                                    adapter = AdapterCls()
-                except Exception as e:
-                    guilogger.error(
-                        f"ProviderManager: failed to instantiate adapter for {key}: {e}"
-                    )
-                    adapter = None
-
-                # Attach provider metadata and cache static models if present
-                if adapter is not None:
-                    try:
-                        setattr(adapter, "provider", p)
-                    except Exception:
-                        pass
-                    try:
-                        setattr(adapter, "missing_provider", False)
-                    except Exception:
-                        pass
-
-                self._providers[key] = adapter
-
-                # Cache models declared in providers.json using a centralized helper
-                try:
-                    models_list_static = normalize_models_for_provider(p)
-                    if models_list_static:
-                        self._models_cache[key] = models_list_static
-                        with _MODEL_CACHE_LOCK:
-                            _MODEL_CACHE[key] = models_list_static
-                            _MODEL_CACHE_TIME[key] = time.time()
-                        if self._event_bus:
-                            try:
-                                self._event_bus.publish(
-                                    "provider.models.list",
-                                    {"provider": key, "models": models_list_static},
-                                )
-                                self._event_bus.publish(
-                                    "provider.models.cached",
-                                    {"provider": key, "models": models_list_static},
-                                )
-                            except Exception:
-                                pass
-                except Exception:
-                    pass
-
-            # Probe adapters for models (adapters may be network-backed; tests can monkeypatch)
-            for prov_key, adapter in list(self._providers.items()):
-                try:
-                    # Skip probe for explicitly inactive providers
-                    prov_cfg = next(
-                        (
-                            p
-                            for p in providers
-                            if canonical_provider(p.get("name") or p.get("type") or "")
-                            == prov_key
-                        ),
-                        None,
-                    )
-                    # Skip probe for explicitly inactive providers, unless they are
-                    # local/self-hosted (base_url present) — those should always be
-                    # probed so the TUI can show whether LM Studio / Ollama is running.
-                    _is_local_prov = bool(
-                        prov_cfg
-                        and (
-                            prov_cfg.get("base_url")
-                            or canonical_provider(prov_cfg.get("type") or "")
-                            in {"lm_studio", "ollama", "openai_compat", "local"}
-                        )
-                    )
-                    if (
-                        prov_cfg
-                        and prov_cfg.get("active") is False
-                        and not _is_local_prov
-                    ):
-                        continue
-
-                    if not adapter:
-                        if not self._models_cache.get(prov_key):
-                            self._models_cache[prov_key] = []
-                        if self._event_bus:
-                            try:
-                                self._event_bus.publish(
-                                    "provider.status.changed",
-                                    {"provider": prov_key, "status": "disconnected"},
-                                )
-                            except Exception:
-                                pass
-                        continue
-
-                    # --- Determine connection status ---
-                    # Priority: validate_connection() > get_models_from_api() result.
-                    # validate_connection() is preferred for providers like GitHub Copilot
-                    # that use OAuth tokens (no network call needed to check auth state).
-                    explicit_status: Optional[str] = None
-                    if hasattr(adapter, "validate_connection"):
-                        try:
-                            valid = adapter.validate_connection()
-                            if inspect.isawaitable(valid):
-                                # Sync context — skip awaitable; fall through to probe
-                                pass
-                            else:
-                                explicit_status = (
-                                    "connected" if valid else "disconnected"
-                                )
                         except Exception:
                             pass
+                    self._initialized = True
+                    return
 
-                    if hasattr(adapter, "get_models_from_api"):
-                        try:
-                            resp = adapter.get_models_from_api()
-                        except Exception:
-                            resp = None
+                raw = json.loads(cfg.read_text(encoding="utf-8"))
+                providers = _load_provider_entries(raw)
+                _load_registered_providers(
+                    providers=providers,
+                    providers_map=self._providers,
+                    provider_models_cache=self._models_cache,
+                    module_models_cache=_MODEL_CACHE,
+                    module_models_cache_time=_MODEL_CACHE_TIME,
+                    model_cache_lock=_MODEL_CACHE_LOCK,
+                    now=time.time,
+                    event_bus=self._event_bus,
+                    providers_config_path=self.providers_config_path,
+                    canonical_provider=canonical_provider,
+                    resolve_adapter_class_fn=_resolve_adapter_class,
+                    instantiate_adapter_fn=_instantiate_adapter,
+                    attach_provider_metadata_fn=_attach_provider_metadata,
+                    cache_static_provider_models_fn=_cache_static_provider_models,
+                    normalize_models_for_provider=normalize_models_for_provider,
+                    camelize=_camelize,
+                    logger=guilogger,
+                )
 
-                        models_list = []
-                        # Validate and sanitise probe results: only accept
-                        # concrete non-empty strings (filter MagicMock placeholders)
-                        if isinstance(resp, dict):
-                            for m in resp.get("models", []):
-                                fid = None
-                                if isinstance(m, dict):
-                                    fid = (
-                                        m.get("id")
-                                        or m.get("key")
-                                        or m.get("name")
-                                        or m.get("model")
-                                    )
-                                elif isinstance(m, str):
-                                    fid = m
-                                if fid and _valid_str(fid):
-                                    models_list.append(str(fid).strip())
+                _run_provider_probe_cycle(
+                    providers=providers,
+                    providers_map=self._providers,
+                    provider_models_cache=self._models_cache,
+                    module_models_cache=_MODEL_CACHE,
+                    module_models_cache_time=_MODEL_CACHE_TIME,
+                    model_cache_lock=_MODEL_CACHE_LOCK,
+                    now=time.time,
+                    event_bus=self._event_bus,
+                    canonical_provider=canonical_provider,
+                    should_probe_provider_fn=_should_probe_provider,
+                    determine_explicit_status_fn=_determine_explicit_status,
+                    probe_adapter_models_fn=lambda **kwargs: _probe_adapter_models(
+                        extract_models_from_api_response=lambda response: _extract_models_from_api_response(
+                            response,
+                            valid_str=_valid_str,
+                        ),
+                        normalize_lmstudio_models=lambda items: [
+                            _lmstudio_full_id(x) for x in items
+                        ],
+                        **kwargs,
+                    ),
+                    cache_probed_models_fn=_cache_probed_models,
+                    publish_provider_probe_events_fn=_publish_provider_probe_events,
+                    publish_unknown_provider_status_fn=_publish_unknown_provider_status,
+                    logger=guilogger,
+                    get_loaded_context_length_fn=lambda adapter, active_model: adapter.get_loaded_context_length(
+                        active_model
+                    )
+                    if hasattr(adapter, "get_loaded_context_length")
+                    else None,
+                    set_active_context_length_fn=lambda context_length, provider_key="": __import__(
+                        "src.core.inference.provider_context",
+                        fromlist=["set_active_context_length"],
+                    ).set_active_context_length(context_length, provider_id=provider_key),
+                    is_active_provider_fn=lambda provider_key, provider_config: bool(
+                        provider_config and provider_config.get("active")
+                    ),
+                )
 
-                        # Normalize LM Studio ids if needed
-                        if prov_key == "lm_studio":
-                            models_list = [_lmstudio_full_id(x) for x in models_list]
-
-                        if models_list:
-                            self._models_cache[prov_key] = models_list
-                            with _MODEL_CACHE_LOCK:
-                                _MODEL_CACHE[prov_key] = models_list
-                                _MODEL_CACHE_TIME[prov_key] = time.time()
-                            guilogger.info(
-                                f"ProviderManager: cached models for {prov_key}: {models_list}"
-                            )
-                            if self._event_bus:
-                                try:
-                                    self._event_bus.publish(
-                                        "provider.models.list",
-                                        {"provider": prov_key, "models": models_list},
-                                    )
-                                    self._event_bus.publish(
-                                        "provider.models.cached",
-                                        {"provider": prov_key, "models": models_list},
-                                    )
-                                    # validate_connection() overrides model-probe status
-                                    final_status = explicit_status or "connected"
-                                    self._event_bus.publish(
-                                        "provider.status.changed",
-                                        {"provider": prov_key, "status": final_status},
-                                    )
-                                    # Query context window for providers that support it
-                                    # (e.g. LM Studio exposes /api/v0/models with
-                                    # loaded_context_length per model).
-                                    if hasattr(adapter, "get_loaded_context_length"):
-                                        try:
-                                            active_model = (
-                                                models_list[0] if models_list else ""
-                                            )
-                                            ctx_len = adapter.get_loaded_context_length(
-                                                active_model
-                                            )
-                                            if ctx_len and ctx_len > 0:
-                                                # Set directly so headless mode (no TUI
-                                                # event subscriber) also gets the live value.
-                                                from src.core.inference.provider_context import (
-                                                    set_active_context_length,
-                                                )
-
-                                                set_active_context_length(ctx_len)
-                                                if self._event_bus:
-                                                    self._event_bus.publish(
-                                                        "provider.context_window",
-                                                        {
-                                                            "provider": prov_key,
-                                                            "model": active_model,
-                                                            "context_window": ctx_len,
-                                                        },
-                                                    )
-                                        except Exception:
-                                            pass
-                                except Exception:
-                                    pass
-                        else:
-                            # Don't overwrite static models cached from providers.json
-                            if not self._models_cache.get(prov_key):
-                                self._models_cache[prov_key] = []
-                            if self._event_bus:
-                                try:
-                                    self._event_bus.publish(
-                                        "provider.models.empty", {"provider": prov_key}
-                                    )
-                                    # validate_connection() overrides empty-models status.
-                                    # This is the key fix for GitHub Copilot: when a token
-                                    # is stored, status is "connected" even though the
-                                    # static fallback models were returned.
-                                    final_status = explicit_status or "disconnected"
-                                    self._event_bus.publish(
-                                        "provider.status.changed",
-                                        {
-                                            "provider": prov_key,
-                                            "status": final_status,
-                                        },
-                                    )
-                                except Exception:
-                                    pass
-                    else:
-                        # Don't overwrite static models cached from providers.json
-                        if not self._models_cache.get(prov_key):
-                            self._models_cache[prov_key] = []
-                        if self._event_bus:
-                            try:
-                                final_status = explicit_status or "unknown"
-                                self._event_bus.publish(
-                                    "provider.status.changed",
-                                    {"provider": prov_key, "status": final_status},
-                                )
-                            except Exception:
-                                pass
-                except Exception:
-                    try:
-                        self._models_cache[prov_key] = []
-                    except Exception:
-                        pass
-                    continue
-
-        except Exception as e:
-            guilogger.error(f"ProviderManager.initialize error: {e}")
-        self._initialized = True
+            except Exception as e:
+                guilogger.error(f"ProviderManager.initialize error: {e}")
+            self._initialized = True
 
     async def validate_provider(self, name: str) -> bool:
-        prov = self.get_provider(name)
-        if not prov:
-            return False
-        try:
-            if hasattr(prov, "validate_connection"):
-                res = prov.validate_connection()
-                if inspect.isawaitable(res):
-                    return await res
-                return bool(res)
-            if hasattr(prov, "get_models_from_api"):
-                try:
-                    resp = prov.get_models_from_api()
-                    return resp is not None
-                except Exception:
-                    return False
-            return True
-        except Exception:
-            return False
+        return await _validate_provider_connection(adapter=self.get_provider(name))
 
 
 # Module-level singleton
@@ -1361,6 +830,7 @@ def get_provider_manager() -> ProviderManager:
 
 
 _INIT_TASK: "asyncio.Task | None" = None  # held so GC cannot collect it (NEW-11)
+_INIT_TASK_LOCK = _threading.Lock()
 
 
 def _ensure_provider_manager_initialized_sync():
@@ -1373,9 +843,14 @@ def _ensure_provider_manager_initialized_sync():
     except RuntimeError:
         loop = None
     if loop and loop.is_running():
-        # Store the task so it is not garbage-collected before it completes.
-        # Exceptions are logged via the done-callback.
-        _INIT_TASK = asyncio.create_task(_provider_manager.initialize())
+        with _INIT_TASK_LOCK:
+            if _provider_manager._initialized:
+                return
+            if _INIT_TASK is not None and not _INIT_TASK.done():
+                return
+            # Store the task so it is not garbage-collected before it completes.
+            # Exceptions are logged via the done-callback.
+            _INIT_TASK = asyncio.create_task(_provider_manager.initialize())
 
         def _log_init_exc(t: "asyncio.Task") -> None:
             if not t.cancelled() and t.exception():
@@ -1385,7 +860,14 @@ def _ensure_provider_manager_initialized_sync():
                     "ProviderManager async init failed: %s", t.exception()
                 )
 
+        def _clear_init_task(t: "asyncio.Task") -> None:
+            global _INIT_TASK
+            with _INIT_TASK_LOCK:
+                if _INIT_TASK is t:
+                    _INIT_TASK = None
+
         _INIT_TASK.add_done_callback(_log_init_exc)
+        _INIT_TASK.add_done_callback(_clear_init_task)
     else:
         try:
             asyncio.run(_provider_manager.initialize())
@@ -1442,29 +924,13 @@ async def get_structured_llm(
         models = []
 
     resolved = None
-    if models:
-        try:
-            # select_model_name handles matching both short and full ids
-            sel = select_model_name(models, model_name)
-            if sel:
-                resolved = sel
-            else:
-                # publish missing model event so callers can react
-                try:
-                    if mgr._event_bus:
-                        mgr._event_bus.publish(
-                            "provider.model.missing",
-                            {
-                                "provider": p_key,
-                                "requested": model_name,
-                                "available": models,
-                            },
-                        )
-                except Exception:
-                    pass
-                resolved = None
-        except Exception:
-            resolved = None
+    resolved = _resolve_requested_model_helper(
+        models,
+        model_name,
+        select_model_name_fn=select_model_name,
+        event_bus=mgr._event_bus,
+        provider_key=p_key,
+    )
 
     adapter = mgr.get_provider(p_key)
     return adapter, resolved
@@ -1489,202 +955,34 @@ async def _call_model_internal(
         if provider:
             adapter = mgr.get_provider(canonical_provider(provider))
         if adapter is None:
-            # try loading from providers.json
             raw = load_provider(None)
-            providers = (
-                raw
-                if isinstance(raw, list)
-                else ([raw] if isinstance(raw, dict) else [])
+            selected = _select_runtime_provider_config(raw=raw, provider=provider)
+            adapter = _instantiate_runtime_adapter(
+                provider_config=selected,
+                providers_config_path=getattr(mgr, "providers_config_path", None),
+                resolve_adapter_class=_resolve_adapter_class,
+                instantiate_adapter=_instantiate_adapter,
+                normalize_models_for_provider=normalize_models_for_provider,
+                camelize=_camelize,
             )
-            selected = None
-            if provider:
-                for p in providers:
-                    if (p.get("name") or "").lower() == str(provider).lower() or (
-                        p.get("type") or ""
-                    ).lower() == str(provider).lower():
-                        selected = p
-                        break
-            if not selected and providers:
-                selected = providers[0]
-            if selected:
-                # instantiate adapter similar to ProviderManager logic
-                ptype = (
-                    str(selected.get("type") or "").strip().lower().replace("-", "_")
-                    or "ollama"
-                )
-                # Load adapter module and try sensible instantiation fallbacks.
-                try:
-                    mod = importlib.import_module(
-                        f"src.core.inference.adapters.{ptype}_adapter"
-                    )
-                    class_name = (
-                        "".join(
-                            part.title() for part in ptype.replace("-", "_").split("_")
-                        )
-                        + "Adapter"
-                    )
-                    AdapterCls = getattr(mod, class_name, None) or getattr(
-                        mod, "Adapter", None
-                    )
-                    if AdapterCls is None:
-                        # fallback: pick any class ending with Adapter
-                        for attr in dir(mod):
-                            if attr.lower().endswith("adapter"):
-                                candidate = getattr(mod, attr)
-                                if isinstance(candidate, type):
-                                    AdapterCls = candidate
-                                    break
-                    if AdapterCls is None:
-                        raise ImportError("Adapter class not found")
-
-                    adapter = None
-                    # Try factory-based construction first
-                    try:
-                        if hasattr(AdapterCls, "from_provider_config"):
-                            try:
-                                adapter = AdapterCls.from_provider_config(selected)
-                            except TypeError:
-                                adapter = AdapterCls.from_provider_config(**selected)
-                    except Exception:
-                        adapter = None
-
-                    if adapter is None:
-                        # Try passing structured args
-                        cfg_path = None
-                        try:
-                            cfg_path = (
-                                str(mgr.providers_config_path)
-                                if mgr.providers_config_path
-                                else (selected.get("config_path") or None)
-                            )
-                        except Exception:
-                            cfg_path = None
-                        try:
-                            adapter = AdapterCls(
-                                name=selected.get("name"),
-                                config_path=cfg_path,
-                                api_key=selected.get("api_key"),
-                                models=normalize_models_for_provider(selected),
-                            )
-                        except TypeError:
-                            try:
-                                adapter = AdapterCls(
-                                    name=selected.get("name"),
-                                    base_url=selected.get("base_url")
-                                    or selected.get("url"),
-                                    api_key=selected.get("api_key"),
-                                )
-                            except TypeError:
-                                try:
-                                    adapter = AdapterCls(
-                                        selected.get("base_url") or selected.get("url")
-                                    )
-                                except Exception:
-                                    try:
-                                        adapter = AdapterCls(selected)
-                                    except Exception:
-                                        # Last resort: call without args
-                                        adapter = AdapterCls()
-                except Exception:
-                    adapter = None
         if adapter is None:
             return {"ok": False, "error": "no_adapter_found"}
-        # Prepare call kwargs so we can inject a safe noop function schema for
-        # proxy adapters (LiteLLM-like) that require a non-empty tools/functions
-        # list when callers did not supply any. We keep the original kwargs
-        # behaviour but ensure the adapter receives a sensible `tools` arg.
-        call_extra_args = dict(kwargs or {})
-        try:
-            if tools is not None:
-                call_extra_args["tools"] = tools
-            else:
-                # Decide conservatively whether to inject a noop. Known proxy
-                # targets (LiteLLM) are detected by adapter name/type.
-                inject_noop = False
-                try:
-                    # Use the ProviderManager helper so detection logic is
-                    # centralized and easier to maintain / test.
-                    inject_noop = mgr.is_proxy_adapter(adapter)
-                except Exception:
-                    inject_noop = False
-
-                if inject_noop:
-                    noop_schema = {
-                        "type": "function",
-                        "function": {
-                            "name": "_noop",
-                            "description": "No-op placeholder injected by LLM manager to satisfy proxy requirement",
-                            "parameters": {"type": "object", "properties": {}},
-                        },
-                    }
-                    call_extra_args["tools"] = [noop_schema]
-        except Exception:
-            # Never fail LLM calls due to injection logic
-            pass
-
-        # Initialize last_err so static analyzers and all code paths have a
-        # well-defined variable to inspect after attempted adapter calls.
-        last_err = None
-
-        if hasattr(adapter, "chat"):
-            loop = asyncio.get_running_loop()
-            # CODE_QUALITY_AUDIT #7 fix: functools.partial is now a top-level import.
-            try:
-                # call synchronously in executor
-                fn = functools.partial(
-                    adapter.chat,
-                    messages,
-                    model=model,
-                    stream=stream,
-                    format_json=format_json,
-                    **call_extra_args,
-                )
-                # Propagate ContextVars (correlation id) into worker thread
-                res = await run_with_correlation(loop, None, fn)
-                # M1: If stream=True the adapter may return a raw requests.Response;
-                # consume the SSE stream and return the accumulated text as a dict.
-                if stream and hasattr(res, "iter_lines"):
-                    text = await run_with_correlation(
-                        loop, None, functools.partial(_consume_sse_stream, res, model)
-                    )
-                    return {"ok": True, "text": text, "streamed": True}
-                return res
-            except Exception as e:
-                last_err = e
-        if hasattr(adapter, "generate"):
-            loop = asyncio.get_running_loop()
-            try:
-                # Some adapters expect (prompt, model, stream, format_json) while some expect prompt-only.
-                fn = functools.partial(
-                    adapter.generate,
-                    messages,
-                    model=model,
-                    stream=stream,
-                    format_json=format_json,
-                    **call_extra_args,
-                )
-                # Propagate ContextVars into worker thread
-                res = await run_with_correlation(loop, None, fn)
-                # M1: Same SSE consumption for generate path
-                if stream and hasattr(res, "iter_lines"):
-                    text = await run_with_correlation(
-                        loop, None, functools.partial(_consume_sse_stream, res, model)
-                    )
-                    return {"ok": True, "text": text, "streamed": True}
-                return res
-            except TypeError:
-                try:
-                    # fallback: positional
-                    fn = functools.partial(adapter.generate, messages)
-                    res = await run_with_correlation(loop, None, fn)
-                    return res
-                except Exception as e:
-                    last_err = e
-            except Exception as e:
-                last_err = e
-        if last_err:
-            return {"ok": False, "error": str(last_err)}
-        return {"ok": False, "error": "adapter_missing_generate_or_chat"}
+        call_extra_args = _prepare_call_extra_args(
+            kwargs=dict(kwargs or {}),
+            tools=tools,
+            is_proxy_adapter=mgr.is_proxy_adapter,
+            adapter=adapter,
+        )
+        return await _call_adapter_with_fallbacks(
+            adapter=adapter,
+            messages=messages,
+            model=model,
+            stream=stream,
+            format_json=format_json,
+            call_extra_args=call_extra_args,
+            run_with_correlation=run_with_correlation,
+            consume_sse_stream=_consume_sse_stream,
+        )
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
@@ -1816,147 +1114,64 @@ def _consume_sse_stream(raw_response: Any, model: Optional[str] = None) -> str:
     _inside_think = False
 
     accumulated = []
+
+    def _publish_chunk(chunk: str, is_reasoning: bool) -> None:
+        _publish_stream_chunk(bus=bus, chunk=chunk, is_reasoning=is_reasoning)
+
     try:
         for raw_line in raw_response.iter_lines():
-            if not raw_line:
+            data = _decode_sse_line(raw_line)
+            if data is None:
                 continue
-            line = (
-                raw_line
-                if isinstance(raw_line, str)
-                else raw_line.decode("utf-8", errors="replace")
-            )
-            if not line.startswith("data:"):
-                continue
-            data = line[5:].strip()
             if data == "[DONE]":
                 break
-            try:
-                chunk = json.loads(data)
-                choices = chunk.get("choices") or []
-                if choices:
-                    delta = choices[0].get("delta") or {}
-
-                    # Source 1: structured reasoning field
-                    reasoning_delta = (
-                        delta.get("reasoning_content") or delta.get("thinking") or ""
-                    )
-                    # Source 3: explicit is_reasoning flag
-                    if not reasoning_delta and delta.get("is_reasoning"):
-                        reasoning_delta = delta.get("content") or ""
-                        content_delta = ""
-                    else:
-                        content_delta = (
-                            delta.get("content") or ""
-                            if not reasoning_delta
-                            else (delta.get("content") or "")
-                        )
-
-                    # Source 2: <think> tag split — only for known reasoning models
-                    if not reasoning_delta and _tag_split_enabled and content_delta:
-                        if "<think>" in content_delta and not _inside_think:
-                            before, _, rest = content_delta.partition("<think>")
-                            _inside_think = True
-                            if before and bus:
-                                try:
-                                    bus.publish(
-                                        "response.stream_chunk",
-                                        {"chunk": before, "is_reasoning": False},
-                                    )
-                                    bus.publish(
-                                        "model.token", {"text": before, "partial": True}
-                                    )
-                                    bus.publish(
-                                        "llm.token", {"text": before, "partial": True, "is_reasoning": False}
-                                    )
-                                except Exception:
-                                    pass
-                            accumulated.append(before)
-                            if "</think>" in rest:
-                                think_part, _, after = rest.partition("</think>")
-                                _inside_think = False
-                                if think_part and bus:
-                                    try:
-                                        bus.publish(
-                                            "response.stream_chunk",
-                                            {"chunk": think_part, "is_reasoning": True},
-                                        )
-                                    except Exception:
-                                        pass
-                                content_delta = after
-                            else:
-                                if rest and bus:
-                                    try:
-                                        bus.publish(
-                                            "response.stream_chunk",
-                                            {"chunk": rest, "is_reasoning": True},
-                                        )
-                                    except Exception:
-                                        pass
-                                content_delta = ""
-                        elif "</think>" in content_delta and _inside_think:
-                            think_part, _, after = content_delta.partition("</think>")
-                            _inside_think = False
-                            if think_part and bus:
-                                try:
-                                    bus.publish(
-                                        "response.stream_chunk",
-                                        {"chunk": think_part, "is_reasoning": True},
-                                    )
-                                except Exception:
-                                    pass
-                            content_delta = after
-                        elif _inside_think:
-                            reasoning_delta = content_delta
-                            content_delta = ""
-
-                    # Publish reasoning delta
-                    if reasoning_delta and bus:
-                        try:
-                            bus.publish(
-                                "response.stream_chunk",
-                                {"chunk": reasoning_delta, "is_reasoning": True},
-                            )
-                        except Exception:
-                            pass
-
-                    # Publish normal content delta
-                    token_text = (
-                        content_delta
-                        if content_delta
-                        else (delta.get("content") or "" if not reasoning_delta else "")
-                    )
-                    if token_text:
-                        accumulated.append(token_text)
-                        if bus:
-                            try:
-                                bus.publish(
-                                    "response.stream_chunk",
-                                    {"chunk": token_text, "is_reasoning": False},
-                                )
-                                bus.publish(
-                                    "model.token", {"text": token_text, "partial": True}
-                                )
-                                bus.publish(
-                                    "llm.token", {"text": token_text, "partial": True, "is_reasoning": False}
-                                )
-                            except Exception:
-                                pass
-            except (json.JSONDecodeError, KeyError, IndexError):
+            chunk = _parse_sse_chunk(data)
+            if chunk is None:
                 continue
+            extracted = _extract_stream_deltas(chunk)
+            if extracted is None:
+                continue
+
+            delta, reasoning_delta, content_delta = extracted
+            used_original_content = False
+
+            if not reasoning_delta:
+                (
+                    split_reasoning,
+                    content_delta,
+                    _inside_think,
+                    prepublished_text,
+                    used_original_content,
+                ) = _split_thinking_content(
+                    content_delta=content_delta,
+                    inside_think=_inside_think,
+                    tag_split_enabled=_tag_split_enabled,
+                    publish_chunk=_publish_chunk,
+                )
+                if prepublished_text:
+                    accumulated.extend(prepublished_text)
+                if split_reasoning:
+                    reasoning_delta = split_reasoning
+
+            if reasoning_delta:
+                _publish_chunk(reasoning_delta, True)
+
+            token_text = (
+                content_delta
+                if content_delta
+                else (
+                    delta.get("content") or ""
+                    if not reasoning_delta and not used_original_content
+                    else ""
+                )
+            )
+            if token_text:
+                accumulated.append(token_text)
+                _publish_chunk(token_text, False)
     except Exception as e:
         guilogger.warning(f"_consume_sse_stream: stream iteration error: {e}")
 
-    full_text = "".join(accumulated)
-    if bus and full_text:
-        try:
-            bus.publish(
-                "model.token", {"text": "", "partial": False, "full": full_text}
-            )
-            bus.publish("llm.token", {"text": "", "partial": False, "full": full_text})
-            bus.publish("response.stream_end", {"full_text": full_text})
-        except Exception:
-            pass
-    return full_text
+    return _finalize_stream(bus=bus, accumulated=accumulated)
 
 
 async def call_model(
@@ -1988,101 +1203,51 @@ async def call_model(
         messages, provider, model, stream, format_json, tools, **kwargs
     )
 
-    if os.getenv("LLM_MANAGER_ENABLE_MODEL_FALLBACK") == "1":
-        is_error = False
-        if isinstance(res, dict):
-            if (
-                res.get("ok") is False
-                or "error" in res
-                or (
-                    res.get("meta")
-                    and isinstance(res.get("meta"), dict)
-                    and res["meta"].get("error")
-                )
-            ):
-                is_error = True
-
-        if is_error:
-            # Attempt fallback — limit attempts to avoid N×120s cascading timeouts (H5 fix)
-            _max_fallbacks = int(os.getenv("LLM_MANAGER_MAX_FALLBACKS", "2"))
-            try:
-                models = await get_available_models("", "", provider or "")
-                if models:
-                    _attempts = 0
-                    for m in models:
-                        if m == model:
-                            continue
-                        if _attempts >= _max_fallbacks:
-                            break
-                        _attempts += 1
-                        fb_res = await _call_model_internal(
-                            messages,
-                            provider,
-                            m,
-                            stream,
-                            format_json,
-                            tools,
-                            **kwargs,
-                        )
-                        is_fb_err = False
-                        if isinstance(fb_res, dict):
-                            if (
-                                fb_res.get("ok") is False
-                                or "error" in fb_res
-                                or (
-                                    fb_res.get("meta")
-                                    and isinstance(fb_res.get("meta"), dict)
-                                    and fb_res["meta"].get("error")
-                                )
-                            ):
-                                is_fb_err = True
-                        if not is_fb_err:
-                            if _cb_key:
-                                get_circuit_breaker(_cb_key).record_success()
-                            return fb_res
-            except Exception:
-                pass
+    res = await _attempt_model_fallback(
+        enabled=os.getenv("LLM_MANAGER_ENABLE_MODEL_FALLBACK") == "1",
+        current_result=res,
+        current_model=model,
+        provider=provider,
+        messages=messages,
+        stream=stream,
+        format_json=format_json,
+        tools=tools,
+        kwargs=kwargs,
+        max_fallbacks=int(os.getenv("LLM_MANAGER_MAX_FALLBACKS", "2")),
+        get_available_models=get_available_models,
+        call_model_internal=_call_model_internal,
+        on_success=(lambda: get_circuit_breaker(_cb_key).record_success())
+        if _cb_key
+        else None,
+    )
 
     # #31: Record success/failure in the circuit breaker
-    if _cb_key:
-        _cb = get_circuit_breaker(_cb_key)
-        _is_err = isinstance(res, dict) and (res.get("ok") is False or res.get("error"))
-        if _is_err:
-            _cb.record_failure()
-        else:
-            _cb.record_success()
+    _update_circuit_breaker_for_result(
+        provider_key=_cb_key,
+        result=res,
+        get_circuit_breaker=get_circuit_breaker,
+    )
 
     # HR-6: Record actual token usage in the budget monitor so check_budget() has
     # real counts rather than rough character-length estimates.
     # FIX: generate() normalises usage to top-level keys (prompt_tokens,
     # completion_tokens, total_tokens) — NOT nested under "usage".  The old
     # res.get("usage") path always returned {} and this block never fired.
-    if session_id and isinstance(res, dict):
-        _pt = int(res.get("prompt_tokens") or 0)
-        _ct = int(res.get("completion_tokens") or 0)
-        _tt = int(res.get("total_tokens") or (_pt + _ct))
-        if _tt > 0:
-            try:
-                if _get_token_budget_monitor is not None:
-                    _get_token_budget_monitor().record_usage(session_id, _pt, _ct, _tt)
-            except Exception:
-                pass  # never let budget tracking break LLM calls
+    _record_token_usage(
+        session_id=session_id,
+        result=res,
+        get_token_budget_monitor=_get_token_budget_monitor,
+    )
 
     # Gap 3: HOOK_LLM_RESPONSE — lets plugins observe every model response.
-    if _LLM_MGR_HAS_HOOKS and _hook_registry is not None:
-        try:
-            _text = res.get("text", "") if isinstance(res, dict) else ""
-            _hook_registry.call(
-                _HOOK_LLM_RESPONSE,
-                {
-                    "content": _text,
-                    "model": model or "",
-                    "provider": provider or "",
-                    "ok": res.get("ok", True) if isinstance(res, dict) else True,
-                },
-            )
-        except Exception:
-            pass
+    _publish_llm_response_hook(
+        enabled=_LLM_MGR_HAS_HOOKS,
+        hook_registry=_hook_registry,
+        hook_name=_HOOK_LLM_RESPONSE,
+        result=res,
+        model=model,
+        provider=provider,
+    )
 
     return res
 

@@ -59,8 +59,8 @@ TOOL_PERMISSIONS: Dict[str, PermissionLevel] = {
     "git_status": PermissionLevel.READ_ONLY,
     "git_log": PermissionLevel.READ_ONLY,
     "git_diff": PermissionLevel.READ_ONLY,
-    "read_web_page": PermissionLevel.READ_ONLY,
-    "web_search": PermissionLevel.READ_ONLY,
+    "read_web_page": PermissionLevel.DANGER,
+    "web_search": PermissionLevel.DANGER,
     "get_memory": PermissionLevel.READ_ONLY,
     "load_skill": PermissionLevel.READ_ONLY,
     "list_skills": PermissionLevel.READ_ONLY,
@@ -151,9 +151,9 @@ TOOL_ALIASES: Dict[str, str] = {
 _CONTEXT_DIR: str = ".codingAgent"  # PREFERRED: project-specific context directory
 _DEFAULT_WORKDIR: Optional[Path] = None
 _AUTONOMOUS_MODE: bool = False  # AUTO-01: global autonomous-mode flag
-_ACTIVE_PERMISSION_MODE: Optional[PermissionLevel] = (
-    None  # TASK-20: active mode override
-)
+_ACTIVE_PERMISSION_MODE: Optional[
+    PermissionLevel
+] = None  # TASK-20: active mode override
 # PREV-1: When True, file-write operations (write_file, edit_file_atomic) block
 # until the user accepts or rejects the diff preview in the TUI.
 # When False (default), writes proceed immediately and the diff is shown as
@@ -200,11 +200,7 @@ def configure(
         committing the change.  When *False* (default), writes proceed
         immediately and the diff is shown as informational output only.
     """
-    global \
-        _CONTEXT_DIR, \
-        _DEFAULT_WORKDIR, \
-        _AUTONOMOUS_MODE, \
-        _REQUIRE_PREVIEW_CONFIRMATION
+    global _CONTEXT_DIR, _DEFAULT_WORKDIR, _AUTONOMOUS_MODE, _REQUIRE_PREVIEW_CONFIRMATION
     with _config_lock:
         _CONTEXT_DIR = context_dir
         _DEFAULT_WORKDIR = default_workdir
@@ -328,12 +324,7 @@ def reset_to_defaults() -> None:
     This is primarily intended for test code to restore deterministic
     module state between tests and avoid order-dependent failures.
     """
-    global \
-        _CONTEXT_DIR, \
-        _DEFAULT_WORKDIR, \
-        _AUTONOMOUS_MODE, \
-        _ACTIVE_PERMISSION_MODE, \
-        _REQUIRE_PREVIEW_CONFIRMATION
+    global _CONTEXT_DIR, _DEFAULT_WORKDIR, _AUTONOMOUS_MODE, _ACTIVE_PERMISSION_MODE, _REQUIRE_PREVIEW_CONFIRMATION
     with _config_lock:
         _CONTEXT_DIR = ".codingAgent"
         _DEFAULT_WORKDIR = None

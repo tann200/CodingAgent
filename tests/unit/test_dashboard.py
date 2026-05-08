@@ -135,6 +135,31 @@ class TestToolEvents:
         mock_app.post_message.assert_called()
 
 
+class TestSystemSettingsEvents:
+    def test_system_settings_posts_system_settings_loaded(self):
+        bridge, bus, mock_app = _make_bridge()
+        bus.publish(
+            "system.settings",
+            {
+                "active_mode": "lead_architect",
+                "theme": "textual-dark",
+                "context_window": 65536,
+                "default_provider": "copilot",
+                "default_model": "gpt-5",
+                "providers": [{"name": "copilot", "models": ["gpt-5"]}],
+                "autonomous_mode": True,
+                "max_turns": 25,
+            },
+        )
+
+        mock_app.post_message.assert_called()
+        posted = mock_app.post_message.call_args[0][0]
+        assert posted.__class__.__name__ == "SystemSettingsLoaded"
+        assert posted.settings["context_window"] == 65536
+        assert posted.settings["autonomous_mode"] is True
+        assert posted.providers == [{"name": "copilot", "models": ["gpt-5"]}]
+
+
 # ---------------------------------------------------------------------------
 # Event dispatch: plan events
 # ---------------------------------------------------------------------------

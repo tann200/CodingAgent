@@ -48,8 +48,8 @@ from src.core.orchestration.permission_table import PermissionTable
         ("bash", "bash"),
         ("run_tests", "bash"),
         ("run_bash", "bash"),
-        ("webfetch", "webfetch"),
-        ("websearch", "websearch"),
+        ("read_web_page", "webfetch"),
+        ("web_search", "websearch"),
         ("delegate_task", "delegate_task"),
     ],
 )
@@ -179,6 +179,43 @@ def test_gate2c_empty_table_returns_none(
         result = gw._gate2c_permission_table("write_file", {"path": "foo.py"})
 
     assert result is None
+
+
+def test_gate2c_network_rule_matches_read_web_page(
+    mock_orch: MagicMock, tbl: PermissionTable
+) -> None:
+    tbl.add_rule("webfetch", "https://docs.example.com/*", "deny", "project")
+    gw = PermissionGateway(mock_orch)
+
+    with patch(
+        "src.core.orchestration.permission_table.get_permission_table",
+        return_value=tbl,
+    ):
+        result = gw._gate2c_permission_table(
+            "read_web_page", {"url": "https://docs.example.com/api"}
+        )
+
+    assert result is not None
+    assert result.allowed is False
+    assert result.gate == 3
+
+
+def test_gate2c_network_rule_matches_web_search(
+    mock_orch: MagicMock, tbl: PermissionTable
+) -> None:
+    tbl.add_rule("websearch", "oauth device flow", "allow", "project")
+    gw = PermissionGateway(mock_orch)
+
+    with patch(
+        "src.core.orchestration.permission_table.get_permission_table",
+        return_value=tbl,
+    ):
+        result = gw._gate2c_permission_table(
+            "web_search", {"query": "oauth device flow"}
+        )
+
+    assert result is not None
+    assert result.allowed is True
 
 
 def test_gate2c_exception_returns_none(mock_orch: MagicMock) -> None:

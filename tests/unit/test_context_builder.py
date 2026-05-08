@@ -1,4 +1,5 @@
 from src.core.context.context_builder import ContextBuilder
+from src.core.context.context_builder import _STATIC_PROMPT_CACHE
 
 # ruff: noqa: E501
 
@@ -281,3 +282,98 @@ def test_active_skills_loads_from_files():
     system_content = messages[0]["content"]
     # Should contain DRY skill content
     assert "Don't Repeat Yourself" in system_content or "DRY" in system_content
+
+
+def test_static_prompt_cache_separates_model_specific_prefixes():
+    ContextBuilder.clear_cache()
+    builder = ContextBuilder()
+
+    common_kwargs = dict(
+        role_name="operational",
+        active_skills=[],
+        task_description="task",
+        tools=[],
+        conversation=[],
+        model_tier="frontier",
+    )
+
+    gemma_messages = builder.build_prompt(
+        model_name="gemma-4-31b",
+        provider_capabilities={
+            "provider_family": "openai",
+            "model": "gemma-4-31b",
+        },
+        **common_kwargs,
+    )
+    gpt_messages = builder.build_prompt(
+        model_name="gpt-4o",
+        provider_capabilities={
+            "provider_family": "openai",
+            "model": "gpt-4o",
+        },
+        **common_kwargs,
+    )
+
+    gemma_system = gemma_messages[0]["content"]
+    gpt_system = gpt_messages[0]["content"]
+
+    assert gemma_system != gpt_system
+    assert len(_STATIC_PROMPT_CACHE) >= 2
+
+
+def test_build_prompt_includes_frozen_memory_prior_context(monkeypatch):
+    builder = ContextBuilder()
+    monkeypatch.setattr(
+        builder,
+        "inject_prior_session_memories",
+        lambda task, limit=3: "<prior_context>Frozen memory</prior_context>",
+    )
+
+    messages = builder.build_prompt(
+        role_name="operational",
+        active_skills=[],
+        task_description="task",
+        tools=[],
+        conversation=[],
+    )
+
+    assert "<prior_context>Frozen memory</prior_context>" in messages[0]["content"]
+
+
+def test_build_prompt_appends_lsp_context_after_prior_context(monkeypatch):
+    builder = ContextBuilder()
+    monkeypatch.setattr(
+        builder,
+        "inject_prior_session_memories",
+        lambda task, limit=3: "<prior_context>Earlier memory</prior_context>",
+    )
+
+    import sys
+    import types
+
+    fake_mod = types.ModuleType("src.core.indexing.lsp_context")
+    fake_mod.get_lsp_context_block = (
+        lambda workdir: "<lsp_context>LSP block</lsp_context>"
+    )
+    old_mod = sys.modules.get("src.core.indexing.lsp_context")
+    sys.modules["src.core.indexing.lsp_context"] = fake_mod
+    try:
+        messages = builder.build_prompt(
+            role_name="operational",
+            active_skills=[],
+            task_description="task",
+            tools=[],
+            conversation=[],
+        )
+    finally:
+        if old_mod is not None:
+            sys.modules["src.core.indexing.lsp_context"] = old_mod
+        else:
+            sys.modules.pop("src.core.indexing.lsp_context", None)
+
+    system = messages[0]["content"]
+    assert "<prior_context>Earlier memory</prior_context>" in system
+    assert "<lsp_context>LSP block</lsp_context>" in system
+    assert system.index("<prior_context>Earlier memory</prior_context>") < system.index(
+        "<lsp_context>LSP block</lsp_context>"
+    )

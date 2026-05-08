@@ -43,17 +43,13 @@ def test_dispatch_result_event_published_to_parent(tmp_path: Path) -> None:
     parent_orch._current_task_id = "parent_session"
     parent_orch.active_agent = None
 
-    # Patch GraphFactory, AgentBrainManager, compiled graph getter and the parent-context var
+    # Patch the canonical graph resolver, AgentBrainManager, and the parent-context var
     with (
-        patch("src.tools.subagent_tools.GraphFactory") as mock_gf,
+        patch("src.tools.subagent_tools._resolve_subagent_graph") as mock_resolver,
         patch("src.tools.subagent_tools.get_agent_brain_manager") as mock_brain_mgr,
         patch("src.tools.subagent_tools._PARENT_ORCHESTRATOR_VAR") as mock_ctxvar,
-        patch(
-            "src.core.orchestration.graph.builder._get_compiled_graph"
-        ) as mock_get_compiled,
     ):
-        mock_gf.get_graph.return_value = mock_graph
-        mock_get_compiled.return_value = mock_graph
+        mock_resolver.return_value = mock_graph
         mock_brain = MagicMock()
         mock_brain.compile_system_prompt.return_value = "sys"
         mock_brain_mgr.return_value = mock_brain
@@ -67,9 +63,9 @@ def test_dispatch_result_event_published_to_parent(tmp_path: Path) -> None:
         )
 
     # Assert the DispatchResultEvent was published with the expected content
-    assert len(parent_orch.event_bus.dispatch_results) == 1, (
-        "DispatchResultEvent not published"
-    )
+    assert (
+        len(parent_orch.event_bus.dispatch_results) == 1
+    ), "DispatchResultEvent not published"
     evt = parent_orch.event_bus.dispatch_results[0]
     # The published event should have a content attribute with our final summary
     assert hasattr(evt, "content")

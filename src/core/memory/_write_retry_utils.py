@@ -2,10 +2,9 @@
 
 import json
 import os
-import shutil
-import tempfile
 import time
 import traceback
+from pathlib import Path
 from typing import Any, Callable, Optional
 
 import logging
@@ -75,8 +74,7 @@ def write_with_retry(
 def atomic_write_json(
     filepath: str | os.PathLike, data: Any, logger_obj: Optional[logging.Logger] = None
 ) -> bool:
-    """
-    Write JSON data to file atomically using tempfile.mkstemp and os.replace.
+    """Write JSON data to file atomically using the central io_utils helper.
 
     Args:
         filepath: Target file path
@@ -84,76 +82,33 @@ def atomic_write_json(
         logger_obj: Optional logger for debug messages
 
     Returns:
-        True if successful, False if atomic_write_json is not available
+        True if successful, False otherwise
     """
     log = logger_obj or logger
 
     try:
-        # Try to use the central atomic write utility if available
-        try:
-            from src.core.io_utils import atomic_write_json as central_atomic_write
+        from src.core.io_utils import atomic_write_json as central_atomic_write
 
-            ok = central_atomic_write(filepath, data, logger=log)
-            if ok:
-                return True
-            log.warning(
-                "atomic_write_json returned False for %s; falling back",
-                filepath,
-            )
-        except Exception:
-            log.debug(
-                "atomic_write_json unavailable or failed for %s; falling back\n%s",
-                filepath,
-                traceback.format_exc(),
-            )
-
-        # Fallback to manual atomic write
-        filepath = str(filepath)
-        directory = os.path.dirname(filepath)
-        if directory:
-            os.makedirs(directory, exist_ok=True)
-
-        fd, tmp_path = tempfile.mkstemp(dir=directory, suffix=".tmp")
-        try:
-            try:
-                with os.fdopen(fd, "w", encoding="utf-8") as f:
-                    json.dump(data, f, indent=2)
-            except Exception:
-                try:
-                    os.close(fd)
-                except Exception:
-                    pass
-                raise
-
-            try:
-                os.replace(tmp_path, filepath)
-            except Exception:
-                try:
-                    shutil.move(tmp_path, filepath)
-                except Exception:
-                    log.debug(
-                        "mkstemp fallback failed for %s; final fallback to write_text\n%s",
-                        filepath,
-                        traceback.format_exc(),
-                    )
-                    try:
-                        with open(filepath, "w", encoding="utf-8") as f:
-                            json.dump(data, f, indent=2)
-                    except Exception:
-                        log.exception(
-                            "failed to write JSON to %s",
-                            filepath,
-                        )
-                        raise
+        ok = central_atomic_write(filepath, data, logger=log)
+        if ok:
             return True
-        except Exception as e:
-            log.error("failed to write JSON to %s: %s", filepath, e)
-            try:
-                if os.path.exists(tmp_path):
-                    os.unlink(tmp_path)
-            except Exception:
-                pass
-            raise
-
+        log.warning(
+            "atomic_write_json returned False for %s; falling back",
+            filepath,
+        )
     except Exception:
+        log.debug(
+            "atomic_write_json unavailable or failed for %s; falling back\n%s",
+            filepath,
+            traceback.format_exc(),
+        )
+
+    # Final fallback: write_text
+    try:
+        p = Path(filepath)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        return True
+    except Exception as e:
+        log.error("failed to write JSON to %s: %s", filepath, e)
         return False

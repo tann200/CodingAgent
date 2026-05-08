@@ -1,7 +1,10 @@
 import asyncio
+import concurrent.futures
 import json
+import threading
 import time
 import pytest
+import src.core.inference.llm_manager as llm_manager_module
 from src.core.inference.llm_manager import (
     ProviderManager,
     _provider_manager,
@@ -94,6 +97,102 @@ def test_get_structured_llm_missing_model_emits_event(monkeypatch, tmp_path):
     assert len(events) >= 1
 
 
+def test_provider_manager_validate_provider_uses_extracted_probe_helper():
+    class _AsyncProvider:
+        async def validate_connection(self):
+            return True
+
+    pm = ProviderManager()
+    pm._providers["ollama"] = _AsyncProvider()
+
+    assert asyncio.run(pm.validate_provider("ollama")) is True
+
+
+def test_provider_manager_initialize_serializes_concurrent_callers(
+    tmp_path, monkeypatch
+):
+    providers_path = tmp_path / "providers.json"
+    providers_path.write_text("[]", encoding="utf-8")
+
+    pm = ProviderManager(providers_config_path=str(providers_path))
+    start_event = threading.Event()
+    calls = {"load": 0, "probe": 0}
+
+    monkeypatch.setattr(
+        llm_manager_module,
+        "_load_provider_entries",
+        lambda raw: [],
+    )
+
+    def _fake_load_registered_providers(**kwargs):
+        calls["load"] += 1
+        time.sleep(0.05)
+
+    def _fake_run_provider_probe_cycle(**kwargs):
+        calls["probe"] += 1
+
+    monkeypatch.setattr(
+        llm_manager_module,
+        "_load_registered_providers",
+        _fake_load_registered_providers,
+    )
+    monkeypatch.setattr(
+        llm_manager_module,
+        "_run_provider_probe_cycle",
+        _fake_run_provider_probe_cycle,
+    )
+
+    def _worker() -> None:
+        start_event.wait(timeout=1.0)
+        asyncio.run(pm.initialize())
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(_worker), executor.submit(_worker)]
+        start_event.set()
+        for future in futures:
+            future.result(timeout=2.0)
+
+    assert pm._initialized is True
+    assert calls == {"load": 1, "probe": 1}
+
+
+def test_ensure_provider_manager_initialized_sync_reuses_inflight_task(monkeypatch):
+    calls = {"count": 0}
+    original_initialized = _provider_manager._initialized
+
+    async def _run_test():
+        release_event = asyncio.Event()
+
+        async def _fake_initialize():
+            calls["count"] += 1
+            await release_event.wait()
+            _provider_manager._initialized = True
+
+        monkeypatch.setattr(_provider_manager, "_initialized", False)
+        monkeypatch.setattr(llm_manager_module, "_INIT_TASK", None)
+        monkeypatch.setattr(_provider_manager, "initialize", _fake_initialize)
+
+        llm_manager_module._ensure_provider_manager_initialized_sync()
+        first_task = llm_manager_module._INIT_TASK
+        assert first_task is not None
+
+        llm_manager_module._ensure_provider_manager_initialized_sync()
+        assert llm_manager_module._INIT_TASK is first_task
+
+        release_event.set()
+        await first_task
+        await asyncio.sleep(0)
+
+    try:
+        asyncio.run(_run_test())
+    finally:
+        _provider_manager._initialized = original_initialized
+        llm_manager_module._INIT_TASK = None
+
+    assert calls["count"] == 1
+    assert llm_manager_module._INIT_TASK is None
+
+
 # ---------------------------------------------------------------------------
 # #31: CircuitBreaker tests
 # ---------------------------------------------------------------------------
@@ -180,20 +279,22 @@ class TestCircuitBreaker:
         assert cb._failure_count == 0
         assert cb.state == CircuitBreaker.CLOSED
 
+
 def test_consume_sse_stream_publishes_llm_token_alias(monkeypatch):
-    from src.core.inference.llm_manager import _consume_sse_stream
     class FakeResponse:
         def iter_lines(self):
             yield b'data: {"choices": [{"delta": {"content": "Hel"}}]}'
             yield b'data: {"choices": [{"delta": {"content": "lo"}}]}'
-            yield b'data: [DONE]'
+            yield b"data: [DONE]"
 
     bus = EventBus()
     published = []
 
     for event_name in ("model.token", "llm.token", "response.stream_end"):
+
         def make_handler(en):
             return lambda payload: published.append((en, payload))
+
         bus.subscribe(event_name, make_handler(event_name))
 
     monkeypatch.setattr(
@@ -209,5 +310,56 @@ def test_consume_sse_stream_publishes_llm_token_alias(monkeypatch):
     model_events = [p for e, p in published if e == "model.token"]
     assert llm_events
     assert model_events
-    assert any(ev.get("partial") is True and ev.get("text") == "Hel" for ev in llm_events)
-    assert any(ev.get("partial") is False and ev.get("full") == "Hello" for ev in llm_events)
+    assert any(
+        ev.get("partial") is True and ev.get("text") == "Hel" for ev in llm_events
+    )
+    assert any(
+        ev.get("partial") is False and ev.get("full") == "Hello" for ev in llm_events
+    )
+
+
+def test_consume_sse_stream_splits_think_blocks_into_reasoning_events(monkeypatch):
+    class FakeResponse:
+        def iter_lines(self):
+            yield b'data: {"choices": [{"delta": {"content": "Hi<think>plan"}}]}'
+            yield b'data: {"choices": [{"delta": {"content": "ning</think> there"}}]}'
+            yield b"data: [DONE]"
+
+    bus = EventBus()
+    published = []
+
+    for event_name in (
+        "response.stream_chunk",
+        "llm.token",
+        "model.token",
+        "response.stream_end",
+    ):
+
+        def make_handler(en):
+            return lambda payload: published.append((en, payload))
+
+        bus.subscribe(event_name, make_handler(event_name))
+
+    monkeypatch.setattr(
+        "src.core.orchestration.event_bus.get_event_bus",
+        lambda: bus,
+        raising=False,
+    )
+
+    result = _consume_sse_stream(FakeResponse(), model="qwen3.5-9b")
+
+    assert result == "Hi there"
+    reasoning_chunks = [
+        p
+        for e, p in published
+        if e == "response.stream_chunk" and p.get("is_reasoning") is True
+    ]
+    normal_chunks = [
+        p
+        for e, p in published
+        if e == "response.stream_chunk" and p.get("is_reasoning") is False
+    ]
+    assert any(chunk.get("chunk") == "plan" for chunk in reasoning_chunks)
+    assert any(chunk.get("chunk") == "ning" for chunk in reasoning_chunks)
+    assert any(chunk.get("chunk") == "Hi" for chunk in normal_chunks)
+    assert any(chunk.get("chunk") == " there" for chunk in normal_chunks)

@@ -1,3 +1,5 @@
+from unittest.mock import patch
+
 from src.core.orchestration.graph_factory import GraphFactory
 
 
@@ -36,3 +38,14 @@ def test_graph_factory_invalid_role():
 def test_graph_factory_default_graph():
     graph = GraphFactory.get_default_graph()
     assert graph is not None
+
+
+def test_graph_factory_get_graph_uses_tier_aware_selector_for_valid_role():
+    with patch(
+        "src.core.orchestration.graph.builder.get_compiled_graph_for_orchestrator",
+        return_value="tier-graph",
+    ) as mock_selector:
+        graph = GraphFactory.get_graph("coder", model="gpt-4o-mini")
+
+    assert graph == "tier-graph"
+    mock_selector.assert_called_once_with(orchestrator=None, model="gpt-4o-mini")

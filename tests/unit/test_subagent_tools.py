@@ -35,14 +35,16 @@ class TestDelegateTask:
             "last_result": {"ok": True, "output": "done"},
         }
 
-        # Patch ainvoke on whatever graph GraphFactory returns so no thread actually
+        # Patch ainvoke on the canonical graph resolver result so no thread actually
         # runs the LangGraph pipeline.  This prevents ordering-dependent hangs when
         # the global ThreadPoolExecutor is in a bad state after the full test suite.
         _mock_graph = MagicMock()
         _mock_graph.ainvoke = AsyncMock(return_value=_fake_state)
 
-        with patch("src.tools.subagent_tools.GraphFactory") as mock_gf:
-            mock_gf.get_graph.return_value = _mock_graph
+        with patch(
+            "src.tools.subagent_tools._resolve_subagent_graph",
+            return_value=_mock_graph,
+        ):
 
             for role in ["researcher", "coder", "reviewer", "planner"]:
                 result = delegate_task(
@@ -51,14 +53,14 @@ class TestDelegateTask:
                     working_dir=str(tmp_path),
                 )
                 # Should either work or fail gracefully (not invalid role error)
-                assert "Invalid role" not in result, (
-                    f"Role '{role}' unexpectedly rejected: {result}"
-                )
+                assert (
+                    "Invalid role" not in result
+                ), f"Role '{role}' unexpectedly rejected: {result}"
 
     def test_delegate_task_default_working_dir(self, tmp_path):
         """Test delegate_task uses default working directory."""
-        # ARCH-VOL21-1: get_graph() now returns the full 14-node compiled graph,
-        # which makes real LLM calls and hangs in tests.  Mock GraphFactory so
+        # ARCH-VOL21-1: subagents now use the canonical compiled graph path,
+        # which makes real LLM calls and hangs in tests. Mock the resolver so
         # the graph is replaced with a fast AsyncMock (same pattern as
         # test_delegate_task_valid_roles).
         from src.tools.subagent_tools import delegate_task
@@ -76,8 +78,10 @@ class TestDelegateTask:
         _mock_graph = MagicMock()
         _mock_graph.ainvoke = AsyncMock(return_value=_fake_state)
 
-        with patch("src.tools.subagent_tools.GraphFactory") as mock_gf:
-            mock_gf.get_graph.return_value = _mock_graph
+        with patch(
+            "src.tools.subagent_tools._resolve_subagent_graph",
+            return_value=_mock_graph,
+        ):
             # working_dir=None should not raise an error
             result = delegate_task(
                 role="researcher",
@@ -103,14 +107,60 @@ class TestDelegateTask:
         _mock_graph = MagicMock()
         _mock_graph.ainvoke = AsyncMock(return_value=_fake_state)
 
-        with patch("src.tools.subagent_tools.GraphFactory") as mock_gf:
-            mock_gf.get_graph.return_value = _mock_graph
+        with patch(
+            "src.tools.subagent_tools._resolve_subagent_graph",
+            return_value=_mock_graph,
+        ):
             result = delegate_task(
                 role="coder",
                 subtask_description="",
             )
         # Should handle empty string gracefully
         assert result is not None
+
+    def test_delegate_task_full_pipeline_uses_tier_aware_graph_selector(self, tmp_path):
+        from src.tools.subagent_tools import delegate_task
+
+        _fake_state = {
+            "task": "Test task",
+            "evaluation_result": "pass",
+            "history": [],
+            "errors": [],
+            "current_plan": [],
+            "current_step": 0,
+            "last_result": {"ok": True, "output": "done"},
+        }
+        _mock_graph = MagicMock()
+        _mock_graph.ainvoke = AsyncMock(return_value=_fake_state)
+        _parent_orch = MagicMock()
+        _parent_orch.event_bus = MagicMock()
+        _parent_orch._current_task_id = "parent-session"
+        _parent_orch.active_agent = None
+
+        with (
+            patch("src.tools.subagent_tools.get_agent_brain_manager") as mock_brain_mgr,
+            patch("src.tools.subagent_tools._PARENT_ORCHESTRATOR_VAR") as mock_ctxvar,
+            patch(
+                "src.tools.subagent_tools._resolve_subagent_graph",
+                return_value=_mock_graph,
+            ) as mock_selector,
+        ):
+            mock_brain = MagicMock()
+            mock_brain.compile_system_prompt.return_value = "sys"
+            mock_brain_mgr.return_value = mock_brain
+            mock_ctxvar.get.return_value = _parent_orch
+
+            delegate_task(
+                role="analyst",
+                subtask_description="Test task",
+                working_dir=str(tmp_path),
+                model="gpt-4o",
+            )
+
+        mock_selector.assert_called_once_with(
+            orchestrator=_parent_orch,
+            model="gpt-4o",
+        )
 
 
 class TestListSubagentRoles:

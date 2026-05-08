@@ -12,8 +12,8 @@ import logging
 import threading
 from typing import Any, Dict, List, Literal, Optional
 
+from src.core.orchestration import event_bus as _event_bus_module
 from src.tools._tool import tool
-from src.core.orchestration.event_bus import get_event_bus as _get_event_bus
 
 logger = logging.getLogger(__name__)
 
@@ -61,8 +61,7 @@ def ask_user(question: str, choices: Optional[List[str]] = None) -> Dict[str, An
 
     bus = None
     try:
-
-        bus = get_event_bus()
+        bus = _event_bus_module.get_event_bus()
         bus.subscribe("user.response", _on_user_response)
         bus.publish(
             "agent.waiting_for_user",
@@ -149,8 +148,7 @@ def submit_plan_for_review(
 
     bus = None
     try:
-
-        bus = get_event_bus()
+        bus = _event_bus_module.get_event_bus()
         bus.subscribe("plan_review.response", _on_plan_response)
         bus.publish(
             "agent.plan_review_requested",
@@ -227,8 +225,7 @@ def send_user_message(
     }
 
     try:
-
-        bus = get_event_bus()
+        bus = _event_bus_module.get_event_bus()
         bus.publish("agent.message", payload)
     except Exception as exc:
         logger.debug("send_user_message: event bus unavailable: %s", exc)

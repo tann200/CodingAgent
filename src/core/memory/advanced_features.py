@@ -9,7 +9,7 @@ import tempfile
 import os
 import shutil
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional
 from datetime import datetime
 
 logger = logging.getLogger(__name__)

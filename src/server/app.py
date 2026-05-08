@@ -19,6 +19,28 @@ from contextlib import asynccontextmanager
 from pydantic import BaseModel
 
 from src.core.orchestration.event_bus import EventBus
+from src.server.event_delivery import enqueue_with_drop_policy, record_dropped_event
+from src.server.event_subscriptions import (
+    DEFAULT_SERVER_EVENT_TYPES,
+    resolve_initial_websocket_events,
+)
+from src.server.websocket_control import (
+    build_control_error_payload,
+    build_control_pong_payload,
+    build_control_subscribed_payload,
+    build_control_subscriptions_payload,
+    build_control_unsubscribed_payload,
+    parse_websocket_control_message,
+)
+from src.server.server_config import (
+    extract_admin_token_from_headers,
+    metrics_basic_auth_valid,
+    read_sse_adapter_settings,
+)
+from src.server.scheduler_endpoints import (
+    load_scheduler_worker,
+    require_scheduler_admin_auth,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -43,16 +65,27 @@ class ServerEventBusAdapter:
         self.keepalive_interval = int(keepalive_interval or 15)
         # Backpressure policy: 'drop_oldest' (default) or 'drop_new'
         self.drop_policy = (drop_policy or "drop_oldest").lower()
-        # Map of session_id -> list of (event_name, handler) tuples for cleanup
+        # Map of connection_id -> list of (event_name, handler) tuples for cleanup.
+        # Keep session_id only as metadata so multiple clients on the same session
+        # cannot unsubscribe each other during generator teardown.
         self._session_handlers: Dict[str, list] = {}
 
     async def event_generator(self, session_id: str) -> AsyncGenerator[str, None]:
         """Generate SSE events for a given session."""
+        connection_id = f"{session_id}:{uuid.uuid4().hex[:8]}"
         # Queue to hold events for this session. Bounded to avoid unbounded
         # memory growth if a client is slow to read. Drop-oldest policy on overflow.
         event_queue: asyncio.Queue[Optional[tuple]] = asyncio.Queue(
             maxsize=self.queue_max_size
         )
+
+        def _record_dropped(event_name: str) -> None:
+            record_dropped_event(
+                event_name,
+                session_id,
+                inc_event_dropped_counter=_inc_event_dropped_counter,
+                inc_client_event_dropped_counter=_inc_client_event_dropped_counter,
+            )
 
         def make_handler(event_name: str):
             """Create a handler for a specific event type."""
@@ -66,94 +99,41 @@ class ServerEventBusAdapter:
                 # Filter events by session_id if present in metadata
                 if session_id == "all" or payload.get("session_id") == session_id:
                     # Put the event in the queue (non-blocking)
-                    try:
-                        event_queue.put_nowait((event_name, payload))
-                    except asyncio.QueueFull:
-                        # Handle according to configured backpressure policy
-                        policy = getattr(self, "drop_policy", "drop_oldest")
-                        if policy == "drop_oldest":
-                            # Evict oldest item, count it as dropped, then try to enqueue
-                            try:
-                                dropped = event_queue.get_nowait()
-                                if dropped:
-                                    try:
-                                        dropped_name = dropped[0]
-                                        _inc_event_dropped_counter(dropped_name)
-                                        _inc_client_event_dropped_counter(
-                                            dropped_name, session_id
-                                        )
-                                    except Exception:
-                                        pass
-                            except Exception:
-                                # nothing to evict
-                                pass
-                            try:
-                                event_queue.put_nowait((event_name, payload))
-                            except asyncio.QueueFull:
-                                # Still failing: drop the new event and account for it
-                                logger.warning(
-                                    "Event queue full for session %s, dropping event %s",
-                                    session_id,
-                                    event_name,
-                                )
-                                try:
-                                    _inc_event_dropped_counter(event_name)
-                                    _inc_client_event_dropped_counter(
-                                        event_name, session_id
-                                    )
-                                except Exception:
-                                    pass
-                        elif policy == "drop_new":
-                            # Drop the incoming event immediately
-                            logger.warning(
-                                "Event queue full for session %s, dropping new event %s",
-                                session_id,
-                                event_name,
-                            )
-                            try:
-                                _inc_event_dropped_counter(event_name)
-                                _inc_client_event_dropped_counter(
-                                    event_name, session_id
-                                )
-                            except Exception:
-                                pass
-                        else:
-                            # Unknown policy: behave like drop_new
-                            logger.warning(
-                                "Unknown drop policy '%s' — dropping new event %s for session %s",
-                                policy,
-                                event_name,
-                                session_id,
-                            )
-                            try:
-                                _inc_event_dropped_counter(event_name)
-                                _inc_client_event_dropped_counter(
-                                    event_name, session_id
-                                )
-                            except Exception:
-                                pass
+                    policy = getattr(self, "drop_policy", "drop_oldest")
+                    if enqueue_with_drop_policy(
+                        event_queue,
+                        (event_name, payload),
+                        drop_policy=policy,
+                        on_drop=_record_dropped,
+                        on_evict=_record_dropped if policy == "drop_oldest" else None,
+                    ):
+                        return
+                    if policy == "drop_oldest":
+                        logger.warning(
+                            "Event queue full for session %s, dropping event %s",
+                            session_id,
+                            event_name,
+                        )
+                    elif policy == "drop_new":
+                        logger.warning(
+                            "Event queue full for session %s, dropping new event %s",
+                            session_id,
+                            event_name,
+                        )
+                    else:
+                        logger.warning(
+                            "Unknown drop policy '%s' - dropping new event %s for session %s",
+                            policy,
+                            event_name,
+                            session_id,
+                        )
 
             return handler
 
         # Subscribe to all event types we care about
         # Since we don't have a way to subscribe to all events, we'll subscribe to known types
         # In a production system, we might modify EventBus to support wildcards or have a separate mechanism
-        key_event_types = [
-            "agent.start",
-            "agent.end",
-            "tool.start",
-            "tool.end",
-            "mcp.server.status",
-            "workflow.step",
-            "llm.response",
-            "llm.token",
-            "session.created",
-            "session.updated",
-            # Relay perception corrective prompts to clients
-            "perception.corrective_prompt",
-            "error",
-            "log",
-        ]
+        key_event_types = list(DEFAULT_SERVER_EVENT_TYPES)
 
         handlers = []
         for event_type in key_event_types:
@@ -162,9 +142,7 @@ class ServerEventBusAdapter:
             handlers.append((event_type, handler))
 
         # Track handlers for cleanup
-        if session_id not in self._session_handlers:
-            self._session_handlers[session_id] = []
-        self._session_handlers[session_id].extend(handlers)
+        self._session_handlers[connection_id] = handlers
 
         try:
             # Keepalive task to send periodic comments so intermediaries don't close idle connections
@@ -172,28 +150,12 @@ class ServerEventBusAdapter:
                 try:
                     while True:
                         await asyncio.sleep(self.keepalive_interval)
-                        try:
-                            event_queue.put_nowait(("_keepalive", {"comment": "ping"}))
-                        except asyncio.QueueFull:
-                            # If queue is full, drop oldest then try once
-                            try:
-                                _ = event_queue.get_nowait()
-                            except Exception:
-                                pass
-                            try:
-                                event_queue.put_nowait(
-                                    ("_keepalive", {"comment": "ping"})
-                                )
-                            except Exception:
-                                # Increment drop counters when keepalive can't be enqueued
-                                try:
-                                    _inc_event_dropped_counter("_keepalive")
-                                    _inc_client_event_dropped_counter(
-                                        "_keepalive", session_id
-                                    )
-                                except Exception:
-                                    pass
-                                pass
+                        enqueue_with_drop_policy(
+                            event_queue,
+                            ("_keepalive", {"comment": "ping"}),
+                            drop_policy=getattr(self, "drop_policy", "drop_oldest"),
+                            on_drop=_record_dropped,
+                        )
                 except asyncio.CancelledError:
                     return
 
@@ -223,9 +185,9 @@ class ServerEventBusAdapter:
             logger.error(f"Error in SSE event generator for session {session_id}: {e}")
         finally:
             # Cleanup: unsubscribe handlers and drain queue
-            if session_id in self._session_handlers:
+            if connection_id in self._session_handlers:
                 for event_name, handler in list(
-                    self._session_handlers.get(session_id, [])
+                    self._session_handlers.get(connection_id, [])
                 ):
                     try:
                         self.event_bus.unsubscribe(event_name, handler)
@@ -233,7 +195,7 @@ class ServerEventBusAdapter:
                         # Some EventBus implementations might raise; tolerate all
                         pass
                 try:
-                    del self._session_handlers[session_id]
+                    del self._session_handlers[connection_id]
                 except Exception:
                     pass
             # Drain remaining items to help GC
@@ -325,7 +287,10 @@ def _run_task_thread(
 
     if bus:
         try:
-            bus.publish("agent.start", {"task_id": task_id, "session_id": session_id, "task": task[:200]})
+            bus.publish(
+                "agent.start",
+                {"task_id": task_id, "session_id": session_id, "task": task[:200]},
+            )
         except Exception:
             pass
 
@@ -354,7 +319,9 @@ def _run_task_thread(
             cancel_event=cancel_event,
         )
         if isinstance(result, dict):
-            result_text = result.get("assistant_message") or result.get("result") or str(result)
+            result_text = (
+                result.get("assistant_message") or result.get("result") or str(result)
+            )
             if not result.get("ok", True):
                 error_text = result.get("error")
         else:
@@ -408,6 +375,8 @@ app = FastAPI(title="CodingAgent Server", version="0.1.0", lifespan=_lifespan)
 # Global instances (in practice, these would be managed by the orchestrator)
 event_bus: Optional[EventBus] = None
 sse_adapter: Optional[ServerEventBusAdapter] = None
+_REGISTERED_CORRECTIVE_BUS: Optional[EventBus] = None
+_REGISTER_EVENT_BUS_LOCK = threading.Lock()
 
 # Simple in-process metrics (Prometheus-style text exposition without external deps)
 _METRICS_LOCK = threading.Lock()
@@ -506,6 +475,16 @@ def _inc_client_event_dropped_counter(event_name: str, session_id: str) -> None:
         )
 
 
+def _record_dropped_session_event(event_name: str, session_id: str) -> None:
+    """Record aggregate and per-client dropped-event counters together."""
+    record_dropped_event(
+        event_name,
+        session_id,
+        inc_event_dropped_counter=_inc_event_dropped_counter,
+        inc_client_event_dropped_counter=_inc_client_event_dropped_counter,
+    )
+
+
 def _inc_admin_auth_counter(key: str) -> None:
     """Increment admin auth counters (attempts/successes/failures).
 
@@ -522,30 +501,37 @@ def register_event_bus(bus: EventBus) -> None:
 
     Use this when the orchestrator supplies the EventBus instance so server
     can reuse it rather than creating its own.
-    """
-    global event_bus, sse_adapter
-    event_bus = bus
-    # Pick SSE adapter settings from environment so deployers can tune
-    # queue sizing and keepalive without changing code.
-    try:
-        _qms = int(os.getenv("CODING_AGENT_SSE_QUEUE_MAX", "100"))
-    except Exception:
-        _qms = 100
-    try:
-        _ka = int(os.getenv("CODING_AGENT_SSE_KEEPALIVE", "15"))
-    except Exception:
-        _ka = 15
-    # Allow deployers to choose drop policy via env var
-    _dp = os.getenv("CODING_AGENT_SSE_DROP_POLICY", "drop_oldest").lower()
-    sse_adapter = ServerEventBusAdapter(
-        event_bus, queue_max_size=_qms, keepalive_interval=_ka, drop_policy=_dp
-    )
 
-    # Subscribe to corrective prompt events to maintain metrics
-    try:
-        event_bus.subscribe("perception.corrective_prompt", _on_perception_corrective)
-    except Exception:
-        pass
+    Thread-safe: a lock prevents concurrent calls from double-subscribing or
+    creating multiple ``sse_adapter`` instances.
+    """
+    global event_bus, sse_adapter, _REGISTERED_CORRECTIVE_BUS
+    with _REGISTER_EVENT_BUS_LOCK:
+        if event_bus is bus and sse_adapter is not None:
+            return
+
+        if _REGISTERED_CORRECTIVE_BUS is not None and _REGISTERED_CORRECTIVE_BUS is not bus:
+            try:
+                _REGISTERED_CORRECTIVE_BUS.unsubscribe(
+                    "perception.corrective_prompt", _on_perception_corrective
+                )
+            except Exception:
+                pass
+
+        event_bus = bus
+        # Pick SSE adapter settings from environment so deployers can tune
+        # queue sizing and keepalive without changing code.
+        _qms, _ka, _dp = read_sse_adapter_settings()
+        sse_adapter = ServerEventBusAdapter(
+            event_bus, queue_max_size=_qms, keepalive_interval=_ka, drop_policy=_dp
+        )
+
+        # Subscribe to corrective prompt events to maintain metrics
+        try:
+            event_bus.subscribe("perception.corrective_prompt", _on_perception_corrective)
+            _REGISTERED_CORRECTIVE_BUS = event_bus
+        except Exception:
+            pass
 
 
 def _require_admin_auth(request: Request) -> None:
@@ -558,12 +544,7 @@ def _require_admin_auth(request: Request) -> None:
     if not admin_token:
         return
     _inc_admin_auth_counter("attempts")
-    auth = request.headers.get("Authorization", "")
-    token = None
-    if auth and auth.lower().startswith("bearer "):
-        token = auth.split(" ", 1)[1]
-    if not token:
-        token = request.headers.get("X-CodingAgent-Token")
+    token = extract_admin_token_from_headers(request.headers)
     if token and token == admin_token:
         _inc_admin_auth_counter("successes")
         return
@@ -584,15 +565,16 @@ def _on_perception_corrective(payload: Dict) -> None:
 
 
 @app.post("/session", response_model=SessionResponse)
-async def create_session(request: SessionCreateRequest):
+async def create_session(session_req: SessionCreateRequest, request: Request):
     """Create a new session (or use provided session ID)."""
-    session_id = request.session_id or f"session-{id(request)}"
+    _require_admin_auth(request)
+    session_id = session_req.session_id or f"session-{id(session_req)}"
     # In a full implementation, we'd store session metadata
     # For now, just publish a session created event
     if event_bus:
         event_bus.publish(
             "session.created",
-            {"session_id": session_id, "metadata": request.metadata or {}},
+            {"session_id": session_id, "metadata": session_req.metadata or {}},
         )
     return SessionResponse(session_id=session_id)
 
@@ -600,6 +582,7 @@ async def create_session(request: SessionCreateRequest):
 @app.get("/session/{session_id}/events")
 async def session_events(session_id: str, request: Request):
     """Server-Sent Events endpoint for a session."""
+    _require_admin_auth(request)
     if not sse_adapter:
         raise HTTPException(status_code=503, detail="Server not properly initialized")
 
@@ -626,21 +609,7 @@ async def metrics_endpoint(request: Request):
     # Allow optional basic auth via environment variable (single username:password)
     auth = os.getenv("CODING_AGENT_METRICS_AUTH")
     if auth:
-        # Expect auth in the form 'username:password'
-        try:
-            import base64
-
-            header = request.headers.get("Authorization")
-            if not header or not header.startswith("Basic "):
-                return Response(status_code=401, content="Unauthorized")
-            b64 = header.split(" ", 1)[1]
-            try:
-                decoded = base64.b64decode(b64).decode("utf-8")
-            except Exception:
-                return Response(status_code=401, content="Unauthorized")
-            if decoded != auth:
-                return Response(status_code=401, content="Unauthorized")
-        except Exception:
+        if not metrics_basic_auth_valid(request.headers, auth):
             return Response(status_code=401, content="Unauthorized")
 
     text = _format_metrics_text()
@@ -650,20 +619,10 @@ async def metrics_endpoint(request: Request):
 @app.get("/scheduler/jobs")
 async def list_scheduler_jobs(request: Request):
     """List registered scheduler jobs and metadata."""
-    # Check admin auth first so auth errors surface cleanly
-    try:
-        _require_admin_auth(request)
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.warning(f"Auth check failed: {e}")
-        raise HTTPException(status_code=503, detail="Auth subsystem error")
-
-    try:
-        from src.core.scheduler import worker as _sched
-    except Exception as e:
-        logger.warning(f"Failed to import scheduler worker: {e}")
-        raise HTTPException(status_code=503, detail="Scheduler unavailable")
+    require_scheduler_admin_auth(
+        request, require_admin_auth=_require_admin_auth, logger=logger
+    )
+    _sched = load_scheduler_worker(logger=logger)
 
     try:
         jobs = _sched.list_jobs()
@@ -681,19 +640,10 @@ async def list_scheduler_jobs(request: Request):
 @app.post("/scheduler/jobs/{name}/unregister")
 async def unregister_scheduler_job(name: str, request: Request):
     """Unregister a scheduler job by name."""
-    try:
-        _require_admin_auth(request)
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.warning(f"Auth check failed: {e}")
-        raise HTTPException(status_code=503, detail="Auth subsystem error")
-
-    try:
-        from src.core.scheduler import worker as _sched
-    except Exception as e:
-        logger.warning(f"Failed to import scheduler worker: {e}")
-        raise HTTPException(status_code=503, detail="Scheduler unavailable")
+    require_scheduler_admin_auth(
+        request, require_admin_auth=_require_admin_auth, logger=logger
+    )
+    _sched = load_scheduler_worker(logger=logger)
 
     try:
         removed = _sched.disable_job(name)
@@ -710,19 +660,10 @@ async def unregister_scheduler_job(name: str, request: Request):
 @app.post("/scheduler/jobs/clear")
 async def clear_scheduler_jobs(request: Request):
     """Clear all registered scheduler jobs."""
-    try:
-        _require_admin_auth(request)
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.warning(f"Auth check failed: {e}")
-        raise HTTPException(status_code=503, detail="Auth subsystem error")
-
-    try:
-        from src.core.scheduler import worker as _sched
-    except Exception as e:
-        logger.warning(f"Failed to import scheduler worker: {e}")
-        raise HTTPException(status_code=503, detail="Scheduler unavailable")
+    require_scheduler_admin_auth(
+        request, require_admin_auth=_require_admin_auth, logger=logger
+    )
+    _sched = load_scheduler_worker(logger=logger)
 
     try:
         _sched.clear_jobs()
@@ -735,19 +676,10 @@ async def clear_scheduler_jobs(request: Request):
 @app.post("/scheduler/jobs/{name}/enable")
 async def enable_scheduler_job(name: str, request: Request):
     """Enable/restore a job registered via a job factory."""
-    try:
-        _require_admin_auth(request)
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.warning(f"Auth check failed: {e}")
-        raise HTTPException(status_code=503, detail="Auth subsystem error")
-
-    try:
-        from src.core.scheduler import worker as _sched
-    except Exception as e:
-        logger.warning(f"Failed to import scheduler worker: {e}")
-        raise HTTPException(status_code=503, detail="Scheduler unavailable")
+    require_scheduler_admin_auth(
+        request, require_admin_auth=_require_admin_auth, logger=logger
+    )
+    _sched = load_scheduler_worker(logger=logger)
 
     try:
         ok = _sched.enable_job(name)
@@ -773,19 +705,10 @@ async def update_scheduler_job_interval(name: str, request: Request):
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid payload")
 
-    try:
-        _require_admin_auth(request)
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.warning(f"Auth check failed: {e}")
-        raise HTTPException(status_code=503, detail="Auth subsystem error")
-
-    try:
-        from src.core.scheduler import worker as _sched
-    except Exception as e:
-        logger.warning(f"Failed to import scheduler worker: {e}")
-        raise HTTPException(status_code=503, detail="Scheduler unavailable")
+    require_scheduler_admin_auth(
+        request, require_admin_auth=_require_admin_auth, logger=logger
+    )
+    _sched = load_scheduler_worker(logger=logger)
 
     try:
         ok = _sched.update_job_interval(name, interval)
@@ -840,12 +763,7 @@ async def websocket_session_events(session_id: str, websocket: WebSocket):
         keepalive_interval = int(os.getenv("CODING_AGENT_SSE_KEEPALIVE", 15))
 
     if admin_token:
-        auth = websocket.headers.get("authorization", "")
-        token = None
-        if auth and auth.lower().startswith("bearer "):
-            token = auth.split(" ", 1)[1]
-        if not token:
-            token = websocket.headers.get("x-codingagent-token")
+        token = extract_admin_token_from_headers(websocket.headers)
         # Do not accept token via query string; require header-based auth for WebSocket.
         if not token or token != admin_token:
             try:
@@ -869,37 +787,13 @@ async def websocket_session_events(session_id: str, websocket: WebSocket):
     q: asyncio.Queue = asyncio.Queue(maxsize=max(1, int(qms)))
 
     # Derive initial subscription list
-    default_event_types = [
-            "agent.start",
-            "agent.end",
-            "tool.start",
-            "tool.end",
-            "mcp.server.status",
-            "workflow.step",
-            "llm.response",
-            "llm.token",
-            "session.created",
-            "session.updated",
-            "perception.corrective_prompt",
-            "error",
-            "log",
-        ]
-
-    if events_param is None:
-        initial_events = default_event_types
-    else:
-        # allow events=none to start with empty subscription set
-        if events_param.strip().lower() in ("", "none"):
-            initial_events = []
-        else:
-            parsed = [e.strip() for e in events_param.split(",") if e.strip()]
-            if "all" in [p.lower() for p in parsed]:
-                initial_events = default_event_types
-            else:
-                initial_events = parsed
+    initial_events = resolve_initial_websocket_events(events_param)
 
     # Map event_name -> handler for unsubscribe/management
     handlers: Dict[str, callable] = {}
+
+    def _record_dropped(event_name: str) -> None:
+        _record_dropped_session_event(event_name, session_id)
 
     def make_handler(ev_name: str):
         # Handler executed in publisher thread; it schedules enqueue on the event loop
@@ -912,31 +806,12 @@ async def websocket_session_events(session_id: str, websocket: WebSocket):
 
                 # enqueue on the event loop to avoid cross-thread queue access
                 def _enqueue():
-                    try:
-                        q.put_nowait((ev_name, payload))
-                    except asyncio.QueueFull:
-                        if drop_policy == "drop_oldest":
-                            try:
-                                _ = q.get_nowait()
-                            except Exception:
-                                pass
-                            try:
-                                q.put_nowait((ev_name, payload))
-                            except Exception:
-                                try:
-                                    _inc_event_dropped_counter(ev_name)
-                                    _inc_client_event_dropped_counter(
-                                        ev_name, session_id
-                                    )
-                                except Exception:
-                                    pass
-                        else:
-                            # drop_new or unknown policy
-                            try:
-                                _inc_event_dropped_counter(ev_name)
-                                _inc_client_event_dropped_counter(ev_name, session_id)
-                            except Exception:
-                                pass
+                    enqueue_with_drop_policy(
+                        q,
+                        (ev_name, payload),
+                        drop_policy=drop_policy,
+                        on_drop=_record_dropped,
+                    )
 
                 loop.call_soon_threadsafe(_enqueue)
             except Exception:
@@ -958,31 +833,12 @@ async def websocket_session_events(session_id: str, websocket: WebSocket):
         try:
             while True:
                 await asyncio.sleep(keepalive_interval)
-                try:
-                    q.put_nowait(("_keepalive", {"comment": "ping"}))
-                except asyncio.QueueFull:
-                    # follow drop policy semantics
-                    if drop_policy == "drop_oldest":
-                        try:
-                            _ = q.get_nowait()
-                        except Exception:
-                            pass
-                        try:
-                            q.put_nowait(("_keepalive", {"comment": "ping"}))
-                        except Exception:
-                            try:
-                                _inc_event_dropped_counter("_keepalive")
-                                _inc_client_event_dropped_counter(
-                                    "_keepalive", session_id
-                                )
-                            except Exception:
-                                pass
-                    else:
-                        try:
-                            _inc_event_dropped_counter("_keepalive")
-                            _inc_client_event_dropped_counter("_keepalive", session_id)
-                        except Exception:
-                            pass
+                enqueue_with_drop_policy(
+                    q,
+                    ("_keepalive", {"comment": "ping"}),
+                    drop_policy=drop_policy,
+                    on_drop=_record_dropped,
+                )
         except asyncio.CancelledError:
             return
 
@@ -1011,12 +867,8 @@ async def websocket_session_events(session_id: str, websocket: WebSocket):
         try:
             while True:
                 text = await websocket.receive_text()
-                try:
-                    msg = json.loads(text)
-                except Exception:
-                    # ignore malformed control messages
-                    continue
-                if not isinstance(msg, dict):
+                msg = parse_websocket_control_message(text)
+                if msg is None:
                     continue
                 typ = msg.get("type")
                 if typ == "subscribe":
@@ -1032,14 +884,12 @@ async def websocket_session_events(session_id: str, websocket: WebSocket):
                         handlers[ev] = h
                         # acknowledge via control envelope
                         try:
-                            q.put_nowait(
-                                ("_control", {"type": "subscribed", "event": ev})
-                            )
+                            q.put_nowait(build_control_subscribed_payload(ev))
                         except Exception:
                             pass
                     except Exception:
                         try:
-                            q.put_nowait(("_control", {"type": "error", "event": ev}))
+                            q.put_nowait(build_control_error_payload(ev))
                         except Exception:
                             pass
                 elif typ == "unsubscribe":
@@ -1054,9 +904,7 @@ async def websocket_session_events(session_id: str, websocket: WebSocket):
                             pass
                         handlers.pop(ev, None)
                         try:
-                            q.put_nowait(
-                                ("_control", {"type": "unsubscribed", "event": ev})
-                            )
+                            q.put_nowait(build_control_unsubscribed_payload(ev))
                         except Exception:
                             pass
                     else:
@@ -1064,13 +912,8 @@ async def websocket_session_events(session_id: str, websocket: WebSocket):
                         # to keep client control flow simple (idempotent).
                         try:
                             q.put_nowait(
-                                (
-                                    "_control",
-                                    {
-                                        "type": "unsubscribed",
-                                        "event": ev,
-                                        "was_subscribed": False,
-                                    },
+                                build_control_unsubscribed_payload(
+                                    ev, was_subscribed=False
                                 )
                             )
                         except Exception:
@@ -1078,19 +921,13 @@ async def websocket_session_events(session_id: str, websocket: WebSocket):
                 elif typ == "list":
                     try:
                         q.put_nowait(
-                            (
-                                "_control",
-                                {
-                                    "type": "subscriptions",
-                                    "events": list(handlers.keys()),
-                                },
-                            )
+                            build_control_subscriptions_payload(list(handlers.keys()))
                         )
                     except Exception:
                         pass
                 elif typ == "ping":
                     try:
-                        q.put_nowait(("_control", {"type": "pong"}))
+                        q.put_nowait(build_control_pong_payload())
                     except Exception:
                         pass
                 else:
@@ -1148,7 +985,7 @@ async def websocket_session_events(session_id: str, websocket: WebSocket):
 
 
 @app.post("/task", response_model=TaskStatusResponse, status_code=202)
-async def submit_task(request_body: TaskCreateRequest):
+async def submit_task(request_body: TaskCreateRequest, request: Request):
     """Submit a task for asynchronous execution.
 
     Returns immediately with task_id and status=accepted.  The orchestrator
@@ -1157,6 +994,7 @@ async def submit_task(request_body: TaskCreateRequest):
 
     Poll GET /task/{task_id} for the result.
     """
+    _require_admin_auth(request)
     task_id = str(uuid.uuid4())
     session_id = request_body.session_id or f"session-{task_id[:8]}"
     cancel_event = threading.Event()
@@ -1185,7 +1023,15 @@ async def submit_task(request_body: TaskCreateRequest):
 
     thread = threading.Thread(
         target=_run_task_thread,
-        args=(task_id, session_id, request_body.task, request_body.working_dir, request_body.model, cancel_event, event_bus),
+        args=(
+            task_id,
+            session_id,
+            request_body.task,
+            request_body.working_dir,
+            request_body.model,
+            cancel_event,
+            event_bus,
+        ),
         daemon=True,
         name=f"task-{task_id[:8]}",
     )
@@ -1199,8 +1045,9 @@ async def submit_task(request_body: TaskCreateRequest):
 
 
 @app.get("/task/{task_id}", response_model=TaskStatusResponse)
-async def get_task_status(task_id: str):
+async def get_task_status(task_id: str, request: Request):
     """Return the current status and result of a submitted task."""
+    _require_admin_auth(request)
     with _TASK_REGISTRY_LOCK:
         rec = _TASK_REGISTRY.get(task_id)
     if rec is None:
@@ -1217,13 +1064,14 @@ async def get_task_status(task_id: str):
 
 
 @app.post("/task/{task_id}/cancel", response_model=TaskStatusResponse)
-async def cancel_task(task_id: str):
+async def cancel_task(task_id: str, request: Request):
     """Signal a running task to cancel.
 
     Sets the cancel_event that run_agent_once_impl checks between steps.
     Returns the current task record — status will transition to cancelled
     once the running step completes.
     """
+    _require_admin_auth(request)
     with _TASK_REGISTRY_LOCK:
         rec = _TASK_REGISTRY.get(task_id)
     if rec is None:
@@ -1243,13 +1091,14 @@ async def cancel_task(task_id: str):
 
 
 @app.get("/tasks", response_model=List[TaskStatusResponse])
-async def list_tasks(limit: int = 50):
+async def list_tasks(request: Request, limit: int = 50):
     """List recent tasks (newest first, capped at limit)."""
+    _require_admin_auth(request)
     with _TASK_REGISTRY_LOCK:
         items = list(_TASK_REGISTRY.values())
     # Sort by started_at descending (None last)
     items.sort(key=lambda r: r.get("started_at") or 0.0, reverse=True)
-    items = items[:max(1, limit)]
+    items = items[: max(1, limit)]
     return [
         TaskStatusResponse(
             task_id=r["task_id"],

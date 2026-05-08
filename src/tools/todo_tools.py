@@ -5,27 +5,22 @@ Manages a human-readable TODO.md file at .agent-context/TODO.md so the user
 can see task progress in real time and the agent can track which steps are done.
 """
 
-import errno
 import json
 import logging
 import os
-import re
-import socket
-import subprocess
-import sys
+import threading
 import time
 import traceback
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-import threading
 
 from src.tools._tool import tool
+from src.tools.file_lock import FileLock as _FileLock
 from src.tools.tools_config import agent_context_path
 
 try:
-    # Optional lightweight metrics (no-op if import fails)
     from src.core.observability.metrics import metrics as _metrics
-except Exception:  # pragma: no cover - defensive
+except Exception:
     _metrics = None
 
 logger = logging.getLogger(__name__)
@@ -33,55 +28,9 @@ logger = logging.getLogger(__name__)
 _TODO_FILENAME = "TODO.md"
 _TODO_JSON_FILENAME = "todo.json"
 
-# Number of rolling backups kept per todo file.
 _BACKUP_KEEP: int = 5
 
-# TTL (seconds) after which a lockfile from another host may be considered stale
-# and eligible for reclaim. Can be overridden via environment variable
-# TODO_LOCK_STALE_TTL (seconds).
 _STALE_LOCK_TTL = int(os.environ.get("TODO_LOCK_STALE_TTL", "300"))
-
-# Simple in-process metrics to surface lock fallback behavior. These are
-# intentionally lightweight (in-memory) and used for diagnostics / tests.
-_lock_metrics_lock = threading.Lock()
-_lock_metrics: Dict[str, int] = {
-    "stale_reclaims": 0,
-    "stale_reclaim_failures": 0,
-    "fallback_acquisitions": 0,
-    "fallback_acquire_timeouts": 0,
-    "fallback_releases": 0,
-}
-
-
-def _inc_lock_metric(key: str) -> None:
-    try:
-        with _lock_metrics_lock:
-            if key in _lock_metrics:
-                _lock_metrics[key] += 1
-    except Exception as e:
-        # Metrics must never interfere with normal operation. Log debug output
-        # and include the traceback using traceback.format_exc() (lint-friendly).
-        try:
-            logger.debug(
-                "Failed to increment lock metric %s: %s\n%s",
-                key,
-                e,
-                traceback.format_exc(),
-            )
-        except Exception:
-            # Best-effort logging only
-            logger.debug("Failed to increment lock metric %s", key)
-
-
-def get_lock_metrics() -> Dict[str, int]:
-    with _lock_metrics_lock:
-        return dict(_lock_metrics)
-
-
-def reset_lock_metrics() -> None:
-    with _lock_metrics_lock:
-        for k in _lock_metrics:
-            _lock_metrics[k] = 0
 
 
 # Read-Before-Write (RBW) / notifier metrics
@@ -136,288 +85,6 @@ def _todo_json_path(workdir: str) -> Path:
 def _lock_path(workdir: str) -> Path:
     """Return the path to the per-workdir lock file used to serialize TODO writes."""
     return agent_context_path(Path(workdir)) / ".todo.lock"
-
-
-def _is_network_filesystem(path: Path) -> bool:
-    """Best-effort detection whether the given path lives on a network filesystem.
-
-    We try platform-specific strategies: on Linux parse /proc/mounts, on macOS
-    parse the output of `mount`. If detection fails, conservatively return
-    False (treat as local filesystem).
-    """
-    try:
-        p = Path(path).resolve()
-        path_str = str(p)
-
-        mounts = []
-        if sys.platform.startswith("linux"):
-            try:
-                with open("/proc/mounts", "r", encoding="utf-8") as f:
-                    for line in f:
-                        parts = line.split()
-                        if len(parts) >= 3:
-                            mnt = parts[1]
-                            fstype = parts[2]
-                            mounts.append((mnt, fstype))
-            except Exception:
-                return False
-        elif sys.platform == "darwin":
-            try:
-                out = subprocess.check_output(
-                    ["mount"], stderr=subprocess.DEVNULL, text=True
-                )
-                for line in out.splitlines():
-                    m = re.search(r" on (\S+) \(([^,]+)", line)
-                    if m:
-                        mounts.append((m.group(1), m.group(2)))
-            except Exception:
-                return False
-        else:
-            # Unknown platform: don't assume network FS
-            return False
-
-        # Find the most specific mountpoint that is a prefix of the path
-        best = None
-        best_len = -1
-        for mnt, fstype in mounts:
-            if path_str.startswith(mnt.rstrip("/")) and len(mnt) > best_len:
-                best = (mnt, fstype.lower())
-                best_len = len(mnt)
-
-        if not best:
-            return False
-
-        fstype = best[1]
-        network_types = (
-            "nfs",
-            "nfs4",
-            "cifs",
-            "smbfs",
-            "smb",
-            "sshfs",
-            "fuse.sshfs",
-            "9p",
-            "afs",
-            "coda",
-            "ceph",
-        )
-        for nt in network_types:
-            if nt == fstype or nt in fstype:
-                logger.debug(
-                    "Filesystem for %s appears to be network type %s", path, fstype
-                )
-                return True
-        return False
-    except Exception:
-        return False
-
-
-class _FileLock:
-    """Cross-platform advisory lock for a given lock path.
-
-    Implementation strategy:
-    - On platforms where fcntl is available we use flock() which is released
-      automatically if the process exits.
-    - Otherwise we fall back to creating an exclusive lockfile using
-      os.open(..., O_CREAT|O_EXCL) and removing it on release. This is a
-      best-effort fallback for platforms without fcntl.
-
-    The lock blocks until acquired or the timeout is reached.
-    """
-
-    def __init__(self, lock_path: Path, timeout: float = 5.0) -> None:
-        self.lock_path = Path(lock_path)
-        self.timeout = float(timeout)
-        # _fp/_fd are used only for platform-specific locking; use Any to
-        # avoid static type complaints in editors.
-        self._fp: Any = None
-        self._fd: Any = None
-        try:
-            import fcntl
-
-            self._fcntl = fcntl
-        except Exception:
-            self._fcntl = None
-
-    def _parse_lockfile(self, data: str):
-        """Return (pid, host, ts, same_host, too_old) from lockfile contents."""
-        m = re.search(r"pid=\s*(\d+)", data)
-        hostm = re.search(r"host=([\w\-\.]+)", data)
-        tsm = re.search(r"ts=(\d+)", data)
-        pid = int(m.group(1)) if m else None
-        host = hostm.group(1) if hostm else None
-        ts = int(tsm.group(1)) if tsm else None
-
-        if socket is not None:
-            same_host = (host == socket.gethostname())
-        else:
-            same_host = False
-
-        stale_ttl = int(os.environ.get("TODO_LOCK_STALE_TTL", "300"))
-        too_old = (
-            ts is not None
-            and (int(time.time() * 1000) - ts) / 1000.0 > stale_ttl
-        )
-        return pid, host, ts, same_host, too_old
-
-    def _try_reclaim(self, pid, same_host, too_old) -> bool:
-        """Attempt to reclaim a stale lock. Returns True if reclaimed."""
-        allow_nfs_env = os.environ.get("TODO_ALLOW_STALE_RECLAIM_ON_NFS", "").lower()
-        allow_nfs = allow_nfs_env in ("1", "true", "yes")
-        try:
-            is_nfs = _is_network_filesystem(self.lock_path)
-        except Exception:
-            is_nfs = False
-        if is_nfs and not allow_nfs:
-            logger.warning(
-                "Refusing to reclaim stale lockfile %s on network filesystem (pid %s). "
-                "Set TODO_ALLOW_STALE_RECLAIM_ON_NFS=1 to override",
-                self.lock_path, pid,
-            )
-            return False
-        try:
-            os.unlink(str(self.lock_path))
-            _inc_lock_metric("stale_reclaims")
-            logger.warning(
-                "Removed stale lockfile %s (pid %s not running)",
-                self.lock_path, pid,
-            )
-            return True
-        except Exception:
-            _inc_lock_metric("stale_reclaim_failures")
-            logger.exception("Failed to remove stale lockfile %s", self.lock_path)
-            return False
-
-    def __enter__(self):
-        # Ensure parent dir exists
-        self.lock_path.parent.mkdir(parents=True, exist_ok=True)
-        start = time.time()
-
-        if self._fcntl is not None:
-            # Use flock on an open file descriptor
-            self._fp = open(self.lock_path, "a+")
-            while True:
-                try:
-                    if self._fp is None:
-                        raise TimeoutError("Invalid file handle for flock")
-                    self._fcntl.flock(self._fp.fileno(), self._fcntl.LOCK_EX)
-                    break
-                except InterruptedError:
-                    if time.time() - start >= self.timeout:
-                        raise TimeoutError("Timeout acquiring lock")
-                    continue
-            return self
-
-        # Fallback: create an exclusive lockfile using O_EXCL
-        flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
-        while True:
-            try:
-                self._fd = os.open(str(self.lock_path), flags)
-                # Write diagnostic info into the lockfile: PID and timestamp
-                try:
-                    hostname = socket.gethostname()
-                    info = f"pid={os.getpid()} ts={int(time.time() * 1000)} host={hostname}\n"
-                    try:
-                        stack = traceback.format_stack(limit=5)
-                        info += "".join(stack)
-                    except Exception:
-                        pass
-                    os.write(self._fd, info.encode("utf-8"))
-                except Exception:
-                    pass
-                _inc_lock_metric("fallback_acquisitions")
-                logger.debug(
-                    "Acquired fallback lockfile %s (pid=%s)",
-                    self.lock_path, os.getpid(),
-                )
-                return self
-            except FileExistsError:
-                # Lockfile exists — try to reclaim if stale
-                try:
-                    if self.lock_path.exists():
-                        try:
-                            data = self.lock_path.read_text(encoding="utf-8")
-                            logger.debug(
-                                "Lockfile %s exists, contents:\n%s",
-                                self.lock_path, data,
-                            )
-                            pid, host, ts, same_host, too_old = self._parse_lockfile(data)
-                            if pid is not None:
-                                try:
-                                    os.kill(pid, 0)
-                                    # Process exists; check if on network fs
-                                    if same_host or too_old:
-                                        if self._try_reclaim(pid, same_host, too_old):
-                                            continue
-                                    # Active lock — treat as held
-                                    pass
-                                except OSError as e:
-                                    if getattr(e, "errno", None) == errno.ESRCH:
-                                        # PID not present — reclaim
-                                        if same_host or too_old:
-                                            if self._try_reclaim(pid, same_host, too_old):
-                                                continue
-                                    elif getattr(e, "errno", None) == errno.EPERM:
-                                        # No permission to signal — treat as active
-                                        pass
-                                    else:
-                                        # Unknown error — be conservative
-                                        pass
-                            else:
-                                # No pid parsed; reclaim if too old
-                                if ts is not None and too_old:
-                                    if self._try_reclaim(None, False, too_old):
-                                        continue
-                        except PermissionError:
-                            # PID exists but cannot be signalled; treat as active
-                            pass
-                        except Exception:
-                            # Parsing diagnostics must not fail lock acquisition
-                            pass
-                except Exception:
-                    pass
-                # If we've exceeded the timeout, raise. Otherwise sleep before retrying.
-                if time.time() - start >= self.timeout:
-                    _inc_lock_metric("fallback_acquire_timeouts")
-                    raise TimeoutError(f"Timeout acquiring lock {self.lock_path}")
-                time.sleep(0.05)
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        if self._fcntl is not None:
-            try:
-                # Only attempt to unlock if we have a valid file handle
-                if self._fp is not None:
-                    try:
-                        self._fcntl.flock(self._fp.fileno(), self._fcntl.LOCK_UN)
-                    except Exception:
-                        # Best-effort: don't let unlocking fail the exit path
-                        pass
-            finally:
-                try:
-                    if self._fp is not None:
-                        self._fp.close()
-                except Exception:
-                    pass
-            return False
-
-        # Fallback: close and remove lockfile
-        try:
-            if self._fd is not None:
-                os.close(self._fd)
-                _inc_lock_metric("fallback_releases")
-                logger.debug(
-                    "Closed fallback lock fd for %s (pid=%s)",
-                    self.lock_path,
-                    os.getpid(),
-                )
-        except Exception:
-            pass
-        try:
-            os.unlink(str(self.lock_path))
-            logger.debug("Unlinked fallback lockfile %s", self.lock_path)
-        except FileNotFoundError:
-            pass
-        return False
 
 
 def _load_todo_json(workdir: str) -> List[Dict[str, Any]]:

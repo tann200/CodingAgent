@@ -126,8 +126,8 @@ _TOOL_KIND_MAP: dict[str, str] = {
     "run_tests": "bash",
     "run_bash": "bash",
     # Network
-    "webfetch": "webfetch",
-    "websearch": "websearch",
+    "read_web_page": "webfetch",
+    "web_search": "websearch",
     # Delegation
     "delegate_task": "delegate_task",
 }
@@ -430,7 +430,9 @@ class PermissionGateway:
                 return self._gate5_user_approval(name, args)
 
         except Exception as _e:
-            _logger.warning("Gate 2c permission policy check failed (fail-open): %s", _e)  # policy failures must never block tool execution
+            _logger.warning(
+                "Gate 2c permission policy check failed (fail-open): %s", _e
+            )  # policy failures must never block tool execution
 
         return PermissionResult(allowed=True)
 
@@ -546,13 +548,23 @@ class PermissionGateway:
     # File-touching tool names whose path args should be checked for external-directory access.
     _FILE_TOOLS: frozenset = frozenset(
         {
-            "read_file", "read_file_chunk", "read_file_bytes",
-            "write_file", "edit_file", "edit_file_atomic", "multiedit",
-            "delete_file", "rename_file", "list_dir", "glob_files",
+            "read_file",
+            "read_file_chunk",
+            "read_file_bytes",
+            "write_file",
+            "edit_file",
+            "edit_file_atomic",
+            "multiedit",
+            "delete_file",
+            "rename_file",
+            "list_dir",
+            "glob_files",
         }
     )
 
-    def _gate2d_external_directory(self, name: str, args: Dict[str, Any]) -> PermissionResult:
+    def _gate2d_external_directory(
+        self, name: str, args: Dict[str, Any]
+    ) -> PermissionResult:
         """Gate 2d: Prompt for user approval when a file tool targets a path
         outside the current workspace root.
 
@@ -578,7 +590,15 @@ class PermissionGateway:
             wd = _Path(workdir).resolve()
 
             # Collect all path-like args; any one escaping workspace triggers the gate.
-            _path_keys = ("path", "src_path", "dst_path", "new_path", "old_path", "src", "dst")
+            _path_keys = (
+                "path",
+                "src_path",
+                "dst_path",
+                "new_path",
+                "old_path",
+                "src",
+                "dst",
+            )
             paths_to_check = [str(args[k]) for k in _path_keys if k in args and args[k]]
 
             for raw in paths_to_check:

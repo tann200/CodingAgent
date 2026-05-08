@@ -1,6 +1,17 @@
 [project]
-name = "repl-nix-workspace"
+name = "codingagent-tui"
 version = "0.1.0"
-description = "Add your description here"
+description = "Textual terminal UI for CodingAgent"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+  "textual==8.1.0",
+  "typing-extensions>=4.11.0",
+]
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+
+[tool.black]
+line-length = 88
+target-version = ["py311"]

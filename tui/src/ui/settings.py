@@ -122,7 +122,30 @@ class SettingsStore:
         for k, v in settings_dict.items():
             if k not in self._data or self._data[k] == DEFAULTS.get(k):
                 self._data[k] = v
-        self._available_providers = providers
+        self._available_providers = [
+            self._normalize_provider_entry(p) for p in providers if isinstance(p, dict)
+        ]
+
+    @staticmethod
+    def _normalize_provider_id(value: str) -> str:
+        return value.lower().strip().replace("-", "_").replace(" ", "_")
+
+    @classmethod
+    def _normalize_provider_entry(cls, provider: Dict[str, Any]) -> Dict[str, Any]:
+        entry = dict(provider)
+        entry["id"] = cls._normalize_provider_id(
+            str(entry.get("type") or entry.get("name") or "")
+        )
+        return entry
+
+    @classmethod
+    def _provider_matches(cls, provider: Dict[str, Any], provider_id: str) -> bool:
+        pid = cls._normalize_provider_id(provider_id)
+        return pid in {
+            cls._normalize_provider_id(str(provider.get("id") or "")),
+            cls._normalize_provider_id(str(provider.get("name") or "")),
+            cls._normalize_provider_id(str(provider.get("type") or "")),
+        }
 
     @property
     def available_providers(self) -> List[Dict[str, Any]]:
@@ -147,17 +170,13 @@ class SettingsStore:
 
     def get_provider_by_id(self, provider_id: str) -> Optional[Dict[str, Any]]:
         for p in self._available_providers:
-            pid = p["name"].lower().replace(" ", "_")
-            if pid == provider_id or p["name"].lower() == provider_id:
+            if self._provider_matches(p, provider_id):
                 return p
         return None
 
     def get_models_for_provider(self, provider_name: str) -> List[str]:
         for p in self._available_providers:
-            if (
-                p["name"].lower() == provider_name.lower()
-                or p["name"].lower().replace(" ", "_") == provider_name
-            ):
+            if self._provider_matches(p, provider_name):
                 return p.get("models", [])
         return []
 
@@ -174,8 +193,15 @@ class SettingsStore:
         results = []
         for prov in self._available_providers:
             prov_name = prov["name"]
+            prov_id = prov.get("id") or self._normalize_provider_id(prov_name)
             for model in prov.get("models", []):
-                results.append({"provider_name": prov_name, "model": model})
+                results.append(
+                    {
+                        "provider_name": prov_name,
+                        "provider_id": prov_id,
+                        "model": model,
+                    }
+                )
         return results
 
     @property

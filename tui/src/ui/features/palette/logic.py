@@ -79,6 +79,11 @@ def filter_commands(query: str) -> list[dict]:
     ]
 
 
+def _provider_id(provider: dict) -> str:
+    value = provider.get("id") or provider.get("type") or provider.get("name") or ""
+    return str(value).lower().replace("-", "_").replace(" ", "_")
+
+
 def get_provider_menu(available_providers: list[dict]) -> list[dict]:
     if not available_providers:
         return [
@@ -92,7 +97,7 @@ def get_provider_menu(available_providers: list[dict]) -> list[dict]:
         {
             "label": p["name"],
             "hint": f"Configure {p['name']} API key",
-            "action": f"setup_prov:{p['name'].lower().replace(' ', '_')}:{p['name']}",
+            "action": f"setup_prov:{_provider_id(p)}:{p['name']}",
         }
         for p in available_providers
     ]
@@ -101,7 +106,7 @@ def get_provider_menu(available_providers: list[dict]) -> list[dict]:
 def get_model_menu(available_providers: list[dict]) -> list[dict]:
     items = []
     for prov in available_providers:
-        prov_id = prov.get("id") or prov["name"].lower().replace(" ", "_")
+        prov_id = _provider_id(prov)
         for m in prov.get("models", []):
             items.append(
                 {

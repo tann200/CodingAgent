@@ -9,7 +9,7 @@ from src.core.context.context_builder import ContextBuilder
 from src.core.inference.llm_manager import call_model
 from src.core.orchestration.tool_parser import parse_tool_block
 from src.core.orchestration.graph.nodes.node_utils import _resolve_orchestrator
-from src.core.utils.strings import valid_str as _valid_str, extract_str as _extract_str
+from src.core.utils.strings import valid_str as _valid_str
 
 logger = logging.getLogger(__name__)
 
@@ -197,6 +197,7 @@ Generate a JSON function call to fix the issue. Use edit_file, write_file, or ba
             max_tokens=4000,
             provider_capabilities=provider_capabilities,
             model_tier=state.get("model_tier"),  # S1-B/S1-C
+            model_name=provider_capabilities.get("model") or "",
         )
 
         provider = None

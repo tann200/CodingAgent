@@ -37,7 +37,7 @@ from typing import Any, Dict, List, Optional
 import requests
 
 from src.core.inference.adapters.openai_compat_adapter import OpenAICompatibleAdapter
-from src.core.utils.strings import valid_str as _valid_str, extract_str as _extract_str
+from src.core.utils.strings import valid_str as _valid_str
 
 _logger = logging.getLogger(__name__)
 
