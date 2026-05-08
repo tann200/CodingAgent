@@ -21,7 +21,7 @@ from textual.containers import Vertical, Horizontal, VerticalScroll
 from textual import on
 from textual.events import Key
 
-from ...settings import AGENTS, TEXTUAL_THEMES
+from ...settings import AGENTS, TEXTUAL_THEMES, SettingsStore
 from ...events import (
     UpdateSettings,
     SaveProviderCredentials,
@@ -37,15 +37,6 @@ _GITHUB_COPILOT_PID = "github_copilot"
 # Provider types that run locally and do not require an API key.
 # For these we show a base URL field instead of an API key input.
 _LOCAL_PROVIDER_TYPES = {"lm_studio", "ollama", "openai_compat", "local"}
-
-
-def _provider_id(provider: dict) -> str:
-    return (
-        str(provider.get("id") or provider.get("type") or provider.get("name") or "")
-        .lower()
-        .replace("-", "_")
-        .replace(" ", "_")
-    )
 
 
 def _is_local_provider(p: dict) -> bool:
@@ -70,7 +61,7 @@ class SettingsScreen(ModalScreen):
             p for p in (settings_store.available_providers or []) if p.get("name")
         ]
         self._prov_models: dict[str, list[str]] = {
-            _provider_id(p): list(p.get("models", [])) for p in self._providers
+            SettingsStore._normalize_provider_id(p): list(p.get("models", [])) for p in self._providers
         }
         # Check Copilot auth state once at construction time (cheap — no network call)
         self._copilot_authenticated: bool = self._check_copilot_auth()
@@ -93,7 +84,7 @@ class SettingsScreen(ModalScreen):
 
     def _compose_inner(self):
         prov_options = [(_NO_PROVIDER, _NO_PROVIDER)] + [
-            (p["name"], _provider_id(p)) for p in self._providers
+            (p["name"], SettingsStore._normalize_provider_id(p)) for p in self._providers
         ]
 
         with Vertical(id="settings_box"):
@@ -199,7 +190,7 @@ class SettingsScreen(ModalScreen):
                 if self._providers:
                     yield Label("API Keys / Provider Auth", classes="section_title")
                     for p in self._providers:
-                        pid = _provider_id(p)
+                        pid = SettingsStore._normalize_provider_id(p)
                         if pid == _GITHUB_COPILOT_PID:
                             # GitHub Copilot uses OAuth device flow, not an API key
                             authenticated = self._copilot_authenticated
@@ -524,7 +515,7 @@ class SettingsScreen(ModalScreen):
 
         # API keys for cloud providers + base URLs for local providers
         for p in self._providers:
-            pid = _provider_id(p)
+            pid = SettingsStore._normalize_provider_id(p)
             if _is_local_provider(p):
                 # Local providers: save an updated base URL if the user changed it
                 try:

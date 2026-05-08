@@ -60,6 +60,7 @@ COMMAND_LIST = [
         "category": "System",
     },
 ]
+from ...settings import SettingsStore
 
 
 def get_all_commands() -> list[dict]:
@@ -79,9 +80,7 @@ def filter_commands(query: str) -> list[dict]:
     ]
 
 
-def _provider_id(provider: dict) -> str:
-    value = provider.get("id") or provider.get("type") or provider.get("name") or ""
-    return str(value).lower().replace("-", "_").replace(" ", "_")
+
 
 
 def get_provider_menu(available_providers: list[dict]) -> list[dict]:
@@ -97,7 +96,7 @@ def get_provider_menu(available_providers: list[dict]) -> list[dict]:
         {
             "label": p["name"],
             "hint": f"Configure {p['name']} API key",
-            "action": f"setup_prov:{_provider_id(p)}:{p['name']}",
+            "action": f"setup_prov:{SettingsStore._normalize_provider_id(p)}:{p['name']}",
         }
         for p in available_providers
     ]
@@ -106,7 +105,7 @@ def get_provider_menu(available_providers: list[dict]) -> list[dict]:
 def get_model_menu(available_providers: list[dict]) -> list[dict]:
     items = []
     for prov in available_providers:
-        prov_id = _provider_id(prov)
+        prov_id = SettingsStore._normalize_provider_id(prov)
         for m in prov.get("models", []):
             items.append(
                 {

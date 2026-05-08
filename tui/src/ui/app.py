@@ -2511,25 +2511,13 @@ class AgentApp(App[None]):
             else:
                 q = args.lower()
                 for p in providers:
-                    pname = p.get("name", "").lower()
-                    ptype = str(p.get("type") or "").lower()
-                    pid = str(p.get("id") or p.get("type") or p.get("name") or "")
-                    pid = pid.lower().replace("-", "_").replace(" ", "_")
-                    if (
-                        q == pname
-                        or q == ptype
-                        or q == pid
-                        or pname.startswith(q)
-                        or q in pname
-                    ):
+                    if SettingsStore._provider_matches(p, args):
                         target = p
                         break
             if target is None:
                 self.notify(f"Provider not found: {args}", severity="warning")
                 return
-            pname = target.get("name", args)
-            pid = target.get("id") or target.get("type") or pname
-            pid = str(pid).lower().replace("-", "_").replace(" ", "_")
+            pid = SettingsStore._normalize_provider_id(target)
             role = self.active_role
             self._settings.set(f"{role}_provider", pid)
             self._settings.set("default_provider", pid)
