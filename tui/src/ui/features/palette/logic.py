@@ -1,3 +1,5 @@
+from ...settings import SettingsStore
+
 COMMAND_LIST = [
     {
         "label": "New session",
@@ -60,7 +62,6 @@ COMMAND_LIST = [
         "category": "System",
     },
 ]
-from ...settings import SettingsStore
 
 
 def get_all_commands() -> list[dict]:

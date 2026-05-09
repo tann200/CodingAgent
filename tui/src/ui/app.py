@@ -2509,7 +2509,6 @@ class AgentApp(App[None]):
                 if 0 <= idx < len(providers):
                     target = providers[idx]
             else:
-                q = args.lower()
                 for p in providers:
                     if SettingsStore._provider_matches(p, args):
                         target = p
@@ -2535,7 +2534,7 @@ class AgentApp(App[None]):
             self._bridge.publish(
                 "model.routing", {"provider": pid, "selected": first_model}
             )
-            self.notify(f"Switched to provider: {pname}")
+            self.notify(f"Switched to provider: {pid}")
 
     async def _slash_model(self, args: str) -> None:
         all_models = self._settings.get_all_models_flat()

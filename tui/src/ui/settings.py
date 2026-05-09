@@ -127,7 +127,9 @@ class SettingsStore:
         ]
 
     @staticmethod
-    def _normalize_provider_id(value: str) -> str:
+    def _normalize_provider_id(value: str | Dict[str, Any]) -> str:
+        if isinstance(value, dict):
+            value = str(value.get("type") or value.get("name") or "")
         return value.lower().strip().replace("-", "_").replace(" ", "_")
 
     @classmethod
