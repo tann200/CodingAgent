@@ -13,6 +13,58 @@ import logging as _logging
 from typing import Any
 
 
+def atomic_write_text(target: Path, content: str, logger=None) -> bool:
+    """Atomically write plain text to ``target``.
+
+    Uses the same mkstemp + fsync + replace pattern as atomic_write_json.
+    Returns True on success, False on failure.
+    """
+    if logger is None:
+        logger = _logging.getLogger(__name__)
+
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        _fd, _tmp = _tempfile.mkstemp(dir=str(target.parent), suffix=".tmp")
+        try:
+            with _os.fdopen(_fd, "w", encoding="utf-8") as _f:
+                _f.write(content)
+                _f.flush()
+                try:
+                    _os.fsync(_f.fileno())
+                except Exception:
+                    pass
+            _os.replace(_tmp, str(target))
+        except Exception:
+            try:
+                _os.unlink(_tmp)
+            except Exception:
+                pass
+            raise
+        try:
+            st = target.stat()
+            logger.info("atomic_write_text: written %s (%d bytes)", target, st.st_size)
+        except Exception:
+            logger.info("atomic_write_text: written %s", target)
+        return True
+    except Exception as _aw:
+        logger.warning("atomic_write_text: atomic write failed: %s", _aw)
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content, encoding="utf-8")
+            try:
+                st = target.stat()
+                logger.info(
+                    "atomic_write_text: written (fallback): %s (%d bytes)",
+                    target, st.st_size,
+                )
+            except Exception:
+                logger.info("atomic_write_text: written (fallback): %s", target)
+            return True
+        except Exception as _fb:
+            logger.error("atomic_write_text: write failed (fallback): %s", _fb)
+            return False
+
+
 def atomic_write_json(target: Path, obj: Any, logger=None) -> bool:
     """Atomically write ``obj`` as JSON to ``target``.
 

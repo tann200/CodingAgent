@@ -4,8 +4,6 @@ import inspect
 import json
 import logging
 import re
-import tempfile
-import os
 from typing import Any, Dict, List, Optional
 from pathlib import Path
 
@@ -32,30 +30,10 @@ _DISTILLER_LLM_TIMEOUT_SECONDS = 120
 
 
 def _atomic_write_text(target: Path, content: str) -> bool:
-    """Best-effort atomic text write with local fallback."""
-    try:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(dir=str(target.parent), suffix=".tmp")
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(content)
-                try:
-                    f.flush()
-                    os.fsync(f.fileno())
-                except Exception:
-                    pass
-            os.replace(tmp, str(target))
-            return True
-        except Exception:
-            try:
-                os.unlink(tmp)
-            except Exception:
-                pass
-            raise
-    except Exception:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content, encoding="utf-8")
-        return True
+    """Best-effort atomic text write via the shared core helper."""
+    from src.core.io_utils import atomic_write_text
+
+    return atomic_write_text(target, content, logger=logger)
 
 
 def _atomic_write_json(target: Path, payload: Any) -> bool:

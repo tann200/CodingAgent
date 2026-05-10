@@ -178,6 +178,7 @@ class TestServerApp:
     def test_per_client_dropped_metrics(self, test_client):
         """Ensure per-client dropped metrics appear when incremented."""
         import src.server.app as app_module
+        from src.server.metrics import inc_client_event_dropped_counter
         from src.core.orchestration.event_bus import EventBus
 
         bus = EventBus()
@@ -185,7 +186,7 @@ class TestServerApp:
         app_module.register_event_bus(bus)
 
         # Increment per-client dropped counter directly (deterministic)
-        app_module._inc_client_event_dropped_counter("agent.start", "s1")
+        inc_client_event_dropped_counter("agent.start", "s1")
 
         # Query /metrics and assert per-client dropped metric present
         response = test_client.get("/metrics")

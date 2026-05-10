@@ -50,6 +50,9 @@ tokenizer = [
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.hatch.build.targets.wheel]
+packages = ["src/", "tui/"]
+
 [tool.ruff]
 line-length = 88
 target-version = "py311"

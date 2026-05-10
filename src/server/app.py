@@ -41,169 +41,17 @@ from src.server.scheduler_endpoints import (
     load_scheduler_worker,
     require_scheduler_admin_auth,
 )
+from src.server.metrics import (
+    format_metrics_text,
+    inc_admin_auth_counter,
+    inc_corrective_prompt_counter,
+    inc_client_event_dropped_counter,
+    inc_event_dropped_counter,
+    record_dropped_session_event,
+)
+from src.server.sse_adapter import ServerEventBusAdapter
 
 logger = logging.getLogger(__name__)
-
-
-class ServerEventBusAdapter:
-    """Adapts internal EventBus to Server-Sent Events for HTTP clients.
-
-    The adapter accepts configurable per-client queue sizing and keepalive
-    interval so deployments can tune memory/latency tradeoffs.
-    """
-
-    def __init__(
-        self,
-        event_bus: EventBus,
-        queue_max_size: int = 100,
-        keepalive_interval: int = 15,
-        drop_policy: str = "drop_oldest",
-    ):
-        self.event_bus = event_bus
-        # Configurable per-client queue max size and keepalive interval
-        self.queue_max_size = int(queue_max_size or 100)
-        self.keepalive_interval = int(keepalive_interval or 15)
-        # Backpressure policy: 'drop_oldest' (default) or 'drop_new'
-        self.drop_policy = (drop_policy or "drop_oldest").lower()
-        # Map of connection_id -> list of (event_name, handler) tuples for cleanup.
-        # Keep session_id only as metadata so multiple clients on the same session
-        # cannot unsubscribe each other during generator teardown.
-        self._session_handlers: Dict[str, list] = {}
-
-    async def event_generator(self, session_id: str) -> AsyncGenerator[str, None]:
-        """Generate SSE events for a given session."""
-        connection_id = f"{session_id}:{uuid.uuid4().hex[:8]}"
-        # Queue to hold events for this session. Bounded to avoid unbounded
-        # memory growth if a client is slow to read. Drop-oldest policy on overflow.
-        event_queue: asyncio.Queue[Optional[tuple]] = asyncio.Queue(
-            maxsize=self.queue_max_size
-        )
-
-        def _record_dropped(event_name: str) -> None:
-            record_dropped_event(
-                event_name,
-                session_id,
-                inc_event_dropped_counter=_inc_event_dropped_counter,
-                inc_client_event_dropped_counter=_inc_client_event_dropped_counter,
-            )
-
-        def make_handler(event_name: str):
-            """Create a handler for a specific event type."""
-
-            def handler(payload: dict) -> None:
-                """Forward matching events to the queue."""
-                # Add session_id to payload if not present for filtering
-                if "session_id" not in payload:
-                    payload = {**payload, "session_id": "unknown"}
-
-                # Filter events by session_id if present in metadata
-                if session_id == "all" or payload.get("session_id") == session_id:
-                    # Put the event in the queue (non-blocking)
-                    policy = getattr(self, "drop_policy", "drop_oldest")
-                    if enqueue_with_drop_policy(
-                        event_queue,
-                        (event_name, payload),
-                        drop_policy=policy,
-                        on_drop=_record_dropped,
-                        on_evict=_record_dropped if policy == "drop_oldest" else None,
-                    ):
-                        return
-                    if policy == "drop_oldest":
-                        logger.warning(
-                            "Event queue full for session %s, dropping event %s",
-                            session_id,
-                            event_name,
-                        )
-                    elif policy == "drop_new":
-                        logger.warning(
-                            "Event queue full for session %s, dropping new event %s",
-                            session_id,
-                            event_name,
-                        )
-                    else:
-                        logger.warning(
-                            "Unknown drop policy '%s' - dropping new event %s for session %s",
-                            policy,
-                            event_name,
-                            session_id,
-                        )
-
-            return handler
-
-        # Subscribe to all event types we care about
-        # Since we don't have a way to subscribe to all events, we'll subscribe to known types
-        # In a production system, we might modify EventBus to support wildcards or have a separate mechanism
-        key_event_types = list(DEFAULT_SERVER_EVENT_TYPES)
-
-        handlers = []
-        for event_type in key_event_types:
-            handler = make_handler(event_type)
-            self.event_bus.subscribe(event_type, handler)
-            handlers.append((event_type, handler))
-
-        # Track handlers for cleanup
-        self._session_handlers[connection_id] = handlers
-
-        try:
-            # Keepalive task to send periodic comments so intermediaries don't close idle connections
-            async def _keepalive_sender():
-                try:
-                    while True:
-                        await asyncio.sleep(self.keepalive_interval)
-                        enqueue_with_drop_policy(
-                            event_queue,
-                            ("_keepalive", {"comment": "ping"}),
-                            drop_policy=getattr(self, "drop_policy", "drop_oldest"),
-                            on_drop=_record_dropped,
-                        )
-                except asyncio.CancelledError:
-                    return
-
-            keepalive_task = asyncio.create_task(_keepalive_sender())
-            try:
-                while True:
-                    # Wait for next event
-                    result = await event_queue.get()
-                    if result is None:  # Sentinel to stop
-                        break
-                    event_name, payload = result
-                    # Format as SSE
-                    data = json.dumps(
-                        {
-                            "event": event_name,
-                            "data": payload,
-                        }
-                    )
-                    yield f"data: {data}\n\n"
-            finally:
-                # Ensure keepalive task is cancelled when generator ends
-                try:
-                    keepalive_task.cancel()
-                except Exception:
-                    pass
-        except Exception as e:
-            logger.error(f"Error in SSE event generator for session {session_id}: {e}")
-        finally:
-            # Cleanup: unsubscribe handlers and drain queue
-            if connection_id in self._session_handlers:
-                for event_name, handler in list(
-                    self._session_handlers.get(connection_id, [])
-                ):
-                    try:
-                        self.event_bus.unsubscribe(event_name, handler)
-                    except Exception:
-                        # Some EventBus implementations might raise; tolerate all
-                        pass
-                try:
-                    del self._session_handlers[connection_id]
-                except Exception:
-                    pass
-            # Drain remaining items to help GC
-            try:
-                while not event_queue.empty():
-                    _ = event_queue.get_nowait()
-            except Exception:
-                pass
 
 
 # Pydantic models for API
@@ -378,124 +226,6 @@ sse_adapter: Optional[ServerEventBusAdapter] = None
 _REGISTERED_CORRECTIVE_BUS: Optional[EventBus] = None
 _REGISTER_EVENT_BUS_LOCK = threading.Lock()
 
-# Simple in-process metrics (Prometheus-style text exposition without external deps)
-_METRICS_LOCK = threading.Lock()
-# counters keyed by (reason, model_tier) -> int
-_CORRECTIVE_PROMPT_COUNTERS: Dict[tuple, int] = {}
-_DROPPED_EVENT_COUNTERS: Dict[str, int] = {}
-# per-client dropped counters keyed by (session_id, event_name) -> int
-_CLIENT_DROPPED_EVENT_COUNTERS: Dict[tuple, int] = {}
-# admin auth counters: keys: attempts, successes, failures
-_ADMIN_AUTH_COUNTERS: Dict[str, int] = {"attempts": 0, "successes": 0, "failures": 0}
-
-
-def _inc_corrective_prompt_counter(reason: str | None, model_tier: str | None) -> None:
-    key = (reason or "unknown", model_tier or "unknown")
-    with _METRICS_LOCK:
-        _CORRECTIVE_PROMPT_COUNTERS[key] = _CORRECTIVE_PROMPT_COUNTERS.get(key, 0) + 1
-
-
-def _format_metrics_text() -> str:
-    lines = [
-        "# HELP codingagent_corrective_prompts_total Total corrective prompts issued",
-        "# TYPE codingagent_corrective_prompts_total counter",
-    ]
-    total = 0
-    with _METRICS_LOCK:
-        items = list(_CORRECTIVE_PROMPT_COUNTERS.items())
-    for (reason, tier), val in items:
-        total += val
-        # Escape quotes in label values
-        reason_s = str(reason).replace('"', '\\"')
-        tier_s = str(tier).replace('"', '\\"')
-        lines.append(
-            f'codingagent_corrective_prompts_total{{reason="{reason_s}",model_tier="{tier_s}"}} {val}'
-        )
-    lines.append(f"codingagent_corrective_prompts_total {total}")
-    # Dropped events metric
-    lines.append("")
-    lines.append(
-        "# HELP codingagent_sse_events_dropped_total Total SSE events dropped per event type"
-    )
-    lines.append("# TYPE codingagent_sse_events_dropped_total counter")
-    with _METRICS_LOCK:
-        dropped_items = list(_DROPPED_EVENT_COUNTERS.items())
-    dropped_total = 0
-    for ename, val in dropped_items:
-        dropped_total += val
-        ename_s = str(ename).replace('"', '\\"')
-        lines.append(f'codingagent_sse_events_dropped_total{{event="{ename_s}"}} {val}')
-    lines.append(f"codingagent_sse_events_dropped_total {dropped_total}")
-    # Per-client dropped events
-    lines.append("")
-    lines.append(
-        "# HELP codingagent_sse_events_dropped_per_client_total Total SSE events dropped per client session and event"
-    )
-    lines.append("# TYPE codingagent_sse_events_dropped_per_client_total counter")
-    with _METRICS_LOCK:
-        client_items = list(_CLIENT_DROPPED_EVENT_COUNTERS.items())
-    for (sid, ename), val in client_items:
-        sid_s = str(sid).replace('"', '\\"')
-        ename_s = str(ename).replace('"', '\\"')
-        lines.append(
-            f'codingagent_sse_events_dropped_per_client_total{{session_id="{sid_s}",event="{ename_s}"}} {val}'
-        )
-    # Admin auth counters
-    lines.append("")
-    lines.append(
-        "# HELP codingagent_admin_auth_total Admin auth attempts/successes/failures"
-    )
-    lines.append("# TYPE codingagent_admin_auth_total counter")
-    with _METRICS_LOCK:
-        a_items = list(_ADMIN_AUTH_COUNTERS.items())
-    for k, v in a_items:
-        k_s = str(k).replace('"', '\\"')
-        lines.append(f'codingagent_admin_auth_total{{type="{k_s}"}} {v}')
-    total_auth = sum(v for _, v in a_items)
-    lines.append(f"codingagent_admin_auth_total {total_auth}")
-    return "\n".join(lines) + "\n"
-
-
-def _inc_event_dropped_counter(event_name: str) -> None:
-    with _METRICS_LOCK:
-        _DROPPED_EVENT_COUNTERS[event_name] = (
-            _DROPPED_EVENT_COUNTERS.get(event_name, 0) + 1
-        )
-
-
-def _inc_client_event_dropped_counter(event_name: str, session_id: str) -> None:
-    """Increment per-client dropped-event counter.
-
-    session_id may be None/empty; we normalise to 'unknown'.
-    """
-    key = (str(session_id or "unknown"), str(event_name or "unknown"))
-    with _METRICS_LOCK:
-        _CLIENT_DROPPED_EVENT_COUNTERS[key] = (
-            _CLIENT_DROPPED_EVENT_COUNTERS.get(key, 0) + 1
-        )
-
-
-def _record_dropped_session_event(event_name: str, session_id: str) -> None:
-    """Record aggregate and per-client dropped-event counters together."""
-    record_dropped_event(
-        event_name,
-        session_id,
-        inc_event_dropped_counter=_inc_event_dropped_counter,
-        inc_client_event_dropped_counter=_inc_client_event_dropped_counter,
-    )
-
-
-def _inc_admin_auth_counter(key: str) -> None:
-    """Increment admin auth counters (attempts/successes/failures).
-
-    Uses the shared _METRICS_LOCK for consistency with other counters.
-    """
-    if key not in ("attempts", "successes", "failures"):
-        return
-    with _METRICS_LOCK:
-        _ADMIN_AUTH_COUNTERS[key] = _ADMIN_AUTH_COUNTERS.get(key, 0) + 1
-
-
 def register_event_bus(bus: EventBus) -> None:
     """Bind a provided EventBus to the server and register internal subscribers.
 
@@ -543,12 +273,12 @@ def _require_admin_auth(request: Request) -> None:
     admin_token = os.getenv("CODING_AGENT_ADMIN_TOKEN")
     if not admin_token:
         return
-    _inc_admin_auth_counter("attempts")
+    inc_admin_auth_counter("attempts")
     token = extract_admin_token_from_headers(request.headers)
     if token and token == admin_token:
-        _inc_admin_auth_counter("successes")
+        inc_admin_auth_counter("successes")
         return
-    _inc_admin_auth_counter("failures")
+    inc_admin_auth_counter("failures")
     raise HTTPException(status_code=401, detail="Unauthorized")
 
 
@@ -556,7 +286,7 @@ def _on_perception_corrective(payload: Dict) -> None:
     try:
         reason = payload.get("reason") if isinstance(payload, dict) else None
         tier = payload.get("model_tier") if isinstance(payload, dict) else None
-        _inc_corrective_prompt_counter(reason, tier)
+        inc_corrective_prompt_counter(reason, tier)
     except Exception:
         pass
 
@@ -612,7 +342,7 @@ async def metrics_endpoint(request: Request):
         if not metrics_basic_auth_valid(request.headers, auth):
             return Response(status_code=401, content="Unauthorized")
 
-    text = _format_metrics_text()
+    text = format_metrics_text()
     return Response(content=text, media_type="text/plain; version=0.0.4")
 
 
@@ -793,7 +523,7 @@ async def websocket_session_events(session_id: str, websocket: WebSocket):
     handlers: Dict[str, callable] = {}
 
     def _record_dropped(event_name: str) -> None:
-        _record_dropped_session_event(event_name, session_id)
+        record_dropped_session_event(event_name, session_id)
 
     def make_handler(ev_name: str):
         # Handler executed in publisher thread; it schedules enqueue on the event loop

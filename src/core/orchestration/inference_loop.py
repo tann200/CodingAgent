@@ -26,6 +26,7 @@ from src.core.inference.provider_utils import (
     resolve_provider_and_model as _resolve_provider_and_model,
 )
 from src.tools.subagent_payloads import build_graph_state_base
+from src.core.orchestration.work_summary import _generate_work_summary
 
 
 def _build_assistant_message(
@@ -535,61 +536,8 @@ def _build_graph_failure_response(
 # _generate_work_summary — copied verbatim from orchestrator.py
 # ---------------------------------------------------------------------------
 
-
-def _generate_work_summary(
-    final_state: Optional[Dict[str, Any]], history: List[Dict[str, Any]]
-) -> str:
-    """Generate a summary of work done based on final state and history."""
-    if not final_state:
-        return ""
-
-    task = final_state.get("task", final_state.get("original_task", ""))
-    rounds = final_state.get("rounds", 0)
-    current_plan = final_state.get("current_plan") or []
-    current_step = final_state.get("current_step", 0)
-    verified_reads = final_state.get("verified_reads") or []
-
-    tool_counts: Dict[str, int] = {}
-    tool_errors: List[str] = []
-    for entry in history:
-        if entry.get("role") == "tool" and entry.get("tool"):
-            tool_name = entry.get("tool", "unknown")
-            tool_counts[tool_name] = tool_counts.get(tool_name, 0) + 1
-            result = entry.get("result") or {}
-            if isinstance(result, dict):
-                err = result.get("error") or result.get("message")
-                if err and result.get("status") == "error":
-                    tool_errors.append(f"{tool_name}: {err}")
-
-    last_result = final_state.get("last_result") or {}
-    last_ok = last_result.get("ok") or last_result.get("status") == "ok"
-    no_plan_fail = int(final_state.get("no_plan_fail_count") or 0)
-
-    summary_parts = []
-    if task:
-        summary_parts.append(f"Task: {task[:100]}")
-    if rounds:
-        summary_parts.append(f"Rounds: {rounds}")
-    if current_plan:
-        completed = min(current_step, len(current_plan))
-        summary_parts.append(f"Steps completed: {completed}/{len(current_plan)}")
-    if verified_reads:
-        summary_parts.append(f"Files read: {len(verified_reads)}")
-    if tool_counts:
-        top_tools = sorted(tool_counts.items(), key=lambda x: -x[1])[:3]
-        summary_parts.append("Tools: " + ", ".join(f"{t}×{c}" for t, c in top_tools))
-    if tool_errors:
-        summary_parts.append(f"Errors: {len(tool_errors)}")
-    if no_plan_fail > 0:
-        summary_parts.append(f"Plan failures: {no_plan_fail}")
-    if last_ok is False:
-        summary_parts.append("Status: failed")
-
-    return " | ".join(summary_parts) if summary_parts else ""
-
-
-# _resolve_provider_and_model imported from src.core.inference.provider_utils
-
+# ---------------------------------------------------------------------------
+# run_agent_once_impl
 # ---------------------------------------------------------------------------
 # run_agent_once_impl
 # ---------------------------------------------------------------------------

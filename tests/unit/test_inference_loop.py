@@ -71,14 +71,13 @@ class TestGenerateWorkSummary:
         result = _generate_work_summary(state, [])
         assert "Fix the bug" in result
 
-    def test_truncates_long_task(self):
+    def test_includes_full_task(self):
         from src.core.orchestration.inference_loop import _generate_work_summary
 
         long_task = "A" * 200
         state = {"task": long_task}
         result = _generate_work_summary(state, [])
-        assert "A" * 100 in result
-        assert "A" * 101 not in result
+        assert "A" * 200 in result
 
     def test_includes_rounds(self):
         from src.core.orchestration.inference_loop import _generate_work_summary
@@ -91,11 +90,16 @@ class TestGenerateWorkSummary:
         from src.core.orchestration.inference_loop import _generate_work_summary
 
         state = {
-            "current_plan": ["step1", "step2", "step3"],
+            "current_plan": [
+                {"description": "step1", "completed": True},
+                {"description": "step2", "completed": True},
+                {"description": "step3"},
+            ],
             "current_step": 2,
         }
         result = _generate_work_summary(state, [])
-        assert "2/3" in result
+        assert "Steps completed" in result
+        assert "Completed" in result
 
     def test_includes_verified_reads_count(self):
         from src.core.orchestration.inference_loop import _generate_work_summary
@@ -143,14 +147,15 @@ class TestGenerateWorkSummary:
 
         state = {"no_plan_fail_count": 3}
         result = _generate_work_summary(state, [])
-        assert "3" in result
+        assert "Failed" in result
 
-    def test_separator_pipe_present_when_multiple_parts(self):
+    def test_includes_multiple_fields_when_present(self):
         from src.core.orchestration.inference_loop import _generate_work_summary
 
         state = {"task": "do something", "rounds": 5}
         result = _generate_work_summary(state, [])
-        assert "|" in result
+        assert "do something" in result
+        assert "5" in result
 
 
 # ---------------------------------------------------------------------------
