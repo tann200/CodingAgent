@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-import asyncio
-import json
 import logging
 import threading
 import time
 import uuid
 from enum import Enum
-from typing import AsyncGenerator, Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any
 
 import uvicorn
 import os
@@ -19,19 +17,7 @@ from contextlib import asynccontextmanager
 from pydantic import BaseModel
 
 from src.core.orchestration.event_bus import EventBus
-from src.server.event_delivery import enqueue_with_drop_policy, record_dropped_event
-from src.server.event_subscriptions import (
-    DEFAULT_SERVER_EVENT_TYPES,
-    resolve_initial_websocket_events,
-)
-from src.server.websocket_control import (
-    build_control_error_payload,
-    build_control_pong_payload,
-    build_control_subscribed_payload,
-    build_control_subscriptions_payload,
-    build_control_unsubscribed_payload,
-    parse_websocket_control_message,
-)
+from src.server.websocket_handler import websocket_session_handler
 from src.server.server_config import (
     extract_admin_token_from_headers,
     metrics_basic_auth_valid,
@@ -47,7 +33,6 @@ from src.server.metrics import (
     inc_corrective_prompt_counter,
     inc_client_event_dropped_counter,
     inc_event_dropped_counter,
-    record_dropped_session_event,
 )
 from src.server.sse_adapter import ServerEventBusAdapter
 
@@ -454,259 +439,14 @@ async def update_scheduler_job_interval(name: str, request: Request):
 
 @app.websocket("/ws/session/{session_id}")
 async def websocket_session_events(session_id: str, websocket: WebSocket):
-    """WebSocket endpoint forwarding selected EventBus events to the client.
-
-    Features:
-    - initial subscription via `events` query param (comma-separated)
-    - per-connection queue size via `queue_max_size` query param
-    - backpressure policy via `drop_policy` query param (drop_oldest|drop_new)
-    - dynamic subscribe/unsubscribe via JSON control messages
-      * {"type": "subscribe", "event": "event.name"}
-      * {"type": "unsubscribe", "event": "event.name"}
-    - keepalive messages controlled by `keepalive` query param (seconds)
-
-    Authentication mirrors the HTTP admin endpoints: if CODING_AGENT_ADMIN_TOKEN is set,
-    the client must provide either a Bearer token in the Authorization header or
-    X-CodingAgent-Token header. Tokens passed via the query string are not accepted.
-    """
-    # Basic admin-token check using WebSocket headers (no Request object available)
-    admin_token = os.getenv("CODING_AGENT_ADMIN_TOKEN")
-
-    # Read query params early so clients can pass queue sizing and initial subs
-    qp = websocket.query_params
-    events_param = qp.get("events")
-    try:
-        qms = int(
-            qp.get("queue_max_size") or os.getenv("CODING_AGENT_SSE_QUEUE_MAX", 100)
-        )
-    except Exception:
-        qms = int(os.getenv("CODING_AGENT_SSE_QUEUE_MAX", 100))
-    drop_policy = (
-        qp.get("drop_policy")
-        or os.getenv("CODING_AGENT_SSE_DROP_POLICY", "drop_oldest")
-    ).lower()
-    try:
-        keepalive_interval = int(
-            qp.get("keepalive") or os.getenv("CODING_AGENT_SSE_KEEPALIVE", 15)
-        )
-    except Exception:
-        keepalive_interval = int(os.getenv("CODING_AGENT_SSE_KEEPALIVE", 15))
-
-    if admin_token:
-        token = extract_admin_token_from_headers(websocket.headers)
-        # Do not accept token via query string; require header-based auth for WebSocket.
-        if not token or token != admin_token:
-            try:
-                await websocket.close(code=1008)
-            except Exception:
-                pass
-            return
-
-    # Ensure event_bus has been registered
-    if not event_bus:
+    """WebSocket endpoint — delegates to websocket_handler for full logic."""
+    if event_bus is None:
         try:
             await websocket.close(code=1011)
         except Exception:
             pass
         return
-
-    # Accept the websocket connection
-    await websocket.accept()
-
-    loop = asyncio.get_running_loop()
-    q: asyncio.Queue = asyncio.Queue(maxsize=max(1, int(qms)))
-
-    # Derive initial subscription list
-    initial_events = resolve_initial_websocket_events(events_param)
-
-    # Map event_name -> handler for unsubscribe/management
-    handlers: Dict[str, callable] = {}
-
-    def _record_dropped(event_name: str) -> None:
-        record_dropped_session_event(event_name, session_id)
-
-    def make_handler(ev_name: str):
-        # Handler executed in publisher thread; it schedules enqueue on the event loop
-        def handler(payload: dict) -> None:
-            try:
-                # Filter by session_id when present in payload
-                if isinstance(payload, dict) and "session_id" in payload:
-                    if session_id != "all" and payload.get("session_id") != session_id:
-                        return
-
-                # enqueue on the event loop to avoid cross-thread queue access
-                def _enqueue():
-                    enqueue_with_drop_policy(
-                        q,
-                        (ev_name, payload),
-                        drop_policy=drop_policy,
-                        on_drop=_record_dropped,
-                    )
-
-                loop.call_soon_threadsafe(_enqueue)
-            except Exception:
-                pass
-
-        return handler
-
-    # Register initial handlers
-    for ev in initial_events:
-        try:
-            h = make_handler(ev)
-            event_bus.subscribe(ev, h)
-            handlers[ev] = h
-        except Exception:
-            pass
-
-    # Keepalive task: periodically enqueue a keepalive message
-    async def _keepalive_sender():
-        try:
-            while True:
-                await asyncio.sleep(keepalive_interval)
-                enqueue_with_drop_policy(
-                    q,
-                    ("_keepalive", {"comment": "ping"}),
-                    drop_policy=drop_policy,
-                    on_drop=_record_dropped,
-                )
-        except asyncio.CancelledError:
-            return
-
-    keepalive_task = asyncio.create_task(_keepalive_sender())
-
-    # Sender task: forwards queue items to the websocket
-    async def _sender():
-        try:
-            while True:
-                item = await q.get()
-                if item is None:
-                    break
-                event_name, payload = item
-                try:
-                    await websocket.send_json({"event": event_name, "data": payload})
-                except WebSocketDisconnect:
-                    break
-                except Exception:
-                    # ignore send errors and continue
-                    continue
-        except asyncio.CancelledError:
-            return
-
-    # Receiver task: handles control messages from the client
-    async def _receiver():
-        try:
-            while True:
-                text = await websocket.receive_text()
-                msg = parse_websocket_control_message(text)
-                if msg is None:
-                    continue
-                typ = msg.get("type")
-                if typ == "subscribe":
-                    ev = msg.get("event")
-                    if not ev:
-                        continue
-                    if ev in handlers:
-                        # already subscribed
-                        continue
-                    try:
-                        h = make_handler(ev)
-                        event_bus.subscribe(ev, h)
-                        handlers[ev] = h
-                        # acknowledge via control envelope
-                        try:
-                            q.put_nowait(build_control_subscribed_payload(ev))
-                        except Exception:
-                            pass
-                    except Exception:
-                        try:
-                            q.put_nowait(build_control_error_payload(ev))
-                        except Exception:
-                            pass
-                elif typ == "unsubscribe":
-                    ev = msg.get("event")
-                    if not ev:
-                        continue
-                    h = handlers.get(ev)
-                    if h:
-                        try:
-                            event_bus.unsubscribe(ev, h)
-                        except Exception:
-                            pass
-                        handlers.pop(ev, None)
-                        try:
-                            q.put_nowait(build_control_unsubscribed_payload(ev))
-                        except Exception:
-                            pass
-                    else:
-                        # Unknown/unregistered event: still acknowledge the request
-                        # to keep client control flow simple (idempotent).
-                        try:
-                            q.put_nowait(
-                                build_control_unsubscribed_payload(
-                                    ev, was_subscribed=False
-                                )
-                            )
-                        except Exception:
-                            pass
-                elif typ == "list":
-                    try:
-                        q.put_nowait(
-                            build_control_subscriptions_payload(list(handlers.keys()))
-                        )
-                    except Exception:
-                        pass
-                elif typ == "ping":
-                    try:
-                        q.put_nowait(build_control_pong_payload())
-                    except Exception:
-                        pass
-                else:
-                    # unknown control type, ignore
-                    pass
-        except WebSocketDisconnect:
-            return
-        except asyncio.CancelledError:
-            return
-        except Exception:
-            # Any other receiver error should close the connection
-            return
-
-    sender_task = asyncio.create_task(_sender())
-    receiver_task = asyncio.create_task(_receiver())
-
-    try:
-        # Wait until either task exits
-        done, pending = await asyncio.wait(
-            [sender_task, receiver_task], return_when=asyncio.FIRST_COMPLETED
-        )
-        # Cancel remaining tasks
-        for t in pending:
-            try:
-                t.cancel()
-            except Exception:
-                pass
-    except Exception:
-        logger.exception("WebSocket session error")
-    finally:
-        # Cleanup: cancel keepalive and remaining tasks
-        try:
-            keepalive_task.cancel()
-        except Exception:
-            pass
-        try:
-            sender_task.cancel()
-        except Exception:
-            pass
-        try:
-            receiver_task.cancel()
-        except Exception:
-            pass
-        # Unsubscribe handlers
-        for ev, h in list(handlers.items()):
-            try:
-                event_bus.unsubscribe(ev, h)
-            except Exception:
-                pass
+    await websocket_session_handler(session_id, websocket, event_bus)
 
 
 # ---------------------------------------------------------------------------

@@ -86,10 +86,15 @@ jobs:
           python - <<'PY'
           import subprocess, sys, re
           result = subprocess.run(
-              ["python", "-m", "pytest", "tests/unit", "-q", "--no-header", "-p", "no:logging"],
+              [sys.executable, "-m", "pytest", "tests/unit", "-q", "--no-header", "-p", "no:logging"],
               capture_output=True, text=True
           )
           output = result.stdout + result.stderr
+          if result.returncode not in (0, 1, 5):
+              print(f"pytest subprocess exited with code {result.returncode}")
+              print("stdout:", result.stdout[:2000])
+              print("stderr:", result.stderr[:2000])
+              sys.exit(1)
           # Match e.g. "3 xfailed" or "2 xpassed"
           xfail_match = re.search(r"(\d+) xfailed", output)
           xpass_match = re.search(r"(\d+) xpassed", output)
