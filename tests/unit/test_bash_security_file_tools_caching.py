@@ -397,6 +397,17 @@ class TestIndexedDirsCacheSkipsRedundantIndexing:
     @pytest.mark.asyncio
     async def test_index_repository_called_once_per_dir(self, tmp_path, monkeypatch):
         """F8: index_repository must be called at most once per working directory."""
+
+        # The analysis_node code uses symbol_graph which creates the .codingAgent
+        # context directory during SymbolGraph.__init__ (via agent_context_path).
+        # This directory creation changes the mtime of the working directory AFTER
+        # _mark_indexed() is called, invalidating the F8 cache on the next call.
+        # Pre-create the directory here so the mtime is stable before the first
+        # call to analysis_node.
+        from src.tools.tools_config import agent_context_path
+
+        agent_context_path(tmp_path)
+
         import src.core.orchestration.graph.nodes.analysis_node as _an
         import src.core.indexing.repo_indexer as _ri
 

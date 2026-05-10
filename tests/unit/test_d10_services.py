@@ -411,8 +411,8 @@ class TestMCPConfigSchema:
     def test_get_mcp_config_workspace_override(self, tmp_path):
         from src.core.config_loader import get_mcp_config
 
-        agent_dir = tmp_path / ".agent"
-        agent_dir.mkdir()
+        agent_dir = tmp_path / ".codingAgent"
+        agent_dir.mkdir(parents=True)
         (agent_dir / "config.json").write_text(
             json.dumps(
                 {
@@ -437,8 +437,8 @@ class TestMCPConfigSchema:
     def test_get_mcp_servers_workspace_override(self, tmp_path):
         from src.core.config_loader import get_mcp_servers
 
-        agent_dir = tmp_path / ".agent"
-        agent_dir.mkdir()
+        agent_dir = tmp_path / ".codingAgent"
+        agent_dir.mkdir(parents=True)
         (agent_dir / "config.json").write_text(
             json.dumps(
                 {"mcp": {"servers": [{"name": "test-server", "cmd": ["test"]}]}}

@@ -1,12 +1,8 @@
 import threading
 import time
 
-from src.tools.todo_tools import (
-    _FileLock,
-    _lock_path,
-    get_lock_metrics,
-    reset_lock_metrics,
-)
+from src.tools.file_lock import get_lock_metrics, reset_lock_metrics
+from src.tools.todo_tools import _FileLock, _lock_path
 
 
 def test_lock_metrics_reset_and_get():
@@ -36,6 +32,7 @@ def test_metrics_fallback_acquire_and_release(tmp_path):
 
 
 def test_metrics_fallback_acquire_timeout(tmp_path):
+    import socket
     reset_lock_metrics()
     workdir = tmp_path / "repo"
     workdir.mkdir()
@@ -57,6 +54,13 @@ def test_metrics_fallback_acquire_timeout(tmp_path):
             return
 
     with lock1:
+        # Overwrite lockfile with a different host so same_host is False
+        # for the worker. This prevents stale reclaim (same host + live PID)
+        # from removing the lock before the timeout check.
+        data = lockp.read_text(encoding="utf-8")
+        data = data.replace(f"host={socket.gethostname()}", "host=different-host")
+        lockp.write_text(data)
+
         # Start a worker that will try to acquire and should time out
         t = threading.Thread(target=worker_attempt)
         t.start()

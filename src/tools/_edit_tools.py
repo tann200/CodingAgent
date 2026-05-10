@@ -119,17 +119,17 @@ def edit_file(
     if guard_result.get("status") == "error":
         return {"path": path, "status": "error", "error": guard_result.get("error")}
 
-    # GAP-S1: Read-before-write guardrail
+    p = _safe_resolve(path, workdir)
+
+    # GAP-S1: Read-before-write guardrail (check after resolve so path is absolute)
     try:
         from src.tools.guardrails import check_read_before_write
 
-        rbw = check_read_before_write(path)
+        rbw = check_read_before_write(str(p))
         if rbw:
-            return {"path": path, "status": "error", **rbw}
+            return {"path": str(p), "status": "error", **rbw}
     except Exception:
         pass
-
-    p = _safe_resolve(path, workdir)
     if not p.exists():
         return {"path": str(p), "status": "not_found"}
 
@@ -369,17 +369,17 @@ def edit_file_atomic(
     if guard_result.get("status") == "error":
         return {"path": path, "status": "error", "error": guard_result.get("error")}
 
-    # GAP-S1: Read-before-write guardrail
+    p = _safe_resolve(path, workdir)
+
+    # GAP-S1: Read-before-write guardrail (check after resolve so path is absolute)
     try:
         from src.tools.guardrails import check_read_before_write
 
-        rbw = check_read_before_write(path)
+        rbw = check_read_before_write(str(p))
         if rbw:
-            return {"path": path, "status": "error", **rbw}
+            return {"path": str(p), "status": "error", **rbw}
     except Exception:
         pass
-
-    p = _safe_resolve(path, workdir)
     if not p.exists():
         return {"path": str(p), "status": "not_found"}
 

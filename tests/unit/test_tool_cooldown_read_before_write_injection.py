@@ -522,15 +522,21 @@ class TestPerceptionNodeInjectedToolNameDetection:
         the perception_node must reject the tool call.
         """
         import inspect
+        from src.core.orchestration.graph.nodes import perception_parsing as pp_mod
+
+        source = inspect.getsource(pp_mod)
+        assert "_detect_prompt_injection" in source, (
+            "F8: perception_parsing must contain the injection guard"
+        )
+        assert "user_messages" in source, (
+            "F8: guard must scan user-role messages"
+        )
+
         from src.core.orchestration.graph.nodes import perception_node as pn_mod
 
-        source = inspect.getsource(pn_mod)
-        # Guard must exist in source
-        assert "injection" in source.lower() or "F8" in source, (
-            "F8: perception_node must contain a prompt injection guard"
-        )
-        assert "user_messages" in source or "role.*user" in source, (
-            "F8: guard must scan user-role messages"
+        pn_source = inspect.getsource(pn_mod)
+        assert "perception_parsing" in pn_source or "_parse_tool_call_and_flags" in pn_source, (
+            "F8: perception_node must invoke the injection guard via perception_parsing"
         )
 
     def test_injection_fingerprint_pattern(self):

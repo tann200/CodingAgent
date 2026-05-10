@@ -34,8 +34,8 @@ from src.core.orchestration.shell_hooks import (
 
 
 def _write_settings(tmpdir: Path, pre_cmds: list[str], post_cmds: list[str]) -> Path:
-    """Write a .agent/settings.json with the given hook commands."""
-    agent_dir = tmpdir / ".agent"
+    """Write a .codingAgent/settings.json with the given hook commands."""
+    agent_dir = tmpdir / ".codingAgent"
     agent_dir.mkdir(parents=True, exist_ok=True)
     settings = {"hooks": {"PreToolUse": pre_cmds, "PostToolUse": post_cmds}}
     settings_path = agent_dir / "settings.json"
@@ -78,21 +78,21 @@ class TestLoadHooksConfig:
         assert config["PostToolUse"] == [{"matcher": "*", "command": "cmd_b"}]
 
     def test_missing_hooks_key_returns_empty(self, tmp_path):
-        agent_dir = tmp_path / ".agent"
+        agent_dir = tmp_path / ".codingAgent"
         agent_dir.mkdir()
         (agent_dir / "settings.json").write_text('{"other": 1}')
         config = _load_hooks_config(tmp_path)
         assert config == {"PreToolUse": [], "PostToolUse": []}
 
     def test_malformed_json_returns_empty(self, tmp_path):
-        agent_dir = tmp_path / ".agent"
+        agent_dir = tmp_path / ".codingAgent"
         agent_dir.mkdir()
         (agent_dir / "settings.json").write_text("not-json")
         config = _load_hooks_config(tmp_path)
         assert config == {"PreToolUse": [], "PostToolUse": []}
 
     def test_hooks_not_dict_returns_empty(self, tmp_path):
-        agent_dir = tmp_path / ".agent"
+        agent_dir = tmp_path / ".codingAgent"
         agent_dir.mkdir()
         (agent_dir / "settings.json").write_text('{"hooks": "invalid"}')
         config = _load_hooks_config(tmp_path)

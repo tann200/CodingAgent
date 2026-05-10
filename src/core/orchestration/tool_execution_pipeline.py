@@ -482,23 +482,17 @@ def execute_tool_impl(orch: Any, tool_call: Dict[str, Any]) -> Dict[str, Any]:
         contract = get_tool_contract(name)
         if contract is not None:
             try:
-                validated = contract.model_validate(args)
+                contract.model_validate(args)
             except ValidationError as ve:
                 return {
                     "ok": False,
                     "error": f"Tool call failed contract validation: {ve}",
                 }
-            if hasattr(validated, "model_dump"):
-                args = validated.model_dump()
-            elif isinstance(validated, dict):
-                args = validated
-            else:
-                try:
-                    args = dict(validated)
-                except Exception:
-                    pass
     except Exception:
         pass
+
+    # Strip LLM-injected user_approved (prevents WorkspaceGuard bypass)
+    args.pop("user_approved", None)
 
     path_arg = args.get("path") or args.get("file_path") or args.get("src_path")
 
@@ -628,6 +622,19 @@ def execute_tool_impl(orch: Any, tool_call: Dict[str, Any]) -> Dict[str, Any]:
         import concurrent.futures as _cf
         import contextvars as _contextvars
         import inspect as _inspect
+
+        # Inject working directory so tool functions resolve paths correctly.
+        # Only inject for functions that accept a workdir parameter.
+        if "workdir" not in args and hasattr(orch, "working_dir") and orch.working_dir:
+            try:
+                import inspect as _inspect
+                sig = _inspect.signature(tool["fn"])
+                if "workdir" in sig.parameters:
+                    args = dict(args)
+                    from pathlib import Path as _Path
+                    args["workdir"] = _Path(orch.working_dir)
+            except (ValueError, TypeError):
+                pass
 
         def _run_tool_callable(fn: Any, kwargs: dict) -> Any:
             rv = fn(**kwargs)

@@ -1,9 +1,11 @@
 
 
-from src.core.orchestration.graph.nodes.perception_node import (
+from src.core.orchestration.graph.nodes.perception_parsing import (
     _parse_native_tool_call_from_resp,
-    _parse_yaml_tool_call_from_content,
     _detect_prompt_injection,
+)
+from src.core.orchestration.graph.nodes.perception_node import (
+    _parse_yaml_tool_call_from_content,
 )
 
 

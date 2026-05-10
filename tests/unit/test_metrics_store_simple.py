@@ -1,12 +1,8 @@
 import threading
 from statistics import median
 
-from src.tools.todo_tools import (
-    get_lock_metrics,
-    get_rbw_metrics,
-    reset_lock_metrics,
-    reset_rbw_metrics,
-)
+from src.tools.file_lock import get_lock_metrics, reset_lock_metrics
+from src.tools.todo_tools import get_rbw_metrics, reset_rbw_metrics
 
 
 def test_lock_and_rbw_concurrent_increments() -> None:

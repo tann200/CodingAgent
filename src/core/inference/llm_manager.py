@@ -428,7 +428,7 @@ class ProviderManager:
     def __init__(self, providers_config_path: Optional[str] = None):
         self._providers: Dict[str, Any] = {}
         self._initialized = False
-        self._init_lock = asyncio.Lock()
+        self._init_lock = _threading.Lock()
         self._models_cache: Dict[str, List[str]] = {}
         self._event_bus = None
         self.providers_config_path = providers_config_path
@@ -733,7 +733,7 @@ class ProviderManager:
     async def initialize(self):
         if self._initialized:
             return
-        async with self._init_lock:
+        with self._init_lock:
             if self._initialized:
                 return
             guilogger.info("ProviderManager.initialize: loading providers.json")

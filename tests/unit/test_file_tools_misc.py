@@ -20,12 +20,14 @@ import pytest
 # ---------------------------------------------------------------------------
 
 def test_edit_file_unified_diff(tmp_path):
-    from src.tools.file_tools import edit_file
+    from src.tools.file_tools import edit_file, read_file
 
     workdir = tmp_path / "work"
     workdir.mkdir()
     file_path = workdir / "test.txt"
     file_path.write_text("line 1\nline 2\nline 3\n")
+
+    read_file("test.txt", workdir=workdir)
 
     patch = (
         "--- test.txt\n"

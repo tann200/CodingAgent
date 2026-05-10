@@ -52,11 +52,11 @@ def test_delegate_task_sets_initial_state_delegation_depth(tmp_path: Path) -> No
     mock_graph.ainvoke = _fake_ainvoke
 
     with (
-        patch("src.tools.subagent_tools.GraphFactory") as mock_gf,
+        patch("src.tools.subagent_tools._resolve_subagent_graph") as mock_gf,
         patch("src.tools.subagent_tools.get_agent_brain_manager") as mock_brain_mgr,
         patch("src.tools.subagent_tools._PARENT_ORCHESTRATOR_VAR") as mock_ctxvar,
     ):
-        mock_gf.get_graph.return_value = mock_graph
+        mock_gf.return_value = mock_graph
         mock_brain = MagicMock()
         mock_brain.compile_system_prompt.return_value = "sys"
         mock_brain_mgr.return_value = mock_brain
@@ -121,11 +121,11 @@ def test_delegate_task_concurrent_contextvar_isolation(tmp_path: Path) -> None:
     mock_graph = _make_minimal_graph_mock(captured)
 
     with (
-        patch("src.tools.subagent_tools.GraphFactory") as mock_gf,
+        patch("src.tools.subagent_tools._resolve_subagent_graph") as mock_gf,
         patch("src.tools.subagent_tools.get_agent_brain_manager") as mock_brain_mgr,
         patch("src.tools.subagent_tools._PARENT_ORCHESTRATOR_VAR") as mock_ctxvar,
     ):
-        mock_gf.get_graph.return_value = mock_graph
+        mock_gf.return_value = mock_graph
         mock_brain = MagicMock()
         mock_brain.compile_system_prompt.return_value = "sys"
         mock_brain_mgr.return_value = mock_brain

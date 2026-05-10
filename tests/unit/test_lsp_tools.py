@@ -378,7 +378,7 @@ class TestFormatter:
         import sys
 
         sys.path.insert(0, str(tmp_path))
-        with patch("src.tools.formatter.run_formatter", return_value=True) as mock_fmt:
+        with patch("src.tools._file_io._run_formatter", return_value=True) as mock_fmt:
             from src.tools.file_tools import write_file
 
             f = tmp_path / "test.py"

@@ -179,15 +179,15 @@ def write_file(
     if guard_result.get("status") == "error":
         return {"path": path, "status": "error", "error": guard_result.get("error")}
 
-    # GAP-S1: Read-before-write guardrail
+    p = _safe_resolve(path, workdir)
+
+    # GAP-S1: Read-before-write guardrail (check after resolve so path is absolute)
     try:
-        rbw = _check_read_before_write(path)
+        rbw = _check_read_before_write(str(p))
         if rbw:
-            return {"path": path, "status": "error", **rbw}
+            return {"path": str(p), "status": "error", **rbw}
     except Exception:
         pass
-
-    p = _safe_resolve(path, workdir)
 
     # OP-5: Apply project-level deny_write patterns from .agent-context/config.json.
     try:

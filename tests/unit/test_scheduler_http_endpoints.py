@@ -270,7 +270,7 @@ def test_websocket_control_list_and_ping(monkeypatch, recv_json_ws):
             assert msg.get("data", {}).get("type") in ("pong", None)
 
 
-def test_websocket_backpressure_and_drop_policy(monkeypatch):
+def test_websocket_backpressure_and_drop_policy(monkeypatch, recv_json_ws):
     monkeypatch.setenv("CODING_AGENT_ADMIN_TOKEN", "ws-token-4")
     # Use a small queue size to force drops
     with TestClient(app) as client:
@@ -291,9 +291,11 @@ def test_websocket_backpressure_and_drop_policy(monkeypatch):
             seen = []
             for _ in range(6):
                 try:
-                    m = ws.receive_json()
-                    if m.get("event") == "session.created":
+                    m = recv_json_ws(ws, timeout=2.0)
+                    if m is not None and m.get("event") == "session.created":
                         seen.append(m)
+                except TimeoutError:
+                    break
                 except Exception:
                     break
             assert len(seen) >= 1

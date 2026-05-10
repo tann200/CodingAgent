@@ -148,7 +148,9 @@ class TestGrep:
 
 class TestEditFileAtomic:
     def test_basic_replacement(self, tmp_path):
+        from src.tools.guardrails import mark_file_read
         write_file("f.py", "def hello():\n    pass\n", workdir=tmp_path)
+        mark_file_read(str((tmp_path / "f.py").resolve()))
         res = edit_file_atomic("f.py", "def hello():", "def goodbye():", workdir=tmp_path)
         assert res["status"] == "ok"
         content = (tmp_path / "f.py").read_text()
@@ -156,7 +158,9 @@ class TestEditFileAtomic:
         assert "hello" not in content
 
     def test_returns_diff(self, tmp_path):
+        from src.tools.guardrails import mark_file_read
         write_file("f.py", "x = 1\n", workdir=tmp_path)
+        mark_file_read(str((tmp_path / "f.py").resolve()))
         res = edit_file_atomic("f.py", "x = 1", "x = 99", workdir=tmp_path)
         assert res["status"] == "ok"
         assert "diff" in res
@@ -164,7 +168,9 @@ class TestEditFileAtomic:
         assert res["lines_removed"] >= 1
 
     def test_not_found_returns_error(self, tmp_path):
+        from src.tools.guardrails import mark_file_read
         write_file("f.py", "x = 1\n", workdir=tmp_path)
+        mark_file_read(str((tmp_path / "f.py").resolve()))
         res = edit_file_atomic("f.py", "THIS DOES NOT EXIST", "replacement", workdir=tmp_path)
         assert res["status"] == "error"
         assert "not found" in res["error"].lower()
@@ -180,7 +186,9 @@ class TestEditFileAtomic:
         assert res["status"] == "not_found"
 
     def test_multiline_old_string(self, tmp_path):
+        from src.tools.guardrails import mark_file_read
         write_file("f.py", "def foo():\n    return 1\n", workdir=tmp_path)
+        mark_file_read(str((tmp_path / "f.py").resolve()))
         res = edit_file_atomic(
             "f.py",
             "def foo():\n    return 1",

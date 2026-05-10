@@ -82,13 +82,14 @@ def validate_file_size(file_path: str, content: str) -> Dict[str, Any]:
 # Example simple contracts (importable)
 class ReadFileContract(BaseModel):
     path: str
-    status: str
+    status: str = ""
     content: Optional[str] = None
 
 
 class WriteFileContract(BaseModel):
     path: str
-    status: str
+    content: str = ""
+    status: str = ""
 
 
 class GeneratePatchContract(BaseModel):
@@ -98,31 +99,31 @@ class GeneratePatchContract(BaseModel):
 
 class ApplyPatchContract(BaseModel):
     path: str
-    status: str
+    status: str = ""
 
 
 class RunTestsContract(BaseModel):
-    status: str
-    returncode: int
+    status: str = ""
+    returncode: int = 0
 
 
 class BashContract(BaseModel):
-    command: str
-    status: str
-    returncode: int
+    command: str = ""
+    status: str = ""
+    returncode: int = 0
     stdout: Optional[str] = None
     stderr: Optional[str] = None
 
 
 class GlobContract(BaseModel):
     pattern: str
-    status: str
+    status: str = ""
     matches: List[str] = []
 
 
 class GrepContract(BaseModel):
     pattern: str
-    status: str
+    status: str = ""
     matches: List[str] = []
 
 

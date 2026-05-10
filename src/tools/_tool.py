@@ -258,9 +258,17 @@ def tool(
     return _wrap
 
 
-def ok(**kwargs: Any) -> dict:
-    """Return a standardised success response."""
-    return {"status": "ok", **kwargs}
+def ok(output: str = "", **kwargs: Any) -> dict:
+    """Return a standardised success response.
+
+    Accepts an optional positional *output* (convenience for callers that
+    pass a bare message string) as well as ``**kwargs``.
+    """
+    result: dict = {"ok": True, "status": "ok"}
+    if output:
+        result["output"] = output
+    result.update(kwargs)
+    return result
 
 
 def err(msg: str, **kwargs: Any) -> dict:

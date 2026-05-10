@@ -16,10 +16,11 @@ def test_write_file_returns_diff_on_change(tmp_path):
 
 
 def test_write_file_no_change_has_no_diff(tmp_path):
-    from src.tools.file_tools import write_file
+    from src.tools.file_tools import write_file, read_file
 
     target = tmp_path / "bar.py"
     target.write_text("y = 2\n", encoding="utf-8")
+    read_file("bar.py", workdir=tmp_path)
     result = write_file("bar.py", "y = 2\n", workdir=tmp_path)
     assert result.get("status") == "no_change"
     # no diff key expected for no_change
@@ -27,10 +28,11 @@ def test_write_file_no_change_has_no_diff(tmp_path):
 
 
 def test_write_file_rejects_new_syntax_error_and_preserves_original(tmp_path):
-    from src.tools.file_tools import write_file
+    from src.tools.file_tools import write_file, read_file
 
     target = tmp_path / "bad.py"
     target.write_text("def ok():\n    return 1\n", encoding="utf-8")
+    read_file("bad.py", workdir=tmp_path)
 
     result = write_file("bad.py", "def broken(:\n    return 1\n", workdir=tmp_path)
 

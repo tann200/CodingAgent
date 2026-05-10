@@ -68,6 +68,7 @@ tools:
   - load_skill
   - list_skills
   - memory_save
+  - record_mistake
   - read_file_bytes
   - tail_log_file
   - echo

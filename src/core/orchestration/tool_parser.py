@@ -2,6 +2,7 @@ from typing import Dict, Any, Optional
 import json
 import logging
 import re
+import yaml
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +86,58 @@ def parse_tool_block(text: str) -> Optional[Dict[str, Any]]:
                     }
             except Exception:
                 pass
+
+    yaml_patterns = [
+        r"```yaml\s*\n(.*?)" + _CLOSE_FENCE,
+    ]
+
+    for pattern in yaml_patterns:
+        match = re.search(pattern, cleaned_text, re.DOTALL | re.IGNORECASE)
+        if match:
+            yaml_content = match.group(1).strip()
+            try:
+                parsed = yaml.safe_load(yaml_content)
+                if isinstance(parsed, dict):
+                    if parsed.get("name") and parsed.get("arguments"):
+                        args = parsed["arguments"]
+                        if isinstance(args, str):
+                            try:
+                                args = json.loads(args)
+                            except Exception:
+                                pass
+                        if isinstance(args, dict):
+                            logger.debug(
+                                f"parse_tool_block: YAML parse succeeded for tool '{parsed['name']}'"
+                            )
+                            return {"name": parsed["name"], "arguments": args}
+                    # Compact format: tool name as the top-level key
+                    for key in parsed:
+                        if isinstance(parsed[key], dict) and "path" in parsed[key]:
+                            logger.debug(
+                                f"parse_tool_block: YAML compact format for tool '{key}'"
+                            )
+                            return {"name": key, "arguments": parsed[key]}
+            except Exception:
+                pass
+
+    # Inline YAML: bare YAML not wrapped in code fences
+    try:
+        inline_parsed = yaml.safe_load(cleaned_text)
+        if isinstance(inline_parsed, dict):
+            if inline_parsed.get("name") and inline_parsed.get("arguments"):
+                args = inline_parsed["arguments"]
+                if isinstance(args, str):
+                    try:
+                        args = json.loads(args)
+                    except Exception:
+                        pass
+                if isinstance(args, dict):
+                    logger.debug(
+                        f"parse_tool_block: inline YAML succeeded for tool '{inline_parsed['name']}'"
+                    )
+                    return {"name": inline_parsed["name"], "arguments": args}
+    except Exception:
+        pass
 
     inline_result = _extract_json_object(cleaned_text)
     if inline_result:

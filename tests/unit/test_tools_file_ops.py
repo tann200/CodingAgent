@@ -24,6 +24,10 @@ def test_edit_file(tmp_path):
     p = subdir / "hello.txt"
     p.write_text("line 1\nline 2\nline 3\n", encoding="utf-8")
 
+    # Read the file first to satisfy the read-before-write guardrail
+    from src.tools.guardrails import mark_file_read
+    mark_file_read(str(p.resolve()))
+
     patch_content = """--- sub/hello.txt
 +++ sub/hello.txt
 @@ -1,3 +1,3 @@
