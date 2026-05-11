@@ -166,15 +166,15 @@ class TestWorkflowSelector:
         assert workflow.use_replan is False
         assert workflow.use_vector_memory is False
 
-    def test_frontier_loop_for_gemma(self):
-        workflow = select_workflow_from_names("gemma-4-27b-a4b", "rtx5070ti-16g")
-        assert workflow.workflow_type == WorkflowType.FRONTIER_LOOP
+    def test_capable_loop_for_gemma(self):
+        workflow = select_workflow_from_names("gemma-4-26b-a4b", "rtx5070ti-16g")
+        assert workflow.workflow_type == WorkflowType.CAPABLE_LOOP
         assert workflow.use_verification is True
         assert workflow.context_limit >= 8192
 
     def test_should_use_single_loop(self):
         assert should_use_single_loop("qwen3.5-9b", "rtx5070ti-16g") is True
-        assert should_use_single_loop("gemma-4-27b-a4b", "rtx5070ti-16g") is False
+        assert should_use_single_loop("gemma-4-26b-a4b", "rtx5070ti-16g") is False
         assert should_use_single_loop("gpt-4o") is False
 
     def test_loop_control(self):
@@ -200,7 +200,7 @@ class TestWorkflowSelector:
 
     def test_gpt_cloud_workflow(self):
         workflow = select_workflow_from_names("gpt-4o")
-        assert workflow.workflow_type == WorkflowType.FRONTIER_LOOP
+        assert workflow.workflow_type == WorkflowType.CAPABLE_LOOP
         assert workflow.max_turns >= 40
 
 

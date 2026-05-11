@@ -71,17 +71,17 @@ def test_lite_routes_are_minimal():
 
 
 def test_select_tier_graph_cache_key_maps_tiers_to_cache_keys():
-    assert select_tier_graph_cache_key("frontier") == "frontier"
-    assert select_tier_graph_cache_key("large") == "frontier"
+    assert select_tier_graph_cache_key("frontier") == "capable"
+    assert select_tier_graph_cache_key("large") == "capable"
     assert select_tier_graph_cache_key("lite") == "lite"
-    assert select_tier_graph_cache_key("medium") == "standard"
+    assert select_tier_graph_cache_key("medium") == "capable"
 
 
 def test_compile_tier_graph_for_key_dispatches_to_matching_compiler():
     calls = []
 
     result = compile_tier_graph_for_key(
-        "frontier",
+        "capable",
         compile_frontier_graph_fn=lambda: calls.append("frontier") or "frontier-graph",
         compile_lite_graph_fn=lambda: calls.append("lite") or "lite-graph",
         compile_agent_graph_fn=lambda: calls.append("standard") or "standard-graph",
@@ -102,8 +102,8 @@ def test_compile_tier_graph_for_key_dispatches_to_matching_compiler():
         compile_lite_graph_fn=lambda: calls.append("lite") or "lite-graph",
         compile_agent_graph_fn=lambda: calls.append("standard") or "standard-graph",
     )
-    assert result == "standard-graph"
-    assert calls == ["frontier", "lite", "standard"]
+    assert result == "frontier-graph"
+    assert calls == ["frontier", "lite", "frontier"]
 
 
 def test_get_compiled_graph_for_orchestrator_uses_explicit_model_tier():

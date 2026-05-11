@@ -6,7 +6,8 @@
     "models": [
       "qwen/qwen3.5-9b",
       "gemma-4-26b-a4b-it",
-      "gemma-4-e4b-it"
+      "gemma-4-e4b-it",
+      "Jackrong/Qwen3.5-27B-Claude-4.6-Opus-Reasoning-Distilled"
     ],
     "default_model": "qwen/qwen3.5-9b",
     "supports_native_tools": true,

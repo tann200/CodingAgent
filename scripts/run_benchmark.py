@@ -28,14 +28,27 @@ _project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(_project_root))
 
 
-def _build_agent_factory(working_dir: str):
+def _build_agent_factory(
+    working_dir: str,
+    *,
+    model: str | None = None,
+    provider: str | None = None,
+):
     """Return a factory that creates a fresh agent for each scenario."""
+
     def factory():
         try:
             from src.core.orchestration.orchestrator import Orchestrator
-            return Orchestrator(working_dir=working_dir)
+
+            orch = Orchestrator(working_dir=working_dir)
+            if provider:
+                setattr(orch, "_provider_name", provider)
+            if model:
+                setattr(orch, "model", model)
+            return orch
         except Exception as e:
             raise RuntimeError(f"Could not create Orchestrator: {e}") from e
+
     return factory
 
 
@@ -141,6 +154,16 @@ def main():
         action="store_true",
         help="List matching scenarios without running them",
     )
+    parser.add_argument(
+        "--model",
+        default=None,
+        help="Explicit model override for benchmark runs.",
+    )
+    parser.add_argument(
+        "--provider",
+        default=None,
+        help="Explicit provider name override for benchmark runs.",
+    )
     args = parser.parse_args()
 
     scenarios_path = Path(args.scenarios_file)
@@ -176,7 +199,11 @@ def main():
             print(f"[{i}/{len(scenarios)}] Running: {scenario.name} ...", end=" ", flush=True)
             evaluator = ScenarioEvaluator(workdir=tmpdir)
             evaluator.add_scenario(scenario)
-            agent_factory = _build_agent_factory(tmpdir)
+            agent_factory = _build_agent_factory(
+                tmpdir,
+                model=args.model,
+                provider=args.provider,
+            )
             results = evaluator.run_evaluation(agent_factory)
             r = results[0]
             all_results.append({

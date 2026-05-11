@@ -9,6 +9,7 @@ import json
 import pytest
 import shutil
 from datetime import datetime
+from types import SimpleNamespace
 
 # ruff: noqa: E501
 from pathlib import Path
@@ -357,6 +358,45 @@ class TestRunScenario:
         assert isinstance(result.start_time, datetime)
         assert isinstance(result.end_time, datetime)
         assert result.end_time >= result.start_time
+
+    def test_orchestrator_agent_uses_run_agent_once(self, tmp_path):
+        ev = ScenarioEvaluator(workdir=str(tmp_path))
+        s = Scenario(
+            name="orch_exec",
+            description="desc",
+            task="Create hello.py",
+            expected_files={"hello.py": "def hello():"},
+        )
+
+        class Agent:
+            def __init__(self):
+                self.calls = []
+
+            def get_tools_for_role(self, role):
+                return {}
+
+            def run_agent_once(self, system_prompt_name, messages, tools, cancel_event=None):
+                self.calls.append(
+                    SimpleNamespace(
+                        system_prompt_name=system_prompt_name,
+                        messages=messages,
+                        tools=tools,
+                    )
+                )
+                scenario_dir = Path(tmp_path) / "orch_exec"
+                scenario_dir.mkdir(parents=True, exist_ok=True)
+                (scenario_dir / "hello.py").write_text(
+                    "def hello():\n    return 'world'\n"
+                )
+                return {"ok": True, "assistant_message": "done"}
+
+        agent = Agent()
+        result = ev.run_scenario(s, lambda: agent)
+
+        assert result.status == "pass"
+        assert len(agent.calls) == 1
+        assert agent.calls[0].system_prompt_name == "operational"
+        assert agent.calls[0].messages == [{"role": "user", "content": "Create hello.py"}]
 
 
 class TestRunEvaluation:

@@ -86,7 +86,7 @@ class TestSmallModelPipeline:
         )
 
         assert WorkflowType.SINGLE_LOOP is not None
-        assert WorkflowType.FRONTIER_LOOP is not None
+        assert WorkflowType.CAPABLE_LOOP is not None
 
     def test_runtime_profile_imports(self):
         """Runtime profile can be imported."""

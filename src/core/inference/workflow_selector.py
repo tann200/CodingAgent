@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 class WorkflowType(str, Enum):
     SINGLE_LOOP = "single_loop"  # ReAct++ for small models
-    FRONTIER_LOOP = "frontier_loop"  # Multi-turn loop for medium+
+    CAPABLE_LOOP = "capable_loop"  # Multi-turn loop for medium+
 
 
 @dataclass
@@ -40,7 +40,7 @@ def select_workflow(runtime: RuntimeProfile) -> WorkflowConfig:
 
     Binary decision:
     - SMALL/LITE mode → SINGLE_LOOP
-    - STANDARD/FULL mode → FRONTIER_LOOP
+    - STANDARD/FULL mode → CAPABLE_LOOP
     """
     is_small = runtime.agent_mode == AgentMode.LITE
     is_cloud = runtime.is_cloud
@@ -59,7 +59,7 @@ def select_workflow(runtime: RuntimeProfile) -> WorkflowConfig:
         )
     else:
         return WorkflowConfig(
-            workflow_type=WorkflowType.FRONTIER_LOOP,
+            workflow_type=WorkflowType.CAPABLE_LOOP,
             context_limit=runtime.safe_context_tokens,
             tool_limit=runtime.tool_limit,
             max_turns=runtime.max_turns,
@@ -67,9 +67,7 @@ def select_workflow(runtime: RuntimeProfile) -> WorkflowConfig:
             use_verification=runtime.use_verification,
             use_replan=runtime.use_replan,
             use_vector_memory=runtime.use_vector_memory,
-            graph_type="frontier_8node"
-            if runtime.agent_mode == AgentMode.STANDARD
-            else "full_16node",
+            graph_type="capable_loop",
         )
 
 

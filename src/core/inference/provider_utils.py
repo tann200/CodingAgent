@@ -45,6 +45,17 @@ def resolve_provider_capabilities(
     """
     caps: dict[str, Any] = {}
 
+    explicit_model = None
+    explicit_provider = None
+    try:
+        explicit_model = _extract_str(getattr(orchestrator, "model", None))
+    except Exception:
+        explicit_model = None
+    try:
+        explicit_provider = _extract_str(getattr(orchestrator, "_provider_name", None))
+    except Exception:
+        explicit_provider = None
+
     # 1) Orchestrator-level capabilities (authoritative)
     try:
         if (
@@ -146,12 +157,22 @@ def resolve_provider_capabilities(
     except Exception:
         _model = None
 
-    return {
+    resolved = {
         "supports_native_tools": bool(caps.get("supports_native_tools", False)),
         "provider_family": caps.get("provider_family") or "default",
-        "model": _model,
-        "provider_name": _pname,
+        "model": explicit_model or _model,
+        "provider_name": explicit_provider or _pname,
     }
+    if resolved["provider_family"] == "default" and resolved["provider_name"]:
+        try:
+            from src.core.orchestration.provider_capabilities import (
+                _map_provider_family_impl as _map_pf,
+            )
+
+            resolved["provider_family"] = _map_pf(resolved["provider_name"])
+        except Exception:
+            pass
+    return resolved
 
 
 def resolve_provider_and_model(orchestrator: Any) -> tuple[Optional[str], Optional[str]]:

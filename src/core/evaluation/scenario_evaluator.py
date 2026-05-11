@@ -19,6 +19,40 @@ from datetime import datetime
 logger = logging.getLogger(__name__)
 
 
+def _run_agent_for_scenario(agent: Any, scenario: "Scenario", scenario_dir: Path) -> None:
+    """Execute one scenario against an agent-like object.
+
+    Supports the existing direct-agent ``run(...)`` contract and the real
+    ``Orchestrator.run_agent_once(...)`` path used by benchmarks.
+    """
+    if hasattr(agent, "run"):
+        agent.run(scenario.task, working_dir=str(scenario_dir))
+        return
+
+    if hasattr(agent, "run_agent_once") and callable(getattr(agent, "run_agent_once")):
+        tools = {}
+        try:
+            tools = agent.get_tools_for_role("default")
+        except Exception:
+            tools = getattr(agent, "tools", {}) or {}
+
+        agent.run_agent_once(
+            system_prompt_name="operational",
+            messages=[{"role": "user", "content": scenario.task}],
+            tools=tools,
+        )
+        return
+
+    if callable(agent):
+        agent(scenario.task)
+        return
+
+    logger.warning(
+        "ScenarioEvaluator: agent has no supported execution surface for '%s'",
+        scenario.name,
+    )
+
+
 @dataclass
 class Scenario:
     """A test scenario for evaluation."""
@@ -172,14 +206,7 @@ class ScenarioEvaluator:
             logger.info(f"Running scenario: {scenario.name}")
             agent = agent_factory()
             try:
-                if hasattr(agent, "run"):
-                    agent.run(scenario.task, working_dir=str(scenario_dir))
-                elif callable(agent):
-                    agent(scenario.task)
-                else:
-                    logger.warning(
-                        f"ScenarioEvaluator: agent has no 'run' method and is not callable — skipping agent execution for '{scenario.name}'"
-                    )
+                _run_agent_for_scenario(agent, scenario, scenario_dir)
             except Exception as agent_err:
                 logger.warning(
                     f"ScenarioEvaluator: agent raised during scenario '{scenario.name}': {agent_err}"
@@ -445,4 +472,3 @@ def run_pass_at_k(
         "pass_at_k": pass_at_k(n, c, k),
         "results": results,
     }
-

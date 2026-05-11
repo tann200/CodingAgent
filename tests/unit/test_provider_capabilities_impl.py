@@ -124,3 +124,28 @@ def test_provider_family_derived_from_provider_name(monkeypatch):
     caps = get_provider_capabilities_impl(orch)
     assert caps.get("provider_name") == "OpenAI"
     assert caps.get("provider_family") == "openai"
+
+
+def test_explicit_model_and_provider_override_manager_values(monkeypatch):
+    fake_caps = {
+        "supports_native_tools": True,
+        "provider_family": "openai",
+        "model": "provider-default",
+        "provider_name": "lm_studio",
+    }
+    fake_mgr = FakeManager(fake_caps)
+
+    import src.core.inference.llm_manager as llm_mgr
+
+    monkeypatch.setattr(llm_mgr, "get_provider_manager", lambda: fake_mgr)
+
+    orch = SimpleNamespace(
+        _adapter=None,
+        model="google/gemma-4-26B-A4B",
+        _provider_name="lm_studio",
+    )
+    caps = get_provider_capabilities_impl(orch)
+
+    assert caps["model"] == "google/gemma-4-26B-A4B"
+    assert caps["provider_name"] == "lm_studio"
+    assert caps["provider_family"] == "local"

@@ -70,6 +70,8 @@ def get_provider_capabilities_impl(orch: Any) -> Dict[str, Any]:
         "model": None,
         "provider_name": "",
     }
+    explicit_model = _extract_str(getattr(orch, "model", None)) if orch else None
+    explicit_provider = _extract_str(getattr(orch, "_provider_name", None)) if orch else None
     try:
         # Prefer central ProviderManager when available so callers obtain a
         # consistent capability view. Sanitize any returned values so tests
@@ -100,9 +102,17 @@ def get_provider_capabilities_impl(orch: Any) -> Dict[str, Any]:
                         caps.get("supports_native_tools", False)
                     ),
                     "provider_family": provider_family,
-                    "model": model,
-                    "provider_name": provider_name or "",
+                    "model": explicit_model or model,
+                    "provider_name": explicit_provider or provider_name or "",
                 }
+                if explicit_provider:
+                    sanitized["provider_family"] = _map_provider_family_impl(
+                        sanitized["provider_name"]
+                    )
+                elif sanitized["provider_family"] == "default" and sanitized["provider_name"]:
+                    sanitized["provider_family"] = _map_provider_family_impl(
+                        sanitized["provider_name"]
+                    )
                 return sanitized
         except Exception:
             # Fall back to local implementation below when ProviderManager is
@@ -136,11 +146,11 @@ def get_provider_capabilities_impl(orch: Any) -> Dict[str, Any]:
             family = _map_provider_family_impl(raw_name)
 
         capabilities["provider_family"] = family
-        capabilities["provider_name"] = raw_name or raw_type or ""
+        capabilities["provider_name"] = explicit_provider or raw_name or raw_type or ""
 
         # ── 3. Active model ────────────────────────────────────────────
         active_model = getattr(orch._adapter, "default_model", None)
-        capabilities["model"] = _extract_str(active_model)
+        capabilities["model"] = explicit_model or _extract_str(active_model)
 
         # ── 4. GitHub Copilot model-name override ──────────────────────
         if family == "openai" and capabilities["model"]:
@@ -167,6 +177,8 @@ def resolve_provider_capabilities(orchestrator: Any) -> Dict[str, Any]:
     supports_streaming.
     """
     provider_capabilities: Dict[str, Any] = {}
+    explicit_model = _extract_str(getattr(orchestrator, "model", None)) if orchestrator else None
+    explicit_provider = _extract_str(getattr(orchestrator, "_provider_name", None)) if orchestrator else None
     try:
         caps: Dict[str, Any] = {}
 
@@ -240,8 +252,8 @@ def resolve_provider_capabilities(orchestrator: Any) -> Dict[str, Any]:
             caps = {
                 "supports_native_tools": supports_native_tools,
                 "provider_family": provider_family,
-                "model": model,
-                "provider_name": provider_name or "",
+                "model": explicit_model or model,
+                "provider_name": explicit_provider or provider_name or "",
             }
 
         # Sanitize and build final result
@@ -257,14 +269,18 @@ def resolve_provider_capabilities(orchestrator: Any) -> Dict[str, Any]:
         provider_capabilities = {
             "supports_native_tools": bool(caps.get("supports_native_tools", False)),
             "provider_family": _pf,
-            "model": _model,
-            "provider_name": _pname or "",
+            "model": explicit_model or _model,
+            "provider_name": explicit_provider or _pname or "",
             "provider_supports_parallel_tools": bool(
                 caps.get("provider_supports_parallel_tools", False)
             ),
             "supports_function_call": bool(caps.get("supports_function_call", False)),
             "supports_streaming": bool(caps.get("supports_streaming", False)),
         }
+        if explicit_provider:
+            provider_capabilities["provider_family"] = _map_provider_family_impl(
+                provider_capabilities["provider_name"]
+            )
     except Exception:
         provider_capabilities = {}
     return provider_capabilities

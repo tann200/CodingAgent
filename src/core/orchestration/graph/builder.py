@@ -286,7 +286,7 @@ def compile_agent_graph():
 _COMPILED_GRAPH = None
 _COMPILED_GRAPH_LOCK = threading.Lock()
 
-# TASK-6: Per-tier graph cache.  Keys: "standard", "frontier".
+# TASK-6: Per-tier graph cache.  Keys: "lite", "capable".
 # Compiled once on first use; reset by _reset_compiled_graph().
 _GRAPH_CACHE: Dict[str, Any] = {}
 _GRAPH_CACHE_LOCK = threading.Lock()
@@ -581,9 +581,8 @@ def build_tier_graph(tier: str):
     tier:
         Model tier string (e.g. ``"frontier"``, ``"large"``, ``"medium"``,
         ``"lite"``). Case-insensitive.
-        - ``"large"`` and ``"frontier"`` get the ``frontier_loop_node`` graph
-        - ``"lite"`` gets the single_loop node (v2 Phase 1)
-        - All others get the standard graph
+        - ``"lite"`` gets the single-loop graph
+        - all other tiers use the capable loop graph
 
     Returns
     -------

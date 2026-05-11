@@ -113,9 +113,7 @@ def select_tier_graph_cache_key(tier: str) -> str:
     normalized_tier = (tier or "").lower()
     if normalized_tier in ("lite", "small"):
         return "lite"
-    if normalized_tier in ("large", "frontier"):
-        return "frontier"
-    return "standard"
+    return "capable"
 
 
 def compile_tier_graph_for_key(
@@ -125,8 +123,8 @@ def compile_tier_graph_for_key(
     compile_lite_graph_fn: Any,
     compile_agent_graph_fn: Any,
 ) -> Any:
-    if cache_key == "frontier":
+    if cache_key == "capable":
         return compile_frontier_graph_fn()
     if cache_key == "lite":
         return compile_lite_graph_fn()
-    return compile_agent_graph_fn()
+    return compile_frontier_graph_fn()
