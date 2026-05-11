@@ -65,6 +65,27 @@ class PermissionKind(str, Enum):
     NONE = "None"  # read-only, no side effects
 
 
+_PERMISSION_KIND_TO_TABLE_KIND: dict[PermissionKind, str] = {
+    PermissionKind.READ_FILE: "read",
+    PermissionKind.WRITE_FILE: "write",
+    PermissionKind.EXECUTE_BASH: "bash",
+    PermissionKind.NETWORK: "webfetch",
+    PermissionKind.GIT_READ: "read",
+    PermissionKind.GIT_WRITE: "write",
+    PermissionKind.MEMORY: "write",
+    PermissionKind.DELEGATE: "delegate_task",
+    PermissionKind.LSP_READ: "read",
+    PermissionKind.LSP_WRITE: "edit",
+    PermissionKind.PLAN: "plan",
+    PermissionKind.NONE: "none",
+}
+
+
+def permission_kind_to_table_kind(permission_kind: PermissionKind) -> str:
+    """Map a PermissionKind enum to the permission-table kind string."""
+    return _PERMISSION_KIND_TO_TABLE_KIND.get(permission_kind, "none")
+
+
 # ---------------------------------------------------------------------------
 # ToolDefinition
 # ---------------------------------------------------------------------------

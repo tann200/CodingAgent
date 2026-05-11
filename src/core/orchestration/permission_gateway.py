@@ -101,6 +101,11 @@ try:
 except Exception:
     _get_permission_context = None  # type: ignore[assignment]
 
+try:
+    from src.tools._tool import permission_kind_to_table_kind as _perm_kind_to_table_kind
+except Exception:
+    _perm_kind_to_table_kind = None  # type: ignore[assignment]
+
 # F-83: single logger; removed duplicate `logger = logging.getLogger(__name__)` at old line 104.
 
 # ---------------------------------------------------------------------------
@@ -136,6 +141,21 @@ _TOOL_KIND_MAP: dict[str, str] = {
 def _tool_kind_for_name(tool_name: str) -> str:
     """Return the PermissionKind string for *tool_name* (fallback: tool_name)."""
     return _TOOL_KIND_MAP.get(tool_name, tool_name)
+
+
+def _tool_kind_for_name_with_registry(orch: Any, tool_name: str) -> str:
+    """Resolve the permission-table kind via registry metadata when available."""
+    try:
+        registry = getattr(orch, "tool_registry", None)
+        if registry is not None and hasattr(registry, "get_permission_kind"):
+            permission_kind = registry.get_permission_kind(tool_name)
+            if _perm_kind_to_table_kind is not None:
+                mapped = _perm_kind_to_table_kind(permission_kind)
+                if mapped and mapped != "none":
+                    return mapped
+    except Exception:
+        pass
+    return _tool_kind_for_name(tool_name)
 
 
 #: Keys to try when extracting the primary argument, in priority order.
@@ -510,8 +530,9 @@ class PermissionGateway:
         try:
             from src.core.orchestration.permission_table import get_permission_table
 
-            # Map tool name to PermissionKind string for the lookup key
-            kind_str = _tool_kind_for_name(name)
+            # Resolve the permission-table kind from declared PermissionKind metadata
+            # when available; fall back to the legacy name-based mapping for older tools.
+            kind_str = _tool_kind_for_name_with_registry(self._orch, name)
             primary_arg = _primary_arg_for_tool(name, args)
             tbl = get_permission_table()
             action = tbl.check(kind_str, primary_arg)

@@ -1,0 +1,94 @@
+"""Provider and adapter bootstrap helpers for the orchestrator."""
+
+from __future__ import annotations
+
+import time
+from typing import Any
+
+from src.core.inference.llm_manager import (
+    _ensure_provider_manager_initialized_sync,
+    get_provider_manager,
+)
+from src.core.logger import logger as guilogger
+
+
+def _init_providers(orch: Any) -> None:
+    """Select and activate the LLM provider adapter."""
+    pm = None
+    try:
+        pm = get_provider_manager()
+        if pm:
+            _wire_provider_manager(orch, pm)
+            _select_default_adapter(orch, pm)
+            if orch._adapter is not None:
+                try:
+                    from src.core.orchestration.orchestrator_helpers import (
+                        _publish_active_config_impl,
+                    )
+
+                    _publish_active_config_impl(orch)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    _publish_startup_events(orch, pm)
+
+
+def _wire_provider_manager(orch: Any, pm: Any) -> None:
+    """Attach the orchestrator event bus to the provider manager and initialize it."""
+    if getattr(pm, "_event_bus", None) is None:
+        pm.set_event_bus(orch.event_bus)
+    else:
+        orch.event_bus = getattr(pm, "_event_bus")
+    _ensure_provider_manager_initialized_sync()
+
+
+def _select_default_adapter(orch: Any, pm: Any) -> None:
+    """Pick the default adapter when the orchestrator has not been given one."""
+    if orch._adapter is not None:
+        return
+
+    providers = pm.list_providers()
+    guilogger.info(f"Orchestrator init: available providers: {providers}")
+    if not providers:
+        return
+
+    active_name = None
+    try:
+        active_name = pm.get_active_provider_name()
+    except Exception:
+        pass
+
+    if active_name and active_name in providers:
+        name = active_name
+    elif "lm_studio" in providers:
+        name = "lm_studio"
+    else:
+        name = providers[0]
+
+    orch._adapter = pm.get_provider(name)
+    guilogger.info(
+        f"Orchestrator init: picked adapter: {name}, adapter: {orch._adapter}"
+    )
+
+
+def _publish_startup_events(orch: Any, pm: Any) -> None:
+    """Publish orchestrator startup events to the active event buses."""
+    try:
+        payload = {"time": time.time(), "working_dir": str(orch.working_dir)}
+        try:
+            guilogger.info("Orchestrator: publishing startup to orch.event_bus")
+            orch.event_bus.publish("orchestrator.startup", payload)
+        except Exception:
+            pass
+
+        try:
+            pm_bus = getattr(pm, "_event_bus", None)
+            if pm_bus and pm_bus is not orch.event_bus:
+                guilogger.info("Orchestrator: publishing startup to pm_bus")
+                pm_bus.publish("orchestrator.startup", payload)
+        except Exception:
+            pass
+    except Exception:
+        pass
