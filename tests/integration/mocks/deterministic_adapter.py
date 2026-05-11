@@ -1,6 +1,8 @@
 from typing import Any, Dict, List, Optional
+
 from src.core.inference.llm_client import LLMClient
 from src.core.inference.telemetry import with_telemetry
+
 
 class DeterministicAdapter(LLMClient):
     def __init__(self, scenarios: Optional[Dict[str, List[str]]] = None):
@@ -16,14 +18,15 @@ class DeterministicAdapter(LLMClient):
         self.step_index = 0
 
     @with_telemetry
-    def generate(self,
-                 messages: List[Dict[str, str]],
-                 model: Optional[str] = None,
-                 stream: bool = False,
-                 timeout: Optional[float] = None,
-                 provider: Optional[str] = None,
-                 **kwargs) -> Dict[str, Any]:
-                 
+    def generate(
+        self,
+        messages: List[Dict[str, str]],
+        model: Optional[str] = None,
+        stream: bool = False,
+        timeout: Optional[float] = None,
+        provider: Optional[str] = None,
+        **kwargs,
+    ) -> Dict[str, Any]:
         if not self.current_scenario or self.current_scenario not in self.scenarios:
             response_text = "No scenario configured."
         else:
@@ -33,7 +36,7 @@ class DeterministicAdapter(LLMClient):
                 self.step_index += 1
             else:
                 response_text = "Scenario completed."
-                
+
         return {
             "ok": True,
             "provider": "deterministic",
@@ -43,12 +46,9 @@ class DeterministicAdapter(LLMClient):
             "total_tokens": 20,
             "choices": [
                 {
-                    "message": {
-                        "role": "assistant",
-                        "content": response_text
-                    },
-                    "finish_reason": "stop"
+                    "message": {"role": "assistant", "content": response_text},
+                    "finish_reason": "stop",
                 }
             ],
-            "raw": {"response": response_text}
+            "raw": {"response": response_text},
         }

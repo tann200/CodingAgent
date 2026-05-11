@@ -15,20 +15,18 @@ on:
         required: false
         default: 'false'
 
+env:
+  CI: "true"
+
 jobs:
-  test:
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-latest, ubuntu-latest]
-        python-version: [3.11]
+  quality:
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: '${{ matrix.python-version }}'
+          python-version: '3.11'
       - name: Assert Python requirement in pyproject
         run: |
           python - <<'PY'
@@ -60,24 +58,32 @@ jobs:
               print(f"Warning: project.requires-python is '{spec}'. Recommended: '>=3.11,<3.12' to lock to 3.11.x")
           print('pyproject Python requirement OK:', spec)
           PY
-      - name: Install deps
+      - name: Install quality dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt || true
           pip install -e .[dev]
       - name: Lint (ruff)
         run: |
-          pip install ruff --quiet
-          python -m ruff check src/ --select=E,F,W --ignore=E501 || true
+          python -m ruff check src tests --select=E,F,W --ignore=E501 || true
       - name: Type check (mypy)
         run: |
-          pip install mypy --quiet
-          python -m mypy src/ --ignore-missing-imports --no-error-summary || true
-      - name: Run unit tests
+          python -m mypy src/server src/core/inference/provider_utils.py src/core/orchestration/tool_contracts.py src/core/orchestration/tool_parser.py --ignore-missing-imports --follow-imports=silent --disable-error-code=import-untyped --no-error-summary || true
+
+  unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      - name: Install unit test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .[dev,server]
+      - name: Run unit tests with coverage
         run: |
           python -m pytest tests/unit -q -p no:logging --cov=src --cov-report=term-missing --cov-report=xml
-        env:
-          CI: "true"
       - name: Check xfail count (IMPL-Q2)
         # Fail the build if the number of xfail/xpass results exceeds the
         # allowed threshold.  This prevents xfail from becoming a permanent
@@ -109,27 +115,99 @@ jobs:
               sys.exit(1)
           print("xfail count within threshold — OK")
           PY
-        env:
-          CI: "true"
       - name: Upload coverage report
         if: success()
         uses: actions/upload-artifact@v4
         with:
           name: coverage-report
           path: coverage.xml
-      - name: Run e2e tests
+
+  platform-smoke:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      - name: Install platform smoke dependencies
         run: |
-          python -m pytest tests/e2e -q -p no:logging
-        env:
-          CI: "true"
+          python -m pip install --upgrade pip
+          pip install -e .[dev,server]
+      - name: Run platform-sensitive unit smoke tests
+        run: |
+          python -m pytest tests/unit/test_sandbox.py tests/unit/test_shell_hooks.py tests/unit/test_task_lifecycle.py -q -p no:logging
+
+  integration-mock:
+    runs-on: ubuntu-latest
+    needs: unit-tests
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      - name: Install integration dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .[dev,server]
+      - name: Run mock-backed integration tests
+        run: |
+          python -m pytest tests/integration/test_mock_adapter_integration.py tests/integration/test_delegation_mock.py tests/integration/test_langgraph_orchestrator.py tests/integration/test_agent_loop_plaintext_tools.py tests/integration/test_loop_prevention.py -q -p no:logging
+
+  e2e-mock:
+    runs-on: ubuntu-latest
+    needs: unit-tests
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      - name: Install e2e dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .[dev,server]
+      - name: Run CI-safe e2e tests
+        run: |
+          python -m pytest tests/e2e/test_agent_scenarios.py tests/e2e/test_basic_workflows.py tests/e2e/test_small_model_pipeline.py -q -p no:logging
+
+  benchmarks:
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' }}
+    needs: unit-tests
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      - name: Install benchmark dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .[dev,server]
       - name: Run benchmark tests (ET-3)
         run: |
           python -m pytest tests/benchmarks -q -p no:logging
-        env:
-          CI: "true"
-      - name: Run integration tests (optional)
-        if: ${{ env.RUN_INTEGRATION == '1' || github.event_name == 'schedule' || github.event.inputs.run_integration == 'true' }}
+
+  live-provider-checks:
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'schedule' || github.event.inputs.run_integration == 'true' }}
+    needs: unit-tests
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      - name: Install live-provider test dependencies
         run: |
-          RUN_INTEGRATION=1 python -m pytest tests/integration -q
-        env:
-          CI: "true"
+          python -m pip install --upgrade pip
+          pip install -e .[dev,server]
+      - name: Run integration tests (optional)
+        run: |
+          RUN_INTEGRATION=1 python -m pytest tests/integration tests/e2e/test_crud_lm_studio.py -q -p no:logging

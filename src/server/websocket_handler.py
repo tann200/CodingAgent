@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from typing import Dict, Callable
+from typing import Any, Callable, Dict
 
 from fastapi import WebSocket, WebSocketDisconnect
 
@@ -29,10 +29,10 @@ logger = logging.getLogger(__name__)
 def _make_websocket_handler(
     event_bus: EventBus,
     session_id: str,
-    q: asyncio.Queue,
+    q: asyncio.Queue[object | None],
     drop_policy: str,
     loop: asyncio.AbstractEventLoop,
-) -> Callable[[str], None]:
+) -> Callable[[str], Callable[[dict[str, Any]], None]]:
     """Factory: build the per-event handler closure for a WebSocket connection.
 
     The returned handler filters by session_id, then enqueues to the websocket
@@ -42,14 +42,14 @@ def _make_websocket_handler(
     def _record_dropped(event_name: str) -> None:
         record_dropped_session_event(event_name, session_id)
 
-    def make_handler(ev_name: str):
-        def handler(payload: dict) -> None:
+    def make_handler(ev_name: str) -> Callable[[dict[str, Any]], None]:
+        def handler(payload: dict[str, Any]) -> None:
             try:
                 if isinstance(payload, dict) and "session_id" in payload:
                     if session_id != "all" and payload.get("session_id") != session_id:
                         return
 
-                def _enqueue():
+                def _enqueue() -> None:
                     enqueue_with_drop_policy(
                         q,
                         (ev_name, payload),
@@ -90,22 +90,17 @@ async def websocket_session_handler(
 
     qp = websocket.query_params
     events_param = qp.get("events")
+    queue_max_raw = qp.get("queue_max_size") or os.getenv("CODING_AGENT_SSE_QUEUE_MAX")
     try:
-        qms = int(
-            qp.get("queue_max_size") or os.getenv("CODING_AGENT_SSE_QUEUE_MAX", 100)
-        )
+        qms = int(queue_max_raw) if queue_max_raw is not None else 100
     except Exception:
-        qms = int(os.getenv("CODING_AGENT_SSE_QUEUE_MAX", 100))
-    drop_policy = (
-        qp.get("drop_policy")
-        or os.getenv("CODING_AGENT_SSE_DROP_POLICY", "drop_oldest")
-    ).lower()
+        qms = 100
+    drop_policy = (qp.get("drop_policy") or os.getenv("CODING_AGENT_SSE_DROP_POLICY") or "drop_oldest").lower()
+    keepalive_raw = qp.get("keepalive") or os.getenv("CODING_AGENT_SSE_KEEPALIVE")
     try:
-        keepalive_interval = int(
-            qp.get("keepalive") or os.getenv("CODING_AGENT_SSE_KEEPALIVE", 15)
-        )
+        keepalive_interval = int(keepalive_raw) if keepalive_raw is not None else 15
     except Exception:
-        keepalive_interval = int(os.getenv("CODING_AGENT_SSE_KEEPALIVE", 15))
+        keepalive_interval = 15
 
     if admin_token:
         token = extract_admin_token_from_headers(websocket.headers)
@@ -126,11 +121,11 @@ async def websocket_session_handler(
     await websocket.accept()
 
     loop = asyncio.get_running_loop()
-    q: asyncio.Queue = asyncio.Queue(maxsize=max(1, int(qms)))
+    q: asyncio.Queue[object | None] = asyncio.Queue(maxsize=max(1, int(qms)))
 
     initial_events = resolve_initial_websocket_events(events_param)
 
-    handlers: Dict[str, Callable] = {}
+    handlers: Dict[str, Callable[[dict[str, Any]], None]] = {}
 
     make_handler = _make_websocket_handler(event_bus, session_id, q, drop_policy, loop)
 

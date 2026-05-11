@@ -9,7 +9,7 @@ import asyncio
 import json
 import logging
 import uuid
-from typing import Any, AsyncGenerator, Dict, Optional
+from typing import AsyncGenerator, Dict, Optional
 
 from src.core.orchestration.event_bus import EventBus
 from src.server.event_delivery import enqueue_with_drop_policy, record_dropped_event

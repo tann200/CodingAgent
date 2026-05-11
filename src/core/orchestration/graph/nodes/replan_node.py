@@ -56,7 +56,7 @@ async def replan_node(state: StateLike, config: RunnableConfig) -> Dict[str, Any
         ]
 
         replan_prompt = f"""The previous step failed because the patch was too large:
-        
+
 Reason: {replan_reason}
 Failed Step: {failed_step_desc}
 

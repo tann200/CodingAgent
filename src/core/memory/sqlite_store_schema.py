@@ -115,7 +115,7 @@ def fts_trigger_statements() -> List[str]:
         """
                 CREATE TRIGGER IF NOT EXISTS messages_ad AFTER DELETE ON messages BEGIN
                     DELETE FROM messages_fts WHERE rowid IN (
-                        SELECT rowid FROM messages_fts WHERE session_id = old.session_id 
+                        SELECT rowid FROM messages_fts WHERE session_id = old.session_id
                         AND content = old.content LIMIT 1
                     );
                 END;

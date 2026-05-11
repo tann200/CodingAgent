@@ -89,7 +89,7 @@ class Greeter:
     '''A greeter class.'''
     def greet(self):
         return "Hello!"
-    
+
     def farewell(self):
         return "Goodbye!"
 """)

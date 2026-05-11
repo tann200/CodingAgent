@@ -72,12 +72,10 @@ class TaskStatusResponse(BaseModel):
 def _get_or_create_orchestrator(working_dir: Optional[str], model: Optional[str]):
     from src.core.orchestration.orchestrator import Orchestrator
 
-    kwargs: Dict[str, object] = {}
-    if working_dir:
-        kwargs["working_dir"] = working_dir
+    orch = Orchestrator(working_dir=working_dir) if working_dir else Orchestrator()
     if model:
-        kwargs["model"] = model
-    return Orchestrator(**kwargs)
+        setattr(orch, "model", model)
+    return orch
 
 
 def _run_task_thread(
@@ -247,7 +245,7 @@ async def cancel_task(task_id: str, request: Request):
         rec = _TASK_REGISTRY.get(task_id)
     if rec is None:
         raise HTTPException(status_code=404, detail="Task not found")
-    cancel_event: threading.Event = rec.get("cancel_event")
+    cancel_event = rec.get("cancel_event")
     if cancel_event:
         cancel_event.set()
     return TaskStatusResponse(

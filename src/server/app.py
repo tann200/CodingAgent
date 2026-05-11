@@ -15,6 +15,7 @@ from pydantic import BaseModel
 
 from src.core.orchestration.event_bus import EventBus
 from src.server.websocket_handler import websocket_session_handler
+from src.server import task_endpoints as _task_endpoints
 from src.server.server_config import (
     extract_admin_token_from_headers,
     metrics_basic_auth_valid,
@@ -30,13 +31,12 @@ from src.server.metrics import (
     inc_corrective_prompt_counter,
 )
 from src.server.sse_adapter import ServerEventBusAdapter
-from src.server.task_endpoints import (
-    _TASK_REGISTRY,
-    _TASK_REGISTRY_LOCK,
-    _get_or_create_orchestrator,
-    register_task_endpoints,
-    task_router,
-)
+
+_TASK_REGISTRY = _task_endpoints._TASK_REGISTRY
+_TASK_REGISTRY_LOCK = _task_endpoints._TASK_REGISTRY_LOCK
+_get_or_create_orchestrator = _task_endpoints._get_or_create_orchestrator
+register_task_endpoints = _task_endpoints.register_task_endpoints
+task_router = _task_endpoints.task_router
 
 logger = logging.getLogger(__name__)
 

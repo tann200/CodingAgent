@@ -133,12 +133,12 @@ try:
     register_tool_contract("write_file", WriteFileContract)
     register_tool_contract("edit_file", WriteFileContract)
     register_tool_contract("edit_file_atomic", WriteFileContract)
-    
+
     register_tool_contract("generate_patch", GeneratePatchContract)
     register_tool_contract("apply_patch", ApplyPatchContract)
-    
+
     register_tool_contract("run_tests", RunTestsContract)
-    
+
     register_tool_contract("bash", BashContract)
     register_tool_contract("glob", GlobContract)
     register_tool_contract("grep", GrepContract)

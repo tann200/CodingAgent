@@ -331,7 +331,7 @@ def edit_by_line_range(
         "lines_added": len([ln for ln in diff_lines if ln.startswith("+")]),
         "lines_removed": len([ln for ln in diff_lines if ln.startswith("-")]),
     }
-    
+
     return result
 
 
@@ -504,7 +504,7 @@ def edit_file_atomic(
         "lines_added": len([ln for ln in diff_lines if ln.startswith("+")]),
         "lines_removed": len([ln for ln in diff_lines if ln.startswith("-")]),
     }
-    
+
     return result
 
 

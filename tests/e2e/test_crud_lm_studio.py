@@ -71,7 +71,7 @@ class TestLMStudioAdapter:
         )
 
         assert result.get("ok") is True
-        print(f"[PASS] Tool call test completed")
+        print("[PASS] Tool call test completed")
 
 
 if __name__ == "__main__":
