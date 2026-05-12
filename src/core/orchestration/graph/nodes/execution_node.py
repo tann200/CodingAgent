@@ -69,6 +69,14 @@ except ImportError:
 
 from src.core.orchestration.graph.nodes.node_utils import span_node as _span_node
 
+# P3-T3: index refresh after file writes — non-fatal import
+try:
+    from src.core.indexing.repo_indexer import refresh_file_in_index as _refresh_file_in_index
+except ImportError:  # pragma: no cover
+    _refresh_file_in_index = None  # type: ignore[assignment]
+
+_FILE_WRITING_TOOLS = frozenset({"write_file", "edit_file", "create_file"})
+
 
 # Gap 3: Plugin hooks — lazy import so the registry is not required at import time.
 try:
@@ -437,6 +445,17 @@ async def _execution_node_impl(state: Mapping[str, Any], config: RunnableConfig)
 
     # UI Sync: Forward tool result to TUI so user can see execution result
     sync_tool_result_to_ui(orchestrator=orchestrator, result=res, logger=logger)
+
+    # P3-T3: Keep repo index fresh after file-writing tools
+    if _refresh_file_in_index is not None and tool_name in _FILE_WRITING_TOOLS:
+        _written_path = args.get("path") or args.get("file_path") or args.get("filename")
+        _working_dir = (
+            orchestrator.working_dir
+            if orchestrator and hasattr(orchestrator, "working_dir")
+            else None
+        )
+        if _written_path and _working_dir:
+            _refresh_file_in_index(_written_path, _working_dir)
 
     # Successful tool execution
     verified_update = []
