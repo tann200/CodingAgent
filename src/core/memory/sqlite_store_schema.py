@@ -83,6 +83,13 @@ def schema_creation_script() -> str:
                     rows_json TEXT NOT NULL,
                     saved_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
+                CREATE TABLE IF NOT EXISTS session_plans (
+                    session_id TEXT PRIMARY KEY,
+                    plan_json TEXT NOT NULL,
+                    task TEXT,
+                    current_step INTEGER DEFAULT 0,
+                    saved_at TEXT
+                );
             """
 
 

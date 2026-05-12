@@ -279,6 +279,10 @@ class SchemaManager:
             self._migrate_v3(conn)
             current_version = 3
 
+        if current_version < 4 <= self.schema_version:
+            self._migrate_v4(conn)
+            current_version = 4  # noqa: F841
+
         conn.execute(
             "UPDATE schema_meta SET value = ? WHERE key = 'schema_version'",
             (str(self.schema_version),),
@@ -343,6 +347,24 @@ class SchemaManager:
             logger.debug("SchemaManager: v3 migration complete")
         except Exception as e:
             logger.warning("SchemaManager: v3 migration failed: %s", e)
+
+    def _migrate_v4(self, conn: sqlite3.Connection) -> None:
+        """P3-T4: Add session_plans table for cross-session plan resumption."""
+        try:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS session_plans (
+                    session_id TEXT PRIMARY KEY,
+                    plan_json TEXT NOT NULL,
+                    task TEXT,
+                    current_step INTEGER DEFAULT 0,
+                    saved_at TEXT
+                );
+                """
+            )
+            logger.debug("SchemaManager: v4 migration complete (session_plans)")
+        except Exception as e:
+            logger.warning("SchemaManager: v4 migration failed: %s", e)
 
 
 # ---------------------------------------------------------------------------

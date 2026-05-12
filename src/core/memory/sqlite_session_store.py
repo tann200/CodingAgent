@@ -76,7 +76,7 @@ class SqliteSessionStore:
     - ``_snap`` (SnapshotManager):   Snapshot save/get/revert.
     """
 
-    _SCHEMA_VERSION = 3
+    _SCHEMA_VERSION = 4  # P3-T4: bumped from 3 to add session_plans table
 
     def __init__(self, workdir: Optional[str] = None):
         self.workdir = Path(workdir) if workdir else Path.cwd()
@@ -167,6 +167,9 @@ class SqliteSessionStore:
 
     def _migrate_v3(self, conn: sqlite3.Connection) -> None:
         self._sm._migrate_v3(conn)
+
+    def _migrate_v4(self, conn: sqlite3.Connection) -> None:
+        self._sm._migrate_v4(conn)
 
     def _ensure_fts_index(self, conn: sqlite3.Connection) -> None:
         self._sm._ensure_fts_index(conn)
@@ -328,6 +331,45 @@ class SqliteSessionStore:
             (session_id or "unknown",),
         ).fetchall()
         return [{"plan": r["plan"], "status": r["status"]} for r in rows]
+
+    # P3-T4: Cross-session plan resumption via session_plans table
+    def save_plan(self, session_id: str, plan: list, task: str, step: int) -> None:
+        """Persist the current plan to the session store for cross-session resumption."""
+        import datetime
+
+        self._execute_write(
+            """INSERT OR REPLACE INTO session_plans
+               (session_id, plan_json, task, current_step, saved_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            (
+                session_id or "unknown",
+                json.dumps(plan, ensure_ascii=False),
+                task or "",
+                step,
+                datetime.datetime.utcnow().isoformat(),
+            ),
+        )
+
+    def load_plan(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """Load the most recently saved plan for cross-session resumption.
+
+        Returns a dict with keys ``plan``, ``task``, ``current_step`` or ``None``.
+        """
+        conn = self._get_connection()
+        row = conn.execute(
+            "SELECT plan_json, task, current_step FROM session_plans WHERE session_id = ?",
+            (session_id or "unknown",),
+        ).fetchone()
+        if row:
+            try:
+                return {
+                    "plan": json.loads(row["plan_json"]),
+                    "task": row["task"],
+                    "current_step": row["current_step"],
+                }
+            except Exception:
+                return None
+        return None
 
     # Error types that are transient / expected and should NOT be promoted to mistakes.
     _TRANSIENT_ERROR_TYPES: frozenset = frozenset(
