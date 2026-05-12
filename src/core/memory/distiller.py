@@ -657,3 +657,38 @@ def generate_session_title(first_user_message: str) -> str:
     # Fallback: first N words of the task
     words = first_user_message.split()
     return " ".join(words[:10]).rstrip(".,;:!?")[:80]
+
+
+# ---------------------------------------------------------------------------
+# P4-T3: Cross-session memory retrieval
+# ---------------------------------------------------------------------------
+
+def retrieve_relevant_prior_sessions(
+    task: str,
+    working_dir: str,
+    max_sessions: int = 3,
+    max_chars: int = 2000,
+) -> str:
+    """Return a text summary of prior sessions relevant to *task*.
+
+    Uses recency-based retrieval from the session store (FTS upgrade-path noted
+    in the audit — use simple recency until the store grows large).
+
+    Returns an empty string if no sessions exist or on any error (non-fatal).
+    """
+    try:
+        from src.core.memory.session_store import get_session_store
+
+        store = get_session_store(workdir=working_dir)
+        if store is None:
+            return ""
+        recent = store.get_recent_sessions(limit=max_sessions)
+        snippets = []
+        for sess in recent:
+            sid = sess.get("session_id", "")
+            summary = store.get_session_text_summary(sid, max_chars=500)
+            if summary:
+                snippets.append(f"[Prior session {sid[:8]}]: {summary}")
+        return "\n".join(snippets)[:max_chars]
+    except Exception:
+        return ""

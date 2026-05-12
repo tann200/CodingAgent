@@ -801,3 +801,48 @@ class SqliteSessionStore:
             except Exception:
                 pass
         return summary
+
+    # P4-T3: Cross-session memory retrieval helpers
+    def get_recent_sessions(self, limit: int = 10) -> List[Dict[str, Any]]:
+        """Return the most recently active session IDs (by latest message).
+
+        Returns a list of dicts with ``session_id`` and ``last_active`` keys.
+        """
+        conn = self._get_connection()
+        try:
+            rows = conn.execute(
+                """SELECT session_id, MAX(created_at) as last_active
+                   FROM messages
+                   GROUP BY session_id
+                   ORDER BY last_active DESC
+                   LIMIT ?""",
+                (limit,),
+            ).fetchall()
+            return [{"session_id": r["session_id"], "last_active": r["last_active"]} for r in rows]
+        except Exception:
+            return []
+
+    def get_session_text_summary(self, session_id: str, max_chars: int = 500) -> str:
+        """Return a short human-readable text summary of a session.
+
+        Pulls the first user message and the last assistant message as a proxy
+        for what the session was about. Returns an empty string on any error.
+        """
+        conn = self._get_connection()
+        try:
+            first_user = conn.execute(
+                "SELECT content FROM messages WHERE session_id=? AND role='user' ORDER BY created_at ASC LIMIT 1",
+                (session_id or "unknown",),
+            ).fetchone()
+            last_assistant = conn.execute(
+                "SELECT content FROM messages WHERE session_id=? AND role='assistant' ORDER BY created_at DESC LIMIT 1",
+                (session_id or "unknown",),
+            ).fetchone()
+            parts = []
+            if first_user:
+                parts.append(f"Task: {first_user['content'][:200]}")
+            if last_assistant:
+                parts.append(f"Result: {last_assistant['content'][:200]}")
+            return "; ".join(parts)[:max_chars]
+        except Exception:
+            return ""
