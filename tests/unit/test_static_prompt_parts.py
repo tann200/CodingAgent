@@ -83,6 +83,17 @@ def test_render_tools_for_small_tier_uses_first_sentence_only():
     assert "Then do more" not in rendered
 
 
+def test_render_tools_for_tier_requires_top_level_names():
+    rendered = render_tools_for_tier(
+        tools=[{"name": "read_file", "description": "Read a file."}],
+        model_tier="medium",
+        sanitize_text=lambda text: text,
+        model_tier_enum=_FakeTier(),
+    )
+
+    assert rendered == "name: read_file\ndescription: Read a file.\n"
+
+
 def test_build_model_constraints_block_for_small_tier():
     result = build_model_constraints_block(
         model_tier="small",

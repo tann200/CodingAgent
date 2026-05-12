@@ -33,6 +33,55 @@ def test_build_prompt_basic_structure():
     assert "<output_format>" in messages[0]["content"]
 
 
+def test_build_prompt_normalizes_openai_function_schemas():
+    ContextBuilder.clear_cache()
+    builder = ContextBuilder()
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "read_file",
+                "description": "Reads content from a file.",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+    ]
+
+    messages = builder.build_prompt(
+        role_name="operational",
+        active_skills=[],
+        task_description="Inspect main.py",
+        tools=tools,
+        conversation=[],
+    )
+
+    system_content = messages[0]["content"]
+    assert "name: read_file" in system_content
+    assert "description: Reads content from a file." in system_content
+
+
+def test_build_prompt_preserves_tool_result_user_messages_in_conversation_history():
+    builder = ContextBuilder()
+
+    messages = builder.build_prompt(
+        role_name="operational",
+        active_skills=[],
+        task_description="Finish the next step",
+        tools=[],
+        conversation=[
+            {"role": "assistant", "content": '{"name": "write_file", "arguments": {"path": "buggy.py"}}'},
+            {"role": "user", "content": '{"tool_execution_result": {"ok": true, "path": "buggy.py"}}'},
+        ],
+    )
+
+    assert any(
+        message["role"] == "user"
+        and '"tool_execution_result"' in message["content"]
+        and '"ok": true' in message["content"]
+        for message in messages
+    )
+
+
 def test_build_prompt_token_budgeting_truncation():
     builder = ContextBuilder(token_estimator=lambda s: len(s))
     max_tokens = 100

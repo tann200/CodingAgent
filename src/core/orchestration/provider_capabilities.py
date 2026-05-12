@@ -182,6 +182,38 @@ def resolve_provider_capabilities(orchestrator: Any) -> Dict[str, Any]:
     try:
         caps: Dict[str, Any] = {}
 
+        # Tier 0: Read directly from providers.json when explicit_provider is set.
+        # This covers the common case where the orchestrator has _provider_name set
+        # (e.g. via CLI --provider flag) but the adapter was not registered with
+        # ProviderManager (e.g. because ProviderManager initialised before the
+        # provider was selected).
+        # We record the value here and apply it as an authoritative override after
+        # all other tiers, because Tier 1 (orchestrator.get_provider_capabilities)
+        # may return a stale False when _adapter is None.
+        _tier0_supports_native_tools: Optional[bool] = None
+        if explicit_provider:
+            try:
+                import json as _json
+                from pathlib import Path as _Path
+
+                _cfg = _Path(__file__).parents[2] / "config" / "providers.json"
+                if _cfg.exists():
+                    _raw = _json.loads(_cfg.read_text(encoding="utf-8"))
+                    _entries = _raw if isinstance(_raw, list) else [_raw]
+                    for _entry in _entries:
+                        if not isinstance(_entry, dict):
+                            continue
+                        _ptype = (_entry.get("type") or "").lower()
+                        _pname = (_entry.get("name") or "").lower()
+                        _ep_norm = explicit_provider.lower().replace("-", "_")
+                        if _ptype == _ep_norm or _pname == _ep_norm:
+                            _tier0_supports_native_tools = bool(
+                                _entry.get("supports_native_tools", False)
+                            )
+                            break
+            except Exception:
+                pass
+
         # Tier 1: orchestrator-level (authoritative)
         try:
             if (
@@ -281,6 +313,14 @@ def resolve_provider_capabilities(orchestrator: Any) -> Dict[str, Any]:
             provider_capabilities["provider_family"] = _map_provider_family_impl(
                 provider_capabilities["provider_name"]
             )
+
+        # Apply Tier 0 override: providers.json is authoritative for
+        # supports_native_tools when an explicit provider was requested.
+        # This corrects the case where _adapter is None (not yet registered in
+        # ProviderManager) so all other tiers returned False.
+        if _tier0_supports_native_tools is not None:
+            provider_capabilities["supports_native_tools"] = _tier0_supports_native_tools
+
     except Exception:
         provider_capabilities = {}
     return provider_capabilities

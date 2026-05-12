@@ -786,6 +786,31 @@ async def _perception_node_impl(
 
     llm_kwargs = _build_llm_kwargs(orchestrator)
 
+    tools_schema = None
+    try:
+        registry = getattr(orchestrator, "tool_registry", None) if orchestrator else None
+        allowed_tool_names = [tool.get("name") for tool in tools_list if tool.get("name")]
+        if registry and hasattr(registry, "filter_by_names") and allowed_tool_names:
+            registry = registry.filter_by_names(allowed_tool_names)
+        if registry and hasattr(registry, "get_openai_functions"):
+            tools_schema = registry.get_openai_functions() or None
+        # When the full registry exceeds a small threshold, reduce to core tools
+        # so that local models (e.g. Gemma) are not overloaded with tool schemas
+        # and return empty tool_calls.  The same set is used in frontier_loop_node.
+        if tools_schema and len(tools_schema) > 9:
+            try:
+                from src.core.orchestration.graph.nodes.frontier_loop_node import (
+                    _CORE_TOOL_NAMES,
+                )
+                tools_schema = [
+                    t for t in tools_schema
+                    if t.get("function", {}).get("name") in _CORE_TOOL_NAMES
+                ] or tools_schema
+            except Exception:
+                pass
+    except Exception:
+        tools_schema = None
+
     # LLM Inference
     logger.info(
         f"perception_node: calling call_model with provider={provider}, model={model}"
@@ -806,10 +831,20 @@ async def _perception_node_impl(
         state,
         orchestrator,
         llm_kwargs,
+        tools=tools_schema,
         call_model_fn=call_model,
     )
     if early_resp is not None:
         return early_resp
+
+    # DEBUG: log raw response for diagnosing empty/empty-tool_calls responses
+    logger.info(
+        "perception_node: raw resp keys=%s finish_reason=%s tool_calls_len=%s content_len=%s",
+        list(resp.keys()) if isinstance(resp, dict) else type(resp),
+        resp.get("finish_reason") if isinstance(resp, dict) else "n/a",
+        len(resp.get("tool_calls") or []) if isinstance(resp, dict) else "n/a",
+        len(resp.get("content", "") or "") if isinstance(resp, dict) else "n/a",
+    )
 
     # Phase 4: Track token usage for budget management
     # REACT-OVF-EARLY-EXIT: Skip the corrective-prompt retry loop entirely.

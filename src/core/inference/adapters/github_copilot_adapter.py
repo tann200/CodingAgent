@@ -218,8 +218,8 @@ class GithubCopilotAdapter(OpenAICompatibleAdapter):
                 )
                 try:
                     clear_token()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    _logger.debug("github_copilot_adapter: clear_token failed: %s", exc)
                 result["user_message"] = (
                     "GitHub Copilot: your token has expired or been revoked. "
                     "Please log in again via Settings → GitHub Copilot → Login."

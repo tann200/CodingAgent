@@ -11,6 +11,7 @@ import os
 import threading
 import time
 import traceback
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -678,7 +679,7 @@ def manage_todo(
                 }
             current[step_id]["status"] = "in_progress"
             current[step_id]["started_at"] = (
-                __import__("datetime").datetime.now().isoformat()
+                datetime.now().isoformat()
             )
             _save_todo(workdir, current)
             try:
@@ -751,7 +752,7 @@ def manage_todo(
                 }
             current[step_id]["status"] = "verified"
             current[step_id]["completed_at"] = (
-                __import__("datetime").datetime.now().isoformat()
+                datetime.now().isoformat()
             )
             _save_todo(workdir, current)
             try:

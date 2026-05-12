@@ -390,14 +390,14 @@ class LSPClient:
         try:
             await self._request("shutdown", {})
             await self._notify("exit", {})
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("LSPClient: shutdown request failed: %s", exc)
         if self._reader_task:
             self._reader_task.cancel()
         try:
             self._proc.kill()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("LSPClient: process kill failed: %s", exc)
         self._started = False
 
     # ------------------------------------------------------------------
@@ -538,7 +538,7 @@ class LSPClient:
                                 self._parse_diagnostic(d) for d in raw_diags
                             ]
         except asyncio.CancelledError:
-            pass
+            logger.debug("LSPClient: reader loop cancelled")
         except Exception as exc:
             logger.debug("LSPClient: reader loop exited: %s", exc)
         finally:

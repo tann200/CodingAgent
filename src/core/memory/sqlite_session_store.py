@@ -55,6 +55,11 @@ from src.core.memory.sqlite_store_queries import (
     map_search_rows,
     map_tool_call_rows,
 )
+from src.core.memory.sqlite_store_collaborators import (
+    ConnectionManager,
+    SchemaManager,
+    SnapshotManager,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -64,278 +69,132 @@ class SqliteSessionStore:
 
     This implementation is retained for archival/long-term storage use cases
     but is not used by default for ephemeral session persistence.
+
+    Internal concerns are delegated to three collaborator objects:
+    - ``_cm``  (ConnectionManager):  DB path resolution + connection lifecycle.
+    - ``_sm``  (SchemaManager):      DDL, FTS setup, schema migrations.
+    - ``_snap`` (SnapshotManager):   Snapshot save/get/revert.
     """
+
+    _SCHEMA_VERSION = 3
 
     def __init__(self, workdir: Optional[str] = None):
         self.workdir = Path(workdir) if workdir else Path.cwd()
         # Use agent_context_path() for consistent behavior
+        _agent_context_dir: Optional[Path] = None
         try:
             from src.tools.tools_config import agent_context_path
 
-            self._agent_context_dir = agent_context_path(self.workdir)
+            _agent_context_dir = agent_context_path(self.workdir)
         except Exception:
-            self._agent_context_dir = None
-        # db_path is resolved lazily via _resolve_db_path when a connection is
-        # required. Keep attribute for compatibility.
-        self.db_path: Optional[Path] = None
-        self._lock = threading.RLock()
-        self._local = threading.local()
-        self._writer_conn: Optional[sqlite3.Connection] = None
-        self._thread_connections = {}
-        self._thread_connections_lock = threading.Lock()
-        self._session_locks: Dict[str, threading.Lock] = {}
-        self._session_locks_lock = threading.Lock()
+            pass
+
+        # Collaborators
+        self._cm = ConnectionManager(
+            workdir=self.workdir,
+            agent_context_dir=_agent_context_dir,
+        )
+        self._sm = SchemaManager(
+            conn_manager=self._cm,
+            schema_version=self._SCHEMA_VERSION,
+        )
+        self._snap = SnapshotManager(
+            conn_manager=self._cm,
+            store_lock=self._cm._lock,
+        )
+
+        # Keep top-level aliases for backwards-compatible attribute access.
+        self._lock = self._cm._lock
+        self._local = self._cm._local
+        self._session_locks = self._cm._session_locks
+        self._session_locks_lock = self._cm._session_locks_lock
+        self._thread_connections = self._cm._thread_connections
+        self._thread_connections_lock = self._cm._thread_connections_lock
+
         # Historically the DB and tables were created at init-time. Some tests
-        # expect the DB file to exist immediately after construction. Prefer
-        # lazy creation, but attempt an eager create here as a best-effort to
-        # preserve test expectations while failing safely when the resolver
-        # cannot run in the current environment.
+        # expect the DB file to exist immediately after construction.
         try:
-            # This will resolve the path, create parent dirs and ensure tables.
             self._get_writer_connection()
         except Exception:
-            # Best-effort: do not propagate initialization failures.
             logger.debug(
                 "SqliteSessionStore: eager DB creation failed during init\n%s",
                 traceback.format_exc(),
             )
 
+    # ------------------------------------------------------------------
+    # Backwards-compatible shims that delegate to collaborators
+    # ------------------------------------------------------------------
+
+    @property
+    def db_path(self) -> Optional[Path]:
+        return self._cm.db_path
+
+    @db_path.setter
+    def db_path(self, value: Optional[Path]) -> None:
+        self._cm.db_path = value
+
+    @property
+    def _agent_context_dir(self) -> Optional[Path]:
+        return self._cm._agent_context_dir
+
+    @_agent_context_dir.setter
+    def _agent_context_dir(self, value: Optional[Path]) -> None:
+        self._cm._agent_context_dir = value
+
     def _resolve_db_path(self) -> Path:
-        """Resolve and cache the on-disk SQLite DB path.
-
-        Resolution policy:
-        - Prefer an already-discovered _agent_context_dir (legacy dirs may be
-          discovered at init-time).
-        - Otherwise prefer existing legacy locations: {workdir}/.agent-context
-          then {workdir}/.agent.
-        - If neither exists call the canonical resolver
-          src.tools.tools_config.agent_context_path(workdir) at call-time.
-          This may create the canonical directory and is appropriate for
-          write-time resolution.
-        The resolved Path is cached on self.db_path and self._agent_context_dir.
-        """
-        if getattr(self, "db_path", None) is not None:
-            return cast(Path, self.db_path)
-
-        # If an agent-context dir was discovered earlier prefer it
-        ac = getattr(self, "_agent_context_dir", None)
-        if ac is not None:
-            ac_path = Path(ac)
-        else:
-            legacy_agent_context = self.workdir / ".agent-context"
-            legacy_agent = self.workdir / ".agent"
-            if legacy_agent_context.exists():
-                ac_path = legacy_agent_context
-            elif legacy_agent.exists():
-                ac_path = legacy_agent
-            else:
-                # Use agent_context_path() when available; otherwise fall back to
-                # the canonical on-disk default instead of referencing an unbound
-                # import target in the failure branch.
-                try:
-                    from src.tools.tools_config import agent_context_path
-                    ac_path = agent_context_path(self.workdir)
-                except Exception:
-                    ac_path = self.workdir / ".codingAgent"
-
-        # Cache resolved values
-        self._agent_context_dir = ac_path
-        self.db_path = ac_path / "session.db"
-        return self.db_path
-
-    # For brevity this file contains the same logic previously present in
-    # src/core/memory/session_store.py but the class is renamed to make the
-    # separation explicit.  Consumers that require long-term SQLite-backed
-    # memory should import SqliteSessionStore directly.
+        return self._cm.resolve_db_path()
 
     def _get_session_lock(self, session_id: str) -> threading.Lock:
-        key = session_id or "unknown"
-        with self._session_locks_lock:
-            lock = self._session_locks.get(key)
-            if lock is None:
-                lock = threading.Lock()
-                self._session_locks[key] = lock
-            return lock
+        return self._cm.get_session_lock(session_id)
 
     def _get_connection(self) -> sqlite3.Connection:
-        # Ensure we have a resolved DB path (may call canonical resolver at
-        # call-time). This mirrors the existence-first policy used elsewhere.
-        dbp = self._resolve_db_path()
-
-        if not hasattr(self._local, "connection") or self._local.connection is None:
-            conn = sqlite3.connect(str(dbp), timeout=30.0)
-            self._local.connection = conn
-            try:
-                with self._thread_connections_lock:
-                    self._thread_connections[threading.get_ident()] = conn
-            except Exception:
-                logger.debug(
-                    "SqliteSessionStore: failed to register thread connection\n%s",
-                    traceback.format_exc(),
-                )
-            self._local.connection.row_factory = sqlite3.Row
-            self._local.connection.execute("PRAGMA journal_mode=WAL")
-            self._local.connection.execute("PRAGMA busy_timeout=1000")
-        return self._local.connection
+        return self._cm.get_connection()
 
     def _get_writer_connection(self) -> sqlite3.Connection:
-        if self._writer_conn is None:
-            dbp = self._resolve_db_path()
-            # Ensure parent directory exists for the file-based DB
-            dbp.parent.mkdir(parents=True, exist_ok=True)
-            conn = sqlite3.connect(str(dbp), timeout=30.0, check_same_thread=False)
-            conn.row_factory = sqlite3.Row
-            conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("PRAGMA busy_timeout=1000")
-            self._writer_conn = conn
-            # Ensure required tables exist on first writer creation.
-            try:
-                self._ensure_tables()
-            except Exception:
-                # Best-effort: if table creation fails, log and continue so
-                # caller receives the writer connection and can observe/raise
-                logger.debug(
-                    "SqliteSessionStore: _ensure_tables failed\n%s",
-                    traceback.format_exc(),
-                )
-        return self._writer_conn
-
-    _SCHEMA_VERSION = 3
+        return self._cm.get_writer_connection(on_first_create=self._ensure_tables)
 
     def get_schema_version(self) -> int:
-        """Return the schema version for compatibility with other stores."""
-        try:
-            return int(self._SCHEMA_VERSION)
-        except Exception:
-            return 1
+        return self._sm.get_schema_version()
 
-    def _ensure_tables(self):
-        # Resolve DB path and ensure tables exist. Writer connection will
-        # create parent directories as needed.
-        _ = self._resolve_db_path()
-        conn = self._get_writer_connection()
-        try:
-            conn.executescript(schema_creation_script())
-
-            conn.execute(
-                "INSERT OR IGNORE INTO schema_meta (key, value) VALUES ('schema_version', ?)",
-                (str(self._SCHEMA_VERSION),),
-            )
-            conn.commit()
-
-            self._ensure_fts_index(conn)
-            self._run_migrations(conn)
-
-        except Exception as e:
-            logger.error(f"SqliteSessionStore: failed to create tables: {e}")
+    def _ensure_tables(self) -> None:
+        self._sm.ensure_tables()
 
     def _run_migrations(self, conn: sqlite3.Connection) -> None:
-        """Run schema migrations from current version to target version."""
-        try:
-            row = conn.execute(
-                "SELECT value FROM schema_meta WHERE key = 'schema_version'"
-            ).fetchone()
-            current_version = schema_version_from_row(row)
-        except Exception:
-            current_version = 1
-
-        if current_version >= self._SCHEMA_VERSION:
-            return
-
-        logger.info(
-            f"SqliteSessionStore: migrating from v{current_version} to v{self._SCHEMA_VERSION}"
-        )
-
-        if current_version < 2 and self._SCHEMA_VERSION >= 2:
-            self._migrate_v2(conn)
-            current_version = 2
-
-        if current_version < 3 and self._SCHEMA_VERSION >= 3:
-            self._migrate_v3(conn)
-            current_version = 3
-
-        conn.execute(
-            "UPDATE schema_meta SET value = ? WHERE key = 'schema_version'",
-            (str(self._SCHEMA_VERSION),),
-        )
-        conn.commit()
-        logger.info(
-            f"SqliteSessionStore: migration complete to v{self._SCHEMA_VERSION}"
-        )
+        self._sm._run_migrations(conn)
 
     def _migrate_v2(self, conn: sqlite3.Connection) -> None:
-        """Migration from v1 to v2: Add session_children table if not exists."""
-        try:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS session_children (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    parent_session_id TEXT NOT NULL,
-                    child_session_id TEXT NOT NULL,
-                    role TEXT,
-                    task TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                );
-            """
-            )
-            conn.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_children_parent ON session_children(parent_session_id);
-            """
-            )
-            logger.debug("SqliteSessionStore: v2 migration complete")
-        except Exception as e:
-            logger.warning(f"SqliteSessionStore: v2 migration failed: {e}")
+        self._sm._migrate_v2(conn)
 
     def _migrate_v3(self, conn: sqlite3.Connection) -> None:
-        """Migration from v2 to v3: Add mistakes table and FTS index."""
-        try:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS mistakes (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    session_id TEXT NOT NULL,
-                    summary TEXT NOT NULL,
-                    context TEXT,
-                    tool TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                );
-            """
-            )
-            conn.execute(
-                """
-                CREATE VIRTUAL TABLE IF NOT EXISTS mistakes_fts USING fts5(
-                    session_id,
-                    summary,
-                    context,
-                    tool,
-                    tokenize='porter unicode61'
-                );
-            """
-            )
-            conn.execute(
-                """
-                CREATE TRIGGER IF NOT EXISTS mistakes_ai AFTER INSERT ON mistakes BEGIN
-                    INSERT INTO mistakes_fts (session_id, summary, context, tool)
-                    VALUES (new.session_id, new.summary, new.context, new.tool);
-                END;
-            """
-            )
-            logger.debug("SqliteSessionStore: v3 migration complete")
-        except Exception as e:
-            logger.warning(f"SqliteSessionStore: v3 migration failed: {e}")
+        self._sm._migrate_v3(conn)
 
     def _ensure_fts_index(self, conn: sqlite3.Connection) -> None:
-        """Create and maintain FTS5 full-text search index."""
-        try:
-            conn.executescript(fts_creation_script())
-            for statement in fts_trigger_statements():
-                conn.execute(statement)
+        self._sm._ensure_fts_index(conn)
 
-            conn.commit()
-            logger.debug("SqliteSessionStore: FTS5 index ready")
-        except Exception as e:
-            logger.warning(f"SqliteSessionStore: FTS index creation failed: {e}")
+    def save_snapshot(
+        self,
+        session_id: str,
+        state_json: str,
+        role: Optional[str] = None,
+        task: Optional[str] = None,
+    ) -> Optional[str]:
+        return self._snap.save_snapshot(session_id, state_json, role, task)
+
+    def get_snapshot(self, session_id: str, snapshot_id: str) -> Optional[str]:
+        return self._snap.get_snapshot(session_id, snapshot_id)
+
+    def revert_session(
+        self, session_id: str, keep_messages: Optional[object] = False
+    ) -> Dict[str, Any]:
+        return self._snap.revert_session(session_id, keep_messages)
+
+    def _revert_session_keep_messages(
+        self, session_id: str, keep_messages: bool = False
+    ) -> Dict[str, Any]:
+        return self._snap._revert_session_keep_messages(session_id, keep_messages)
+
+    def close(self) -> None:
+        self._cm.close()
 
     # ------------------------------------------------------------------
     # High-level convenience API (parity with JsonlSessionStore)
@@ -791,82 +650,6 @@ class SqliteSessionStore:
 
         return _build(session_id)
 
-    def save_snapshot(
-        self,
-        session_id: str,
-        state_json: str,
-        role: Optional[str] = None,
-        task: Optional[str] = None,
-    ) -> Optional[str]:
-        """Create a durable snapshot capturing both a sidecar state and a
-        row-level copy of session rows across the mutable tables.
-
-        The row-level copy is stored in session_snapshot_rows and is used by
-        revert_session to restore the session exactly as it was when the
-        snapshot was taken. This provides a stronger and more reliable revert
-        semantics than timestamp-only truncation.
-        """
-        snap_id = uuid.uuid4().hex
-        sid = session_id or "unknown"
-
-        with self._lock:
-            wconn = self._get_writer_connection()
-            try:
-                try:
-                    wconn.execute("BEGIN")
-                except Exception:
-                    pass
-
-                # Insert snapshot metadata
-                wconn.execute(
-                    "INSERT INTO session_snapshots (session_id, snapshot_id, state_json, role, task) VALUES (?, ?, ?, ?, ?)",
-                    (sid, snap_id, state_json, role, task),
-                )
-
-                # Tables to snapshot (preserve ordering via created_at)
-                tables = (
-                    "messages",
-                    "tool_calls",
-                    "errors",
-                    "plans",
-                    "decisions",
-                    "session_children",
-                )
-                for tbl in tables:
-                    try:
-                        rows = wconn.execute(
-                            f"SELECT * FROM {tbl} WHERE session_id=? ORDER BY created_at",
-                            (sid,),
-                        ).fetchall()
-                        serialised = serialise_snapshot_rows(rows)
-                        wconn.execute(
-                            "INSERT INTO session_snapshot_rows (snapshot_id, table_name, rows_json) VALUES (?, ?, ?)",
-                            (snap_id, tbl, json.dumps(serialised, ensure_ascii=False)),
-                        )
-                    except Exception:
-                        # Best-effort: skip tables that may not exist
-                        pass
-
-                wconn.commit()
-            except Exception:
-                try:
-                    wconn.rollback()
-                except Exception:
-                    pass
-                return None
-
-        return snap_id
-
-    def get_snapshot(self, session_id: str, snapshot_id: str) -> Optional[str]:
-        conn = self._get_connection()
-        row = conn.execute(
-            "SELECT state_json FROM session_snapshots WHERE session_id=? AND snapshot_id=?",
-            (session_id or "unknown", snapshot_id),
-        ).fetchone()
-        if not row:
-            return None
-        return row["state_json"]
-
     def list_sessions(self) -> List[str]:
         conn = self._get_connection()
         rows = conn.execute(
@@ -953,193 +736,6 @@ class SqliteSessionStore:
 
         return new_id
 
-    # Backwards-compatibility shim: some callers expect the signature
-    # fork_session(session_id, new_session_id). Provide an alias that maps
-    # the older positional name to the current implementation.
-    # Note: fork_session_alias removed — callers should use fork_session(..., fork_id=...)
-
-    # Original revert implementation removed in favour of a compatibility
-    # wrapper below that accepts both the legacy boolean ``keep_messages``
-    # parameter and a snapshot_id string. The wrapper delegates to the
-    # private helper _revert_session_keep_messages when a boolean is used.
-
-    # Compatibility overload: accept a snapshot_id as the second argument so
-    # callers using the JsonlSessionStore semantics (revert_session(session_id, snapshot_id))
-    # can still call revert_session on the sqlite-backed store. If the
-    # second parameter is a string we interpret it as a snapshot_id and restore
-    # the session state to that snapshot by deleting rows newer than the
-    # snapshot's saved_at timestamp. This is best-effort and may be a no-op
-    # if the snapshot is not found.
-    def revert_session(
-        self, session_id: str, keep_messages: Optional[object] = False
-    ) -> Dict[str, Any]:
-        """Revert session state.
-
-        Backwards-compatible behaviour:
-          - If ``keep_messages`` is a bool: original behaviour where True
-            preserves messages and deletes other tables.
-          - If ``keep_messages`` is a str: treat it as a ``snapshot_id`` and
-            attempt to revert to that snapshot timestamp (best-effort).
-        """
-        # If a string was provided, treat as snapshot_id and attempt to revert
-        if isinstance(keep_messages, str):
-            snap_id = keep_messages
-            sid = session_id or "unknown"
-            try:
-                conn = self._get_connection()
-                row = conn.execute(
-                    "SELECT saved_at FROM session_snapshots WHERE session_id=? AND snapshot_id=?",
-                    (sid, snap_id),
-                ).fetchone()
-                if not row:
-                    return {"ok": False, "deleted": {}}
-                saved_at = row[0]
-
-                # Prefer a deterministic, row-level restore when snapshot row
-                # data is available. This restores the exact set of rows that
-                # were present when save_snapshot() ran. If no row-level data
-                # exists for this snapshot, fall back to the timestamp-based
-                # deletion approach as a best-effort revert.
-                try:
-                    conn = self._get_connection()
-                    rows = conn.execute(
-                        "SELECT table_name, rows_json FROM session_snapshot_rows WHERE snapshot_id=?",
-                        (snap_id,),
-                    ).fetchall()
-                except Exception:
-                    rows = []
-
-                if rows:
-                    deleted: Dict[str, int] = {
-                        "messages": 0,
-                        "tool_calls": 0,
-                        "errors": 0,
-                        "plans": 0,
-                        "decisions": 0,
-                    }
-                    with self._lock:
-                        wconn = self._get_writer_connection()
-                        try:
-                            try:
-                                wconn.execute("BEGIN")
-                            except Exception:
-                                pass
-
-                            deleted = restore_snapshot_rows(
-                                conn=wconn,
-                                session_id=sid,
-                                grouped_rows=group_snapshot_rows(rows),
-                                initial_deleted=deleted,
-                            )
-
-                            # Optionally remove snapshots created after this snap
-                            try:
-                                wconn.execute(
-                                    "DELETE FROM session_snapshots WHERE session_id=? AND datetime(saved_at) > datetime(?)",
-                                    (sid, saved_at),
-                                )
-                            except Exception:
-                                pass
-
-                            wconn.commit()
-                        except Exception:
-                            try:
-                                wconn.rollback()
-                            except Exception:
-                                pass
-                            raise
-
-                    return {"ok": True, "deleted": deleted}
-
-                # No deterministic row-level snapshot data — fall back to
-                # timestamp-based deletion as a last resort.
-                deleted = {
-                    "messages": 0,
-                    "tool_calls": 0,
-                    "errors": 0,
-                    "plans": 0,
-                    "decisions": 0,
-                }
-                with self._lock:
-                    wconn = self._get_writer_connection()
-                    try:
-                        try:
-                            wconn.execute("BEGIN")
-                        except Exception:
-                            pass
-                        deleted = delete_rows_after_snapshot(
-                            conn=wconn,
-                            session_id=sid,
-                            saved_at=saved_at,
-                        )
-                        wconn.commit()
-                    except Exception:
-                        try:
-                            wconn.rollback()
-                        except Exception:
-                            pass
-                        raise
-
-                return {"ok": True, "deleted": deleted}
-            except Exception:
-                return {"ok": False, "deleted": {}}
-
-        # Otherwise fall back to original behaviour (keep_messages boolean)
-        return self._revert_session_keep_messages(session_id, bool(keep_messages))
-
-    # Preserve the original implementation under a private name to be invoked
-    # by the compatibility wrapper above when a boolean keep_messages is used.
-    def _revert_session_keep_messages(
-        self, session_id: str, keep_messages: bool = False
-    ) -> Dict[str, Any]:
-        sid = session_id or "unknown"
-        deleted: Dict[str, int] = {
-            "messages": 0,
-            "tool_calls": 0,
-            "errors": 0,
-            "plans": 0,
-            "decisions": 0,
-        }
-
-        with self._lock:
-            conn = self._get_writer_connection()
-            try:
-                tables = keep_messages_delete_specs(keep_messages)
-                for tbl, should_delete in tables:
-                    if not should_delete:
-                        continue
-                    cur = conn.execute(f"DELETE FROM {tbl} WHERE session_id=?", (sid,))
-                    cnt = (
-                        cur.rowcount
-                        if cur is not None and cur.rowcount is not None
-                        else 0
-                    )
-                    # Map to the canonical key used by tests
-                    key = tbl
-                    deleted[key] = cnt
-
-                # Also remove session_children and snapshots for the session
-                try:
-                    cur = conn.execute(
-                        "DELETE FROM session_children WHERE parent_session_id=?", (sid,)
-                    )
-                except Exception:
-                    cur = None
-                try:
-                    conn.execute(
-                        "DELETE FROM session_snapshots WHERE session_id=?", (sid,)
-                    )
-                except Exception:
-                    pass
-
-                conn.commit()
-            except Exception as e:
-                conn.rollback()
-                logger.error("SqliteSessionStore.revert_session failed: %s", e)
-                raise
-
-        return {"ok": True, "deleted": deleted}
-
     def session_exists(self, session_id: str) -> bool:
         conn = self._get_connection()
         row = conn.execute(
@@ -1163,37 +759,3 @@ class SqliteSessionStore:
             except Exception:
                 pass
         return summary
-
-    def close(self) -> None:
-        try:
-            with self._thread_connections_lock:
-                conns = list(self._thread_connections.items())
-                self._thread_connections.clear()
-        except Exception:
-            conns = []
-        for tid, conn in conns:
-            try:
-                conn.close()
-            except Exception:
-                logger.debug(
-                    "SqliteSessionStore.close: failed to close thread connection %s\n%s",
-                    tid,
-                    traceback.format_exc(),
-                )
-        try:
-            with self._lock:
-                if self._writer_conn is not None:
-                    try:
-                        self._writer_conn.close()
-                    except Exception:
-                        logger.debug(
-                            "SqliteSessionStore.close: failed to close writer connection\n%s",
-                            traceback.format_exc(),
-                        )
-                    finally:
-                        self._writer_conn = None
-        except Exception:
-            logger.debug(
-                "SqliteSessionStore.close: unexpected error during close\n%s",
-                traceback.format_exc(),
-            )

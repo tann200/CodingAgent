@@ -101,10 +101,11 @@ class LmStudioAdapter(OpenAICompatibleAdapter):
                                             )
                                         )
                                 break
-                        except Exception:
+                        except Exception as exc:
+                            _logger.debug("lm_studio_adapter: model discovery inner error: %s", exc)
                             continue
-            except Exception:
-                pass
+            except Exception as exc:
+                _logger.debug("lm_studio_adapter: model discovery failed: %s", exc)
 
         # ----------------------------------------------------------------
         # 3. Fall back to environment variables
@@ -126,7 +127,8 @@ class LmStudioAdapter(OpenAICompatibleAdapter):
                 _default_model = None
             elif _default_model is not None:
                 _default_model = str(_default_model).strip()
-        except Exception:
+        except Exception as exc:
+            _logger.debug("lm_studio_adapter: _default_model sanitize failed: %s", exc)
             try:
                 if isinstance(_default_model, str) and _default_model.strip():
                     _default_model = _default_model.strip()
@@ -162,8 +164,8 @@ class LmStudioAdapter(OpenAICompatibleAdapter):
                     if cfg.exists():
                         raw2 = json.loads(cfg.read_text(encoding="utf-8"))
                         candidates = raw2 if isinstance(raw2, list) else [raw2]
-                except Exception:
-                    pass
+                except Exception as exc:
+                    _logger.debug("lm_studio_adapter: failed to load providers.json: %s", exc)
             for p in candidates:
                 try:
                     ptype = (p.get("type") or "").lower()
@@ -299,6 +301,6 @@ class LmStudioAdapter(OpenAICompatibleAdapter):
                             or short in variants(model_name)
                         ):
                             return str(raw_key)
-        except Exception:
-            pass
+        except Exception as exc:
+            _logger.debug("lm_studio_adapter: resolve_model_name failed: %s", exc)
         return model_name

@@ -183,6 +183,14 @@ from src.core.inference.provider_config import (
 )
 from src.core.utils.strings import valid_str as _valid_str
 
+
+def _set_active_context_length_lazy(context_length: int, provider_key: str = "") -> None:
+    """Lazy wrapper for provider_context.set_active_context_length to avoid circular imports."""
+    import importlib
+    mod = importlib.import_module("src.core.inference.provider_context")
+    mod.set_active_context_length(context_length, provider_id=provider_key)
+
+
 # Gap 3: Plugin hooks — lazy import so the registry is not required at import time.
 try:
     from src.core.plugin.hook_registry import (
@@ -804,10 +812,7 @@ class ProviderManager:
                     )
                     if hasattr(adapter, "get_loaded_context_length")
                     else None,
-                    set_active_context_length_fn=lambda context_length, provider_key="": __import__(
-                        "src.core.inference.provider_context",
-                        fromlist=["set_active_context_length"],
-                    ).set_active_context_length(context_length, provider_id=provider_key),
+                    set_active_context_length_fn=lambda context_length, provider_key="": _set_active_context_length_lazy(context_length, provider_key),
                     is_active_provider_fn=lambda provider_key, provider_config: bool(
                         provider_config and provider_config.get("active")
                     ),

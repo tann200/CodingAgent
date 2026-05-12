@@ -264,9 +264,15 @@ class ToolRegistry:
         return entry["fn"](**kwargs)
 
     def get_openai_functions(self) -> List[Dict[str, Any]]:
-        """Return all tools formatted as OpenAI function-calling schemas."""
+        """Return all tools formatted as OpenAI function-calling schemas.
+
+        Aliases share the same underlying function and therefore produce
+        identical schema entries (same canonical name). We deduplicate by
+        the schema function name so the LLM receives each tool exactly once.
+        """
         with self._lock:
             items = list(self._tools.items())
+        seen: set = set()
         result = []
         for name, entry in items:
             fn = entry.get("fn")
@@ -274,10 +280,15 @@ class ToolRegistry:
                 continue
             defn = getattr(fn, TOOL_ATTR, None)
             if defn is not None:
-                result.append(defn.to_openai_schema())
+                schema = defn.to_openai_schema()
             else:
                 # Fallback: build minimal schema from signature
-                result.append(_minimal_schema(name, fn, entry.get("description", "")))
+                schema = _minimal_schema(name, fn, entry.get("description", ""))
+            fn_name = schema.get("function", {}).get("name") or name
+            if fn_name in seen:
+                continue
+            seen.add(fn_name)
+            result.append(schema)
         return result
 
     def filter_by_tags(self, *tags: str) -> "ToolRegistry":

@@ -54,11 +54,12 @@ except Exception:
                         ):
                             updated.append(data)
                         to_write = updated
-                except Exception:
-                    pass
+                except Exception as exc:
+                    _logger.debug("ollama_adapter: _write_models_cache inner error: %s", exc)
             target.write_text(json.dumps(to_write), encoding="utf-8")
             return True
-        except Exception:
+        except Exception as exc:
+            _logger.debug("ollama_adapter: _write_models_cache failed: %s", exc)
             return False
 
     def lm_select_model_name(models, requested=None):
@@ -307,8 +308,8 @@ class OllamaAdapter(LLMClient):
         # Attempt to persist but don't fail tests if write fails
         try:
             self._save_provider()
-        except Exception:
-            pass
+        except Exception as exc:
+            _logger.debug("ollama_adapter: _save_provider failed: %s", exc)
 
         # Update adapter.models in-place when possible so references remain valid
         try:
@@ -345,8 +346,8 @@ class OllamaAdapter(LLMClient):
                         if resp.status_code >= 400:  # type: ignore[reportAttributeAccessIssue]
                             continue
                         return resp.json()  # type: ignore[reportAttributeAccessIssue]
-                except Exception:
-                    pass
+                except Exception as exc:
+                    _logger.debug("ollama_adapter: get_model_info response parse failed: %s", exc)
                 if isinstance(resp, dict):
                     return resp
             except Exception:
@@ -589,8 +590,8 @@ class OllamaAdapter(LLMClient):
         try:
             if self.provider and isinstance(self.provider, dict):
                 _disable_think = bool(self.provider.get("disable_thinking", False))
-        except Exception:
-            pass
+        except Exception as exc:
+            _logger.debug("ollama_adapter: disable_thinking check failed: %s", exc)
         if _disable_think and "think" not in payload:
             payload["think"] = False
 
@@ -668,8 +669,8 @@ class OllamaAdapter(LLMClient):
                         maybe = json.loads(content)
                         if isinstance(maybe, (dict, list)):
                             parsed = maybe
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        _logger.debug("ollama_adapter: JSON parse of content failed: %s", exc)
                 result = {
                     "model": data.get("model"),
                     "created_at": data.get("created_at"),

@@ -13,7 +13,12 @@ def _extract_message_obj(resp: Any) -> dict:
         if isinstance(resp, dict):
             choices = resp.get("choices")
             if choices and len(choices) > 0:
-                return choices[0].get("message", {}) if isinstance(choices[0], dict) else {}
+                if isinstance(choices[0], dict):
+                    choice = choices[0]
+                    message = choice.get("message", {})
+                    if isinstance(message, dict) and choice.get("tool_calls") and not message.get("tool_calls"):
+                        return {**message, "tool_calls": choice.get("tool_calls")}
+                    return message if isinstance(message, dict) else {}
     except Exception:
         pass
     return {}

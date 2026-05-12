@@ -398,6 +398,40 @@ class TestRunScenario:
         assert agent.calls[0].system_prompt_name == "operational"
         assert agent.calls[0].messages == [{"role": "user", "content": "Create hello.py"}]
 
+    def test_orchestrator_agent_working_dir_is_aligned_to_scenario_dir(self, tmp_path):
+        ev = ScenarioEvaluator(workdir=str(tmp_path))
+        s = Scenario(
+            name="orch_workdir",
+            description="desc",
+            task="Create hello.py",
+            expected_files={"hello.py": "def hello():"},
+        )
+
+        class Agent:
+            def __init__(self):
+                self.working_dir = tmp_path
+                self.ensure_calls = 0
+
+            def _ensure_working_dir(self):
+                self.ensure_calls += 1
+
+            def get_tools_for_role(self, role):
+                return {}
+
+            def run_agent_once(self, system_prompt_name, messages, tools, cancel_event=None):
+                scenario_dir = Path(self.working_dir)
+                (scenario_dir / "hello.py").write_text(
+                    "def hello():\n    return 'world'\n"
+                )
+                return {"ok": True, "assistant_message": "done"}
+
+        agent = Agent()
+        result = ev.run_scenario(s, lambda: agent)
+
+        assert result.status == "pass"
+        assert Path(agent.working_dir) == tmp_path / "orch_workdir"
+        assert agent.ensure_calls == 1
+
 
 class TestRunEvaluation:
     """Tests for run_evaluation with multiple scenarios."""

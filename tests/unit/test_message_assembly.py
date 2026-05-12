@@ -11,6 +11,7 @@ def test_sanitize_conversation_messages_keeps_user_and_assistant_only():
             {"role": "system", "content": "ignore"},
             {"role": "user", "content": "hello"},
             {"role": "assistant", "content": "world"},
+            {"role": "tool", "name": "read_file", "content": "{\"ok\": true}"},
         ],
         sanitize_text=lambda text: text.upper(),
     )

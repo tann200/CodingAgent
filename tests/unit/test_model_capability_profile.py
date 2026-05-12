@@ -119,7 +119,7 @@ def test_primary_profiles():
     assert gemma_profile.architecture == Architecture.MOE
     assert gemma_profile.params_total == 27.0
     assert gemma_profile.params_active == 4.0
-    assert gemma_profile.max_context == 131072
+    assert gemma_profile.max_context == 262144
     assert gemma_profile.kv_per_token_mb == 1.6
     assert gemma_profile.thinking_mode == ThinkingMode.AUTO
 

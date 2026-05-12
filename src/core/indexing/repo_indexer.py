@@ -225,8 +225,8 @@ def _load_index_metadata(base_path: Path) -> Dict[str, Any]:
         try:
             with open(meta_path, "r", encoding="utf-8") as f:
                 return json.load(f)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("repo_indexer: failed to load index metadata: %s", exc)
     return {}
 
 
@@ -268,8 +268,8 @@ def index_repository(workdir: str, incremental: bool = True) -> Dict[str, Any]:
         try:
             with open(index_path, "r", encoding="utf-8") as f:
                 existing_index = json.load(f)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("repo_indexer: failed to load existing index: %s", exc)
 
     # Load metadata for change detection
     metadata = _load_index_metadata(base_path) if incremental else {}
@@ -437,8 +437,8 @@ def get_index_stats(workdir: str) -> Dict[str, Any]:
                 stats["is_incremental"] = meta.get("incremental", False)
                 stats["files_indexed_last"] = meta.get("files_indexed", 0)
                 stats["files_deleted_last"] = meta.get("files_deleted", 0)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("repo_indexer: failed to read index metadata stats: %s", exc)
 
     if index_path.exists():
         try:
@@ -446,8 +446,8 @@ def get_index_stats(workdir: str) -> Dict[str, Any]:
                 idx = json.load(f)
                 stats["indexed_files"] = len(idx.get("files", []))
                 stats["indexed_symbols"] = len(idx.get("symbols", []))
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("repo_indexer: failed to read index stats: %s", exc)
 
     return stats
 

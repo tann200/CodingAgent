@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import logging
 from typing import Any, Callable, List, Mapping, Optional, Sequence
+
+logger = logging.getLogger(__name__)
 
 
 _EMPTY_TASK_STATE = "# Current Task\n\n# Completed Steps\n\n# Next Step"
@@ -44,30 +47,30 @@ def build_session_context_blocks(
             and len(task_state) > min_task_state_chars
         ):
             parts.append(_tagged_block("session_summary", task_state))
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("prompt_blocks: session summary block failed: %s", exc)
 
     try:
         todo_content = get_todo_content()
         if todo_content and len(todo_content) > min_todo_chars:
             parts.append(_tagged_block("task_progress", todo_content))
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("prompt_blocks: todo content block failed: %s", exc)
 
     try:
         preferences_content = get_preferences_content()
         if preferences_content and len(preferences_content) > min_prefs_chars:
             parts.append(_tagged_block("user_preferences", preferences_content))
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("prompt_blocks: preferences block failed: %s", exc)
 
     try:
         if not has_tool_results and task_description:
             past_mistakes = get_past_mistakes(task_description)
             if past_mistakes:
                 parts.append(_tagged_block("past_mistakes", past_mistakes))
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("prompt_blocks: past mistakes block failed: %s", exc)
 
     return parts
 

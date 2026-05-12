@@ -99,9 +99,8 @@ def _write_prefs_data(data: dict, label: str) -> None:
         if ok:
             try:
                 os.chmod(_PREFS_PATH, 0o600)
-            except Exception:
-                pass
-            logger.debug("credentials: atomic_write_json succeeded for %s (%s)", _PREFS_PATH, label)
+            except Exception as exc:
+                logger.debug("credentials: chmod failed for %s: %s", _PREFS_PATH, exc)
             return
         logger.warning(
             "credentials: atomic_write_json returned False for %s (%s); falling back",
@@ -124,13 +123,13 @@ def _write_prefs_data(data: dict, label: str) -> None:
         os.replace(tmp, _PREFS_PATH)
         try:
             os.chmod(_PREFS_PATH, 0o600)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("credentials: chmod failed (fallback) for %s: %s", _PREFS_PATH, exc)
     except Exception:
         try:
             os.unlink(tmp)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("credentials: failed to unlink tmp file %s: %s", tmp, exc)
         raise
 
 
@@ -141,8 +140,8 @@ def _prefs_set(provider: str, key: str) -> None:
         if _PREFS_PATH.exists():
             try:
                 data = json.loads(_PREFS_PATH.read_text(encoding="utf-8"))
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("credentials: failed to read prefs.json: %s", exc)
         data.setdefault("api_keys", {})[provider] = key
         _write_prefs_data(data, "set")
     except Exception as exc:
@@ -157,8 +156,8 @@ def _prefs_delete(provider: str) -> None:
         data = json.loads(_PREFS_PATH.read_text(encoding="utf-8"))
         data.get("api_keys", {}).pop(provider, None)
         _write_prefs_data(data, "delete")
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("credentials: _prefs_delete failed for provider %s: %s", provider, exc)
 
 
 # ---------------------------------------------------------------------------

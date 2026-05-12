@@ -29,6 +29,20 @@ def test_route_frontier_loop_exit_handles_approval_overflow_and_empty_result():
     assert route_frontier_loop_exit({"last_result": {"ok": True}}) == "verification"
 
 
+def test_should_after_memory_sync_frontier_ends_on_completion_signal_without_plan():
+    assert (
+        should_after_memory_sync_frontier(
+            {
+                "current_plan": [],
+                "next_action": None,
+                "last_result": {"ok": True, "_completion_detected": True},
+                "rounds": 1,
+            }
+        )
+        == "end"
+    )
+
+
 def test_route_wait_frontier_requires_plan_approval():
     assert route_wait_frontier({"plan_mode_approved": True}) == "frontier_loop"
     assert route_wait_frontier({"plan_mode_approved": False}) == "memory_sync"

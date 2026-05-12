@@ -127,9 +127,9 @@ class OpenAICompatibleAdapter(LLMClient):
                 return requests.post(url, headers=headers, json=payload, stream=stream)
             except TypeError:
                 try:
-                    return requests.post(url, payload, stream)
+                    return requests.post(url, data=payload, headers=headers, stream=stream)
                 except TypeError:
-                    return requests.post(url, payload)
+                    return requests.post(url, data=payload, headers=headers)
 
     # ------------------------------------------------------------------
     # Model discovery
@@ -294,6 +294,239 @@ class OpenAICompatibleAdapter(LLMClient):
     # Inference
     # ------------------------------------------------------------------
 
+    def _sanitize_kwargs(self, kwargs: Dict[str, Any]) -> Dict[str, Any]:
+        """Strip kwargs whose values cannot be JSON-serialized.
+
+        Non-serializable values (e.g. leaked internal objects from call_extra_args)
+        would cause a TypeError in requests.post(json=...) and trigger a dangerous
+        form-encoded fallback.
+        """
+        import json as _json
+        clean: Dict[str, Any] = {}
+        for k, v in kwargs.items():
+            try:
+                _json.dumps(v)
+                clean[k] = v
+            except (TypeError, ValueError):
+                _logger.warning(
+                    "_chat_internal: dropping non-serializable kwarg '%s' (%s)",
+                    k, type(v).__name__,
+                )
+        return clean
+
+    def _build_payload(
+        self,
+        messages: Union[List[Dict[str, Any]], str],
+        model_name: str,
+        kwargs: Dict[str, Any],
+    ) -> tuple[Dict[str, Any], Optional[str]]:
+        """Build the request payload dict and endpoint URL.
+
+        Returns:
+            (payload, endpoint) — endpoint is None when no URL is resolvable.
+        """
+        if isinstance(messages, (list, tuple)):
+            payload: Dict[str, Any] = {
+                "model": model_name,
+                "messages": messages,
+                **kwargs,
+            }
+            ep = self._compose("chat/completions") or self._compose("responses")
+        else:
+            payload = {"model": model_name, "input": str(messages)}
+            ep = self._compose("responses") or self._compose("chat")
+        return payload, ep
+
+    def _apply_provider_flags(self, payload: Dict[str, Any]) -> None:
+        """Mutate payload in-place with provider-specific flags.
+
+        Currently handles:
+        - ``functions`` key compat for non-LM-Studio providers
+        - ``think: false`` injection when ``disable_thinking`` is set
+        """
+        # OpenAI compatibility: copy tools → functions if functions key absent.
+        # Skip for providers that reject the legacy 'functions' key (e.g. LM Studio).
+        _skip_fn_compat = bool(getattr(self, "_skip_functions_compat", False))
+        if not _skip_fn_compat:
+            try:
+                _prov_cfg2 = getattr(self, "provider", None) or {}
+                if isinstance(_prov_cfg2, dict):
+                    _skip_fn_compat = bool(
+                        _prov_cfg2.get("skip_functions_compat", False)
+                    )
+            except Exception as exc:
+                _logger.debug("openai_compat: skip_functions_compat check failed: %s", exc)
+        if not _skip_fn_compat:
+            try:
+                if "tools" in payload and "functions" not in payload:
+                    payload["functions"] = payload["tools"]
+            except Exception as exc:
+                _logger.debug("openai_compat: functions compat injection failed: %s", exc)
+
+        # GAP-NEW-5: inject disable_thinking flag for providers that request it.
+        _disable_think = False
+        try:
+            _prov_cfg = getattr(self, "provider", None) or {}
+            if isinstance(_prov_cfg, dict):
+                _disable_think = bool(_prov_cfg.get("disable_thinking", False))
+        except Exception as exc:
+            _logger.debug("openai_compat: disable_thinking check failed: %s", exc)
+        if _disable_think and "think" not in payload:
+            payload["think"] = False
+
+    def _execute_with_retry(
+        self,
+        ep: str,
+        payload: Dict[str, Any],
+        stream: bool,
+    ) -> Any:
+        """POST *payload* to *ep* with exponential-backoff retry on transient errors.
+
+        Returns the raw requests.Response (streaming or non-streaming).
+        Raises on unrecoverable errors.
+        """
+        _MAX_RETRIES = 3
+        _RETRYABLE_STATUS = {429, 500, 502, 503, 504}
+        r = None
+        last_exc: Optional[Exception] = None
+        for _attempt in range(_MAX_RETRIES):
+            try:
+                r = self._safe_post(
+                    ep,
+                    self._headers(),
+                    payload,
+                    timeout=self.DEFAULT_TIMEOUT,
+                    stream=stream,
+                )
+                if stream:
+                    return r
+                if r.status_code not in _RETRYABLE_STATUS:
+                    break
+                _logger.warning(
+                    "%s.chat attempt %d/%d: status %d, retrying",
+                    self.__class__.__name__,
+                    _attempt + 1,
+                    _MAX_RETRIES,
+                    r.status_code,
+                )
+            except requests.exceptions.ConnectionError as _ce:
+                last_exc = _ce
+                _logger.warning(
+                    "%s.chat attempt %d/%d: connection error, retrying",
+                    self.__class__.__name__,
+                    _attempt + 1,
+                    _MAX_RETRIES,
+                )
+            if _attempt < _MAX_RETRIES - 1:
+                _retry_wait = 2**_attempt  # default: 1s, 2s
+                if r is not None and r.status_code == 429:
+                    for _hdr in (
+                        "retry-after",
+                        "x-ratelimit-reset-requests",
+                        "x-ratelimit-reset",
+                    ):
+                        _hval = r.headers.get(_hdr)
+                        if _hval:
+                            try:
+                                _retry_wait = min(float(_hval), 30.0)
+                            except ValueError:
+                                pass
+                            break
+                time.sleep(_retry_wait)
+
+        if last_exc is not None and r is None:
+            raise last_exc
+        return r
+
+    _OVERFLOW_PATTERNS = (
+        "context_length_exceeded",
+        "context length exceeded",
+        "maximum context length",
+        "context window",
+        "prompt is too long",
+        "tokens exceeds",
+        "exceeds the model's maximum",
+        "input is too long",
+        "exceeds the available context",
+        "available context size",
+        "exceeds context length",
+        "context length is",
+    )
+
+    def _parse_error_response(self, he: Exception, r: Any) -> Dict[str, Any]:
+        """Parse an HTTP error response into a structured error dict.
+
+        Detects context-overflow errors so callers can trigger compaction.
+        """
+        resp = getattr(he, "response", None) or r
+        body = None
+        try:
+            body = resp.json()
+        except Exception:
+            try:
+                body = resp.text
+            except Exception:
+                body = str(he)
+
+        user_message = None
+        suggestions: List[str] = []
+        _context_overflow = False
+
+        try:
+            if isinstance(body, dict):
+                err = body.get("error") or body.get("errors")
+                if isinstance(err, dict):
+                    msg = err.get("message") or ""
+                    msg_lower = str(msg).lower()
+                    if any(p in msg_lower for p in self._OVERFLOW_PATTERNS):
+                        _context_overflow = True
+                        user_message = str(msg)
+                    elif (
+                        "insufficient system resources" in msg_lower
+                        or "failed to load model" in msg_lower
+                        or "requires approximately" in msg_lower
+                    ):
+                        user_message = str(msg)
+                        m = re.search(
+                            r"requires approximately ([0-9]+(?:\.[0-9]+)?) ?GB",
+                            msg,
+                            re.IGNORECASE,
+                        )
+                        if m:
+                            suggestions.append(
+                                f"This model needs ~{m.group(1)} GB RAM to load."
+                            )
+                        suggestions.append(
+                            "Consider using a smaller model or increasing available memory."
+                        )
+                    else:
+                        user_message = str(msg)
+                elif isinstance(err, str):
+                    err_lower = err.lower()
+                    if any(p in err_lower for p in self._OVERFLOW_PATTERNS):
+                        _context_overflow = True
+                        user_message = err
+            elif isinstance(body, str):
+                body_lower = body.lower()
+                if any(p in body_lower for p in self._OVERFLOW_PATTERNS):
+                    _context_overflow = True
+        except Exception:
+            pass
+
+        meta = {
+            "error": "http_error",
+            "status_code": getattr(resp, "status_code", None),
+            "body": body,
+        }
+        if _context_overflow:
+            meta["context_overflow"] = True
+        result: Dict[str, Any] = {"meta": meta}
+        if _context_overflow:
+            result["context_overflow"] = True
+        if user_message:
+            result.update({"user_message": user_message, "suggestions": suggestions})
+        return result
+
     def _chat_internal(
         self,
         messages: Union[List[Dict[str, Any]], str],
@@ -318,26 +551,13 @@ class OpenAICompatibleAdapter(LLMClient):
 
         model_name = self.resolve_model_name(model_name)
 
-        # CP-12: Strip the dynamic-boundary sentinel from message content before
-        # sending.  OpenAI-compatible endpoints do not support the Anthropic
-        # cache_control content-block format; we simply remove the sentinel line
-        # so the model never sees the raw internal marker.  A future native
-        # Anthropic-Messages-API adapter should override _preprocess_messages()
-        # to split on the sentinel and set cache_control instead.
+        # CP-12: Strip the dynamic-boundary sentinel from message content.
         if isinstance(messages, (list, tuple)):
             messages = self._preprocess_messages(list(messages))
 
-        if isinstance(messages, (list, tuple)):
-            payload: Dict[str, Any] = {
-                "model": model_name,
-                "messages": messages,
-                **kwargs,
-            }
-            ep = self._compose("chat/completions") or self._compose("responses")
-        else:
-            payload = {"model": model_name, "input": str(messages)}
-            ep = self._compose("responses") or self._compose("chat")
+        kwargs = self._sanitize_kwargs(kwargs)
 
+        payload, ep = self._build_payload(messages, model_name, kwargs)
         if not ep:
             return {"message": {"role": "assistant", "content": "", "parsed": None}}
 
@@ -350,88 +570,13 @@ class OpenAICompatibleAdapter(LLMClient):
                     list(payload.keys()),
                 )
 
-            # OpenAI compatibility: copy tools → functions if functions key absent
-            try:
-                if "tools" in payload and "functions" not in payload:
-                    payload["functions"] = payload["tools"]
-            except Exception:
-                pass
+            self._apply_provider_flags(payload)
 
-            # GAP-NEW-5: inject disable_thinking flag for providers that request it.
-            # Passed as extra_body so it reaches the provider without polluting the
-            # standard OpenAI schema.  Ollama and LM Studio both accept "think": false.
-            _disable_think = False
-            try:
-                _prov_cfg = getattr(self, "provider", None) or {}
-                if isinstance(_prov_cfg, dict):
-                    _disable_think = bool(_prov_cfg.get("disable_thinking", False))
-            except Exception:
-                pass
-            if _disable_think and "think" not in payload:
-                payload["think"] = False
-
-            # P2-1: Retry with exponential backoff on transient errors.
-            # GAP-NEW-1: Parse Retry-After header on 429 to avoid needless delay
-            # or re-triggering the rate limit.
-            _MAX_RETRIES = 3
-            _RETRYABLE_STATUS = {429, 500, 502, 503, 504}
-            r = None
-            last_exc: Optional[Exception] = None
-            for _attempt in range(_MAX_RETRIES):
-                try:
-                    r = self._safe_post(
-                        ep,
-                        self._headers(),
-                        payload,
-                        timeout=self.DEFAULT_TIMEOUT,
-                        stream=stream,
-                    )
-                    if stream:
-                        return r
-                    if r.status_code not in _RETRYABLE_STATUS:
-                        break
-                    _logger.warning(
-                        "%s.chat attempt %d/%d: status %d, retrying",
-                        self.__class__.__name__,
-                        _attempt + 1,
-                        _MAX_RETRIES,
-                        r.status_code,
-                    )
-                except requests.exceptions.ConnectionError as _ce:
-                    last_exc = _ce
-                    _logger.warning(
-                        "%s.chat attempt %d/%d: connection error, retrying",
-                        self.__class__.__name__,
-                        _attempt + 1,
-                        _MAX_RETRIES,
-                    )
-                if _attempt < _MAX_RETRIES - 1:
-                    # GAP-NEW-1: honour Retry-After header from provider (caps at 30s).
-                    _retry_wait = 2**_attempt  # default: 1s, 2s
-                    if r is not None and r.status_code == 429:
-                        for _hdr in (
-                            "retry-after",
-                            "x-ratelimit-reset-requests",
-                            "x-ratelimit-reset",
-                        ):
-                            _hval = r.headers.get(_hdr)
-                            if _hval:
-                                try:
-                                    _retry_wait = min(float(_hval), 30.0)
-                                except ValueError:
-                                    pass
-                                break
-                    time.sleep(_retry_wait)
-
-            if last_exc is not None and r is None:
-                raise last_exc
+            r = self._execute_with_retry(ep, payload, stream)
 
             if stream:
                 return r
 
-            # After the retry loop, r is guaranteed non-None here:
-            # if r were still None we'd have raised last_exc above, or
-            # ConnectionError would have propagated.
             if r is None:  # pragma: no cover — defensive; satisfies type narrowing
                 raise RuntimeError(
                     "HTTP response is None after retry loop (unexpected)"
@@ -440,94 +585,7 @@ class OpenAICompatibleAdapter(LLMClient):
             try:
                 r.raise_for_status()
             except Exception as he:
-                resp = getattr(he, "response", None) or r
-                body = None
-                try:
-                    body = resp.json()
-                except Exception:
-                    try:
-                        body = resp.text
-                    except Exception:
-                        body = str(he)
-
-                user_message = None
-                suggestions: List[str] = []
-                # REACT-OVF: detect context-overflow error messages so the
-                # caller (perception_node) can trigger compaction instead of
-                # treating the turn as a generic failure.
-                _context_overflow = False
-                _OVERFLOW_PATTERNS = (
-                    "context_length_exceeded",
-                    "context length exceeded",
-                    "maximum context length",
-                    "context window",
-                    "prompt is too long",
-                    "tokens exceeds",
-                    "exceeds the model's maximum",
-                    "input is too long",
-                    # LM Studio: "request (101084 tokens) exceeds the available context size (4096 tokens)"
-                    "exceeds the available context",
-                    "available context size",
-                    # Ollama / llama.cpp
-                    "exceeds context length",
-                    "context length is",
-                )
-                try:
-                    if isinstance(body, dict):
-                        err = body.get("error") or body.get("errors")
-                        if isinstance(err, dict):
-                            msg = err.get("message") or ""
-                            msg_lower = str(msg).lower()
-                            if any(p in msg_lower for p in _OVERFLOW_PATTERNS):
-                                _context_overflow = True
-                                user_message = str(msg)
-                            elif (
-                                "insufficient system resources" in msg_lower
-                                or "failed to load model" in msg_lower
-                                or "requires approximately" in msg_lower
-                            ):
-                                user_message = str(msg)
-                                m = re.search(
-                                    r"requires approximately ([0-9]+(?:\.[0-9]+)?) ?GB",
-                                    msg,
-                                    re.IGNORECASE,
-                                )
-                                if m:
-                                    suggestions.append(
-                                        f"This model needs ~{m.group(1)} GB RAM to load."
-                                    )
-                                suggestions.append(
-                                    "Consider using a smaller model or increasing available memory."
-                                )
-                            else:
-                                user_message = str(msg)
-                        elif isinstance(err, str):
-                            err_lower = err.lower()
-                            if any(p in err_lower for p in _OVERFLOW_PATTERNS):
-                                _context_overflow = True
-                                user_message = err
-                    elif isinstance(body, str):
-                        body_lower = body.lower()
-                        if any(p in body_lower for p in _OVERFLOW_PATTERNS):
-                            _context_overflow = True
-                except Exception:
-                    pass
-
-                meta = {
-                    "error": "http_error",
-                    "status_code": getattr(resp, "status_code", None),
-                    "body": body,
-                }
-                if _context_overflow:
-                    meta["context_overflow"] = True
-                result: Dict[str, Any] = {"meta": meta}
-                if _context_overflow:
-                    result["context_overflow"] = True
-                if user_message:
-                    result.update(
-                        {"user_message": user_message, "suggestions": suggestions}
-                    )
-                return result
+                return self._parse_error_response(he, r)
 
             try:
                 return r.json()

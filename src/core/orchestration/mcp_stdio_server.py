@@ -154,348 +154,334 @@ class MCPStdioServer:
         )
         return json.dumps(notification.__dict__)
 
-    def _handle_request(self, request: JsonRpcRequest) -> Optional[str]:
-        """Handle an incoming JSON-RPC request."""
-        method = request.method
+    # ------------------------------------------------------------------
+    # Per-method request handlers
+    # ------------------------------------------------------------------
+
+    def _handle_initialize(self, request: JsonRpcRequest) -> str:
+        """Handle 'initialize' — return server capabilities."""
+        result = {
+            "protocolVersion": "1.0",
+            "capabilities": {
+                "tools": True,
+                "resources": True,
+                "prompts": True,
+            },
+            "serverInfo": {
+                "name": "coding-agent",
+                "version": "1.0.0",
+            },
+        }
+        return self._build_response(request, result)
+
+    def _handle_session_request_state(self, request: JsonRpcRequest) -> str:
+        """Handle 'session/request_state' — forward to EventBus and ack."""
+        eb = self._get_event_bus()
+        if eb:
+            eb.publish("session.request_state", request.params)
+        return self._build_response(request, {"status": "requested"})
+
+    def _handle_tools_list(self, request: JsonRpcRequest) -> str:
+        """Handle 'tools/list' — return tools from live registry."""
+        tools_list = []
+        if self._orchestrator is not None:
+            try:
+                registry = getattr(self._orchestrator, "tool_registry", None)
+                if registry and hasattr(registry, "tools"):
+                    tools_list = [
+                        {"name": name, "description": getattr(t, "description", "")}
+                        for name, t in registry.tools.items()
+                    ]
+            except Exception as _te:
+                logger.debug(f"MCPStdioServer: tools/list error: {_te}")
+        return self._build_response(request, {"tools": tools_list})
+
+    def _handle_tools_call(self, request: JsonRpcRequest) -> str:
+        """Handle 'tools/call' — execute synchronously or fire-and-forget."""
         params = request.params
-
-        # ACP/MCP method handlers
-        if method == "initialize":
-            # Initialize the connection - return capabilities
-            result = {
-                "protocolVersion": "1.0",
-                "capabilities": {
-                    "tools": True,
-                    "resources": True,
-                    "prompts": True,
-                },
-                "serverInfo": {
-                    "name": "coding-agent",
-                    "version": "1.0.0",
-                },
-            }
-            return self._build_response(request, result)
-
-        elif method == "session/request_state":
-            # GAP 1: Forward state request to EventBus
-            eb = self._get_event_bus()
-            if eb:
-                eb.publish("session.request_state", params)
-            # Return ack - actual state comes via notification
-            return self._build_response(request, {"status": "requested"})
-
-        elif method == "tools/list":
-            # Return available tools from the live tool registry when orchestrator is set.
-            tools_list = []
-            if self._orchestrator is not None:
-                try:
-                    registry = getattr(self._orchestrator, "tool_registry", None)
-                    if registry and hasattr(registry, "tools"):
-                        tools_list = [
-                            {"name": name, "description": getattr(t, "description", "")}
-                            for name, t in registry.tools.items()
-                        ]
-                except Exception as _te:
-                    logger.debug(f"MCPStdioServer: tools/list error: {_te}")
-            result = {"tools": tools_list}
-            return self._build_response(request, result)
-
-        elif method == "tools/call":
-            # P4-2: Execute tool synchronously via orchestrator when available;
-            # fall back to EventBus fire-and-forget when orchestrator is absent.
-            tool_name = params.get("name")
-            tool_args = params.get("arguments", {})
-            if self._orchestrator is not None:
-                try:
-                    tool_result = self._orchestrator.execute_tool(
-                        {"name": tool_name, "arguments": tool_args}
-                    )
-                    return self._build_response(
-                        request,
-                        {
-                            "content": [
-                                {"type": "text", "text": json.dumps(tool_result)}
-                            ],
-                            "isError": not tool_result.get("ok", True),
-                        },
-                    )
-                except Exception as _te:
-                    return self._build_error_response(
-                        request, -32603, f"Tool execution error: {_te}"
-                    )
-            # No orchestrator — fire via EventBus (async path)
-            eb = self._get_event_bus()
-            if eb:
-                eb.publish(
-                    "mcp.tool_call",
-                    {"tool": tool_name, "args": tool_args, "requestId": request.id},
+        tool_name = params.get("name")
+        tool_args = params.get("arguments", {})
+        if self._orchestrator is not None:
+            try:
+                tool_result = self._orchestrator.execute_tool(
+                    {"name": tool_name, "arguments": tool_args}
                 )
-            return self._build_response(request, {"status": "executing"})
+                return self._build_response(
+                    request,
+                    {
+                        "content": [
+                            {"type": "text", "text": json.dumps(tool_result)}
+                        ],
+                        "isError": not tool_result.get("ok", True),
+                    },
+                )
+            except Exception as _te:
+                return self._build_error_response(
+                    request, -32603, f"Tool execution error: {_te}"
+                )
+        # No orchestrator — fire via EventBus (async path)
+        eb = self._get_event_bus()
+        if eb:
+            eb.publish(
+                "mcp.tool_call",
+                {"tool": tool_name, "args": tool_args, "requestId": request.id},
+            )
+        return self._build_response(request, {"status": "executing"})
 
-        elif method == "ping":
-            return self._build_response(request, {"pong": True})
+    def _handle_ping(self, request: JsonRpcRequest) -> str:
+        """Handle 'ping'."""
+        return self._build_response(request, {"pong": True})
 
-        elif method == "resources/list":
-            # P4-2: List workspace files as resources when orchestrator provides working_dir.
-            resources = []
-            try:
-                from pathlib import Path as _Path
+    def _handle_resources_list(self, request: JsonRpcRequest) -> str:
+        """Handle 'resources/list' — enumerate workspace files."""
+        from pathlib import Path as _Path
 
-                _workdir = None
-                if self._orchestrator is not None:
-                    _workdir = getattr(self._orchestrator, "working_dir", None)
-                if _workdir:
-                    _base = _Path(_workdir).resolve()
-                    # MED-10 fix: validate that _base is a non-root directory to
-                    # prevent accidentally enumerating the whole filesystem.
-                    if _base == _base.anchor or not _base.is_dir():
-                        logger.warning(
-                            "MCPStdioServer: refusing resources/list for root/invalid path %s",
-                            _base,
+        resources: list = []
+        try:
+            _workdir = None
+            if self._orchestrator is not None:
+                _workdir = getattr(self._orchestrator, "working_dir", None)
+            if _workdir:
+                _base = _Path(_workdir).resolve()
+                # MED-10 fix: validate that _base is a non-root directory to
+                # prevent accidentally enumerating the whole filesystem.
+                if _base == _base.anchor or not _base.is_dir():
+                    logger.warning(
+                        "MCPStdioServer: refusing resources/list for root/invalid path %s",
+                        _base,
+                    )
+                else:
+                    _SKIP = {
+                        ".git",
+                        "__pycache__",
+                        ".venv",
+                        "node_modules",
+                        ".codingAgent",
+                        ".agent-context",
+                    }
+                    _MAX_DEPTH = 8
+                    _MAX_RESULTS = 200
+                    for p in sorted(_base.rglob("*")):
+                        try:
+                            _rel_parts = p.relative_to(_base).parts
+                            if len(_rel_parts) > _MAX_DEPTH:
+                                continue
+                        except ValueError:
+                            continue
+                        if any(part in _SKIP for part in p.parts):
+                            continue
+                        if p.is_file() and len(resources) < _MAX_RESULTS:
+                            rel = str(p.relative_to(_base))
+                            resources.append(
+                                {
+                                    "uri": f"file://{rel}",
+                                    "name": rel,
+                                    "mimeType": "text/plain",
+                                }
+                            )
+        except Exception as _re:
+            logger.debug(f"MCPStdioServer: resources/list error: {_re}")
+        return self._build_response(request, {"resources": resources})
+
+    def _handle_resources_read(self, request: JsonRpcRequest) -> str:
+        """Handle 'resources/read' — read file by URI."""
+        from pathlib import Path as _Path
+        import os as _os
+
+        uri = request.params.get("uri", "")
+        contents: list = []
+        try:
+            _workdir = None
+            if self._orchestrator is not None:
+                _workdir = getattr(self._orchestrator, "working_dir", None)
+            if _workdir and uri.startswith("file://"):
+                rel_path = uri[len("file://"):]
+                target = (_Path(_workdir) / rel_path).resolve()
+                base = _Path(_workdir).resolve()
+                # Security: reject path traversal outside working dir.
+                _base_prefix = str(base) + _os.sep
+                if (
+                    str(target) == str(base) or str(target).startswith(_base_prefix)
+                ) and target.is_file():
+                    text = target.read_text(encoding="utf-8", errors="replace")
+                    contents = [{"uri": uri, "mimeType": "text/plain", "text": text}]
+                else:
+                    return self._build_error_response(request, -32602, "Resource not found")
+        except Exception as _re:
+            return self._build_error_response(request, -32603, str(_re))
+        return self._build_response(request, {"contents": contents})
+
+    def _handle_prompts_list(self, request: JsonRpcRequest) -> str:
+        """Handle 'prompts/list' — expose agent role prompts."""
+        from pathlib import Path as _Path
+
+        prompts: list = []
+        try:
+            _roles_dir = (
+                _Path(__file__).parents[3] / "config" / "agent-brain" / "roles"
+            )
+            if _roles_dir.exists():
+                for f in sorted(_roles_dir.glob("*.md")):
+                    prompts.append({"name": f.stem, "description": f"Role prompt: {f.stem}"})
+        except Exception:
+            pass
+        return self._build_response(request, {"prompts": prompts})
+
+    def _handle_prompts_get(self, request: JsonRpcRequest) -> str:
+        """Handle 'prompts/get' — return content of a named role prompt."""
+        from pathlib import Path as _Path
+
+        name = request.params.get("name", "")
+        try:
+            _roles_dir = (
+                _Path(__file__).parents[3] / "config" / "agent-brain" / "roles"
+            )
+            _prompt_file = _roles_dir / f"{name}.md"
+            if _prompt_file.exists():
+                text = _prompt_file.read_text(encoding="utf-8")
+                messages = [{"role": "user", "content": {"type": "text", "text": text}}]
+                return self._build_response(request, {"messages": messages})
+            return self._build_error_response(request, -32602, f"Prompt '{name}' not found")
+        except Exception as _pe:
+            return self._build_error_response(request, -32603, str(_pe))
+
+    def _handle_sampling_create(self, request: JsonRpcRequest) -> str:
+        """Handle 'sampling/create' — forward to orchestrator LLM."""
+        import asyncio as _asyncio
+        import contextvars as _contextvars
+
+        params = request.params
+        messages_in = params.get("messages", [])
+        max_tokens = params.get("maxTokens", 256)
+        try:
+            if self._orchestrator is not None and hasattr(self._orchestrator, "call_model"):
+                _msgs = [
+                    {
+                        "role": m.get("role", "user"),
+                        "content": m.get("content", {}).get("text", ""),
+                    }
+                    for m in messages_in
+                ]
+                _orch = self._orchestrator
+
+                def _call_model_in_new_loop():
+                    _loop = _asyncio.new_event_loop()
+                    try:
+                        return _loop.run_until_complete(
+                            _orch.call_model(_msgs, max_tokens=max_tokens)  # type: ignore[attr-defined]
+                        )
+                    finally:
+                        _loop.close()
+
+                ctx = _contextvars.copy_context()
+                resp = self._sampling_executor.submit(
+                    ctx.run, _call_model_in_new_loop
+                ).result(timeout=60)
+                if isinstance(resp, str):
+                    text = resp
+                elif isinstance(resp, dict):
+                    _choices = resp.get("choices")
+                    if _choices and len(_choices) > 0:
+                        ch = (
+                            _choices[0].get("message", {})
+                            if isinstance(_choices[0], dict)
+                            else {}
                         )
                     else:
-                        _SKIP = {
-                            ".git",
-                            "__pycache__",
-                            ".venv",
-                            "node_modules",
-                            ".codingAgent",
-                            ".agent-context",
-                        }
-                        _MAX_DEPTH = 8
-                        _MAX_RESULTS = 200
-                        for p in sorted(_base.rglob("*")):
-                            # Enforce depth limit relative to _base
-                            try:
-                                _rel_parts = p.relative_to(_base).parts
-                                if len(_rel_parts) > _MAX_DEPTH:
-                                    continue
-                            except ValueError:
-                                continue
-                            if any(part in _SKIP for part in p.parts):
-                                continue
-                            if p.is_file() and len(resources) < _MAX_RESULTS:
-                                rel = str(p.relative_to(_base))
-                                resources.append(
-                                    {
-                                        "uri": f"file://{rel}",
-                                        "name": rel,
-                                        "mimeType": "text/plain",
-                                    }
-                                )
-            except Exception as _re:
-                logger.debug(f"MCPStdioServer: resources/list error: {_re}")
-            result = {"resources": resources}
-            return self._build_response(request, result)
+                        ch = resp.get("message", {})
+                    text = ch.get("content", "") if isinstance(ch, dict) else str(ch)
+                else:
+                    text = str(resp)
+                result = {
+                    "content": {"type": "text", "text": text},
+                    "model": "coding-agent",
+                    "stopReason": "endTurn",
+                }
+            else:
+                result = {
+                    "content": {"type": "text", "text": ""},
+                    "model": "coding-agent",
+                    "stopReason": "endTurn",
+                }
+        except Exception:
+            result = {
+                "content": {"type": "text", "text": ""},
+                "model": "coding-agent",
+                "stopReason": "error",
+            }
+        return self._build_response(request, result)
 
-        elif method == "resources/read":
-            # P4-2: Read file contents by URI (file://<relative-path>).
-            uri = params.get("uri", "")
-            contents = []
-            try:
-                from pathlib import Path as _Path
+    def _handle_completion_complete(self, request: JsonRpcRequest) -> str:
+        """Handle 'completion/complete' — return argument completions."""
+        from pathlib import Path as _Path
 
-                _workdir = None
-                if self._orchestrator is not None:
-                    _workdir = getattr(self._orchestrator, "working_dir", None)
-                if _workdir and uri.startswith("file://"):
-                    rel_path = uri[len("file://") :]
-                    target = (_Path(_workdir) / rel_path).resolve()
-                    base = _Path(_workdir).resolve()
-                    # Security: reject path traversal outside working dir.
-                    # Use os.sep suffix to prevent /workdir-evil from matching /workdir.
-                    import os as _os
-
-                    _base_prefix = str(base) + _os.sep
-                    if (
-                        str(target) == str(base) or str(target).startswith(_base_prefix)
-                    ) and target.is_file():
-                        text = target.read_text(encoding="utf-8", errors="replace")
-                        contents = [
-                            {"uri": uri, "mimeType": "text/plain", "text": text}
-                        ]
-                    else:
-                        return self._build_error_response(
-                            request, -32602, "Resource not found"
-                        )
-            except Exception as _re:
-                return self._build_error_response(request, -32603, str(_re))
-            result = {"contents": contents}
-            return self._build_response(request, result)
-
-        elif method == "prompts/list":
-            # P4-2: Expose agent role prompts as named prompts.
-            prompts = []
-            try:
-                from pathlib import Path as _Path
-
+        params = request.params
+        ref = params.get("ref", {})
+        _arg_val = params.get("argument", {}).get("value", "")
+        completion_values: list = []
+        try:
+            if ref.get("type") == "ref/prompt":
                 _roles_dir = (
                     _Path(__file__).parents[3] / "config" / "agent-brain" / "roles"
                 )
                 if _roles_dir.exists():
-                    for f in sorted(_roles_dir.glob("*.md")):
-                        prompts.append(
-                            {"name": f.stem, "description": f"Role prompt: {f.stem}"}
-                        )
-            except Exception:
-                pass
-            result = {"prompts": prompts}
-            return self._build_response(request, result)
-
-        elif method == "prompts/get":
-            # P4-2: Return the content of a named role prompt.
-            name = params.get("name", "")
-            messages = []
-            try:
-                from pathlib import Path as _Path
-
-                _roles_dir = (
-                    _Path(__file__).parents[3] / "config" / "agent-brain" / "roles"
+                    completion_values = [
+                        f.stem
+                        for f in _roles_dir.glob("*.md")
+                        if f.stem.startswith(_arg_val)
+                    ]
+            elif ref.get("type") == "ref/resource":
+                _workdir = (
+                    getattr(self._orchestrator, "working_dir", None)
+                    if self._orchestrator
+                    else None
                 )
-                _prompt_file = _roles_dir / f"{name}.md"
-                if _prompt_file.exists():
-                    text = _prompt_file.read_text(encoding="utf-8")
-                    messages = [
-                        {"role": "user", "content": {"type": "text", "text": text}}
-                    ]
-                else:
-                    return self._build_error_response(
-                        request, -32602, f"Prompt '{name}' not found"
-                    )
-            except Exception as _pe:
-                return self._build_error_response(request, -32603, str(_pe))
-            result = {"messages": messages}
-            return self._build_response(request, result)
+                if _workdir:
+                    _base = _Path(_workdir)
+                    completion_values = [
+                        f"file://{str(p.relative_to(_base))}"
+                        for p in _base.rglob("*")
+                        if p.is_file()
+                        and str(p.relative_to(_base)).startswith(_arg_val)
+                    ][:20]
+        except Exception:
+            pass
+        return self._build_response(
+            request, {"completion": {"values": completion_values, "hasMore": False}}
+        )
 
-        elif method == "sampling/create":
-            # P4-2: Forward sampling request to orchestrator's LLM.
-            messages_in = params.get("messages", [])
-            max_tokens = params.get("maxTokens", 256)
-            try:
-                if self._orchestrator is not None and hasattr(
-                    self._orchestrator, "call_model"
-                ):
-                    # Build minimal message list for call_model
-                    _msgs = [
-                        {
-                            "role": m.get("role", "user"),
-                            "content": m.get("content", {}).get("text", ""),
-                        }
-                        for m in messages_in
-                    ]
-                    import asyncio as _asyncio
+    def _handle_logging_set_level(self, request: JsonRpcRequest) -> str:
+        """Handle 'logging/setLevel'."""
+        return self._build_response(request, {"status": "ok"})
 
-                    # Use a dedicated thread+loop to avoid RuntimeError when
-                    # _handle_request is called from inside run_async() which
-                    # already has a running event loop.
-                    _orch = self._orchestrator
-                    if _orch is None:
-                        raise RuntimeError("Orchestrator not available for sampling")
+    # ------------------------------------------------------------------
+    # Dispatch table and main request router
+    # ------------------------------------------------------------------
 
-                    def _call_model_in_new_loop():
-                        _loop = _asyncio.new_event_loop()
-                        try:
-                            return _loop.run_until_complete(
-                                _orch.call_model(_msgs, max_tokens=max_tokens)  # type: ignore[attr-defined]
-                            )
-                        finally:
-                            _loop.close()
+    _REQUEST_HANDLERS: Dict[str, str] = {
+        "initialize": "_handle_initialize",
+        "session/request_state": "_handle_session_request_state",
+        "tools/list": "_handle_tools_list",
+        "tools/call": "_handle_tools_call",
+        "ping": "_handle_ping",
+        "resources/list": "_handle_resources_list",
+        "resources/read": "_handle_resources_read",
+        "prompts/list": "_handle_prompts_list",
+        "prompts/get": "_handle_prompts_get",
+        "sampling/create": "_handle_sampling_create",
+        "completion/complete": "_handle_completion_complete",
+        "logging/setLevel": "_handle_logging_set_level",
+    }
 
-                    # Ensure ContextVars (eg. correlation id) propagate into the
-                    # sampling thread by capturing the current context and using
-                    # ctx.run as the submitted callable.
-                    import contextvars as _contextvars
-
-                    ctx = _contextvars.copy_context()
-                    resp = self._sampling_executor.submit(
-                        ctx.run, _call_model_in_new_loop
-                    ).result(timeout=60)
-                    if isinstance(resp, str):
-                        text = resp
-                    elif isinstance(resp, dict):
-                        _choices = resp.get("choices")
-                        if _choices and len(_choices) > 0:
-                            ch = (
-                                _choices[0].get("message", {})
-                                if isinstance(_choices[0], dict)
-                                else {}
-                            )
-                        else:
-                            ch = resp.get("message", {})
-                        text = (
-                            ch.get("content", "") if isinstance(ch, dict) else str(ch)
-                        )
-                    else:
-                        text = str(resp)
-                    result = {
-                        "content": {"type": "text", "text": text},
-                        "model": "coding-agent",
-                        "stopReason": "endTurn",
-                    }
-                else:
-                    result = {
-                        "content": {"type": "text", "text": ""},
-                        "model": "coding-agent",
-                        "stopReason": "endTurn",
-                    }
-            except Exception as _se:
-                result = {
-                    "content": {"type": "text", "text": ""},
-                    "model": "coding-agent",
-                    "stopReason": "error",
-                }
-            return self._build_response(request, result)
-
-        elif method == "completion/complete":
-            # P4-2: Return argument completions for known prompt/resource refs.
-            ref = params.get("ref", {})
-            _arg_name = params.get("argument", {}).get("name", "")
-            _arg_val = params.get("argument", {}).get("value", "")
-            completion_values = []
-            try:
-                if ref.get("type") == "ref/prompt":
-                    # Suggest role prompt names matching the partial value
-                    from pathlib import Path as _Path
-
-                    _roles_dir = (
-                        _Path(__file__).parents[3] / "config" / "agent-brain" / "roles"
-                    )
-                    if _roles_dir.exists():
-                        completion_values = [
-                            f.stem
-                            for f in _roles_dir.glob("*.md")
-                            if f.stem.startswith(_arg_val)
-                        ]
-                elif ref.get("type") == "ref/resource":
-                    # Suggest file URIs matching the partial value
-                    _workdir = (
-                        getattr(self._orchestrator, "working_dir", None)
-                        if self._orchestrator
-                        else None
-                    )
-                    if _workdir:
-                        from pathlib import Path as _Path
-
-                        _base = _Path(_workdir)
-                        completion_values = [
-                            f"file://{str(p.relative_to(_base))}"
-                            for p in _base.rglob("*")
-                            if p.is_file()
-                            and str(p.relative_to(_base)).startswith(_arg_val)
-                        ][:20]
-            except Exception:
-                pass
-            result = {"completion": {"values": completion_values, "hasMore": False}}
-            return self._build_response(request, result)
-
-        elif method == "logging/setLevel":
-            # Set logging level
-            return self._build_response(request, {"status": "ok"})
-
-        else:
+    def _handle_request(self, request: JsonRpcRequest) -> Optional[str]:
+        """Route an incoming JSON-RPC request to the appropriate handler."""
+        handler_name = self._REQUEST_HANDLERS.get(request.method)
+        if handler_name is None:
             return self._build_error_response(
-                request, -32601, f"Method not found: {method}"
+                request, -32601, f"Method not found: {request.method}"
             )
+        handler = getattr(self, handler_name)
+        return handler(request)
 
     def _handle_notification(self, notification: JsonRpcNotification) -> None:
         """Handle an incoming JSON-RPC notification."""

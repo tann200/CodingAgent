@@ -93,8 +93,8 @@ class LiteLLMAdapter(OpenAICompatibleAdapter):
                 from src.core.user_prefs import UserPrefs
 
                 api_key = UserPrefs.load().get_provider_key("litellm")
-            except Exception:
-                pass
+            except Exception as exc:
+                _logger.debug("litellm_adapter: failed to load API key from UserPrefs: %s", exc)
         if not api_key:
             api_key = os.environ.get("LITELLM_API_KEY") or None
 

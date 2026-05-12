@@ -72,8 +72,8 @@ def _load_server_config() -> Dict:
 
         if _CONFIG_PATH.exists():
             return yaml.safe_load(_CONFIG_PATH.read_text(encoding="utf-8")) or {}
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("lsp_manager: failed to load lsp_servers.yaml: %s", exc)
     # Minimal built-in fallback so yaml dependency is optional
     return {
         "python": {"cmd": ["pylsp"], "fallback_cmds": [["pyright", "--stdio"]]},
@@ -185,8 +185,8 @@ class LSPManager:
                 if isinstance(client, LSPClient):
                     try:
                         await client.shutdown()
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        logger.debug("lsp_manager: error shutting down LSP client: %s", exc)
             self._clients.clear()
 
     @staticmethod

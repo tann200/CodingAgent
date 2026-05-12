@@ -479,8 +479,8 @@ class IncrementalIndexer:
                     ):
                         self._last_modified[key] = mtime
                         self.symbol_graph.update_file(str(path))
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("symbol_graph: failed to update file %s: %s", path, exc)
 
     def get_symbol_info(self, name: str) -> Optional[Dict]:
         """Get information about a symbol."""

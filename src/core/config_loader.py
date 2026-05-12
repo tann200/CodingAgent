@@ -162,9 +162,8 @@ def load_merged_config(working_dir: Optional[Path] = None) -> Dict[str, Any]:
                 if reloader.changed():
                     logger.debug("Hot-reload detected config change, applying")
                     result = reloader.load()
-            except Exception:
-                # If the reloader interface is not as expected, ignore it.
-                pass
+            except Exception as exc:
+                logger.debug("config_loader: hot-reload interface error: %s", exc)
         except Exception as e:
             logger.debug(f"Hot-reload not available: {e}")
 

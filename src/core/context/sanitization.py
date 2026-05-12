@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Callable
+
+logger = logging.getLogger(__name__)
 
 
 def sanitize_prompt_text(text: str, *, get_context_dir_name: Callable[[], str]) -> str:
@@ -60,7 +63,7 @@ def sanitize_prompt_text(text: str, *, get_context_dir_name: Callable[[], str]) 
                 log_path = ctx_dir / "context_sanitization.log"
                 with open(log_path, "a", encoding="utf-8") as handle:
                     handle.write("SANITIZE: removed suspicious content\n")
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("sanitization: failed to write sanitization log: %s", exc)
 
     return sanitized

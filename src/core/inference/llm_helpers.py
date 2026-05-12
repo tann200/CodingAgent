@@ -70,6 +70,7 @@ async def call_model_with_timeout(
     state: Mapping[str, Any],
     orchestrator: Any,
     llm_kwargs: dict,
+    tools: list[Any] | None = None,
     call_model_fn: Any | None = None,
 ) -> tuple[dict | None, Any]:
     """Call the shared call_model helper with configurable timeout and cancel handling.
@@ -86,7 +87,7 @@ async def call_model_with_timeout(
                 model=model,
                 stream=_STREAMING_ENABLED,
                 format_json=False,
-                tools=None,
+                tools=tools,
                 session_id=state.get("session_id"),
                 **llm_kwargs,
             )
@@ -119,6 +120,13 @@ async def call_model_with_timeout(
         )
         if early_exit:
             return value, None
+        logger.info(
+            "call_model_with_timeout: raw value type=%s finish_reason=%s tool_calls_len=%s content_len=%s",
+            type(value),
+            value.get("finish_reason") if isinstance(value, dict) else "n/a",
+            len(value.get("tool_calls") or []) if isinstance(value, dict) else "n/a",
+            len(value.get("content", "") or "") if isinstance(value, dict) else "n/a",
+        )
         return None, value
     except asyncio.CancelledError:
         logger.info("llm_helpers: Task cancelled")

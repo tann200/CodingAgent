@@ -9,6 +9,7 @@ Implements ACP/MCP compliant state hydration:
 
 import logging
 import threading
+import time
 import uuid
 from typing import Dict, Set, Callable, Any, List, Optional
 from dataclasses import dataclass, field
@@ -216,7 +217,7 @@ class AgentSessionManager:
                 {
                     "source": source,
                     "payload": payload,
-                    "timestamp": __import__("time").time(),
+                    "timestamp": time.time(),
                 }
             )
 

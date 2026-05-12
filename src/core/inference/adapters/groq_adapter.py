@@ -74,8 +74,8 @@ class GroqAdapter(OpenAICompatibleAdapter):
                 from src.core.user_prefs import UserPrefs
 
                 api_key = UserPrefs.load().get_provider_key("groq")
-            except Exception:
-                pass
+            except Exception as exc:
+                _logger.debug("groq_adapter: failed to load API key from UserPrefs: %s", exc)
         if not api_key:
             api_key = os.environ.get("GROQ_API_KEY") or None
 

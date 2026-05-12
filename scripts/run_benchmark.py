@@ -45,6 +45,21 @@ def _build_agent_factory(
                 setattr(orch, "_provider_name", provider)
             if model:
                 setattr(orch, "model", model)
+            # If _adapter is None after init (e.g. provider not registered in
+            # ProviderManager before orchestrator creation), resolve it now using
+            # the explicit provider name so perception_node doesn't fast-fail.
+            if provider and getattr(orch, "_adapter", None) is None:
+                try:
+                    from src.core.inference.llm_manager import get_provider_manager
+                    _pm = get_provider_manager()
+                    _adapter = _pm.get_provider(provider)
+                    if _adapter is None:
+                        # Try get_active_adapter as fallback
+                        _adapter = _pm.get_active_adapter()
+                    if _adapter is not None:
+                        orch._adapter = _adapter
+                except Exception:
+                    pass
             return orch
         except Exception as e:
             raise RuntimeError(f"Could not create Orchestrator: {e}") from e

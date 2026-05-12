@@ -19,12 +19,32 @@ from datetime import datetime
 logger = logging.getLogger(__name__)
 
 
+def _align_agent_working_dir(agent: Any, scenario_dir: Path) -> None:
+    """Point agent-backed runs at the scenario directory when supported."""
+    if not hasattr(agent, "working_dir"):
+        return
+    try:
+        current = getattr(agent, "working_dir")
+        aligned = scenario_dir if isinstance(current, Path) or current is None else str(scenario_dir)
+        setattr(agent, "working_dir", aligned)
+    except Exception:
+        return
+    try:
+        ensure_working_dir = getattr(agent, "_ensure_working_dir", None)
+        if callable(ensure_working_dir):
+            ensure_working_dir()
+    except Exception as exc:
+        logger.debug("scenario_evaluator: _ensure_working_dir failed: %s", exc)
+
+
 def _run_agent_for_scenario(agent: Any, scenario: "Scenario", scenario_dir: Path) -> None:
     """Execute one scenario against an agent-like object.
 
     Supports the existing direct-agent ``run(...)`` contract and the real
     ``Orchestrator.run_agent_once(...)`` path used by benchmarks.
     """
+    _align_agent_working_dir(agent, scenario_dir)
+
     if hasattr(agent, "run"):
         agent.run(scenario.task, working_dir=str(scenario_dir))
         return

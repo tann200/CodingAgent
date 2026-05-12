@@ -9,6 +9,8 @@ from collections import OrderedDict
 from datetime import date as _date
 from pathlib import Path
 
+logger = logging.getLogger(__name__)
+
 from src.core.memory.frozen_snapshot import get_memory_for_prompt
 from src.core.context.prompt_blocks import (
     build_repository_intelligence_block,
@@ -164,8 +166,8 @@ def _default_max_tokens() -> int:
     try:
         if _get_context_budget is not None:
             return _get_context_budget()
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("context_builder: _default_max_tokens failed: %s", exc)
     return 6000
 
 
@@ -492,6 +494,39 @@ class ContextBuilder:
         """
         return sanitize_prompt_text(text, get_context_dir_name=_get_ctx_name)
 
+    @staticmethod
+    def _normalize_tools_for_prompt(tools: List[Dict]) -> List[Dict]:
+        """Normalize tool schemas to the prompt-friendly shape.
+
+        Prompt rendering and cache-key generation expect tool dicts with top-level
+        ``name`` and ``description`` fields. Capable-loop callers may instead pass
+        OpenAI-style function schemas, so normalize them here at the prompt boundary.
+        """
+        normalized: List[Dict] = []
+        for tool in tools:
+            if not isinstance(tool, dict):
+                continue
+            if tool.get("name"):
+                normalized.append(tool)
+                continue
+            function_schema = tool.get("function")
+            if not isinstance(function_schema, dict):
+                normalized.append(tool)
+                continue
+            name = function_schema.get("name")
+            if not name:
+                normalized.append(tool)
+                continue
+            normalized.append(
+                {
+                    **tool,
+                    "name": name,
+                    "description": tool.get("description")
+                    or function_schema.get("description", ""),
+                }
+            )
+        return normalized
+
     # ------------------------------------------------------------------
     # S9-A: Cross-session memory injection
     # ------------------------------------------------------------------
@@ -522,10 +557,8 @@ class ContextBuilder:
             for r in results:
                 text = r.get("text") or r.get("content") or str(r)
                 lines.append(f"- {str(text)[:250]}")
-        except Exception:
-            pass
-
-        # 2. GAP-NEW-4: memory.md — notes saved with memory_save()
+        except Exception as exc:
+            logger.debug("context_builder: VectorStore memory retrieval failed: %s", exc)
         # Use frozen snapshot for system prompt stability (prompt caching)
         _mem_snapshot = get_memory_for_prompt()
         if _mem_snapshot:
@@ -639,13 +672,8 @@ class ContextBuilder:
             )
             if result.returncode == 0:
                 return result.stdout.strip()
-        except Exception:
-            pass
-        return ""
-
-    # ------------------------------------------------------------------
-    # _build_static_system_prefix helper methods
-    # ------------------------------------------------------------------
+        except Exception as exc:
+            logger.debug("context_builder: git branch detection failed: %s", exc)
 
     def _build_model_constraints_block(
         self, model_tier: Optional[str], tools: list
@@ -727,6 +755,8 @@ class ContextBuilder:
         _STATIC_PROMPT_CACHE keyed by a tuple of all inputs that affect it.
         The cache is cleared at each task boundary by clear_cache().
         """
+        tools = self._normalize_tools_for_prompt(tools)
+
         # P1-B: Prune tools to the tier limit FIRST so the cache key reflects the
         # actual rendered tool set (not the raw caller-supplied list).  This makes
         # the cache more efficient: two callers passing different-sized lists that
@@ -824,8 +854,8 @@ class ContextBuilder:
                     retrieved_snippets,
                     included_descriptors=_included,
                 )
-            except Exception:
-                pass  # never fail prompt build due to budget enforcement
+            except Exception as exc:
+                logger.debug("context_builder: snippet budget enforcement failed: %s", exc)  # never fail prompt build due to budget enforcement
 
         if not retrieved_snippets:
             return retrieved_snippets, ""
@@ -838,7 +868,8 @@ class ContextBuilder:
                 sanitize_text=self._sanitize_text,
             )
             return retrieved_snippets, repo_block or ""
-        except Exception:
+        except Exception as exc:
+            logger.debug("context_builder: repository context block failed: %s", exc)
             return retrieved_snippets, ""
 
     def _build_dynamic_prompt_parts(
@@ -877,8 +908,8 @@ class ContextBuilder:
                 )
                 if prior_context_block:
                     dynamic_parts.insert(0, prior_context_block)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("context_builder: prior session memory injection failed: %s", exc)
 
         _, repo_block = self._prepare_repository_context_block(
             retrieved_snippets=retrieved_snippets,
@@ -903,8 +934,8 @@ class ContextBuilder:
             _lsp_block = get_lsp_context_block(workdir=self._agent_context_dir.parent)
             if _lsp_block:
                 dynamic_parts.append(_lsp_block)
-        except Exception:
-            pass  # never fail prompt build due to LSP errors
+        except Exception as exc:
+            logger.debug("context_builder: LSP context block failed: %s", exc)  # never fail prompt build due to LSP errors
 
         return dynamic_parts
 
@@ -955,8 +986,8 @@ class ContextBuilder:
                     "working_dir": str(_ctx_dir.parent) if _ctx_dir else "",
                 },
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("context_builder: hook emit failed: %s", exc)
 
     def build_prompt(
         self,
@@ -1003,8 +1034,8 @@ class ContextBuilder:
                 if not _caps_local.get("provider_supports_parallel_tools", True):
                     _is_simple_mode = True
 
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("context_builder: simple_mode/tier check failed: %s", exc)
 
         use_native_tools = (
             not _is_simple_mode  # NANO never uses native tools

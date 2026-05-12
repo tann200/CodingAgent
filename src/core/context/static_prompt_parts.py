@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import logging
 import re
 from pathlib import Path
 from typing import Callable, Dict, List, Mapping, Optional, Sequence, Tuple
+
+logger = logging.getLogger(__name__)
 
 
 MODEL_ID_PARTIAL_MAP: List[Tuple[str, str]] = [
@@ -150,15 +153,16 @@ def build_model_constraints_block(
         if get_context_budget is not None:
             try:
                 context_tokens = get_context_budget(model_tier=tier_str)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("static_prompt_parts: get_context_budget failed: %s", exc)
         lines = [
             f"Tier: {tier_str.upper()} | Context: {context_tokens:,} tokens | Tools: {len(tools)} available",
             f"Max plan steps: {step_limit} | Output format: JSON function call (required, no YAML)",
             "Not available: parallel tool calls, subagent delegation, extended reasoning",
         ]
         return "<model_constraints>\n" + "\n".join(lines) + "\n</model_constraints>"
-    except Exception:
+    except Exception as exc:
+        logger.debug("static_prompt_parts: build_model_constraints_block failed: %s", exc)
         return ""
 
 
@@ -176,8 +180,8 @@ def build_instruction_files_block(
             instruction_block = render_instruction_files(instruction_files)
             if instruction_block:
                 return f"<project_instructions>\n{instruction_block}\n</project_instructions>"
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("static_prompt_parts: instruction files block failed: %s", exc)
     return ""
 
 
@@ -195,8 +199,8 @@ def build_project_instructions_block(
                 f"- {instruction}" for instruction in project_instructions
             )
             return f"<project_config_instructions>\n{instruction_block}\n</project_config_instructions>"
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("static_prompt_parts: project instructions block failed: %s", exc)
     return ""
 
 
@@ -263,8 +267,8 @@ def build_thinking_guidance_block(
             raise ImportError("thinking_utils unavailable")
         active_model = str(caps.get("model", ""))
         is_reasoning_model = bool(active_model and is_reasoning_model_fn(active_model))
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("static_prompt_parts: is_reasoning_model check failed: %s", exc)
     partial = select_prompt_partial_fn(model_tier, provider_capabilities, is_reasoning_model)
     if partial:
         return f"<model_guidance>\n{partial}\n</model_guidance>"
@@ -357,8 +361,8 @@ def build_static_system_parts(
             is_reasoning_model = bool(
                 active_model and is_reasoning_model_fn(active_model)
             )
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("static_prompt_parts: is_reasoning_model check (2) failed: %s", exc)
 
     thinking_mode = build_thinking_mode_block_fn(tier_str, is_reasoning_model)
     if thinking_mode:

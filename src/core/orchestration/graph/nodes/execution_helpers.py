@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from datetime import date
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 
@@ -442,12 +444,13 @@ async def generate_action_for_plan_step(
             **({"model": exec_model_override} if exec_model_override else {}),
         )
         if exec_llm_timeout:
-            resp = await __import__("asyncio").wait_for(
+            resp = await asyncio.wait_for(
                 call_coro, timeout=exec_llm_timeout
             )
         else:
             resp = await call_coro
-    except __import__("asyncio").TimeoutError:
+
+    except asyncio.TimeoutError:
         logger.warning(
             "execution_node: LLM call timed out after %ss",
             exec_llm_timeout,
@@ -1147,7 +1150,7 @@ def build_read_then_write_result(
     if status != "ok":
         return None
 
-    resolved = str((__import__("pathlib").Path(working_dir) / path_arg).resolve())
+    resolved = str((Path(working_dir) / path_arg).resolve())
     task = (state.get("task") or "").lower()
     modification_keywords = (
         "add ",
@@ -1168,6 +1171,13 @@ def build_read_then_write_result(
         "on top of ",
         "inside ",
         "contents of ",
+        "fix ",
+        "create ",
+        "write ",
+        "implement",
+        "correct",
+        "repair",
+        "patch",
     )
     task_implies_write = any(keyword in task for keyword in modification_keywords)
 

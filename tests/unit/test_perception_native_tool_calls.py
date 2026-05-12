@@ -8,6 +8,8 @@ These tests verify that perception_node correctly handles:
 
 import json
 
+from src.core.orchestration.graph.nodes.perception_parsing import _extract_message_obj
+
 
 def test_parse_native_tool_call_basic():
     """Test parsing basic native tool_call structure."""
@@ -228,3 +230,26 @@ def test_invalid_arguments_json_handled():
     assert tool_call is not None
     assert tool_call["name"] == "read_file"
     assert tool_call["arguments"] == {}
+
+
+def test_extract_message_obj_promotes_choice_level_tool_calls():
+    resp = {
+        "choices": [
+            {
+                "message": {"role": "assistant", "content": ""},
+                "tool_calls": [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "read_file",
+                            "arguments": '{"path":"main.py"}',
+                        },
+                    }
+                ],
+            }
+        ]
+    }
+
+    message_obj = _extract_message_obj(resp)
+
+    assert message_obj["tool_calls"][0]["function"]["name"] == "read_file"

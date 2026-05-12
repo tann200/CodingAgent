@@ -98,3 +98,30 @@ async def test_call_model_with_timeout_honors_streaming_flag(monkeypatch):
     )
 
     assert captured_kwargs.get("stream") is False
+
+
+@pytest.mark.asyncio
+async def test_call_model_with_timeout_forwards_tools():
+    from src.core.inference.llm_helpers import call_model_with_timeout
+
+    captured_kwargs = {}
+
+    async def _mock_call(messages, **kwargs):
+        captured_kwargs.update(kwargs)
+        return {"ok": True}
+
+    state = {"history": [], "rounds": 0, "session_id": "s4"}
+    tools = [{"type": "function", "function": {"name": "read_file"}}]
+
+    await call_model_with_timeout(
+        messages=[{"role": "user", "content": "test"}],
+        provider=None,
+        model="m",
+        state=state,
+        orchestrator=None,
+        llm_kwargs={},
+        tools=tools,
+        call_model_fn=_mock_call,
+    )
+
+    assert captured_kwargs.get("tools") == tools

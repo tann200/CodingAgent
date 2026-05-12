@@ -26,6 +26,7 @@ import functools
 import inspect
 import logging
 import threading
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import ContextVar
@@ -127,7 +128,7 @@ class AgentMessage:
     payload: Any
     priority: MessagePriority = MessagePriority.NORMAL
     reply_to: Optional[str] = None
-    timestamp: float = field(default_factory=lambda: __import__("time").time())
+    timestamp: float = field(default_factory=time.time)
 
 
 @dataclass
@@ -140,7 +141,7 @@ class DispatchEvent:
     parent_session_id: Optional[str] = None
     context: str = ""
     correlation_id: Optional[str] = None
-    timestamp: float = field(default_factory=lambda: __import__("time").time())
+    timestamp: float = field(default_factory=time.time)
 
 
 @dataclass
@@ -152,7 +153,7 @@ class DispatchResultEvent:
     parent_session_id: Optional[str] = None
     error: Optional[str] = None
     correlation_id: Optional[str] = None
-    timestamp: float = field(default_factory=lambda: __import__("time").time())
+    timestamp: float = field(default_factory=time.time)
 
 
 # Event names for dispatch (matching OpenClaw patterns)

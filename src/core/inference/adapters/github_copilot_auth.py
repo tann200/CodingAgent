@@ -142,9 +142,8 @@ def _auth_json_path() -> Path:
                 _logger.info("Migrated auth.json from %s to %s", old_path, new_path)
             except Exception as exc:  # pragma: no cover
                 _logger.warning("Could not migrate auth.json: %s", exc)
-    except Exception:
-        # Ignore migration errors; caller will handle missing file cases
-        pass
+    except Exception as exc:
+        _logger.debug("github_copilot_auth: _auth_json_path migration failed: %s", exc)
 
     return new_path
 
@@ -646,8 +645,8 @@ def load_enterprise_url() -> Optional[str]:
         entry = data.get(_PROVIDER_KEY)
         if entry and isinstance(entry, dict):
             return entry.get("enterpriseUrl") or None
-    except Exception:
-        pass
+    except Exception as exc:
+        _logger.debug("github_copilot_auth: get_enterprise_url failed: %s", exc)
     return None
 
 
