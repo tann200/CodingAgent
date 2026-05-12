@@ -12,7 +12,7 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from src.core.orchestration.event_bus import EventBus
+from src.core.orchestration.event_bus import EventBus, subscribe_stderr_fallback
 from src.core.orchestration.work_summary import _generate_work_summary
 from src.core.orchestration.tool_result_formatter import TOOL_RESULT_FORMATTERS
 from src.core.orchestration.tool_constants import (
@@ -145,6 +145,9 @@ class Orchestrator:
             pass
         # TUI-01: accept an externally-created EventBus (e.g. from AgentBridge)
         self.event_bus = event_bus if event_bus is not None else EventBus()
+        # P2-T5: register stderr fallback for safety events so they are always
+        # visible in headless/CLI mode (sandbox degradation, doom-loop detection).
+        subscribe_stderr_fallback(self.event_bus)
         # Set working_dir and _allow_external now so bootstrap can use them
         self.working_dir = Path(working_dir) if working_dir else None
         self._allow_external = allow_external_working_dir  # boolified in bootstrap

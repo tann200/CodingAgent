@@ -1,0 +1,20 @@
+{
+  "timestamp": "2026-05-11T23:30:24.293820",
+  "summary": {
+    "total": 1,
+    "passed": 0,
+    "failed": 1,
+    "errors": 0,
+    "pass_rate": 0.0,
+    "total_duration_seconds": 5.83
+  },
+  "results": [
+    {
+      "scenario_name": "fix_syntax_error",
+      "status": "fail",
+      "duration_seconds": 5.83,
+      "error": null,
+      "verification_output": "Test command failed: Traceback (most recent call last):\n  File \"<string>\", line 1, in <module>\n  File \"/private/var/folders/sz/w8v_f91d32g6syq1pdmp176m0000gn/T/benchmark_fix_syntax_error_plpwuxry/fix_syntax_error/buggy.py\", line 1\n    def add(a, b)\n                 ^\nSyntaxError: expected ':'\n"
+    }
+  ]
+}

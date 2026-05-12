@@ -55,6 +55,51 @@ _BASH_STDERR_MAX = 6_000  # raised from 2 KB — Python tracebacks routinely exc
 _BASH_STDOUT_MAX_TOKENS = 2_000  # ~8 KB of typical code at 1 tok ≈ 4 chars
 _BASH_STDERR_MAX_TOKENS = 600  # enough for a full Python traceback
 
+# P2-T3: explicit denylist of commands that are unsafe regardless of flags.
+# These supplement _DESTRUCTIVE_CMD_PATTERNS which checks flag-level restrictions.
+# Operators can extend this list via agent_config.yaml bash_tool.command_denylist_extras.
+_COMMAND_DENYLIST: frozenset = frozenset(
+    {
+        "nc",
+        "ncat",
+        "netcat",
+        "telnet",
+        "ftp",
+        "sftp",
+        "scp",
+        "rsync",  # network exfiltration vectors (no-flag block)
+        "mkfs",
+        "fdisk",
+        "parted",  # disk destruction
+        "shutdown",
+        "reboot",
+        "halt",
+        "poweroff",  # system control
+        "crontab",  # persistence
+    }
+)
+
+
+def _check_command_denylist(cmd: str) -> Optional[str]:
+    """Return an error string if the first token of *cmd* is in _COMMAND_DENYLIST.
+
+    Strips leading path components so ``/usr/bin/nc`` is treated as ``nc``.
+    """
+    try:
+        tokens = shlex.split(cmd)
+    except ValueError:
+        return None  # malformed shell — let sandbox handle it
+    if not tokens:
+        return None
+    binary = Path(tokens[0]).name  # /usr/bin/curl → curl
+    if binary in _COMMAND_DENYLIST:
+        return (
+            f"Command '{binary}' is blocked by the CodingAgent tool policy. "
+            "If this command is required, add it to the command_denylist_extras "
+            "allowlist_override in agent_config.yaml."
+        )
+    return None
+
 
 # Destructive-command patterns checked by _check_shell_flags()
 # (distinct from DANGEROUS_PATTERNS which checks shell metacharacters)
@@ -288,6 +333,12 @@ def bash(
     _flag_err = _check_shell_flags(cmd_parts, first_cmd)
     if _flag_err is not None:
         return _flag_err
+
+    # Gate 4c: P2-T3 explicit command denylist — blocks unconditionally dangerous
+    # commands regardless of flags (e.g. nc, telnet, crontab).
+    _deny_err = _check_command_denylist(command)
+    if _deny_err is not None:
+        return {"status": "error", "error": _deny_err}
 
     # Gate 4b: Git subcommand allowlist — only read-only git operations are
     # auto-allowed.  Write operations (commit, push, reset, rm, …) require

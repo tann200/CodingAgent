@@ -1,5 +1,6 @@
 from langchain_core.runnables import RunnableConfig
 import asyncio
+import json
 import logging
 import re
 from pathlib import Path
@@ -44,6 +45,7 @@ from src.core.orchestration.graph.nodes.execution_helpers import (
     sync_execution_state_to_orchestrator,
     sync_tool_result_to_ui,
     update_tool_tracking,
+    _validate_python_syntax,
 )
 from src.core.orchestration.loop_guards import (
     check_read_before_write,
@@ -320,6 +322,23 @@ async def _execution_node_impl(state: Mapping[str, Any], config: RunnableConfig)
     )
     if _rbw_err:
         return _rbw_err
+
+    # P2-T2: Python syntax gate — reject write_file calls that would produce
+    # syntactically invalid .py files before the write reaches the filesystem.
+    # Runs after the read-before-write check so RBW errors take precedence.
+    if tool_name == "write_file" and path_arg:
+        _py_content = args.get("content", "")
+        _syntax_err = _validate_python_syntax(_py_content, path_arg)
+        if _syntax_err:
+            _syntax_err_payload = json.dumps(
+                {"tool_execution_result": {"ok": False, "error": _syntax_err}}
+            )
+            return {
+                "last_result": {"ok": False, "error": _syntax_err},
+                "history": list(state.get("history", []))
+                + [{"role": "user", "content": _syntax_err_payload}],
+                "next_action": None,
+            }
 
     # ORCH-02: cooldown guard delegated to loop_guards.check_cooldown()
     _cooldown_err = check_cooldown(tool_name, args, state)

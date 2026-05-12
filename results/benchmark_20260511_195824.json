@@ -1,0 +1,20 @@
+{
+  "timestamp": "2026-05-11T19:58:24.061905",
+  "summary": {
+    "total": 1,
+    "passed": 0,
+    "failed": 1,
+    "errors": 0,
+    "pass_rate": 0.0,
+    "total_duration_seconds": 4.96
+  },
+  "results": [
+    {
+      "scenario_name": "hello_world_function",
+      "status": "fail",
+      "duration_seconds": 4.96,
+      "error": null,
+      "verification_output": "Expected file not found: greet.py"
+    }
+  ]
+}

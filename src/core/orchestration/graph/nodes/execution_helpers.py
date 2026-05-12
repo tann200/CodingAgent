@@ -1,11 +1,31 @@
 from __future__ import annotations
 
+import ast as _ast
 import asyncio
 import json
 import re
 from datetime import date
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
+
+
+def _validate_python_syntax(content: str, path_hint: str = "") -> Optional[str]:
+    """Return an error string if *content* is not valid Python, else None.
+
+    Only applies to .py files. Non-Python content always returns None.
+    Called before committing a write_file result to prevent the agent from
+    writing files that would immediately cause import/syntax errors.
+    """
+    if not path_hint.endswith(".py"):
+        return None
+    try:
+        _ast.parse(content)
+        return None
+    except SyntaxError as exc:
+        return (
+            f"Syntax error in generated Python for '{path_hint}': "
+            f"{exc.msg} (line {exc.lineno})"
+        )
 
 
 def extract_tool_call_from_response(

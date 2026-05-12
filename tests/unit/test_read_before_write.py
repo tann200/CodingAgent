@@ -114,7 +114,7 @@ class TestReadBeforeWriteEnforcement:
             working_dir=str(tmp_path),
             next_action={
                 "name": "write_file",
-                "arguments": {"path": "new_file.py", "content": "new content"},
+                "arguments": {"path": "new_file.py", "content": "x = 1\n"},
             },
             verified_reads=[],  # No prior read
             files_read={},  # No file read tracking

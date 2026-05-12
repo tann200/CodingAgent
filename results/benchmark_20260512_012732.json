@@ -1,0 +1,27 @@
+{
+  "timestamp": "2026-05-12T01:27:32.489245",
+  "summary": {
+    "total": 2,
+    "passed": 1,
+    "failed": 1,
+    "errors": 0,
+    "pass_rate": 0.5,
+    "total_duration_seconds": 306.52
+  },
+  "results": [
+    {
+      "scenario_name": "create_cli_tool",
+      "status": "fail",
+      "duration_seconds": 187.82,
+      "error": null,
+      "verification_output": "Test command failed: An error occurred while reading the file: I/O operation on closed file.\n"
+    },
+    {
+      "scenario_name": "write_file_processor",
+      "status": "pass",
+      "duration_seconds": 118.7,
+      "error": null,
+      "verification_output": ""
+    }
+  ]
+}

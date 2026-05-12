@@ -118,6 +118,30 @@ def _prepare_next_round_state(
 
     _prev_working_dir = current_state.get("working_dir")
     _prev_system_prompt = current_state.get("system_prompt")
+
+    # P2-T4: context-budget compaction — if history is large, compact it via
+    # distiller to prevent unbounded context growth across rounds.
+    # Threshold: ~6 000 tokens (≈ 24 KB) estimated by the distiller helper.
+    _HISTORY_TOKEN_THRESHOLD = 6000
+    try:
+        from src.core.memory.distiller import (  # noqa: PLC0415
+            compact_messages_to_prose as _compact,
+            _estimate_tokens as _est,
+        )
+
+        _token_est = _est(_next_history)
+        if _token_est > _HISTORY_TOKEN_THRESHOLD:
+            _wdir = _prev_working_dir or final_state.get("working_dir") or ""
+            _prose = _compact(_next_history, _wdir)
+            if _prose:
+                # Replace history with a single summary message, keeping the
+                # most recent messages intact (distiller handles _KEEP_RECENT internally).
+                _next_history = [{"role": "user", "content": f"[Context summary]\n{_prose}"}]
+    except Exception as _compact_exc:
+        guilogger.debug(
+            "_prepare_next_round_state: compaction failed (non-fatal): %s", _compact_exc
+        )
+
     return {
         **final_state,
         "history": _next_history,

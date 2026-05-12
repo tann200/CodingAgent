@@ -404,3 +404,30 @@ def get_event_bus() -> EventBus:
             if _default_bus is None:  # double-checked lock
                 _default_bus = EventBus()
     return _default_bus
+
+
+# P2-T5: safety events that must always be visible, even in headless/CLI mode.
+_SAFETY_EVENTS: frozenset = frozenset(
+    {"system.warning", "tool.doom_loop_detected", "system.error"}
+)
+
+
+def subscribe_stderr_fallback(event_bus: "EventBus") -> None:
+    """Register a stderr fallback subscriber for safety events.
+
+    Call from Orchestrator.__init__ or the CLI entry point so headless runs
+    always surface sandbox-degradation and doom-loop warnings even when no
+    TUI subscriber is active.
+
+    Note: when a TUI IS active it will have its own subscriber; this fallback
+    will ALSO fire, resulting in duplicate output (once in the TUI, once to
+    stderr).  This is intentional — safety warnings should never be silent.
+    """
+    import sys as _sys
+
+    def _stderr_handler(payload: Any) -> None:
+        msg = payload.get("message") if isinstance(payload, dict) else str(payload)
+        print(f"[CodingAgent WARNING] {msg}", file=_sys.stderr, flush=True)
+
+    for ev in _SAFETY_EVENTS:
+        event_bus.subscribe(ev, _stderr_handler)
