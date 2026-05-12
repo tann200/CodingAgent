@@ -39,6 +39,27 @@ TYPE_GUIDANCE = {
     "unknown_error": "Analyze the error carefully and generate a targeted fix.",
 }
 
+# P3-T2: strategy escalation — each attempt uses a progressively broader approach.
+# Index 0 = first attempt (targeted), 1 = second (read-first), 2+ = broad analysis.
+_STRATEGY_ESCALATION = [
+    # attempt 0: targeted fix based on error type
+    lambda error_type, error_summary: (
+        f"Guidance: {TYPE_GUIDANCE.get(error_type, TYPE_GUIDANCE['unknown_error'])}\n"
+        "Generate a minimal, targeted fix using edit_file or write_file."
+    ),
+    # attempt 1: read full file first, then fix
+    lambda error_type, error_summary: (
+        "Strategy: Before fixing, use read_file to inspect the full file content. "
+        "Then generate a complete, correct replacement of the problematic section."
+    ),
+    # attempt 2+: broad root-cause analysis
+    lambda error_type, error_summary: (
+        "Strategy: The previous two fix attempts failed. "
+        "Use bash to run the failing command and capture full output. "
+        "Then apply a fix that addresses the root cause, not just the symptom."
+    ),
+]
+
 
 async def debug_node(state: StateLike, config: RunnableConfig) -> Dict[str, Any]:
     """
@@ -157,13 +178,17 @@ async def debug_node(state: StateLike, config: RunnableConfig) -> Dict[str, Any]
     except Exception:
         pass  # never block execution
 
+    # P3-T2: select strategy based on current attempt number (escalates on each retry)
+    _strategy_idx = min(current_attempt, len(_STRATEGY_ESCALATION) - 1)
+    _strategy = _STRATEGY_ESCALATION[_strategy_idx](error_type, error_summary)
+
     fix_prompt = f"""You are a debugging assistant. Attempt {next_attempt}/{max_attempts}.
 
 Task: {task}
 Error type: {error_type}
 Error details: {error_summary}
 
-Guidance: {TYPE_GUIDANCE[error_type]}
+{_strategy}
 
 Generate a JSON function call to fix the issue. Use edit_file, write_file, or bash as appropriate."""
 

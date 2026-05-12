@@ -535,6 +535,44 @@ def get_symbols_for_task(
         return []
 
 
+def refresh_file_in_index(file_path: str, working_dir: str) -> bool:
+    """Re-parse a single file and update its entry in the on-disk index.
+
+    P3-T3: Call this after any write_file / edit_file tool completes successfully
+    so the in-process symbol index stays consistent with the filesystem.
+    Returns True if the index was updated, False on any error (non-fatal).
+    """
+    try:
+        p = Path(file_path)
+        if not p.is_absolute():
+            p = Path(working_dir) / file_path
+        p = p.resolve()
+        if not p.exists():
+            return False
+        parsed = parse_file(p)
+        if not parsed:
+            return False
+        # Load existing index, update the file entry, save atomically.
+        ctx_dir = Path(working_dir) / _get_ctx_dir_name()
+        index_path = ctx_dir / "repo_index.json"
+        if not index_path.exists():
+            return False
+        data = json.loads(index_path.read_text(encoding="utf-8"))
+        try:
+            rel = str(p.relative_to(Path(working_dir).resolve()))
+        except ValueError:
+            rel = str(p)
+        data.setdefault("files", {})[rel] = parsed
+        if _atomic_write_json is not None:
+            return bool(_atomic_write_json(index_path, data))
+        # Fallback: plain write (no atomicity guarantee)
+        index_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        return True
+    except Exception as exc:
+        logger.debug("repo_indexer.refresh_file_in_index: %s", exc)
+        return False
+
+
 if __name__ == "__main__":
     # Example usage
     # Replace '.' with your repository path

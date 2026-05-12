@@ -86,8 +86,21 @@ def should_after_planning(
 
 def should_after_step_controller(
     state: Mapping[str, Any],
-) -> Literal["execution", "verification"]:
-    """Decide whether the next planned step should execute or verify."""
+) -> Literal["execution", "verification", "planning", "end"]:
+    """Decide the next node after step_controller.
+
+    P3-T1: Extended to cover all routing cases:
+    - cancel or plan exhausted → "end"
+    - no plan yet              → "planning"
+    - step pending / retry     → "execution"
+    - step completed           → "verification"
+    """
+    # Cancellation takes highest priority
+    cancel_event = state.get("cancel_event")
+    if cancel_event and hasattr(cancel_event, "is_set") and cancel_event.is_set():
+        logger.info("should_after_step_controller: canceled, routing to end")
+        return "end"
+
     current_plan = state.get("current_plan") or []
     current_step = int(state.get("current_step") or 0)
     last_result = state.get("last_result")
@@ -96,29 +109,39 @@ def should_after_step_controller(
         f"should_after_step_controller: current_step={current_step}, plan_len={len(current_plan)}, last_result={last_result}"
     )
 
-    if current_plan and current_step < len(current_plan):
-        if last_result and isinstance(last_result, dict):
-            if last_result.get("ok"):
-                logger.info(
-                    f"should_after_step_controller: advancing to step {current_step + 1}/{len(current_plan)}, going to execution"
-                )
-                return "execution"
+    # No plan → go generate one
+    if not current_plan:
+        logger.info("should_after_step_controller: no plan, routing to planning")
+        return "planning"
 
-            max_step_retries = 3
-            step_retry_counts: dict = state.get("step_retry_counts") or {}
-            retries = int(step_retry_counts.get(str(current_step), 0))
-            if retries >= max_step_retries:
-                logger.warning(
-                    f"should_after_step_controller: step {current_step + 1} retry budget ({max_step_retries}) exhausted, routing to verification (will trigger debug via evaluation)"
-                )
-                return "verification"
+    # Plan exhausted → go to verification / wrap-up
+    if current_step >= len(current_plan):
+        logger.info(
+            "should_after_step_controller: plan exhausted (%d/%d), routing to end",
+            current_step,
+            len(current_plan),
+        )
+        return "end"
+
+    if last_result and isinstance(last_result, dict):
+        if last_result.get("ok"):
             logger.info(
-                f"should_after_step_controller: step {current_step + 1} execution failed (retry {retries}/{max_step_retries}), going to execution"
+                f"should_after_step_controller: advancing to step {current_step + 1}/{len(current_plan)}, going to execution"
             )
             return "execution"
 
-        logger.info("should_after_step_controller: no last_result, going to execution")
+        max_step_retries = 3
+        step_retry_counts: dict = state.get("step_retry_counts") or {}
+        retries = int(step_retry_counts.get(str(current_step), 0))
+        if retries >= max_step_retries:
+            logger.warning(
+                f"should_after_step_controller: step {current_step + 1} retry budget ({max_step_retries}) exhausted, routing to verification"
+            )
+            return "verification"
+        logger.info(
+            f"should_after_step_controller: step {current_step + 1} execution failed (retry {retries}/{max_step_retries}), going to execution"
+        )
         return "execution"
 
-    logger.info("should_after_step_controller: no pending steps, going to verification")
-    return "verification"
+    logger.info("should_after_step_controller: no last_result, going to execution")
+    return "execution"

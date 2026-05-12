@@ -228,11 +228,18 @@ def compile_agent_graph():
         },
     )
 
-    # Step controller -> execution or verification
+    # Step controller -> execution, verification, planning, or end
+    # P3-T1: extended routing handles plan-exhausted (end), no-plan (planning),
+    # and cancellation (end) in addition to the normal execution/verification paths.
     workflow.add_conditional_edges(
         "step_controller",
         should_after_step_controller,
-        {"execution": "execution", "verification": "verification"},
+        {
+            "execution": "execution",
+            "verification": "verification",
+            "planning": "planning",
+            "end": END,
+        },
     )
 
     # After verification, go to evaluation for overall state review
