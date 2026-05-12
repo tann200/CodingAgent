@@ -1340,3 +1340,34 @@ def build_execution_return_payload(
         **dict(affected_files_update),
         **dict(plan_exit_update),
     }
+
+
+# ---------------------------------------------------------------------------
+# P3-T5: Snapshot capture for task rollback
+# ---------------------------------------------------------------------------
+
+def _capture_snapshot(path: str, working_dir: str) -> Optional[str]:
+    """Read the current content of *path* and save it to the snapshot dir.
+
+    Must be called **before** a write_file / edit_file tool result is committed
+    so that the pre-write content is preserved for rollback by debug_node.
+
+    Returns the absolute snapshot file path on success, ``None`` on any error
+    (non-fatal — snapshot loss is acceptable over crashing execution).
+    """
+    import hashlib
+    import time
+
+    try:
+        p = (Path(working_dir) / path).resolve()
+        if not p.exists():
+            return None
+        snap_dir = Path(working_dir) / ".codingAgent" / "snapshots"
+        snap_dir.mkdir(parents=True, exist_ok=True)
+        ts = int(time.time() * 1000)
+        slug = hashlib.md5(str(p).encode()).hexdigest()[:8]
+        snap_path = snap_dir / f"{slug}_{ts}{p.suffix}"
+        snap_path.write_bytes(p.read_bytes())
+        return str(snap_path)
+    except Exception:
+        return None

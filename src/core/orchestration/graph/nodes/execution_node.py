@@ -4,7 +4,7 @@ import json
 import logging
 import re
 from pathlib import Path
-from typing import Mapping, Dict, Any
+from typing import Mapping, Dict, Any, Optional
 
 from src.core.orchestration.graph.state import StateLike, validate_state
 from src.core.context.context_builder import ContextBuilder
@@ -46,6 +46,7 @@ from src.core.orchestration.graph.nodes.execution_helpers import (
     sync_tool_result_to_ui,
     update_tool_tracking,
     _validate_python_syntax,
+    _capture_snapshot,
 )
 from src.core.orchestration.loop_guards import (
     check_read_before_write,
@@ -402,6 +403,18 @@ async def _execution_node_impl(state: Mapping[str, Any], config: RunnableConfig)
         now_monotonic=_time_mod.monotonic(),
     )
 
+    # P3-T5: Capture pre-write snapshot before the tool modifies the file
+    _pre_write_snapshot: Optional[str] = None
+    if tool_name in _FILE_WRITING_TOOLS:
+        _snap_path_arg = args.get("path") or args.get("file_path") or args.get("filename")
+        _snap_working_dir = (
+            orchestrator.working_dir
+            if orchestrator and hasattr(orchestrator, "working_dir")
+            else None
+        )
+        if _snap_path_arg and _snap_working_dir:
+            _pre_write_snapshot = _capture_snapshot(_snap_path_arg, _snap_working_dir)
+
     try:
         res = await dispatch_execution_tool(
             state=state,
@@ -581,4 +594,9 @@ async def _execution_node_impl(state: Mapping[str, Any], config: RunnableConfig)
         no_plan_fail_update=post_tool_updates["no_plan_fail_update"],
         affected_files_update=post_tool_updates["affected_files_update"],
         plan_exit_update=post_tool_updates["plan_exit_update"],
+    ) | (
+        # P3-T5: append pre-write snapshot path to state["snapshots"]
+        {"snapshots": (list(state.get("snapshots") or [])) + [_pre_write_snapshot]}
+        if _pre_write_snapshot
+        else {}
     )
