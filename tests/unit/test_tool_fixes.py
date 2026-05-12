@@ -176,7 +176,9 @@ class TestEditFileAtomic:
         assert "not found" in res["error"].lower()
 
     def test_ambiguous_match_returns_error(self, tmp_path):
+        from src.tools.guardrails import mark_file_read
         write_file("f.py", "x = 1\nx = 1\n", workdir=tmp_path)
+        mark_file_read(str((tmp_path / "f.py").resolve()))
         res = edit_file_atomic("f.py", "x = 1", "x = 2", workdir=tmp_path)
         assert res["status"] == "error"
         assert "2 times" in res["error"] or "twice" in res["error"] or "2" in res["error"]

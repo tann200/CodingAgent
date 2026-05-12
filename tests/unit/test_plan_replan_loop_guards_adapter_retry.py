@@ -306,12 +306,9 @@ class TestOrchestratorPlanEnforceWarningsInitialState:
         The correct default is False: warnings are advisory only; the plan_attempts guard
         remains as a backstop but is rarely needed.
         """
-        src_path = Path(
-            "/Users/tann200/PycharmProjects/CodingAgent/src/core/orchestration/orchestrator.py"
-        )
-        il_path = Path(
-            "/Users/tann200/PycharmProjects/CodingAgent/src/core/orchestration/inference_loop.py"
-        )
+        _repo_root = Path(__file__).parent.parent.parent
+        src_path = _repo_root / "src/core/orchestration/orchestrator.py"
+        il_path = _repo_root / "src/core/orchestration/inference_loop.py"
         source = src_path.read_text() + il_path.read_text()
         assert '"plan_enforce_warnings": False' in source, (
             "plan_enforce_warnings must be False in orchestrator initial_state "
@@ -332,9 +329,7 @@ class TestSettingsPanelAtomicProvidersJsonWrite:
         # (src/ui/ was retired; the settings controller was extracted there).
         src_path = Path("src/core/settings/controller.py")
         if not src_path.exists():
-            src_path = Path(
-                "/Users/tann200/PycharmProjects/CodingAgent/src/core/settings/controller.py"
-            )
+            src_path = Path(__file__).parent.parent.parent / "src/core/settings/controller.py"
         source = src_path.read_text()
         # The new code should use os.replace; old cfg_path.write_text should be gone from the write path
         # (it may still appear in read path or elsewhere — check it's not in the write block)
