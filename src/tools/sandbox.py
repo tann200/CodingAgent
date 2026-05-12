@@ -333,6 +333,13 @@ def run_sandboxed(
 
     # 4. Final fallback — plain subprocess with warning
     if level != "off":
+        import sys as _sys
+
+        _warn = (
+            "WARNING: sandbox: bwrap and sandbox-exec are unavailable — "
+            "running command WITHOUT sandboxing. Set SANDBOX_LEVEL=off to suppress.\n"
+        )
+        _sys.stderr.write(_warn)
         logger.debug(
             "sandbox: bwrap and sandbox-exec unavailable — falling back to unsandboxed execution"
         )

@@ -244,7 +244,14 @@ def run_agent_once_impl(
             # Allow multiple graph rounds to consume multi-turn tool sequences (bounded)
             # F-71: single named constant; guard below uses >= so it fires at exactly
             # MAX_TOOL_LOOP_ITERATIONS, not one beyond it.
-            MAX_TOOL_LOOP_ITERATIONS: int = 5
+            # P1-T3: read from config key "max_graph_rounds" (default 20) so operators
+            # can tune the limit without touching source code.
+            _configured_rounds = (
+                int(_cfg_get("max_graph_rounds", 20))
+                if _cfg_get is not None
+                else 20
+            )
+            MAX_TOOL_LOOP_ITERATIONS: int = _configured_rounds
             max_rounds = MAX_TOOL_LOOP_ITERATIONS
             current_state = initial_state
 
@@ -309,6 +316,17 @@ def run_agent_once_impl(
                     final_state["errors"] = list(final_state.get("errors", [])) + [
                         "infinite_loop_tool_limit"
                     ]
+                    # P1-T5: surface the limit to the user as an assistant message so
+                    # they know why the task stopped rather than seeing a silent abort.
+                    _limit_msg = (
+                        f"Task stopped: the tool-call loop limit ({MAX_TOOL_LOOP_ITERATIONS} rounds) "
+                        "has been reached. This usually means the agent is stuck in a repeated "
+                        "tool-call cycle. Please review the conversation and start a new task."
+                    )
+                    _history = list(final_state.get("history", []))
+                    _history.append({"role": "assistant", "content": _limit_msg})
+                    final_state["history"] = _history
+                    final_state["assistant_message"] = _limit_msg
                     break
 
                 # Track last assistant message for no-progress detection

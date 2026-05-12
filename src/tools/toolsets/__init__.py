@@ -1,2 +1,4 @@
 # Toolset YAML files and loader live here.
-# Import the loader directly: from src.tools.toolsets.loader import ToolsetManager
+# Canonical implementation: src.config.toolsets.loader
+# Legacy shim (backward compat): src.tools.toolsets.loader
+# Prefer importing from src.config.toolsets.loader directly.
