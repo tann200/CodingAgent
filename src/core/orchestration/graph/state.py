@@ -46,108 +46,136 @@ def replace_state_list(items: list[Any] | None) -> ReplaceList:
 
 
 class _AgentStateSpec(TypedDict, total=False):
-    """
-    Represents the shared state of the LangGraph cognitive pipeline.
+    """Shared state of the LangGraph cognitive pipeline.
+
+    Fields are organized into logical sections with section-comment headers
+    (P4-T5). LangGraph requires a flat TypedDict — nested sub-states are NOT
+    used as they break the reducer. Section comments are documentation only.
     """
 
+    # ── Core task ──────────────────────────────────────────────────────────
     task: str
-    history: Annotated[List[Dict[str, Any]], merge_or_replace_list]
-    verified_reads: Annotated[List[str], merge_or_replace_list]
-    next_action: Dict[str, Any] | None
-    last_result: Dict[str, Any] | None
-    rounds: int
+    original_task: str | None
     working_dir: str
     system_prompt: str
-    errors: List[str]
     session_id: str | None
-    delegation_results: Dict[str, Any] | None
-    current_plan: List[Dict[str, Any]] | None
-    current_step: int | None
+    parent_session_id: str | None
+    turn_count: int | None
+    max_turns: int | None
+    rounds: int
+    agent_mode: str | None
+    model_tier: str | None
     deterministic: bool | None
     seed: int | None
-    analysis_summary: str | None
-    relevant_files: List[str] | None
-    key_symbols: List[str] | None
-    analyst_findings: str | None
-    plan_resumed: bool | None
-    delegations: List[Dict[str, Any]] | None
-    delegation_depth: int | None
-    debug_attempts: int | None
-    max_debug_attempts: int | None
-    total_debug_attempts: int | None
-    last_debug_error_type: str | None
-    verification_passed: bool | None
-    verification_result: Dict[str, Any] | None
-    step_controller_enabled: bool | None
-    task_decomposed: bool | None
-    tool_call_count: int | None
-    max_tool_calls: int | None
-    last_tool_name: str | None
-    repo_summary_data: str | None
-    replan_required: str | None
-    action_failed: bool | None
-    plan_progress: Dict[str, Any] | None
-    evaluation_result: str | None
-    cancel_event: Any | None
-    empty_response_count: int | None
-    original_task: str | None
+
+    # ── Conversation history ───────────────────────────────────────────────
+    history: Annotated[List[Dict[str, Any]], merge_or_replace_list]
+    verified_reads: Annotated[List[str], merge_or_replace_list]
+    task_history: List[Dict[str, Any]] | None
+    recent_tool_calls: List[str] | None
+    errors: List[str]
+
+    # ── Plan & step ────────────────────────────────────────────────────────
+    current_plan: List[Dict[str, Any]] | None
+    current_step: int | None
     step_description: str | None
     planned_action: Dict[str, Any] | None
-    plan_validation: Dict[str, Any] | None
-    plan_enforce_warnings: bool | None
-    plan_strict_mode: bool | None
-    task_history: List[Dict[str, Any]] | None
-    step_retry_counts: Dict[str, int] | None
-    no_plan_fail_count: int | None
-    tool_last_used: Dict[str, int] | None
-    files_read: Dict[str, bool] | None
+    plan_progress: Dict[str, Any] | None
     plan_dag: Dict[str, Any] | None
     execution_waves: List[List[str]] | None
     current_wave: int | None
-    pending_preview_id: str | None
-    preview_mode_enabled: bool | None
-    awaiting_user_input: bool | None
-    preview_confirmed: bool | None
-    _should_distill: bool | None
-    _force_compact: bool | None
-    _budget_compaction: bool | None
-    _p2p_context: List[Dict[str, Any]] | None
+    plan_attempts: int | None
+    replan_attempts: int | None
+    replan_required: str | None
+    plan_resumed: bool | None
+    last_plan_hash: str | None
+    task_decomposed: bool | None
+    task_complexity: str | None
+    step_retry_counts: Dict[str, int] | None
+    no_plan_fail_count: int | None
+    step_lint_warnings: List[str] | None
+    affected_files: List[str] | None
+
+    # ── Plan approval / preview ────────────────────────────────────────────
+    plan_validation: Dict[str, Any] | None
+    plan_enforce_warnings: bool | None
+    plan_strict_mode: bool | None
     plan_mode_enabled: bool | None
     awaiting_plan_approval: bool | None
     plan_mode_approved: bool | None
     plan_mode_blocked_tool: str | None
+    pending_preview_id: str | None
+    preview_mode_enabled: bool | None
+    preview_confirmed: bool | None
+    awaiting_user_input: bool | None
+
+    # ── Tool execution ─────────────────────────────────────────────────────
+    next_action: Dict[str, Any] | None
+    last_result: Dict[str, Any] | None
+    last_tool_name: str | None
+    action_failed: bool | None
+    tool_call_count: int | None
+    max_tool_calls: int | None
+    tool_last_used: Dict[str, int] | None
+    files_read: Dict[str, bool] | None
+    snapshots: List[str] | None
+
+    # ── Debug & recovery ───────────────────────────────────────────────────
+    debug_attempts: int | None
+    max_debug_attempts: int | None
+    total_debug_attempts: int | None
+    last_debug_error_type: str | None
+    total_recovery_attempts: int | None
+    last_error_code: str | None
     needs_clarification: bool | None
+
+    # ── Verification ───────────────────────────────────────────────────────
+    verification_passed: bool | None
+    verification_result: Dict[str, Any] | None
+    evaluation_result: str | None
+    evaluation_llm_verdict: str | None
+    evaluation_llm_reason: str | None
+
+    # ── Analysis & context ─────────────────────────────────────────────────
+    analysis_summary: str | None
+    relevant_files: List[str] | None
+    key_symbols: List[str] | None
+    analyst_findings: str | None
+    repo_summary_data: str | None
+    call_graph: Dict[str, Any] | None
+    test_map: Dict[str, Any] | None
+    step_controller_enabled: bool | None
+    empty_response_count: int | None
+
+    # ── Delegation ─────────────────────────────────────────────────────────
+    delegation_results: Dict[str, Any] | None
+    delegations: List[Dict[str, Any]] | None
+    delegation_depth: int | None
+
+    # ── Memory / distillation ──────────────────────────────────────────────
+    _should_distill: bool | None
+    _force_compact: bool | None
+    _budget_compaction: bool | None
+    _compacted_history: List[Dict[str, Any]] | None
+    _compaction_last_round: int | None
+    last_compact_at: Any | None
+    last_compact_turn: int | None
+    context_degradation_detected: bool | None
+
+    # ── Cost & telemetry ───────────────────────────────────────────────────
+    session_cost_usd: float | None
+
+    # ── Internal / private ─────────────────────────────────────────────────
+    _p2p_context: List[Dict[str, Any]] | None
     _file_lock_manager: Any | None
     _write_queue: List[Dict[str, Any]] | None
     _agent_session_manager: Any | None
     _agent_messages: List[Dict[str, Any]] | None
     _context_controller: Any | None
-    last_compact_at: Any | None
-    last_compact_turn: int | None
-    context_degradation_detected: bool | None
-    plan_attempts: int | None
-    replan_attempts: int | None
-    total_recovery_attempts: int | None
-    call_graph: Dict[str, Any] | None
-    test_map: Dict[str, Any] | None
-    turn_count: int | None
-    max_turns: int | None
-    recent_tool_calls: List[str] | None
-    model_tier: str | None
-    session_cost_usd: float | None
-    snapshots: List[str] | None
-    agent_mode: str | None
-    parent_session_id: str | None
-    affected_files: List[str] | None
-    task_complexity: str | None
-    step_lint_warnings: List[str] | None
-    evaluation_llm_verdict: str | None
-    evaluation_llm_reason: str | None
-    _compacted_history: List[Dict[str, Any]] | None
-    _compaction_last_round: int | None
-    last_plan_hash: str | None
     _pending_injections_source: Any | None
-    last_error_code: str | None
+
+    # ── Control flow ───────────────────────────────────────────────────────
+    cancel_event: Any | None
 
 
 # Expose the TypedDict as AgentState at runtime so tests that inspect
