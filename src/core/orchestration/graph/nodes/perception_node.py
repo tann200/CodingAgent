@@ -666,10 +666,6 @@ async def _perception_node_impl(
 
     # Setup prompt
     builder = ContextBuilder(working_dir=state.get("working_dir"))
-    tools_list = [
-        {"name": n, "description": m.get("description", "")}
-        for n, m in orchestrator.tool_registry.tools.items()
-    ]
 
     # ORCH-W1: When within 2 turns of the limit, remove write tools so the model
     # stops attempting new edits and focuses on summarisation/verification only.
@@ -678,13 +674,6 @@ async def _perception_node_impl(
     # Normalize to plain ints so static analyzers don't infer Optional[int]
     _turn_count_now = int(turn_count)
     _max_turns_now = int(max_turns)
-    tools_list = _filter_tools_near_turn_limit_impl(
-        tools_list=tools_list,
-        turn_count=_turn_count_now,
-        max_turns=_max_turns_now,
-        modifying_tools=_MODIFYING_TOOLS,
-        logger=logger,
-    )
 
     # Dynamic skill injection: if task involves debugging or deep searching, inject by name
     active_skills = _compute_active_skills_for_task_impl(
@@ -735,6 +724,25 @@ async def _perception_node_impl(
     # the orchestrator sets _agent_mode="planning" and the state carries agent_mode.
     # Use the strategic role so the LLM focuses on planning rather than execution.
     _perception_role = _select_perception_role_impl(state, orchestrator)
+
+    # Build the tool list filtered to the active role's toolset (YAML-driven).
+    # Falls back to the full registry if the toolset lookup fails.
+    try:
+        tools_list = orchestrator.get_tools_for_role(_perception_role)
+    except Exception as _tl_err:
+        logger.debug("perception_node: get_tools_for_role failed (%s); using full registry", _tl_err)
+        tools_list = [
+            {"name": n, "description": m.get("description", "")}
+            for n, m in orchestrator.tool_registry.tools.items()
+        ]
+
+    tools_list = _filter_tools_near_turn_limit_impl(
+        tools_list=tools_list,
+        turn_count=_turn_count_now,
+        max_turns=_max_turns_now,
+        modifying_tools=_MODIFYING_TOOLS,
+        logger=logger,
+    )
 
     # Assemble the tiered context / provider metadata used by prompt assembly and warnings.
     _provider_context = _resolve_perception_provider_context_impl(
@@ -794,18 +802,28 @@ async def _perception_node_impl(
             registry = registry.filter_by_names(allowed_tool_names)
         if registry and hasattr(registry, "get_openai_functions"):
             tools_schema = registry.get_openai_functions() or None
-        # When the full registry exceeds a small threshold, reduce to core tools
-        # so that local models (e.g. Gemma) are not overloaded with tool schemas
-        # and return empty tool_calls.  The same set is used in frontier_loop_node.
-        if tools_schema and len(tools_schema) > 9:
+        # Safety cap for small/local models: if the role toolset still produces
+        # more than 20 schemas (e.g. toolset YAML is very broad), fall back to a
+        # model-appropriate subset via the toolset loader's model-aware path.
+        # This replaces the previous hardcoded 9-tool _CORE_TOOL_NAMES cap which
+        # was both too aggressive and hid YAML-level toolset misconfiguration.
+        _SMALL_MODEL_TOOL_LIMIT = 20
+        if tools_schema and len(tools_schema) > _SMALL_MODEL_TOOL_LIMIT:
             try:
-                from src.core.orchestration.graph.nodes.frontier_loop_node import (
-                    _CORE_TOOL_NAMES,
+                from src.config.toolsets.loader import (
+                    load_toolset_for_model,
+                    _is_small_model,
                 )
-                tools_schema = [
-                    t for t in tools_schema
-                    if t.get("function", {}).get("name") in _CORE_TOOL_NAMES
-                ] or tools_schema
+                if _is_small_model(model):
+                    _sm_ts = load_toolset_for_model(_perception_role, model)
+                    if _sm_ts and "tools" in _sm_ts:
+                        _sm_names = set(_sm_ts["tools"])
+                        _reduced = [
+                            t for t in tools_schema
+                            if t.get("function", {}).get("name") in _sm_names
+                        ]
+                        if len(_reduced) >= 3:
+                            tools_schema = _reduced
             except Exception:
                 pass
     except Exception:

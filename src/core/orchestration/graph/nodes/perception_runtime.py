@@ -159,13 +159,31 @@ def _compute_active_skills_for_task(
 
 
 def _select_perception_role(state: Mapping[str, Any], orchestrator: Any) -> str:
-    """Select the perception prompt role from agent mode."""
+    """Map agent_mode to the canonical toolset role name.
+
+    All five toolset roles are reachable:
+      planning  → strategic   (planner toolset)
+      analyzing → analyst     (analysis toolset)
+      reviewing → reviewer    (review toolset)
+      debugging → debugger    (debug toolset)
+      *         → operational (coding toolset, default)
+    """
     agent_mode = (
         state.get("agent_mode")
         or getattr(orchestrator, "_agent_mode", None)
         or "execution"
     )
-    return "strategic" if agent_mode == "planning" else "operational"
+    _MODE_TO_ROLE = {
+        "planning": "strategic",
+        "plan": "strategic",
+        "analyzing": "analyst",
+        "analysis": "analyst",
+        "reviewing": "reviewer",
+        "review": "reviewer",
+        "debugging": "debugger",
+        "debug": "debugger",
+    }
+    return _MODE_TO_ROLE.get(agent_mode, "operational")
 
 
 def _resolve_perception_provider_context(
