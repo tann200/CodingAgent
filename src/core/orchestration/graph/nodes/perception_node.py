@@ -719,22 +719,13 @@ async def _perception_node_impl(
         logger.debug("perception_node PRUNE: skipped (non-fatal): %s", _prune_err)
 
 
-
-    # ORCH-W4: Select role based on agent_mode.  When plan_enter has been called,
-    # the orchestrator sets _agent_mode="planning" and the state carries agent_mode.
-    # Use the strategic role so the LLM focuses on planning rather than execution.
+    # ORCH-W4: Select role; build tool list filtered to the role's YAML toolset.
     _perception_role = _select_perception_role_impl(state, orchestrator)
-
-    # Build the tool list filtered to the active role's toolset (YAML-driven).
-    # Falls back to the full registry if the toolset lookup fails.
     try:
         tools_list = orchestrator.get_tools_for_role(_perception_role)
     except Exception as _tl_err:
         logger.debug("perception_node: get_tools_for_role failed (%s); using full registry", _tl_err)
-        tools_list = [
-            {"name": n, "description": m.get("description", "")}
-            for n, m in orchestrator.tool_registry.tools.items()
-        ]
+        tools_list = [{"name": n, "description": m.get("description", "")} for n, m in orchestrator.tool_registry.tools.items()]
 
     tools_list = _filter_tools_near_turn_limit_impl(
         tools_list=tools_list,
