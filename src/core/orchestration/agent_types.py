@@ -211,6 +211,24 @@ BUILD_AGENT = AgentDefinition(
     max_rounds=30,
 )
 
+#: Full-access subagent — parallel-capable workhorse for research+execution.
+#: Mirrors opencode's 'general' subagent type (agent.ts:146-159).
+GENERAL_AGENT = AgentDefinition(
+    id="general",
+    name="General",
+    description=(
+        "Full-access workhorse subagent. Reads, writes, searches, runs tests, "
+        "and executes shell commands. Designed for parallel research and "
+        "execution tasks where read-only analysis is insufficient."
+    ),
+    mode="subagent",
+    toolset="coding",
+    allowed_tools=None,
+    denied_tools=set(),
+    max_rounds=15,
+    include_dynamic_prompt=True,
+)
+
 #: Read-only exploration subagent — spawned by the build agent for codebase
 #: reconnaissance before writing.  Mirrors OpenCode's 'explore' agent and
 #: claw-code's 'Explore' subagent type.
@@ -425,6 +443,7 @@ class AgentRegistry:
 
     _BUILTIN_AGENTS: List[AgentDefinition] = [
         BUILD_AGENT,
+        GENERAL_AGENT,
         EXPLORE_AGENT,
         PLAN_AGENT,
         VERIFICATION_AGENT,

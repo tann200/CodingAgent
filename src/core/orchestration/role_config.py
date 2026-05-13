@@ -143,11 +143,50 @@ ROLE_CONFIGS: Dict[str, Dict[str, Any]] = {
         ],
         "max_rounds": 12,
     },
+    # General role: full-access workhorse for parallel research+execution.
+    # Mirrors opencode's 'general' subagent type (agent.ts:146-159).
+    "general_role": {
+        "description": "Full-access workhorse for parallel research and execution tasks.",
+        "system_prompt_suffix": "You have full tool access. Read, write, search, and execute as needed.",
+        "allowed_tools": [
+            "read_file",
+            "list_files",
+            "glob",
+            "grep",
+            "search_code",
+            "find_symbol",
+            "find_references",
+            "batched_file_read",
+            "multi_file_summary",
+            "bash",
+            "write_file",
+            "edit_file",
+            "edit_file_atomic",
+            "edit_by_line_range",
+            "delete_file",
+            "apply_patch",
+            "run_tests",
+            "run_linter",
+            "run_ts_check",
+            "git_log",
+            "git_diff",
+            "git_status",
+            "web_search",
+            "read_web_page",
+            "memory_search",
+            "analyze_repository",
+            "initialize_repo_intelligence",
+            "load_skill",
+            "list_skills",
+        ],
+        "denied_tools": [],
+        "max_rounds": 15,
+    },
 }
 
 
 # Canonical roles defined in docs/gap-analysis.md
-CANONICAL_ROLES = ["analyst", "strategic", "operational", "reviewer", "debugger"]
+CANONICAL_ROLES = ["analyst", "strategic", "operational", "reviewer", "debugger", "general"]
 
 # Map legacy/alternate role names to canonical roles
 ROLE_ALIASES = {
@@ -162,6 +201,8 @@ ROLE_ALIASES = {
     "review": "reviewer",
     "audit": "reviewer",
     "debug": "debugger",
+    "generalist": "general",
+    "general_purpose": "general",
 }
 
 # Build canonical role configs by mapping existing ROLE_CONFIGS entries
@@ -173,6 +214,8 @@ CANONICAL_ROLE_CONFIGS: Dict[str, Dict[str, Any]] = {
     "analyst": ROLE_CONFIGS.get("analyst_role", ROLE_CONFIGS.get("researcher", {})),
     # debugger: full edit+test access, no deletion/delegation
     "debugger": ROLE_CONFIGS.get("debugger_role", ROLE_CONFIGS.get("researcher", {})),
+    # general: full-access workhorse for parallel research+execution
+    "general": ROLE_CONFIGS.get("general_role", ROLE_CONFIGS.get("coder", {})),
 }
 
 
@@ -302,6 +345,7 @@ _ROLE_PREFERS_SMALL_MODEL: Dict[str, bool] = {
     "reviewer": True,  # code review — read-heavy, no complex generation
     "operational": False,  # code implementation — needs full model capability
     "debugger": False,  # root-cause + editing — needs full model capability
+    "general": False,  # full-access workhorse — needs full model capability
 }
 
 

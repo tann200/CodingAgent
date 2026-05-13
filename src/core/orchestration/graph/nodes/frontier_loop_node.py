@@ -54,6 +54,7 @@ from src.core.orchestration.graph.nodes.execution_helpers import (
 from src.core.orchestration.graph.nodes.tool_output_truncation import (
     TOOL_LARGE_TEXT_FIELDS,
     TOOL_OUTPUT_MAX_BYTES,
+    prune_tool_outputs,
     truncate_tool_output,
 )
 from src.core.orchestration.graph.nodes.node_utils import (
@@ -467,11 +468,9 @@ async def _prepare_turn_messages(
 
         cb = ContextBuilder(working_dir=getattr(orchestrator, "working_dir", None))
 
-        guilogger.info(
-            "[frontier_loop_node] turn=%d history_before_build_prompt=%s",
-            turns_taken,
-            [(m.get("role"), str(m.get("content", ""))[:300]) for m in history],
-        )
+        guilogger.info("[frontier_loop_node] turn=%d history_before_prune=%s",
+                       turns_taken, [(m.get("role"), str(m.get("content", ""))[:300]) for m in history])
+        history = prune_tool_outputs(history)
 
         token_budget = get_context_budget(model_tier=model_tier)
 
@@ -1004,7 +1003,7 @@ async def frontier_loop_node(
     except Exception:
         pass
 
-    return {
+    result: Dict[str, Any] = {
         "history": history,
         "tool_call_count": tool_call_count,
         "last_result": last_result,
@@ -1012,3 +1011,9 @@ async def frontier_loop_node(
         "_frontier_loop_turns": turns_taken,
         "awaiting_plan_approval": False,
     }
+    if "context_overflow" in errors:
+        result["_budget_compaction"] = True
+        result["_should_distill"] = True
+        if last_result is None or last_result.get("ok") is not False:
+            result["last_result"] = {"ok": False, "error": "Context window overflow — compaction triggered"}
+    return result

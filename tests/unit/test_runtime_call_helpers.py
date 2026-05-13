@@ -42,21 +42,38 @@ def test_instantiate_runtime_adapter_preserves_runtime_fallback_sequence():
 
 
 def test_prepare_call_extra_args_injects_noop_for_proxy_only():
+    messages_with_tools = [
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "read_file", "arguments": "{}"}}]},
+    ]
     proxy_args = prepare_call_extra_args(
         kwargs={},
         tools=None,
         is_proxy_adapter=lambda _adapter: True,
         adapter=object(),
+        messages=messages_with_tools,
     )
     non_proxy_args = prepare_call_extra_args(
         kwargs={},
         tools=None,
         is_proxy_adapter=lambda _adapter: False,
         adapter=object(),
+        messages=messages_with_tools,
     )
 
     assert proxy_args["tools"][0]["function"]["name"] == "_noop"
     assert "tools" not in non_proxy_args
+
+
+def test_prepare_call_extra_args_noop_skipped_without_tool_history():
+    messages_no_tools = [{"role": "user", "content": "hello"}]
+    result = prepare_call_extra_args(
+        kwargs={},
+        tools=None,
+        is_proxy_adapter=lambda _adapter: True,
+        adapter=object(),
+        messages=messages_no_tools,
+    )
+    assert "tools" not in result
 
 
 def test_call_adapter_with_fallbacks_prefers_chat_and_consumes_stream():

@@ -82,6 +82,7 @@ def prepare_call_extra_args(
     tools: Optional[List[Any]],
     is_proxy_adapter: Callable[[Any], bool],
     adapter: Any,
+    messages: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     call_extra_args = dict(kwargs or {})
     try:
@@ -95,7 +96,10 @@ def prepare_call_extra_args(
         except Exception:
             inject_noop = False
 
-        if inject_noop:
+        # P0: only inject noop when history has tool calls (conversation
+        # is in "tool mode") — unconditional injection causes 400 errors
+        # during compaction when no tools are expected.
+        if inject_noop and _history_has_tool_calls(messages):
             call_extra_args["tools"] = [
                 {
                     "type": "function",
@@ -109,6 +113,21 @@ def prepare_call_extra_args(
     except Exception:
         pass
     return call_extra_args
+
+
+def _history_has_tool_calls(messages: Optional[List[Dict[str, Any]]]) -> bool:
+    """Return True when *messages* contains at least one assistant tool-call record."""
+    if not messages:
+        return False
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        if msg.get("tool_calls"):
+            return True
+        content = msg.get("content", "")
+        if isinstance(content, str) and '"tool_calls"' in content:
+            return True
+    return False
 
 
 async def call_adapter_with_fallbacks(

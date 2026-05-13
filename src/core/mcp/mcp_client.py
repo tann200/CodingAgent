@@ -35,8 +35,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from dataclasses import dataclass, field
 import os
+import signal
+from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -99,6 +100,17 @@ class McpStdioClient:
         self._notification_handlers: List[
             Callable[[str, Dict[str, Any]], Optional[Awaitable[None]]]
         ] = []
+
+    def __del__(self) -> None:
+        """Safety net: kill the subprocess if disconnect() was not called."""
+        if self._process is not None and self._process.returncode is None:
+            try:
+                os.kill(self._process.pid, signal.SIGTERM)
+            except Exception:
+                try:
+                    self._process.kill()
+                except Exception:
+                    pass
 
     def add_notification_handler(
         self,

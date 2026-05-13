@@ -28,43 +28,61 @@ def preflight_check_impl(orch: Any, tool_call: Dict[str, Any]) -> Dict[str, Any]
 
     tool = orch.tool_registry.get(name)
     if not tool:
-        # TOOLS-03: structured tool-repair response instead of bare error string.
-        # Include a short list of the closest-sounding registered tool names so
-        # the LLM can self-correct without a full round-trip.
-        _all_tool_names = (
-            sorted(orch.tool_registry.tools.keys())
-            if hasattr(orch.tool_registry, "tools")
-            else []
-        )
-        # P3-D: Auto-correct high-confidence typos (cutoff=0.85, single unique match)
-        # for SMALL and above.
-        _auto_corrected = False
-        try:
-            _model_tier = getattr(orch, "_model_tier", None) or ""
-            _tier_lower = str(_model_tier).lower()
-            if _tier_lower not in ("small", ""):
-                _high_conf = difflib.get_close_matches(
-                    name, _all_tool_names, n=1, cutoff=0.85
+        # Cheap case-insensitive fallback before expensive fuzzy matching.
+        # Local models often emit wrong-case tool names (e.g. "Read_File").
+        _lower_name = name.lower()
+        if _lower_name != name:
+            _lower_tool = orch.tool_registry.get(_lower_name)
+            if _lower_tool:
+                import logging as _log
+
+                _log.getLogger(__name__).warning(
+                    "preflight: case-corrected tool '%s' → '%s'",
+                    name,
+                    _lower_name,
                 )
-                if _high_conf:
-                    _corrected_name = _high_conf[0]
-                    _corrected_tool = orch.tool_registry.get(_corrected_name)
-                    if _corrected_tool:
-                        import logging as _log
+                name = _lower_name
+                tool_call["name"] = _lower_name
+                tool = _lower_tool
 
-                        _log.getLogger(__name__).warning(
-                            "preflight: P3-D auto-corrected tool '%s' → '%s'",
-                            name,
-                            _corrected_name,
-                        )
-                        name = _corrected_name
-                        tool_call["name"] = _corrected_name
-                        tool = _corrected_tool
-                        _auto_corrected = True
-        except Exception:
-            pass
+        if not tool:
+            # TOOLS-03: structured tool-repair response instead of bare error string.
+            # Include a short list of the closest-sounding registered tool names so
+            # the LLM can self-correct without a full round-trip.
+            _all_tool_names = (
+                sorted(orch.tool_registry.tools.keys())
+                if hasattr(orch.tool_registry, "tools")
+                else []
+            )
+            # P3-D: Auto-correct high-confidence typos (cutoff=0.85, single unique match)
+            # for SMALL and above.
+            _auto_corrected = False
+            try:
+                _model_tier = getattr(orch, "_model_tier", None) or ""
+                _tier_lower = str(_model_tier).lower()
+                if _tier_lower not in ("small", ""):
+                    _high_conf = difflib.get_close_matches(
+                        name, _all_tool_names, n=1, cutoff=0.85
+                    )
+                    if _high_conf:
+                        _corrected_name = _high_conf[0]
+                        _corrected_tool = orch.tool_registry.get(_corrected_name)
+                        if _corrected_tool:
+                            import logging as _log
 
-        if not _auto_corrected:
+                            _log.getLogger(__name__).warning(
+                                "preflight: P3-D auto-corrected tool '%s' → '%s'",
+                                name,
+                                _corrected_name,
+                            )
+                            name = _corrected_name
+                            tool_call["name"] = _corrected_name
+                            tool = _corrected_tool
+                            _auto_corrected = True
+            except Exception:
+                pass
+
+        if not tool:
             _closest = difflib.get_close_matches(name, _all_tool_names, n=5, cutoff=0.4)
             return {
                 "ok": False,

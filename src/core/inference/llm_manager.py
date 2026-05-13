@@ -977,6 +977,7 @@ async def _call_model_internal(
             tools=tools,
             is_proxy_adapter=mgr.is_proxy_adapter,
             adapter=adapter,
+            messages=messages,
         )
         return await _call_adapter_with_fallbacks(
             adapter=adapter,

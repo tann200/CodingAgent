@@ -20,6 +20,8 @@ def canonicalize_subagent_role(role: str) -> str:
         "operational": "operational",
         "strategic": "strategic",
         "debugger": "debugger",
+        "general": "general",
+        "generalist": "general",
     }.get(role, role)
 
 

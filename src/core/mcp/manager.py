@@ -306,3 +306,26 @@ class McpServerManager:
         self._clients.clear()
         self._started = False
         self._publish_status()
+
+    def stop_sync(self) -> None:
+        """Synchronous kill of all MCP subprocesses for use in close/shutdown.
+
+        Sends SIGTERM to each stdio subprocess (falling back to SIGKILL),
+        then clears the client registry.  Non-stdio transports are skipped
+        since they have no local subprocess to clean up.
+        """
+        for name, client in list(self._clients.items()):
+            proc = getattr(client, "_process", None)
+            if proc is not None and proc.returncode is None:
+                try:
+                    proc.terminate()
+                except Exception:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+            st = self._states.get(name)
+            if st is not None:
+                st.connected = False
+        self._clients.clear()
+        self._started = False

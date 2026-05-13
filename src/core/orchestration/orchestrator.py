@@ -463,7 +463,7 @@ class Orchestrator:
         return get_provider_capabilities_impl(self)
 
     def close(self) -> None:
-        """Release long-lived resources (executor thread pools)."""
+        """Release long-lived resources (executor thread pools, MCP subprocesses)."""
         try:
             if hasattr(self, "_graph_executor"):
                 self._graph_executor.shutdown(wait=True)
@@ -480,6 +480,13 @@ class Orchestrator:
             _title_thread = getattr(self, "_session_title_thread", None)
             if _title_thread is not None and _title_thread.is_alive():
                 _title_thread.join(timeout=2.0)
+        except Exception:
+            pass
+        # P1: kill MCP subprocesses so stdio child processes are not orphaned.
+        try:
+            _mcp = getattr(self, "mcp_manager", None)
+            if _mcp is not None and hasattr(_mcp, "stop_sync"):
+                _mcp.stop_sync()
         except Exception:
             pass
 

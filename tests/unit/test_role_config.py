@@ -15,6 +15,7 @@ def test_list_roles():
     assert "operational" in roles
     assert "reviewer" in roles
     assert "analyst" in roles
+    assert "general" in roles
 
 
 def test_get_role_config():

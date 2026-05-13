@@ -37,7 +37,11 @@ def test_noop_injected_for_proxy_adapter(monkeypatch):
     mgr._providers["litellm"] = proxy
     mgr._initialized = True
 
-    messages = [{"role": "user", "content": "call a tool"}]
+    # History has tool calls → noop should be injected
+    messages = [
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "read_file", "arguments": "{}"}}]},
+        {"role": "user", "content": "call a tool"},
+    ]
     # call asynchronously
     resp = asyncio.run(call_model(messages, provider="litellm", tools=None))
     assert resp.get("ok") is True
@@ -50,6 +54,20 @@ def test_noop_injected_for_proxy_adapter(monkeypatch):
     fn = noop.get("function")
     assert isinstance(fn, dict)
     assert fn.get("name") == "_noop"
+
+def test_noop_not_injected_when_history_lacks_tool_calls(monkeypatch):
+    """Noop should NOT be injected when history has no tool calls (e.g. compaction)."""
+    mgr = get_provider_manager()
+    proxy = FakeProxyAdapter()
+    mgr._providers["litellm"] = proxy
+    mgr._initialized = True
+
+    messages = [{"role": "user", "content": "summarize the history"}]
+    resp = asyncio.run(call_model(messages, provider="litellm", tools=None))
+    assert resp.get("ok") is True
+    # No history of tool calls → no noop injection
+    assert proxy.last_call_kwargs is not None
+    assert proxy.last_call_kwargs.get("tools") is None
 
 
 def test_noop_not_injected_for_non_proxy(monkeypatch):
