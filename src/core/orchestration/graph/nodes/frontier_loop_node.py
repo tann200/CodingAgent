@@ -808,6 +808,13 @@ async def frontier_loop_node(
     pending_action: Dict[str, Any] | None = (
         state.get("next_action") if isinstance(state.get("next_action"), dict) else None
     )
+
+    # GAP-FRONTIER-3 fix: inject analyst_findings into task context so the LLM
+    # benefits from pre-loop analysis produced by analyst_delegation_node.
+    analyst_findings: str = (state.get("analyst_findings") or "").strip()
+    if analyst_findings:
+        task = f"{task}\n\n<analyst_findings>\n{analyst_findings}\n</analyst_findings>"
+        logger.info("frontier_loop_node: injecting analyst_findings (%d chars)", len(analyst_findings))
     provider_name: str | None = None
     model_name: str | None = None
 

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any, Literal, Mapping
 
+from src.core.orchestration.graph.perception_routing import _task_is_complex
+
 
 READ_ONLY_ROLES = {"scout", "researcher", "reviewer"}
 WRITE_ROLES = {"coder", "tester"}
@@ -32,11 +34,23 @@ def is_lite_mode(
 
 def route_perception_frontier(
     state: Mapping[str, Any],
-) -> Literal["frontier_loop", "memory_sync"]:
+) -> Literal["analysis", "frontier_loop", "memory_sync"]:
+    """Route after perception in the frontier graph.
+
+    Complex tasks are routed through analysis + analyst_delegation first so
+    LARGE/FRONTIER models receive the same pre-loop intelligence gathering as
+    the standard capable graph.  Simple tasks and error conditions bypass
+    analysis and go straight to frontier_loop or memory_sync.
+    """
     if state.get("needs_clarification"):
         return "memory_sync"
     if "context_overflow" in (state.get("errors") or []):
         return "memory_sync"
+    # next_action already set means fast-path (tool pre-planned); skip analysis.
+    if state.get("next_action"):
+        return "frontier_loop"
+    if _task_is_complex(state):
+        return "analysis"
     return "frontier_loop"
 
 

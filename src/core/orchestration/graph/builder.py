@@ -350,6 +350,12 @@ def _compile_frontier_graph():
     async def _perception(state: StateLike, config: RunnableConfig):
         return await perception_node(state, config)
 
+    async def _analysis(state: StateLike, config: RunnableConfig):
+        return await analysis_node(state, config)
+
+    async def _analyst_delegation(state: StateLike, config: RunnableConfig):
+        return await analyst_delegation_node(state, config)
+
     async def _frontier_loop(state: StateLike, config: RunnableConfig):
         return await frontier_loop_node(state, config)
 
@@ -376,6 +382,8 @@ def _compile_frontier_graph():
         return await wait_for_user_node(state, config)
 
     workflow.add_node("perception", _perception)
+    workflow.add_node("analysis", _analysis)
+    workflow.add_node("analyst_delegation", _analyst_delegation)
     workflow.add_node("frontier_loop", _frontier_loop)
     workflow.add_node("verification", _verification)
     workflow.add_node("evaluation", _evaluation)
@@ -386,13 +394,34 @@ def _compile_frontier_graph():
 
     workflow.set_entry_point("perception")
 
-    # perception → frontier_loop (always for this graph — tier is already frontier)
-    # Still honour context overflow and clarification exits from perception.
+    # perception → analysis (complex tasks) | frontier_loop | memory_sync
+    # Complex tasks run analysis + analyst_delegation before entering the loop,
+    # so LARGE/FRONTIER models benefit from the same pre-loop intelligence
+    # gathering as the standard capable graph.
     workflow.add_conditional_edges(
         "perception",
         _tier_graph_routing.route_perception_frontier,
-        {"frontier_loop": "frontier_loop", "memory_sync": "memory_sync"},
+        {
+            "analysis": "analysis",
+            "frontier_loop": "frontier_loop",
+            "memory_sync": "memory_sync",
+        },
     )
+
+    # analysis → analyst_delegation (complex) | frontier_loop (simple)
+    # Reuse the standard routing function; remap "planning" key → "frontier_loop"
+    # (same technique as step_controller → memory_sync remap above).
+    workflow.add_conditional_edges(
+        "analysis",
+        should_after_analysis,
+        {
+            "analyst_delegation": "analyst_delegation",
+            "planning": "frontier_loop",  # no planning node in frontier graph
+        },
+    )
+
+    # analyst_delegation → frontier_loop (always — provides findings for loop context)
+    workflow.add_edge("analyst_delegation", "frontier_loop")
 
     # frontier_loop → verification | memory_sync | wait_for_user
     workflow.add_conditional_edges(
