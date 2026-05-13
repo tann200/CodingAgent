@@ -176,8 +176,8 @@ class McpHttpClient:
             async def _call(tool_def=tool_def, **kwargs):
                 result = await self.call_tool(tool_def.name, kwargs)
                 if result.ok:
-                    return result.content
-                raise RuntimeError(result.error)
+                    return {"ok": True, "output": result.content}
+                return {"ok": False, "error": result.error}
 
             try:
                 registry.register(
