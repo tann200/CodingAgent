@@ -19,6 +19,7 @@ from typing import Any, Dict, Optional
 from src.core.paths import get_memory_path
 from src.core.memory.security import scan_memory_content
 from src.core.memory.file_lock import locked_file
+from src.core.memory.memory_tools import memory_search  # noqa: F401 — re-export for registry discovery
 from src.tools._tool import tool, PermissionKind
 
 logger = logging.getLogger(__name__)

@@ -71,4 +71,3 @@ tools:
   - record_mistake
   - read_file_bytes
   - tail_log_file
-  - echo

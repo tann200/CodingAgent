@@ -2,7 +2,13 @@ from typing import Dict, Any, List
 from pathlib import Path
 import json
 
+from src.tools._tool import tool, PermissionKind
 
+
+@tool(
+    tags=["coding", "planning", "debug", "analysis"],
+    permission_kind=PermissionKind.READ_FILE,
+)
 def memory_search(query: str, workdir: str) -> Dict[str, Any]:
     """Search TASK_STATE.md and execution_trace.json for the query.
     Returns simple ranked results: exact match lines from TASK_STATE.md first, then trace entries sorted by recency.
