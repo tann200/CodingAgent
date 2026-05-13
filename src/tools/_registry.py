@@ -62,7 +62,6 @@ _BUILTIN_ALIASES: Dict[str, str] = {
     "fs.read": "read_file",
     "fs.write": "write_file",
     "fs.list": "list_files",
-    "get_git_diff": "get_git_diff",  # system_tools name (kept distinct from git_diff)
 }
 
 

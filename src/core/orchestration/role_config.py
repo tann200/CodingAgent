@@ -143,6 +143,87 @@ ROLE_CONFIGS: Dict[str, Dict[str, Any]] = {
         ],
         "max_rounds": 12,
     },
+    # Scout role: read-only rapid codebase exploration.
+    # Matches the scout brain file and PRSW READ_ONLY_ROLES classification.
+    "scout": {
+        "description": "Rapid codebase exploration — finds files, patterns, and dependencies.",
+        "system_prompt_suffix": "Explore the codebase quickly. Read files, search patterns, report findings. Never write or modify.",
+        "allowed_tools": [
+            "read_file",
+            "list_files",
+            "glob",
+            "grep",
+            "search_code",
+            "find_symbol",
+            "find_references",
+            "bash_readonly",
+            "memory_search",
+            "analyze_repository",
+            "initialize_repo_intelligence",
+            "multi_file_summary",
+            "batched_file_read",
+        ],
+        "denied_tools": [
+            "write_file",
+            "edit_file",
+            "edit_file_atomic",
+            "edit_by_line_range",
+            "multiedit",
+            "delete_file",
+            "apply_patch",
+            "generate_patch",
+            "bash",
+            "run_tests",
+            "run_js_tests",
+            "run_linter",
+            "run_ts_check",
+            "delegate_task",
+            "ask_user",
+            "submit_plan_for_review",
+            "git_commit",
+            "manage_todo",
+        ],
+        "max_rounds": 12,
+    },
+    # Tester role: test creation and execution.
+    # Matches the tester brain file and PRSW WRITE_ROLES classification.
+    "tester": {
+        "description": "Test creation and execution — writes tests, runs suites, reports coverage.",
+        "system_prompt_suffix": "Write and run tests. Read implementation code first, then write comprehensive tests. Execute and report results.",
+        "allowed_tools": [
+            "read_file",
+            "list_files",
+            "glob",
+            "grep",
+            "search_code",
+            "find_symbol",
+            "find_references",
+            "bash",
+            "write_file",
+            "edit_file",
+            "run_tests",
+            "run_js_tests",
+            "run_linter",
+            "run_ts_check",
+            "syntax_check",
+            "git_log",
+            "git_diff",
+            "git_status",
+            "batched_file_read",
+            "multi_file_summary",
+        ],
+        "denied_tools": [
+            "delete_file",
+            "apply_patch",
+            "generate_patch",
+            "delegate_task",
+            "ask_user",
+            "submit_plan_for_review",
+            "git_commit",
+            "manage_todo",
+        ],
+        "max_rounds": 15,
+    },
     # General role: full-access workhorse for parallel research+execution.
     # Mirrors opencode's 'general' subagent type (agent.ts:146-159).
     "general_role": {
@@ -186,7 +267,10 @@ ROLE_CONFIGS: Dict[str, Dict[str, Any]] = {
 
 
 # Canonical roles defined in docs/gap-analysis.md
-CANONICAL_ROLES = ["analyst", "strategic", "operational", "reviewer", "debugger", "general"]
+CANONICAL_ROLES = [
+    "analyst", "strategic", "operational", "reviewer", "debugger", "general",
+    "scout", "tester",
+]
 
 # Map legacy/alternate role names to canonical roles
 ROLE_ALIASES = {
@@ -214,6 +298,10 @@ CANONICAL_ROLE_CONFIGS: Dict[str, Dict[str, Any]] = {
     "analyst": ROLE_CONFIGS.get("analyst_role", ROLE_CONFIGS.get("researcher", {})),
     # debugger: full edit+test access, no deletion/delegation
     "debugger": ROLE_CONFIGS.get("debugger_role", ROLE_CONFIGS.get("researcher", {})),
+    # scout: read-only codebase exploration
+    "scout": ROLE_CONFIGS.get("scout", {}),
+    # tester: test creation and execution
+    "tester": ROLE_CONFIGS.get("tester", {}),
     # general: full-access workhorse for parallel research+execution
     "general": ROLE_CONFIGS.get("general_role", ROLE_CONFIGS.get("coder", {})),
 }
@@ -345,6 +433,8 @@ _ROLE_PREFERS_SMALL_MODEL: Dict[str, bool] = {
     "reviewer": True,  # code review — read-heavy, no complex generation
     "operational": False,  # code implementation — needs full model capability
     "debugger": False,  # root-cause + editing — needs full model capability
+    "scout": True,  # read-only exploration — small model sufficient
+    "tester": False,  # test writing + execution — needs full model capability
     "general": False,  # full-access workhorse — needs full model capability
 }
 

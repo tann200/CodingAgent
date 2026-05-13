@@ -22,6 +22,8 @@ def canonicalize_subagent_role(role: str) -> str:
         "debugger": "debugger",
         "general": "general",
         "generalist": "general",
+        "scout": "scout",
+        "tester": "tester",
     }.get(role, role)
 
 
@@ -171,6 +173,16 @@ def build_subagent_roles_payload() -> Dict[str, Any]:
         "debugger": {
             "description": "Root-cause analysis and bug fixing",
             "best_for": "Diagnosing failures, analysing tracebacks, producing fixes",
+            "aliases": [],
+        },
+        "scout": {
+            "description": "Rapid codebase exploration and file discovery",
+            "best_for": "Finding relevant files, analyzing structures, discovering dependencies",
+            "aliases": [],
+        },
+        "tester": {
+            "description": "Test creation and execution",
+            "best_for": "Writing tests, running test suites, reporting coverage",
             "aliases": [],
         },
     }

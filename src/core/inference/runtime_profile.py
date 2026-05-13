@@ -20,13 +20,10 @@ from .hardware_capability_profile import (
     get_hardware_profile,
     compute_safe_context_tokens,
 )
+from .model_tiers import ModelTier, get_tier_config, get_tool_limit, get_max_turns
 from .model_capability_profile import (
     ModelProfile,
     get_model_profile,
-    AgentMode,
-    AgentModeSettings,
-    select_agent_mode,
-    get_agent_mode_settings,
     ThinkingMode,
 )
 
@@ -40,8 +37,7 @@ class RuntimeProfile:
     model: ModelProfile
     hardware: HardwareProfile
 
-    agent_mode: AgentMode
-    mode_settings: AgentModeSettings
+    model_tier: ModelTier
 
     safe_context_tokens: int
     tool_limit: int
@@ -80,45 +76,44 @@ def merge_profiles(
 ) -> RuntimeProfile:
     """Merge model + hardware into runtime profile.
 
-    Rule: AgentMode settings can be overridden by smaller limit (never larger).
+    Tier settings are sourced from ``ModelTier`` (``model_tiers``), not
+    the deprecated ``AgentMode``.
     """
-    agent_mode = select_agent_mode(
-        model_profile.params_total,
-        is_local=hardware_profile.vram_gb > 0,
-    )
-    mode_settings = get_agent_mode_settings(agent_mode)
+    from .model_tiers import classify_model
+
+    model_tier = classify_model(model_profile.name, model_profile.max_context)
+    tc = get_tier_config(model_tier)
 
     safe_context = compute_safe_context_tokens(
         vram_gb=hardware_profile.vram_gb,
         model_weights_gb=model_profile.compute_weights_gb(),
         kv_per_token_mb=model_profile.kv_per_token_mb,
-        overhead_gb=0.5,  # Reduced overhead for modern frameworks
+        overhead_gb=0.5,
     )
 
-    safe_context = min(safe_context, mode_settings.context_tokens)
+    safe_context = min(safe_context, tc.context_tokens)
     safe_context = min(safe_context, model_profile.max_context)
 
-    tool_limit = min(mode_settings.tool_limit, model_profile.tool_limit)
-    max_turns = min(mode_settings.max_turns, model_profile.max_turns)
+    tool_limit = min(get_tool_limit(model_tier), model_profile.tool_limit)
+    max_turns = min(get_max_turns(model_tier), model_profile.max_turns)
 
-    thinking_mode = mode_settings.thinking_mode
+    thinking_mode = ThinkingMode(tc.thinking_mode)
     if model_profile.thinking_mode == ThinkingMode.OFF:
         thinking_mode = ThinkingMode.OFF
 
     return RuntimeProfile(
         model=model_profile,
         hardware=hardware_profile,
-        agent_mode=agent_mode,
-        mode_settings=mode_settings,
+        model_tier=model_tier,
         safe_context_tokens=safe_context,
         tool_limit=tool_limit,
         max_turns=max_turns,
         thinking_mode=thinking_mode,
-        use_verification=mode_settings.verification,
-        use_replan=mode_settings.replan,
-        use_vector_memory=mode_settings.vector_memory,
+        use_verification=tc.verification,
+        use_replan=tc.replan,
+        use_vector_memory=tc.vector_memory,
         kv_cache_quant=hardware_profile.vram_gb <= 16,
-        compaction_threshold=0.8 if agent_mode == AgentMode.LITE else 0.85,
+        compaction_threshold=0.8 if model_tier == ModelTier.SMALL else 0.85,
     )
 
 
@@ -166,7 +161,7 @@ def preview_runtime(model_name: str, vram_gb: float, quant: str = "q4") -> dict:
     return {
         "model": model_name,
         "vram_gb": vram_gb,
-        "agent_mode": runtime.agent_mode.value,
+        "model_tier": runtime.model_tier.value,
         "safe_context_tokens": runtime.safe_context_tokens,
         "tool_limit": runtime.tool_limit,
         "max_turns": runtime.max_turns,

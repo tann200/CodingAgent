@@ -1210,7 +1210,7 @@ async def call_model(
     )
 
     res = await _attempt_model_fallback(
-        enabled=os.getenv("LLM_MANAGER_ENABLE_MODEL_FALLBACK") == "1",
+        enabled=os.getenv("LLM_MANAGER_ENABLE_MODEL_FALLBACK", "1") == "1",
         current_result=res,
         current_model=model,
         provider=provider,

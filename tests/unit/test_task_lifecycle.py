@@ -471,8 +471,8 @@ class TestGetToolsForRoleMcp:
 
         tools = {
             "read_file": {"description": "reads"},
-            "git__commit": {"description": "commit changes", "origin": "mcp"},
-            "git__push": {"description": "push remote", "origin": "mcp"},
+            "git/commit": {"description": "commit changes", "origin": "mcp"},
+            "git/push": {"description": "push remote", "origin": "mcp"},
         }
         orch = self._orch_with_tools(tools)
 
@@ -487,15 +487,15 @@ class TestGetToolsForRoleMcp:
             result = get_tools_for_role_impl(orch, "operational")
 
         names = [r["name"] for r in result]
-        assert "git__commit" in names
-        assert "git__push" in names
+        assert "git/commit" in names
+        assert "git/push" in names
 
     def test_mcp_tools_included_in_fallback(self):
         from src.core.orchestration.task_lifecycle import get_tools_for_role_impl
 
         tools = {
             "bash": {"description": "run bash"},
-            "mcp__srv__tool1": {"description": "mcp tool", "origin": "mcp"},
+            "srv/tool1": {"description": "mcp tool", "origin": "mcp"},
         }
         orch = self._orch_with_tools(tools)
 
@@ -507,4 +507,4 @@ class TestGetToolsForRoleMcp:
             result = get_tools_for_role_impl(orch, "unknown_role")
 
         names = [r["name"] for r in result]
-        assert "mcp__srv__tool1" in names
+        assert "srv/tool1" in names

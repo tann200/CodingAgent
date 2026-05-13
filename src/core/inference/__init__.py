@@ -5,9 +5,19 @@ Phase 1: workflow_selector integration
 Phase 2: kv_cache_governor, thinking_utils
 """
 
+from .model_tiers import (
+    ModelTier,
+    TierConfig,
+    get_tier_config,
+    classify_model,
+    get_tool_limit,
+    get_plan_step_limit,
+    get_max_turns,
+    supports_native_tools,
+    is_simple_mode,
+)
 from .model_capability_profile import (
     ModelProfile,
-    ModelTier,
     Architecture,
     ThinkingMode,
     AgentMode,
@@ -56,9 +66,18 @@ from .thinking_utils import (
 )
 
 __all__ = [
+    # model_tiers
+    "ModelTier",
+    "TierConfig",
+    "get_tier_config",
+    "classify_model",
+    "get_tool_limit",
+    "get_plan_step_limit",
+    "get_max_turns",
+    "supports_native_tools",
+    "is_simple_mode",
     # model_capability_profile
     "ModelProfile",
-    "ModelTier",
     "Architecture",
     "ThinkingMode",
     "AgentMode",

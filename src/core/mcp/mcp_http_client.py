@@ -163,7 +163,7 @@ class McpHttpClient:
     async def register_tools(self, registry) -> int:
         """Register MCP tools into the tool registry.
 
-        Tools are registered with prefix "mcp__{server_name}__" to avoid
+        Tools are registered as ``{server_name}/{tool_name}`` to avoid
         collisions with local tools.
 
         Returns the number of tools registered.
@@ -171,7 +171,7 @@ class McpHttpClient:
         tools = await self.list_tools()
         count = 0
         for tool_def in tools:
-            tool_name = f"mcp__{self.name}__{tool_def.name}"
+            tool_name = f"{self.name}/{tool_def.name}"
 
             async def _call(tool_def=tool_def, **kwargs):
                 result = await self.call_tool(tool_def.name, kwargs)
@@ -184,7 +184,7 @@ class McpHttpClient:
                     name=tool_name,
                     fn=_call,
                     description=tool_def.description,
-                    orig="mcp",
+                    origin="mcp",
                 )
                 count += 1
             except Exception as e:

@@ -270,11 +270,7 @@ class McpStdioClient:
         tools = await self.list_tools()
         count = 0
         for tool_def in tools:
-            tool_name = (
-                f"{self.name}__{tool_def.name}"
-                if "__" not in tool_def.name
-                else tool_def.name
-            )
+            tool_name = f"{self.name}/{tool_def.name}"
             client = self  # capture for closure
 
             async def _async_call(

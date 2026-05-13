@@ -20,6 +20,7 @@ Hardware target: 16GB VRAM.
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from enum import Enum
 from typing import Optional
 
@@ -34,12 +35,44 @@ class ModelTier(str, Enum):
 
 
 # Maximum number of tools to include in context for each tier.
+# SMALL (7–14B) → 15: conservative limit to avoid overwhelming
+#   small models with too many choices (aligned with AgentMode.LITE).
+# MEDIUM (14–70B) → 35: spacious enough for the 26 tool-set YAMLs.
+# LARGE (>70B) → 50: near-full tool access.
+# FRONTIER (cloud) → 60: full tool access.
 _TOOL_LIMITS: dict[ModelTier, int] = {
-    ModelTier.SMALL: 20,
+    ModelTier.SMALL: 15,
     ModelTier.MEDIUM: 35,
     ModelTier.LARGE: 50,
     ModelTier.FRONTIER: 60,
 }
+
+
+@dataclass
+class TierConfig:
+    """Behavioral settings per model tier — replaces ``AgentModeSettings``.
+
+    These drive context budget, thinking mode, and pipeline-stage toggles
+    (verification, replan, vector memory) that differ by tier.
+    """
+    context_tokens: int
+    thinking_mode: str  # "off" | "auto" | "on"
+    verification: bool
+    replan: bool
+    vector_memory: bool
+
+
+_TIER_CONFIGS: dict[ModelTier, TierConfig] = {
+    ModelTier.SMALL: TierConfig(16384, "off", False, False, False),
+    ModelTier.MEDIUM: TierConfig(32768, "auto", True, True, True),
+    ModelTier.LARGE: TierConfig(65536, "auto", True, True, True),
+    ModelTier.FRONTIER: TierConfig(128000, "on", True, True, True),
+}
+
+
+def get_tier_config(tier: ModelTier) -> TierConfig:
+    """Return the ``TierConfig`` for *tier*."""
+    return _TIER_CONFIGS[tier]
 
 # Patterns that indicate a FRONTIER cloud model.
 # These are matched before the keyword heuristics so that e.g.

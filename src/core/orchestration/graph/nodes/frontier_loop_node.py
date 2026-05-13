@@ -1,42 +1,15 @@
 """frontier_loop_node.py — Tight LLM+tool loop for LARGE/FRONTIER models (TASK-5).
 
-Implements a claw-code–style ``run_turn()`` inner loop that keeps LLM and tool
-calls within a single node, eliminating N×(perception → analysis → planning →
-execution) round-trips through the LangGraph state machine for capable models.
+Keeps LLM+tool calls within a single node instead of round-tripping
+through the LangGraph state machine for every tool call.
 
-How it works
-------------
-1. Build a context prompt (task + history + relevant files).
-2. Call the LLM.
-3. Parse any tool calls from the response.
-4. Execute each tool call (via orchestrator.execute_tool).
-5. Append assistant message + tool results to conversation history.
-6. Loop from (2) until one of the exit conditions fires:
-   - LLM returns no tool calls ("complete" / natural language reply).
-   - Tool call budget (max_tool_calls) is exhausted.
-   - Plan-mode write gate is pending approval.
-   - Context overflow detected.
-   - Maximum internal turns reached (_MAX_FRONTIER_TURNS).
+Exit conditions: no tool calls in response, tool budget exhausted,
+plan-mode write gate, context overflow, max turns reached.
 
-On exit the node sets:
-   - ``last_result``           — outcome of last tool call (or None on natural reply).
-   - ``tool_call_count``       — cumulative tool calls across all turns.
-   - ``_frontier_loop_turns``  — internal turn count (for observability / tests).
-   - ``awaiting_plan_approval``— True when plan-mode blocked a write tool.
-   - ``errors``                — includes "context_overflow" when detected.
+On exit sets: last_result, tool_call_count, _frontier_loop_turns,
+awaiting_plan_approval, errors.
 
-The node is NOT wired into the default ``compile_agent_graph()`` graph.
-It is used by the tier-aware graph built by TASK-6 (``build_tier_graph()``).
-External code that wants the frontier graph can call::
-
-    from src.core.orchestration.graph.builder import build_tier_graph
-    graph = build_tier_graph("frontier")
-
-Registration note
------------------
-frontier_loop_node is imported by builder.py (TASK-6) only when the active tier
-is LARGE or FRONTIER; other tiers continue to use the standard 16-node graph.
-"""
+Used by the tier-aware ``build_tier_graph()``."""
 
 from __future__ import annotations
 
@@ -62,14 +35,17 @@ from src.core.orchestration.graph.nodes.node_utils import (
     _notify_provider_limit,
 )
 from src.core.orchestration.tool_parser import parse_tool_block
+from src.core.inference.kv_cache_governor import (
+    CompactionAction,
+    KVCacheGovernor,
+    create_governor_for_model,
+)
 
 logger = logging.getLogger(__name__)
 from src.core.logger import logger as guilogger  # noqa: E402
 
-# Core tools exposed to capable-tier (local) models.  Sending all 66+ tools to
-# smaller / local models overwhelms their attention budget and causes them to
-# either ignore tools entirely or fail with finish_reason="tool_calls" + empty
-# tool_calls array.  This set covers the operations needed for typical coding tasks.
+# Core tools for small/local models.  Larger tiers get core + extras up to
+# their ``get_tool_limit()`` via ``_filter_tools_for_tier``.
 _CORE_TOOL_NAMES: frozenset[str] = frozenset(
     {
         "read_file",
@@ -84,6 +60,25 @@ _CORE_TOOL_NAMES: frozenset[str] = frozenset(
     }
 )
 
+def _filter_tools_for_tier(tools_schema: list, model_tier: str) -> list:
+    if not tools_schema:
+        return tools_schema
+    try:
+        from src.core.inference.model_tiers import ModelTier, get_tool_limit
+        tier = ModelTier(model_tier.lower())
+    except (ValueError, AttributeError):
+        return tools_schema
+    if tier == ModelTier.SMALL:
+        return [t for t in tools_schema if t.get("function", {}).get("name") in _CORE_TOOL_NAMES]
+    limit = get_tool_limit(tier)
+    core = [t for t in tools_schema if t.get("function", {}).get("name") in _CORE_TOOL_NAMES]
+    extras = [t for t in tools_schema if t.get("function", {}).get("name") not in _CORE_TOOL_NAMES]
+    expanded = list(core)
+    remaining = limit - len(core)
+    if remaining > 0 and extras:
+        expanded.extend(extras[:remaining])
+    return expanded
+
 # Maximum turns within one invocation of frontier_loop_node.
 # Each "turn" is one LLM call + its tool calls.
 # This bounds the node's wall-clock time and prevents runaway infinite loops.
@@ -93,7 +88,6 @@ _MAX_FRONTIER_TURNS = 20
 # OP-9: Cap per-tool output that enters conversation history.
 _TOOL_OUTPUT_MAX_BYTES = TOOL_OUTPUT_MAX_BYTES
 _TOOL_LARGE_TEXT_FIELDS = TOOL_LARGE_TEXT_FIELDS
-
 
 # Expose a module-level call_model proxy so tests can patch
 async def call_model(*args, **kwargs):
@@ -106,16 +100,13 @@ async def call_model(*args, **kwargs):
 
     return await _call(*args, **kwargs)
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-
 def _truncate_tool_output(res: dict) -> dict:
     """Cap any large text fields in a tool result before it enters history."""
     return truncate_tool_output(res, marker_label="frontier_loop")
-
 
 def _extract_content_text(response: Any) -> str:
     """Extract text content from an LLM response object."""
@@ -151,7 +142,6 @@ def _extract_content_text(response: Any) -> str:
         pass
     return ""
 
-
 def _is_context_overflow(error_msg: str) -> bool:
     """Return True if the error message indicates a context-window overflow."""
     patterns = [
@@ -165,7 +155,6 @@ def _is_context_overflow(error_msg: str) -> bool:
     ]
     low = error_msg.lower()
     return any(p in low for p in patterns)
-
 
 def _normalize_tool_call(tc: Any) -> tuple[str, dict]:
     """Return a normalized (tool_name, tool_args) tuple."""
@@ -197,7 +186,6 @@ def _normalize_tool_call(tc: Any) -> tuple[str, dict]:
     except Exception:
         return "", {}
 
-
 def _render_tool_calls_text(tool_calls: list[Any]) -> str:
     """Serialize tool calls into parseable assistant history content."""
     blocks: list[str] = []
@@ -216,7 +204,6 @@ def _render_tool_calls_text(tool_calls: list[Any]) -> str:
         except Exception:
             continue
     return "\n".join(blocks)
-
 
 def _append_tool_call_history(history: list[dict], tool_calls: list[Any]) -> list[dict]:
     """Ensure history contains a parseable assistant tool-call record."""
@@ -483,13 +470,7 @@ async def _prepare_turn_messages(
             except Exception:
                 pass
 
-        if tools_schema and len(tools_schema) > len(_CORE_TOOL_NAMES):
-            filtered = [
-                t for t in tools_schema
-                if t.get("function", {}).get("name") in _CORE_TOOL_NAMES
-            ]
-            if filtered:
-                tools_schema = filtered
+        tools_schema = _filter_tools_for_tier(tools_schema, model_tier)
 
         provider_caps = _resolve_pc(orchestrator)
 
@@ -560,6 +541,7 @@ async def _call_llm_for_turn(
     model_name: "str | None",
     orchestrator: Any,
     turns_taken: int,
+    model_tier: str = "frontier",
 ) -> "tuple[Any, str, list]":
     """Call the LLM and extract ``(response, content_text, tool_calls)``.
 
@@ -574,13 +556,7 @@ async def _call_llm_for_turn(
         except Exception:
             pass
 
-    if tools_schema and len(tools_schema) > len(_CORE_TOOL_NAMES):
-        _filtered_llm = [
-            t for t in tools_schema
-            if t.get("function", {}).get("name") in _CORE_TOOL_NAMES
-        ]
-        if _filtered_llm:
-            tools_schema = _filtered_llm
+    tools_schema = _filter_tools_for_tier(tools_schema, model_tier)
 
     guilogger.info(
         "[frontier_loop_node] turn=%d messages_preview=%s",
@@ -827,6 +803,13 @@ async def frontier_loop_node(
         provider_name = None
         model_name = None
 
+    kv_gov: KVCacheGovernor | None = None
+    try:
+        if model_name:
+            kv_gov = create_governor_for_model(model_name)
+    except Exception:
+        pass
+
     last_result: Dict[str, Any] | None = None
     turns_taken: int = 0
 
@@ -890,6 +873,7 @@ async def frontier_loop_node(
                     model_name=model_name,
                     orchestrator=orchestrator,
                     turns_taken=turns_taken,
+                    model_tier=model_tier,
                 )
             except Exception as exc:
                 error_str = str(exc)
@@ -923,6 +907,23 @@ async def frontier_loop_node(
                 logger.warning("frontier_loop_node: context overflow in LLM response")
                 errors = list(errors) + ["context_overflow"]
                 break
+
+            if kv_gov is not None and isinstance(response, dict):
+                resp_total = int(response.get("total_tokens") or 0)
+                if resp_total <= 0:
+                    resp_total = int(response.get("prompt_tokens") or 0) + int(response.get("completion_tokens") or 0)
+                if resp_total > 0:
+                    kv_state = kv_gov.on_context_update(resp_total)
+                    if kv_state.action in (CompactionAction.COMPACT, CompactionAction.FORCE_COMPACT):
+                        logger.warning(
+                            "frontier_loop_node: KV Cache %s at %d tokens (%.0f%% of %d)",
+                            kv_state.action.value,
+                            resp_total,
+                            kv_state.usage_ratio * 100,
+                            kv_gov.max_tokens,
+                        )
+                        errors = list(errors) + ["context_overflow"]
+                        break
 
             # Append assistant message
             history = list(history)

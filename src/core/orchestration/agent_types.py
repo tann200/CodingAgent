@@ -232,6 +232,228 @@ GENERAL_AGENT = AgentDefinition(
 #: Read-only exploration subagent — spawned by the build agent for codebase
 #: reconnaissance before writing.  Mirrors OpenCode's 'explore' agent and
 #: claw-code's 'Explore' subagent type.
+ANALYST_AGENT = AgentDefinition(
+    id="analyst",
+    name="Analyst",
+    description=(
+        "Read-only codebase explorer for pre-planning intelligence. "
+        "Searches, reads, and analyses code. Cannot write or delegate."
+    ),
+    mode="subagent",
+    toolset="analysis",
+    denied_tools={
+        "write_file",
+        "edit_file",
+        "edit_file_atomic",
+        "edit_by_line_range",
+        "multiedit",
+        "delete_file",
+        "apply_patch",
+        "generate_patch",
+        "run_tests",
+        "run_linter",
+        "run_js_tests",
+        "run_ts_check",
+        "delegate_task",
+        "ask_user",
+        "submit_plan_for_review",
+        "git_commit",
+        "manage_todo",
+    },
+    max_rounds=15,
+    include_dynamic_prompt=True,
+    prompt_override=(
+        "You are a read-only codebase exploration agent. "
+        "Your only job is to gather accurate information about the codebase and "
+        "return a clear, structured summary. "
+        "You may read files, search code, run read-only shell commands, and fetch web pages. "
+        "You must NOT write, edit, delete, or create any files. "
+        "You must NOT run tests, linters, or compilers. "
+        "You must NOT delegate to other agents. "
+        "Be thorough and precise. Return everything you find that is relevant to the delegated task."
+    ),
+)
+
+#: Planning subagent — decomposes tasks into structured plans.
+STRATEGIC_AGENT = AgentDefinition(
+    id="strategic",
+    name="Strategic",
+    description=(
+        "Task decomposition and planning agent. Reads the codebase and produces "
+        "structured execution plans. Cannot write files or execute shell commands."
+    ),
+    mode="subagent",
+    toolset="planning",
+    denied_tools={
+        "write_file",
+        "edit_file",
+        "edit_file_atomic",
+        "edit_by_line_range",
+        "multiedit",
+        "delete_file",
+        "apply_patch",
+        "generate_patch",
+        "bash",
+        "git_commit",
+        "delegate_task",
+        "ask_user",
+    },
+    max_rounds=20,
+    include_dynamic_prompt=True,
+)
+
+#: Code implementation subagent — full-access workhorse for writing code.
+OPERATIONAL_AGENT = AgentDefinition(
+    id="operational",
+    name="Operational",
+    description=(
+        "Code implementation subagent. Reads, writes, edits, runs tests, "
+        "and executes shell commands. Full access for feature implementation."
+    ),
+    mode="subagent",
+    toolset="coding",
+    allowed_tools=None,
+    denied_tools=set(),
+    max_rounds=15,
+    include_dynamic_prompt=True,
+)
+
+#: Code review subagent — validates changes, runs tests, reports quality.
+REVIEWER_AGENT = AgentDefinition(
+    id="reviewer",
+    name="Reviewer",
+    description=(
+        "Code review and verification subagent. Reads code, runs tests and "
+        "linters, returns a structured quality report. Cannot modify files."
+    ),
+    mode="subagent",
+    toolset="review",
+    denied_tools={
+        "write_file",
+        "edit_file",
+        "edit_file_atomic",
+        "edit_by_line_range",
+        "multiedit",
+        "delete_file",
+        "apply_patch",
+        "generate_patch",
+        "git_commit",
+        "delegate_task",
+        "ask_user",
+        "submit_plan_for_review",
+    },
+    max_rounds=10,
+    include_dynamic_prompt=True,
+    prompt_override=(
+        "You are a verification agent. Run the test suite and linter, then "
+        "return a structured report: which tests passed, which failed, any lint "
+        "warnings, and a short summary of overall quality. "
+        "Do not modify any files. Report only — do not attempt to fix issues."
+    ),
+)
+
+#: Debugging subagent — root-cause analysis with read/edit/test access.
+DEBUGGER_AGENT = AgentDefinition(
+    id="debugger",
+    name="Debugger",
+    description=(
+        "Root-cause analysis and bug fixing subagent. Reads, edits, runs tests. "
+        "Cannot delete files or delegate to other agents."
+    ),
+    mode="subagent",
+    toolset="debug",
+    denied_tools={
+        "delete_file",
+        "delegate_task",
+        "ask_user",
+        "submit_plan_for_review",
+    },
+    max_rounds=12,
+    include_dynamic_prompt=True,
+)
+
+#: Read-only scout subagent — rapid codebase exploration for file discovery.
+#: Matches PRSW READ_ONLY_ROLES classification and the scout brain file.
+SCOUT_AGENT = AgentDefinition(
+    id="scout",
+    name="Scout",
+    description=(
+        "Rapid codebase explorer. Finds files, patterns, and dependencies. "
+        "Cannot write, edit, or delegate."
+    ),
+    mode="subagent",
+    toolset="analysis",
+    denied_tools={
+        "write_file",
+        "edit_file",
+        "edit_file_atomic",
+        "edit_by_line_range",
+        "multiedit",
+        "delete_file",
+        "apply_patch",
+        "generate_patch",
+        "bash",
+        "run_tests",
+        "run_linter",
+        "run_js_tests",
+        "run_ts_check",
+        "delegate_task",
+        "ask_user",
+        "submit_plan_for_review",
+        "git_commit",
+        "manage_todo",
+    },
+    max_rounds=12,
+    include_dynamic_prompt=True,
+    prompt_override=(
+        "You are a Scout Agent specialized in rapid codebase exploration. "
+        "Find relevant files, analyze structures and dependencies, and report "
+        "your findings. "
+        "Start with glob patterns to find relevant files, use grep to search "
+        "for specific patterns, and read key files to understand context. "
+        "Publish findings to agent.scout.broadcast. "
+        "You must NOT write, edit, delete, or create any files. "
+        "You must NOT run tests, linters, or compilers. "
+        "You must NOT delegate to other agents. "
+        "Be fast and thorough."
+    ),
+)
+
+#: Test execution subagent — writes and runs tests, reports coverage.
+#: Matches PRSW WRITE_ROLES classification and the tester brain file.
+TESTER_AGENT = AgentDefinition(
+    id="tester",
+    name="Tester",
+    description=(
+        "Test creation and execution subagent. Writes tests, runs suites, "
+        "and reports coverage results. Can read implementation code and edit "
+        "test files."
+    ),
+    mode="subagent",
+    toolset="coding",
+    denied_tools={
+        "delete_file",
+        "apply_patch",
+        "generate_patch",
+        "delegate_task",
+        "ask_user",
+        "submit_plan_for_review",
+        "git_commit",
+        "manage_todo",
+    },
+    max_rounds=15,
+    include_dynamic_prompt=True,
+    prompt_override=(
+        "You are a Tester Agent specialized in test creation and execution. "
+        "Review implementation code to understand functionality, write "
+        "comprehensive test cases, execute tests, and report results. "
+        "Publish to agent.tester.broadcast. "
+        "You may read, write, and edit test files. "
+        "You may run tests and linters. "
+        "You must NOT delete files or delegate to other agents."
+    ),
+)
+
 EXPLORE_AGENT = AgentDefinition(
     id="explore",
     name="Explore",
@@ -444,6 +666,13 @@ class AgentRegistry:
     _BUILTIN_AGENTS: List[AgentDefinition] = [
         BUILD_AGENT,
         GENERAL_AGENT,
+        ANALYST_AGENT,
+        STRATEGIC_AGENT,
+        OPERATIONAL_AGENT,
+        REVIEWER_AGENT,
+        DEBUGGER_AGENT,
+        SCOUT_AGENT,
+        TESTER_AGENT,
         EXPLORE_AGENT,
         PLAN_AGENT,
         VERIFICATION_AGENT,

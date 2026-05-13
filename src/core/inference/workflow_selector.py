@@ -12,7 +12,8 @@ from dataclasses import dataclass
 from enum import Enum
 
 from .runtime_profile import RuntimeProfile, get_runtime_profile
-from .model_capability_profile import AgentMode, ThinkingMode
+from .model_tiers import ModelTier
+from .model_capability_profile import ThinkingMode
 
 logger = logging.getLogger(__name__)
 
@@ -39,10 +40,10 @@ def select_workflow(runtime: RuntimeProfile) -> WorkflowConfig:
     """Select workflow config based on runtime profile.
 
     Binary decision:
-    - SMALL/LITE mode → SINGLE_LOOP
-    - STANDARD/FULL mode → CAPABLE_LOOP
+    - SMALL mode → SINGLE_LOOP
+    - MEDIUM/LARGE/FRONTIER → CAPABLE_LOOP
     """
-    is_small = runtime.agent_mode == AgentMode.LITE
+    is_small = runtime.model_tier == ModelTier.SMALL
     is_cloud = runtime.is_cloud
 
     if is_small and not is_cloud:
@@ -84,7 +85,7 @@ def select_workflow_from_names(
 def should_use_single_loop(model_name: str, hardware_name: str = "auto") -> bool:
     """Quick check: should this model use single-loop orchestrator?"""
     runtime = get_runtime_profile(model_name, hardware_name)
-    return runtime.agent_mode == AgentMode.LITE and not runtime.is_cloud
+    return runtime.model_tier == ModelTier.SMALL and not runtime.is_cloud
 
 
 @dataclass
@@ -117,10 +118,11 @@ class LoopControl:
 def get_loop_control(runtime: RuntimeProfile) -> LoopControl:
     """Get loop control settings for a runtime profile."""
     max_llm_calls = {
-        AgentMode.LITE: 6,
-        AgentMode.STANDARD: 15,
-        AgentMode.FULL: 40,
-    }.get(runtime.agent_mode, 15)
+        ModelTier.SMALL: 6,
+        ModelTier.MEDIUM: 15,
+        ModelTier.LARGE: 15,
+        ModelTier.FRONTIER: 40,
+    }.get(runtime.model_tier, 15)
 
     return LoopControl(
         max_llm_calls=max_llm_calls,

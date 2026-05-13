@@ -375,7 +375,7 @@ class McpWsClient:
                     _name,
                     _make_fn(_client_ref, _tool_name),
                     description=tool_defn.description,
-                    origin="plugin",
+                    origin="mcp",
                 )
                 count += 1
             except Exception as exc:

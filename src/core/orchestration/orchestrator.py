@@ -37,18 +37,8 @@ __all__ = [
 # Phase A: constants — re-exported for backward compatibility.
 
 # tool_contracts — kept here so tests can patch orchestrator.get_tool_contract.
-try:
-    from src.core.orchestration.tool_contracts import get_tool_contract
-    from src.core.orchestration.tool_contracts import ToolContract  # type: ignore[attr-defined]
-except ImportError:
-
-    def get_tool_contract(name: str) -> Any:  # type: ignore[misc]
-        return None
-
-    class ToolContract:  # type: ignore[no-redef]
-        @staticmethod
-        def model_validate(obj: Any) -> Any:
-            return obj
+from src.core.orchestration.tool_contracts import get_tool_contract  # noqa: F401,E402
+from src.core.orchestration.tool_contracts import ToolContract  # type: ignore[attr-defined]  # noqa: F401,E402
 
 
 logger = logging.getLogger(__name__)

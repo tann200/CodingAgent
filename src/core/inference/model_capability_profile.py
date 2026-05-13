@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Optional
 
-from .model_tiers import ModelTier, classify_model
+from .model_tiers import ModelTier, classify_model, get_tool_limit, get_max_turns, get_tier_config
 
 
 class Architecture(str, Enum):
@@ -310,6 +310,11 @@ def list_available_profiles() -> list[str]:
 
 @dataclass
 class AgentModeSettings:
+    """Deprecated — use ``TierConfig`` from ``model_tiers`` instead.
+
+    Kept for backward compatibility during the ModelTier consolidation.
+    New code should call ``get_tier_config(classify_model(...))`` directly.
+    """
     max_turns: int
     tool_limit: int
     context_tokens: int
@@ -320,11 +325,19 @@ class AgentModeSettings:
 
 
 class AgentMode(Enum):
-    LITE = "lite"  # ≤14B models
-    STANDARD = "standard"  # 14-70B models
-    FULL = "full"  # Cloud frontier
+    """Deprecated — use ``ModelTier`` from ``model_tiers`` instead.
+
+    Maps to ``ModelTier``:
+    - LITE → SMALL
+    - STANDARD → MEDIUM
+    - FULL → FRONTIER
+    """
+    LITE = "lite"
+    STANDARD = "standard"
+    FULL = "full"
 
 
+# Legacy mapping — kept for imports that still reference _MODE_SETTINGS.
 _MODE_SETTINGS: dict[AgentMode, AgentModeSettings] = {
     AgentMode.LITE: AgentModeSettings(
         max_turns=20,
@@ -357,7 +370,13 @@ _MODE_SETTINGS: dict[AgentMode, AgentModeSettings] = {
 
 
 def select_agent_mode(params_b: float, is_local: bool = True) -> AgentMode:
-    """Select AgentMode based on parameter count and deployment type."""
+    """Deprecated — use ``classify_model()`` instead.
+
+    Rough mapping:
+    - ``params_b <= 14`` → SMALL  → LITE
+    - ``params_b <= 70`` → MEDIUM → STANDARD
+    - ``> 70`` or cloud  → FRONTIER → FULL
+    """
     if not is_local:
         return AgentMode.FULL
     if params_b <= 14:
@@ -366,5 +385,5 @@ def select_agent_mode(params_b: float, is_local: bool = True) -> AgentMode:
 
 
 def get_agent_mode_settings(mode: AgentMode) -> AgentModeSettings:
-    """Get default settings for an AgentMode."""
+    """Deprecated — use ``get_tier_config()`` with ``classify_model()``."""
     return _MODE_SETTINGS[mode]

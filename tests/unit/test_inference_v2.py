@@ -11,6 +11,7 @@ import pytest
 
 from src.core.inference import (
     ModelProfile,
+    ModelTier,
     Architecture,
     ThinkingMode,
     AgentMode,
@@ -124,10 +125,10 @@ class TestRuntimeProfile:
         hardware = get_hardware_profile("rtx5070ti-16g")
         runtime = merge_profiles(model, hardware)
 
-        assert runtime.agent_mode == AgentMode.LITE
+        assert runtime.model_tier == ModelTier.LARGE
         assert runtime.safe_context_tokens >= 8192
-        assert runtime.tool_limit <= 15
-        assert runtime.thinking_mode == ThinkingMode.OFF
+        assert runtime.tool_limit <= 50
+        assert runtime.thinking_mode == ThinkingMode.OFF  # profile overrides tier default
 
     def test_runtime_vram_check(self):
         model = get_model_profile("qwen3.5-9b")
@@ -141,7 +142,7 @@ class TestRuntimeProfile:
         result = preview_runtime("qwen3-14b", 16.0)
         assert result["model"] == "qwen3-14b"
         assert result["vram_gb"] == 16.0
-        assert result["agent_mode"] == "lite"
+        assert result["model_tier"] == "small"
         assert "safe_context_tokens" in result
         assert "will_fit" in result
 
@@ -159,29 +160,34 @@ class TestRuntimeProfile:
 
 
 class TestWorkflowSelector:
-    def test_single_loop_for_qwen(self):
-        workflow = select_workflow_from_names("qwen3.5-9b", "rtx5070ti-16g")
+    def test_single_loop_for_small_model(self):
+        workflow = select_workflow_from_names("gemma-4-4b", "rtx5070ti-16g")
         assert workflow.workflow_type == WorkflowType.SINGLE_LOOP
         assert workflow.use_verification is False
         assert workflow.use_replan is False
         assert workflow.use_vector_memory is False
 
-    def test_capable_loop_for_gemma(self):
+    def test_capable_loop_for_medium_model(self):
         workflow = select_workflow_from_names("gemma-4-26b-a4b", "rtx5070ti-16g")
         assert workflow.workflow_type == WorkflowType.CAPABLE_LOOP
         assert workflow.use_verification is True
         assert workflow.context_limit >= 8192
 
+    def test_capable_loop_for_large_qwen(self):
+        """qwen3.5-9b is LARGE tier (262K context) — capable loop."""
+        workflow = select_workflow_from_names("qwen3.5-9b", "rtx5070ti-16g")
+        assert workflow.workflow_type == WorkflowType.CAPABLE_LOOP
+
     def test_should_use_single_loop(self):
-        assert should_use_single_loop("qwen3.5-9b", "rtx5070ti-16g") is True
+        assert should_use_single_loop("gemma-4-4b", "rtx5070ti-16g") is True
         assert should_use_single_loop("gemma-4-26b-a4b", "rtx5070ti-16g") is False
         assert should_use_single_loop("gpt-4o") is False
 
-    def test_loop_control(self):
-        runtime = get_runtime_profile("qwen3.5-9b", "rtx5070ti-16g")
+    def test_loop_control_small(self):
+        runtime = get_runtime_profile("gemma-4-4b", "rtx5070ti-16g")
         control = get_loop_control(runtime)
 
-        assert control.max_llm_calls == 6  # LITE mode cap
+        assert control.max_llm_calls == 6
         assert control.llm_calls_remaining == 6
         assert control.should_stop is False
 
@@ -189,14 +195,21 @@ class TestWorkflowSelector:
         assert control.llm_calls_remaining == 5
         assert control.turns_used == 1
 
-    def test_loop_control_full_stop(self):
-        runtime = get_runtime_profile("qwen3.5-9b", "rtx5070ti-16g")
+    def test_loop_control_small_full_stop(self):
+        runtime = get_runtime_profile("gemma-4-4b", "rtx5070ti-16g")
         control = get_loop_control(runtime)
 
         for _ in range(control.max_llm_calls):
             control.increment()
 
         assert control.should_stop is True
+
+    def test_loop_control_large(self):
+        """qwen3.5-9b is LARGE — higher LLM call budget."""
+        runtime = get_runtime_profile("qwen3.5-9b", "rtx5070ti-16g")
+        control = get_loop_control(runtime)
+
+        assert control.max_llm_calls == 15
 
     def test_gpt_cloud_workflow(self):
         workflow = select_workflow_from_names("gpt-4o")
