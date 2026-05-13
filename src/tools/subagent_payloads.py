@@ -252,10 +252,9 @@ def build_subagent_initial_state(
             "current_step",
             "verified_reads",
             "files_read",
-            "plan_validation",
-            "verification_result",
-            "evaluation_result",
-            "plan_mode_approved",
+            # NOTE: plan_validation, verification_result, evaluation_result, and
+            # plan_mode_approved are intentionally excluded (FAULT-08): these are
+            # workflow-phase signals that must not bleed from parent into child subagent.
             "affected_files",
             "model_tier",
         )

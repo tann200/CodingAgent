@@ -556,10 +556,6 @@ def delegate_task(
                 future = executor.submit(_child_ctx.run, _run_subagent)
                 final_state = future.result(timeout=300)
 
-            # SPAWN-W1: Reset active_agent after child run
-            if _use_full_pipeline and parent_orchestrator is not None:
-                parent_orchestrator.active_agent = None
-
             # CP-2: Update manifest to completed
             if _manifest_path is not None:
                 try:
@@ -655,9 +651,6 @@ def delegate_task(
                 pass
 
         except Exception as _subagent_err:
-            if _use_full_pipeline and parent_orchestrator is not None:
-                parent_orchestrator.active_agent = None
-
             # CP-2: Update manifest to failed
             if _manifest_path is not None:
                 try:
@@ -728,6 +721,13 @@ def delegate_task(
                 pass
 
             raise _subagent_err
+
+        finally:
+            # FAULT-07 fix: always reset active_agent regardless of success/failure/exception.
+            # Previously this was duplicated in the success and except paths and would leak
+            # if an exception was raised before the try block (e.g. during manifest writing).
+            if _use_full_pipeline and parent_orchestrator is not None:
+                parent_orchestrator.active_agent = None
 
         # SPAWN-W3: Persist child session in SessionStore so it's queryable later.
         if parent_session_id is not None:
@@ -809,6 +809,8 @@ async def delegate_task_async(
     role: str,
     subtask_description: str,
     working_dir: Optional[str] = None,
+    allowed_tools: Optional[list] = None,
+    model: Optional[str] = None,
 ) -> str:
     """
     Async version of delegate_task for use in async contexts.
@@ -817,6 +819,8 @@ async def delegate_task_async(
         role: The role of the subagent
         subtask_description: Detailed instructions for the subtask
         working_dir: The directory to execute in
+        allowed_tools: Optional explicit list of tool names the subagent may use.
+        model: Optional model name to use for this subagent's LLM calls.
 
     Returns:
         Summary of the subagent's work
@@ -834,7 +838,7 @@ async def delegate_task_async(
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
         # Propagate ContextVars into the subagent thread
         future = executor.submit(
-            _ctx.run, delegate_task, role, subtask_description, working_dir
+            _ctx.run, delegate_task, role, subtask_description, working_dir, allowed_tools, model
         )
         try:
             return future.result(timeout=_DELEGATION_TIMEOUT_SECONDS)

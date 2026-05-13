@@ -5,15 +5,15 @@ from typing import Mapping, Dict, Any, Optional, Tuple
 
 from src.core.orchestration.graph.state import StateLike
 from src.core.orchestration.graph.nodes.node_utils import _resolve_orchestrator
-from src.tools.subagent_tools import delegate_task_async
+from src.tools.subagent_tools import delegate_task_async, _DELEGATION_DEPTH_VAR, _MAX_DELEGATION_DEPTH as _MAX_DEPTH
 
 logger = logging.getLogger(__name__)
 
 # F-67: named constant for file write-lock acquisition timeout.
 _WRITE_LOCK_TIMEOUT_SECONDS = 30.0
 # Role classifications for PRSW
-READ_ONLY_ROLES = {"scout", "researcher", "reviewer"}
-WRITE_ROLES = {"coder", "tester"}
+READ_ONLY_ROLES = {"scout", "researcher", "reviewer", "analyst"}
+WRITE_ROLES = {"coder", "tester", "operational", "debugger", "planner", "strategic"}
 
 
 async def _execute_delegation_with_locks(
@@ -50,20 +50,20 @@ async def _execute_delegation_with_locks(
                     }
                 acquired.append(f)
 
-        # HR-5 fix: enforce delegation depth limit to prevent recursive DoS.
-        # Read depth from state only — in-process delegation depth is tracked via
-        # ContextVar in src.tools.subagent_tools and the per-graph AgentState
-        # field "delegation_depth" is used for cross-session propagation.
-        current_depth = int(state.get("delegation_depth") or 0)
-        _MAX_DELEGATION_DEPTH = 3
-        if current_depth >= _MAX_DELEGATION_DEPTH:
+        # FAULT-02: use ContextVar as authoritative depth source; fall back to
+        # state["delegation_depth"] only for cross-session subprocess propagation.
+        current_depth = max(
+            _DELEGATION_DEPTH_VAR.get(),
+            int(state.get("delegation_depth") or 0),
+        )
+        if current_depth >= _MAX_DEPTH:
             logger.error(
-                f"delegation_node: delegation depth {current_depth} >= {_MAX_DELEGATION_DEPTH}, "
+                f"delegation_node: delegation depth {current_depth} >= {_MAX_DEPTH}, "
                 "refusing to spawn further subagent to prevent recursive DoS"
             )
             return {
                 "status": "error",
-                "error": f"delegation depth limit ({_MAX_DELEGATION_DEPTH}) reached",
+                "error": f"delegation depth limit ({_MAX_DEPTH}) reached",
             }
 
         # HR-12 fix: wrap with timeout so a hung subagent does not block the parent.

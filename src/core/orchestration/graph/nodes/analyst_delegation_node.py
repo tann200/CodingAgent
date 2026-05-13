@@ -20,7 +20,7 @@ import logging
 from typing import Dict, Any, List
 
 from src.core.orchestration.graph.state import StateLike
-from src.tools.subagent_tools import delegate_task_async
+from src.tools.subagent_tools import delegate_task_async, _DELEGATION_DEPTH_VAR, _MAX_DELEGATION_DEPTH
 
 logger = logging.getLogger(__name__)
 
@@ -109,6 +109,16 @@ async def analyst_delegation_node(state: StateLike, config: RunnableConfig) -> D
         pass
 
     findings = ""
+
+    # FAULT-06: depth guard — refuse to spawn analyst subagents if already at max depth.
+    current_depth = _DELEGATION_DEPTH_VAR.get()
+    if current_depth >= _MAX_DELEGATION_DEPTH:
+        logger.warning(
+            "analyst_delegation_node: delegation depth %d >= %d, skipping analyst subagents",
+            current_depth,
+            _MAX_DELEGATION_DEPTH,
+        )
+        return {"analyst_findings": ""}
 
     if model_tier in _PARALLEL_ANALYST_TIERS:
         # GAP-FRONTIER-3: parallel analyst subagents for FRONTIER/LARGE
