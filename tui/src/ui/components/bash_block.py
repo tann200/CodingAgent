@@ -82,6 +82,10 @@ class BashBlock(Widget):
         yield Label(f"# {desc}", classes="bash-header")
         if self._command:
             yield Label(f"$ {self._command}", classes="bash-cmd")
+        yield Static("", classes="bash-output")
+
+    def on_mount(self) -> None:
+        self._refresh_output()
 
     # ------------------------------------------------------------------
     # Output streaming
@@ -115,39 +119,23 @@ class BashBlock(Widget):
     # ------------------------------------------------------------------
 
     def _refresh_output(self) -> None:
-        """Re-render the output area based on current collapsed state."""
-        # Remove previously mounted output widgets
-        for w in self.query(".bash-output,.bash-truncated"):
-            w.remove()
-
+        """Update the single output Static with rendered text."""
+        output_widget = self.query_one(".bash-output", Static)
         lines = self._output_lines
         if not lines:
+            output_widget.update("")
             return
 
         if self.collapsed and len(lines) > MAX_VISIBLE_LINES:
             visible = lines[:MAX_VISIBLE_LINES]
             hidden = len(lines) - MAX_VISIBLE_LINES
-            for line in visible:
-                self.mount(Static(line, classes="bash-output", markup=False))
-            self.mount(
-                Static(
-                    f"[dim]... {hidden} more line(s) — click header to expand[/]",
-                    classes="bash-truncated",
-                    markup=True,
-                )
-            )
+            text = "\n".join(visible)
+            text += f"\n[dim]... {hidden} more line(s) — click header to expand[/]"
         else:
-            for line in lines:
-                self.mount(Static(line, classes="bash-output", markup=False))
+            text = "\n".join(lines)
             if len(lines) > MAX_VISIBLE_LINES:
-                # expanded: show collapse hint
-                self.mount(
-                    Static(
-                        _COLLAPSE_HINT,
-                        classes="bash-truncated",
-                        markup=True,
-                    )
-                )
+                text += f"\n{_COLLAPSE_HINT}"
+        output_widget.update(text)
 
     # ------------------------------------------------------------------
     # Read-only accessors (used in tests)

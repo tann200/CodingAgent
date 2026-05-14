@@ -13,6 +13,7 @@ from typing import Optional, cast, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from textual.notifications import SeverityLevel
+    from .components import ConsolePanel, FilePickerOverlay, StreamView
 
 from textual.app import App, ComposeResult
 from textual.widget import Widget
@@ -22,18 +23,10 @@ from textual import on
 from textual.reactive import reactive
 
 from .components import (
-    HistoryInput,
-    AgentArtifact,
-    ThinkingProcess,
-    StreamView,
-    ConsolePanel,
-    SideBySideDiff,
-    InlineDiff,
     ChatTextArea,
-    FilePickerOverlay,
+    HistoryInput,
+    SideBySideDiff,
     SubagentProgress,
-    BashBlock,
-    TodoListWidget,
 )
 from .settings import SettingsStore
 from .logging import get_logger
@@ -155,6 +148,7 @@ SAFE_SLASH_CMDS = {"interrupt", "status", "help", "quit"}
 
 # Max chars of a single @-referenced file inlined into prompt
 _AT_FILE_MAX_CHARS = 8000
+_MAX_CHAT_WIDGETS = 200  # prune chat log when it exceeds this many widgets
 # Workspace dirs to skip when scanning files for @ picker
 _AT_SKIP_DIRS = {".git", "__pycache__", ".venv", "node_modules", ".mypy_cache"}
 
@@ -507,6 +501,8 @@ class AgentApp(App[None]):
     # ── Layout ────────────────────────────────────────────────────────────
 
     def compose(self) -> ComposeResult:
+        from .components import ConsolePanel, FilePickerOverlay
+
         yield Header(show_clock=False)
         yield Static("  connecting…", id="provider_banner")
 
@@ -601,6 +597,8 @@ class AgentApp(App[None]):
     # ── Lifecycle ─────────────────────────────────────────────────────────
 
     def on_mount(self) -> None:
+        from .components import ConsolePanel, FilePickerOverlay
+
         # §10.1 startup sequence
         self._bridge.setup_subscriptions()
         self._bridge.load_history()
@@ -649,8 +647,8 @@ class AgentApp(App[None]):
                     msg = self._queued_messages.popleft()
                     logger.warning("Draining queued message on shutdown: %s", msg[:60])
                     self._bridge.send_prompt(msg)
-                except Exception:
-                    pass
+                except Exception as _drain_err:
+                    logger.debug("shutdown drain send failed: %s", _drain_err)
         self._save_session_snapshot()
         self._bridge.interrupt()
         self._bridge.save_history()
@@ -703,6 +701,8 @@ class AgentApp(App[None]):
             pass
 
     def _ensure_stream_widget(self) -> StreamView:
+        from .components import StreamView
+
         if self._current_stream is None:
             self.is_streaming = True
             role = ROLE_LABELS.get(self.active_role, self.active_role)
@@ -724,8 +724,19 @@ class AgentApp(App[None]):
     def _append_log_line(self, line: str, level: str = "INFO") -> None:
         """§16.4 — write log.new events DIRECTLY to console, never through logging."""
         try:
+            from .components import ConsolePanel
+
             console = self.query_one("#console_panel", ConsolePanel)
             console.write_line(line, level)
+        except Exception:
+            pass
+
+    def _prune_chat_log(self) -> None:
+        """Remove oldest widgets from chat_log when it exceeds _MAX_CHAT_WIDGETS."""
+        try:
+            chat_log = self.query_one("#chat_log", VerticalScroll)
+            while len(chat_log.children) > _MAX_CHAT_WIDGETS:
+                chat_log.children[0].remove()
         except Exception:
             pass
 
@@ -733,11 +744,13 @@ class AgentApp(App[None]):
         chat_log = self.query_one("#chat_log", VerticalScroll)
         await chat_log.mount(widget)
         chat_log.scroll_end(animate=False)
+        self._prune_chat_log()
 
     def _sched_chat_widget(self, widget) -> None:
         """Schedule a widget mount in the chat log from a sync handler."""
         chat_log = self.query_one("#chat_log", VerticalScroll)
         self.call_later(self._mount_and_scroll, widget, chat_log)
+        self.call_later(self._prune_chat_log)
 
     # ── Session snapshot ──────────────────────────────────────────────────
 
@@ -1112,11 +1125,15 @@ class AgentApp(App[None]):
     @on(DisplayReasoning)
     async def handle_reasoning(self, event: DisplayReasoning) -> None:
         self._finalize_stream()
+        from .components import ThinkingProcess
+
         widget = ThinkingProcess(event.content, event.start_time)
         await self._mount_chat_widget(widget)
 
     @on(AgentFinalResponse)
     async def handle_final_response(self, event: AgentFinalResponse) -> None:
+        from .components import AgentArtifact
+
         self._finalize_stream()
         logger.info("Agent final response received")
         artifact = AgentArtifact(
@@ -1219,6 +1236,7 @@ class AgentApp(App[None]):
             Button("Allow Always", id=f"btn_tool_perm_always_{tid}", variant="warning")
         )
         chat_log.scroll_end(animate=False)
+        self._prune_chat_log()
 
     # ── Per-turn usage summary (TUI-T6) ──────────────────────────────────
 
@@ -1266,6 +1284,7 @@ class AgentApp(App[None]):
             Button("Stop agent", id=f"btn_doom_deny_{tid}", variant="error")
         )
         chat_log.scroll_end(animate=False)
+        self._prune_chat_log()
 
     # ── Tool call 3-beat lifecycle (§6.1) ─────────────────────────────────
 
@@ -1325,6 +1344,8 @@ class AgentApp(App[None]):
 
                 items = json.loads(event.result_text)
                 if isinstance(items, list):
+                    from .components import TodoListWidget
+
                     widget = TodoListWidget()
                     widget.update_items(items)
                     if event.tool_id and event.tool_id in self._tool_widgets:
@@ -1400,6 +1421,8 @@ class AgentApp(App[None]):
         if tool_lower in ("bash", "run_bash"):
             command = cached_args.get("command", "")
             desc = cached_args.get("description", "")
+            from .components import BashBlock
+
             block = BashBlock(command=command, description=desc)
             block.set_output(result_lines)
             if event.tool_id and event.tool_id in self._tool_widgets:
@@ -1554,6 +1577,8 @@ class AgentApp(App[None]):
         # GAP-TUI-2 / GAP-CONFIG-1: choose renderer based on diff_style setting
         use_inline = self._settings.get("diff_style", "side-by-side") == "inline"
         if use_inline:
+            from .components import InlineDiff
+
             widget: Widget = InlineDiff(
                 path=event.path,
                 diff=event.diff,
@@ -1636,6 +1661,7 @@ class AgentApp(App[None]):
         )
         await approval.mount(Button("Reject", id="btn_reject_plan", variant="error"))
         chat_log.scroll_end(animate=False)
+        self._prune_chat_log()
 
     # ── Bash tier-3 approval gate (§16.1) ─────────────────────────────────
 
@@ -1656,6 +1682,7 @@ class AgentApp(App[None]):
         await row.mount(Button("Allow", id=f"btn_bash_allow_{tid}", variant="success"))
         await row.mount(Button("Deny", id=f"btn_bash_deny_{tid}", variant="error"))
         chat_log.scroll_end(animate=False)
+        self._prune_chat_log()
 
     @on(Button.Pressed)
     async def on_any_button(self, event: Button.Pressed) -> None:
@@ -2087,6 +2114,8 @@ class AgentApp(App[None]):
                 if getattr(w, "_path", None) == event.file_path
             ]
             if not existing:
+                from .components import AgentArtifact
+
                 artifact = AgentArtifact(
                     content=event.diff, title=event.file_path, kind="diff"
                 )
@@ -2912,11 +2941,12 @@ class AgentApp(App[None]):
                             try:
                                 f.flush()
                                 _os.fsync(f.fileno())
-                            except Exception:
-                                pass
+                            except Exception as _fsync_err:
+                                logger.debug("export fsync failed: %s", _fsync_err)
                         try:
                             _os.replace(tmp, str(export_path))
-                        except Exception:
+                        except Exception as _replace_err:
+                            logger.debug("export replace failed, trying move: %s", _replace_err)
                             try:
                                 _shutil.move(tmp, str(export_path))
                             except Exception:
@@ -3377,15 +3407,15 @@ class AgentApp(App[None]):
                                 try:
                                     if model_id not in adapter.models:
                                         adapter.models.insert(0, model_id)
-                                except Exception:
-                                    pass
+                                except Exception as _model_ins_err:
+                                    logger.debug("model insert best-effort failed: %s", _model_ins_err)
 
                         # Re-publish so banner/sidebar refresh immediately.
                         if hasattr(orch, "_publish_active_config"):
                             try:
                                 orch._publish_active_config()
-                            except Exception:
-                                pass
+                            except Exception as _pub_err:
+                                logger.debug("publish active config failed: %s", _pub_err)
         except Exception as _exc:
             logger.debug(f"handle_update_role_model adapter update: {_exc}")
 
@@ -3506,8 +3536,8 @@ class AgentApp(App[None]):
                 screen = self._oauth_screen
                 self._oauth_screen = None
                 screen.complete()  # type: ignore[attr-defined]
-            except Exception:
-                pass
+            except Exception as _oauth_err:
+                logger.debug("dismiss OAuth screen failed: %s", _oauth_err)
 
         # Also dismiss any open SettingsScreen — it was constructed before the
         # token existed so it still shows the "Login" button.  Dismissing it
@@ -3519,7 +3549,7 @@ class AgentApp(App[None]):
                 if isinstance(screen, SettingsScreen):
                     screen.dismiss()
                     break
-        except Exception:
+        except Exception as _settings_err:
             pass
 
         # Immediately update the provider banner / sidebar — no restart needed.
@@ -3582,6 +3612,8 @@ class AgentApp(App[None]):
 
     def action_toggle_console(self) -> None:
         try:
+            from .components import ConsolePanel
+
             console = self.query_one("#console_panel", ConsolePanel)
             if "hidden" in console.classes:
                 console.remove_class("hidden")

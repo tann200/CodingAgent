@@ -20,6 +20,7 @@ import os
 import tempfile
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
@@ -213,6 +214,9 @@ class AgentBridge:
         self._working_dir: str = str(working_dir) if working_dir else ""
         self._continue_state: Optional[dict] = None
 
+        # Thread pool for background agent runs (reuse threads, avoid per-call overhead)
+        self._thread_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="bridge")
+
         # AUTO-03: track active TUI role for system-prompt routing
         self._active_role: str = "lead_architect"
         self._deferred_init_done: bool = False
@@ -404,7 +408,10 @@ class AgentBridge:
             pass
 
     def cleanup(self) -> None:
-        """Unsubscribe all handlers (§10.2 step 5)."""
+        """Unsubscribe all handlers (§10.2 step 5) and release thread pool."""
+        pool = getattr(self, "_thread_pool", None)
+        if pool is not None:
+            pool.shutdown(wait=False)
         for event, cb in self._subscriptions:
             try:
                 self._bus.unsubscribe(event, cb)
@@ -1346,7 +1353,11 @@ class AgentBridge:
             self._pending_injections.clear()
         with self._history_lock:
             self.history.append(("user", text))
-        threading.Thread(target=self._run_agent, args=(text,), daemon=True).start()
+        pool = getattr(self, "_thread_pool", None)
+        if pool is None:
+            pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="bridge")
+            self._thread_pool = pool
+        pool.submit(self._run_agent, text)
         return True
 
     def pop_pending_injections(self) -> list[str]:

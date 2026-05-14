@@ -1,26 +1,26 @@
 from textual.widgets import Static
-from textual.reactive import reactive
 from rich.text import Text
 
 
 class StreamView(Static):
-    _buffer = reactive("", layout=False, repaint=True)
-
     def __init__(self, role: str = "Agent", **kwargs):
         super().__init__("", **kwargs)
         self._role = role
         self._raw = ""
+        self._flush_pending = False
 
     def append_chunk(self, chunk: str) -> None:
         self._raw += chunk
-        self._buffer = self._raw
+        if not self._flush_pending:
+            self._flush_pending = True
+            self.call_later(self._flush)
 
-    def watch__buffer(self, new_val: str) -> None:
+    def _flush(self) -> None:
+        self._flush_pending = False
         t = Text()
         t.append(f"{self._role}: ", style="bold #10b981")
-        t.append(new_val)
+        t.append(self._raw)
         self.update(t)
 
     def finalize(self) -> str:
-        result = self._raw
-        return result
+        return self._raw
