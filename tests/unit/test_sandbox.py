@@ -129,7 +129,8 @@ class TestSandboxAvailable:
 
     def test_returns_true_when_sandbox_exec_available(self):
         with patch.object(sbox, "_bwrap_available", return_value=False), \
-             patch.object(sbox, "_sandbox_exec_available", return_value=True):
+             patch.object(sbox, "_sandbox_exec_available", return_value=True), \
+             patch.object(sbox, "sandbox_exec_enforced", return_value=True):
             assert sbox.sandbox_available() is True
 
     def test_returns_false_when_none_available(self):
