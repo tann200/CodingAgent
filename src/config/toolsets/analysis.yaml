@@ -26,6 +26,7 @@ tools:
   - memory_search
   - analyze_repository
   - initialize_repo_intelligence
+  - repo_overview
   # Skills
   - load_skill
   - list_skills

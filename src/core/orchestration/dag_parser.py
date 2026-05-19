@@ -55,7 +55,11 @@ class PlanDAG:
         return ready
 
     def topological_sort_waves(self) -> List[List[str]]:
-        """Group steps into waves for parallel execution."""
+        """Group steps into waves for parallel execution.
+
+        Raises:
+            ValueError: If a circular dependency is detected in the DAG.
+        """
         waves = []
         completed = set()
         remaining = set(self.steps.keys())
@@ -63,7 +67,17 @@ class PlanDAG:
         while remaining:
             ready = self.get_ready_steps(completed)
             if not ready:
-                raise ValueError("Circular dependency detected")
+                cycle_members = sorted(remaining)
+                logger.error(
+                    "PlanDAG: circular dependency detected among steps %s. "
+                    "Completed so far: %s",
+                    cycle_members,
+                    sorted(completed),
+                )
+                raise ValueError(
+                    f"Circular dependency detected in plan DAG. "
+                    f"Stuck steps: {cycle_members}"
+                )
 
             waves.append(ready)
             completed.update(ready)

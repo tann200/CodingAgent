@@ -11,6 +11,7 @@ import logging
 import re as _re
 import shlex
 import subprocess
+import unicodedata
 import uuid
 from pathlib import Path
 from typing import Dict, Any, Optional
@@ -44,6 +45,20 @@ _logger = logging.getLogger(__name__)
 # Sentinel for workdir default — resolved lazily to Path.cwd() at call time
 # so the module can be imported without a fixed working directory.
 _WORKDIR_DEFAULT = object()
+
+
+def _normalize_command(cmd: str) -> str:
+    """Apply NFKC Unicode normalization and strip control characters.
+
+    Prevents homoglyph bypasses (e.g. Cyrillic 'с' for ASCII 'c') and null-byte
+    injection.  Normal whitespace (space, tab, newline) is preserved.
+    """
+    normalized = unicodedata.normalize("NFKC", cmd)
+    return "".join(
+        ch
+        for ch in normalized
+        if unicodedata.category(ch) not in ("Cc", "Cf") or ch in " \t\n\r"
+    )
 
 # Output size caps — tests import these directly from file_tools; the re-export
 # there reads from here so the values are authoritative in this module.
@@ -202,6 +217,77 @@ def _check_shell_flags(cmd_parts: list, first_cmd: str) -> Optional[Dict[str, An
                 "status": "error",
                 "error": "env -i (clear environment) is not allowed.",
             }
+        # Block env VAR=val cmd — environment variable injection can bypass
+        # security controls via LD_PRELOAD, PYTHONPATH, PATH, etc.
+        for _part in cmd_parts[1:]:
+            if _part.startswith("-"):
+                continue  # skip env flags (e.g., -u, --unset)
+            if "=" in _part:
+                return {
+                    "status": "error",
+                    "error": (
+                        f"env with variable assignment '{_part}' is not allowed. "
+                        "Environment variable injection (LD_PRELOAD, PYTHONPATH, PATH, etc.) "
+                        "can bypass security controls."
+                    ),
+                }
+            break  # first non-flag, non-assignment token is the sub-command; stop
+    elif first_cmd == "xargs":
+        # Block xargs when it would invoke a code-execution interpreter with inline
+        # -c/-e flags, bypassing Gate 3 (CODE_EXEC_INTERPRETERS check).
+        for _i, _part in enumerate(cmd_parts[1:], 1):
+            if _part in CODE_EXEC_INTERPRETERS:
+                _remaining = cmd_parts[_i + 1 :]
+                if any(_f in CODE_EXEC_FLAGS for _f in _remaining):
+                    return {
+                        "status": "error",
+                        "error": (
+                            f"xargs with '{_part}' and inline execution flags is not allowed: "
+                            "xargs can be used to invoke code-execution interpreters and "
+                            "bypass the inline-code guard."
+                        ),
+                    }
+    elif first_cmd == "find":
+        # Block find -exec / -execdir / -ok with shell or code-exec interpreters.
+        _FIND_EXEC_FLAGS = {"-exec", "-execdir", "-ok"}
+        _SHELL_NAMES = {"sh", "bash", "zsh", "ksh", "fish", "dash", "csh", "tcsh"}
+        for _i, _part in enumerate(cmd_parts[1:], 1):
+            if _part in _FIND_EXEC_FLAGS:
+                # Collect the exec'd command (tokens until \; or +)
+                _exec_args = []
+                for _follow in cmd_parts[_i + 1 :]:
+                    if _follow in (";", "+", r"\;", "\\;"):
+                        break
+                    _exec_args.append(_follow)
+                if not _exec_args:
+                    continue
+                _exec_binary = Path(_exec_args[0]).name.lower()
+                if _exec_binary in _SHELL_NAMES:
+                    return {
+                        "status": "error",
+                        "error": (
+                            f"find {_part} with shell '{_exec_binary}' is not allowed: "
+                            "find -exec sh/bash/etc can execute arbitrary commands."
+                        ),
+                    }
+                if _exec_binary in CODE_EXEC_INTERPRETERS:
+                    _exec_flags = _exec_args[1:]
+                    if any(_f in CODE_EXEC_FLAGS for _f in _exec_flags):
+                        return {
+                            "status": "error",
+                            "error": (
+                                f"find {_part} with '{_exec_binary}' and inline execution flags "
+                                "is not allowed: find -exec can bypass the inline-code guard."
+                            ),
+                        }
+                if _exec_binary in _COMMAND_DENYLIST:
+                    return {
+                        "status": "error",
+                        "error": (
+                            f"find {_part} with '{_exec_binary}' is not allowed: "
+                            f"'{_exec_binary}' is in the command denylist."
+                        ),
+                    }
     return None
 
 
@@ -270,6 +356,11 @@ def bash(
     if description:
         _logger.info("bash: %s | cmd=%r", description, command)
 
+    # Pre-Gate: Unicode normalization — NFKC normalises homoglyphs and strips
+    # control/format characters (null bytes, zero-width spaces, etc.) before
+    # any security gate inspects the command string.
+    command = _normalize_command(command)
+
     # Gate 1: Shell-operator / metacharacter block (DANGEROUS_PATTERNS).
     # Blocks &&, ||, ;, |, >, >>, <, $(, ` and destructive keywords on the
     # normalised (whitespace-collapsed, lowercased) command string so spacing
@@ -285,9 +376,12 @@ def bash(
     # Gate 2: AST-level bash security analysis — catches advanced injection vectors
     # ($(...), backtick substitution, pipe-to-shell, fork bombs, disk-wipe ops) that
     # DANGEROUS_PATTERNS may miss (e.g. creative whitespace, multi-arg tricks).
+    # Both BLOCKED and DANGEROUS are hard-blocked here; later gates also catch
+    # DANGEROUS commands, but treating DANGEROUS as blocked provides defence-in-depth
+    # and eliminates the risk of silent pass-through if a later gate has a gap.
     try:
         _risk_level, _risk_reasons = analyze_bash_command(command)
-        if _risk_level == BashRiskLevel.BLOCKED:
+        if _risk_level in (BashRiskLevel.BLOCKED, BashRiskLevel.DANGEROUS):
             return {
                 "status": "error",
                 "error": f"Command blocked by security analysis: {'; '.join(_risk_reasons)}",
@@ -478,6 +572,9 @@ def bash_readonly(
         workdir = Path.cwd()
     workdir = Path(workdir)  # type: ignore[arg-type]
 
+    # Pre-Gate: Unicode normalization — same as bash().
+    command = _normalize_command(command)
+
     # Gate 1: Shell-operator / metacharacter block.
     _cmd_lower = _re.sub(r"\s+", " ", command).lower()
     for pattern in DANGEROUS_PATTERNS:
@@ -490,7 +587,7 @@ def bash_readonly(
     # Gate 2: AST-level bash security analysis.
     try:
         _risk_level, _risk_reasons = analyze_bash_command(command)
-        if _risk_level == BashRiskLevel.BLOCKED:
+        if _risk_level in (BashRiskLevel.BLOCKED, BashRiskLevel.DANGEROUS):
             return {
                 "status": "error",
                 "error": f"Command blocked by security analysis: {'; '.join(_risk_reasons)}",

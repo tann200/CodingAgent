@@ -4,8 +4,9 @@ Lightweight VectorStore stub
 This module intentionally provides a minimal, dependency-free VectorStore API so
 the rest of the codebase can opt into semantic-search features when available.
 It deliberately does NOT depend on external vector DBs or heavy ML stacks
-(pyarrow, pandas, pydantic, sentence-transformers). The implementation is a
-safe no-op / in-memory stub.
+(pyarrow, pandas, pydantic). When ``sentence-transformers`` is installed it is
+used automatically for real semantic search; otherwise a fast SHA-256 stub is
+used as a graceful fallback.
 
 v2 Phase 3: RAM-optimized embedding cache for 64GB systems.
 """
@@ -23,6 +24,34 @@ from pathlib import Path
 from src.tools.tools_config import agent_context_path
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# sentence-transformers lazy import — real semantic model when available
+# ---------------------------------------------------------------------------
+
+_ST_MODEL: Any = None  # cached SentenceTransformer instance or None
+_ST_AVAILABLE: bool | None = None  # None = not yet probed
+
+
+def _get_st_model() -> Any:
+    """Return a SentenceTransformer model on first call; None if unavailable.
+
+    Uses 'all-MiniLM-L6-v2' — a small (80 MB), fast, OS/stack agnostic model
+    that runs on CPU without a GPU.  The result is module-level cached so the
+    expensive load happens at most once per process.
+    """
+    global _ST_MODEL, _ST_AVAILABLE
+    if _ST_AVAILABLE is not None:
+        return _ST_MODEL
+    try:
+        from sentence_transformers import SentenceTransformer  # type: ignore[import]
+        _ST_MODEL = SentenceTransformer("all-MiniLM-L6-v2")
+        _ST_AVAILABLE = True
+        logger.info("VectorStore: sentence-transformers loaded (all-MiniLM-L6-v2)")
+    except Exception as exc:
+        _ST_AVAILABLE = False
+        logger.debug("VectorStore: sentence-transformers unavailable (%s), using SHA-256 stub", exc)
+    return _ST_MODEL
 
 try:
     from src.core.io_utils import atomic_write_json as _atomic_write_json
@@ -91,6 +120,14 @@ class _DummyModel:
     def encode(self, texts: Any) -> List[List[float]]:
         if isinstance(texts, str):
             texts = [texts]
+        # Prefer real sentence-transformers model when available
+        st = _get_st_model()
+        if st is not None:
+            try:
+                embeddings = st.encode(list(texts), convert_to_numpy=False)
+                return [list(map(float, e)) for e in embeddings]
+            except Exception as exc:
+                logger.debug("_DummyModel.encode: ST model failed (%s), falling back to stub", exc)
         out: List[List[float]] = []
         for t in texts:
             vec = _get_cached_embedding(str(t), self._dim)
@@ -145,19 +182,13 @@ class VectorStore:
         logger.debug("VectorStore.index_code persisted %d symbols", len(self._symbols))
 
     def search(self, query: str, limit: int = 5) -> List[Dict[str, Any]]:
-        """Basic token-based search over the persisted symbols.
+        """Search over persisted symbols using semantic or token similarity.
 
-        NOTE: This stub intentionally performs a light-weight substring/token
-        match rather than vector similarity. It also removes any heavy binary
-        "vector" payload from results before returning to callers (the full
-        backend implementations typically drop the vector column to avoid
-        memory/serialization issues).
+        When ``sentence-transformers`` is available, cosine similarity is used
+        for genuine semantic search.  Otherwise falls back to token overlap.
 
-        The comment below documents the behavior: drop the 'vector' column
-        before returning results.
+        NOTE: the 'vector' column is always stripped from returned results.
         """
-        # drop 'vector' column before returning results
-
         # Ensure in-memory cache populated (lazy load from disk)
         if not getattr(self, "_symbols", None):
             try:
@@ -177,29 +208,61 @@ class VectorStore:
                 )
                 self._symbols = []
 
+        symbols = self._symbols or []
+        if not symbols:
+            return []
+
+        # --- Semantic search path (sentence-transformers available) ---
+        st = _get_st_model()
+        if st is not None:
+            try:
+                import math
+
+                q_vec = self._model.encode(query)[0]
+                q_norm = math.sqrt(sum(x * x for x in q_vec)) or 1.0
+
+                scored: List[tuple[float, Dict[str, Any]]] = []
+                for sym in symbols:
+                    s_vec = sym.get("vector")
+                    if not s_vec:
+                        # Embed on demand (first time after index_code without vectors)
+                        text = " ".join(filter(None, [
+                            sym.get("symbol_name") or sym.get("name"),
+                            sym.get("file_path"),
+                            sym.get("docstring") or sym.get("summary"),
+                        ]))
+                        s_vec = self._model.encode(text)[0]
+                    s_norm = math.sqrt(sum(x * x for x in s_vec)) or 1.0
+                    cosine = sum(a * b for a, b in zip(q_vec, s_vec)) / (q_norm * s_norm)
+                    scored.append((cosine, sym))
+                scored.sort(key=lambda t: t[0], reverse=True)
+                results = []
+                for _, sym in scored[:limit]:
+                    res = dict(sym)
+                    res.pop("vector", None)
+                    results.append(res)
+                logger.debug("VectorStore.search(%r) semantic -> %d results", query, len(results))
+                return results
+            except Exception as exc:
+                logger.debug("VectorStore.search: semantic path failed (%s), falling back", exc)
+
+        # --- Token-based fallback ---
         q = (query or "").lower()
         tokens = [t for t in re.split(r"[\s_\-/\\]+", q) if t]
 
-        results: List[Dict[str, Any]] = []
-        for sym in self._symbols or []:
+        results = []
+        for sym in symbols:
             name = (sym.get("symbol_name") or sym.get("name") or "").lower()
             file_path = (sym.get("file_path") or "").lower()
-
-            if not tokens:
-                match = True
-            else:
-                match = any(tok in name or tok in file_path for tok in tokens)
-
+            match = not tokens or any(tok in name or tok in file_path for tok in tokens)
             if match:
-                # copy minimal fields and ensure vector payload removed
                 res = dict(sym)
-                # Remove any large binary vector payloads if present
                 res.pop("vector", None)
                 results.append(res)
                 if len(results) >= limit:
                     break
 
-        logger.debug("VectorStore.search(%r) -> %d results", query, len(results))
+        logger.debug("VectorStore.search(%r) token -> %d results", query, len(results))
         return results
 
     def add_memory(self, text: str, metadata: Dict[str, Any]) -> None:

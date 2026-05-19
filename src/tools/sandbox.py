@@ -10,7 +10,7 @@ Platform support:
   that allows read-only access to system dirs, writable cwd only, and
   denies network by default.
 - **Fallback**: When no sandboxing is available and level != "off",
-  executes via plain ``subprocess.run`` with a warning event.
+  executes via plain ``subprocess.run`` with a logged warning event.
 
 Sandbox strictness levels (``sandbox_level`` param):
 
@@ -20,12 +20,22 @@ Sandbox strictness levels (``sandbox_level`` param):
 
 The level can be overridden at import time via the
 ``CODINGAGENT_SANDBOX_LEVEL`` environment variable.
+
+macOS note:
+    Apple deprecated ``sandbox-exec`` and the associated SBPL sandbox
+    profiles.  On recent macOS / Apple Silicon the profile may silently
+    have no effect.  The module detects this by running a canary probe
+    that attempts to write outside the allowed directory and checking
+    whether the operation is blocked.  When the probe indicates the
+    sandbox is not enforced a WARNING is emitted and
+    ``sandbox_exec_enforced()`` returns False.
 """
 
 from __future__ import annotations
 
 import logging
 import os
+import platform
 import shutil
 import subprocess
 import tempfile
@@ -55,6 +65,101 @@ _SANDBOX_EXEC_PATH: Optional[str] = _sandbox_exec_path()
 
 def _sandbox_exec_available() -> bool:
     return _SANDBOX_EXEC_PATH is not None
+
+
+# ---------------------------------------------------------------------------
+# macOS sandbox-exec enforcement probe
+# ---------------------------------------------------------------------------
+
+_SANDBOX_EXEC_ENFORCED: Optional[bool] = None  # None = not yet probed
+
+
+def _probe_sandbox_exec_enforced() -> bool:
+    """Check whether sandbox-exec actually *enforces* restrictions on this host.
+
+    Apple deprecated sandbox-exec and on some macOS / Apple Silicon
+    configurations it silently accepts profiles but does not enforce them.
+    We detect this by attempting a write to a path outside /tmp inside a
+    sandbox that should deny it.  If the write succeeds the sandbox is not
+    enforcing.
+
+    Returns True when the sandbox appears to be enforced, False otherwise.
+    Errors in the probe itself are treated conservatively as "not enforced".
+    """
+    if not _sandbox_exec_available():
+        return False
+    if platform.system() != "Darwin":
+        return False
+    try:
+        import tempfile as _tf
+
+        # Create an isolated probe dir and a *target outside it*
+        with _tf.TemporaryDirectory() as probe_dir:
+            target_outside = Path(probe_dir) / ".." / "sandbox_probe_canary"
+            target_outside = target_outside.resolve()
+
+            # Profile that only allows writes to probe_dir
+            profile = (
+                "(version 1)\n"
+                "(allow default)\n"
+                f'(deny file-write* (not (subpath "{probe_dir}")))\n'
+            )
+            _fd, profile_path = _tf.mkstemp(suffix=".sb", prefix="codingagent-probe-")
+            try:
+                with os.fdopen(_fd, "w") as f:
+                    f.write(profile)
+                cmd = [
+                    _SANDBOX_EXEC_PATH,
+                    "-f", profile_path,
+                    "sh", "-c",
+                    f"echo canary > {target_outside} 2>/dev/null; echo $?",
+                ]
+                res = subprocess.run(
+                    cmd, capture_output=True, text=True, timeout=5
+                )
+                # If the canary file was created, sandbox did not enforce
+                if target_outside.exists():
+                    try:
+                        target_outside.unlink()
+                    except Exception:
+                        pass
+                    return False
+                return True
+            finally:
+                try:
+                    os.unlink(profile_path)
+                except Exception:
+                    pass
+    except Exception as exc:
+        logger.debug("sandbox-exec enforcement probe error: %s", exc)
+        return False  # conservative: assume not enforced
+
+
+def sandbox_exec_enforced() -> bool:
+    """Return True when sandbox-exec is available *and* actually enforces its profile.
+
+    Result is cached after the first call (the check is a subprocess probe).
+    """
+    global _SANDBOX_EXEC_ENFORCED
+    if _SANDBOX_EXEC_ENFORCED is None:
+        _SANDBOX_EXEC_ENFORCED = _probe_sandbox_exec_enforced()
+        if _sandbox_exec_available() and not _SANDBOX_EXEC_ENFORCED:
+            _warn = (
+                "WARNING: sandbox-exec is present but appears NOT to enforce its "
+                "sandbox profile on this macOS host (likely Apple Silicon + recent OS). "
+                "Shell commands will run with reduced isolation. "
+                "Install bwrap for reliable sandboxing, or set "
+                "CODINGAGENT_SANDBOX_LEVEL=off to suppress this warning."
+            )
+            import sys as _sys
+            print(_warn, file=_sys.stderr, flush=True)
+            logger.warning("sandbox: %s", _warn)
+            try:
+                from src.core.orchestration.event_bus import get_event_bus
+                get_event_bus().publish("system.warning", {"message": _warn})
+            except Exception:
+                pass
+    return bool(_SANDBOX_EXEC_ENFORCED)
 
 
 # ---------------------------------------------------------------------------
@@ -155,34 +260,23 @@ def _bwrap_available() -> bool:
     return _BWRAP_AVAILABLE
 
 
-# Emit a startup warning event when the environment requests sandboxing but
-# neither bwrap nor sandbox-exec is available.
-try:
-    if (
-        _DEFAULT_LEVEL != "off"
-        and not _BWRAP_AVAILABLE
-        and not _sandbox_exec_available()
-    ):
-        try:
-            from src.core.orchestration.event_bus import get_event_bus
-
-            try:
-                eb = get_event_bus()
-                try:
-                    eb.publish(
-                        "system.warning",
-                        {
-                            "message": "sandbox: bwrap and sandbox-exec unavailable; sandbox disabled"
-                        },
-                    )
-                except Exception:
-                    pass
-            except Exception:
-                pass
-        except Exception:
-            logger.debug("sandbox: could not publish startup warning")
-except Exception:
-    pass
+# Emit a startup warning (stderr + logger + EventBus) when the environment
+# requests sandboxing but neither bwrap nor sandbox-exec is available.
+if _DEFAULT_LEVEL != "off" and not _BWRAP_AVAILABLE and not _sandbox_exec_available():
+    import sys as _sys
+    _warn = (
+        "WARNING: CodingAgent sandbox requested but neither bwrap (Linux) nor "
+        "sandbox-exec (macOS) is available. Shell commands will run with FULL "
+        "USER PRIVILEGES. Set CODINGAGENT_SANDBOX_LEVEL=off to suppress this "
+        "warning, or install bwrap to enable sandboxing."
+    )
+    print(_warn, file=_sys.stderr, flush=True)
+    logger.warning("sandbox: %s", _warn)
+    try:
+        from src.core.orchestration.event_bus import get_event_bus
+        get_event_bus().publish("system.warning", {"message": _warn})
+    except Exception:
+        pass
 
 
 def _build_bwrap_args(
@@ -293,43 +387,51 @@ def run_sandboxed(
             )
             # fall through to next option
 
-    # 3. Try sandbox-exec (macOS)
+    # 3. Try sandbox-exec (macOS) — only if available AND enforcing
     if _sandbox_exec_available():
-        try:
-            profile_path = _write_sandbox_exc_profile(cwd, level)
-            try:
-                sbox_cmd = [_SANDBOX_EXEC_PATH, "-f", profile_path] + cmd
-                # Note: sandbox-exec does not support --unshare-net; network
-                # is denied via the profile instead.
-                result = subprocess.run(
-                    sbox_cmd, cwd=str(cwd), timeout=timeout, **kwargs
-                )
-                # macOS sandbox-exec can fail before the command starts if the
-                # generated profile uses unsupported syntax on the host version.
-                # In that case degrade to the documented plain-subprocess fallback
-                # instead of surfacing sandbox parser errors as command output.
-                _stderr = result.stderr or ""
-                if isinstance(_stderr, bytes):
-                    _stderr = _stderr.decode(errors="replace")
-                if result.returncode == 65 and "sandbox-exec:" in str(_stderr):
-                    logger.warning(
-                        "sandbox: sandbox-exec profile rejected (%s) — falling back to unsandboxed",
-                        str(_stderr).splitlines()[0] if _stderr else "unknown error",
-                    )
-                else:
-                    return result
-            finally:
-                # Best-effort cleanup of the temp profile
-                try:
-                    os.unlink(profile_path)
-                except Exception:
-                    pass
-        except Exception as exc:
-            logger.warning(
-                "sandbox: sandbox-exec failed (%s) — falling back to unsandboxed",
-                exc,
+        if not sandbox_exec_enforced():
+            # Sandbox-exec exists but is not enforcing (deprecated on this macOS).
+            # Log at debug level (warning was already emitted at probe time) and
+            # fall through to the plain-subprocess path.
+            logger.debug(
+                "sandbox: sandbox-exec not enforcing on this host — skipping"
             )
-            # fall through
+        else:
+            try:
+                profile_path = _write_sandbox_exc_profile(cwd, level)
+                try:
+                    sbox_cmd = [_SANDBOX_EXEC_PATH, "-f", profile_path] + cmd
+                    # Note: sandbox-exec does not support --unshare-net; network
+                    # is denied via the profile instead.
+                    result = subprocess.run(
+                        sbox_cmd, cwd=str(cwd), timeout=timeout, **kwargs
+                    )
+                    # macOS sandbox-exec can fail before the command starts if the
+                    # generated profile uses unsupported syntax on the host version.
+                    # In that case degrade to the documented plain-subprocess fallback
+                    # instead of surfacing sandbox parser errors as command output.
+                    _stderr = result.stderr or ""
+                    if isinstance(_stderr, bytes):
+                        _stderr = _stderr.decode(errors="replace")
+                    if result.returncode == 65 and "sandbox-exec:" in str(_stderr):
+                        logger.warning(
+                            "sandbox: sandbox-exec profile rejected (%s) — falling back to unsandboxed",
+                            str(_stderr).splitlines()[0] if _stderr else "unknown error",
+                        )
+                    else:
+                        return result
+                finally:
+                    # Best-effort cleanup of the temp profile
+                    try:
+                        os.unlink(profile_path)
+                    except Exception:
+                        pass
+            except Exception as exc:
+                logger.warning(
+                    "sandbox: sandbox-exec failed (%s) — falling back to unsandboxed",
+                    exc,
+                )
+                # fall through
 
     # 4. Final fallback — plain subprocess with warning
     if level != "off":
@@ -340,33 +442,31 @@ def run_sandboxed(
             "running command WITHOUT sandboxing. Set SANDBOX_LEVEL=off to suppress.\n"
         )
         _sys.stderr.write(_warn)
-        logger.debug(
+        logger.warning(
             "sandbox: bwrap and sandbox-exec unavailable — falling back to unsandboxed execution"
         )
         try:
             from src.core.orchestration.event_bus import get_event_bus
-
-            try:
-                eb = get_event_bus()
-                try:
-                    eb.publish(
-                        "system.warning",
-                        {
-                            "message": "sandbox: bwrap and sandbox-exec unavailable; sandbox disabled"
-                        },
-                    )
-                except Exception:
-                    pass
-            except Exception:
-                pass
+            get_event_bus().publish(
+                "system.warning",
+                {"message": "sandbox: bwrap and sandbox-exec unavailable; sandbox disabled"},
+            )
         except Exception:
             pass
     return subprocess.run(cmd, cwd=str(cwd), timeout=timeout, **kwargs)
 
 
 def sandbox_available() -> bool:
-    """Return True if sandboxed execution is possible on this host."""
-    return _bwrap_available() or _sandbox_exec_available()
+    """Return True if sandboxed execution is possible on this host.
+
+    On macOS this returns True only when sandbox-exec is both available
+    *and* enforcing (see ``sandbox_exec_enforced()``).
+    """
+    if _bwrap_available():
+        return True
+    if _sandbox_exec_available():
+        return sandbox_exec_enforced()
+    return False
 
 
 def get_sandbox_level() -> str:
@@ -386,3 +486,4 @@ def set_sandbox_level(level: str) -> None:
     if level not in ("off", "workspace", "full"):
         raise ValueError(f"Invalid sandbox level: {level!r}")
     _DEFAULT_LEVEL = level
+

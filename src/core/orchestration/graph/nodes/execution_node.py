@@ -457,7 +457,7 @@ async def _execution_node_impl(state: Mapping[str, Any], config: RunnableConfig)
     _recent_calls = _recent_calls[-_RECENT_CALLS_WINDOW:]
 
     # UI Sync: Forward tool result to TUI so user can see execution result
-    sync_tool_result_to_ui(orchestrator=orchestrator, result=res, logger=logger)
+    sync_tool_result_to_ui(orchestrator=orchestrator, result=res, logger=logger, tool_name=tool_name)
 
     # P3-T3: Keep repo index fresh after file-writing tools
     if _refresh_file_in_index is not None and tool_name in _FILE_WRITING_TOOLS:

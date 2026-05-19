@@ -290,6 +290,47 @@ def get_model_for_role(role: str) -> Optional[str]:
     return None
 
 
+
+# ---------------------------------------------------------------------------
+# Agent loop constants — all hardcoded defaults overridable via config keys
+# ---------------------------------------------------------------------------
+
+#: Maximum number of planning rounds before the planner gives up.
+#: Config key: ``max_rounds_planning``
+MAX_ROUNDS_PLANNING: int = 15
+
+#: Seconds before an existing plan is considered stale and replanned.
+#: Config key: ``plan_resume_ttl_seconds``
+PLAN_RESUME_TTL_SECONDS: int = 1800
+
+#: Default per-task debug attempt ceiling (also readable from state["max_debug_attempts"]).
+#: Config key: ``max_debug_attempts``
+MAX_DEBUG_ATTEMPTS: int = 3
+
+#: Session-wide ceiling on total debug LLM calls (across all tasks/steps).
+#: Config key: ``total_debug_ceiling``
+TOTAL_DEBUG_CEILING: int = 9
+
+#: Maximum replan attempts per execution path.
+#: Config key: ``max_replan_attempts``
+MAX_REPLAN_ATTEMPTS: int = 5
+
+
+def get_agent_loop_constant(key: str, default: int, working_dir: Optional[Path] = None) -> int:
+    """Read an integer agent-loop constant from merged config, falling back to *default*.
+
+    Useful for nodes that want config-driven limits without hard-coding values.
+    """
+    try:
+        cfg = load_merged_config(working_dir=working_dir)
+        val = cfg.get(key)
+        if val is not None:
+            return int(val)
+    except Exception:
+        pass
+    return default
+
+
 def get_small_model(working_dir: Optional[Path] = None) -> Optional[str]:
     """Return a configured 'small_model' string.
 

@@ -26,8 +26,10 @@ from src.core.orchestration.graph.nodes.planning_result import (
     _build_resolved_plan_result as _build_resolved_plan_result_impl,
 )
 from src.core.orchestration.graph.nodes.planning_helpers import (
+    append_plan_audit_log,
     get_last_plan_path,
     hydrate_repo_context_from_index,
+    maybe_inject_repo_overview,
     load_last_plan,
     plan_is_resumable,
     resolve_planning_orchestrator,
@@ -106,16 +108,11 @@ def _load_last_plan(workdir: str) -> Dict[str, Any]:
 
 
 def _save_last_plan(workdir: str, plan: list, task: str, step: int = 0) -> None:
-    """Save the current plan to JSON file for cross-session persistence."""
-    save_last_plan(
-        workdir=workdir,
-        plan=plan,
-        task=task,
-        step=step,
-        get_last_plan_path_fn=_get_last_plan_path,
-        logger=logger,
-        now_fn=datetime.now,
-    )
+    """Save plan to JSON (cross-session persistence) and append to audit log."""
+    _kw = dict(workdir=workdir, plan=plan, task=task, step=step,
+               get_last_plan_path_fn=_get_last_plan_path, logger=logger, now_fn=datetime.now)
+    save_last_plan(**_kw)
+    append_plan_audit_log(**_kw)
 
 
 def _build_planning_task_description(
@@ -375,6 +372,11 @@ async def _planning_node_impl(state: Mapping[str, Any], config: RunnableConfig) 
             task,
             relevant_files,
             key_symbols,
+        )
+
+        # Repo-aware planning: inject directory tree when no analysis context present.
+        analysis_summary = maybe_inject_repo_overview(
+            str(s.get("working_dir") or ""), relevant_files, analysis_summary
         )
 
         # GAP-FRONTIER-6: Tier-dependent step limit — frontier models can plan more steps.

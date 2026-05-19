@@ -29,6 +29,21 @@ async def replan_node(state: StateLike, config: RunnableConfig) -> Dict[str, Any
     # P2-A: global recovery cap (shared with debug_node)
     total_recovery_attempts = int(state.get("total_recovery_attempts") or 0) + 1
 
+    # Configurable replan ceiling
+    from src.core.config_loader import get_agent_loop_constant, MAX_REPLAN_ATTEMPTS
+    _replan_cap = get_agent_loop_constant("max_replan_attempts", MAX_REPLAN_ATTEMPTS)
+    if replan_attempts > _replan_cap:
+        logger.warning(
+            f"replan_node: replan_attempts={replan_attempts} exceeds cap={_replan_cap}, aborting"
+        )
+        return {
+            "replan_required": None,
+            "action_failed": False,
+            "replan_attempts": replan_attempts,
+            "total_recovery_attempts": total_recovery_attempts,
+            "errors": [f"Replan cap ({_replan_cap}) exceeded — aborting replan loop"],
+        }
+
     orchestrator = _resolve_orchestrator(state, config)
     if orchestrator is None:
         logger.error("replan_node: orchestrator is None")

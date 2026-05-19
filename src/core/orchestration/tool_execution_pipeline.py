@@ -378,6 +378,11 @@ def execute_tool_impl(orch: Any, tool_call: Dict[str, Any]) -> Dict[str, Any]:
         return {"ok": False, "error": "Tool arguments must be a mapping."}
 
     if getattr(orch, "_dry_run", False) and name in DRY_RUN_BLOCKED_TOOLS:
+        # Strip internal flags before returning (same as the live-execution path).
+        # user_approved is an internal WorkspaceGuard bypass token; it must never
+        # be surfaced to callers even in dry_run mode.
+        args = dict(args)
+        args.pop("user_approved", None)
         entry = {"tool": name, "args": args}
         try:
             orch._dry_run_log.append(entry)

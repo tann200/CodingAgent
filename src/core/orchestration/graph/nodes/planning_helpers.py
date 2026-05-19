@@ -7,7 +7,33 @@ import tempfile
 import traceback
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, Mapping, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
+import logging as _logging
+
+_helpers_logger = _logging.getLogger(__name__)
+
+
+def maybe_inject_repo_overview(
+    working_dir: str,
+    relevant_files: List[str],
+    analysis_summary: str,
+) -> str:
+    """Return analysis_summary enriched with repo_overview tree when no files known."""
+    if relevant_files:
+        return analysis_summary
+    try:
+        from src.tools.repo_overview_tool import repo_overview as _ov_fn
+        ov = _ov_fn(workdir=working_dir, max_depth=3, max_files=200)
+        if ov.get("ok") and ov.get("entries"):
+            lines = [f"{'  '*(e['depth']-1)}{e['path']} ({'dir' if e['type']=='dir' else 'file'})"
+                     for e in ov["entries"][:80]]
+            manifests = ", ".join(ov.get("manifests") or []) or "none"
+            _helpers_logger.debug("planning_helpers: repo_overview injected (%d entries)", len(ov["entries"]))
+            return (f"[repo_overview] root={ov['root']} manifests={manifests} "
+                    f"truncated={ov['truncated']}\n" + "\n".join(lines))
+    except Exception as exc:
+        _helpers_logger.debug("planning_helpers: repo_overview skipped: %s", exc)
+    return analysis_summary
 
 
 def resolve_planning_orchestrator(
@@ -138,6 +164,40 @@ def save_last_plan(
             raise
     except Exception as exc:
         logger.warning("planning_node: failed to save last plan: %s", exc)
+
+
+def append_plan_audit_log(
+    *,
+    workdir: str,
+    plan: list,
+    task: str,
+    step: int,
+    get_last_plan_path_fn: Callable[[str], Path],
+    logger: Any,
+    now_fn: Callable[[], datetime] = datetime.now,
+) -> None:
+    """Append a plan snapshot to the append-only plan_history.jsonl audit log.
+
+    The log lives at ``<agent_context_dir>/plan_history.jsonl`` and is never
+    truncated — every planning decision is preserved for post-hoc analysis.
+    Failures are logged at DEBUG level and swallowed so they never block execution.
+    """
+    try:
+        plan_path = get_last_plan_path_fn(workdir)
+        history_path = plan_path.parent / "plan_history.jsonl"
+        entry = {
+            "ts": now_fn().isoformat(),
+            "task": task,
+            "step": step,
+            "plan_len": len(plan),
+            "plan": plan,
+        }
+        history_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(history_path, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(entry, default=str) + "\n")
+        logger.debug("planning_node: appended plan to audit log %s", history_path)
+    except Exception as exc:
+        logger.debug("planning_node: plan audit log write skipped: %s", exc)
 
 
 def plan_is_resumable(

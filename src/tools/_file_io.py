@@ -317,6 +317,14 @@ def write_file(
         _logger.exception("write_file atomic write failed for %s", p)
         return {"path": str(p), "status": "error", "error": str(_mk_exc)}
 
+    # MEM-1: Evict the just-written file from ContextBuilder's read cache so the
+    # next context build reflects the new content rather than the pre-write version.
+    try:
+        from src.core.context.context_builder import ContextBuilder as _CB
+        _CB.invalidate_path(str(p))
+    except Exception:
+        pass  # never block a write on cache-invalidation failure
+
     result: Dict[str, Any] = {
         "path": str(p),
         "status": "ok",

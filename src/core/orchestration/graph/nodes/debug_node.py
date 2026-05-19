@@ -73,11 +73,25 @@ async def debug_node(state: StateLike, config: RunnableConfig) -> Dict[str, Any]
         logger.error("debug_node: orchestrator is None")
         return {"next_action": None, "errors": ["orchestrator not found"]}
 
+    from src.core.config_loader import get_agent_loop_constant, MAX_DEBUG_ATTEMPTS, TOTAL_DEBUG_CEILING
+
     current_attempt: int = int(state.get("debug_attempts") or 0)
-    max_attempts: int = int(state.get("max_debug_attempts") or 3)
+    max_attempts: int = int(state.get("max_debug_attempts") or get_agent_loop_constant("max_debug_attempts", MAX_DEBUG_ATTEMPTS))
     total_debug_attempts: int = int(state.get("total_debug_attempts") or 0)
+    total_debug_ceiling: int = int(state.get("total_debug_ceiling") or get_agent_loop_constant("total_debug_ceiling", TOTAL_DEBUG_CEILING))
     last_result = state.get("last_result") or {}
     verification_result = state.get("verification_result") or {}
+
+    # Session-wide hard cap: stop if total debug LLM calls across all tasks hit the ceiling
+    if total_debug_attempts >= total_debug_ceiling:
+        logger.warning(
+            f"debug_node: session total_debug_ceiling reached "
+            f"({total_debug_attempts}/{total_debug_ceiling}), refusing further debug attempts"
+        )
+        return {
+            "next_action": None,
+            "errors": [f"Session debug ceiling ({total_debug_ceiling}) reached — aborting debug loop"],
+        }
     # DOOM-LOOP FIX: Use original_task as the authoritative task string.
     # state["task"] may have been overwritten by planning_node with a step
     # description, which causes "Task: Task: Task:..." accumulation when

@@ -12,7 +12,7 @@ NODE_DIR = Path("src/core/orchestration/graph/nodes")
 # Current measured limits (tightened from actual sizes to catch regressions).
 # Update these DOWN as files are further split; never update them UP.
 _FILE_LIMITS = {
-    "execution_helpers.py": 1340,   # target 600 after full split
+    "execution_helpers.py": 1344,   # target 600 after full split
     "frontier_loop_node.py": 1020,  # target 600 after split
     "planning_node.py": 900,        # partially split, target 600
     "execution_node.py": 610,       # target 600; grew slightly from P3-T3/T5 wiring

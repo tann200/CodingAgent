@@ -269,7 +269,7 @@ ROLE_CONFIGS: Dict[str, Dict[str, Any]] = {
 # Canonical roles defined in docs/gap-analysis.md
 CANONICAL_ROLES = [
     "analyst", "strategic", "operational", "reviewer", "debugger", "general",
-    "scout", "tester",
+    "scout", "tester", "explore", "verification",
 ]
 
 # Map legacy/alternate role names to canonical roles
@@ -287,6 +287,10 @@ ROLE_ALIASES = {
     "debug": "debugger",
     "generalist": "general",
     "general_purpose": "general",
+    # explore / verification aliases
+    "explorer": "explore",
+    "verify": "verification",
+    "verifier": "verification",
 }
 
 # Build canonical role configs by mapping existing ROLE_CONFIGS entries
@@ -305,6 +309,41 @@ CANONICAL_ROLE_CONFIGS: Dict[str, Dict[str, Any]] = {
     # general: full-access workhorse for parallel research+execution
     "general": ROLE_CONFIGS.get("general_role", ROLE_CONFIGS.get("coder", {})),
 }
+
+
+def _build_canonical_role_config_from_agent(agent_id: str) -> Optional[Dict[str, Any]]:
+    """Build a ROLE_CONFIGS-compatible dict from an AgentDefinition.
+
+    Used for roles (`explore`, `verification`) that exist in agent_types.py but
+    have no hand-written ROLE_CONFIGS entry.  Returns None if agent_id is unknown.
+    """
+    try:
+        from src.core.orchestration.agent_types import get_agent as _get_agent
+        agent_def = _get_agent(agent_id)
+        if agent_def is None:
+            return None
+        return {
+            "description": agent_def.description,
+            "system_prompt_suffix": "",
+            "allowed_tools": sorted(agent_def.allowed_tools) if agent_def.allowed_tools is not None else [],
+            "denied_tools": sorted(agent_def.denied_tools),
+            "max_rounds": agent_def.max_rounds,
+        }
+    except Exception:
+        return None
+
+
+def _populate_agent_type_roles() -> None:
+    """Lazily populate CANONICAL_ROLE_CONFIGS for roles defined only in agent_types.py."""
+    for _role_id in ("explore", "verification"):
+        if _role_id not in CANONICAL_ROLE_CONFIGS:
+            _cfg = _build_canonical_role_config_from_agent(_role_id)
+            if _cfg is not None:
+                CANONICAL_ROLE_CONFIGS[_role_id] = _cfg
+
+
+# Populate immediately at module import time (agent_types is always available).
+_populate_agent_type_roles()
 
 
 def normalize_role(role: str) -> str:

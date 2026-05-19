@@ -13,7 +13,9 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 from src.core.orchestration.graph.nodes.execution_guards import (  # noqa: F401
     _validate_python_syntax,
     _capture_snapshot,
+    check_agent_definition_tool_gate,
 )
+from src.core.orchestration.prompt_injection_guard import sanitize_result_dict
 
 
 def extract_tool_call_from_response(
@@ -304,14 +306,16 @@ def log_plan_step_execution(
 
 
 def sync_tool_result_to_ui(
-    *, orchestrator: Any, result: Mapping[str, Any], logger: Any
+    *, orchestrator: Any, result: Mapping[str, Any], logger: Any,
+    tool_name: str = "",
 ) -> None:
     """Best-effort append of the latest tool result into UI-visible history."""
     if not orchestrator or not hasattr(orchestrator, "msg_mgr"):
         return
     try:
+        safe_result = sanitize_result_dict(dict(result), tool_name=tool_name)
         orchestrator.msg_mgr.append(
-            "user", json.dumps({"tool_execution_result": result})
+            "user", json.dumps({"tool_execution_result": safe_result})
         )
     except Exception as exc:
         logger.debug("UI sync failed: %s", exc)
@@ -667,6 +671,14 @@ def handle_execution_preflight_and_role_gate(
                 ],
                 "next_action": None,
             }
+
+    # P3-1: Second gate — AgentDefinition.is_tool_permitted() via active_agent.
+    # Catches explore/verification and future agent-types-only roles.
+    _agent_gate = check_agent_definition_tool_gate(
+        orchestrator=orchestrator, tool_name=tool_name, logger=logger
+    )
+    if _agent_gate is not None:
+        return _agent_gate
 
     return None
 

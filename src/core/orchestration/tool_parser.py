@@ -29,9 +29,9 @@ def _extract_json_object(text: str) -> Optional[Dict[str, Any]]:
                         break
             try:
                 parsed = json.loads(text[start:end])
-                if parsed.get("name") and parsed.get("arguments"):
+                if parsed.get("name") and parsed.get("arguments") is not None:
                     return parsed
-                if parsed.get("tool") and parsed.get("arguments"):
+                if parsed.get("tool") and parsed.get("arguments") is not None:
                     return {
                         "name": parsed.get("tool"),
                         "arguments": parsed.get("arguments"),
@@ -71,12 +71,12 @@ def parse_tool_block(text: str) -> Optional[Dict[str, Any]]:
             json_content = match.group(1).strip()
             try:
                 parsed = json.loads(json_content)
-                if parsed.get("name") and parsed.get("arguments"):
+                if parsed.get("name") and parsed.get("arguments") is not None:
                     logger.debug(
                         f"parse_tool_block: JSON parse succeeded for tool '{parsed.get('name')}'"
                     )
                     return parsed
-                if parsed.get("tool") and parsed.get("arguments"):
+                if parsed.get("tool") and parsed.get("arguments") is not None:
                     logger.debug(
                         f"parse_tool_block: JSON parse succeeded for tool '{parsed.get('tool')}'"
                     )
@@ -98,7 +98,7 @@ def parse_tool_block(text: str) -> Optional[Dict[str, Any]]:
             try:
                 parsed = yaml.safe_load(yaml_content)
                 if isinstance(parsed, dict):
-                    if parsed.get("name") and parsed.get("arguments"):
+                    if parsed.get("name") and parsed.get("arguments") is not None:
                         args = parsed["arguments"]
                         if isinstance(args, str):
                             try:
