@@ -408,17 +408,9 @@ def get_tools_for_role_impl(orch, role: str) -> List[Dict[str, Any]]:
         # → filtered to debug toolset: bash, read_file, edit_file, run_tests …
     """
     try:
-        # Import the toolset loader module (prefer src.tools.toolsets.loader,
-        # fall back to src.config.toolsets.loader). We import the module so we
-        # can use model-aware loading when available (load_toolset_for_model).
-        try:
-            import importlib
+        import importlib
 
-            ts_loader = importlib.import_module("src.tools.toolsets.loader")
-        except Exception:
-            import importlib
-
-            ts_loader = importlib.import_module("src.config.toolsets.loader")
+        ts_loader = importlib.import_module("src.config.toolsets.loader")
 
         toolset_name = ts_loader.get_toolset_for_role(role)
 

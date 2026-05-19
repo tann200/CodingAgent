@@ -395,8 +395,7 @@ class TestGetToolsForRoleImpl:
             with patch.dict(
                 "sys.modules",
                 {
-                    "src.tools.toolsets.loader": None,
-                    "src.config.toolsets.loader": None,
+                "src.config.toolsets.loader": None,
                 },
             ):
                 result = get_tools_for_role_impl(orch, "debugger")
@@ -478,10 +477,10 @@ class TestGetToolsForRoleMcp:
 
         # Patch the loader that get_tools_for_role_impl actually calls
         with patch(
-            "src.tools.toolsets.loader.get_toolset_for_role",
+            "src.config.toolsets.loader.get_toolset_for_role",
             return_value="operational",
         ), patch(
-            "src.tools.toolsets.loader.get_tools_for_toolset",
+            "src.config.toolsets.loader.get_tools_for_toolset",
             return_value=["read_file"],
         ):
             result = get_tools_for_role_impl(orch, "operational")
@@ -501,7 +500,7 @@ class TestGetToolsForRoleMcp:
 
         # Force fallback by making toolset lookup raise
         with patch(
-            "src.tools.toolsets.loader.get_tools_for_toolset",
+            "src.config.toolsets.loader.get_tools_for_toolset",
             side_effect=ValueError("no toolset"),
         ):
             result = get_tools_for_role_impl(orch, "unknown_role")

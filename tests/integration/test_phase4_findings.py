@@ -88,6 +88,8 @@ class TestPermissionGateway:
         from src.core.orchestration.permission_gateway import PermissionGateway
 
         orch = MagicMock()
+        orch.event_bus = None  # prevent MagicMock auto-creation (gate5 wait loop)
+        orch.working_dir = None  # prevent MagicMock path resolution in gate2d
         for k, v in orch_attrs.items():
             setattr(orch, k, v)
         return PermissionGateway(orch)
@@ -106,13 +108,18 @@ class TestPermissionGateway:
         assert r.gate == 2
         assert r.reason == "explore mode"
 
-    def test_gate2_explore_mode_blocks_write(self) -> None:
+    def _make_gw(self):
         from src.core.orchestration.permission_gateway import PermissionGateway
 
         orch = MagicMock()
+        orch.event_bus = None
+        orch.working_dir = None
+        return PermissionGateway(orch), orch
+
+    def test_gate2_explore_mode_blocks_write(self) -> None:
+        gw, orch = self._make_gw()
         orch.plan_mode = None
         orch.explore_mode = True
-        gw = PermissionGateway(orch)
 
         with patch(
             "src.core.orchestration.role_config.is_tool_allowed_for_role",
@@ -126,12 +133,9 @@ class TestPermissionGateway:
         assert "Explore mode" in result.rejection["error"]
 
     def test_gate2_explore_mode_allows_read(self) -> None:
-        from src.core.orchestration.permission_gateway import PermissionGateway
-
-        orch = MagicMock()
+        gw, orch = self._make_gw()
         orch.plan_mode = None
         orch.explore_mode = True
-        gw = PermissionGateway(orch)
 
         with patch(
             "src.core.orchestration.role_config.is_tool_allowed_for_role",
@@ -143,12 +147,7 @@ class TestPermissionGateway:
         assert isinstance(result.allowed, bool)
 
     def test_gate4_permission_mode_blocks_dangerous_tool(self) -> None:
-        from src.core.orchestration.permission_gateway import PermissionGateway
-
-        orch = MagicMock()
-        orch.plan_mode = None
-        orch.explore_mode = False
-        gw = PermissionGateway(orch)
+        gw, _ = self._make_gw()
 
         class _FakeMode:
             value = "read_only"
@@ -174,12 +173,9 @@ class TestPermissionGateway:
         assert result.gate == 4
 
     def test_check_returns_allowed_for_safe_tool_no_special_mode(self) -> None:
-        from src.core.orchestration.permission_gateway import PermissionGateway
-
-        orch = MagicMock()
+        gw, orch = self._make_gw()
         orch.plan_mode = None
         orch.explore_mode = False
-        gw = PermissionGateway(orch)
 
         with (
             patch(

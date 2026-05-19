@@ -80,11 +80,13 @@ class ToolRegistry:
         fn: Callable[..., Any],
         side_effects: Optional[List[str]] = None,
         description: str = "",
+        origin: str = "builtin",
     ) -> None:
         self.tools[name] = {
             "fn": fn,
             "side_effects": side_effects or [],
             "description": description,
+            "origin": origin,
         }
 
     def get(self, name: str) -> Optional[Dict[str, Any]]:

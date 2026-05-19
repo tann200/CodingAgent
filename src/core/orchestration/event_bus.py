@@ -279,10 +279,16 @@ class EventBus:
     ) -> None:
         msg = AgentMessage(agent_id="broadcast", payload=payload, priority=priority)
         with self._lock:
+            called: set = set()
             all_subs = []
             for agent_id in self._agent_ids:
-                all_subs.extend(self._agent_subscribers.get(agent_id, []))
-            all_subs.extend(self._agent_subscribers.get("*", []))
+                for cb in self._agent_subscribers.get(agent_id, []):
+                    if id(cb) not in called:
+                        called.add(id(cb))
+                        all_subs.append(cb)
+            for cb in self._agent_subscribers.get("*", []):
+                if id(cb) not in called:
+                    all_subs.append(cb)
         for cb in all_subs:
             try:
                 cb(msg)

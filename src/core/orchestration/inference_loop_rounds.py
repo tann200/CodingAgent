@@ -184,10 +184,19 @@ def _build_loop_exit_response(
             guilogger.error(f"inference_loop: terminated due to {error_type}")
 
             if error_type == "infinite_loop_tool_limit":
+                _actual_limit = 20
+                try:
+                    from src.core.config_loader import get as _cg
+                    _v = _cg("max_graph_rounds")
+                    if isinstance(_v, int) and _v > 0:
+                        _actual_limit = _v
+                except Exception:
+                    pass
                 msg = (
-                    "[red]⚠ Task stopped: Maximum tool call limit (5) reached.[/red]\n\n"
-                    "The agent made too many tool calls without completing the task. "
-                    "Try providing more specific instructions or breaking down the task."
+                    f"[red]⚠ Task stopped: Maximum graph-round limit ({_actual_limit}) reached.[/red]\n\n"
+                    "The agent made too many tool-call rounds without completing the task. "
+                    "Consider increasing `max_graph_rounds` in agent_config.yaml, or "
+                    "break the task into smaller steps."
                 )
             else:
                 msg = (

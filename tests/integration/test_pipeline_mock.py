@@ -358,8 +358,8 @@ def test_pm6_fix_syntax_pipeline(tmp_path, monkeypatch):
                 '  patch: "@@ -1 +1 @@\\n- def foo(): pass\\n+ def foo(): return 1\\n"\n'
                 "```"
             ),
-            # call 2: run_tests
-            "```yaml\nname: run_tests\narguments: {}\n```",
+            # call 2: run_tests — use JSON format so frontier_loop parses it as a tool call
+            '{"name": "run_tests", "arguments": {}}',
             # call 3: completion → task complete signal → routes to memory_sync
             "Task complete. The syntax has been fixed and tests pass.",
         ],

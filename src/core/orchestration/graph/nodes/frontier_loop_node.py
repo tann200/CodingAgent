@@ -144,17 +144,14 @@ def _extract_content_text(response: Any) -> str:
 
 def _is_context_overflow(error_msg: str) -> bool:
     """Return True if the error message indicates a context-window overflow."""
-    patterns = [
-        "context length",
-        "context window",
-        "exceeds the available context",
-        "max_tokens",
-        "token limit",
-        "input too long",
-        "prompt is too long",
-    ]
+    patterns = (
+        "maximum context length", "context window limit", "context window exceeded",
+        "exceeds the available context", "input is too long", "prompt is too long",
+        "context length limit reached", "token limit exceeded", "max tokens exceeded",
+        "reduce the length", "too many tokens",
+    )
     low = error_msg.lower()
-    return any(p in low for p in patterns)
+    return sum(1 for p in patterns if p in low) >= 2
 
 def _normalize_tool_call(tc: Any) -> tuple[str, dict]:
     """Return a normalized (tool_name, tool_args) tuple."""

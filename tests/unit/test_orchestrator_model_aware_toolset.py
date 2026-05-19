@@ -28,7 +28,7 @@ def test_get_tools_for_role_uses_model_aware_loader(monkeypatch):
     real_import_module = importlib.import_module
 
     def fake_import(name, package=None):
-        if name == "src.tools.toolsets.loader":
+        if name == "src.config.toolsets.loader":
             return fake_loader
         return real_import_module(name, package=package)
 

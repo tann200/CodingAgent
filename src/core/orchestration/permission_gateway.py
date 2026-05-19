@@ -282,9 +282,12 @@ class PermissionGateway:
             return result
 
         # TASK-4: Gate 2b — PermissionPolicy rule evaluation (DENY/ASK/ALLOW)
+        _gate5_handled = False
         result = self._gate2b_policy_rules(name, args)
         if result.blocked:
             return result
+        if result.gate == 5:
+            _gate5_handled = True
 
         # Gate 2d — External directory: prompt user when a file tool targets a
         # path outside the workspace root.  Mirrors opencode's
@@ -292,6 +295,8 @@ class PermissionGateway:
         result = self._gate2d_external_directory(name, args)
         if result.blocked:
             return result
+        if result.gate == 5:
+            _gate5_handled = True
 
         needs_gate, result = self._gate3_permission_level(name, args)
         if result.blocked:
@@ -303,7 +308,7 @@ class PermissionGateway:
 
         # TASK-PERM-3: Gate 2c — SQLite PermissionTable "allow always" / "deny always" rules.
         # Runs before gate5 so persisted "allow always" rules skip the interactive prompt.
-        if needs_gate:
+        if needs_gate and not _gate5_handled:
             table_result = self._gate2c_permission_table(name, args)
             if table_result is not None:
                 return table_result
@@ -447,7 +452,10 @@ class PermissionGateway:
 
             if behavior == _Behavior.ASK:
                 # Reuse Gate 5's interactive TUI-event flow.
-                return self._gate5_user_approval(name, args)
+                result = self._gate5_user_approval(name, args)
+                if result.allowed:
+                    return PermissionResult(allowed=True, gate=5)
+                return result
 
         except Exception as _e:
             _logger.warning(
@@ -638,6 +646,8 @@ class PermissionGateway:
                         name,
                         {**args, "_external_path_context": raw},
                     )
+                    if result.allowed:
+                        return PermissionResult(allowed=True, gate=5)
                     return result
                 except Exception:
                     pass  # unresolvable paths — let the tool itself report the error
