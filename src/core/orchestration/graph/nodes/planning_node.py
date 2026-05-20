@@ -577,24 +577,22 @@ async def _planning_node_impl(state: Mapping[str, Any], config: RunnableConfig) 
             try:
                 import json as _json
 
-                # Use the orchestrator already resolved at the top of the function (NEW-9).
-                # The previous re-fetch via config.get() failed on RunnableConfig objects.
                 if orchestrator and hasattr(orchestrator, "session_store"):
                     _sid = getattr(orchestrator, "_current_task_id", None)
-                    _thread_name = getattr(threading.current_thread(), "name", "unknown")
-                    logger.debug(
-                        "session_store: write (session=%r, thread=%s, site=%s)",
-                        _sid,
-                        _thread_name,
-                        "planning_node:add_plan",
-                    )
+                    logger.debug("session_store: write session=%r site=planning_node:add_plan", _sid)
                     orchestrator.session_store.add_plan(
-                        session_id=_sid,
-                        plan=_json.dumps(steps),
-                        status="created",
+                        session_id=_sid, plan=_json.dumps(steps), status="created",
                     )
-            except Exception:
-                pass  # never block execution
+                    # H-03: persist for cross-session resumption (save_plan was never called)
+                    if hasattr(orchestrator.session_store, "save_plan"):
+                        try:
+                            orchestrator.session_store.save_plan(
+                                session_id=_sid or "unknown", plan=steps, task=task or "", step=0,
+                            )
+                        except Exception as _sp_exc:
+                            logger.warning("planning_node: save_plan failed: %s", _sp_exc)
+            except Exception as _ss_exc:
+                logger.warning("planning_node: session_store write failed: %s", _ss_exc)
 
             # 4.4: Persist plan to JSON file for cross-session persistence
             _save_last_plan(working_dir, steps, task, 0)

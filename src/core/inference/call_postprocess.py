@@ -27,14 +27,19 @@ async def attempt_model_fallback(
     get_available_models: Callable[[str, str, str], Awaitable[List[str]]],
     call_model_internal: Callable[..., Awaitable[Any]],
     on_success: Optional[Callable[[], None]] = None,
-) -> Any:
+) -> "tuple[Any, bool]":
+    """Return ``(result, cb_handled)`` where ``cb_handled`` is True when a
+    fallback succeeded and ``on_success`` already recorded success in the
+    circuit breaker — the caller must skip the second ``record_success`` call
+    to prevent double-counting (G-01/G-02).
+    """
     if not enabled or not is_error_result(current_result):
-        return current_result
+        return current_result, False
 
     try:
         models = await get_available_models("", "", provider or "")
         if not models:
-            return current_result
+            return current_result, False
 
         attempts = 0
         for fallback_model in models:
@@ -58,7 +63,9 @@ async def attempt_model_fallback(
                         on_success()
                     except Exception:
                         pass
-                return fallback_result
+                # G-01: circuit breaker success already recorded via on_success;
+                # signal caller to skip its own record_success call.
+                return fallback_result, True
     except Exception as _fb_exc:
         # G-03: log the exception so programming bugs (AttributeError, TypeError)
         # are not silently swallowed alongside expected network/provider errors.
@@ -66,9 +73,9 @@ async def attempt_model_fallback(
         _logging.getLogger(__name__).warning(
             "attempt_model_fallback: unexpected error during fallback: %s", _fb_exc
         )
-        return current_result
+        return current_result, False
 
-    return current_result
+    return current_result, False
 
 
 def update_circuit_breaker_for_result(

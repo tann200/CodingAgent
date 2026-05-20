@@ -1209,7 +1209,7 @@ async def call_model(
         messages, provider, model, stream, format_json, tools, **kwargs
     )
 
-    res = await _attempt_model_fallback(
+    res, _cb_handled = await _attempt_model_fallback(
         enabled=os.getenv("LLM_MANAGER_ENABLE_MODEL_FALLBACK", "1") == "1",
         current_result=res,
         current_model=model,
@@ -1227,12 +1227,15 @@ async def call_model(
         else None,
     )
 
-    # #31: Record success/failure in the circuit breaker
-    _update_circuit_breaker_for_result(
-        provider_key=_cb_key,
-        result=res,
-        get_circuit_breaker=get_circuit_breaker,
-    )
+    # #31: Record success/failure in the circuit breaker.
+    # G-01/G-02: skip when fallback already called on_success (record_success)
+    # to prevent double-counting a successful recovery.
+    if not _cb_handled:
+        _update_circuit_breaker_for_result(
+            provider_key=_cb_key,
+            result=res,
+            get_circuit_breaker=get_circuit_breaker,
+        )
 
     # HR-6: Record actual token usage in the budget monitor so check_budget() has
     # real counts rather than rough character-length estimates.

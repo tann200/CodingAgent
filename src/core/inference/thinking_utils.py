@@ -57,6 +57,26 @@ _NO_THINK_SUPPORTED_PATTERNS = (
 _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
 
 
+def strip_thinking(text: str) -> str:
+    """Remove all <think>...</think> blocks from *text*, including nested blocks.
+
+    Safe to call on any model's output — non-thinking models produce no such
+    blocks so the string is returned unchanged.
+
+    C-02: naive non-greedy regex leaves dangling ``</think>`` when tags are
+    nested (e.g. ``<think>outer <think>inner</think> still outer</think>``).
+    We loop until the string no longer changes so every nesting level is
+    stripped, then remove any leftover ``</think>`` closing tags.
+    """
+    prev = None
+    while prev != text:
+        prev = text
+        text = _THINK_RE.sub("", text)
+    # Remove any orphaned closing tags left after stripping nested blocks
+    text = re.sub(r"</think>", "", text, flags=re.IGNORECASE)
+    return text.strip()
+
+
 def is_reasoning_model(model_id: str) -> bool:
     """Return True when *model_id* is known to emit ＜think＞ blocks by default."""
     # BUG-FIX: handle non-string input gracefully
@@ -69,15 +89,6 @@ def supports_no_think(model_id: str) -> bool:
     # BUG-FIX: handle non-string input gracefully
     lowered = str(model_id).lower() if model_id is not None else ""
     return any(pat in lowered for pat in _NO_THINK_SUPPORTED_PATTERNS)
-
-
-def strip_thinking(text: str) -> str:
-    """Remove all <think>...</think> blocks from *text*.
-
-    Safe to call on any model's output — non-thinking models produce no such
-    blocks so the string is returned unchanged.
-    """
-    return _THINK_RE.sub("", text).strip()
 
 
 def budget_max_tokens(base: int, model_id: str) -> int:

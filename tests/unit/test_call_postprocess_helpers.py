@@ -58,7 +58,7 @@ def test_attempt_model_fallback_returns_successful_alternative():
             return {"ok": False, "error": "broken"}
 
         success_calls = []
-        result = await attempt_model_fallback(
+        result, cb_handled = await attempt_model_fallback(
             enabled=True,
             current_result={"ok": False, "error": "broken"},
             current_model="primary",
@@ -75,6 +75,7 @@ def test_attempt_model_fallback_returns_successful_alternative():
         )
 
         assert result == {"ok": True, "text": "fallback ok"}
+        assert cb_handled is True  # G-01: fallback handled the CB update
         assert calls == ["backup"]
         assert success_calls == [True]
 

@@ -4,7 +4,7 @@ import hashlib
 import logging
 from typing import Dict, Any, Optional, List
 
-from src.core.orchestration.graph.state import StateLike
+from src.core.orchestration.graph.state import StateLike, replace_state_list
 from src.core.context.context_builder import ContextBuilder
 from src.core.inference.llm_manager import call_model
 from src.core.orchestration.graph.nodes.node_utils import _resolve_orchestrator
@@ -28,6 +28,31 @@ async def replan_node(state: StateLike, config: RunnableConfig) -> Dict[str, Any
     replan_attempts = int(state.get("replan_attempts") or 0) + 1
     # P2-A: global recovery cap (shared with debug_node)
     total_recovery_attempts = int(state.get("total_recovery_attempts") or 0) + 1
+
+    # H-02: Detect LangGraph node replay by comparing the pre-replan plan hash.
+    # On replay LangGraph re-reads the pre-node checkpoint, so replan_attempts
+    # resets to the same value; the cap is never reached on a tight replay loop.
+    # Guard: if the current plan hash equals last_plan_hash AND replan_required
+    # is set, this is a replay of an already-attempted replan — abort early.
+    try:
+        import json as _json_h02
+        _cur_hash = hashlib.sha256(
+            _json_h02.dumps(current_plan, sort_keys=True, default=str).encode()
+        ).hexdigest()
+    except Exception:
+        _cur_hash = None
+    _prior_hash = state.get("last_plan_hash")
+    if _cur_hash and _prior_hash and _cur_hash == _prior_hash:
+        logger.warning(
+            "replan_node: plan hash unchanged (H-02 replay guard) — skipping LLM replan"
+        )
+        return {
+            "replan_required": None,
+            "action_failed": False,
+            "replan_attempts": replan_attempts,
+            "total_recovery_attempts": total_recovery_attempts,
+            "errors": ["replan_node: replay detected, plan hash unchanged — aborting"],
+        }
 
     # Configurable replan ceiling
     from src.core.config_loader import get_agent_loop_constant, MAX_REPLAN_ATTEMPTS
@@ -259,13 +284,15 @@ Respond ONLY with the JSON array, no other text."""
                 "total_recovery_attempts": total_recovery_attempts,
                 "last_plan_hash": _new_hash,
                 # HR-13 fix: use system role with [internal] prefix to prevent
-                # LLM from interpreting this as a user instruction
-                "history": [
+                # LLM from interpreting this as a user instruction.
+                # H-05: wrap with replace_state_list so LangGraph replaces
+                # rather than appends to the existing history list.
+                "history": replace_state_list([
                     {
                         "role": "system",
                         "content": f"[internal] Replan: Split '{failed_step_desc}' into {len(new_steps)} smaller steps.",
                     }
-                ],
+                ]),
             }
         else:
             # Failed to generate new steps
@@ -276,13 +303,15 @@ Respond ONLY with the JSON array, no other text."""
                 "replan_attempts": replan_attempts,
                 "total_recovery_attempts": total_recovery_attempts,
                 "errors": ["Failed to generate smaller steps"],
-                # HR-13 fix: use system role with [internal] prefix
-                "history": [
+                # HR-13 fix: use system role with [internal] prefix.
+                # H-05: wrap with replace_state_list so LangGraph replaces
+                # rather than appends to the existing history list.
+                "history": replace_state_list([
                     {
                         "role": "system",
                         "content": "[internal] Replan failed: Could not generate smaller steps.",
                     }
-                ],
+                ]),
             }
 
     except Exception as e:
