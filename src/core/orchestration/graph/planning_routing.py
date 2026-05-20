@@ -117,11 +117,11 @@ def should_after_step_controller(
     # Plan exhausted → go to verification / wrap-up
     if current_step >= len(current_plan):
         logger.info(
-            "should_after_step_controller: plan exhausted (%d/%d), routing to end",
+            "should_after_step_controller: plan exhausted (%d/%d), routing to verification",
             current_step,
             len(current_plan),
         )
-        return "end"
+        return "verification"
 
     if last_result and isinstance(last_result, dict):
         if last_result.get("ok"):

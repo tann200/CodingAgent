@@ -32,7 +32,7 @@ async def replan_node(state: StateLike, config: RunnableConfig) -> Dict[str, Any
     # Configurable replan ceiling
     from src.core.config_loader import get_agent_loop_constant, MAX_REPLAN_ATTEMPTS
     _replan_cap = get_agent_loop_constant("max_replan_attempts", MAX_REPLAN_ATTEMPTS)
-    if replan_attempts > _replan_cap:
+    if replan_attempts >= _replan_cap:
         logger.warning(
             f"replan_node: replan_attempts={replan_attempts} exceeds cap={_replan_cap}, aborting"
         )

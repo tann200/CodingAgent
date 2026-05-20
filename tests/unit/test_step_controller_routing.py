@@ -11,10 +11,11 @@ def test_routes_to_execution_when_plan_active():
     assert should_after_step_controller(state) == "execution"
 
 
-def test_routes_to_end_when_plan_exhausted():
+def test_routes_to_verification_when_plan_exhausted():
+    """F-03 fix: plan exhausted must run verification, not jump straight to END."""
     state = {"current_plan": [{"description": "step1"}], "current_step": 1}
     result = should_after_step_controller(state)
-    assert result == "end"
+    assert result == "verification"
 
 
 def test_routes_to_planning_when_no_plan():

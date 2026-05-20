@@ -110,14 +110,22 @@ def test_compile_tier_graph_for_key_dispatches_to_matching_compiler():
     )
     assert result == "lite-graph"
 
-    result = compile_tier_graph_for_key(
-        "standard",
-        compile_frontier_graph_fn=lambda: calls.append("frontier") or "frontier-graph",
-        compile_lite_graph_fn=lambda: calls.append("lite") or "lite-graph",
-        compile_agent_graph_fn=lambda: calls.append("standard") or "standard-graph",
-    )
-    assert result == "frontier-graph"
-    assert calls == ["frontier", "lite", "frontier"]
+    # F-14: "standard" and other unknown keys now raise ValueError rather than
+    # silently falling through to frontier. See test_compile_tier_graph_for_key_raises_on_unknown_key.
+    assert calls == ["frontier", "lite"]
+
+
+def test_compile_tier_graph_for_key_raises_on_unknown_key():
+    """F-14 fix: unknown cache_key must raise ValueError, not silently use frontier."""
+    import pytest
+
+    with pytest.raises(ValueError, match="unknown cache_key"):
+        compile_tier_graph_for_key(
+            "unknown_tier",
+            compile_frontier_graph_fn=lambda: "frontier-graph",
+            compile_lite_graph_fn=lambda: "lite-graph",
+            compile_agent_graph_fn=lambda: "standard-graph",
+        )
 
 
 def test_get_compiled_graph_for_orchestrator_uses_explicit_model_tier():

@@ -141,4 +141,9 @@ def compile_tier_graph_for_key(
         return compile_frontier_graph_fn()
     if cache_key == "lite":
         return compile_lite_graph_fn()
-    return compile_frontier_graph_fn()
+    # F-14: unknown cache_key — fail loudly so a newly added tier is not
+    # silently compiled as the frontier graph.
+    raise ValueError(
+        f"compile_tier_graph_for_key: unknown cache_key {cache_key!r}. "
+        "Add a matching branch or update select_tier_graph_cache_key."
+    )

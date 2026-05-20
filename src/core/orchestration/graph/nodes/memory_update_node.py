@@ -175,9 +175,17 @@ async def memory_update_node(state: StateLike, config: RunnableConfig) -> Dict[s
     logger.info("=== memory_update_node END ===")
     # HR-2 / ME-3 fix: return updated history and distilled summary via return dict.
     # Also clear _force_compact flag so it does not persist to the next turn.
-    # CF-1 fix: clear errors so transient pipeline errors (e.g. context_overflow) do
-    # not leak into the next outer-loop round and cause mis-routing.
-    result: Dict[str, Any] = {"_force_compact": False, "errors": []}
+    # CF-1 fix: clear TRANSIENT pipeline errors (e.g. context_overflow, tool_timeout)
+    # so they do not leak into the next outer-loop round and cause mis-routing.
+    # F-15: persistent errors (e.g. delegation failures) are preserved — only
+    # well-known transient prefixes are wiped.
+    _TRANSIENT_ERROR_PREFIXES = ("context_overflow", "tool_timeout", "kv_cache", "token_limit")
+    prior_errors: list = list(state.get("errors") or [])  # type: ignore[arg-type]
+    persistent_errors = [
+        e for e in prior_errors
+        if not any(e.startswith(pfx) for pfx in _TRANSIENT_ERROR_PREFIXES)
+    ]
+    result: Dict[str, Any] = {"_force_compact": False, "errors": persistent_errors}
     if _distilled_summary:
         result["analysis_summary"] = _distilled_summary
     if _updated_history is not None:

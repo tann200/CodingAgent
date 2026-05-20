@@ -112,6 +112,7 @@ def should_after_execution(
                 "prepend",
                 "append",
                 "edit ",
+                "fix ",
                 "modify",
                 "update ",
                 "change ",
@@ -254,9 +255,9 @@ def should_after_verification(
         return "debug"
 
     logger.warning(
-        f"should_after_verification: max debug attempts reached ({max_debug_attempts}), ending"
+        f"should_after_verification: max debug attempts reached ({max_debug_attempts}), routing to memory_sync for cleanup"
     )
-    return "end"
+    return "memory_sync"
 
 
 def should_after_debug(

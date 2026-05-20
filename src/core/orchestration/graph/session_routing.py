@@ -48,10 +48,17 @@ def should_after_memory_sync(
     last_result = state.get("last_result") or {}
     execution_ok = last_result.get("ok") or last_result.get("status") == "ok"
     rounds = int(state.get("rounds") or 0)
-    if not current_plan and not next_action and execution_ok and rounds > 0:
+    # Fast-path to END: breaks the memory_sync→perception→memory_sync loop for
+    # simple no-plan tasks (e.g. "list all files") where verification/evaluation
+    # nodes are never entered.
+    # F-08 guard: do NOT fire the fast-path when evaluation_result indicates the
+    # task is still in progress ("debug", "replan") — only allow it when
+    # evaluation_result is absent (simple task) or already terminal.
+    _fast_path_blocked = evaluation_result in ("debug", "replan")
+    if not current_plan and not next_action and execution_ok and rounds > 0 and not _fast_path_blocked:
         logger.info(
             "should_after_memory_sync: fast-path task complete "
-            f"(rounds={rounds}, no plan, no pending action) — routing to END"
+            f"(rounds={rounds}, no plan, no pending action, evaluation_result={evaluation_result!r}) — routing to END"
         )
         return "end"
 

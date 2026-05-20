@@ -98,15 +98,15 @@ class TestStepControllerFailedStepRetryRouting:
         result = should_after_step_controller(state)
         assert result == "execution"
 
-    def test_all_steps_done_routes_to_end(self):
-        """All plan steps completed → end (P3-T1: plan exhausted routes to end, not verification)."""
+    def test_all_steps_done_routes_to_verification(self):
+        """All plan steps completed → verification (F-03 fix: plan exhausted must run verification)."""
         state = _make_state(
             current_plan=[{"description": "s1"}],
             current_step=1,  # past end of plan
             last_result={"ok": True},
         )
         result = should_after_step_controller(state)
-        assert result == "end"
+        assert result == "verification"
 
 
 # ---------------------------------------------------------------------------

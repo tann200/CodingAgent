@@ -389,7 +389,7 @@ class TestVerificationRouterPostVerificationDecisions:
         }
 
         result = should_after_verification(state)
-        assert result == "end"
+        assert result == "memory_sync"  # F-19 fix: routes to memory_sync for cleanup, not hard END
 
 
 class TestAgentGraphCompilationAndRouting:
