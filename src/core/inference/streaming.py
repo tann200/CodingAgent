@@ -3,11 +3,53 @@ from __future__ import annotations
 import json
 from typing import Any, Callable, List, Optional, Tuple
 
+# C-01: carry-buffer for incomplete multi-byte UTF-8 sequences split across SSE chunks.
+# Callers that receive raw bytes should pass their carry-buffer bytearray and update it
+# with the returned remainder; callers that already have str lines may ignore the buffer.
+_SSE_CARRY: bytearray = bytearray()
 
-def decode_sse_line(raw_line: Any) -> Optional[str]:
+
+def decode_sse_line(
+    raw_line: Any,
+    *,
+    carry: Optional[bytearray] = None,
+) -> Optional[str]:
+    """Decode one SSE line, handling multi-byte UTF-8 sequences split across chunks.
+
+    Args:
+        raw_line: Either a ``str`` or ``bytes``/``bytearray`` chunk.
+        carry: Mutable ``bytearray`` used to buffer an incomplete UTF-8 sequence
+               from the previous call.  Pass the same object on every call for a
+               given SSE stream.  Ignored when *raw_line* is already a ``str``.
+
+    Returns:
+        The ``data:`` payload (str), ``"[DONE]"``, or ``None``.
+    """
     if not raw_line:
         return None
-    line = raw_line if isinstance(raw_line, str) else raw_line.decode("utf-8", errors="replace")
+    if isinstance(raw_line, str):
+        line = raw_line
+    else:
+        # C-01: prepend any leftover bytes from previous chunk, then try to
+        # decode.  If the sequence is still incomplete, stash the tail in
+        # *carry* and return None so the caller waits for the next chunk.
+        buf = (carry + raw_line) if carry is not None else bytearray(raw_line)
+        try:
+            line = buf.decode("utf-8")
+            if carry is not None:
+                carry.clear()
+        except UnicodeDecodeError as exc:
+            # Keep the incomplete tail for the next chunk.
+            tail = buf[exc.start :]
+            if carry is not None:
+                carry.clear()
+                carry.extend(tail)
+            try:
+                line = buf[: exc.start].decode("utf-8")
+            except UnicodeDecodeError:
+                return None
+            if not line:
+                return None
     if not line.startswith("data:"):
         return None
     data = line[5:].strip()

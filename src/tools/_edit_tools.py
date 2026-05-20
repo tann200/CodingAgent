@@ -18,6 +18,39 @@ import tempfile
 from pathlib import Path
 from typing import Dict, Any, Optional
 
+
+def _atomic_write(path: Path, content: str, encoding: str = "utf-8") -> None:
+    """Write *content* to *path* atomically using a sibling temp file + os.replace.
+
+    Guarantees that readers either see the old or the new content — never a
+    partially-written file — even if the process is interrupted mid-write.
+    """
+    fd, tmp = tempfile.mkstemp(
+        dir=str(path.parent),
+        prefix=f".{path.stem}.write.",
+        suffix=path.suffix or ".tmp",
+    )
+    try:
+        with os.fdopen(fd, "w", encoding=encoding) as fh:
+            fh.write(content)
+        os.replace(tmp, str(path))
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _invalidate_context_cache(path: Path) -> None:
+    """Invalidate ContextBuilder cache for *path* (best-effort, non-fatal)."""
+    try:
+        from src.core.context.context_builder import ContextBuilder as _CB
+
+        _CB.invalidate_path(str(path))
+    except Exception:
+        pass
+
 from src.tools._path_utils import safe_resolve as _safe_resolve
 from src.tools._tool import tool
 from src.tools._diff_gate import (
@@ -180,7 +213,8 @@ def edit_file(
         if ver_err:
             return ver_err
 
-        p.write_text(new_content, encoding="utf-8")
+        _atomic_write(p, new_content)
+        _invalidate_context_cache(p)
 
         # Generate unified diff for TUI display
         original_lines = original_content.splitlines(keepends=True)
@@ -312,7 +346,8 @@ def edit_by_line_range(
     if ver_err:
         return ver_err
 
-    p.write_text(new_content_str, encoding="utf-8")
+    _atomic_write(p, new_content_str)
+    _invalidate_context_cache(p)
 
     from src.tools.patch_tools import generate_unified_diff as _gen_diff
 
@@ -471,15 +506,8 @@ def edit_file_atomic(
             "PREV-1 preview gate error (non-fatal, proceeding): %s", _gate_exc
         )
 
-    p.write_text(new_content, encoding="utf-8")
-
-    # MEM-1: Invalidate context cache so the next ContextBuilder re-reads from disk.
-    try:
-        from src.core.context.context_builder import ContextBuilder as _CB
-
-        _CB.invalidate_path(str(p))
-    except Exception:
-        pass
+    _atomic_write(p, new_content)
+    _invalidate_context_cache(p)
 
     # P9: Auto-format after write (best-effort; never blocks)
     try:
@@ -612,7 +640,8 @@ def multiedit(
     if ver_err:
         return ver_err
 
-    p.write_text(working_content, encoding="utf-8")
+    _atomic_write(p, working_content)
+    _invalidate_context_cache(p)
 
     # P9: Auto-format after write (best-effort)
     try:

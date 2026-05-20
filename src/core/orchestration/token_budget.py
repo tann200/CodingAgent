@@ -21,7 +21,10 @@ class _UsageRatioMixin:
     def usage_ratio(self) -> float:
         if self.max_tokens <= 0:
             return 0.0
-        return self.used_tokens / self.max_tokens
+        # C-03: clamp to 1.0 — used_tokens can exceed max_tokens when the
+        # provider returns a usage count larger than the advertised context
+        # window (e.g. completion tokens push past the limit).
+        return min(self.used_tokens / self.max_tokens, 1.0)
 
 
 @dataclass
