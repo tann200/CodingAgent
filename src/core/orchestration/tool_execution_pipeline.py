@@ -20,37 +20,28 @@ TOOL_EXECUTOR_MAX_WORKERS: int = 4
 TOOL_OUTPUT_MAX_CHARS: int = 8_000
 
 
-def _truncate_result_strings(result: dict) -> dict:
-    """Truncate overly large string fields in tool results."""
-    if not isinstance(result, dict):
+def _truncate_result_strings(result: Any, _depth: int = 0) -> Any:
+    """Recursively truncate overly large string fields in tool results.
+
+    E-03: The previous implementation only handled the top-level dict and a
+    single nested ``result["result"]`` dict.  Deeper nesting and list values
+    were silently passed through at full size, bypassing TOOL_OUTPUT_MAX_CHARS.
+
+    This replacement recurses into dicts and lists up to a safety depth of 6.
+    """
+    if _depth > 6:
         return result
-
-    if any(
-        isinstance(v, str) and len(v) > TOOL_OUTPUT_MAX_CHARS for v in result.values()
-    ):
-        result = dict(result)
-        for k, v in list(result.items()):
-            if isinstance(v, str) and len(v) > TOOL_OUTPUT_MAX_CHARS:
-                result[k] = (
-                    v[:TOOL_OUTPUT_MAX_CHARS]
-                    + f"\n... [truncated: {len(v) - TOOL_OUTPUT_MAX_CHARS} chars omitted]"
-                )
-
-    inner = result.get("result")
-    if isinstance(inner, dict):
-        if any(
-            isinstance(v, str) and len(v) > TOOL_OUTPUT_MAX_CHARS
-            for v in inner.values()
-        ):
-            inner = dict(inner)
-            result["result"] = inner
-            for k, v in list(inner.items()):
-                if isinstance(v, str) and len(v) > TOOL_OUTPUT_MAX_CHARS:
-                    inner[k] = (
-                        v[:TOOL_OUTPUT_MAX_CHARS]
-                        + f"\n... [truncated: {len(v) - TOOL_OUTPUT_MAX_CHARS} chars omitted]"
-                    )
-
+    if isinstance(result, str):
+        if len(result) > TOOL_OUTPUT_MAX_CHARS:
+            return (
+                result[:TOOL_OUTPUT_MAX_CHARS]
+                + f"\n... [truncated: {len(result) - TOOL_OUTPUT_MAX_CHARS} chars omitted]"
+            )
+        return result
+    if isinstance(result, dict):
+        return {k: _truncate_result_strings(v, _depth + 1) for k, v in result.items()}
+    if isinstance(result, list):
+        return [_truncate_result_strings(v, _depth + 1) for v in result]
     return result
 
 
@@ -434,7 +425,8 @@ def execute_tool_impl(orch: Any, tool_call: Dict[str, Any]) -> Dict[str, Any]:
             or "preflight_failed",
         }
 
-    name = tool_call.get("name", name)
+    # E-05: 'name' was already validated above; re-fetching from tool_call is a
+    # no-op and could silently swap the name after guard checks ran against it.
     tool = orch.tool_registry.get(name)
     if not tool:
         return {"ok": False, "error": f"Tool '{name}' not found."}

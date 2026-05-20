@@ -8,36 +8,61 @@ logger = logging.getLogger(__name__)
 
 
 def _extract_json_object(text: str) -> Optional[Dict[str, Any]]:
-    """Extract and parse a JSON object with 'name' and 'arguments' keys."""
-    patterns = [
-        r'\{[^}]*"name"\s*:\s*"[^"]+"\s*,\s*"arguments"\s*:\s*\{',
-    ]
+    """Extract and parse a JSON object with 'name'/'tool' and 'arguments' keys.
 
-    for pattern in patterns:
-        match = re.search(pattern, text)
-        if match:
-            start = match.start()
-            depth = 0
-            end = start
-            for i, c in enumerate(text[start:], start):
-                if c == "{":
+    E-02: The previous implementation used a regex that assumed 'name' is the
+    first key and excluded nested braces before it ([^}]*).  This broke for any
+    key order and any nested object before 'name'.
+
+    Replacement: walk the string character-by-character to find every
+    brace-balanced candidate, then try json.loads on each.  Accepts the first
+    candidate that contains the required keys regardless of order.
+    """
+    if not text:
+        return None
+
+    i = 0
+    length = len(text)
+    while i < length:
+        if text[i] != "{":
+            i += 1
+            continue
+        # Found an opening brace — walk forward tracking brace depth.
+        depth = 0
+        start = i
+        in_string = False
+        escape_next = False
+        j = i
+        while j < length:
+            ch = text[j]
+            if escape_next:
+                escape_next = False
+            elif ch == "\\":
+                escape_next = True
+            elif ch == '"' and not escape_next:
+                in_string = not in_string
+            elif not in_string:
+                if ch == "{":
                     depth += 1
-                elif c == "}":
+                elif ch == "}":
                     depth -= 1
                     if depth == 0:
-                        end = i + 1
+                        candidate = text[start : j + 1]
+                        try:
+                            parsed = json.loads(candidate)
+                            if isinstance(parsed, dict):
+                                if parsed.get("name") and parsed.get("arguments") is not None:
+                                    return parsed
+                                if parsed.get("tool") and parsed.get("arguments") is not None:
+                                    return {
+                                        "name": parsed["tool"],
+                                        "arguments": parsed["arguments"],
+                                    }
+                        except Exception:
+                            pass
                         break
-            try:
-                parsed = json.loads(text[start:end])
-                if parsed.get("name") and parsed.get("arguments") is not None:
-                    return parsed
-                if parsed.get("tool") and parsed.get("arguments") is not None:
-                    return {
-                        "name": parsed.get("tool"),
-                        "arguments": parsed.get("arguments"),
-                    }
-            except Exception:
-                pass
+            j += 1
+        i += 1
     return None
 
 
@@ -53,10 +78,18 @@ def parse_tool_block(text: str) -> Optional[Dict[str, Any]]:
     if not text:
         return None
 
-    cleaned_text = re.sub(r"", "", text, flags=re.DOTALL).strip()
+    # Strip channel thought tags from the raw text first, preserving code fences
+    # so the fence-based json/yaml patterns below still find their delimiters.
     cleaned_text = re.sub(
-        r"<\|channel\|>thought.*?<channel\|>", "", cleaned_text, flags=re.DOTALL
+        r"<\|channel\|>thought.*?<channel\|>", "", text, flags=re.DOTALL
     ).strip()
+
+    # E-01: Prepare a fence-stripped version for last-resort inline parsing.
+    # The original pattern was an empty string r"" which is a no-op in re.sub
+    # (matches zero-width position between every character, inserts "").
+    # We only apply this strip to the final fallback paths — fence-based patterns
+    # still operate on cleaned_text (which retains the fences).
+    fenceless_text = re.sub(r"```[a-z]*\n?|```", "", cleaned_text, flags=re.DOTALL).strip()
 
     _CLOSE_FENCE = r"```[ \t]*(?:\n|$)"
 
@@ -122,7 +155,7 @@ def parse_tool_block(text: str) -> Optional[Dict[str, Any]]:
 
     # Inline YAML: bare YAML not wrapped in code fences
     try:
-        inline_parsed = yaml.safe_load(cleaned_text)
+        inline_parsed = yaml.safe_load(fenceless_text)
         if isinstance(inline_parsed, dict):
             if inline_parsed.get("name") and inline_parsed.get("arguments"):
                 args = inline_parsed["arguments"]
@@ -139,14 +172,14 @@ def parse_tool_block(text: str) -> Optional[Dict[str, Any]]:
     except Exception:
         pass
 
-    inline_result = _extract_json_object(cleaned_text)
+    inline_result = _extract_json_object(fenceless_text)
     if inline_result:
         logger.debug(
             f"parse_tool_block: inline JSON succeeded for tool '{inline_result.get('name')}'"
         )
         return inline_result
 
-    xml_result = _parse_qwen3_xml(cleaned_text)
+    xml_result = _parse_qwen3_xml(fenceless_text)
     if xml_result:
         logger.debug(
             f"parse_tool_block: Qwen3 XML succeeded for tool '{xml_result.get('name')}'"

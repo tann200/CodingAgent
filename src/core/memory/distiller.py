@@ -46,9 +46,20 @@ def _atomic_write_json(target: Path, payload: Any) -> bool:
 def _get_distiller_executor() -> concurrent.futures.ThreadPoolExecutor:
     global _DISTILLER_LLM_EXECUTOR
     if _DISTILLER_LLM_EXECUTOR is None:
+        # F-01: Use max_workers=2 so a leaked/timed-out thread does not
+        # permanently saturate the pool.  With max_workers=1, any call that
+        # times out occupies the single worker indefinitely (future.cancel()
+        # is a no-op on an already-running thread), causing every subsequent
+        # distillation call to queue behind the leaked thread and also time out.
         _DISTILLER_LLM_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
-            max_workers=1, thread_name_prefix="distiller_llm"
+            max_workers=2, thread_name_prefix="distiller_llm"
         )
+        # F-02: Register atexit shutdown so the interpreter does not hang on
+        # threads blocked in asyncio.run() at process exit.  wait=False avoids
+        # blocking teardown on an in-flight LLM request.
+        import atexit as _atexit
+
+        _atexit.register(_DISTILLER_LLM_EXECUTOR.shutdown, False)
     return _DISTILLER_LLM_EXECUTOR
 
 
@@ -129,6 +140,17 @@ def _call_llm_sync(messages: list, format_json: bool = False, **kwargs) -> str:
             future = _pool.submit(_ctx.run, asyncio.run, candidate)
             try:
                 resp = future.result(timeout=_DISTILLER_LLM_TIMEOUT_SECONDS)
+            except concurrent.futures.TimeoutError:
+                # F-01: Log timeout specifically — the thread is now leaked (cancel()
+                # is a no-op on an already-running thread).  The second pool worker
+                # slot remains available for the next distillation call.
+                logger.warning(
+                    "_call_llm_sync: LLM timed out after %ds — thread leaked, "
+                    "will not block future calls",
+                    _DISTILLER_LLM_TIMEOUT_SECONDS,
+                )
+                future.cancel()
+                return ""
             except Exception as thread_err:
                 logger.error(f"_call_llm_sync: thread executor failed: {thread_err}")
                 future.cancel()
@@ -344,21 +366,29 @@ def distill_context(
     safe_msgs = []
     # HR-14 fix: process more messages to avoid missing the original task statement.
     # Use min(50, len(messages)) to include early messages that may contain the task.
-    msg_window = min(len(messages), 50)
-    for m in messages[-msg_window:]:
-        # Increase truncation limit for error messages that may contain critical details
-        limit = (
-            3000
-            if m.get("role") in ("tool", "user")
-            and "error" in str(m.get("content", "")).lower()
-            else 500
-        )
-        safe_msgs.append(
-            {
-                "role": m.get("role", "unknown"),
-                "content": str(m.get("content", ""))[:limit],
-            }
-        )
+    # F-04: Always anchor on messages[0] (the original task) regardless of window size
+    # so the distilled current_task is derived from the actual user request, not just
+    # recent tool output.
+    if messages:
+        anchor_indices = {0}
+        msg_window = min(len(messages), 50)
+        windowed_start = max(1, len(messages) - msg_window + 1)
+        for idx, m in enumerate(messages):
+            if idx not in anchor_indices and idx < windowed_start:
+                continue
+            # Increase truncation limit for error messages that may contain critical details
+            limit = (
+                3000
+                if m.get("role") in ("tool", "user")
+                and "error" in str(m.get("content", "")).lower()
+                else 500
+            )
+            safe_msgs.append(
+                {
+                    "role": m.get("role", "unknown"),
+                    "content": str(m.get("content", ""))[:limit],
+                }
+            )
     msg_str = json.dumps(safe_msgs, indent=2)
 
     prompt = (
@@ -395,9 +425,33 @@ def distill_context(
             [{"role": "user", "content": prompt}], format_json=True, max_tokens=_max_tok
         )
         if content:
-            match = re.search(r"\{.*\}", content, re.DOTALL)
-            if match:
-                distilled_state = json.loads(match.group(0))
+            # F-05: Replace greedy re.search(r"\{.*\}", …, DOTALL) which mis-matches
+            # multi-object responses (e.g. a <think> partial followed by the answer).
+            # Use a brace-balance walker to find the first well-formed JSON object.
+            _json_candidate: Optional[str] = None
+            _depth = 0
+            _start: Optional[int] = None
+            _in_str = False
+            _esc = False
+            for _i, _ch in enumerate(content):
+                if _esc:
+                    _esc = False
+                elif _ch == "\\":
+                    _esc = True
+                elif _ch == '"' and not _esc:
+                    _in_str = not _in_str
+                elif not _in_str:
+                    if _ch == "{":
+                        if _start is None:
+                            _start = _i
+                        _depth += 1
+                    elif _ch == "}" and _start is not None:
+                        _depth -= 1
+                        if _depth == 0:
+                            _json_candidate = content[_start : _i + 1]
+                            break
+            if _json_candidate:
+                distilled_state = json.loads(_json_candidate)
             else:
                 distilled_state = json.loads(content)
 

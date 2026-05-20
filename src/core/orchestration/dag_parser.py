@@ -37,9 +37,25 @@ class PlanDAG:
         self._build_edges()
 
     def _build_edges(self):
-        """Build adjacency list from depends_on."""
+        """Build adjacency list from depends_on.
+
+        H-01: Previously, references to non-existent step IDs were silently
+        added to self.edges without a corresponding self.steps entry.
+        get_ready_steps() would then never satisfy those phantom deps, causing
+        topological_sort_waves() to raise "Circular dependency detected" with
+        a misleading error message when the actual problem was a bad reference.
+
+        Fix: validate each dep against self.steps and warn + skip if missing.
+        """
         for step in self.steps.values():
             for dep in step.depends_on:
+                if dep not in self.steps:
+                    logger.warning(
+                        "PlanDAG: step %r depends_on unknown step %r — dependency ignored",
+                        step.step_id,
+                        dep,
+                    )
+                    continue
                 if dep not in self.edges:
                     self.edges[dep] = set()
                 self.edges[dep].add(step.step_id)

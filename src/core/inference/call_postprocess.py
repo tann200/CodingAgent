@@ -59,7 +59,13 @@ async def attempt_model_fallback(
                     except Exception:
                         pass
                 return fallback_result
-    except Exception:
+    except Exception as _fb_exc:
+        # G-03: log the exception so programming bugs (AttributeError, TypeError)
+        # are not silently swallowed alongside expected network/provider errors.
+        import logging as _logging
+        _logging.getLogger(__name__).warning(
+            "attempt_model_fallback: unexpected error during fallback: %s", _fb_exc
+        )
         return current_result
 
     return current_result

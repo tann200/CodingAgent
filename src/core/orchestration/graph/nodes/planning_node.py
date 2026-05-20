@@ -43,6 +43,14 @@ logger = logging.getLogger(__name__)
 _PLAN_RESUME_TTL_SECONDS = 1800  # 30 minutes
 
 
+def _dag_waves(dag, label: str):
+    """Return topological waves for *dag*, or None if validation fails (H-04)."""
+    if not dag.validate():
+        logger.warning("planning_node: %s DAG invalid; sequential execution", label)
+        return None
+    return dag.topological_sort_waves()
+
+
 def _plan_is_resumable(
     data: Dict[str, Any],
     current_task: str,
@@ -614,7 +622,7 @@ async def _planning_node_impl(state: Mapping[str, Any], config: RunnableConfig) 
             from src.core.orchestration.dag_parser import _convert_flat_to_dag
 
             dag = _convert_flat_to_dag(steps)
-            waves = dag.topological_sort_waves() if dag.validate() else None
+            waves = _dag_waves(dag, "new-plan")
             return _build_resolved_plan_result(
                 current_plan=steps,
                 current_step=0,
@@ -636,7 +644,7 @@ async def _planning_node_impl(state: Mapping[str, Any], config: RunnableConfig) 
         from src.core.orchestration.dag_parser import _convert_flat_to_dag
 
         dag = _convert_flat_to_dag(fallback_plan)
-        waves = dag.topological_sort_waves() if dag.validate() else None
+        waves = _dag_waves(dag, "fallback-plan")
         return _build_resolved_plan_result(
             current_plan=fallback_plan,
             current_step=0,
@@ -650,7 +658,7 @@ async def _planning_node_impl(state: Mapping[str, Any], config: RunnableConfig) 
     from src.core.orchestration.dag_parser import _convert_flat_to_dag
 
     dag = _convert_flat_to_dag(current_plan)
-    waves = dag.topological_sort_waves() if dag.validate() else None
+    waves = _dag_waves(dag, "existing-plan")
     return _build_resolved_plan_result(
         current_plan=current_plan,
         current_step=current_step,
