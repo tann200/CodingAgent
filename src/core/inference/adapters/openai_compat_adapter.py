@@ -595,13 +595,17 @@ class OpenAICompatibleAdapter(LLMClient):
                 }
 
         except requests.exceptions.RequestException as exc:
-            _logger.warning("%s.chat request failed: %s", self.__class__.__name__, exc)
-            return {"error": "request_exception", "message": str(exc)}
+            # CRED-1: str(exc) can contain the full request URL or a repr of the
+            # PreparedRequest including Authorization headers — never propagate raw.
+            _logger.warning(
+                "%s.chat request failed: %s", self.__class__.__name__, type(exc).__name__
+            )
+            return {"error": "request_exception", "message": "network_error"}
         except Exception as exc:
             _logger.warning(
-                "%s.chat unexpected error: %s", self.__class__.__name__, exc
+                "%s.chat unexpected error: %s", self.__class__.__name__, type(exc).__name__
             )
-            return {"error": "unexpected", "message": str(exc)}
+            return {"error": "unexpected", "message": "internal_error"}
 
     @with_telemetry
     def generate(

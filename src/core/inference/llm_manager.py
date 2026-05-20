@@ -990,7 +990,10 @@ async def _call_model_internal(
             consume_sse_stream=_consume_sse_stream,
         )
     except Exception as e:
-        return {"ok": False, "error": str(e)}
+        # CRED-1: str(e) from adapter exceptions can include URLs with credentials.
+        # Log only the exception type; return a generic error code to callers.
+        guilogger.warning("_call_model_internal: %s", type(e).__name__)
+        return {"ok": False, "error": "internal_error"}
 
 
 # ---------------------------------------------------------------------------
@@ -1010,6 +1013,9 @@ class CircuitBreaker:
                    request through.  If it succeeds → CLOSED; if it fails → OPEN.
 
     Thread-safe: all state mutations are protected by an RLock.
+    BUG-3 fix: a single ``_probe_in_flight`` flag prevents two concurrent
+    callers from both seeing ``is_open() == False`` during HALF_OPEN and
+    issuing simultaneous probe requests.
     """
 
     CLOSED = "closed"
@@ -1026,6 +1032,7 @@ class CircuitBreaker:
         self._state = self.CLOSED
         self._failure_count = 0
         self._opened_at: float = 0.0
+        self._probe_in_flight: bool = False
         self._lock = _threading.RLock()
 
     # -- public interface ---------------------------------------------------
@@ -1043,11 +1050,13 @@ class CircuitBreaker:
     def record_success(self) -> None:
         with self._lock:
             self._failure_count = 0
+            self._probe_in_flight = False
             self._state = self.CLOSED
 
     def record_failure(self) -> None:
         with self._lock:
             self._failure_count += 1
+            self._probe_in_flight = False
             if self._failure_count >= self.failure_threshold:
                 self._state = self.OPEN
                 self._opened_at = time.time()
@@ -1057,8 +1066,14 @@ class CircuitBreaker:
     def _current_state(self) -> str:
         if self._state == self.OPEN:
             if time.time() - self._opened_at >= self.recovery_timeout:
-                self._state = self.HALF_OPEN
-                return self.HALF_OPEN
+                # BUG-3: only transition to HALF_OPEN and allow one probe through.
+                # If a probe is already in flight, keep reporting OPEN so concurrent
+                # callers fast-fail instead of issuing redundant probe requests.
+                if not self._probe_in_flight:
+                    self._state = self.HALF_OPEN
+                    self._probe_in_flight = True
+                    return self.HALF_OPEN
+                return self.OPEN
         return self._state
 
 

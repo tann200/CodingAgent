@@ -153,7 +153,10 @@ class TokenBudgetMonitor:
         # Fall back to the current cached value so we never reset an explicitly
         # tuned value (e.g. a small model with a 4096-token window).
         context_budget = state.get("_context_budget")
-        if context_budget and int(context_budget) > 0:
+        # BUG-4: use `is not None` not truthiness — `0` is falsy but a valid value
+        # meaning "context window fully consumed", which should trigger compaction
+        # rather than silently falling back to a stale 32 768-token default.
+        if context_budget is not None and int(context_budget) > 0:
             max_tokens = int(context_budget)
         else:
             max_tokens = existing_budget.max_tokens
