@@ -158,6 +158,8 @@ Respond ONLY with the JSON array, no other text."""
                 model=provider_capabilities.get("model") or None,
                 stream=False,
                 format_json=False,
+                # BUG-N3: pass session_id so token usage is attributed correctly
+                session_id=state.get("session_id"),
             )
         )
         _rp_deadline = (

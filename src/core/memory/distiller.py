@@ -328,7 +328,7 @@ def distill_context(
                 # Pattern from claw's compact.rs: system summary first, then
                 # recent messages so the agent retains immediate context.
                 _recent = (
-                    messages[-_KEEP_RECENT:] if len(messages) > _KEEP_RECENT else []
+                    messages[-_KEEP_RECENT:] if len(messages) >= _KEEP_RECENT else []
                 )
                 # OP-8: Prefix the compacted message with [COMPACTED] so the TUI
                 # and log consumers can identify it as a synthetic summary rather
@@ -683,7 +683,7 @@ def call_internal_agent(
         if system_msg:
             full_messages.append({"role": "system", "content": system_msg})
         full_messages.extend(messages)
-        return _call_llm_sync(full_messages, max_new_tokens=max_tokens)
+        return _call_llm_sync(full_messages, max_tokens=max_tokens)
     except Exception as exc:
         logger.error("call_internal_agent(%r) failed: %s", agent_id, exc)
         return ""

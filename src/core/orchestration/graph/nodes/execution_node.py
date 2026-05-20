@@ -499,8 +499,11 @@ async def _execution_node_impl(state: Mapping[str, Any], config: RunnableConfig)
         logger=logger,
     )
 
-    # Check if execution was successful (handle both {"ok": True} and {"status": "ok"} formats)
-    execution_ok = res.get("ok") or res.get("status") == "ok"
+    # Check if execution was successful (handle both {"ok": True} and {"status": "ok"} formats).
+    # BUG-N4: must not treat {"ok": False, "status": "ok"} as success — when "ok" is
+    # explicitly False the tool reported failure regardless of the "status" field.
+    _ok_flag = res.get("ok")
+    execution_ok = (_ok_flag is True) or (_ok_flag is None and res.get("status") == "ok")
     if execution_ok:
         # Log failure for debugging if needed
         actual_res = res.get("result", {})
@@ -573,7 +576,7 @@ async def _execution_node_impl(state: Mapping[str, Any], config: RunnableConfig)
     if not post_tool_updates["plan_approval_consumed"] and (
         state.get("plan_mode_approved")
         and tool_name in MODIFYING_TOOLS
-        and (res.get("ok") or res.get("status") == "ok")
+        and (res.get("ok") is True or (res.get("ok") is None and res.get("status") == "ok"))
     ):
         post_tool_updates["plan_approval_consumed"] = {"plan_mode_approved": False}
 

@@ -698,7 +698,10 @@ def _extract_affected_files(steps: list) -> list:
         for m in _FILE_PAT.finditer(desc):
             p = m.group(1)
             # Skip pure-extension tokens like ".py" or paths starting with ".."
-            if p.startswith("..") or "/" not in p and "." == p[0]:
+            # BUG-N2: parenthesise the second clause to make precedence explicit;
+            # "or" binds looser than "and" so without parens the intent is preserved
+            # but the code is misleading and linters flag it.
+            if p.startswith("..") or ("/" not in p and p.startswith(".")):
                 continue
             if p not in seen:
                 seen.add(p)
