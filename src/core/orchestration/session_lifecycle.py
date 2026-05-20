@@ -280,7 +280,11 @@ class SessionLifecycleManager:
         return SessionSnapshot(
             session_id=session_id,
             task=state.get("task", ""),
-            history=state.get("history", []),
+            # D-3: deep-copy history so the snapshot is immutable with respect to
+            # the caller's state dict.  Without this, concurrent message appends
+            # during json.dump (save_snapshot) could corrupt or truncate the
+            # serialised history.
+            history=list(state.get("history", [])),
             current_step=int(state.get("current_step", 0)),
             plan=state.get("current_plan"),
             verified_reads=state.get("verified_reads", []),
@@ -472,7 +476,8 @@ class SessionLifecycleManager:
         """
         return {
             "task": snapshot.task,
-            "history": snapshot.history,
+            # D-3: return a copy so callers cannot mutate the cached snapshot object.
+            "history": list(snapshot.history),
             "current_step": snapshot.current_step,
             "current_plan": snapshot.plan,
             "verified_reads": snapshot.verified_reads,

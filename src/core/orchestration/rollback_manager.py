@@ -247,6 +247,7 @@ class RollbackManager:
         snapshots = self.snapshots.get(snapshot_id, [])  # type: ignore[call-overload]
 
         restored_files = []
+        failed_files: list = []
         for snap in snapshots:
             try:
                 file_path = safe_resolve(snap.path, self.workdir)
@@ -254,12 +255,18 @@ class RollbackManager:
                 logger.warning(
                     f"rollback: path '{snap.path}' escapes workspace — skipping"
                 )
+                failed_files.append({"path": snap.path, "error": "path escapes workspace"})
                 continue
             try:
-                # Create backup before restoring
+                # Create backup before restoring (best-effort; never abort on backup failure)
                 if file_path.exists():
                     backup_path = file_path.with_suffix(file_path.suffix + ".backup")
-                    shutil.copy2(file_path, backup_path)
+                    try:
+                        shutil.copy2(file_path, backup_path)
+                    except Exception as _backup_exc:
+                        logger.warning(
+                            f"rollback: could not create backup for {snap.path}: {_backup_exc}"
+                        )
 
                 # Restore content via mkstemp -> replace to avoid partial writes
                 file_path.parent.mkdir(parents=True, exist_ok=True)
@@ -294,21 +301,27 @@ class RollbackManager:
                         raise
                 except Exception as e:
                     logger.error(f"Failed to restore {snap.path}: {e}")
-                    return {"ok": False, "error": f"Failed to restore {snap.path}: {e}"}
+                    # D-4: collect failure and continue — don't leave remaining files
+                    # unrestored just because one file failed.
+                    failed_files.append({"path": snap.path, "error": str(e)})
+                    continue
 
             except Exception as e:
                 logger.error(f"Failed to restore {snap.path}: {e}")
-                return {"ok": False, "error": f"Failed to restore {snap.path}: {e}"}
+                failed_files.append({"path": snap.path, "error": str(e)})
+                continue
 
         logger.info(
             f"Rolled back {len(restored_files)} files from snapshot {snapshot_id}"
+            + (f" ({len(failed_files)} failed)" if failed_files else "")
         )
 
         return {
-            "ok": True,
+            "ok": len(failed_files) == 0,
             "snapshot_id": snapshot_id,
             "restored_files": restored_files,
             "restored_count": len(restored_files),
+            "failed_files": failed_files,
         }
 
     def append_to_snapshot(self, snapshot_id: str, file_path: str) -> bool:

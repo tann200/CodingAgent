@@ -544,11 +544,15 @@ class SessionRegistry:
         """Shutdown the registry and stop all monitoring."""
         self.stop_health_monitor()
 
+        # D-2: Snapshot session IDs under the lock, then release before iterating.
+        # Holding the outer lock while calling unregister_session() causes the
+        # RLock to re-enter, which is technically allowed, but the cascade in
+        # unregister_session() removes child sessions that are also in the snapshot
+        # list — leading to spurious "not found" warnings on the next iteration.
         with self._lock:
-            # Unregister all sessions
             session_ids = list(self._sessions.keys())
-            for sid in session_ids:
-                self.unregister_session(sid, "Registry shutdown")
+        for sid in session_ids:
+            self.unregister_session(sid, "Registry shutdown")
 
         logger.info("Session registry shutdown complete")
 

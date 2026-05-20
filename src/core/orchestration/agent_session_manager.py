@@ -111,6 +111,12 @@ class AgentSessionManager:
         # main thread (update_session_state) and the EventBus delivery thread
         # (_handle_state_request → get_session_state). Guard all accesses with this lock.
         self._state_lock = threading.Lock()
+        # D-1: _sessions and _role_subscriptions are mutated from multiple threads
+        # (register_agent, unregister_agent, subscribe_to_role, get_active_agents).
+        # Guard every read/write with this dedicated lock.
+        self._sessions_lock = threading.Lock()
+        # D-5: index from session_id → agent_id for O(1) teardown lookup.
+        self._session_id_to_agent_id: Dict[str, str] = {}
         self._setup_hydration_handler()
 
     def _setup_hydration_handler(self):
@@ -188,9 +194,10 @@ class AgentSessionManager:
             # consistent, but flush P2P *outside* to avoid an AB-BA deadlock
             # between _state_lock and _p2p_lock.
             state = self._current_session_state
-            state.active_agents = {
-                k: v for k, v in self._sessions.items() if v.status == "running"
-            }
+            with self._sessions_lock:
+                state.active_agents = {
+                    k: v for k, v in self._sessions.items() if v.status == "running"
+                }
 
         # Flush P2P messages outside _state_lock to prevent deadlock:
         # flush_pending_p2p() acquires _p2p_lock, and any thread that holds
@@ -241,8 +248,10 @@ class AgentSessionManager:
             status="running",
             callbacks={},
         )
-        self._sessions[agent_id] = session
-        self._role_subscriptions[role].add(agent_id)
+        with self._sessions_lock:
+            self._sessions[agent_id] = session
+            self._role_subscriptions[role].add(agent_id)
+            self._session_id_to_agent_id[session_id] = agent_id
 
         return session
 
@@ -260,7 +269,9 @@ class AgentSessionManager:
                 callback(msg)
 
         eb.subscribe(topic, wrapped)
-        self._sessions[agent_id].callbacks[topic] = wrapped
+        with self._sessions_lock:
+            if agent_id in self._sessions:
+                self._sessions[agent_id].callbacks[topic] = wrapped
 
     def publish_to_role(self, sender_id: str, role: AgentRole, payload: Any):
         """Broadcast message to all agents of a specific role."""
@@ -280,14 +291,31 @@ class AgentSessionManager:
 
     def get_active_agents(self) -> Dict[str, AgentSession]:
         """Get all active agent sessions."""
-        return {k: v for k, v in self._sessions.items() if v.status == "running"}
+        with self._sessions_lock:
+            return {k: v for k, v in self._sessions.items() if v.status == "running"}
 
     def unregister_agent(self, agent_id: str):
         """Unregister an agent session."""
-        if agent_id in self._sessions:
-            session = self._sessions[agent_id]
-            self._role_subscriptions[session.role].discard(agent_id)
-            del self._sessions[agent_id]
+        with self._sessions_lock:
+            if agent_id in self._sessions:
+                session = self._sessions[agent_id]
+                session.status = "terminated"
+                self._role_subscriptions[session.role].discard(agent_id)
+                self._session_id_to_agent_id.pop(session.session_id, None)
+                del self._sessions[agent_id]
+
+    def unregister_agent_by_session_id(self, session_id: str) -> bool:
+        """Unregister an agent session by its session_id (O(1) lookup). Returns True if found."""
+        with self._sessions_lock:
+            agent_id = self._session_id_to_agent_id.get(session_id)
+            if agent_id and agent_id in self._sessions:
+                session = self._sessions[agent_id]
+                session.status = "terminated"
+                self._role_subscriptions[session.role].discard(agent_id)
+                del self._session_id_to_agent_id[session_id]
+                del self._sessions[agent_id]
+                return True
+        return False
 
 
 def get_agent_session_manager() -> AgentSessionManager:
