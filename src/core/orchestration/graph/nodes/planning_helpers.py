@@ -22,7 +22,7 @@ def maybe_inject_repo_overview(
     if relevant_files:
         return analysis_summary
     try:
-        from src.tools.repo_overview_tool import repo_overview as _ov_fn
+        from src.tools.repo_read_tools import repo_overview as _ov_fn
         ov = _ov_fn(workdir=working_dir, max_depth=3, max_files=200)
         if ov.get("ok") and ov.get("entries"):
             lines = [f"{'  '*(e['depth']-1)}{e['path']} ({'dir' if e['type']=='dir' else 'file'})"

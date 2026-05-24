@@ -61,17 +61,17 @@ def example_registry() -> ToolRegistry:
     reg = ToolRegistry()
 
     # Repo Intelligence Tools
-    from src.tools import repo_tools
-    from src.tools import repo_analysis_tools
+    from src.tools import repo_read_tools
+    from src.tools import repo_write_tools
 
     reg.register(
         "initialize_repo_intelligence",
-        repo_tools.initialize_repo_intelligence,
+        repo_write_tools.initialize_repo_intelligence,
         description="initialize_repo_intelligence() -> Indexes the repository to enable code search and symbol finding.",
     )
     reg.register(
         "analyze_repository",
-        repo_analysis_tools.analyze_repository,
+        repo_read_tools.analyze_repository,
         description="analyze_repository() -> Analyzes the repository and creates a repo_memory.json file with summaries and dependencies.",
     )
 
@@ -87,19 +87,19 @@ def example_registry() -> ToolRegistry:
         pass
     reg.register(
         "search_code",
-        repo_tools.search_code,
+        repo_read_tools.search_code,
         description="search_code(query) -> Performs semantic search for code snippets.",
     )
     reg.register(
         "find_symbol",
-        repo_tools.find_symbol,
+        repo_read_tools.find_symbol,
         description="find_symbol(name) -> Finds a class or function by its exact name.",
     )
     # add find_references if available
     try:
         reg.register(
             "find_references",
-            repo_tools.find_references,
+            repo_read_tools.find_references,
             description="find_references(name) -> Find references to a symbol across the repo.",
         )
     except Exception:

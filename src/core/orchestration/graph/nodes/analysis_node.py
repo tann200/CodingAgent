@@ -6,7 +6,7 @@ from typing import Dict, Any
 
 from src.core.orchestration.graph.state import StateLike
 from src.core.orchestration.graph.nodes.node_utils import _resolve_orchestrator
-from src.tools.repo_summary import generate_repo_summary
+from src.tools.repo_read_tools import generate_repo_summary
 
 logger = logging.getLogger(__name__)
 
