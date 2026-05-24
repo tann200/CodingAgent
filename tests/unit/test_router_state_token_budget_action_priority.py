@@ -304,24 +304,34 @@ class TestMemoryUpdateNodeAppliesCompactedHistory:
         }
 
     def test_memory_update_node_returns_compacted_history(self, tmp_path):
-        """memory_update_node must return compacted history when distill_context compacts."""
+        """memory_update_node must return compacted history when CompactionService compacts."""
         from src.core.orchestration.graph.nodes.memory_update_node import (
             memory_update_node,
         )
+        from src.core.memory.compaction_service import CompactionResult
 
         state = self._make_state(55, tmp_path)
         config = {"configurable": {"orchestrator": None}}
 
         compact_msgs = [{"role": "system", "content": "Session Summary:\nCompacted"}]
+        ok_result = CompactionResult(
+            success=True,
+            compacted_history=compact_msgs,
+            method="deterministic",
+        )
+
+        fake_service = MagicMock()
+        fake_service.should_compact.return_value = True
+        fake_service.compact.return_value = ok_result
 
         with patch(
-            "src.core.orchestration.graph.nodes.memory_update_node.distill_context",
-            return_value={"current_task": "t", "_compacted_history": compact_msgs},
+            "src.core.memory.compaction_service.CompactionService",
+            return_value=fake_service,
         ):
             result = asyncio.run(memory_update_node(state, config))  # type: ignore[arg-type]
 
         assert "history" in result, (
-            "memory_update_node must return 'history' when distill_context compacts"
+            "memory_update_node must return 'history' when CompactionService compacts"
         )
         assert result["history"] == compact_msgs
 

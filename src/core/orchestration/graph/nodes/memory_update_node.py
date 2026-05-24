@@ -92,57 +92,140 @@ async def _memory_update_node_impl(state: StateLike, config: RunnableConfig) -> 
         try:
             history = state.get("history", [])
 
+            # P2-1: Use CompactionService as the unified facade for all compaction
+            # paths.  The service handles algorithm selection (LLM vs. deterministic)
+            # and publishes context.compacted / context.compact.failed events.
+            try:
+                from src.core.memory.compaction_service import CompactionService
+
+                _compaction_service_available = True
+            except ImportError:
+                _compaction_service_available = False
+
             if force_compact:
                 logger.info(
-                    f"memory_update_node: FORCE COMPACT "
-                    f"(history has {len(history)} messages)"
+                    "memory_update_node: FORCE COMPACT "
+                    "(history has %d messages)",
+                    len(history),
                 )
 
-                if compact_messages_to_prose is not None:
-                    summary = compact_messages_to_prose(
-                        history, working_dir=workdir_path
+                if _compaction_service_available:
+                    _event_bus = None
+                    try:
+                        from src.core.orchestration.event_bus import get_event_bus as _geb
+
+                        _event_bus = _geb()
+                    except Exception:
+                        pass
+
+                    _cs = CompactionService(
+                        history=list(history),
+                        working_dir=workdir_path,
+                        event_bus=_event_bus,
+                        # Force-compact must not stall on an LLM call: use
+                        # deterministic sliding-window as the primary path but
+                        # let the service try LLM first (prefer_deterministic=False
+                        # means LLM→deterministic fallback, which is fine here).
+                        prefer_deterministic=False,
                     )
+                    _cs_result = _cs.compact()
+                    if _cs_result.success and _cs_result.compacted_history:
+                        _updated_history = _cs_result.compacted_history
+                        logger.info(
+                            "memory_update_node: compact complete via CompactionService "
+                            "(method=%s, %d→%d messages)",
+                            _cs_result.method,
+                            len(history),
+                            len(_updated_history),
+                        )
+                    else:
+                        # Fallback to old behaviour on service failure
+                        summary = "Context compacted."
+                        _updated_history = [
+                            {"role": "system", "content": "Session Summary:\n" + summary},
+                            {"role": "user", "content": state.get("task", "")},
+                        ]
                 else:
-                    summary = "Context compacted."
+                    # CompactionService unavailable — use old direct path
+                    if compact_messages_to_prose is not None:
+                        summary = compact_messages_to_prose(
+                            history, working_dir=workdir_path
+                        )
+                    else:
+                        summary = "Context compacted."
 
-                essential = [
-                    {"role": "system", "content": "Session Summary:\n" + summary},
-                    {"role": "user", "content": state.get("task", "")},
-                ]
-
-                # CF-1 / HR-2 fix: return updated history via return dict, not in-place.
-                _updated_history = essential
-
-                logger.info(
-                    f"memory_update_node: compact complete "
-                    f"(reduced to {len(essential)} messages)"
-                )
+                    _updated_history = [
+                        {"role": "system", "content": "Session Summary:\n" + summary},
+                        {"role": "user", "content": state.get("task", "")},
+                    ]
+                    logger.info(
+                        "memory_update_node: compact complete "
+                        "(reduced to %d messages)",
+                        len(_updated_history),
+                    )
             else:
-                # HR-2 fix: capture distill_context return value and apply compacted
-                # history to state so the context window is actually reduced when the
-                # 50-message threshold triggers inside distill_context.
-                if distill_context is not None:
-                    # Use .get to avoid TypedDict non-required key access errors
+                # HR-2 fix: compact history when threshold is reached.
+                # P2-1: Try CompactionService first; fall back to distill_context.
+                if _compaction_service_available:
+                    _event_bus2 = None
+                    try:
+                        from src.core.orchestration.event_bus import get_event_bus as _geb2
+
+                        _event_bus2 = _geb2()
+                    except Exception:
+                        pass
+
+                    _cs2 = CompactionService(
+                        history=list(history),
+                        working_dir=workdir_path,
+                        event_bus=_event_bus2,
+                        prefer_deterministic=False,
+                    )
+                    if _cs2.should_compact():
+                        _cs2_result = _cs2.compact()
+                        if _cs2_result.success and _cs2_result.compacted_history:
+                            _updated_history = _cs2_result.compacted_history
+                            logger.info(
+                                "memory_update_node: history compacted by CompactionService "
+                                "(method=%s, %d messages remain)",
+                                _cs2_result.method,
+                                len(_updated_history),
+                            )
+                elif distill_context is not None:
                     distilled = distill_context(
                         state.get("history", []), working_dir=workdir_path
                     )
-                else:
-                    distilled = None
-                compacted = distilled.get("_compacted_history") if distilled else None
-                if compacted:
-                    _updated_history = compacted
-                    logger.info(
-                        f"memory_update_node: history compacted by distill_context "
-                        f"({len(compacted)} messages remain)"
-                    )
-                # ME-3 fix: feed the distilled current_state back into analysis_summary
-                # so the next perception turn sees an up-to-date context summary rather
-                # than the stale value from several turns ago.
-                if distilled and distilled.get("current_state"):
-                    _distilled_summary = distilled["current_state"]
-                    logger.info(
-                        "memory_update_node: updating analysis_summary from distilled state"
-                    )
+                    compacted = distilled.get("_compacted_history") if distilled else None
+                    if compacted:
+                        _updated_history = compacted
+                        logger.info(
+                            "memory_update_node: history compacted by distill_context "
+                            "(%d messages remain)",
+                            len(compacted),
+                        )
+                    # ME-3 fix: feed the distilled current_state back into analysis_summary
+                    # so the next perception turn sees an up-to-date context summary rather
+                    # than the stale value from several turns ago.
+                    if distilled and distilled.get("current_state"):
+                        _distilled_summary = distilled["current_state"]
+                        logger.info(
+                            "memory_update_node: updating analysis_summary from distilled state"
+                        )
+
+                # ME-3 fallback: when CompactionService path ran (not distill_context),
+                # still attempt to get analysis_summary via distill_context if available.
+                if _compaction_service_available and distill_context is not None:
+                    try:
+                        _distill_for_summary = distill_context(
+                            state.get("history", []), working_dir=workdir_path
+                        )
+                        if _distill_for_summary and _distill_for_summary.get("current_state"):
+                            _distilled_summary = _distill_for_summary["current_state"]
+                            logger.info(
+                                "memory_update_node: updating analysis_summary from distilled state"
+                            )
+                    except Exception as _me3_err:
+                        logger.debug("memory_update_node ME-3: distill for summary failed: %s", _me3_err)
 
             logger.info("memory_update_node: distillation complete")
         except Exception as e:

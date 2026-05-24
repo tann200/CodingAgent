@@ -206,35 +206,52 @@ def _compact_messages_impl(orch: Any, messages: list) -> str:
 def compact_context_impl(orch: Any) -> bool:
     """S9-B: Immediately distill the current conversation history.
 
-    Triggers ``distill_context()`` regardless of the token threshold so
-    the user can manually free context window space at any time via the
-    ``/compact`` TUI slash command.
+    Triggers compaction regardless of the token threshold so the user can
+    manually free context window space at any time via the ``/compact`` TUI
+    slash command.
+
+    Uses :class:`~src.core.memory.compaction_service.CompactionService` as the
+    unified facade, which tries the LLM summariser first and falls back to the
+    deterministic sliding-window compactor.
 
     Returns:
-        True if distillation ran successfully; False on error or no history.
+        True if compaction ran successfully; False on error or no history.
     """
     try:
-        from src.core.memory.distiller import distill_context
+        from pathlib import Path
 
-        history = orch.msg_mgr.messages if hasattr(orch, "msg_mgr") else []
+        from src.core.memory.compaction_service import CompactionService
+
+        history = list(orch.msg_mgr.messages) if hasattr(orch, "msg_mgr") else []
         if not history:
             return False
-        distill_context(
-            messages=list(history),
-            working_dir=orch.working_dir if hasattr(orch, "working_dir") else None,
-        )
-        guilogger.info("compact_context: distillation complete")
-        # Publish event for TUI status bar
+
+        working_dir: Path | None = None
         try:
-            _bus = getattr(orch, "event_bus", None)
-            if _bus:
-                _bus.publish("context.compacted", {"message": "Context compacted"})
+            working_dir = Path(orch.working_dir) if hasattr(orch, "working_dir") else None
         except Exception:
             pass
-        return True
+
+        event_bus = getattr(orch, "event_bus", None)
+        service = CompactionService(
+            history=history,
+            working_dir=working_dir,
+            event_bus=event_bus,
+        )
+        result = service.compact()
+        if result.success:
+            guilogger.info(
+                "compact_context: compaction complete via method=%s "
+                "tokens=%d→%d",
+                result.method,
+                result.tokens_before,
+                result.tokens_after,
+            )
+        else:
+            guilogger.warning("compact_context: compaction failed: %s", result.error)
+        return result.success
     except Exception as exc:
-        guilogger.warning(f"compact_context: distillation failed: {exc}")
-        # BUG-VOL22-1: Publish failure event so TUI can surface it to the user.
+        guilogger.warning(f"compact_context: unexpected error: {exc}")
         try:
             _bus = getattr(orch, "event_bus", None)
             if _bus:

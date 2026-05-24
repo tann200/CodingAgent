@@ -3,12 +3,14 @@
 Extends ``SessionListScreen`` with additional actions surfaced in the UI:
 - **Fork** (`f`): create an independent copy of the selected session
 - **Revert** (`r`): restore the working directory to the selected session's git snapshot
+  - Requires confirmation via a modal dialog (``RevertConfirmScreen``) before running
+    the destructive ``git stash`` + ``git checkout`` commands.
 - **Resume** (Enter): load the selected session's history and restart (existing behaviour
   from ``SessionListScreen._resume_selected()``)
 
 This screen is used by:
 - P3-2: ``Ctrl+R`` binding in ``AgentApp`` → ``push_screen(SessionScreen())``
-- P2-2: ``/fork`` slash command can now link to a SessionScreen that shows forkable sessions
+- P2-2: ``/fork`` and ``/revert`` slash commands (wired in builtin_commands.py)
 
 Architecture
 ------------
@@ -21,19 +23,86 @@ are additive and do not interfere with the parent's bindings.
 from __future__ import annotations
 
 import json
-import shutil
 import subprocess
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Optional
 
 from textual.app import ComposeResult
-from textual.containers import Container
+from textual.containers import Container, Horizontal
 from textual.events import Key
 from textual.screen import ModalScreen
-from textual.widgets import Input, Label, Static
+from textual.widgets import Button, Input, Label, Static
 
 from .session_list import SessionListScreen
+
+
+# ---------------------------------------------------------------------------
+# Confirmation dialog (P2-2)
+# ---------------------------------------------------------------------------
+
+
+class RevertConfirmScreen(ModalScreen[bool]):
+    """Modal confirmation dialog before running a destructive git-revert.
+
+    Returns ``True`` when the user confirms; ``False`` (or ``None``) on cancel.
+    """
+
+    DEFAULT_CSS = """
+    RevertConfirmScreen {
+        align: center middle;
+    }
+    #confirm_dialog {
+        background: $surface;
+        border: tall $primary;
+        padding: 1 2;
+        width: 60;
+        height: auto;
+    }
+    #confirm_message {
+        margin-bottom: 1;
+    }
+    #confirm_buttons {
+        align: right middle;
+        height: auto;
+    }
+    Button {
+        margin-left: 1;
+    }
+    """
+
+    def __init__(self, sha: str, working_dir: str) -> None:
+        super().__init__()
+        self._sha = sha
+        self._working_dir = working_dir
+
+    def compose(self) -> ComposeResult:
+        with Container(id="confirm_dialog"):
+            yield Label(
+                f"⚠ Revert working directory to git snapshot [bold]{self._sha[:12]}[/bold]?\n\n"
+                f"  Directory: {self._working_dir}\n\n"
+                "  Uncommitted changes will be stashed. This cannot be undone easily.",
+                id="confirm_message",
+            )
+            with Horizontal(id="confirm_buttons"):
+                yield Button("Revert", id="btn_confirm", variant="error")
+                yield Button("Cancel", id="btn_cancel", variant="default")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        self.dismiss(event.button.id == "btn_confirm")
+
+    def on_key(self, event: Key) -> None:
+        if event.key == "escape":
+            self.dismiss(False)
+            event.prevent_default()
+        elif event.key == "enter":
+            self.dismiss(True)
+            event.prevent_default()
+
+
+# ---------------------------------------------------------------------------
+# SessionScreen
+# ---------------------------------------------------------------------------
 
 
 class SessionScreen(SessionListScreen):
@@ -42,6 +111,7 @@ class SessionScreen(SessionListScreen):
     Keybindings (additive to parent):
     - ``f``: fork selected session → new independent session snapshot
     - ``r``: revert working directory to selected session's git snapshot
+      (shows ``RevertConfirmScreen`` confirmation dialog first)
     - ``Enter``: resume selected session (inherited)
     - ``d``: delete/trash selected session (inherited)
     - ``Esc``: close (inherited)
@@ -95,15 +165,14 @@ class SessionScreen(SessionListScreen):
             self.app.notify(f"Fork failed: {exc}", severity="error")
 
     # ------------------------------------------------------------------
-    # Revert action
+    # Revert action (with confirmation dialog)
     # ------------------------------------------------------------------
 
     def action_revert_session(self) -> None:
-        """Revert the working directory to the selected session's git snapshot.
+        """Prompt for confirmation then revert the working directory.
 
-        Uses ``git stash`` + ``git checkout`` to restore the snapshot recorded
-        in ``data["git_sha"]`` (written by ``_save_session_snapshot``).
-        Falls back to a notification if no git SHA is stored or git is absent.
+        Shows ``RevertConfirmScreen`` and only proceeds with the destructive
+        ``git stash + git checkout`` if the user confirms.
         """
         if not self._filtered or self._selected >= len(self._filtered):
             self.app.notify("No session selected.", severity="warning")
@@ -119,6 +188,16 @@ class SessionScreen(SessionListScreen):
         if not working_dir:
             self.app.notify("No working directory recorded.", severity="warning")
             return
+
+        def _on_confirm(confirmed: bool | None) -> None:
+            if not confirmed:
+                return
+            self._do_revert(git_sha, working_dir)
+
+        self.app.push_screen(RevertConfirmScreen(git_sha, working_dir), _on_confirm)
+
+    def _do_revert(self, git_sha: str, working_dir: str) -> None:
+        """Execute the git revert after user confirmation."""
         try:
             cwd = Path(working_dir)
             if not cwd.is_dir():

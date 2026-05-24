@@ -1970,24 +1970,13 @@ class AgentApp(App[None], StatusBarMixin, ChatDisplayMixin):
                     severity="warning",
                 )
             else:
-                # Use the dedicated undo method from core_bridge
-                removed = self._bridge.undo_last_user_message()
-                if removed:
-                    # Also remove any trailing assistant messages that came after
-                    with self._bridge._history_lock:
-                        hist = self._bridge.history
-                        while hist and hist[-1][0] != "user":
-                            hist.pop()
-                    self._bridge._save_history()
-                    w = Static(
-                        "[dim]↩ Undone: last user message removed[/]",
-                        classes="system_msg",
-                        markup=True,
-                    )
-                    await self._mount_chat_widget(w)
-                    self.notify("Last message undone")
-                else:
-                    self.notify("Nothing to undo", severity="warning")
+                await self._slash_undo_with_confirm()
+
+        elif cmd == "revert":
+            # P2-2: open SessionScreen so the user can pick a git snapshot to revert to.
+            from .screens.session_screen import SessionScreen
+
+            self.push_screen(SessionScreen())
 
         elif cmd == "interrupt":
             self._bridge.force_interrupt()
@@ -2064,6 +2053,70 @@ class AgentApp(App[None], StatusBarMixin, ChatDisplayMixin):
                 self._bridge.send_prompt(f"/{val}")
             else:
                 self.notify(f"Unknown command: /{cmd}", severity="warning")
+
+    async def _slash_undo_with_confirm(self) -> None:
+        """P2-2: Show a confirmation dialog before removing the last user message.
+
+        Passes through to the existing undo logic only after the user confirms.
+        """
+        from textual.containers import Horizontal
+        from textual.screen import ModalScreen
+        from textual.widgets import Button
+
+        class _UndoConfirmScreen(ModalScreen):
+            DEFAULT_CSS = """
+            _UndoConfirmScreen { align: center middle; }
+            #_undo_dlg {
+                background: $surface; border: tall $primary;
+                padding: 1 2; width: 56; height: auto;
+            }
+            #_undo_msg { margin-bottom: 1; }
+            #_undo_btns { align: right middle; height: auto; }
+            Button { margin-left: 1; }
+            """
+
+            def compose(self):
+                from textual.containers import Container
+                from textual.widgets import Label
+                with Container(id="_undo_dlg"):
+                    yield Label(
+                        "Remove the last user message from history?\n\n"
+                        "  This cannot be undone.",
+                        id="_undo_msg",
+                    )
+                    with Horizontal(id="_undo_btns"):
+                        yield Button("Undo", id="btn_yes", variant="error")
+                        yield Button("Cancel", id="btn_no", variant="default")
+
+            def on_button_pressed(self, event: Button.Pressed) -> None:
+                self.dismiss(event.button.id == "btn_yes")
+
+            def on_key(self, event) -> None:
+                if event.key == "escape":
+                    self.dismiss(False)
+                    event.prevent_default()
+
+        async def _after_confirm(confirmed: bool | None) -> None:
+            if not confirmed:
+                return
+            removed = self._bridge.undo_last_user_message()
+            if removed:
+                with self._bridge._history_lock:
+                    hist = self._bridge.history
+                    while hist and hist[-1][0] != "user":
+                        hist.pop()
+                self._bridge._save_history()
+                w = Static(
+                    "[dim]↩ Undone: last user message removed[/]",
+                    classes="system_msg",
+                    markup=True,
+                )
+                await self._mount_chat_widget(w)
+                self.notify("Last message undone")
+            else:
+                self.notify("Nothing to undo", severity="warning")
+
+        self.push_screen(_UndoConfirmScreen(), _after_confirm)
 
     async def _slash_fast(self) -> None:
         """S8-C: /fast — switch to the smallest/fastest configured model (NANO tier)."""

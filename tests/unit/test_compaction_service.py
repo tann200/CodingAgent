@@ -243,3 +243,111 @@ class TestEventBusPublishing:
         svc = CompactionService(_make_history(3), event_bus=None, prefer_deterministic=True)
         result = svc.compact()
         assert result.success is True
+
+
+# ---------------------------------------------------------------------------
+# P2-1: compact_context_impl routed through CompactionService
+# ---------------------------------------------------------------------------
+
+
+class TestCompactContextImpl:
+    """compact_context_impl must now delegate to CompactionService."""
+
+    def _make_orch(self, history=None, working_dir="/tmp/test"):
+        orch = MagicMock()
+        _hist = history if history is not None else _make_history(5)
+        orch.msg_mgr.messages = _hist
+        orch.working_dir = working_dir
+        orch.event_bus = MagicMock()
+        return orch
+
+    def test_returns_true_on_success(self):
+        from src.core.orchestration.orchestrator_helpers import compact_context_impl
+
+        orch = self._make_orch()
+        ok_result = CompactionResult(
+            success=True,
+            compacted_history=_make_history(2),
+            method="deterministic",
+            tokens_before=500,
+            tokens_after=100,
+        )
+        with patch(
+            "src.core.memory.compaction_service.CompactionService.compact",
+            return_value=ok_result,
+        ):
+            result = compact_context_impl(orch)
+
+        assert result is True
+
+    def test_returns_false_when_no_history(self):
+        from src.core.orchestration.orchestrator_helpers import compact_context_impl
+
+        orch = self._make_orch(history=[])
+        assert compact_context_impl(orch) is False
+
+    def test_returns_false_on_compaction_failure(self):
+        from src.core.orchestration.orchestrator_helpers import compact_context_impl
+
+        orch = self._make_orch()
+        fail_result = CompactionResult(
+            success=False,
+            method="error",
+            error="LLM timeout",
+        )
+        with patch(
+            "src.core.memory.compaction_service.CompactionService.compact",
+            return_value=fail_result,
+        ):
+            result = compact_context_impl(orch)
+
+        assert result is False
+
+    def test_publishes_failure_event_on_exception(self):
+        """If CompactionService itself raises, the failure event is still published."""
+        from src.core.orchestration.orchestrator_helpers import compact_context_impl
+
+        orch = self._make_orch()
+        with patch(
+            "src.core.memory.compaction_service.CompactionService",
+            side_effect=RuntimeError("boom"),
+        ):
+            result = compact_context_impl(orch)
+
+        assert result is False
+        orch.event_bus.publish.assert_called_once()
+        call_args = orch.event_bus.publish.call_args[0]
+        assert call_args[0] == "context.compact.failed"
+
+    def test_uses_compaction_service_not_distiller_directly(self):
+        """After P2-1 fix, compact_context_impl must NOT import distill_context directly.
+        Instead it must construct CompactionService. Verify that CompactionService.__init__
+        is called with the correct history.
+        """
+        from src.core.orchestration.orchestrator_helpers import compact_context_impl
+
+        history = _make_history(4)
+        orch = self._make_orch(history=history)
+
+        constructed_with: list = []
+
+        class _TrackingService:
+            def __init__(self, history, **kwargs):
+                constructed_with.append(list(history))
+                self._history = history
+
+            def compact(self):
+                return CompactionResult(
+                    success=True,
+                    compacted_history=self._history[:2],
+                    method="deterministic",
+                )
+
+        with patch(
+            "src.core.memory.compaction_service.CompactionService",
+            _TrackingService,
+        ):
+            compact_context_impl(orch)
+
+        assert len(constructed_with) == 1
+        assert constructed_with[0] == history

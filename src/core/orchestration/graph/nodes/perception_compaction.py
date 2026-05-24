@@ -1,4 +1,5 @@
 import logging
+from pathlib import Path
 from typing import Any, Mapping
 
 logger = logging.getLogger(__name__)
@@ -35,17 +36,36 @@ def _run_auto_compaction(
     cfg_get_fn: Any,
     get_context_budget_fn: Any,
 ) -> tuple[list, list | None]:
-    """Run the deterministic auto-compaction logic."""
+    """Run context compaction via :class:`CompactionService`.
+
+    The ``auto_compact_config_cls``, ``should_compact_fn``, ``compact_messages_fn``,
+    ``cfg_get_fn``, and ``get_context_budget_fn`` parameters are retained for
+    backward-compatibility with the ``perception_node.py`` wrapper — they are no
+    longer used directly; ``CompactionService`` resolves the algorithm internally.
+    """
     new_compacted_history = None
     try:
-        if (
-            auto_compact_config_cls is None
-            or should_compact_fn is None
-            or compact_messages_fn is None
-            or cfg_get_fn is None
-        ):
-            raise RuntimeError("auto_compactor unavailable")
+        # --- Cooldown guard (unchanged from previous implementation) ----------
+        compaction_last_round = state.get("_compaction_last_round")
+        current_rounds = int(state.get("rounds") or 0)
+        compaction_min_gap = 3
+        compaction_last_round_int = (
+            int(compaction_last_round) if compaction_last_round is not None else None
+        )
+        if compaction_last_round_int is not None:
+            gap = current_rounds - compaction_last_round_int
+            if gap < compaction_min_gap:
+                logger.debug(
+                    "perception_node CP-6: skipping compaction — cooldown active "
+                    "(last=%d, current=%d, gap=%d < %d)",
+                    compaction_last_round_int,
+                    current_rounds,
+                    gap,
+                    compaction_min_gap,
+                )
+                return history_for_prompt, None
 
+        # --- Determine token limit from adapter / config ---------------------
         context_window = 0
         try:
             if adapter and hasattr(adapter, "context_window"):
@@ -55,55 +75,73 @@ def _run_auto_compaction(
         except Exception:
             pass
 
-        config_default_max = int(cfg_get_fn("auto_compact_max_tokens", 10_000) or 10_000)
-        auto_compact_max_tokens = (
+        config_default_max = 10_000
+        if cfg_get_fn is not None:
+            try:
+                config_default_max = int(
+                    cfg_get_fn("auto_compact_max_tokens", 10_000) or 10_000
+                )
+            except Exception:
+                pass
+
+        token_limit = (
             int(context_window * 0.85) if context_window > 0 else config_default_max
         )
-        auto_compact_preserve = int(cfg_get_fn("auto_compact_preserve_recent", 4) or 4)
-        auto_compact_config = auto_compact_config_cls(
-            preserve_recent=auto_compact_preserve,
-            max_tokens=auto_compact_max_tokens,
+
+        # --- Delegate to CompactionService -----------------------------------
+        from src.core.memory.compaction_service import CompactionService
+
+        working_dir: Path | None = None
+        try:
+            wd = getattr(orchestrator, "working_dir", None)
+            if wd:
+                working_dir = Path(wd)
+        except Exception:
+            pass
+
+        event_bus = getattr(orchestrator, "event_bus", None)
+        service = CompactionService(
+            history=history_for_prompt,
+            working_dir=working_dir,
+            event_bus=event_bus,
+            # Always use deterministic path in the hot perception loop so we
+            # never block on an LLM call during compaction.
+            prefer_deterministic=True,
+            compact_threshold=0.85,
         )
 
-        compaction_last_round = state.get("_compaction_last_round")
-        current_rounds = int(state.get("rounds") or 0)
-        compaction_min_gap = 3
-        compaction_last_round_int = (
-            int(compaction_last_round) if compaction_last_round is not None else None
-        )
-        gap: int | None = None
-        if compaction_last_round_int is not None:
-            gap = current_rounds - compaction_last_round_int
-            compaction_on_cooldown = gap < compaction_min_gap
-        else:
-            compaction_on_cooldown = False
+        if not service.should_compact(token_limit=token_limit):
+            return history_for_prompt, None
 
-        if compaction_on_cooldown:
-            logger.debug(
-                f"perception_node CP-6: skipping compaction — cooldown active (last={compaction_last_round_int}, current={current_rounds}, gap={gap} < {compaction_min_gap})"
+        result = service.compact()
+        if result.success and result.compacted_history:
+            history_for_prompt = result.compacted_history
+            new_compacted_history = result.compacted_history
+            logger.info(
+                "perception_node CP-6: auto-compacted history via CompactionService "
+                "(method=%s, tokens %d→%d, new_len=%d)",
+                result.method,
+                result.tokens_before,
+                result.tokens_after,
+                len(history_for_prompt),
             )
-        elif should_compact_fn(history_for_prompt, auto_compact_config):
-            compact_result = compact_messages_fn(history_for_prompt, auto_compact_config)
-            if compact_result.removed_message_count > 0:
-                history_for_prompt = compact_result.compacted_messages
-                new_compacted_history = compact_result.compacted_messages
-                logger.info(
-                    "perception_node CP-6: auto-compacted history — removed=%d, new_len=%d",
-                    compact_result.removed_message_count,
-                    len(history_for_prompt),
-                )
-                try:
-                    if orchestrator and hasattr(orchestrator, "event_bus"):
-                        orchestrator.event_bus.publish(
-                            "context.auto_compacted",
-                            {
-                                "removed_message_count": compact_result.removed_message_count,
-                                "new_message_count": len(history_for_prompt),
-                                "session_id": state.get("session_id"),
-                            },
-                        )
-                except Exception:
-                    pass
+            # Publish context.auto_compacted for TUI status bar (richer payload
+            # than the old context.compacted event).
+            try:
+                if event_bus:
+                    event_bus.publish(
+                        "context.auto_compacted",
+                        {
+                            "method": result.method,
+                            "tokens_before": result.tokens_before,
+                            "tokens_after": result.tokens_after,
+                            "new_message_count": len(history_for_prompt),
+                            "session_id": state.get("session_id"),
+                        },
+                    )
+            except Exception:
+                pass
+
     except Exception as auto_compaction_error:
         logger.debug(
             "perception_node CP-6: auto-compaction skipped (non-fatal): %s",

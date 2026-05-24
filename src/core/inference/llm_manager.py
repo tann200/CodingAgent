@@ -489,14 +489,25 @@ class ProviderManager:
     def _on_model_routing(self, payload: Any) -> None:
         """Handle a ``model.routing`` event published by the TUI or orchestrator.
 
-        Updates ``default_model`` on the active adapter (and optionally flips
-        the active provider) so the *next* inference call picks the newly
-        selected model without requiring a process restart.
+        For same-provider model switch:
+            Updates ``default_model`` on the active adapter so the next inference
+            call picks the new model without a restart.
+
+        For cross-provider switch (``provider`` key in payload differs from current):
+            1. Writes the new ``active`` flag to ``providers.json`` so
+               ``get_active_provider_name()`` reflects the change persistently.
+            2. Re-instantiates the target adapter from its config so in-process
+               calls immediately route to the new provider — no restart required.
+            3. Updates ``default_model`` on the newly active adapter.
+            4. Publishes ``model.routing.complete`` with the outcome.
 
         Args:
             payload: Dict with keys ``"selected"`` (model name) and optionally
                      ``"provider"`` (provider key/name).
         """
+        import logging as _logging
+
+        _log = _logging.getLogger(__name__)
         try:
             if not isinstance(payload, dict):
                 return
@@ -505,37 +516,130 @@ class ProviderManager:
             if not selected_model:
                 return
 
-            # Update the active adapter's default_model if it exposes one.
-            adapter = self.get_active_adapter()
+            switched_provider: Optional[str] = None
+
+            # --- Cross-provider switch ----------------------------------------
+            if provider_key:
+                pkey = canonical_provider(provider_key)
+                current = self.get_active_provider_name()
+
+                if pkey and pkey != current:
+                    # Step 1: Persist the active flag change to providers.json
+                    _persisted = self._persist_active_provider(pkey)
+
+                    # Step 2: Re-instantiate the adapter if we have a registered entry
+                    existing_adapter = self._providers.get(pkey)
+                    if existing_adapter is None:
+                        # Try to build adapter from providers.json config
+                        new_adapter = self._build_adapter_for_provider(pkey)
+                        if new_adapter is not None:
+                            self._providers[pkey] = new_adapter
+                            existing_adapter = new_adapter
+                            _log.info(
+                                "model.routing: instantiated new adapter for provider %r",
+                                pkey,
+                            )
+
+                    switched_provider = pkey if existing_adapter is not None else None
+
+            # --- Update default_model on the (now active) adapter -------------
+            target_pkey = switched_provider or canonical_provider(provider_key or "")
+            adapter = self._providers.get(target_pkey) if target_pkey else None
+            if adapter is None:
+                adapter = self.get_active_adapter()
             if adapter is not None and hasattr(adapter, "default_model"):
                 try:
                     adapter.default_model = selected_model
                 except Exception:
                     pass
 
-            # If a specific provider was requested and differs from current, try
-            # to mark it active by setting active=true in-memory on its config.
-            if provider_key:
-                pkey = provider_key.lower().replace(" ", "_")
-                provider_cfg = self._providers.get(pkey)
-                if provider_cfg is not None and hasattr(provider_cfg, "active"):
-                    try:
-                        # Flip all providers inactive, then activate the target.
-                        for p in self._providers.values():
-                            if hasattr(p, "active"):
-                                p.active = False
-                        provider_cfg.active = True
-                    except Exception:
-                        pass
-
-            import logging as _logging
-            _logging.getLogger(__name__).info(
-                "model.routing: live-switched to model=%r provider=%r",
+            _log.info(
+                "model.routing: live-switched to model=%r provider=%r (persisted=%s)",
                 selected_model,
                 provider_key,
+                switched_provider is not None,
             )
+
+            # --- Publish completion event -------------------------------------
+            if self._event_bus:
+                try:
+                    self._event_bus.publish(
+                        "model.routing.complete",
+                        {
+                            "model": selected_model,
+                            "provider": provider_key,
+                            "switched_provider": switched_provider,
+                        },
+                    )
+                except Exception:
+                    pass
         except Exception:
             pass
+
+    def _persist_active_provider(self, target_key: str) -> bool:
+        """Write ``active: true`` for *target_key* and ``false`` for all others
+        in ``providers.json``.  Returns True on success.
+        """
+        try:
+            cfg_path = resolve_config_path(self.providers_config_path)
+            with _providers_json_lock:
+                raw = json.loads(cfg_path.read_text(encoding="utf-8"))
+                providers = raw if isinstance(raw, list) else ([raw] if isinstance(raw, dict) else [])
+                changed = False
+                for p in providers:
+                    if not isinstance(p, dict):
+                        continue
+                    pkey = canonical_provider(p.get("name") or p.get("type") or "")
+                    should_be_active = pkey == target_key
+                    if p.get("active") != should_be_active:
+                        p["active"] = should_be_active
+                        changed = True
+                if changed:
+                    cfg_path.write_text(
+                        json.dumps(providers if isinstance(raw, list) else providers[0], indent=2),
+                        encoding="utf-8",
+                    )
+            return True
+        except Exception as exc:
+            import logging as _logging
+
+            _logging.getLogger(__name__).debug(
+                "model.routing: failed to persist active provider: %s", exc
+            )
+            return False
+
+    def _build_adapter_for_provider(self, target_key: str) -> Optional[Any]:
+        """Load adapter class and instantiate adapter for *target_key* from providers.json."""
+        try:
+            cfg_path = resolve_config_path(self.providers_config_path)
+            with _providers_json_lock:
+                raw = json.loads(cfg_path.read_text(encoding="utf-8"))
+            providers = raw if isinstance(raw, list) else ([raw] if isinstance(raw, dict) else [])
+            for p in providers:
+                if not isinstance(p, dict):
+                    continue
+                pkey = canonical_provider(p.get("name") or p.get("type") or "")
+                if pkey != target_key:
+                    continue
+                provider_type = str(p.get("type") or "ollama").strip().lower().replace("-", "_")
+                adapter_cls, err = _resolve_adapter_class(
+                    provider_type=provider_type,
+                    camelize=_camelize,
+                )
+                if err or adapter_cls is None:
+                    return None
+                adapter, a_err = _instantiate_adapter(
+                    adapter_cls=adapter_cls,
+                    provider=p,
+                    providers_config_path=self.providers_config_path,
+                    normalize_models_for_provider=normalize_models_for_provider,
+                )
+                if adapter is not None:
+                    _attach_provider_metadata(adapter, p)
+                return adapter
+        except Exception:
+            pass
+        return None
 
     def list_providers(self) -> List[str]:
         return sorted(list(self._providers.keys()))
@@ -1268,6 +1372,15 @@ async def call_model(
     if _cid:
         guilogger.debug(f"call_model: cid={_cid} provider={provider!r} model={model!r}")
 
+    # Fetch the global event bus once for this call so we can publish fallback
+    # events without re-importing inside the hot path.
+    try:
+        from src.core.orchestration.event_bus import get_event_bus as _get_eb
+
+        _call_event_bus = _get_eb()
+    except Exception:
+        _call_event_bus = None
+
     # #31: Circuit-breaker fast-fail — skip call entirely when provider is known-bad
     _cb_key = canonical_provider(provider) if provider else ""
     if _cb_key:
@@ -1314,7 +1427,7 @@ async def call_model(
         call_model_internal=_call_model_internal,
         get_provider_manager=get_provider_manager,
         get_circuit_breaker=get_circuit_breaker,
-        publish=None,  # event bus publish wired below if needed
+        publish=_call_event_bus.publish if _call_event_bus is not None else None,
     )
 
     # #31: Record success/failure in the circuit breaker.

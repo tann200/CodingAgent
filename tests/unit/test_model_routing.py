@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -108,22 +108,21 @@ class TestOnModelRouting:
         assert adapter.default_model == "gemini-2.5-pro"
 
     def test_provider_key_activates_provider(self):
-        """When provider_key matches a provider in _providers, mark it active."""
+        """P3-3: cross-provider switch calls _persist_active_provider with the target key."""
         pm = ProviderManager()
+        pm._providers = {"openai": MagicMock(), "anthropic": MagicMock()}
 
-        # Set up two providers with mutable .active attribute
-        provider_a = MagicMock()
-        provider_a.active = True
-        provider_b = MagicMock()
-        provider_b.active = False
+        persist_calls: list = []
+        with (
+            patch.object(pm, "get_active_provider_name", return_value="openai"),
+            patch.object(pm, "_persist_active_provider",
+                         side_effect=lambda k: persist_calls.append(k) or True),
+            patch.object(pm, "_build_adapter_for_provider", return_value=None),
+            patch.object(pm, "get_active_adapter", return_value=None),
+        ):
+            pm._on_model_routing({"selected": "claude-3-7", "provider": "anthropic"})
 
-        pm._providers = {"openai": provider_a, "anthropic": provider_b}
-        pm.get_active_adapter = lambda: None
-
-        pm._on_model_routing({"selected": "claude-3-7", "provider": "anthropic"})
-
-        assert provider_b.active is True
-        assert provider_a.active is False
+        assert "anthropic" in persist_calls
 
     def test_provider_key_missing_from_providers_does_not_raise(self):
         pm = ProviderManager()

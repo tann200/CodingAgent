@@ -146,17 +146,26 @@ def test_on_model_routing_ignores_missing_selected_key():
     assert adapter.default_model == "original"
 
 
-def test_on_model_routing_flips_active_provider():
+def test_on_model_routing_cross_provider_uses_persist_not_inplace_active():
+    """P3-3 fix: cross-provider switch must call _persist_active_provider (write to
+    providers.json) rather than mutating adapter.active flags in-memory, since
+    adapters in _providers are adapter instances, not config objects with .active.
+    """
     pm = _pm()
-    prov_a = SimpleNamespace(active=True)
-    prov_b = SimpleNamespace(active=False)
-    pm._providers["provider_a"] = prov_a
-    pm._providers["provider_b"] = prov_b
-    adapter = SimpleNamespace(default_model="old")
-    with patch.object(pm, "get_active_adapter", return_value=adapter):
+    fake_adapter = SimpleNamespace(default_model=None)
+    pm._providers["provider_a"] = SimpleNamespace(default_model="old")
+    pm._providers["provider_b"] = fake_adapter
+
+    persist_calls: list = []
+    with (
+        patch.object(pm, "get_active_provider_name", return_value="provider_a"),
+        patch.object(pm, "_persist_active_provider", side_effect=lambda k: persist_calls.append(k) or True),
+        patch.object(pm, "_build_adapter_for_provider", return_value=None),
+        patch.object(pm, "get_active_adapter", return_value=None),
+    ):
         pm._on_model_routing({"selected": "new-model", "provider": "provider_b"})
-    assert prov_b.active is True
-    assert prov_a.active is False
+
+    assert "provider_b" in persist_calls, "_persist_active_provider must be called with target key"
 
 
 # ---------------------------------------------------------------------------
@@ -334,3 +343,89 @@ def test_get_provider_capabilities_defaults_safe():
         caps = pm.get_provider_capabilities()
     assert caps["supports_native_tools"] is False
     assert isinstance(caps["provider_family"], str)
+
+
+# ---------------------------------------------------------------------------
+# P3-3: _on_model_routing — cross-provider live switching
+# ---------------------------------------------------------------------------
+
+
+def test_on_model_routing_updates_default_model_same_provider():
+    """Same-provider switch: default_model is updated on the adapter."""
+    pm = _pm()
+    adapter = SimpleNamespace(default_model="old-model")
+    with patch.object(pm, "get_active_adapter", return_value=adapter):
+        pm._on_model_routing({"selected": "new-model"})
+    assert adapter.default_model == "new-model"
+
+
+def test_on_model_routing_ignores_non_dict_payload():
+    """Non-dict payload must not raise."""
+    pm = _pm()
+    pm._on_model_routing("not a dict")
+    pm._on_model_routing(None)
+    pm._on_model_routing(42)
+
+
+def test_on_model_routing_ignores_missing_selected():
+    """Missing 'selected' field — no-op, no error."""
+    pm = _pm()
+    adapter = SimpleNamespace(default_model="original")
+    with patch.object(pm, "get_active_adapter", return_value=adapter):
+        pm._on_model_routing({"provider": "ollama"})
+    assert adapter.default_model == "original"
+
+
+def test_on_model_routing_cross_provider_calls_persist(tmp_path):
+    """Cross-provider switch: _persist_active_provider and _build_adapter_for_provider
+    are called when provider_key differs from current active provider.
+    """
+    pm = _pm()
+    published: list = []
+    bus = MagicMock()
+    bus.publish = lambda e, p: published.append((e, p))
+    pm._event_bus = bus
+
+    new_adapter = SimpleNamespace(default_model=None)
+    with (
+        patch.object(pm, "get_active_provider_name", return_value="ollama"),
+        patch.object(pm, "_persist_active_provider", return_value=True) as mock_persist,
+        patch.object(pm, "_build_adapter_for_provider", return_value=new_adapter) as mock_build,
+        patch.object(pm, "get_active_adapter", return_value=None),
+    ):
+        pm._on_model_routing({"selected": "gpt-4o", "provider": "openai"})
+
+    mock_persist.assert_called_once_with("openai")
+    mock_build.assert_called_once_with("openai")
+    assert new_adapter.default_model == "gpt-4o"
+    # model.routing.complete event must be published
+    assert any(evt == "model.routing.complete" for evt, _ in published)
+
+
+def test_on_model_routing_publishes_routing_complete():
+    """model.routing.complete event is always published when event_bus is set."""
+    pm = _pm()
+    published: list = []
+    bus = MagicMock()
+    bus.publish = lambda e, p: published.append((e, p))
+    pm._event_bus = bus
+
+    adapter = SimpleNamespace(default_model=None)
+    with (
+        patch.object(pm, "get_active_provider_name", return_value="ollama"),
+        patch.object(pm, "get_active_adapter", return_value=adapter),
+    ):
+        pm._on_model_routing({"selected": "llama3:8b", "provider": "ollama"})
+
+    assert any(evt == "model.routing.complete" for evt, _ in published)
+    payload = next(p for e, p in published if e == "model.routing.complete")
+    assert payload["model"] == "llama3:8b"
+
+
+def test_on_model_routing_no_event_bus_does_not_raise():
+    """No event_bus set — should succeed silently."""
+    pm = _pm()
+    pm._event_bus = None
+    adapter = SimpleNamespace(default_model=None)
+    with patch.object(pm, "get_active_adapter", return_value=adapter):
+        pm._on_model_routing({"selected": "llama3", "provider": "ollama"})

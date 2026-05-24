@@ -456,3 +456,119 @@ async def test_call_model_cb_not_open_passes_through():
 
     with _CB_LOCK:
         _CIRCUIT_BREAKERS.pop(key, None)
+
+
+# ---------------------------------------------------------------------------
+# P1-1 fix: provider fallback publish wiring
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_call_model_passes_publish_to_fallback_chain():
+    """call_model must pass the event bus publish callable (not None) to
+    ProviderFallbackChain.call() so provider.fallback.used events reach the TUI.
+    """
+    ok_response: Dict[str, Any] = {"ok": True, "content": "hi"}
+    captured_publish: list = []
+
+    class _FakeChain:
+        async def call(self, **kwargs):
+            captured_publish.append(kwargs.get("publish"))
+            return ok_response, None
+
+    fake_bus = MagicMock()
+    fake_bus.publish = MagicMock()
+
+    import src.core.orchestration.event_bus as _eb_mod
+
+    original_geb = getattr(_eb_mod, "get_event_bus", None)
+    _eb_mod.get_event_bus = lambda: fake_bus  # type: ignore[attr-defined]
+    try:
+        with (
+            patch(
+                "src.core.inference.llm_manager._call_model_internal",
+                AsyncMock(return_value=ok_response),
+            ),
+            patch(
+                "src.core.inference.llm_manager._attempt_model_fallback",
+                AsyncMock(return_value=(ok_response, False)),
+            ),
+            patch(
+                "src.core.inference.llm_manager._get_fallback_chain",
+                return_value=_FakeChain(),
+            ),
+            patch("src.core.inference.llm_manager._update_circuit_breaker_for_result"),
+            patch("src.core.inference.llm_manager._record_token_usage"),
+            patch("src.core.inference.llm_manager._publish_llm_response_hook"),
+        ):
+            result = await call_model(
+                messages=[{"role": "user", "content": "hi"}],
+                provider=None,
+            )
+    finally:
+        if original_geb is not None:
+            _eb_mod.get_event_bus = original_geb
+
+    assert result == ok_response
+    assert len(captured_publish) == 1, "fallback chain .call() must be called once"
+    assert captured_publish[0] is not None, (
+        "publish passed to ProviderFallbackChain.call() must not be None after P1-1 fix"
+    )
+
+
+@pytest.mark.asyncio
+async def test_call_model_publishes_fallback_used_event_on_fallback():
+    """When the primary call fails and fallback chain succeeds, the
+    provider.fallback.used event must be published to the event bus.
+    """
+    primary_err: Dict[str, Any] = {"ok": False, "error": "primary_failed"}
+    fallback_ok: Dict[str, Any] = {"ok": True, "content": "fallback response"}
+    published_events: list = []
+
+    class _FakeChain:
+        async def call(self, *, primary_result, publish, **kwargs):
+            if publish is not None:
+                publish(
+                    "provider.fallback.used",
+                    {"primary": "primary_provider", "fallback": "backup_provider"},
+                )
+            return fallback_ok, "backup_provider"
+
+    fake_bus = MagicMock()
+    fake_bus.publish = lambda evt, payload: published_events.append((evt, payload))
+
+    import src.core.orchestration.event_bus as _eb_mod2
+
+    original_geb2 = getattr(_eb_mod2, "get_event_bus", None)
+    _eb_mod2.get_event_bus = lambda: fake_bus  # type: ignore[attr-defined]
+    try:
+        with (
+            patch(
+                "src.core.inference.llm_manager._call_model_internal",
+                AsyncMock(return_value=primary_err),
+            ),
+            patch(
+                "src.core.inference.llm_manager._attempt_model_fallback",
+                AsyncMock(return_value=(primary_err, False)),
+            ),
+            patch(
+                "src.core.inference.llm_manager._get_fallback_chain",
+                return_value=_FakeChain(),
+            ),
+            patch("src.core.inference.llm_manager._update_circuit_breaker_for_result"),
+            patch("src.core.inference.llm_manager._record_token_usage"),
+            patch("src.core.inference.llm_response_hook._publish_llm_response_hook"
+                  if False else "src.core.inference.llm_manager._publish_llm_response_hook"),
+        ):
+            result = await call_model(
+                messages=[{"role": "user", "content": "hi"}],
+                provider=None,
+            )
+    finally:
+        if original_geb2 is not None:
+            _eb_mod2.get_event_bus = original_geb2
+
+    assert result == fallback_ok
+    assert any(evt == "provider.fallback.used" for evt, _ in published_events), (
+        "provider.fallback.used event must be published when fallback succeeds"
+    )
