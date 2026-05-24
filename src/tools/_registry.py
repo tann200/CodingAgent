@@ -70,7 +70,6 @@ _BUILTIN_MODULES = [
 # to avoid alarming users who have not installed the optional extra.
 _OPTIONAL_MODULES: frozenset[str] = frozenset({
     "src.tools.lsp_tools",
-    "src.tools.lsp_edit_tools",
 })
 
 # Built-in aliases: alias_name -> canonical_name
