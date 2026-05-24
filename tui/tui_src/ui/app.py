@@ -265,6 +265,16 @@ class AgentApp(
             pass
         self.post_message(RequestSystemSettings())
         self._bridge.publish_session_request()
+
+        # P3-2: Show session browser on launch if previous sessions exist.
+        try:
+            _sessions_dir = self._get_sessions_dir()
+            if _sessions_dir and any(_sessions_dir.iterdir()):
+                from .screens.session_screen import SessionScreen
+                self.call_later(self.push_screen, SessionScreen())
+        except Exception:
+            pass
+
         logger.info("TUI mounted and ready")
 
     def on_unmount(self) -> None:
