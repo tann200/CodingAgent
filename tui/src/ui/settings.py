@@ -185,7 +185,7 @@ class SettingsStore:
     def get_api_key(self, provider_id: str) -> str:
         """Return stored API key for provider_id from providers.json, or empty string."""
         try:
-            from src.ui.config_writer import load_provider_credentials
+            from tui.tui_src.ui.config_writer import load_provider_credentials
 
             return load_provider_credentials(provider_id).get("api_key", "")
         except Exception:

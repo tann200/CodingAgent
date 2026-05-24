@@ -29,16 +29,16 @@ import uuid
 from pathlib import Path
 from textual import work, on
 
-from src.ui.bus import SystemSettingsLoaded, AgentFinalResponse
-from src.ui.events import (
+from tui.tui_src.ui.bus import SystemSettingsLoaded, AgentFinalResponse
+from tui.tui_src.ui.events import (
     RequestSystemSettings,
     SaveProviderCredentials,
     UpdateRoleModel,
 )
-from src.ui.app import AgentApp
+from tui.tui_src.ui.app import AgentApp
 
 try:
-    from src.ui.logging import get_logger
+    from tui.tui_src.ui.logging import get_logger
 except Exception:
     try:
         from .logging import get_logger

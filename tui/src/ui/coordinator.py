@@ -7,7 +7,7 @@ try:
     # when running the standalone TUI package as tui.src.*), fall back to a
     # package-relative import.  As a last resort, use the stdlib logging
     # module so the module remains importable in constrained test envs.
-    from src.ui.logging import get_logger
+    from tui.tui_src.ui.logging import get_logger
 except Exception:
     try:
         from .logging import get_logger

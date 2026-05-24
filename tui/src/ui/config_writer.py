@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Optional
 
 try:
-    from src.ui.logging import get_logger
+    from tui.tui_src.ui.logging import get_logger
 except Exception:
     try:
         from .logging import get_logger

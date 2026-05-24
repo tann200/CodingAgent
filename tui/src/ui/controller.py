@@ -1,8 +1,8 @@
 from __future__ import annotations
-from src.ui.bus import StatusUpdate
+from tui.tui_src.ui.bus import StatusUpdate
 
 try:
-    from src.ui.logging import get_logger
+    from tui.tui_src.ui.logging import get_logger
 except Exception:
     try:
         from .logging import get_logger
