@@ -30,17 +30,17 @@ from unittest.mock import MagicMock
 
 class TestSubagentProgressClickable:
     def test_child_session_id_stored(self):
-        from tui.src.ui.components.subagent_progress import SubagentProgress
+        from tui.tui_src.ui.components.subagent_progress import SubagentProgress
         w = SubagentProgress(role="analyst", task="do something", child_session_id="abc123")
         assert w._child_session_id == "abc123"
 
     def test_default_child_session_id_empty(self):
-        from tui.src.ui.components.subagent_progress import SubagentProgress
+        from tui.tui_src.ui.components.subagent_progress import SubagentProgress
         w = SubagentProgress(role="analyst", task="do something")
         assert w._child_session_id == ""
 
     def test_clicked_message_has_correct_fields(self):
-        from tui.src.ui.components.subagent_progress import SubagentProgress
+        from tui.tui_src.ui.components.subagent_progress import SubagentProgress
         msg = SubagentProgress.Clicked(
             child_session_id="sess42",
             role="debugger",
@@ -51,7 +51,7 @@ class TestSubagentProgressClickable:
         assert msg.task == "fix the bug"
 
     def test_finish_adds_click_hint_when_session_id_set(self):
-        from tui.src.ui.components.subagent_progress import SubagentProgress
+        from tui.tui_src.ui.components.subagent_progress import SubagentProgress
         w = SubagentProgress(role="analyst", task="x", child_session_id="sess1")
         w._finished = False
         # Simulate finish without a real Textual loop by just calling the logic
@@ -71,7 +71,7 @@ class TestSubagentProgressClickable:
 
     def test_on_click_skips_when_not_finished(self):
         """on_click should NOT post Clicked if not yet finished."""
-        from tui.src.ui.components.subagent_progress import SubagentProgress
+        from tui.tui_src.ui.components.subagent_progress import SubagentProgress
         w = SubagentProgress(role="r", task="t", child_session_id="s")
         w._finished = False
         posted = []
@@ -80,7 +80,7 @@ class TestSubagentProgressClickable:
         assert len(posted) == 0
 
     def test_on_click_skips_when_no_session_id(self):
-        from tui.src.ui.components.subagent_progress import SubagentProgress
+        from tui.tui_src.ui.components.subagent_progress import SubagentProgress
         w = SubagentProgress(role="r", task="t", child_session_id="")
         w._finished = True
         posted = []
@@ -89,7 +89,7 @@ class TestSubagentProgressClickable:
         assert len(posted) == 0
 
     def test_on_click_posts_when_finished_and_has_id(self):
-        from tui.src.ui.components.subagent_progress import SubagentProgress
+        from tui.tui_src.ui.components.subagent_progress import SubagentProgress
         w = SubagentProgress(role="analyst", task="fix it", child_session_id="kid1")
         w._finished = True
         posted = []
@@ -106,11 +106,11 @@ class TestSubagentProgressClickable:
 
 class TestSubagentDetailScreen:
     def test_importable(self):
-        from tui.src.ui.screens.subagent_detail import SubagentDetailScreen
+        from tui.tui_src.ui.screens.subagent_detail import SubagentDetailScreen
         assert SubagentDetailScreen is not None
 
     def test_load_session_returns_none_when_missing(self, tmp_path):
-        from tui.src.ui.screens.subagent_detail import SubagentDetailScreen
+        from tui.tui_src.ui.screens.subagent_detail import SubagentDetailScreen
         screen = SubagentDetailScreen(
             child_session_id="nonexistent",
             role="analyst",
@@ -120,7 +120,7 @@ class TestSubagentDetailScreen:
         assert screen._load_session() is None
 
     def test_load_session_reads_json(self, tmp_path):
-        from tui.src.ui.screens.subagent_detail import SubagentDetailScreen
+        from tui.tui_src.ui.screens.subagent_detail import SubagentDetailScreen
         data = {
             "session_id": "kid1",
             "parent_session_id": "parent1",
@@ -144,7 +144,7 @@ class TestSubagentDetailScreen:
         assert len(loaded["messages"]) == 1
 
     def test_default_sessions_dir(self):
-        from tui.src.ui.screens.subagent_detail import SubagentDetailScreen
+        from tui.tui_src.ui.screens.subagent_detail import SubagentDetailScreen
         screen = SubagentDetailScreen(child_session_id="x", role="r", task="t")
         assert screen._sessions_dir == Path.home() / ".coding_agent" / "sessions"
 
@@ -155,12 +155,12 @@ class TestSubagentDetailScreen:
 
 class TestSessionListScreenSubagents:
     def test_filter_subagents_flag_stored(self):
-        from tui.src.ui.screens.session_list import SessionListScreen
+        from tui.tui_src.ui.screens.session_list import SessionListScreen
         screen = SessionListScreen(filter_subagents=True)
         assert screen._filter_subagents is True
 
     def test_filter_subagents_default_false(self):
-        from tui.src.ui.screens.session_list import SessionListScreen
+        from tui.tui_src.ui.screens.session_list import SessionListScreen
         screen = SessionListScreen()
         assert screen._filter_subagents is False
 
@@ -184,7 +184,7 @@ class TestSessionListScreenSubagents:
         assert filtered[0][1]["session_id"] == "c1"
 
     def test_render_list_annotates_child_with_role(self, tmp_path):
-        from tui.src.ui.screens.session_list import SessionListScreen
+        from tui.tui_src.ui.screens.session_list import SessionListScreen
         child = {
             "session_id": "c1",
             "parent_session_id": "p1",
@@ -218,7 +218,7 @@ class TestSessionListScreenSubagents:
         assert "↳" in rendered
 
     def test_filter_searches_role_field(self):
-        from tui.src.ui.screens.session_list import SessionListScreen
+        from tui.tui_src.ui.screens.session_list import SessionListScreen
         screen = SessionListScreen()
         screen._all_sessions = [
             (Path("/fake/s1.json"), {"task_name": "task1", "role": "debugger"}),
@@ -236,8 +236,8 @@ class TestSessionListScreenSubagents:
 
     def test_open_selected_routing_logic_for_child(self, tmp_path):
         """_open_selected for a child session should call push_screen with SubagentDetailScreen."""
-        from tui.src.ui.screens.session_list import SessionListScreen
-        from tui.src.ui.screens.subagent_detail import SubagentDetailScreen
+        from tui.tui_src.ui.screens.session_list import SessionListScreen
+        from tui.tui_src.ui.screens.subagent_detail import SubagentDetailScreen
         child_data = {"session_id": "c99", "parent_session_id": "p99", "role": "analyst", "task_name": "do analysis"}
 
         screen = SessionListScreen()

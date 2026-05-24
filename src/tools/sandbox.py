@@ -114,7 +114,7 @@ def _probe_sandbox_exec_enforced() -> bool:
                     "sh", "-c",
                     f"echo canary > {target_outside} 2>/dev/null; echo $?",
                 ]
-                res = subprocess.run(
+                subprocess.run(
                     cmd, capture_output=True, text=True, timeout=5
                 )
                 # If the canary file was created, sandbox did not enforce

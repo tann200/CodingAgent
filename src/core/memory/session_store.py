@@ -45,7 +45,8 @@ def _resolve_backend(explicit: Optional[str] = None) -> str:
     """Resolve which backend to use: explicit arg > env var > default jsonl."""
     if explicit:
         return str(explicit).lower()
-    env = os.getenv("CODING_AGENT_STORAGE_BACKEND", "").lower()
+    env = os.getenv("CODINGAGENT_STORAGE_BACKEND") or os.getenv("CODING_AGENT_STORAGE_BACKEND", "")
+    env = env.lower()
     if env in ("jsonl", "sqlite"):
         return env
     # Try project config if available

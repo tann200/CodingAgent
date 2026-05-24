@@ -625,7 +625,11 @@ class TestAppStructure:
 
     def test_session_list_import_is_lazy(self):
         text = self._get_source()
-        assert "from .screens.session_list import SessionListScreen" in text
+        # app.py now delegates to SessionScreen (which extends SessionListScreen)
+        assert (
+            "from .screens.session_screen import SessionScreen" in text
+            or "from .screens.session_list import SessionListScreen" in text
+        )
 
     def test_timeline_import_is_lazy(self):
         text = self._get_source()

@@ -173,6 +173,61 @@ class ToolDefinition:
             schema["function"]["parameters"]["required"] = required
         return schema
 
+    def validate_args(self, args: dict) -> list[str]:
+        """Validate *args* against this tool's generated JSON Schema.
+
+        Returns a (possibly empty) list of human-readable error strings.
+        Never raises — schema generation failures are silently skipped.
+
+        Checks:
+        - Required fields are present.
+        - Field types match the schema (string, integer, number, boolean,
+          array, object).  ``None`` values are allowed for optional fields.
+        """
+        errors: list[str] = []
+        try:
+            schema = self.to_openai_schema()
+            params = schema.get("function", {}).get("parameters", {})
+            properties: dict = params.get("properties", {})
+            required: list[str] = params.get("required", [])
+
+            # 1. Required field presence
+            for field_name in required:
+                if field_name not in args or args[field_name] is None:
+                    errors.append(f"missing required field '{field_name}'")
+
+            # 2. Type checking for provided fields
+            _TYPE_MAP: dict[str, type | tuple[type, ...]] = {
+                "string": str,
+                "integer": int,
+                "number": (int, float),
+                "boolean": bool,
+                "array": list,
+                "object": dict,
+            }
+            for field_name, prop in properties.items():
+                if field_name not in args or args[field_name] is None:
+                    continue  # optional field absent — already handled above
+                expected_type_name = prop.get("type", "string")
+                expected_type = _TYPE_MAP.get(expected_type_name)
+                if expected_type is None:
+                    continue
+                val = args[field_name]
+                # booleans are ints in Python — exclude bool when checking int
+                if expected_type is int and isinstance(val, bool):
+                    errors.append(
+                        f"field '{field_name}' expected integer, got boolean"
+                    )
+                elif not isinstance(val, expected_type):
+                    errors.append(
+                        f"field '{field_name}' expected {expected_type_name},"
+                        f" got {type(val).__name__}"
+                    )
+        except Exception:
+            # Schema generation can fail for complex signatures; skip validation
+            pass
+        return errors
+
     def _populate_skill_enum(self, params: dict) -> None:
         """Populate 'name' enum from available skills."""
         try:

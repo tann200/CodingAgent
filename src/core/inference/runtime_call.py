@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import functools
-import json as _json
 import logging
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 

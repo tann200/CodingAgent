@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# DEPRECATED: use `scripts/run.sh` or `uv run codingagent` instead.
 # starth.sh - simplified launcher that ensures .venv is used and runs the app via start.sh
 # Purpose: provide an always-venv startup entrypoint (requested by user)
 set -euo pipefail

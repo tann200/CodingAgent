@@ -7,6 +7,7 @@ from typing import Dict, Any, List
 from concurrent.futures import ThreadPoolExecutor
 
 from src.core.orchestration.graph.state import StateLike, replace_state_list
+from src.core.orchestration.graph.nodes.node_utils import span_node as _span_node
 
 # Hoisted to module level so tests can patch
 # src.core.orchestration.graph.nodes.memory_update_node.distill_context
@@ -33,6 +34,12 @@ atexit.register(_executor.shutdown, wait=True)
 
 
 async def memory_update_node(state: StateLike, config: RunnableConfig) -> Dict[str, Any]:
+    """Thin OTel-span wrapper — delegates to _memory_update_node_impl."""
+    with _span_node("memory_update", {"rounds": state.get("rounds", 0)}):
+        return await _memory_update_node_impl(state, config)
+
+
+async def _memory_update_node_impl(state: StateLike, config: RunnableConfig) -> Dict[str, Any]:
     """
     Memory Update Layer: Persists distilled context and triggers advanced memory features.
     Memory operations are parallelized for performance.

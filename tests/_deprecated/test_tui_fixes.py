@@ -34,8 +34,8 @@ _TUI_UI = Path(__file__).parent.parent.parent / "tui" / "src" / "ui"
 
 def _make_bridge():
     """AgentBridge with a mock app and mock orchestrator — no real EventBus."""
-    from tui.src.ui.mock_eventbus import get_mock_event_bus, reset_mock_event_bus
-    from tui.src.ui.core_bridge import AgentBridge
+    from tui.tui_src.ui.mock_eventbus import get_mock_event_bus, reset_mock_event_bus
+    from tui.tui_src.ui.core_bridge import AgentBridge
 
     reset_mock_event_bus()
     bus = get_mock_event_bus()
@@ -84,7 +84,7 @@ class TestFix1DoubleThreading:
 
         with patch("threading.Thread", CapturingThread):
             # Patch threading.Thread inside the core_bridge module
-            import tui.src.ui.core_bridge as _cb_mod
+            import tui.tui_src.ui.core_bridge as _cb_mod
 
             old = _cb_mod.threading.Thread
             _cb_mod.threading.Thread = CapturingThread
@@ -111,7 +111,7 @@ class TestFix1DoubleThreading:
                     kwargs.get("target") or (args[0] if args else None)
                 )
 
-        import tui.src.ui.core_bridge as _cb_mod
+        import tui.tui_src.ui.core_bridge as _cb_mod
 
         old = _cb_mod.threading.Thread
         _cb_mod.threading.Thread = CountingThread
@@ -198,7 +198,7 @@ class TestFix2DiffRenderer:
 class TestFix3CallFromThread:
     def test_schedule_callback_method_exists_on_bridge(self):
         """AgentBridge must define _schedule_callback."""
-        from tui.src.ui.core_bridge import AgentBridge
+        from tui.tui_src.ui.core_bridge import AgentBridge
 
         assert "_schedule_callback" in AgentBridge.__dict__, (
             "AgentBridge must define _schedule_callback"
@@ -206,7 +206,7 @@ class TestFix3CallFromThread:
 
     def test_schedule_callback_calls_call_from_thread(self):
         """AgentBridge._schedule_callback must delegate to self.app.call_from_thread."""
-        from tui.src.ui.core_bridge import AgentBridge
+        from tui.tui_src.ui.core_bridge import AgentBridge
 
         src = inspect.getsource(AgentBridge._schedule_callback)
         assert "call_from_thread" in src, "_schedule_callback must use call_from_thread"
@@ -278,14 +278,14 @@ class TestFix4RegexPatterns:
 class TestFix5StreamingComplete:
     def test_on_model_token_exists_in_bridge(self):
         """AgentBridge must subscribe to model.token events."""
-        from tui.src.ui.core_bridge import AgentBridge
+        from tui.tui_src.ui.core_bridge import AgentBridge
 
         src = inspect.getsource(AgentBridge)
         assert "model.token" in src, "AgentBridge must subscribe to model.token events"
 
     def test_on_model_token_handler_exists(self):
         """AgentBridge must define _on_model_token handler."""
-        from tui.src.ui.core_bridge import AgentBridge
+        from tui.tui_src.ui.core_bridge import AgentBridge
 
         assert hasattr(AgentBridge, "_on_model_token"), (
             "AgentBridge must define _on_model_token"
@@ -324,7 +324,7 @@ class TestFix6BoundedLog:
 
     def test_append_log_line_exists_in_bridge(self):
         """AgentBridge must have _append_log_line for bounded log dispatch."""
-        from tui.src.ui.core_bridge import AgentBridge
+        from tui.tui_src.ui.core_bridge import AgentBridge
 
         src = inspect.getsource(AgentBridge)
         assert "_append_log_line" in src, (
@@ -333,7 +333,7 @@ class TestFix6BoundedLog:
 
     def test_log_event_dispatched_via_schedule_callback(self):
         """_on_new_log must dispatch via _schedule_callback (thread safety)."""
-        from tui.src.ui.core_bridge import AgentBridge
+        from tui.tui_src.ui.core_bridge import AgentBridge
 
         src = inspect.getsource(AgentBridge)
         assert "_schedule_callback" in src and "_append_log_line" in src, (
@@ -432,7 +432,7 @@ class TestFix8PlanBar:
 class TestFix9CompactContext:
     def test_compact_context_method_exists_on_bridge(self):
         """AgentBridge must define compact_context(), not a placeholder."""
-        from tui.src.ui.core_bridge import AgentBridge
+        from tui.tui_src.ui.core_bridge import AgentBridge
 
         assert hasattr(AgentBridge, "compact_context"), (
             "AgentBridge must define compact_context()"
@@ -440,14 +440,14 @@ class TestFix9CompactContext:
 
     def test_compact_context_calls_orchestrator(self):
         """compact_context must delegate to the orchestrator, not be a stub."""
-        from tui.src.ui.core_bridge import AgentBridge
+        from tui.tui_src.ui.core_bridge import AgentBridge
 
         src = inspect.getsource(AgentBridge.compact_context)
         assert "orchestrator" in src, "compact_context must call the orchestrator"
 
     def test_compact_context_not_placeholder(self):
         """compact_context must not contain 'Placeholder' or 'pass'."""
-        from tui.src.ui.core_bridge import AgentBridge
+        from tui.tui_src.ui.core_bridge import AgentBridge
 
         src = inspect.getsource(AgentBridge.compact_context)
         assert "Placeholder" not in src, (
@@ -484,7 +484,7 @@ class TestSettingsScreenModern:
         """_handle_session_new or equivalent must call start_new_task()."""
         text = self._tui_src()
         bridge_src = inspect.getsource(
-            __import__("tui.src.ui.core_bridge", fromlist=["AgentBridge"]).AgentBridge
+            __import__("tui.tui_src.ui.core_bridge", fromlist=["AgentBridge"]).AgentBridge
         )
         assert "start_new_task" in bridge_src, (
             "AgentBridge must call start_new_task() on new session"
@@ -514,7 +514,7 @@ class TestSlashCommandsAndQuit:
 
     def test_slash_commands_list_has_quit_compact_new(self):
         """SLASH_COMMANDS must include /quit, /compact, and /new."""
-        from tui.src.ui.components.chat_input import SLASH_COMMANDS
+        from tui.tui_src.ui.components.chat_input import SLASH_COMMANDS
 
         assert "/quit" in SLASH_COMMANDS, "/quit must be in SLASH_COMMANDS"
         assert "/compact" in SLASH_COMMANDS, "/compact must be in SLASH_COMMANDS"

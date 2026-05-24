@@ -2,13 +2,36 @@
 
 Similar to OpenClaw's CommandRegistry, this module provides
 slash commands like /help, /skills, /session, /history, etc.
+
+Extended Design (P1-5)
+----------------------
+In addition to the class-based ``Command`` ABC, the registry now supports
+**callable handlers** — plain functions or async coroutines — registered via
+``CommandRegistry.register_handler()``.  This lets the TUI layer (``app.py``)
+register its ``_slash_*`` methods without requiring a full ``Command`` subclass
+per command, while still benefiting from the single source of truth for names,
+descriptions, and aliases.
+
+Usage::
+
+    registry.register_handler(
+        name="clear",
+        description="Clear chat output",
+        handler=self._slash_clear,
+        aliases=["cls"],
+    )
+
+The ``list_metadata()`` method returns a list of ``SlashCommandMeta`` dicts
+(``name``, ``description``, ``aliases``) that can be used to auto-generate
+``SLASH_COMMANDS`` and ``SLASH_COMMAND_DESCRIPTIONS`` in the TUI without
+duplicating the data.
 """
 
 import re
 import logging
 import threading
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional, TYPE_CHECKING
+from typing import Any, Callable, Dict, List, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from src.core.orchestration.orchestrator import Orchestrator
@@ -19,6 +42,28 @@ except Exception:
     _git_diff = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# P1-5: SlashCommandMeta — lightweight metadata record
+# ---------------------------------------------------------------------------
+
+class SlashCommandMeta:
+    """Metadata for a single slash command (name, description, aliases).
+
+    Returned by ``CommandRegistry.list_metadata()`` so callers can build
+    autocomplete lists and help text without coupling to ``Command`` internals.
+    """
+
+    __slots__ = ("name", "description", "aliases")
+
+    def __init__(self, name: str, description: str, aliases: List[str]) -> None:
+        self.name = name
+        self.description = description
+        self.aliases: List[str] = aliases
+
+    def __repr__(self) -> str:  # pragma: no cover
+        return f"SlashCommandMeta(name={self.name!r}, description={self.description!r}, aliases={self.aliases!r})"
 
 
 class Command(ABC):
@@ -32,6 +77,39 @@ class Command(ABC):
     def execute(self, args: str, session: Optional[Dict[str, Any]] = None) -> str:
         """Execute the command and return response string."""
         pass
+
+
+class _CallableCommand(Command):
+    """Wraps a plain callable or coroutine as a ``Command`` instance.
+
+    Used internally by ``CommandRegistry.register_handler()`` so that the
+    TUI can register ``_slash_*`` methods without writing a full subclass.
+    The callable receives ``(args: str)`` as its only positional argument;
+    ``session`` is ignored (TUI handlers don't need it).
+    """
+
+    def __init__(
+        self,
+        name: str,
+        description: str,
+        handler: Callable,
+        aliases: Optional[List[str]] = None,
+    ) -> None:
+        self.name = name
+        self.description = description
+        self.aliases = aliases or []
+        self._handler = handler
+
+    def execute(self, args: str, session: Optional[Dict[str, Any]] = None) -> str:
+        """Call the handler.  If it returns a coroutine, return a sentinel string."""
+        result = self._handler(args)
+        import inspect
+        if inspect.isawaitable(result):
+            # Async handlers are meant to be awaited by the TUI event loop.
+            # For synchronous callers (e.g. backend dispatch), return a neutral
+            # string rather than raising.
+            return f"/{self.name}: async handler must be awaited by the TUI."
+        return result if isinstance(result, str) else ""
 
 
 class HelpCommand(Command):
@@ -290,6 +368,33 @@ class CommandRegistry:
         for alias in cmd.aliases:
             self._commands[alias] = cmd
 
+    def register_handler(
+        self,
+        name: str,
+        description: str,
+        handler: Callable,
+        aliases: Optional[List[str]] = None,
+    ) -> None:
+        """Register a plain callable (or coroutine function) as a slash command.
+
+        This is the preferred API for TUI-side handlers that are already
+        implemented as ``_slash_*`` methods on ``AgentApp`` and should not
+        be re-wrapped in a ``Command`` subclass.
+
+        Args:
+            name:        Command name without leading ``/`` (e.g. ``"clear"``).
+            description: One-line description shown in ``/help`` and autocomplete.
+            handler:     Callable with signature ``(args: str) -> str | Awaitable``.
+            aliases:     Optional list of alternative names.
+        """
+        cmd = _CallableCommand(
+            name=name,
+            description=description,
+            handler=handler,
+            aliases=list(aliases or []),
+        )
+        self.register(cmd)
+
     def unregister(self, name: str) -> None:
         """Unregister a command by name or alias."""
         if name in self._commands:
@@ -312,6 +417,30 @@ class CommandRegistry:
                 commands.append(cmd)
         return commands
 
+    def list_metadata(self) -> List[SlashCommandMeta]:
+        """Return lightweight metadata for every registered command (unique by name).
+
+        Suitable for building ``SLASH_COMMANDS`` / ``SLASH_COMMAND_DESCRIPTIONS``
+        in the TUI without importing ``Command`` subclasses.
+
+        Returns:
+            List of :class:`SlashCommandMeta`, sorted alphabetically by name.
+        """
+        seen: set = set()
+        result: List[SlashCommandMeta] = []
+        for cmd in self._commands.values():
+            if cmd.name not in seen:
+                seen.add(cmd.name)
+                result.append(
+                    SlashCommandMeta(
+                        name=cmd.name,
+                        description=cmd.description,
+                        aliases=list(cmd.aliases),
+                    )
+                )
+        result.sort(key=lambda m: m.name)
+        return result
+
     def dispatch(
         self, input: str, session: Optional[Dict[str, Any]] = None
     ) -> Optional[str]:
@@ -328,8 +457,9 @@ class CommandRegistry:
         if not input.startswith("/"):
             return None
 
-        # Parse command and args
-        match = re.match(r"/(\w+)\s*(.*)", input)
+        # Parse command and args — \w+ handles alphanumeric names; \W+ handles
+        # punctuation aliases like "?" (e.g. /? as alias for /help).
+        match = re.match(r"/(\w+|\W+?)\s*(.*)", input)
         if not match:
             return None
 

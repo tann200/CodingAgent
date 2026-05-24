@@ -7,12 +7,18 @@ from typing import Dict, Any, Optional, List
 from src.core.orchestration.graph.state import StateLike, replace_state_list
 from src.core.context.context_builder import ContextBuilder
 from src.core.inference.llm_manager import call_model
-from src.core.orchestration.graph.nodes.node_utils import _resolve_orchestrator
+from src.core.orchestration.graph.nodes.node_utils import _resolve_orchestrator, span_node as _span_node
 
 logger = logging.getLogger(__name__)
 
 
 async def replan_node(state: StateLike, config: RunnableConfig) -> Dict[str, Any]:
+    """Thin OTel-span wrapper — delegates to _replan_node_impl."""
+    with _span_node("replan", {"step": state.get("current_step", 0)}):
+        return await _replan_node_impl(state, config)
+
+
+async def _replan_node_impl(state: StateLike, config: RunnableConfig) -> Dict[str, Any]:
     """
     Replan Node: Handles patch size violations by splitting oversized steps.
     When a patch exceeds 200 lines, this node prompts the LLM to rewrite

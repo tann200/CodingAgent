@@ -51,14 +51,14 @@ def _invalidate_context_cache(path: Path) -> None:
     except Exception:
         pass
 
-from src.tools._path_utils import safe_resolve as _safe_resolve
-from src.tools._tool import tool
-from src.tools._diff_gate import (
+from src.tools._path_utils import safe_resolve as _safe_resolve  # noqa: E402
+from src.tools._tool import tool  # noqa: E402
+from src.tools._diff_gate import (  # noqa: E402
     _publish_diff_preview,
     register_preview_gate,
 )
-from src.tools._workspace_guard import WorkspaceGuard
-from src.tools._lint_verify import verify_candidate_content as _verify_new_content
+from src.tools._workspace_guard import WorkspaceGuard  # noqa: E402
+from src.tools._lint_verify import verify_candidate_content as _verify_new_content  # noqa: E402
 
 _logger = logging.getLogger(__name__)
 

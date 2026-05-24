@@ -135,6 +135,7 @@ from src.core.inference.call_postprocess import (
     record_token_usage as _record_token_usage,
     update_circuit_breaker_for_result as _update_circuit_breaker_for_result,
 )
+from src.core.inference.provider_fallback import get_fallback_chain as _get_fallback_chain
 from src.core.inference.runtime_call import (
     call_adapter_with_fallbacks as _call_adapter_with_fallbacks,
     instantiate_runtime_adapter as _instantiate_runtime_adapter,
@@ -478,6 +479,63 @@ class ProviderManager:
 
     def set_event_bus(self, bus: Any):
         self._event_bus = bus
+        # P3-3: subscribe to model.routing so live model switches from the TUI
+        # propagate into the inference layer without requiring a restart.
+        try:
+            bus.subscribe("model.routing", self._on_model_routing)
+        except Exception:
+            pass
+
+    def _on_model_routing(self, payload: Any) -> None:
+        """Handle a ``model.routing`` event published by the TUI or orchestrator.
+
+        Updates ``default_model`` on the active adapter (and optionally flips
+        the active provider) so the *next* inference call picks the newly
+        selected model without requiring a process restart.
+
+        Args:
+            payload: Dict with keys ``"selected"`` (model name) and optionally
+                     ``"provider"`` (provider key/name).
+        """
+        try:
+            if not isinstance(payload, dict):
+                return
+            selected_model: Optional[str] = payload.get("selected") or payload.get("model")
+            provider_key: Optional[str] = payload.get("provider")
+            if not selected_model:
+                return
+
+            # Update the active adapter's default_model if it exposes one.
+            adapter = self.get_active_adapter()
+            if adapter is not None and hasattr(adapter, "default_model"):
+                try:
+                    adapter.default_model = selected_model
+                except Exception:
+                    pass
+
+            # If a specific provider was requested and differs from current, try
+            # to mark it active by setting active=true in-memory on its config.
+            if provider_key:
+                pkey = provider_key.lower().replace(" ", "_")
+                provider_cfg = self._providers.get(pkey)
+                if provider_cfg is not None and hasattr(provider_cfg, "active"):
+                    try:
+                        # Flip all providers inactive, then activate the target.
+                        for p in self._providers.values():
+                            if hasattr(p, "active"):
+                                p.active = False
+                        provider_cfg.active = True
+                    except Exception:
+                        pass
+
+            import logging as _logging
+            _logging.getLogger(__name__).info(
+                "model.routing: live-switched to model=%r provider=%r",
+                selected_model,
+                provider_key,
+            )
+        except Exception:
+            pass
 
     def list_providers(self) -> List[str]:
         return sorted(list(self._providers.keys()))
@@ -1240,6 +1298,23 @@ async def call_model(
         on_success=(lambda: get_circuit_breaker(_cb_key).record_success())
         if _cb_key
         else None,
+    )
+
+    # P1-1: Cross-provider fallback — if model-level fallback also failed, try
+    # other registered providers before giving up entirely.
+    res, _fallback_provider = await _get_fallback_chain().call(
+        primary_result=res,
+        primary_provider=provider,
+        messages=messages,
+        model=model,
+        stream=stream,
+        format_json=format_json,
+        tools=tools,
+        kwargs=kwargs,
+        call_model_internal=_call_model_internal,
+        get_provider_manager=get_provider_manager,
+        get_circuit_breaker=get_circuit_breaker,
+        publish=None,  # event bus publish wired below if needed
     )
 
     # #31: Record success/failure in the circuit breaker.

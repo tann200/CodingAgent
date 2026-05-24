@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 from typing import Any, Callable, Dict
 
 from fastapi import WebSocket, WebSocketDisconnect
+
+from src.core.env_shims import getenv_with_compat as _getenv
 
 from src.core.orchestration.event_bus import EventBus
 from src.server.event_delivery import enqueue_with_drop_policy
@@ -86,17 +87,17 @@ async def websocket_session_handler(
     the client must provide either a Bearer token in the Authorization header or
     X-CodingAgent-Token header. Tokens passed via the query string are not accepted.
     """
-    admin_token = os.getenv("CODING_AGENT_ADMIN_TOKEN")
+    admin_token = _getenv("CODINGAGENT_ADMIN_TOKEN", "CODING_AGENT_ADMIN_TOKEN")
 
     qp = websocket.query_params
     events_param = qp.get("events")
-    queue_max_raw = qp.get("queue_max_size") or os.getenv("CODING_AGENT_SSE_QUEUE_MAX")
+    queue_max_raw = qp.get("queue_max_size") or _getenv("CODINGAGENT_SSE_QUEUE_MAX", "CODING_AGENT_SSE_QUEUE_MAX")
     try:
         qms = int(queue_max_raw) if queue_max_raw is not None else 100
     except Exception:
         qms = 100
-    drop_policy = (qp.get("drop_policy") or os.getenv("CODING_AGENT_SSE_DROP_POLICY") or "drop_oldest").lower()
-    keepalive_raw = qp.get("keepalive") or os.getenv("CODING_AGENT_SSE_KEEPALIVE")
+    drop_policy = (qp.get("drop_policy") or _getenv("CODINGAGENT_SSE_DROP_POLICY", "CODING_AGENT_SSE_DROP_POLICY") or "drop_oldest").lower()
+    keepalive_raw = qp.get("keepalive") or _getenv("CODINGAGENT_SSE_KEEPALIVE", "CODING_AGENT_SSE_KEEPALIVE")
     try:
         keepalive_interval = int(keepalive_raw) if keepalive_raw is not None else 15
     except Exception:

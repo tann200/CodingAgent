@@ -25,6 +25,7 @@ from __future__ import annotations
 import importlib
 import inspect
 import logging
+import os
 import threading
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
@@ -33,6 +34,11 @@ from src.tools._tool import TOOL_ATTR, ToolDefinition, PermissionKind
 
 logger = logging.getLogger(__name__)
 
+# P2-6: Maximum number of *plugin* tools that may be registered in a single
+# ToolRegistry instance.  Builtins and aliases are never counted against this
+# cap.  Override via the TOOL_POOL_MAX_PLUGINS environment variable.
+_DEFAULT_MAX_PLUGIN_TOOLS: int = 50
+
 # Modules that make up the built-in tool set.  Order is irrelevant.
 _BUILTIN_MODULES = [
     "src.tools.file_tools",
@@ -40,8 +46,10 @@ _BUILTIN_MODULES = [
     "src.tools.verification_tools",
     "src.tools.todo_tools",
     "src.tools.subagent_tools",
-    "src.tools.repo_tools",
-    "src.tools.repo_analysis_tools",
+    # Consolidated repo tools (replaces repo_tools, repo_analysis_tools,
+    # repo_overview_tool, repo_summary — those files remain for backward compat)
+    "src.tools.repo_read_tools",
+    "src.tools.repo_write_tools",
     "src.tools.patch_tools",
     "src.tools.state_tools",
     "src.tools.system_tools",
@@ -55,8 +63,15 @@ _BUILTIN_MODULES = [
     "src.tools.skill_tools",
     "src.tools.plan_mode_tools",
     "src.tools.rollback_tools",
-    "src.tools.repo_overview_tool",
 ]
+
+# Modules that require optional dependencies (e.g. pygls for LSP).
+# ImportError on these is logged at DEBUG level rather than WARNING
+# to avoid alarming users who have not installed the optional extra.
+_OPTIONAL_MODULES: frozenset[str] = frozenset({
+    "src.tools.lsp_tools",
+    "src.tools.lsp_edit_tools",
+})
 
 # Built-in aliases: alias_name -> canonical_name
 _BUILTIN_ALIASES: Dict[str, str] = {
@@ -71,13 +86,30 @@ class ToolRegistry:
 
     Supports manual registration (``register()``) and automatic discovery of
     ``@tool``-decorated functions via ``discover(module)``.
+
+    Parameters
+    ----------
+    max_plugin_tools:
+        Maximum number of *plugin* tools (``origin='plugin'``) allowed in
+        this registry.  Attempts to register beyond the cap raise
+        ``RuntimeError``.  Defaults to the ``TOOL_POOL_MAX_PLUGINS``
+        environment variable if set, otherwise ``_DEFAULT_MAX_PLUGIN_TOOLS``
+        (50).  Pass ``0`` to disable the cap entirely.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, max_plugin_tools: Optional[int] = None) -> None:
         self._tools: Dict[str, Dict[str, Any]] = {}
         self._lock = threading.Lock()
         # TASK-03: track origin ('builtin' or 'plugin') for each registered name
         self._origins: Dict[str, str] = {}
+        # P2-6: plugin tool cap
+        if max_plugin_tools is None:
+            try:
+                max_plugin_tools = int(os.environ.get("TOOL_POOL_MAX_PLUGINS", _DEFAULT_MAX_PLUGIN_TOOLS))
+            except (ValueError, TypeError):
+                max_plugin_tools = _DEFAULT_MAX_PLUGIN_TOOLS
+        self._max_plugin_tools: int = max(0, max_plugin_tools)
+        self._plugin_count: int = 0
 
     # ------------------------------------------------------------------
     # Registration
@@ -119,6 +151,19 @@ class ToolRegistry:
                 "Rename the plugin tool or remove it from your config."
             )
 
+        # P2-6: Enforce plugin-tool cap (new names only; re-registering an
+        # existing plugin name does not count against the cap a second time).
+        if origin == "plugin":
+            with self._lock:
+                is_new_plugin = existing_origin != "plugin"
+                if is_new_plugin and self._max_plugin_tools > 0 and self._plugin_count >= self._max_plugin_tools:
+                    raise RuntimeError(
+                        f"ToolPool cap reached: cannot register plugin tool {name!r}. "
+                        f"The registry already contains {self._plugin_count} plugin tool(s) "
+                        f"(cap={self._max_plugin_tools}). Raise TOOL_POOL_MAX_PLUGINS or "
+                        "reduce the number of plugin tools."
+                    )
+
         entry: Dict[str, Any] = {
             "fn": fn,
             "side_effects": list(side_effects or []),
@@ -127,8 +172,12 @@ class ToolRegistry:
             "name": name,
         }
         with self._lock:
+            prev_origin = self._origins.get(name)
             self._tools[name] = entry
             self._origins[name] = origin
+            # P2-6: track plugin count (only increment for newly added plugin names)
+            if origin == "plugin" and prev_origin != "plugin":
+                self._plugin_count += 1
 
     def register_definition(
         self, defn: ToolDefinition, origin: str = "builtin"
@@ -142,6 +191,11 @@ class ToolRegistry:
             tags=defn.tags,
             origin=origin,
         )
+        # Store the ToolDefinition on the entry so tool_preflight.py can
+        # access validate_args() without re-importing _tool.py at call time.
+        with self._lock:
+            if defn.name in self._tools:
+                self._tools[defn.name]["__tool_meta__"] = defn
 
     def alias(self, alias_name: str, canonical_name: str) -> None:
         """Register *alias_name* as an alias for an already-registered tool."""
@@ -202,7 +256,8 @@ class ToolRegistry:
             mod = importlib.import_module(module_name)
             return self.discover(mod, origin=origin)
         except ImportError as exc:
-            logger.warning(
+            _log_level = "debug" if module_name in _OPTIONAL_MODULES else "warning"
+            getattr(logger, _log_level)(
                 "discover_module_name: could not import '%s': %s", module_name, exc
             )
             return 0
@@ -319,6 +374,17 @@ class ToolRegistry:
     def __contains__(self, name: str) -> bool:
         with self._lock:
             return name in self._tools
+
+    @property
+    def plugin_count(self) -> int:
+        """Number of plugin tools currently registered."""
+        with self._lock:
+            return self._plugin_count
+
+    @property
+    def max_plugin_tools(self) -> int:
+        """The cap on plugin tools for this registry (0 = unlimited)."""
+        return self._max_plugin_tools
 
 
 # ---------------------------------------------------------------------------

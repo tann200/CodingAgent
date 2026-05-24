@@ -6,7 +6,7 @@ from copy import deepcopy
 from typing import Any, Dict, Iterable, Optional, Tuple
 
 
-DELEGATION_DENYLIST = {"delegate_task", "delegate_task_async"}
+DELEGATION_DENYLIST = {"delegate_task", "delegate_task_async", "delegate_tasks_parallel"}
 
 
 def canonicalize_subagent_role(role: str) -> str:

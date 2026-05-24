@@ -1,0 +1,67 @@
+{
+  "providers": [
+    {
+      "name": "Local LM Studio",
+      "base_url": "http://127.0.0.1:1234/v1",
+      "api_key_env": "LM_STUDIO_KEY",
+      "type": "openai_compatible",
+      "models": ["qwen2.5-coder-14b", "deepseek-coder-v2", "llama-3-8b"]
+    },
+    {
+      "name": "Groq",
+      "base_url": "https://api.groq.com/openai/v1",
+      "api_key_env": "GROQ_API_KEY",
+      "type": "openai_compatible",
+      "models": ["llama-3.3-70b-versatile", "mixtral-8x7b-32768", "gemma2-9b-it"]
+    },
+    {
+      "name": "OpenRouter",
+      "base_url": "https://openrouter.ai/api/v1",
+      "api_key_env": "OPENROUTER_API_KEY",
+      "type": "openai_compatible",
+      "models": ["auto", "anthropic/claude-3.5-sonnet", "google/gemini-pro-1.5"]
+    },
+    {
+      "name": "DeepSeek",
+      "base_url": "https://api.deepseek.com",
+      "api_key_env": "DEEPSEEK_API_KEY",
+      "type": "openai_compatible",
+      "models": ["deepseek-chat", "deepseek-coder"]
+    },
+    {
+      "name": "OpenAI",
+      "base_url": "https://api.openai.com/v1",
+      "api_key_env": "OPENAI_API_KEY",
+      "type": "openai_compatible",
+      "models": ["gpt-4o", "gpt-4o-mini", "o1-preview"]
+    },
+    {
+      "name": "Anthropic",
+      "base_url": "https://api.anthropic.com/v1",
+      "api_key_env": "ANTHROPIC_API_KEY",
+      "type": "anthropic",
+      "models": ["claude-3-5-sonnet-latest", "claude-3-opus-latest", "claude-3-5-haiku-latest"]
+    },
+    {
+      "name": "Google",
+      "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
+      "api_key_env": "GOOGLE_API_KEY",
+      "type": "openai_compatible",
+      "models": ["gemini-1.5-pro", "gemini-1.5-flash"]
+    },
+    {
+      "name": "Copilot",
+      "base_url": "http://localhost:5000/v1",
+      "api_key_env": "COPILOT_API_KEY",
+      "type": "openai_compatible",
+      "models": ["gpt-4o", "claude-3.5-sonnet"]
+    },
+    {
+      "name": "Zai",
+      "base_url": "https://api.z.ai/api/paas/v4",
+      "api_key_env": "Z_AI_API_KEY",
+      "type": "openai_compatible",
+      "models": ["glm-4.5", "glm-4-flash", "glm-4-plus"]
+    }
+  ]
+}

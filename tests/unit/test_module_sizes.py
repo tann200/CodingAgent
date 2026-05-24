@@ -29,7 +29,7 @@ def test_no_new_node_file_bloat():
         lines = len(p.read_text().splitlines())
         if lines > limit:
             oversized.append(f"{p.name}: {lines} lines (limit {limit})")
-    assert oversized == [], f"Oversized node files:\n" + "\n".join(oversized)
+    assert oversized == [], "Oversized node files:\n" + "\n".join(oversized)
 
 
 def test_execution_guards_extracted():

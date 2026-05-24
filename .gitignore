@@ -69,4 +69,15 @@ secrets.json
 *.swp
 *~
 
+# Test/debug artifacts that must never be committed
+MagicMock/
+tmp_*/
+results/
+brand_new.txt
+dummy_path
+sub/
+coverage.xml
+pyright-output.json
+*.log
+
 # End of .gitignore

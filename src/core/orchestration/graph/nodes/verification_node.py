@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any, Dict, Mapping
 
 from src.core.orchestration.graph.state import StateLike
-from src.core.orchestration.graph.nodes.node_utils import _resolve_orchestrator
+from src.core.orchestration.graph.nodes.node_utils import _resolve_orchestrator, span_node as _span_node
 from src.tools import verification_tools
 
 logger = logging.getLogger(__name__)
@@ -51,6 +51,12 @@ _WRITE_TOOLS_ALWAYS_VERIFY = {
 
 
 async def verification_node(state: StateLike, config: RunnableConfig) -> Dict[str, Any]:
+    """Thin OTel-span wrapper — delegates to _verification_node_impl."""
+    with _span_node("verification", {"step": state.get("current_step", 0)}):
+        return await _verification_node_impl(state, config)
+
+
+async def _verification_node_impl(state: StateLike, config: RunnableConfig) -> Dict[str, Any]:
     """
     Verification Layer: Run tests / linters / syntax checks on proposed edits.
     Also validates file deletions to ensure files are actually deleted.

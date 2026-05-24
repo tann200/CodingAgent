@@ -9,8 +9,6 @@ from collections import OrderedDict
 from datetime import date as _date
 from pathlib import Path
 
-logger = logging.getLogger(__name__)
-
 from src.core.memory.frozen_snapshot import get_memory_for_prompt
 from src.core.context.prompt_blocks import (
     build_repository_intelligence_block,
@@ -133,6 +131,8 @@ try:
     from src.tools.tools_config import agent_context_path as _agent_context_path
 except Exception:
     _agent_context_path = None  # type: ignore[assignment]
+
+logger = logging.getLogger(__name__)
 
 # CP-12: Sentinel string that marks the boundary between the static (cacheable)
 # and dynamic (per-turn) portions of the system prompt.

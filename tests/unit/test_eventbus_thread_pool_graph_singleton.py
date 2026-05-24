@@ -547,7 +547,7 @@ class TestSendPromptConcurrentExecutionPrevention:
 
     def _make_bridge(self):
         from unittest.mock import MagicMock as _MM
-        from tui.src.ui.core_bridge import AgentBridge
+        from tui.tui_src.ui.core_bridge import AgentBridge
 
         bridge = AgentBridge.__new__(AgentBridge)
         bridge._agent_lock = threading.Lock()

@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Optional
 
-from .model_tiers import ModelTier, classify_model, get_tool_limit, get_max_turns, get_tier_config
+from .model_tiers import ModelTier, classify_model
 
 
 class Architecture(str, Enum):

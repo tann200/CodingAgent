@@ -13,16 +13,17 @@ import sys
 from typing import Optional
 
 
-# tiny debug helper — only active when CODING_AGENT_DEBUG env var is set
+# tiny debug helper — only active when CODINGAGENT_DEBUG env var is set
+# CODING_AGENT_DEBUG is the legacy name kept for backward compatibility.
 def _dbg(msg: str) -> None:
-    if os.getenv("CODING_AGENT_DEBUG"):
+    if os.getenv("CODINGAGENT_DEBUG") or os.getenv("CODING_AGENT_DEBUG"):
         try:
             print(msg, flush=True)
         except Exception:
             pass
         try:
-            root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            p = os.path.join(root, "tmp_debug_main.log")
+            import tempfile
+            p = os.path.join(tempfile.gettempdir(), "codingagent_debug_main.log")
             with open(p, "a", encoding="utf-8") as f:
                 f.write(msg + "\n")
         except Exception:
@@ -87,11 +88,11 @@ def _parse_args(argv: list) -> argparse.Namespace:
     # Global (non-subcommand) flags
     parser.add_argument(
         "--output-format",
-        choices=["pretty", "json", "raw"],
+        choices=["pretty", "json", "raw", "stream"],
         default="pretty",
         help=(
             "Output format: pretty (default TUI), json (structured JSON per turn), "
-            "raw (plain assistant text only)."
+            "raw (plain assistant text only), stream (incremental token streaming to stdout)."
         ),
     )
     parser.add_argument(
@@ -515,6 +516,24 @@ def _run_headless(
         from src.core.orchestration.orchestrator import Orchestrator
 
         orch = Orchestrator(working_dir=workdir, dry_run=dry_run)
+
+        # P3-1: Headless streaming — subscribe to response.stream_chunk events
+        # before run_agent_once() so tokens are printed incrementally.
+        _streaming_active = output_format == "stream"
+        _stream_had_output = False
+
+        if _streaming_active:
+            def _on_stream_chunk(payload: dict) -> None:
+                nonlocal _stream_had_output
+                chunk = payload.get("chunk", "") if isinstance(payload, dict) else str(payload)
+                is_reasoning = payload.get("is_reasoning", False) if isinstance(payload, dict) else False
+                if chunk and not is_reasoning:
+                    sys.stdout.write(chunk)
+                    sys.stdout.flush()
+                    _stream_had_output = True
+
+            orch.event_bus.subscribe("response.stream_chunk", _on_stream_chunk)
+
         result = orch.run_agent_once(
             system_prompt_name="operational",
             messages=_messages if _messages else [{"role": "user", "content": task}],
@@ -537,6 +556,15 @@ def _run_headless(
             print(_json.dumps(result, ensure_ascii=False, default=str))
         elif output_format == "raw":
             print(result.get("assistant_message", ""))
+        elif output_format == "stream":
+            # Chunks already printed incrementally; ensure trailing newline if
+            # any output was written and the last chunk didn't end with one.
+            if _stream_had_output:
+                sys.stdout.write("\n")
+                sys.stdout.flush()
+            else:
+                # Fallback: no chunks arrived (non-streaming provider), print full message
+                print(result.get("assistant_message", ""))
         else:
             # pretty
             msg = result.get("assistant_message", "")
@@ -672,7 +700,7 @@ def main(argv: Optional[list] = None) -> int:
         _dbg(f"[src.main] Could not apply permission context: {_pctx_err}")
 
     # Non-interactive (headless) mode when --task is supplied or output format is not pretty
-    if args.task or args.output_format in ("json", "raw"):
+    if args.task or args.output_format in ("json", "raw", "stream"):
         task = args.task or ""
         if not task:
             task = sys.stdin.read().strip()
@@ -685,60 +713,15 @@ def main(argv: Optional[list] = None) -> int:
         )
 
     try:
-        import sys as _sys
         from pathlib import Path as _Path
 
         _working_dir = _Path(args.workdir) if args.workdir else None
 
-        # TUI-01: Launch the new Textual TUI (tui/src/ui/app.py::AgentApp).
-        # src/ui/ has been retired (LEGACY-03); only the new TUI is supported.
-        #
-        # The tui/ package's internal imports use bare `from src.ui.xxx` paths,
-        # which require tui/ to be on sys.path AND for `src` in sys.modules to
-        # resolve to tui/src/ rather than the project-root src/ package.
-        # We temporarily redirect sys.modules['src'] to tui/src/ for the import,
-        # then restore it so the rest of the project keeps working.
-        import importlib.util as _ilu
-
-        _tui_root = str(_Path(__file__).parent.parent / "tui")
-        _proj_root = str(_Path(__file__).parent.parent)
-        if _tui_root not in _sys.path:
-            _sys.path.insert(0, _tui_root)
-
-        # Load tui/src as a temporary module to shadow the project-root src package
-        _tui_src_init = _Path(_tui_root) / "src" / "__init__.py"
-        _tui_src_spec = _ilu.spec_from_file_location(
-            "src",
-            str(_tui_src_init),
-            submodule_search_locations=[str(_Path(_tui_root) / "src")],
-        )
-        if _tui_src_spec is None or _tui_src_spec.loader is None:
-            raise ImportError(f"Cannot load TUI src spec from {_tui_src_init}")
-        _tui_src_mod = _ilu.module_from_spec(_tui_src_spec)
-        _tui_src_spec.loader.exec_module(_tui_src_mod)  # type: ignore[union-attr]
-
-        _saved_src = _sys.modules.get("src")
-        _sys.modules["src"] = _tui_src_mod
-        try:
-            from src.ui.app import AgentApp  # type: ignore[import]
-            from src.ui.core_bridge import AgentBridge  # type: ignore[import]  # noqa: F401
-        finally:
-            # Restore the project-root src package.
-            # IMPORTANT: also remove _tui_root from sys.path so that runtime
-            # imports inside the TUI (e.g. `from src.core.inference...`) resolve
-            # to the project-root src/ package, not tui/src/.  The TUI's own
-            # src.ui.* modules are already in sys.modules at this point.
-            if _saved_src is not None:
-                _sys.modules["src"] = _saved_src
-            elif "src" in _sys.modules:
-                del _sys.modules["src"]
-            try:
-                _sys.path.remove(_tui_root)
-            except ValueError:
-                pass
-            # Ensure project root is on sys.path for src.core.* imports
-            if _proj_root not in _sys.path:
-                _sys.path.insert(0, _proj_root)
+        # TUI-01: Launch the Textual TUI (tui/tui_src/ui/app.py::AgentApp).
+        # P1-3: tui/src/ was renamed to tui/tui_src/ so it has a unique package
+        # name `tui_src` — no sys.path shadowing required.
+        from tui.tui_src.ui.app import AgentApp  # type: ignore[import]
+        from tui.tui_src.ui.core_bridge import AgentBridge  # type: ignore[import]  # noqa: F401
 
         app = AgentApp()
         # Inject working_dir into the bridge after the app creates it,

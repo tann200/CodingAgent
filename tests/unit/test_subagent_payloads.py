@@ -39,7 +39,7 @@ def test_compute_effective_tool_policy_uses_registry_when_explicit_allowlist_mis
         registry_denied_tools=None,
     )
     assert allowed == {"read_file"}
-    assert denied == {"delegate_task", "delegate_task_async"}
+    assert denied == {"delegate_task", "delegate_task_async", "delegate_tasks_parallel"}
 
 
 def test_build_subagent_manifest_sets_running_status():

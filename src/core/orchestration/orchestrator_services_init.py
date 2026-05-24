@@ -101,7 +101,7 @@ def _init_services(orch: Any) -> None:
         import os
         import threading
 
-        if os.getenv("CODING_AGENT_HTTP_SERVER", "false").lower() == "true":
+        if os.getenv("CODINGAGENT_HTTP_SERVER", os.getenv("CODING_AGENT_HTTP_SERVER", "false")).lower() == "true":
             import src.server.app as server_app
 
             try:

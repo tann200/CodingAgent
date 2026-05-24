@@ -22,6 +22,7 @@ tools:
   - batch
   # Delegation
   - delegate_task
+  - delegate_tasks_parallel
   - list_subagent_roles
   # State / checkpoints
   - create_state_checkpoint

@@ -20,7 +20,7 @@ import threading
 import traceback
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional, cast
+from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -217,8 +217,6 @@ class SchemaManager:
 
     def ensure_tables(self) -> None:
         from src.core.memory.sqlite_store_schema import (
-            fts_creation_script,
-            fts_trigger_statements,
             schema_creation_script,
         )
 

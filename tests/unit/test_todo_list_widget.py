@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from tui.src.ui.components.todo_list import TodoListWidget, _STATUS_STYLES
+from tui.tui_src.ui.components.todo_list import TodoListWidget, _STATUS_STYLES
 
 
 # ---------------------------------------------------------------------------

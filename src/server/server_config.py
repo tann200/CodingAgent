@@ -7,18 +7,24 @@ import os
 from typing import Mapping, Optional, Tuple
 
 
+
 def read_sse_adapter_settings(environ: Optional[Mapping[str, str]] = None) -> Tuple[int, int, str]:
     """Read queue size, keepalive, and drop policy from the environment."""
     env = environ or os.environ
+    # Support both CODINGAGENT_ (new) and CODING_AGENT_ (legacy) prefixes.
+    # When a plain Mapping is passed we must check both keys manually.
+    def _get(new_key: str, old_key: str, default: str) -> str:
+        return env.get(new_key) or env.get(old_key) or default  # type: ignore[return-value]
+
     try:
-        queue_max_size = int(env.get("CODING_AGENT_SSE_QUEUE_MAX", "100"))
+        queue_max_size = int(_get("CODINGAGENT_SSE_QUEUE_MAX", "CODING_AGENT_SSE_QUEUE_MAX", "100"))
     except Exception:
         queue_max_size = 100
     try:
-        keepalive_interval = int(env.get("CODING_AGENT_SSE_KEEPALIVE", "15"))
+        keepalive_interval = int(_get("CODINGAGENT_SSE_KEEPALIVE", "CODING_AGENT_SSE_KEEPALIVE", "15"))
     except Exception:
         keepalive_interval = 15
-    drop_policy = env.get("CODING_AGENT_SSE_DROP_POLICY", "drop_oldest").lower()
+    drop_policy = _get("CODINGAGENT_SSE_DROP_POLICY", "CODING_AGENT_SSE_DROP_POLICY", "drop_oldest").lower()
     return queue_max_size, keepalive_interval, drop_policy
 
 

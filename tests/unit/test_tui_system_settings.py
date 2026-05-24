@@ -4,7 +4,7 @@ from unittest.mock import MagicMock
 
 
 def test_request_system_settings_delegates_to_bridge() -> None:
-    from tui.src.ui.app import AgentApp
+    from tui.tui_src.ui.app import AgentApp
 
     app = AgentApp.__new__(AgentApp)
     app._bridge = MagicMock()

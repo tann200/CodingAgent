@@ -28,6 +28,8 @@ from .components import (
     SideBySideDiff,
     SubagentProgress,
 )
+from .components.status_bar import StatusBarMixin, ROLE_LABELS as _SB_ROLE_LABELS, ROLE_COLORS as _SB_ROLE_COLORS
+from .components.chat_mixin import ChatDisplayMixin
 from .settings import SettingsStore
 from .logging import get_logger
 from .bus import (
@@ -107,18 +109,8 @@ logger = get_logger("app")
 _COST_INPUT_PER_1K: float = 0.001  # input / system / task tokens
 _COST_OUTPUT_PER_1K: float = 0.003  # output tokens
 
-ROLE_LABELS = {
-    "lead_architect": "LEAD ARCHITECT",
-    "full_stack_engineer": "FULL STACK ENGINEER",
-    "qa_lead": "QA LEAD",
-    "system": "SYSTEM",
-}
-ROLE_COLORS = {
-    "lead_architect": "#a855f7",
-    "full_stack_engineer": "#3b82f6",
-    "qa_lead": "#22c55e",
-    "system": "#666666",
-}
+ROLE_LABELS = _SB_ROLE_LABELS
+ROLE_COLORS = _SB_ROLE_COLORS
 
 SLASH_HELP = """\
 Available commands:
@@ -407,7 +399,7 @@ def _render_question_block(args: dict, result_text: str) -> str:
     return ""
 
 
-class AgentApp(App[None]):
+class AgentApp(App[None], StatusBarMixin, ChatDisplayMixin):
     COMMAND_PALETTE = False
     BINDINGS = [
         ("tab", "toggle_mode", "agents"),
@@ -416,6 +408,7 @@ class AgentApp(App[None]):
         ("ctrl+s", "open_settings", "settings"),
         ("ctrl+m", "open_model_picker", "model"),
         ("ctrl+q", "quit_app", "quit"),
+        ("ctrl+r", "open_sessions", "sessions"),
     ]
     CSS_PATH = "styles/app.tcss"
 
@@ -661,65 +654,10 @@ class AgentApp(App[None]):
         self.exit()
 
     # ── Internal helpers ──────────────────────────────────────────────────
+    # _update_perm_badge, _update_role_display, _update_status_bar are
+    # inherited from StatusBarMixin (tui/src/ui/components/status_bar.py).
 
-    def _update_perm_badge(self, delta: int = 0) -> None:
-        """GAP-FOOTER-1: update the pending-permission count chip in the footer."""
-        self._pending_perm_count = max(0, self._pending_perm_count + delta)
-        try:
-            chip = self.query_one("#perm_count_chip", Static)
-            if self._pending_perm_count > 0:
-                chip.update(
-                    f"[bold #facc15]△ {self._pending_perm_count} Permission(s)[/]"
-                )
-            else:
-                chip.update("")
-        except Exception:
-            pass
-
-    def _update_role_display(self, role: str) -> None:
-        label = ROLE_LABELS.get(role, role.upper().replace("_", " "))
-        color = ROLE_COLORS.get(role, "#888888")
-        try:
-            self.query_one("#sb_role", Static).update(f"[bold {color}]{label}[/]")
-            self.sub_title = f"AGENT: {label}"
-        except Exception:
-            pass
-
-    def _update_status_bar(self) -> None:
-        role = self.active_role
-        label = ROLE_LABELS.get(role, role.upper().replace("_", " "))
-        color = ROLE_COLORS.get(role, "#888888")
-        streaming = " [bold #facc15][streaming][/]" if self.is_streaming else ""
-        running = " [bold #ff5555][running][/]" if self.agent_running else ""
-        try:
-            self.query_one("#status_left", Static).update(
-                f"[bold {color}]{label}[/] | "
-                f"Tokens: {self.total_tokens:,}/{self.context_window:,}"
-                f"{streaming}{running}"
-            )
-        except Exception:
-            pass
-
-    def _ensure_stream_widget(self) -> StreamView:
-        from .components import StreamView
-
-        if self._current_stream is None:
-            self.is_streaming = True
-            role = ROLE_LABELS.get(self.active_role, self.active_role)
-            self._current_stream = StreamView(role=role, classes="stream_msg")
-            chat_log = self.query_one("#chat_log", VerticalScroll)
-            self.call_later(self._mount_and_scroll, self._current_stream, chat_log)
-        return self._current_stream
-
-    async def _mount_and_scroll(self, widget, container) -> None:
-        await container.mount(widget)
-        container.scroll_end(animate=False)
-
-    def _finalize_stream(self) -> None:
-        if self._current_stream is not None:
-            self._current_stream = None
-            self.is_streaming = False
-            self._update_status_bar()
+    # _ensure_stream_widget, _mount_and_scroll, _finalize_stream → ChatDisplayMixin
 
     def _append_log_line(self, line: str, level: str = "INFO") -> None:
         """§16.4 — write log.new events DIRECTLY to console, never through logging."""
@@ -731,26 +669,7 @@ class AgentApp(App[None]):
         except Exception:
             pass
 
-    def _prune_chat_log(self) -> None:
-        """Remove oldest widgets from chat_log when it exceeds _MAX_CHAT_WIDGETS."""
-        try:
-            chat_log = self.query_one("#chat_log", VerticalScroll)
-            while len(chat_log.children) > _MAX_CHAT_WIDGETS:
-                chat_log.children[0].remove()
-        except Exception:
-            pass
-
-    async def _mount_chat_widget(self, widget) -> None:
-        chat_log = self.query_one("#chat_log", VerticalScroll)
-        await chat_log.mount(widget)
-        chat_log.scroll_end(animate=False)
-        self._prune_chat_log()
-
-    def _sched_chat_widget(self, widget) -> None:
-        """Schedule a widget mount in the chat log from a sync handler."""
-        chat_log = self.query_one("#chat_log", VerticalScroll)
-        self.call_later(self._mount_and_scroll, widget, chat_log)
-        self.call_later(self._prune_chat_log)
+    # _prune_chat_log, _mount_chat_widget, _sched_chat_widget → ChatDisplayMixin
 
     # ── Session snapshot ──────────────────────────────────────────────────
 
@@ -869,14 +788,7 @@ class AgentApp(App[None]):
         self._clear_chat_panel()
         self._reset_sidebar()
 
-    def _clear_chat_panel(self) -> None:
-        self._finalize_stream()
-        self._tool_widgets.clear()
-        self._tool_args.clear()
-        try:
-            self.query_one("#chat_log", VerticalScroll).remove_children()
-        except Exception:
-            pass
+    # _clear_chat_panel → ChatDisplayMixin
 
     def _reset_sidebar(self) -> None:
         self._modified_files.clear()
@@ -905,131 +817,17 @@ class AgentApp(App[None]):
 
     # ── @file picker helpers ───────────────────────────────────────────────
 
-    def _list_workspace_files(
-        self, query: str = "", max_results: int = 30
-    ) -> list[str]:
-        """Return workspace file paths matching *query*, relative to working_dir.
+    # _list_workspace_files → ChatDisplayMixin
 
-        Results are cached for 60 s to avoid rescanning on every keystroke.
-        """
-        now = time.monotonic()
-        if not self._at_file_cache or now - self._at_file_cache_ts > 60.0:
-            try:
-                wd = Path(self._bridge.working_dir or os.getcwd())
-                all_files: list[str] = []
-                for root, dirs, fnames in os.walk(str(wd)):
-                    dirs[:] = [d for d in dirs if d not in _AT_SKIP_DIRS]
-                    for fname in fnames:
-                        all_files.append(
-                            os.path.relpath(os.path.join(root, fname), str(wd))
-                        )
-                        if len(all_files) >= 2000:
-                            break
-                    if len(all_files) >= 2000:
-                        break
-                self._at_file_cache = sorted(all_files)
-                self._at_file_cache_ts = now
-            except Exception:
-                return []
-        if not query:
-            return self._at_file_cache[:max_results]
-        q = query.lower()
-        return [f for f in self._at_file_cache if q in f.lower()][:max_results]
-
-    def _at_picker_navigate(self, direction: str) -> None:
-        """Move the file picker selection up or down."""
-        if not self._at_picker_matches:
-            return
-        if direction == "up":
-            self._at_picker_index = max(0, self._at_picker_index - 1)
-        else:
-            self._at_picker_index = min(
-                len(self._at_picker_matches) - 1, self._at_picker_index + 1
-            )
-        if self._at_picker_widget is not None:
-            self._at_picker_widget.update_picker(
-                self._at_picker_matches, self._at_picker_index
-            )
-
-    def _at_picker_complete(self) -> None:
-        """Replace the @token in ChatTextArea with the selected file path."""
-        if not self._at_picker_matches or not (
-            0 <= self._at_picker_index < len(self._at_picker_matches)
-        ):
-            return
-        chosen = self._at_picker_matches[self._at_picker_index]
-        try:
-            ta = self.query_one("#user_input", ChatTextArea)
-            current = ta.text
-            new_text = re.sub(r"@\S*$", f"@{chosen} ", current)
-            ta.load_text(new_text)
-            ta.move_cursor(ta.document.end)
-        except Exception:
-            pass
-        self._at_picker_hide()
-
-    def _at_picker_hide(self) -> None:
-        """Hide the file picker without completing."""
-        self._at_picker_active = False
-        self._at_picker_matches = []
-        self._at_prefix = ""
-        if self._at_picker_widget is not None:
-            self._at_picker_widget.display = False
+    # _at_picker_navigate, _at_picker_complete, _at_picker_hide → ChatDisplayMixin
 
     # ── Inline palette helpers ─────────────────────────────────────────────
 
-    def _palette_navigate(self, direction: str) -> None:
-        """Move the palette selection up or down (for ChatTextArea routing)."""
-        if not self._palette_matches:
-            return
-        if direction == "up":
-            self._palette_index = max(0, self._palette_index - 1)
-        else:
-            self._palette_index = min(
-                len(self._palette_matches) - 1, self._palette_index + 1
-            )
-
-    def _palette_complete(self) -> str:
-        """Return the currently-selected command and hide the inline palette."""
-        if self._palette_matches and 0 <= self._palette_index < len(
-            self._palette_matches
-        ):
-            cmd = self._palette_matches[self._palette_index]
-        else:
-            cmd = ""
-        self._palette_active = False
-        self._palette_index = 0
-        self._palette_matches = []
-        return cmd
+    # _palette_navigate, _palette_complete → ChatDisplayMixin
 
     # ── @file token expansion ─────────────────────────────────────────────
 
-    def _expand_at_tokens(self, text: str) -> str:
-        """Replace '@path' tokens with file content wrapped in XML tags.
-
-        Only expands tokens that resolve to readable files within the workspace.
-        Leaves bare '@word' tokens that don't match files unchanged.
-        """
-        try:
-            wd = Path(self._bridge.working_dir or os.getcwd()).resolve()
-        except Exception:
-            return text
-
-        def _replace(m: re.Match) -> str:
-            rel = m.group(1)
-            try:
-                target = (wd / rel).resolve()
-                # Ensure path stays inside workspace
-                if not str(target).startswith(str(wd)):
-                    return m.group(0)
-                if target.is_file():
-                    content = target.read_text(errors="replace")[:_AT_FILE_MAX_CHARS]
-                    return f"<file: {rel}>\n{content}\n</file>"
-            except Exception:
-                pass
-            return m.group(0)
-
-        return re.sub(r"@(\S+)", _replace, text)
+    # _expand_at_tokens → ChatDisplayMixin
 
     # ── EventBus / bus event handlers ─────────────────────────────────────
 
@@ -1106,51 +904,23 @@ class AgentApp(App[None]):
 
     @on(StreamChunkEvent)
     def handle_stream_chunk(self, event: StreamChunkEvent) -> None:
-        stream = self._ensure_stream_widget()
-        stream.append_chunk(event.chunk)
-        if not event.is_partial:
-            self._finalize_stream()
-        try:
-            self.query_one("#chat_log", VerticalScroll).scroll_end(animate=False)
-        except Exception:
-            pass
+        self._chat_handle_stream_chunk(event)
 
     @on(StreamingThinkingUpdate)
     def handle_thinking_update(self, event: StreamingThinkingUpdate) -> None:
-        stream = self._ensure_stream_widget()
-        stream.append_chunk(event.content)
-        if event.is_complete:
-            self._finalize_stream()
+        self._chat_handle_thinking_update(event)
 
     @on(DisplayReasoning)
     async def handle_reasoning(self, event: DisplayReasoning) -> None:
-        self._finalize_stream()
-        from .components import ThinkingProcess
-
-        widget = ThinkingProcess(event.content, event.start_time)
-        await self._mount_chat_widget(widget)
+        await self._chat_handle_reasoning(event)
 
     @on(AgentFinalResponse)
     async def handle_final_response(self, event: AgentFinalResponse) -> None:
-        from .components import AgentArtifact
-
-        self._finalize_stream()
-        logger.info("Agent final response received")
-        artifact = AgentArtifact(
-            content=event.content, title="Response", kind="markdown"
-        )
-        await self._mount_chat_widget(artifact)
+        await self._chat_handle_final_response(event)
 
     @on(WorkerError)
     async def handle_error(self, event: WorkerError) -> None:
-        self._finalize_stream()
-        logger.error(f"Worker error: {event.message}")
-        widget = Static(
-            f"[bold red]✗ Error:[/] {event.message}",
-            classes="error_msg",
-            markup=True,
-        )
-        await self._mount_chat_widget(widget)
+        await self._chat_handle_error(event)
 
     # ── Step boundary events ───────────────────────────────────────────────
 
@@ -1178,26 +948,8 @@ class AgentApp(App[None]):
 
     @on(McpServerStatusEvent)
     def handle_mcp_status(self, event: McpServerStatusEvent) -> None:
-        # GAP-FOOTER-2: show count and error state (red ⊙ when has_error)
-        if event.running:
-            if event.has_error:
-                label = (
-                    f"[bold #ff5555]⊙ MCP {event.count}[/]"
-                    if event.count
-                    else "[bold #ff5555]⊙ MCP[/]"
-                )
-            else:
-                label = (
-                    f"[green]⊙ MCP {event.count}[/green]"
-                    if event.count
-                    else "[green]⊙ MCP[/green]"
-                )
-        else:
-            label = "[dim]⊙ MCP[/dim]"
-        try:
-            self.query_one("#mcp_status_chip", Static).update(label)
-        except Exception:
-            pass
+        # GAP-FOOTER-2: delegated to StatusBarMixin._update_mcp_status_chip
+        self._update_mcp_status_chip(event.running, event.count, event.has_error)
 
     # ── Tool permission gate ───────────────────────────────────────────────
 
@@ -1242,49 +994,11 @@ class AgentApp(App[None]):
 
     @on(UsageTurnSummaryEvent)
     def handle_usage_turn_summary(self, event: UsageTurnSummaryEvent) -> None:
-        """Append a dim token/cost footer after the most recent assistant message."""
-        parts = []
-        if event.input_tokens or event.output_tokens:
-            parts.append(f"{event.input_tokens:,} in / {event.output_tokens:,} out")
-        if event.cost_usd > 0:
-            parts.append(f"${event.cost_usd:.4f}")
-        if not parts:
-            return
-        footer_text = "  ".join(parts)
-        widget = Static(
-            f"[dim #555555]  ↳ {footer_text}[/]",
-            classes="usage_footer",
-            markup=True,
-        )
-        self._sched_chat_widget(widget)
-
-    # ── Doom-loop gate (PERM-W3) ──────────────────────────────────────────
+        self._chat_handle_usage_turn_summary(event)
 
     @on(DoomLoopEvent)
     async def handle_doom_loop(self, event: DoomLoopEvent) -> None:
-        """Show a confirmation dialog when the agent is stuck in a repeating loop."""
-        logger.warning(
-            f"Doom-loop detected: tool={event.tool_name!r}  count={event.count}"
-        )
-        chat_log = self.query_one("#chat_log", VerticalScroll)
-        warn = Static(
-            f"[bold #ff5555]⚠ Loop detected:[/] [bold]{event.tool_name}[/] "
-            f"called {event.count}× with identical arguments.",
-            classes="retry_msg",
-            markup=True,
-        )
-        await chat_log.mount(warn)
-        tid = event.tool_id or f"doom_{event.fingerprint[:8]}"
-        row = Horizontal(id=f"doom_row_{tid}", classes="approval_row")
-        await chat_log.mount(row)
-        await row.mount(
-            Button("Continue anyway", id=f"btn_doom_allow_{tid}", variant="warning")
-        )
-        await row.mount(
-            Button("Stop agent", id=f"btn_doom_deny_{tid}", variant="error")
-        )
-        chat_log.scroll_end(animate=False)
-        self._prune_chat_log()
+        await self._chat_handle_doom_loop(event)
 
     # ── Tool call 3-beat lifecycle (§6.1) ─────────────────────────────────
 
@@ -1639,29 +1353,7 @@ class AgentApp(App[None]):
 
     @on(PlanRequestedEvent)
     async def handle_plan_requested(self, event: PlanRequestedEvent) -> None:
-        logger.info("Plan approval requested")
-        self._finalize_stream()
-        chat_log = self.query_one("#chat_log", VerticalScroll)
-
-        if event.plan_text:
-            plan_display = Static(
-                f"[bold #a855f7]Plan:[/]\n{event.plan_text}",
-                classes="plan_msg",
-                markup=True,
-            )
-            await chat_log.mount(plan_display)
-
-        approval = Horizontal(id="plan_approval", classes="approval_row")
-        await chat_log.mount(approval)
-        await approval.mount(
-            Static("Approve this plan?  ", classes="approval_label", markup=True)
-        )
-        await approval.mount(
-            Button("Approve", id="btn_approve_plan", variant="success")
-        )
-        await approval.mount(Button("Reject", id="btn_reject_plan", variant="error"))
-        chat_log.scroll_end(animate=False)
-        self._prune_chat_log()
+        await self._chat_handle_plan_requested(event)
 
     # ── Bash tier-3 approval gate (§16.1) ─────────────────────────────────
 
@@ -1704,11 +1396,11 @@ class AgentApp(App[None]):
         if _handled:
             event.stop()
 
-        # GAP-FOOTER-3: subagent footer chip — open SessionListScreen filtered to subagents
+        # GAP-FOOTER-3: subagent footer chip — open SessionScreen filtered to subagents
         if btn_id == "subagent_footer_chip":
-            from .screens.session_list import SessionListScreen
+            from .screens.session_screen import SessionScreen
 
-            self.push_screen(SessionListScreen(filter_subagents=True))
+            self.push_screen(SessionScreen(filter_subagents=True))
             return
 
         # ── Plan approval ───────────────────────────────────────────────
@@ -2009,24 +1701,14 @@ class AgentApp(App[None]):
 
     @on(SessionHealthEvent)
     async def handle_session_health(self, event: SessionHealthEvent) -> None:
-        color_map = {"error": "#ff5555", "warning": "#facc15", "info": "#3b82f6"}
-        color = color_map.get(event.level, "#888888")
-        widget = Static(
-            f"[bold {color}]⚠ {event.title}:[/] {event.message}",
-            classes="retry_msg",
-            markup=True,
-        )
-        await self._mount_chat_widget(widget)
+        await self._chat_handle_session_health(event)
 
     # ── Status + role ─────────────────────────────────────────────────────
 
     @on(StatusUpdate)
     def handle_status(self, event: StatusUpdate) -> None:
         logger.info(f"Status: {event.message}")
-        try:
-            self.query_one("#sb_status", Static).update(f"Status: {event.message}")
-        except Exception:
-            pass
+        self._update_status_text(event.message)
         # TUI-T1: Status messages are non-conversation events; use a transient toast
         # instead of polluting the chat log.
         self.notify(event.message, timeout=3)
@@ -2055,22 +1737,10 @@ class AgentApp(App[None]):
         logger.info(
             f"Provider {event.provider}: {event.old_status} → {event.new_status}"
         )
+        self._update_provider_status_widgets(event.provider, event.new_status)
+        # Update banner CSS class for visual connected/error state
         try:
-            # Human-readable status labels
-            _status_labels = {
-                "connected": "connected",
-                "disconnected": "not connected",
-                "initializing": "initializing…",
-                "unknown": "unknown",
-                "error": "error",
-                "failed": "error",
-            }
-            status_label = _status_labels.get(event.new_status, event.new_status)
-            self.query_one("#sb_provider", Static).update(
-                f"{event.provider}: {status_label}"
-            )
             banner = self.query_one("#provider_banner", Static)
-            banner.update(f"  {event.provider.upper()}  —  {status_label}")
             banner.remove_class("connected", "error")
             if event.new_status == "connected":
                 banner.add_class("connected")
@@ -2133,67 +1803,23 @@ class AgentApp(App[None]):
 
     @on(ContextCompactedEvent)
     async def handle_context_compacted(self, event: ContextCompactedEvent) -> None:
-        """TASK-TUI-9: Insert a visual compaction divider on auto-compaction."""
-        divider = Static(
-            "[dim]══════════════ Context Compacted ══════════════[/]",
-            classes="system_msg compaction_divider",
-            markup=True,
-        )
-        await self._mount_chat_widget(divider)
+        await self._chat_handle_context_compacted(event)
 
     @on(ContextDegradedEvent)
     async def handle_context_degraded(self, event: ContextDegradedEvent) -> None:
-        logger.warning(f"Context degraded: {event.reason}")
-        self.notify(f"Context degraded: {event.reason}", severity="warning")
-        w = Static(
-            f"[bold #facc15]⚠ Context degraded:[/] {event.reason}"
-            + (
-                f"  (target window: {event.target_window:,})"
-                if event.target_window
-                else ""
-            ),
-            classes="retry_msg",
-            markup=True,
-        )
-        await self._mount_chat_widget(w)
+        await self._chat_handle_context_degraded(event)
 
     @on(RetryAttemptEvent)
     async def handle_retry_attempt(self, event: RetryAttemptEvent) -> None:
-        logger.warning(
-            f"Retry {event.attempt_number}/{event.max_attempts}: {event.error_type}"
-        )
-        prov = f"  [{event.provider}]" if event.provider else ""
-        w = Static(
-            f"[bold #facc15]↻ Retry {event.attempt_number}/{event.max_attempts}:[/] "
-            f"{event.error_type}{prov}",
-            classes="retry_msg",
-            markup=True,
-        )
-        await self._mount_chat_widget(w)
+        await self._chat_handle_retry_attempt(event)
 
     @on(RetrySucceededEvent)
     async def handle_retry_succeeded(self, event: RetrySucceededEvent) -> None:
-        logger.info(f"Retry succeeded on attempt {event.attempt_number}")
-        prov = f"  [{event.provider}]" if event.provider else ""
-        w = Static(
-            f"[bold #22c55e]✓ Retry succeeded[/] on attempt {event.attempt_number}{prov}",
-            classes="retry_msg",
-            markup=True,
-        )
-        await self._mount_chat_widget(w)
+        await self._chat_handle_retry_succeeded(event)
 
     @on(RetryFailedEvent)
     async def handle_retry_failed(self, event: RetryFailedEvent) -> None:
-        logger.error(f"All retries failed: {event.error_type}")
-        self.notify("All retry attempts failed", severity="error")
-        prov = f"  [{event.provider}]" if event.provider else ""
-        w = Static(
-            f"[bold #ff5555]✗ All {event.total_attempts} retries failed:[/] "
-            f"{event.error_type}{prov}",
-            classes="retry_msg",
-            markup=True,
-        )
-        await self._mount_chat_widget(w)
+        await self._chat_handle_retry_failed(event)
 
     # ── Input handling: ChatTextArea ──────────────────────────────────────
 
@@ -2272,43 +1898,7 @@ class AgentApp(App[None]):
 
     @on(ChatTextArea.TextChanged)
     def on_chat_text_area_changed(self, event: ChatTextArea.TextChanged) -> None:
-        """Drive inline palette and @file picker from every text change."""
-        text = event.text
-
-        # ── Inline slash-command palette ─────────────────────────────────
-        # LOW-13 fix: the old guard `not "\n" in text` prevented the palette
-        # from appearing when the user typed a multiline message that *starts*
-        # with a slash command.  Only the first line needs to start with "/" —
-        # subsequent lines are arguments/context.
-        first_line = text.split("\n", 1)[0]
-        if first_line.startswith("/"):
-            from .components.chat_input import SLASH_COMMANDS
-
-            matches = [c for c in SLASH_COMMANDS if c.startswith(first_line.rstrip())]
-            if matches:
-                self._palette_active = True
-                self._palette_matches = matches
-                self._palette_index = 0
-                return
-        # Dismiss palette if text no longer starts with /
-        if self._palette_active:
-            self._palette_active = False
-            self._palette_matches = []
-
-        # ── @file picker ─────────────────────────────────────────────────
-        at_match = re.search(r"@(\S*)$", text)
-        if at_match:
-            query = at_match.group(1)
-            self._at_prefix = "@" + query
-            matches_files = self._list_workspace_files(query)
-            if matches_files:
-                self._at_picker_matches = matches_files
-                self._at_picker_index = 0
-                self._at_picker_active = True
-                if self._at_picker_widget is not None:
-                    self._at_picker_widget.update_picker(matches_files, 0)
-                return
-        self._at_picker_hide()
+        self._chat_handle_text_changed(event)
 
     # ── Interrupt signal from HistoryInput (kept for compat) ──────────────
 
@@ -2431,9 +2021,7 @@ class AgentApp(App[None]):
             self.action_open_settings()
 
         elif cmd == "sessions":
-            from .screens.session_list import SessionListScreen
-
-            self.push_screen(SessionListScreen())
+            self.action_open_sessions()
 
         elif cmd == "timeline":
             from .screens.timeline import TimelineScreen
@@ -3654,6 +3242,12 @@ class AgentApp(App[None]):
             # Preserve stacktrace at ERROR level for diagnostics
             logger.exception(f"action_open_settings failed: {exc}")
             self.notify(f"Could not open settings: {exc}", severity="error")
+
+    def action_open_sessions(self) -> None:
+        """P3-2: Open the session browser (Ctrl+R or /sessions command)."""
+        from .screens.session_screen import SessionScreen
+
+        self.push_screen(SessionScreen())
 
     # Legacy /clear helper alias
     def _clear_session(self) -> None:

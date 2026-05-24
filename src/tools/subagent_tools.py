@@ -243,6 +243,200 @@ class SubagentOrchestrator:
         return list(set(base_denied) | self._denied_tools)
 
 
+def _validate_delegate_inputs(role: str, subtask_description: str) -> Optional[str]:
+    """Return an error string when inputs are invalid, else None."""
+    valid_roles = _build_valid_roles()
+    if role not in valid_roles:
+        role_block = _build_role_description_block()
+        return (
+            f"Error: Invalid role '{role}'. Valid roles are:\n{role_block}\n"
+            f"Call list_subagent_roles() for an up-to-date listing."
+        )
+    if not subtask_description or not subtask_description.strip():
+        return "Error: subtask_description must not be empty."
+    return None
+
+
+def _resolve_delegate_setup(
+    role: str,
+    allowed_tools: Optional[list],
+    model: Optional[str],
+    depth: int,
+    workdir_path: "Path",
+    parent_orchestrator: Any,
+) -> "tuple[str, str, SubagentOrchestrator, Optional[str], Optional[set], set]":
+    """Resolve canonical role, system prompt, subagent orchestrator, and tool policy.
+
+    Returns ``(canonical_role, system_prompt, subagent_orchestrator, override_model,
+    effective_allowed, effective_denied)``.
+    """
+    canonical_role = canonicalize_subagent_role(role)
+    if get_agent_brain_manager is None:
+        raise RuntimeError("AgentBrainManager is not available (src.core not importable)")
+    brain = get_agent_brain_manager()
+    system_prompt = brain.compile_system_prompt(canonical_role)
+
+    # SPAWN-W2: Resolve allowed_tools from explicit param or AgentDefinition registry.
+    _registry_allowed: Optional[set] = None
+    _registry_denied: set = set()
+    if allowed_tools is None:
+        try:
+            from src.core.orchestration.agent_types import get_agent_registry
+
+            _agent_def = get_agent_registry().get(canonical_role)
+            if _agent_def is not None:
+                _registry_allowed = _agent_def.allowed_tools
+                _registry_denied = _agent_def.denied_tools or set()
+        except Exception:
+            pass
+
+    effective_allowed, effective_denied = compute_effective_tool_policy(
+        explicit_allowed_tools=allowed_tools,
+        registry_allowed_tools=_registry_allowed,
+        registry_denied_tools=_registry_denied,
+    )
+
+    subagent_orchestrator = SubagentOrchestrator(
+        role=role,
+        working_dir=str(workdir_path),
+        allowed_tools=effective_allowed,
+        denied_tools=effective_denied,
+    )
+
+    # SM-1: Resolve override model — explicit param > role default > None
+    override_model: Optional[str] = model
+    if override_model is None:
+        try:
+            from src.core.orchestration.role_config import (
+                get_default_model_for_role as _gdmfr,
+            )
+
+            override_model = _gdmfr(canonical_role)
+        except Exception:
+            pass
+
+    return canonical_role, system_prompt, subagent_orchestrator, override_model, effective_allowed, effective_denied
+
+
+def _publish_delegation_start(
+    parent_orchestrator: Any,
+    child_session_id: str,
+    parent_session_id: Optional[str],
+    canonical_role: str,
+    subtask_description: str,
+) -> None:
+    """Fire delegation.start event on the parent event bus (best-effort)."""
+    try:
+        if parent_orchestrator is not None:
+            _pbus = getattr(parent_orchestrator, "event_bus", None)
+            if _pbus is not None:
+                _pbus.publish(
+                    "delegation.start",
+                    {
+                        "child_session_id": child_session_id,
+                        "parent_session_id": parent_session_id,
+                        "role": canonical_role,
+                        "task": subtask_description[:120],
+                    },
+                )
+                if DispatchEvent is not None and hasattr(_pbus, "publish_dispatch"):
+                    _dispatch_event = DispatchEvent(
+                        session_id=child_session_id,
+                        agent_id=canonical_role,
+                        task=subtask_description,
+                        parent_session_id=parent_session_id,
+                    )
+                    _pbus.publish_dispatch(_dispatch_event)
+    except Exception:
+        pass
+
+
+def _publish_delegation_finish(
+    parent_orchestrator: Any,
+    child_session_id: str,
+    parent_session_id: Optional[str],
+    canonical_role: str,
+    final_state: Any,
+    ok: bool,
+) -> None:
+    """Fire delegation.finish event and roll up child cost (best-effort)."""
+    try:
+        if parent_orchestrator is not None:
+            _pbus = getattr(parent_orchestrator, "event_bus", None)
+            if _pbus is not None:
+                _child_cost = (
+                    float(final_state.get("session_cost_usd") or 0.0)
+                    if final_state and isinstance(final_state, dict)
+                    else 0.0
+                )
+                _pbus.publish(
+                    "delegation.finish",
+                    {
+                        "child_session_id": child_session_id,
+                        "role": canonical_role,
+                        "ok": ok,
+                        "cost_usd": _child_cost if ok else None,
+                    },
+                )
+                if ok and DispatchResultEvent is not None and hasattr(
+                    _pbus, "publish_dispatch_result"
+                ):
+                    _content = select_dispatch_result_content(final_state)
+                    _result_event = DispatchResultEvent(
+                        session_id=child_session_id,
+                        content=_content,
+                        parent_session_id=parent_session_id,
+                    )
+                    _pbus.publish_dispatch_result(_result_event)
+                if ok and _child_cost > 0:
+                    _pbus.publish(
+                        "usage.subagent_cost",
+                        {
+                            "child_session_id": child_session_id,
+                            "role": canonical_role,
+                            "cost_usd": _child_cost,
+                        },
+                    )
+    except Exception:
+        pass
+
+
+def _persist_child_session(
+    final_state: Any,
+    workdir_path: "Path",
+    child_session_id: str,
+    parent_session_id: Optional[str],
+    canonical_role: str,
+    subtask_description: str,
+    ok: bool,
+    error: Optional[str] = None,
+) -> None:
+    """Write the child session payload to the sessions directory (best-effort)."""
+    import time as _time
+
+    try:
+        _sessions_dir = get_sessions_dir()
+        _sessions_dir.mkdir(parents=True, exist_ok=True)
+        _child_msgs = extract_child_session_messages(final_state) if ok else []
+        _session_payload = build_subagent_session_payload(
+            child_session_id=child_session_id,
+            parent_session_id=parent_session_id,
+            task_name=subtask_description,
+            canonical_role=canonical_role,
+            working_dir=str(workdir_path),
+            timestamp=_time.time(),
+            messages=_child_msgs,
+            ok=ok,
+            **({"error": error} if error else {}),
+        )
+        _sp = Path(
+            build_child_session_file_path(str(_sessions_dir), child_session_id)
+        )
+        _atomic_write_json(_sp, _session_payload, logger=logger)
+    except Exception:
+        pass
+
+
 @tool(
     side_effects=["execute"], tags=["planning"], permission_kind=PermissionKind.DELEGATE
 )
@@ -295,18 +489,10 @@ def delegate_task(
     Raises:
         ValueError: If an invalid role is provided
     """
-    # DR-1: Build valid roles dynamically from role_config so this validation
-    # never goes stale when roles are added or renamed.
-    valid_roles = _build_valid_roles()
-    if role not in valid_roles:
-        role_block = _build_role_description_block()
-        return (
-            f"Error: Invalid role '{role}'. Valid roles are:\n{role_block}\n"
-            f"Call list_subagent_roles() for an up-to-date listing."
-        )
-
-    if not subtask_description or not subtask_description.strip():
-        return "Error: subtask_description must not be empty."
+    # DR-1: Validate inputs using helper (checks role validity and non-empty description).
+    _input_err = _validate_delegate_inputs(role, subtask_description)
+    if _input_err:
+        return _input_err
 
     workdir = working_dir or "."
     workdir_path = Path(workdir).resolve()
@@ -328,40 +514,24 @@ def delegate_task(
 
     try:
         # 1. Setup the isolated initial state
-        # Map legacy role names to canonical so AgentBrainManager finds the right prompts.
-        canonical_role = canonicalize_subagent_role(role)
-        if get_agent_brain_manager is None:
-            return "Error: AgentBrainManager is not available (src.core not importable)"
-        brain = get_agent_brain_manager()
-        system_prompt = brain.compile_system_prompt(canonical_role)
-
-        # SPAWN-W2: Resolve allowed_tools from explicit param or AgentDefinition registry.
-        _registry_allowed: Optional[set] = None
-        _registry_denied: set = set()
-        if allowed_tools is None:
-            try:
-                from src.core.orchestration.agent_types import get_agent_registry
-
-                _agent_def = get_agent_registry().get(canonical_role)
-                if _agent_def is not None:
-                    _registry_allowed = _agent_def.allowed_tools
-                    _registry_denied = _agent_def.denied_tools or set()
-            except Exception:
-                pass
-
-        _effective_allowed, _effective_denied = compute_effective_tool_policy(
-            explicit_allowed_tools=allowed_tools,
-            registry_allowed_tools=_registry_allowed,
-            registry_denied_tools=_registry_denied,
-        )
-
-        # Create role-aware orchestrator for tool restriction enforcement
-        subagent_orchestrator = SubagentOrchestrator(
-            role=role,
-            working_dir=str(workdir_path),
-            allowed_tools=_effective_allowed,
-            denied_tools=_effective_denied,
-        )
+        try:
+            (
+                canonical_role,
+                system_prompt,
+                subagent_orchestrator,
+                _override_model,
+                _effective_allowed,
+                _effective_denied,
+            ) = _resolve_delegate_setup(
+                role=role,
+                allowed_tools=allowed_tools,
+                model=model,
+                depth=depth,
+                workdir_path=workdir_path,
+                parent_orchestrator=_PARENT_ORCHESTRATOR_VAR.get(None),
+            )
+        except RuntimeError as _setup_err:
+            return f"Error: {_setup_err}"
 
         # SPAWN-W1: Generate a child session ID and track parent reference.
         # TASK-ID-1: If task_id is provided, use it as session_id so prior state
@@ -395,18 +565,6 @@ def delegate_task(
             except Exception as _re:
                 logger.debug("delegate_task: state resumption failed: %s", _re)
                 _resumed_state = None
-
-        # SM-1: Resolve override model — explicit param > role default > None
-        _override_model: Optional[str] = model
-        if _override_model is None:
-            try:
-                from src.core.orchestration.role_config import (
-                    get_default_model_for_role as _gdmfr,
-                )
-
-                _override_model = _gdmfr(canonical_role)
-            except Exception:
-                pass
 
         initial_state = build_subagent_initial_state(
             subtask_description=subtask_description,
@@ -511,31 +669,13 @@ def delegate_task(
             _manifest_path = None
 
         # SUBAGENT-VIS-1: Notify TUI that a subagent is starting
-        # Also publish DispatchEvent for subagent dispatch tracking
-        try:
-            if parent_orchestrator is not None:
-                _pbus = getattr(parent_orchestrator, "event_bus", None)
-                if _pbus is not None:
-                    _pbus.publish(
-                        "delegation.start",
-                        {
-                            "child_session_id": child_session_id,
-                            "parent_session_id": parent_session_id,
-                            "role": canonical_role,
-                            "task": subtask_description[:120],
-                        },
-                    )
-                    # Publish DispatchEvent if available (matching OpenClaw pattern)
-                    if DispatchEvent is not None and hasattr(_pbus, "publish_dispatch"):
-                        _dispatch_event = DispatchEvent(
-                            session_id=child_session_id,
-                            agent_id=canonical_role,
-                            task=subtask_description,
-                            parent_session_id=parent_session_id,
-                        )
-                        _pbus.publish_dispatch(_dispatch_event)
-        except Exception:
-            pass
+        _publish_delegation_start(
+            parent_orchestrator=parent_orchestrator,
+            child_session_id=child_session_id,
+            parent_session_id=parent_session_id,
+            canonical_role=canonical_role,
+            subtask_description=subtask_description,
+        )
 
         try:
             # Propagate incremented depth into the child thread's context so that
@@ -571,84 +711,26 @@ def delegate_task(
                     pass
 
             # SUBAGENT-VIS-2: Persist child session to sessions directory
-            # so the TUI SessionListScreen can display it with parent_session_id.
-            try:
-                _sessions_dir = get_sessions_dir()
-                _sessions_dir.mkdir(parents=True, exist_ok=True)
-                _child_msgs = extract_child_session_messages(final_state)
-                _session_payload = build_subagent_session_payload(
-                    child_session_id=child_session_id,
-                    parent_session_id=parent_session_id,
-                    task_name=subtask_description,
-                    canonical_role=canonical_role,
-                    working_dir=str(workdir_path),
-                    timestamp=_time.time(),
-                    messages=_child_msgs,
-                    ok=True,
-                )
-                _sp = Path(
-                    build_child_session_file_path(str(_sessions_dir), child_session_id)
-                )
-                try:
-                    ok = _atomic_write_json(_sp, _session_payload, logger=logger)
-                    if not ok:
-                        logger.debug(
-                            "delegate_task: failed to write session payload %s", _sp
-                        )
-                except Exception as _e:
-                    import traceback as _traceback
-
-                    logger.debug(
-                        "delegate_task: exception when writing session payload: %s\n%s",
-                        _e,
-                        _traceback.format_exc(),
-                    )
-            except Exception:
-                pass
+            _persist_child_session(
+                final_state=final_state,
+                workdir_path=workdir_path,
+                child_session_id=child_session_id,
+                parent_session_id=parent_session_id,
+                canonical_role=canonical_role,
+                subtask_description=subtask_description,
+                ok=True,
+            )
 
             # SUBAGENT-VIS-1: Notify TUI that subagent finished successfully
             # GAP-NEW-7: also publish subagent cost so parent session can roll it up
-            try:
-                if parent_orchestrator is not None:
-                    _pbus = getattr(parent_orchestrator, "event_bus", None)
-                    if _pbus is not None:
-                        _child_cost = (
-                            float(final_state.get("session_cost_usd") or 0.0)
-                            if final_state
-                            else 0.0
-                        )
-                        _pbus.publish(
-                            "delegation.finish",
-                            {
-                                "child_session_id": child_session_id,
-                                "role": canonical_role,
-                                "ok": True,
-                                "cost_usd": _child_cost,
-                            },
-                        )
-                        # Publish DispatchResultEvent if available (matching OpenClaw pattern)
-                        if DispatchResultEvent is not None and hasattr(
-                            _pbus, "publish_dispatch_result"
-                        ):
-                            _content = select_dispatch_result_content(final_state)
-                            _result_event = DispatchResultEvent(
-                                session_id=child_session_id,
-                                content=_content,
-                                parent_session_id=parent_session_id,
-                            )
-                            _pbus.publish_dispatch_result(_result_event)
-                        # Roll up child cost into parent state via usage.subagent_cost event
-                        if _child_cost > 0:
-                            _pbus.publish(
-                                "usage.subagent_cost",
-                                {
-                                    "child_session_id": child_session_id,
-                                    "role": canonical_role,
-                                    "cost_usd": _child_cost,
-                                },
-                            )
-            except Exception:
-                pass
+            _publish_delegation_finish(
+                parent_orchestrator=parent_orchestrator,
+                child_session_id=child_session_id,
+                parent_session_id=parent_session_id,
+                canonical_role=canonical_role,
+                final_state=final_state,
+                ok=True,
+            )
 
         except Exception as _subagent_err:
             # CP-2: Update manifest to failed
@@ -666,59 +748,27 @@ def delegate_task(
                 except Exception:
                     pass
 
-            # SUBAGENT-VIS-2: Persist failed child session skeleton so it still
-            # appears in SessionListScreen with an error annotation.
-            try:
-                _sessions_dir = get_sessions_dir()
-                _sessions_dir.mkdir(parents=True, exist_ok=True)
-                _session_payload = build_subagent_session_payload(
-                    child_session_id=child_session_id,
-                    parent_session_id=parent_session_id,
-                    task_name=subtask_description,
-                    canonical_role=canonical_role,
-                    working_dir=str(workdir_path),
-                    timestamp=_time.time(),
-                    messages=[],
-                    ok=False,
-                    error=str(_subagent_err),
-                )
-
-                _sp = Path(
-                    build_child_session_file_path(str(_sessions_dir), child_session_id)
-                )
-                try:
-                    ok = _atomic_write_json(_sp, _session_payload, logger=logger)
-                    if not ok:
-                        logger.debug(
-                            "delegate_task: failed to write failed session payload %s",
-                            _sp,
-                        )
-                except Exception as _e:
-                    import traceback as _traceback
-
-                    logger.debug(
-                        "delegate_task: exception when writing failed session payload: %s\n%s",
-                        _e,
-                        _traceback.format_exc(),
-                    )
-            except Exception:
-                pass
+            # SUBAGENT-VIS-2: Persist failed child session skeleton
+            _persist_child_session(
+                final_state=None,
+                workdir_path=workdir_path,
+                child_session_id=child_session_id,
+                parent_session_id=parent_session_id,
+                canonical_role=canonical_role,
+                subtask_description=subtask_description,
+                ok=False,
+                error=str(_subagent_err),
+            )
 
             # SUBAGENT-VIS-1: Notify TUI that subagent failed
-            try:
-                if parent_orchestrator is not None:
-                    _pbus = getattr(parent_orchestrator, "event_bus", None)
-                    if _pbus is not None:
-                        _pbus.publish(
-                            "delegation.finish",
-                            {
-                                "child_session_id": child_session_id,
-                                "role": canonical_role,
-                                "ok": False,
-                            },
-                        )
-            except Exception:
-                pass
+            _publish_delegation_finish(
+                parent_orchestrator=parent_orchestrator,
+                child_session_id=child_session_id,
+                parent_session_id=parent_session_id,
+                canonical_role=canonical_role,
+                final_state=None,
+                ok=False,
+            )
 
             raise _subagent_err
 
@@ -848,3 +898,195 @@ async def delegate_task_async(
                 f"{_DELEGATION_TIMEOUT_SECONDS} seconds. The subagent may be "
                 f"hanging or the task is too complex."
             )
+
+
+# ---------------------------------------------------------------------------
+# P2-8: Async parallel subagent delegation
+# ---------------------------------------------------------------------------
+
+# Maximum number of subtasks that can be run in parallel in one call.
+_PARALLEL_MAX_SUBTASKS: int = 6
+# Per-subtask wall-clock timeout in seconds.
+_PARALLEL_SUBTASK_TIMEOUT: float = 300.0
+
+
+@tool(
+    side_effects=["execute"],
+    tags=["planning", "subagent"],
+    permission_kind=PermissionKind.DELEGATE,
+)
+def delegate_tasks_parallel(
+    subtasks: List[Dict[str, Any]],
+    working_dir: Optional[str] = None,
+    model: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Delegate multiple independent subtasks to subagents and run them in parallel.
+
+    Each subtask is run concurrently in its own isolated subagent.  Results are
+    collected once all subtasks finish (or time out) and returned as a structured
+    summary.
+
+    Use this when you have several *independent* tasks that do not depend on each
+    other's output — for example, running analysis on three separate files at the
+    same time.  If tasks are sequential or share mutable state, use ``delegate_task``
+    instead.
+
+    Args:
+        subtasks:
+            List of subtask dicts.  Each dict must have:
+            - ``role`` (str): Subagent role (e.g. ``"analyst"``, ``"coding"``).
+            - ``subtask_description`` (str): Detailed instructions for the subagent.
+            Optional per-subtask keys:
+            - ``working_dir`` (str): Overrides the top-level ``working_dir``.
+            - ``allowed_tools`` (list[str]): Tool allowlist for this subagent.
+            - ``model`` (str): Model override for this subagent.
+        working_dir:
+            Default working directory applied to all subtasks that don't
+            specify their own ``working_dir``.
+        model:
+            Default model applied to all subtasks that don't specify their
+            own ``model``.
+
+    Returns:
+        Dict with keys:
+        - ``ok`` (bool): True if *all* subtasks succeeded.
+        - ``results`` (list): Per-subtask result dicts containing ``role``,
+          ``subtask_description``, ``ok``, ``output`` (or ``error``).
+        - ``succeeded`` (int): Number of successful subtasks.
+        - ``failed`` (int): Number of failed/timed-out subtasks.
+    """
+    import concurrent.futures
+    import contextvars as _cv
+
+    if not isinstance(subtasks, list) or not subtasks:
+        return {
+            "ok": False,
+            "error": "subtasks must be a non-empty list of dicts.",
+            "results": [],
+            "succeeded": 0,
+            "failed": 0,
+        }
+
+    if len(subtasks) > _PARALLEL_MAX_SUBTASKS:
+        return {
+            "ok": False,
+            "error": (
+                f"Too many subtasks: {len(subtasks)} requested, "
+                f"max is {_PARALLEL_MAX_SUBTASKS}. Split into multiple calls."
+            ),
+            "results": [],
+            "succeeded": 0,
+            "failed": 0,
+        }
+
+    # Validate subtask structure up front
+    validated: List[Dict[str, Any]] = []
+    for i, task in enumerate(subtasks):
+        if not isinstance(task, dict):
+            return {
+                "ok": False,
+                "error": f"subtask[{i}] must be a dict, got {type(task).__name__}.",
+                "results": [],
+                "succeeded": 0,
+                "failed": 0,
+            }
+        role = task.get("role")
+        desc = task.get("subtask_description")
+        if not role or not isinstance(role, str):
+            return {
+                "ok": False,
+                "error": f"subtask[{i}] missing required string key 'role'.",
+                "results": [],
+                "succeeded": 0,
+                "failed": 0,
+            }
+        if not desc or not isinstance(desc, str):
+            return {
+                "ok": False,
+                "error": f"subtask[{i}] missing required string key 'subtask_description'.",
+                "results": [],
+                "succeeded": 0,
+                "failed": 0,
+            }
+        validated.append(
+            {
+                "role": role,
+                "subtask_description": desc,
+                "working_dir": task.get("working_dir") or working_dir,
+                "allowed_tools": task.get("allowed_tools"),
+                "model": task.get("model") or model,
+            }
+        )
+
+    _ctx = _cv.copy_context()
+
+    def _run_one(task: Dict[str, Any]) -> Dict[str, Any]:
+        """Run a single delegate_task call; capture result or error."""
+        try:
+            output = _ctx.run(
+                delegate_task,
+                task["role"],
+                task["subtask_description"],
+                task.get("working_dir"),
+                task.get("allowed_tools"),
+                task.get("model"),
+            )
+            ok = not (isinstance(output, str) and output.startswith("Error:"))
+            return {
+                "role": task["role"],
+                "subtask_description": task["subtask_description"],
+                "ok": ok,
+                "output": output,
+            }
+        except Exception as exc:
+            logger.warning(
+                "delegate_tasks_parallel: subtask %r raised %s: %s",
+                task["subtask_description"][:60],
+                type(exc).__name__,
+                exc,
+            )
+            return {
+                "role": task["role"],
+                "subtask_description": task["subtask_description"],
+                "ok": False,
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+
+    max_workers = min(len(validated), _PARALLEL_MAX_SUBTASKS)
+    results: List[Dict[str, Any]] = []
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {pool.submit(_run_one, task): task for task in validated}
+        for fut in concurrent.futures.as_completed(futures, timeout=_PARALLEL_SUBTASK_TIMEOUT + 10):
+            try:
+                results.append(fut.result(timeout=1))
+            except concurrent.futures.TimeoutError:
+                task = futures[fut]
+                results.append(
+                    {
+                        "role": task["role"],
+                        "subtask_description": task["subtask_description"],
+                        "ok": False,
+                        "error": f"Timed out after {_PARALLEL_SUBTASK_TIMEOUT}s.",
+                    }
+                )
+            except Exception as exc:
+                task = futures[fut]
+                results.append(
+                    {
+                        "role": task["role"],
+                        "subtask_description": task["subtask_description"],
+                        "ok": False,
+                        "error": f"{type(exc).__name__}: {exc}",
+                    }
+                )
+
+    succeeded = sum(1 for r in results if r.get("ok"))
+    failed = len(results) - succeeded
+    return {
+        "ok": failed == 0,
+        "results": results,
+        "succeeded": succeeded,
+        "failed": failed,
+    }

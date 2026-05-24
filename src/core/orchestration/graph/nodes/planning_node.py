@@ -3,7 +3,6 @@ import asyncio
 import json
 import logging
 import re
-import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Mapping, Dict, Any, Optional

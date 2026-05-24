@@ -8,23 +8,12 @@ import uuid
 
 # ruff: noqa: E501
 from pathlib import Path
-from typing import Any, Dict, List, Optional, cast
+from typing import Any, Dict, List, Optional
 
-from src.core.memory.sqlite_store_schema import (
-    fts_creation_script,
-    fts_trigger_statements,
-    schema_creation_script,
-    schema_version_from_row,
-    serialise_snapshot_rows,
-)
 from src.core.memory.sqlite_store_session_ops import (
     copy_missing_snapshot_rows,
     copy_session_rows,
     copy_session_snapshots,
-    delete_rows_after_snapshot,
-    group_snapshot_rows,
-    keep_messages_delete_specs,
-    restore_snapshot_rows,
 )
 from src.core.memory.sqlite_store_sidecar import (
     build_decision_records,

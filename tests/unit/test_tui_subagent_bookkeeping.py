@@ -4,7 +4,7 @@ from unittest.mock import MagicMock
 
 
 def _make_app():
-    from tui.src.ui.app import AgentApp
+    from tui.tui_src.ui.app import AgentApp
 
     app = AgentApp.__new__(AgentApp)
     app._subagent_widgets = {}
@@ -17,8 +17,8 @@ def _make_app():
 
 
 def test_subagent_start_registers_widget_and_updates_status() -> None:
-    from tui.src.ui.app import AgentApp
-    from tui.src.ui.bus import SubagentStartEvent
+    from tui.tui_src.ui.app import AgentApp
+    from tui.tui_src.ui.bus import SubagentStartEvent
 
     app, status = _make_app()
     event = SubagentStartEvent("child-1", "analyst", "inspect auth flow")
@@ -32,9 +32,9 @@ def test_subagent_start_registers_widget_and_updates_status() -> None:
 
 
 def test_subagent_start_reuses_existing_widget_for_same_child() -> None:
-    from tui.src.ui.app import AgentApp
-    from tui.src.ui.bus import SubagentStartEvent
-    from tui.src.ui.components.subagent_progress import SubagentProgress
+    from tui.tui_src.ui.app import AgentApp
+    from tui.tui_src.ui.bus import SubagentStartEvent
+    from tui.tui_src.ui.components.subagent_progress import SubagentProgress
 
     app, status = _make_app()
     existing = SubagentProgress("analyst", "inspect auth flow", "child-1")
@@ -51,8 +51,8 @@ def test_subagent_start_reuses_existing_widget_for_same_child() -> None:
 
 
 def test_subagent_finish_removes_widget_and_marks_complete() -> None:
-    from tui.src.ui.app import AgentApp
-    from tui.src.ui.bus import SubagentFinishEvent
+    from tui.tui_src.ui.app import AgentApp
+    from tui.tui_src.ui.bus import SubagentFinishEvent
 
     app, status = _make_app()
     widget = MagicMock()

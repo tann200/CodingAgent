@@ -1,7 +1,196 @@
 from __future__ import annotations
 
-import logging
-from typing import (
+"""AgentState — shared state of the LangGraph cognitive pipeline.
+
+Overview
+--------
+``AgentState`` (alias ``_AgentStateSpec``) is a flat ``TypedDict`` threaded
+through every node in the LangGraph graph.  All 79 fields are ``total=False``
+(all optional at the TypedDict level); runtime defaults are supplied by node
+initialisation code.
+
+Two fields use LangGraph *annotated reducers* so parallel branches can safely
+append without clobbering each other:
+
+- ``history``       — ``merge_or_replace_list``  (append; use ``ReplaceList``
+                      to replace wholesale, e.g. after compaction)
+- ``verified_reads`` — same reducer
+
+All other fields are last-write-wins: the node that finishes last in a parallel
+fan-out wins.
+
+Node Execution Order (Standard Graph — NANO/SMALL/MEDIUM model tiers)
+----------------------------------------------------------------------
+Defined in ``src/core/orchestration/graph/builder.py:compile_agent_graph()``.
+
+::
+
+    ENTRY
+      └─ perception ──────────────────────────────────────────────────────────
+            │  Reads:  task, history, rounds, turn_count, max_turns,
+            │          current_plan, cancel_event, model_tier, …
+            │  Writes: history, next_action, rounds, model_tier,
+            │          task_complexity, _should_distill, _budget_compaction, …
+            ├─► execution          (tool call path / simple task fast-path)
+            ├─► analysis           (default: context-gathering)
+            ├─► planning           (simple task: bypass analysis)
+            └─► memory_sync        (task already complete)
+
+      └─ analysis ─────────────────────────────────────────────────────────────
+            │  Reads:  task, working_dir, model_tier
+            │  Writes: analysis_summary, relevant_files, key_symbols,
+            │          repo_summary_data, call_graph, test_map
+            ├─► analyst_delegation (complex task)
+            └─► planning           (simple task)
+
+      └─ analyst_delegation ───────────────────────────────────────────────────
+            │  Reads:  task, analysis_summary, relevant_files, working_dir
+            │  Writes: analyst_findings
+            └─► planning
+
+      └─ planning ─────────────────────────────────────────────────────────────
+            │  Reads:  task, history, current_plan, analysis_summary,
+            │          plan_attempts, model_tier
+            │  Writes: current_plan, current_step, task_decomposed, plan_dag,
+            │          execution_waves, plan_attempts, affected_files
+            └─► plan_validator
+
+      └─ plan_validator ───────────────────────────────────────────────────────
+            │  Reads:  current_plan, plan_enforce_warnings, plan_strict_mode
+            │  Writes: plan_validation, action_failed, errors
+            ├─► execution          (plan valid)
+            ├─► planning           (plan invalid → re-plan)
+            └─► wait_for_user      (plan-mode: awaiting approval)
+
+      └─ execution ────────────────────────────────────────────────────────────
+            │  Reads:  task, working_dir, history, next_action, planned_action,
+            │          step_description, tool_call_count, cancel_event, …
+            │  Writes: last_result, last_tool_name, verified_reads, history,
+            │          next_action, tool_call_count, plan_progress,
+            │          replan_required, no_plan_fail_count, snapshots, …
+            ├─► wait_for_user      (preview pending)
+            ├─► step_controller    (plan step done → advance step)
+            ├─► perception         (WR-1 fast-path: read-only round-trip)
+            ├─► memory_sync        (tool budget exhausted)
+            ├─► replan             (replan_required set)
+            └─► analysis           (tool fail → re-analysis)
+
+      └─ wait_for_user ────────────────────────────────────────────────────────
+            │  Reads:  awaiting_plan_approval, current_plan,
+            │          pending_preview_id, awaiting_user_input
+            │  Writes: awaiting_plan_approval, plan_mode_approved,
+            │          preview_confirmed, pending_preview_id
+            ├─► execution          (confirmed / approved)
+            ├─► perception         (preview rejected)
+            └─► planning           (plan rejected → re-plan)
+
+      └─ step_controller ──────────────────────────────────────────────────────
+            │  Reads:  current_plan, current_step, last_result,
+            │          step_retry_counts, model_tier, working_dir
+            │  Writes: step_description, planned_action, step_retry_counts,
+            │          step_lint_warnings, next_action
+            ├─► execution          (execute current step)
+            ├─► verification       (plan exhausted)
+            ├─► planning           (no plan)
+            └─► END                (cancelled / plan empty)
+
+      └─ replan ───────────────────────────────────────────────────────────────
+            │  Reads:  replan_required, current_plan, replan_attempts, task
+            │  Writes: current_plan, current_step, execution_waves,
+            │          replan_required, replan_attempts, history, errors
+            ├─► step_controller    (new plan ready)
+            ├─► perception         (fallback)
+            └─► memory_sync        (recovery cap hit)
+
+      └─ verification ─────────────────────────────────────────────────────────
+            │  Reads:  last_result, current_plan, current_step, model_tier
+            │  Writes: verification_result, verification_passed
+            └─► evaluation
+
+      └─ evaluation ───────────────────────────────────────────────────────────
+            │  Reads:  verification_result, verification_passed, errors,
+            │          debug_attempts, max_debug_attempts
+            │  Writes: evaluation_result, next_action, evaluation_llm_verdict,
+            │          replan_required, action_failed, errors
+            ├─► memory_sync        (complete)
+            ├─► step_controller    (partial completion → next step)
+            ├─► debug              (verification failed)
+            └─► END
+
+      └─ debug ────────────────────────────────────────────────────────────────
+            │  Reads:  debug_attempts, max_debug_attempts, verification_result,
+            │          last_result, task, history, cancel_event
+            │  Writes: next_action, debug_attempts, total_debug_attempts,
+            │          last_debug_error_type, errors
+            ├─► execution          (apply fix)
+            ├─► memory_sync        (give up)
+            └─► END
+
+      └─ memory_sync (memory_update_node) ─────────────────────────────────────
+            │  Reads:  working_dir, history, evaluation_result, task,
+            │          current_plan, session_id, _should_distill, _force_compact
+            │  Writes: _force_compact, errors, analysis_summary, history
+            │          (compacted via ReplaceList)
+            ├─► delegation         (delegations pending)
+            ├─► perception         (loop back for next turn)
+            └─► END
+
+      └─ delegation ───────────────────────────────────────────────────────────
+            │  Reads:  delegations, working_dir, session_id, delegation_depth
+            │  Writes: delegation_results, history
+            └─► END
+
+Frontier / Lite Graphs
+-----------------------
+``_compile_frontier_graph()`` (LARGE/FRONTIER tiers) replaces ``execution``
+with a single ``frontier_loop`` node that handles both planning and tool calls
+in one pass.
+
+``_compile_lite_graph()`` (LITE/v2 mode) is a minimal
+``perception → frontier_loop → memory_sync → END`` pipeline with no
+verification or delegation.
+
+Field Lifecycle Quick Reference
+--------------------------------
+The following fields are written by *multiple* nodes — take care when reading
+them mid-graph:
+
+=========================  ====================================================
+Field                      Written by
+=========================  ====================================================
+``next_action``            perception, execution, debug, step_controller,
+                           evaluation
+``history``                perception, execution, replan, memory_sync,
+                           delegation
+``current_plan``           planning, replan, execution (plan_advance helper)
+``current_step``           planning, replan, execution (plan_advance helper)
+``analysis_summary``       analysis, memory_sync (distilled)
+``relevant_files``         analysis, planning
+``errors``                 perception, plan_validator, execution, replan,
+                           debug, memory_sync
+``model_tier``             perception (only — set once per turn)
+``rounds``                 perception (incremented each turn)
+=========================  ====================================================
+
+Reducer Semantics
+-----------------
+``history`` and ``verified_reads`` both use ``merge_or_replace_list``:
+
+- Normal append: return a plain ``list`` — LangGraph merges it with the
+  existing state by concatenation.
+- Full replacement (e.g. after compaction): return ``replace_state_list(items)``
+  which wraps the list in ``ReplaceList``; the reducer then returns only those
+  items discarding previous history.
+
+See Also
+--------
+- ``src/core/orchestration/graph/builder.py`` — graph compilation & routing
+- ``src/core/orchestration/graph/nodes/`` — individual node implementations
+- ``src/core/orchestration/graph/state.py:validate_state()`` — runtime checks
+"""
+
+import logging  # noqa: E402
+from typing import (  # noqa: E402
     TypedDict,
     List,
     Dict,
@@ -14,7 +203,7 @@ from typing import (
 # Import the authoritative PlanDAG from dag_parser — state.py previously had
 # an incompatible duplicate dataclass definition (different fields) which
 # caused AttributeErrors at runtime when code mixed both.
-from src.core.orchestration.dag_parser import PlanDAG  # noqa: F401
+from src.core.orchestration.dag_parser import PlanDAG  # noqa: F401, E402
 
 _logger = logging.getLogger(__name__)
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 
 def test_settings_store_normalizes_provider_ids_and_matches_type_aliases() -> None:
-    from tui.src.ui.settings import SettingsStore
+    from tui.tui_src.ui.settings import SettingsStore
 
     store = SettingsStore.__new__(SettingsStore)
     store._data = {}
@@ -32,7 +32,7 @@ def test_settings_store_normalizes_provider_ids_and_matches_type_aliases() -> No
 
 
 def test_settings_store_flat_models_include_provider_id() -> None:
-    from tui.src.ui.settings import SettingsStore
+    from tui.tui_src.ui.settings import SettingsStore
 
     store = SettingsStore.__new__(SettingsStore)
     store._data = {}
@@ -55,7 +55,7 @@ def test_settings_store_flat_models_include_provider_id() -> None:
 
 
 def test_palette_provider_menu_uses_normalized_provider_id() -> None:
-    from tui.src.ui.features.palette.logic import get_provider_menu
+    from tui.tui_src.ui.features.palette.logic import get_provider_menu
 
     items = get_provider_menu(
         [{"name": "GitHub Copilot", "type": "github_copilot", "id": "github_copilot"}]

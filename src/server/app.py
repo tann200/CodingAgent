@@ -6,8 +6,9 @@ import logging
 import threading
 from typing import Dict, Optional
 
-import os
 import uvicorn
+
+from src.core.env_shims import getenv_with_compat as _getenv
 from fastapi import FastAPI, HTTPException, Request, WebSocket
 from fastapi.responses import StreamingResponse, Response
 from contextlib import asynccontextmanager
@@ -119,7 +120,7 @@ def _require_admin_auth(request: Request) -> None:
     Accepts Bearer token via Authorization header or X-CodingAgent-Token header.
     If no admin token is configured, the endpoints are open for local usage.
     """
-    admin_token = os.getenv("CODING_AGENT_ADMIN_TOKEN")
+    admin_token = _getenv("CODINGAGENT_ADMIN_TOKEN", "CODING_AGENT_ADMIN_TOKEN")
     if not admin_token:
         return
     inc_admin_auth_counter("attempts")
@@ -189,7 +190,7 @@ async def metrics_endpoint(request: Request):
     counters are thread-safe via a lock.
     """
     # Allow optional basic auth via environment variable (single username:password)
-    auth = os.getenv("CODING_AGENT_METRICS_AUTH")
+    auth = _getenv("CODINGAGENT_METRICS_AUTH", "CODING_AGENT_METRICS_AUTH")
     if auth:
         if not metrics_basic_auth_valid(request.headers, auth):
             return Response(status_code=401, content="Unauthorized")

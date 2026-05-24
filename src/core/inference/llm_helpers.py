@@ -1,16 +1,17 @@
 import asyncio
 import logging
-import os
 from typing import Any, Mapping
 
 from src.core.inference.llm_manager import call_model
+from src.core.env_shims import getenv_with_compat as _getenv
 
 logger = logging.getLogger(__name__)
 
 # G12: opt-in token streaming via env var.
-# When true, perception_node and inference_loop fallback pass stream=True
-# so _consume_sse_stream publishes llm.token events per chunk.
-_STREAMING_ENABLED: bool = os.getenv("CODING_AGENT_STREAM_TOKENS", "").lower() in ("1", "true", "yes")
+# CODINGAGENT_STREAM_TOKENS is the canonical name; CODING_AGENT_STREAM_TOKENS is legacy.
+_STREAMING_ENABLED: bool = (
+    _getenv("CODINGAGENT_STREAM_TOKENS", "CODING_AGENT_STREAM_TOKENS", "") or ""
+).lower() in ("1", "true", "yes")
 
 
 async def _await_llm_task(

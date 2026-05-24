@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from tui.src.ui.components.inline_tool import (
+from tui.tui_src.ui.components.inline_tool import (
     FALLBACK_RENDER,
     TOOL_RENDER_MAP,
     ToolRender,

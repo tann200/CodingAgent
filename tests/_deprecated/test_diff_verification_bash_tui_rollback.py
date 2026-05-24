@@ -419,7 +419,7 @@ class TestTUIEventBusSubscriptionCleanupOnUnmount:
 
     def test_eb_subscriptions_list_initialised(self):
         """_subscriptions must be an empty list before setup_subscriptions() is called."""
-        from tui.src.ui.core_bridge import AgentBridge
+        from tui.tui_src.ui.core_bridge import AgentBridge
 
         bridge = AgentBridge.__new__(AgentBridge)
         bridge._subscriptions = []
@@ -626,7 +626,7 @@ class TestOrchestratorContinueStateSerializationAndRestore:
 
         for mod_path in (
             "src.core.orchestration.orchestrator",
-            "tui.src.ui.core_bridge",
+            "tui.tui_src.ui.core_bridge",
         ):
             try:
                 mod = importlib.import_module(mod_path)
@@ -679,13 +679,13 @@ class TestChatInputSlashCommandTabAutocomplete:
 
     def test_slash_commands_list_exists(self):
         """SLASH_COMMANDS must be defined in the tui chat_input module."""
-        from tui.src.ui.components.chat_input import SLASH_COMMANDS
+        from tui.tui_src.ui.components.chat_input import SLASH_COMMANDS
 
         assert len(SLASH_COMMANDS) > 0, "SLASH_COMMANDS list must be non-empty"
 
     def test_slash_commands_has_required_entries(self):
         """The command palette must include the essential commands."""
-        from tui.src.ui.components.chat_input import SLASH_COMMANDS
+        from tui.tui_src.ui.components.chat_input import SLASH_COMMANDS
 
         for cmd in ("/help", "/clear", "/continue", "/settings"):
             assert cmd in SLASH_COMMANDS, f"SLASH_COMMANDS must include {cmd}"

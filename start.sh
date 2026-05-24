@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# DEPRECATED: use `scripts/run.sh` or `uv run codingagent` instead.
 # start.sh - startup script for CodingAgent
 # Updated behavior:
 # - Prefer python3.11 when creating venv

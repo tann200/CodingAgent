@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pytest
 
-from tui.src.ui.components.bash_block import BashBlock, MAX_VISIBLE_LINES
+from tui.tui_src.ui.components.bash_block import BashBlock, MAX_VISIBLE_LINES
 
 
 # ---------------------------------------------------------------------------

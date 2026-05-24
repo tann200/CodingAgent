@@ -130,4 +130,19 @@ def preflight_check_impl(orch: Any, tool_call: Dict[str, Any]) -> Dict[str, Any]
         except Exception as e:
             return {"ok": False, "error": f"Invalid path: {e}"}
 
+    # P1-4: Validate LLM-supplied arguments against the tool's JSON Schema.
+    # This catches missing required fields and wrong types before execution,
+    # providing an early structured error the LLM can self-correct from.
+    _tool_meta = tool.get("__tool_meta__")
+    if _tool_meta is not None and hasattr(_tool_meta, "validate_args"):
+        _arg_errors = _tool_meta.validate_args(args)
+        if _arg_errors:
+            return {
+                "ok": False,
+                "error": "argument_validation_failed",
+                "message": f"Argument validation failed for '{name}': "
+                + "; ".join(_arg_errors),
+                "details": _arg_errors,
+            }
+
     return {"ok": True}

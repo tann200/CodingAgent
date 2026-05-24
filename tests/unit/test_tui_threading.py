@@ -20,8 +20,8 @@ from unittest.mock import MagicMock
 
 def _make_bridge():
     """Build an AgentBridge with a mocked orchestrator (no real LLM calls)."""
-    from tui.src.ui.mock_eventbus import get_mock_event_bus, reset_mock_event_bus
-    from tui.src.ui.core_bridge import AgentBridge
+    from tui.tui_src.ui.mock_eventbus import get_mock_event_bus, reset_mock_event_bus
+    from tui.tui_src.ui.core_bridge import AgentBridge
 
     reset_mock_event_bus()
     bus = get_mock_event_bus()

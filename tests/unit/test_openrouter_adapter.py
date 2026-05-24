@@ -479,7 +479,7 @@ class TestSettingsPanelApiKey:
     """
 
     def test_save_provider_credentials_persists_api_key(self, tmp_path):
-        from tui.src.ui import config_writer
+        from tui.tui_src.ui import config_writer
 
         with patch.object(config_writer, "CONFIG_PATH", tmp_path / "providers.json"):
             config_writer.save_provider_credentials("openrouter", "sk-test-key")
@@ -487,14 +487,14 @@ class TestSettingsPanelApiKey:
         assert data.get("api_key") == "sk-test-key"
 
     def test_load_provider_credentials_returns_empty_when_missing(self, tmp_path):
-        from tui.src.ui import config_writer
+        from tui.tui_src.ui import config_writer
 
         with patch.object(config_writer, "CONFIG_PATH", tmp_path / "providers.json"):
             data = config_writer.load_provider_credentials("nonexistent")
         assert data == {}
 
     def test_save_provider_credentials_stores_base_url(self, tmp_path):
-        from tui.src.ui import config_writer
+        from tui.tui_src.ui import config_writer
 
         with patch.object(config_writer, "CONFIG_PATH", tmp_path / "providers.json"):
             config_writer.save_provider_credentials(
@@ -504,7 +504,7 @@ class TestSettingsPanelApiKey:
         assert data.get("base_url") == "https://example.com"
 
     def test_empty_api_key_not_stored(self, tmp_path):
-        from tui.src.ui import config_writer
+        from tui.tui_src.ui import config_writer
 
         with patch.object(config_writer, "CONFIG_PATH", tmp_path / "providers.json"):
             config_writer.save_provider_credentials("openrouter", "")
@@ -520,7 +520,7 @@ class TestSettingsModalApiKeyUI:
 
     def _src(self):
         import inspect
-        from tui.src.ui.features.settings.screen import ProviderConfigScreen
+        from tui.tui_src.ui.features.settings.screen import ProviderConfigScreen
 
         return inspect.getsource(ProviderConfigScreen)
 

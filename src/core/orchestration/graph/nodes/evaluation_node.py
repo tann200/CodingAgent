@@ -6,6 +6,7 @@ import threading
 from typing import Dict, Any
 
 from src.core.orchestration.graph.state import StateLike
+from src.core.orchestration.graph.nodes.node_utils import span_node as _span_node
 
 logger = logging.getLogger(__name__)
 
@@ -16,6 +17,12 @@ def _failed(r: dict) -> bool:
 
 
 async def evaluation_node(state: StateLike, config: RunnableConfig) -> Dict[str, Any]:
+    """Thin OTel-span wrapper — delegates to _evaluation_node_impl."""
+    with _span_node("evaluation", {"rounds": state.get("rounds", 0)}):
+        return await _evaluation_node_impl(state, config)
+
+
+async def _evaluation_node_impl(state: StateLike, config: RunnableConfig) -> Dict[str, Any]:
     """
     Evaluation Node: Post-verification review to decide if task goal is fully met.
     Reviews overall state including verification results, plan completion, and errors.

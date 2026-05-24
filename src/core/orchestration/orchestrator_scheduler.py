@@ -20,8 +20,8 @@ def _init_scheduler(orch: Any) -> None:
 
         from src.core.scheduler import worker as _sched
 
-        _hb = int(_os.getenv("CODING_AGENT_SCHEDULER_HEARTBEAT", "60") or 60)
-        _dist_int = int(_os.getenv("CODING_AGENT_DISTILL_INTERVAL", "600") or 600)
+        _hb = int(_os.getenv("CODINGAGENT_SCHEDULER_HEARTBEAT") or _os.getenv("CODING_AGENT_SCHEDULER_HEARTBEAT", "60") or 60)
+        _dist_int = int(_os.getenv("CODINGAGENT_DISTILL_INTERVAL") or _os.getenv("CODING_AGENT_DISTILL_INTERVAL", "600") or 600)
 
         def _publish_distill_request() -> None:
             try:
