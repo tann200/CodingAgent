@@ -50,7 +50,12 @@ def _get_st_model() -> Any:
         logger.info("VectorStore: sentence-transformers loaded (all-MiniLM-L6-v2)")
     except Exception as exc:
         _ST_AVAILABLE = False
-        logger.debug("VectorStore: sentence-transformers unavailable (%s), using SHA-256 stub", exc)
+        logger.warning(
+            "VectorStore: sentence-transformers unavailable (%s) — "
+            "falling back to SHA-256 stub. Semantic search is DISABLED. "
+            "Install sentence-transformers for meaningful retrieval.",
+            exc,
+        )
     return _ST_MODEL
 
 try:

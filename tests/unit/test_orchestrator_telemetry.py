@@ -33,48 +33,58 @@ def test_orchestrator_emits_startup_and_model_events(monkeypatch, tmp_path):
     monkeypatch.setattr(_LM, "get_models_from_api", fake_get_models)
 
     # Reset provider manager and set providers path
+    _orig_providers = dict(_provider_manager._providers)
+    _orig_initialized = _provider_manager._initialized
+    _orig_config_path = _provider_manager.providers_config_path
+    _orig_models_cache = dict(_provider_manager._models_cache)
     _provider_manager._initialized = False
     _provider_manager._providers = {}
     _provider_manager._models_cache = {}
     _provider_manager.providers_config_path = str(cfg)
 
-    # subscribe to events
-    eb = EventBus()
-    events = []
+    try:
+        # subscribe to events
+        eb = EventBus()
+        events = []
 
-    def on_start(payload):
-        events.append(("startup", payload))
+        def on_start(payload):
+            events.append(("startup", payload))
 
-    def on_cached(payload):
-        events.append(("cached", payload))
+        def on_cached(payload):
+            events.append(("cached", payload))
 
-    def on_completed(payload):
-        events.append(("completed", payload))
+        def on_completed(payload):
+            events.append(("completed", payload))
 
-    eb.subscribe("orchestrator.startup", on_start)
-    eb.subscribe("provider.models.cached", on_cached)
-    eb.subscribe("provider.models.probing.completed", on_completed)
+        eb.subscribe("orchestrator.startup", on_start)
+        eb.subscribe("provider.models.cached", on_cached)
+        eb.subscribe("provider.models.probing.completed", on_completed)
 
-    # Set event bus on provider manager before orchestrator initializes
-    _provider_manager.set_event_bus(eb)
+        # Set event bus on provider manager before orchestrator initializes
+        _provider_manager.set_event_bus(eb)
 
-    # Import and create orchestrator (this will trigger non-blocking background probe)
-    from src.core.orchestration.orchestrator import Orchestrator
+        # Import and create orchestrator (this will trigger non-blocking background probe)
+        from src.core.orchestration.orchestrator import Orchestrator
 
-    _orch = Orchestrator()
+        _orch = Orchestrator()
 
-    # wait briefly for background probe to run
-    time.sleep(1)
+        # wait briefly for background probe to run
+        time.sleep(1)
 
-    # assert startup event was published
-    assert any(e[0] == "startup" for e in events), (
-        f"Missing startup event, events: {events}"
-    )
+        # assert startup event was published
+        assert any(e[0] == "startup" for e in events), (
+            f"Missing startup event, events: {events}"
+        )
 
-    # assert background probe cached models event occurred
-    assert any(e[0] == "cached" for e in events) or any(
-        e[0] == "completed" for e in events
-    ), f"Missing cached/completed events, events: {events}"
+        # assert background probe cached models event occurred
+        assert any(e[0] == "cached" for e in events) or any(
+            e[0] == "completed" for e in events
+        ), f"Missing cached/completed events, events: {events}"
 
-    # ensure adapter probe was called
-    pass  # the orchestrator mock satisfies the core logic
+        # ensure adapter probe was called
+        pass  # the orchestrator mock satisfies the core logic
+    finally:
+        _provider_manager._providers = _orig_providers
+        _provider_manager._initialized = _orig_initialized
+        _provider_manager.providers_config_path = _orig_config_path
+        _provider_manager._models_cache = _orig_models_cache

@@ -88,9 +88,17 @@ def providers_config(tmp_path_factory):
     providers_path.write_text(json.dumps(providers), encoding="utf-8")
 
     # Ensure the project's provider manager uses this path
+    _orig_config_path = None
+    _orig_initialized = None
+    _orig_providers = None
+    _orig_models_cache = None
     try:
         import src.core.inference.llm_manager as lm
 
+        _orig_config_path = lm._provider_manager.providers_config_path
+        _orig_initialized = lm._provider_manager._initialized
+        _orig_providers = dict(lm._provider_manager._providers)
+        _orig_models_cache = dict(lm._provider_manager._models_cache)
         lm._provider_manager.providers_config_path = str(providers_path)
         # reset initialized state so tests get a fresh load
         lm._provider_manager._initialized = False
@@ -100,3 +108,18 @@ def providers_config(tmp_path_factory):
         pass
 
     yield str(providers_path)
+
+    # Restore provider manager state so subsequent test files are not affected
+    try:
+        import src.core.inference.llm_manager as lm
+
+        if _orig_config_path is not None:
+            lm._provider_manager.providers_config_path = _orig_config_path
+        if _orig_initialized is not None:
+            lm._provider_manager._initialized = _orig_initialized
+        if _orig_providers is not None:
+            lm._provider_manager._providers = _orig_providers
+        if _orig_models_cache is not None:
+            lm._provider_manager._models_cache = _orig_models_cache
+    except Exception:
+        pass

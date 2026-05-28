@@ -85,6 +85,18 @@ try:
 except ImportError:
     pass
 
+
+def get_agent_brain_manager() -> Any:
+    """Public wrapper around the lazily-imported ``get_agent_brain_manager``.
+
+    Exposes a stable module-level name so tests can monkeypatch
+    ``src.tools.subagent_tools.get_agent_brain_manager`` without patching
+    the private ``_get_agent_brain_manager`` variable directly.
+    """
+    if _get_agent_brain_manager is None:
+        raise RuntimeError("AgentBrainManager is not available (src.core not importable)")
+    return _get_agent_brain_manager()
+
 try:
     from src.core.orchestration.role_config import (
         normalize_role,
@@ -273,9 +285,7 @@ def _resolve_delegate_setup(
     effective_allowed, effective_denied)``.
     """
     canonical_role = canonicalize_subagent_role(role)
-    if _get_agent_brain_manager is None:
-        raise RuntimeError("AgentBrainManager is not available (src.core not importable)")
-    brain = _get_agent_brain_manager()
+    brain = get_agent_brain_manager()
     system_prompt = brain.compile_system_prompt(canonical_role)
 
     # SPAWN-W2: Resolve allowed_tools from explicit param or AgentDefinition registry.

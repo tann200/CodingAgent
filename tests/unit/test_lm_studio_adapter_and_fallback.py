@@ -4,7 +4,7 @@ from unittest.mock import patch
 import asyncio
 
 from src.core.inference.adapters.lm_studio_adapter import LmStudioAdapter
-from src.core.inference.llm_manager import call_model, get_provider_manager
+from src.core.inference.llm_manager import call_model, get_provider_manager, get_circuit_breaker
 import src.core.inference.llm_manager as _llm_manager_mod
 
 
@@ -100,6 +100,26 @@ def test_llm_manager_fallback(monkeypatch):
     try:
         pm._providers["lm_studio"] = MockAdapter()
         pm._initialized = True
+
+        # Prevent any re-initialization from overwriting the mock state.
+        # If a previous test left _initialized=False, get_available_models would
+        # call pm.initialize() and reload from disk, losing the MockAdapter.
+        async def _noop_initialize():
+            pass
+        monkeypatch.setattr(pm, "initialize", _noop_initialize)
+
+        # Disable cross-provider fallback so only model-level fallback within
+        # lm_studio is exercised — prevents interference from other providers.
+        monkeypatch.setenv("LLM_PROVIDER_FALLBACK_ENABLED", "0")
+
+        # Reset circuit breaker for lm_studio so a previous test's failure
+        # count does not cause fast-fail before the MockAdapter is even called.
+        cb = get_circuit_breaker("lm_studio")
+        with cb._lock:
+            cb._state = cb.CLOSED
+            cb._failure_count = 0
+            cb._opened_at = 0.0
+            cb._probe_in_flight = False
         # Clear module-level model cache AFTER installing the mock so the adapter
         # probe in _get_models_for_provider_key discovers the MockAdapter's models.
         # This prevents cross-test contamination from a cached empty list (ET-4 fix).

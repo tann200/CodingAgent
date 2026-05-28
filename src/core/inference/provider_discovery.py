@@ -134,9 +134,7 @@ def get_models_for_provider_key(
         models = get_models_from_provider_adapter_fn(
             manager=manager,
             provider_key=provider_key,
-            extract_models_from_api_response=lambda response: extract_models_from_api_response(
-                response, valid_str=valid_str  # type: ignore[call-arg]
-            ),
+            extract_models_from_api_response=extract_models_from_api_response,
             normalize_lmstudio_models=normalize_lmstudio_models,
         )
         if models:

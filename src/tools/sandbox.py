@@ -50,6 +50,13 @@ _BWRAP_PATH: Optional[str] = shutil.which("bwrap")
 # Default sandbox level — override via env var or config
 _DEFAULT_LEVEL: str = os.environ.get("CODINGAGENT_SANDBOX_LEVEL", "workspace")
 
+# Hard-stop mode: when set to "1" or "true", refuse to run any command that
+# would fall back to unsandboxed execution instead of silently proceeding.
+# Set SANDBOX_REQUIRE_ENFORCEMENT=1 for autonomous / CI use.
+_REQUIRE_ENFORCEMENT: bool = os.environ.get(
+    "SANDBOX_REQUIRE_ENFORCEMENT", ""
+).strip().lower() in ("1", "true", "yes")
+
 # ---------------------------------------------------------------------------
 # sandbox-exec detection (macOS)
 # ---------------------------------------------------------------------------
@@ -396,6 +403,14 @@ def run_sandboxed(
             logger.debug(
                 "sandbox: sandbox-exec not enforcing on this host — skipping"
             )
+            if _REQUIRE_ENFORCEMENT:
+                raise RuntimeError(
+                    "sandbox: sandbox-exec is present but NOT enforcing restrictions "
+                    "on this host (Apple Silicon / modern macOS deprecation). "
+                    "Refusing to run unsandboxed command because "
+                    "SANDBOX_REQUIRE_ENFORCEMENT=1. "
+                    "Install bwrap or set CODINGAGENT_SANDBOX_LEVEL=off to opt out."
+                )
         else:
             try:
                 profile_path = _write_sandbox_exc_profile(cwd, level)
@@ -433,7 +448,7 @@ def run_sandboxed(
                 )
                 # fall through
 
-    # 4. Final fallback — plain subprocess with warning
+    # 4. Final fallback — plain subprocess with warning (or hard-stop)
     if level != "off":
         import sys as _sys
 
@@ -441,6 +456,13 @@ def run_sandboxed(
             "WARNING: sandbox: bwrap and sandbox-exec are unavailable — "
             "running command WITHOUT sandboxing. Set SANDBOX_LEVEL=off to suppress.\n"
         )
+        if _REQUIRE_ENFORCEMENT:
+            raise RuntimeError(
+                "sandbox: no sandbox backend is available or enforcing. "
+                "Refusing to run unsandboxed command because "
+                "SANDBOX_REQUIRE_ENFORCEMENT=1. "
+                "Install bwrap or set CODINGAGENT_SANDBOX_LEVEL=off to opt out."
+            )
         _sys.stderr.write(_warn)
         logger.warning(
             "sandbox: bwrap and sandbox-exec unavailable — falling back to unsandboxed execution"

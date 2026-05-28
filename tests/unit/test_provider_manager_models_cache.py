@@ -36,24 +36,37 @@ def test_provider_manager_probes_models_once(monkeypatch, tmp_path):
     monkeypatch.setattr(_LM, "get_models_from_api", _fake_get_models)
 
     # Reset provider manager singleton
+    _orig_providers = dict(lm._provider_manager._providers)
+    _orig_initialized = lm._provider_manager._initialized
+    _orig_config_path = lm._provider_manager.providers_config_path
+    _orig_models_cache = dict(lm._provider_manager._models_cache)
     lm._provider_manager._initialized = False
     lm._provider_manager._providers = {}
     lm._provider_manager._models_cache = {}
 
-    # Initialize with custom providers path
-    lm._provider_manager.providers_config_path = str(cfg)
-    # Run initialize (sync shim)
-    lm._ensure_provider_manager_initialized_sync()
+    try:
+        # Initialize with custom providers path
+        lm._provider_manager.providers_config_path = str(cfg)
+        # Run initialize (sync shim)
+        lm._ensure_provider_manager_initialized_sync()
 
-    # Assert LMStudioAdapter.get_models_from_api was called exactly once
-    assert calls["n"] == 1
+        # Assert LMStudioAdapter.get_models_from_api was called exactly once
+        assert calls["n"] == 1
 
-    # Cached models should include the model id
-    cached = lm._provider_manager.get_cached_models("lm_studio")
-    assert "qwen/qwen3.5-9b" in cached
+        # Cached models should include the model id
+        cached = lm._provider_manager.get_cached_models("lm_studio")
+        assert "qwen/qwen3.5-9b" in cached
 
-    # Calling get_available_models should return the cached models and not call adapter again
-    models_first = asyncio.run(lm.get_available_models("", "", "lm_studio"))
-    models_second = asyncio.run(lm.get_available_models("", "", "lm_studio"))
-    assert models_first == models_second
-    assert "qwen/qwen3.5-9b" in models_first
+        # Calling get_available_models should return the cached models and not call adapter again
+        models_first = asyncio.run(lm.get_available_models("", "", "lm_studio"))
+        models_second = asyncio.run(lm.get_available_models("", "", "lm_studio"))
+        assert models_first == models_second
+        assert "qwen/qwen3.5-9b" in models_first
+    finally:
+        lm._provider_manager._providers = _orig_providers
+        lm._provider_manager._initialized = _orig_initialized
+        lm._provider_manager.providers_config_path = _orig_config_path
+        lm._provider_manager._models_cache = _orig_models_cache
+        with lm._MODEL_CACHE_LOCK:
+            lm._MODEL_CACHE.pop("lm_studio", None)
+            lm._MODEL_CACHE_TIME.pop("lm_studio", None)
