@@ -116,11 +116,20 @@ def log_wave_execution_start(
     current_wave: int,
     logger: Any,
 ) -> None:
-    """Log the current wave size when execution is operating in wave mode."""
+    """Log the current wave size when execution is operating in wave mode.
+
+    P3-5 / OE-3 NOTE: DAG waves are tracked for advancement detection but
+    execution is **sequential** (one tool call per execution_node invocation).
+    True parallel wave execution would require asyncio.gather across multiple
+    simultaneous invocations or LangGraph Send() branches — a high-complexity
+    change deferred to a future phase.  The wave infrastructure is still
+    valuable: it groups steps logically, enables wave-level progress tracking,
+    and provides a clear upgrade path to parallelism.
+    """
     if execution_waves and current_wave < len(execution_waves):
         wave_steps = execution_waves[current_wave]
         logger.info(
-            "Wave execution: wave %d/%d with %d steps",
+            "Wave execution: wave %d/%d with %d steps (sequential)",
             current_wave + 1,
             len(execution_waves),
             len(wave_steps),

@@ -79,10 +79,14 @@ def _hydrate_repo_context_from_index(
 
     planning_node already benefits from analysis_node output when available.
     This fallback only fills gaps when planning starts with weak repo context.
+
+    P3-2: After token-based symbol lookup, augment with semantic vector search
+    when the VectorStore has an index.  This enables repo-aware planning even
+    for tasks whose keywords don't literally appear in symbol names.
     """
     try:
         from src.core.indexing.repo_indexer import get_symbols_for_task as _gst
-        return hydrate_repo_context_from_index(
+        files, symbols, repo_syms = hydrate_repo_context_from_index(
             working_dir=working_dir,
             task=task,
             relevant_files=relevant_files,
@@ -94,7 +98,36 @@ def _hydrate_repo_context_from_index(
         logger.debug(
             "planning_node: repo-context hydration failed (non-critical): %s", exc
         )
-        return list(relevant_files), list(key_symbols), []
+        files, symbols, repo_syms = list(relevant_files), list(key_symbols), []
+
+    # P3-2: Semantic enrichment via VectorStore (best-effort, never blocks planning).
+    try:
+        from src.core.indexing.vector_store import VectorStore as _VS
+        _vs = _VS(workdir=working_dir)
+        _semantic_hits = _vs.search(task, limit=5)
+        if _semantic_hits:
+            _seen_files: set[str] = set(files)
+            _seen_syms: set[str] = set(symbols)
+            for _hit in _semantic_hits:
+                _fp = _hit.get("file_path") or _hit.get("path") or ""
+                _nm = _hit.get("name") or _hit.get("symbol_name") or ""
+                if _fp and _fp not in _seen_files:
+                    files.append(_fp)
+                    _seen_files.add(_fp)
+                if _nm and _nm not in _seen_syms:
+                    symbols.append(_nm)
+                    _seen_syms.add(_nm)
+                # Add to repo_syms if not already present by name
+                if _nm and not any(r.get("name") == _nm for r in repo_syms):
+                    repo_syms.append(_hit)
+            logger.debug(
+                "planning_node: semantic search added %d hits to repo context",
+                len(_semantic_hits),
+            )
+    except Exception as _se:
+        logger.debug("planning_node: semantic vector search skipped: %s", _se)
+
+    return files, symbols, repo_syms
 
 
 def _get_last_plan_path(workdir: str) -> Path:
@@ -234,9 +267,17 @@ def _build_resolved_plan_result(
     key_symbols: list[str],
     affected_files: list,
     execution_waves: Any,
+    prior_plan: list | None = None,
+    plan_history: list | None = None,
+    plan_history_reason: str = "new_plan",
 ) -> dict:
-    """Compatibility wrapper around resolved plan payload assembly."""
-    return _build_resolved_plan_result_impl(
+    """Compatibility wrapper around resolved plan payload assembly.
+
+    P3-4: When *prior_plan* is provided and non-empty, snapshot it into
+    *plan_history* before returning the new plan so post-hoc failure analysis
+    can reconstruct the sequence of planning decisions.
+    """
+    result = _build_resolved_plan_result_impl(
         current_plan=current_plan,
         current_step=current_step,
         plan_attempts=plan_attempts,
@@ -245,6 +286,21 @@ def _build_resolved_plan_result(
         affected_files=affected_files,
         execution_waves=execution_waves,
     )
+    # P3-4: Append prior plan to history when plan changes.
+    if prior_plan:
+        from datetime import datetime as _dt
+        _entry = {
+            "timestamp": _dt.utcnow().isoformat() + "Z",
+            "plan": list(prior_plan),
+            "reason": plan_history_reason,
+        }
+        _history: list = list(plan_history) if plan_history else []
+        # Cap at 10 versions to avoid unbounded growth.
+        _history.append(_entry)
+        if len(_history) > 10:
+            _history = _history[-10:]
+        result["plan_history"] = _history
+    return result
 
 
 async def planning_node(state: StateLike, config: RunnableConfig) -> Dict[str, Any]:
@@ -633,6 +689,9 @@ async def _planning_node_impl(state: Mapping[str, Any], config: RunnableConfig) 
                 key_symbols=key_symbols,
                 affected_files=_extract_affected_files(steps),
                 execution_waves=waves,
+                prior_plan=list(current_plan) if current_plan else None,
+                plan_history=list(s.get("plan_history") or []),
+                plan_history_reason="llm_generated",
             )
     except Exception as e:
         logger.error(f"planning_node: plan generation failed: {e}")
@@ -655,6 +714,9 @@ async def _planning_node_impl(state: Mapping[str, Any], config: RunnableConfig) 
             key_symbols=key_symbols,
             affected_files=_extract_affected_files(fallback_plan),
             execution_waves=waves,
+            prior_plan=list(current_plan) if current_plan else None,
+            plan_history=list(s.get("plan_history") or []),
+            plan_history_reason="fallback_parse_failed",
         )
 
     from src.core.orchestration.dag_parser import _convert_flat_to_dag

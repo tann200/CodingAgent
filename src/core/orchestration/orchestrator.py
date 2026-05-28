@@ -138,6 +138,15 @@ class Orchestrator:
         # P2-T5: register stderr fallback for safety events so they are always
         # visible in headless/CLI mode (sandbox degradation, doom-loop detection).
         subscribe_stderr_fallback(self.event_bus)
+        # P3-3: Wire OtelExporter to the EventBus when OTEL_EXPORTER_OTLP_ENDPOINT
+        # is set.  This is a no-op when the env var is absent or when the optional
+        # opentelemetry packages are not installed.
+        try:
+            from src.core.observability.otel_exporter import OtelExporter as _OtelExporter
+            _otel = _OtelExporter()
+            _otel.subscribe(self.event_bus)
+        except Exception:
+            pass
         # Set working_dir and _allow_external now so bootstrap can use them
         self.working_dir = Path(working_dir) if working_dir else None
         self._allow_external = allow_external_working_dir  # boolified in bootstrap

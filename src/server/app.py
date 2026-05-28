@@ -180,8 +180,36 @@ async def session_events(session_id: str, request: Request):
 
 @app.get("/health")
 async def health_check():
-    """Health check endpoint."""
-    return {"status": "healthy"}
+    """Health check endpoint.
+
+    Returns the service status plus capability flags so operators can
+    immediately see which optional features are active without reading source.
+    """
+    # P3-1: Report semantic search mode so operators know if sentence-transformers
+    # is installed and real embedding-based search is active.
+    _semantic_search_available = False
+    try:
+        import sentence_transformers  # noqa: F401
+        _semantic_search_available = True
+    except ImportError:
+        pass
+
+    # P3-3: Report OTel export status.
+    import os as _os
+    _otel_enabled = bool(_os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT", ""))
+
+    return {
+        "status": "healthy",
+        "capabilities": {
+            "semantic_search": _semantic_search_available,
+            "semantic_search_note": (
+                "real embedding-based search active"
+                if _semantic_search_available
+                else "SHA-256 stub active — install sentence-transformers for real semantic search: pip install codingagent[semantic]"
+            ),
+            "otel_export": _otel_enabled,
+        },
+    }
 
 
 @app.get("/metrics")

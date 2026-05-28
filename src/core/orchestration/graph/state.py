@@ -308,6 +308,10 @@ class _AgentStateSpec(TypedDict, total=False):
     task_complexity: str | None
     step_retry_counts: Dict[str, int] | None
     no_plan_fail_count: int | None
+    # P3-4: Plan versioning — list of previous plan snapshots with timestamps.
+    # Populated by planning_node each time current_plan is overwritten.
+    # Each entry: {"timestamp": ISO8601, "plan": [...], "reason": str}
+    plan_history: List[Dict[str, Any]] | None
     step_lint_warnings: List[str] | None
     affected_files: List[str] | None
 

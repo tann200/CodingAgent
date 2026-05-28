@@ -370,7 +370,7 @@ def test_log_wave_execution_start_logs_current_wave_size():
         logger=logger,
     )
 
-    assert logged == ["Wave execution: wave %d/%d with %d steps"]
+    assert logged == ["Wave execution: wave %d/%d with %d steps (sequential)"]
 
 
 def test_log_plan_and_wave_advancement_logs_progress_and_completion():
