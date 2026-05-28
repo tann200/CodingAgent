@@ -15,6 +15,18 @@ Example::
 
 from __future__ import annotations
 
+import os
+
+# ---------------------------------------------------------------------------
+# P2-2: Strict allowlist mode — BASH_STRICT_ALLOWLIST=1
+# When enabled, only commands in SAFE_COMMANDS are auto-allowed.
+# TEST_COMPILE_COMMANDS (compilers, test runners) are also blocked, giving a
+# read-only-inspection-only shell for maximum safety during autonomous runs.
+# Set BASH_STRICT_ALLOWLIST=1 (or "true" / "yes") in the environment to enable.
+# ---------------------------------------------------------------------------
+_STRICT_ALLOWLIST_ENV = os.environ.get("BASH_STRICT_ALLOWLIST", "0").strip().lower()
+BASH_STRICT_ALLOWLIST: bool = _STRICT_ALLOWLIST_ENV in ("1", "true", "yes")
+
 # ---------------------------------------------------------------------------
 # Tier 0 — Always-blocked shell constructs and destructive patterns
 # Checked on whitespace-normalised, lower-cased command text so

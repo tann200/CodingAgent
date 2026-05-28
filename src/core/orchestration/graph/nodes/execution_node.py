@@ -59,6 +59,7 @@ from src.core.orchestration.event_bus import run_with_correlation
 from src.core.orchestration.graph.nodes.tool_output_truncation import (
     TOOL_LARGE_TEXT_FIELDS,
     TOOL_OUTPUT_MAX_BYTES,
+    detect_prompt_injection,
     truncate_tool_output,
 )
 
@@ -108,6 +109,8 @@ _TOOL_LARGE_TEXT_FIELDS = TOOL_LARGE_TEXT_FIELDS
 
 def _truncate_tool_output(res: dict) -> dict:
     """OP-9: Cap any large text fields in a tool result before it enters history."""
+    # P2-7: Scan for prompt injection patterns before context injection.
+    res = detect_prompt_injection(res, logger=logger)
     return truncate_tool_output(res, marker_label="OP-9", logger=logger)
 
 

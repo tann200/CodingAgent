@@ -39,7 +39,11 @@ from src.core.orchestration.graph.nodes.node_utils import span_node as _span_nod
 
 logger = logging.getLogger(__name__)
 
-_PLAN_RESUME_TTL_SECONDS = 1800  # 30 minutes
+# P2-5: Config-driven plan resume TTL.  Override via env var AGENT_PLAN_RESUME_TTL
+# (seconds) or config key ``plan_resume_ttl_seconds``.  Default: 1800 (30 min).
+_PLAN_RESUME_TTL_SECONDS: int = int(
+    __import__("os").environ.get("AGENT_PLAN_RESUME_TTL", "1800")
+)
 
 
 def _dag_waves(dag, label: str):

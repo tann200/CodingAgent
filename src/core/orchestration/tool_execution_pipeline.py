@@ -419,6 +419,35 @@ def _run_preflight_and_lookup(
     except Exception:
         pass
 
+    # P2-3: Structural role-based tool restriction for the main orchestrator role.
+    # When no active_agent is set, check the orchestrator's role_manager if
+    # available.  This enforces reviewer/researcher read-only policies at the
+    # graph level rather than relying solely on prompt instructions.
+    try:
+        role_manager = getattr(orch, "role_manager", None)
+        if role_manager is not None and active_agent is None:
+            current_role = role_manager.get_current_role()
+            if current_role is not None:
+                from src.core.orchestration.role_config import is_tool_allowed_for_role
+
+                if not is_tool_allowed_for_role(name, current_role):
+                    _write_permission_audit(
+                        orch.working_dir, name, args, "deny", "role_tool_restriction"
+                    )
+                    return (
+                        {
+                            "ok": False,
+                            "error": (
+                                f"Tool '{name}' is not permitted for role '{current_role}'. "
+                                f"Role '{current_role}' has structural tool restrictions — "
+                                "check the role's allowed_tools / denied_tools config."
+                            ),
+                        },
+                        None,
+                    )
+    except Exception:
+        pass
+
     agent_override = _check_agent_permission_override(orch, name, args)
     if agent_override is not None:
         return agent_override, None

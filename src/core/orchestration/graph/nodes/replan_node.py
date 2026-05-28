@@ -60,8 +60,12 @@ async def _replan_node_impl(state: StateLike, config: RunnableConfig) -> Dict[st
             "errors": ["replan_node: replay detected, plan hash unchanged — aborting"],
         }
 
-    # Configurable replan ceiling
-    from src.core.config_loader import get_agent_loop_constant, MAX_REPLAN_ATTEMPTS
+    # Configurable replan ceiling (per-step)
+    from src.core.config_loader import (
+        get_agent_loop_constant,
+        MAX_REPLAN_ATTEMPTS,
+        MAX_TOTAL_RECOVERY_ATTEMPTS,
+    )
     _replan_cap = get_agent_loop_constant("max_replan_attempts", MAX_REPLAN_ATTEMPTS)
     if replan_attempts >= _replan_cap:
         logger.warning(
@@ -73,6 +77,26 @@ async def _replan_node_impl(state: StateLike, config: RunnableConfig) -> Dict[st
             "replan_attempts": replan_attempts,
             "total_recovery_attempts": total_recovery_attempts,
             "errors": [f"Replan cap ({_replan_cap}) exceeded — aborting replan loop"],
+        }
+
+    # P2-4: Global session-wide recovery ceiling (replan + debug combined).
+    _total_recovery_cap = get_agent_loop_constant(
+        "max_total_recovery_attempts", MAX_TOTAL_RECOVERY_ATTEMPTS
+    )
+    if total_recovery_attempts >= _total_recovery_cap:
+        logger.warning(
+            f"replan_node: total_recovery_attempts={total_recovery_attempts} exceeds "
+            f"session cap={_total_recovery_cap}, aborting to prevent infinite loop"
+        )
+        return {
+            "replan_required": None,
+            "action_failed": False,
+            "replan_attempts": replan_attempts,
+            "total_recovery_attempts": total_recovery_attempts,
+            "errors": [
+                f"Session recovery cap ({_total_recovery_cap}) exceeded — "
+                "aborting replan loop. Too many recovery attempts this session."
+            ],
         }
 
     orchestrator = _resolve_orchestrator(state, config)

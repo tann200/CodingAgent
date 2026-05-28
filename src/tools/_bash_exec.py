@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Dict, Any, Optional
 
 from src.tools._security import (
+    BASH_STRICT_ALLOWLIST,
     CODE_EXEC_FLAGS,
     CODE_EXEC_INTERPRETERS,
     DANGEROUS_PATTERNS,
@@ -451,10 +452,22 @@ def bash(
             }
 
     # Gate 5: Tier allowlist.
+    # In strict allowlist mode (BASH_STRICT_ALLOWLIST=1) only SAFE_COMMANDS pass;
+    # compilers and test runners (TEST_COMPILE_COMMANDS) are also blocked so the
+    # agent is restricted to read-only inspection commands.
     if first_cmd in SAFE_COMMANDS:
         pass  # Auto-allowed
     elif first_cmd == "git":
         pass  # Already validated by Gate 4b (subcommand allowlist)
+    elif BASH_STRICT_ALLOWLIST:
+        return {
+            "status": "error",
+            "error": (
+                f"Command '{cmd_parts[0]}' is not allowed in strict allowlist mode "
+                f"(BASH_STRICT_ALLOWLIST=1). Only read-only inspection commands are "
+                f"permitted: {sorted(SAFE_COMMANDS)}."
+            ),
+        }
     elif first_cmd in TEST_COMPILE_COMMANDS:
         if first_cmd == "npm" and not any(
             x in cmd_lower for x in ["test", "run ", "start", "build", "lint"]

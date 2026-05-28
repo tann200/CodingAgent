@@ -322,6 +322,14 @@ TOTAL_DEBUG_CEILING: int = 9
 #: Config key: ``max_replan_attempts``
 MAX_REPLAN_ATTEMPTS: int = 5
 
+#: Session-wide ceiling on total recovery (replan + debug) LLM calls.
+#: Prevents infinite replan/debug loops across a full session.
+#: Override via env var AGENT_MAX_TOTAL_RECOVERY or config key ``max_total_recovery_attempts``.
+#: Config key: ``max_total_recovery_attempts``
+MAX_TOTAL_RECOVERY_ATTEMPTS: int = int(
+    __import__("os").environ.get("AGENT_MAX_TOTAL_RECOVERY", "20")
+)
+
 
 def get_agent_loop_constant(key: str, default: int, working_dir: Optional[Path] = None) -> int:
     """Read an integer agent-loop constant from merged config, falling back to *default*.
