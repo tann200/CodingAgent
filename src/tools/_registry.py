@@ -47,7 +47,8 @@ _BUILTIN_MODULES = [
     "src.tools.todo_tools",
     "src.tools.subagent_tools",
     # Consolidated repo tools (replaces repo_tools, repo_analysis_tools,
-    # repo_overview_tool, repo_summary — those files remain for backward compat)
+    # repo_overview_tool, repo_summary — those files are now consolidated
+    # into repo_read_tools / repo_write_tools)
     "src.tools.repo_read_tools",
     "src.tools.repo_write_tools",
     "src.tools.patch_tools",
@@ -141,19 +142,29 @@ class ToolRegistry:
             ``'builtin'`` (default) or ``'plugin'``.  Plugin registrations that
             attempt to overwrite a builtin name raise ``ValueError`` (TASK-03).
         """
-        # TASK-03: Reject plugin attempts to overwrite builtin names
+        entry: Dict[str, Any] = {
+            "fn": fn,
+            "side_effects": list(side_effects or []),
+            "description": description or (fn.__doc__ or "").strip().split("\n")[0],
+            "tags": list(tags or []),
+            "name": name,
+        }
+        # Hold the lock for the entire check-and-register sequence to prevent
+        # TOCTOU races between the builtin-conflict check, the plugin-cap check,
+        # and the final write.
         with self._lock:
             existing_origin = self._origins.get(name)
-        if existing_origin == "builtin" and origin == "plugin":
-            raise ValueError(
-                f"Plugin tool {name!r} conflicts with a built-in tool of the same name. "
-                "Rename the plugin tool or remove it from your config."
-            )
 
-        # P2-6: Enforce plugin-tool cap (new names only; re-registering an
-        # existing plugin name does not count against the cap a second time).
-        if origin == "plugin":
-            with self._lock:
+            # TASK-03: Reject plugin attempts to overwrite builtin names
+            if existing_origin == "builtin" and origin == "plugin":
+                raise ValueError(
+                    f"Plugin tool {name!r} conflicts with a built-in tool of the same name. "
+                    "Rename the plugin tool or remove it from your config."
+                )
+
+            # P2-6: Enforce plugin-tool cap (new names only; re-registering an
+            # existing plugin name does not count against the cap a second time).
+            if origin == "plugin":
                 is_new_plugin = existing_origin != "plugin"
                 if is_new_plugin and self._max_plugin_tools > 0 and self._plugin_count >= self._max_plugin_tools:
                     raise RuntimeError(
@@ -163,19 +174,10 @@ class ToolRegistry:
                         "reduce the number of plugin tools."
                     )
 
-        entry: Dict[str, Any] = {
-            "fn": fn,
-            "side_effects": list(side_effects or []),
-            "description": description or (fn.__doc__ or "").strip().split("\n")[0],
-            "tags": list(tags or []),
-            "name": name,
-        }
-        with self._lock:
-            prev_origin = self._origins.get(name)
             self._tools[name] = entry
             self._origins[name] = origin
             # P2-6: track plugin count (only increment for newly added plugin names)
-            if origin == "plugin" and prev_origin != "plugin":
+            if origin == "plugin" and existing_origin != "plugin":
                 self._plugin_count += 1
 
     def register_definition(
@@ -414,7 +416,7 @@ def _minimal_schema(name: str, fn: Callable, description: str) -> dict:
             if param.default is inspect.Parameter.empty:
                 required.append(pname)
     except Exception:
-        pass
+        logger.debug("_minimal_schema: failed to inspect signature for tool %r; LLM will receive an empty schema", name, exc_info=True)
     schema = {
         "type": "function",
         "function": {
@@ -424,7 +426,7 @@ def _minimal_schema(name: str, fn: Callable, description: str) -> dict:
         },
     }
     if required:
-        schema["function"]["parameters"]["required"] = required
+        schema["function"]["parameters"]["required"] = required  # type: ignore[index]
     return schema
 
 

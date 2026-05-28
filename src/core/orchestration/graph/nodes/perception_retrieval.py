@@ -112,6 +112,10 @@ async def _retrieve_context(
                     pass
                 return results
 
+            search_code_result: object
+            symbol_results: object
+            references_result: object
+            test_file_results: object
             (
                 search_code_result,
                 symbol_results,

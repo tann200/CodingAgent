@@ -8,12 +8,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
+_FileLock: Any = None
 try:
-    from src.tools.todo_tools import _load_todo_json, _lock_path, _FileLock, _save_todo
+    from src.tools.todo_tools import _load_todo_json, _lock_path, _FileLock, _save_todo  # type: ignore[assignment]
 except ImportError:
     _load_todo_json = None  # type: ignore[assignment]
     _lock_path = None  # type: ignore[assignment]
-    _FileLock = None  # type: ignore[assignment]
     _save_todo = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
@@ -77,7 +77,7 @@ class PlanDAG:
             ValueError: If a circular dependency is detected in the DAG.
         """
         waves = []
-        completed = set()
+        completed: set[str] = set()
         remaining = set(self.steps.keys())
 
         while remaining:

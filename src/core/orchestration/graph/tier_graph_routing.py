@@ -135,7 +135,6 @@ def compile_tier_graph_for_key(
     *,
     compile_frontier_graph_fn: Any,
     compile_lite_graph_fn: Any,
-    compile_agent_graph_fn: Any,
 ) -> Any:
     if cache_key == "capable":
         return compile_frontier_graph_fn()

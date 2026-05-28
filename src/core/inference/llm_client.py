@@ -23,7 +23,7 @@ class LLMClient(ABC):
         # preserved when adapters run in worker threads. Fall back to
         # asyncio.to_thread if the helper isn't available.
         loop = asyncio.get_running_loop()
-        run_with_corr = None
+        run_with_corr: Any = None
         try:
             # Preferred: central helper that copies context into thread
             from src.core.orchestration.event_bus import (

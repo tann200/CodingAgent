@@ -565,7 +565,7 @@ def distill_context(
             if index_path.exists():
                 with open(index_path, "r", encoding="utf-8") as f:
                     repo_index = json.load(f)
-                repo_memory = {"modules": []}
+                repo_memory: Dict[str, Any] = {"modules": []}
                 for fdata in repo_index.get("files", []):
                     repo_memory["modules"].append(
                         {"path": fdata.get("path"), "imports": fdata.get("imports", [])}

@@ -19,10 +19,11 @@ from src.tools._tool import tool
 from src.tools.file_lock import FileLock as _FileLock
 from src.tools.tools_config import agent_context_path
 
+_metrics: Any = None
 try:
-    from src.core.observability.metrics import metrics as _metrics
+    from src.core.observability.metrics import metrics as _metrics  # type: ignore[assignment]
 except Exception:
-    _metrics = None
+    pass
 
 logger = logging.getLogger(__name__)
 

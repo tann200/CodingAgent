@@ -243,7 +243,7 @@ def summarize_structure_detailed(workdir: Any = None) -> Dict[str, Any]:
 
     root = workdir.resolve()
 
-    summary = {
+    summary: Dict[str, Any] = {
         "root": str(root),
         "total_files": 0,
         "total_dirs": 0,

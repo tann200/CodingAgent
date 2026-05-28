@@ -150,7 +150,7 @@ class PermissionTable:
                 action,
                 scope,
             )
-            return row_id
+            return row_id or 0
 
     def check(self, tool_kind: str, argument: str = "") -> Optional[str]:
         """Check whether *argument* matches any stored rule for *tool_kind*.

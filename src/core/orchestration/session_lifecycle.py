@@ -240,7 +240,7 @@ class SessionLifecycleManager:
         """
         from src.core.orchestration.session_registry import get_session_registry
 
-        results = []
+        results: List[Any] = []
 
         # Get session tree
         registry = get_session_registry()

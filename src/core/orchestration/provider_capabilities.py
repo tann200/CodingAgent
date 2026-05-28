@@ -107,11 +107,11 @@ def get_provider_capabilities_impl(orch: Any) -> Dict[str, Any]:
                 }
                 if explicit_provider:
                     sanitized["provider_family"] = _map_provider_family_impl(
-                        sanitized["provider_name"]
+                        str(sanitized["provider_name"])
                     )
                 elif sanitized["provider_family"] == "default" and sanitized["provider_name"]:
                     sanitized["provider_family"] = _map_provider_family_impl(
-                        sanitized["provider_name"]
+                        str(sanitized["provider_name"])
                     )
                 return sanitized
         except Exception:

@@ -28,7 +28,7 @@ except Exception:
         except Exception:
             return None
 
-    def lm_save_provider(data, path=None, initial_path=None):
+    def lm_save_provider(data, path=None, initial_path=None):  # type: ignore[misc]
         try:
             target = (
                 Path(initial_path)
@@ -62,7 +62,7 @@ except Exception:
             _logger.debug("ollama_adapter: _write_models_cache failed: %s", exc)
             return False
 
-    def lm_select_model_name(models, requested=None):
+    def lm_select_model_name(models, requested=None):  # type: ignore[misc]
         if not models:
             return None
         for m in models:
@@ -71,10 +71,10 @@ except Exception:
                     return requested
         return models[0] if models else None
 
-    def lm_call_requests(method, url, **kwargs):
+    def lm_call_requests(method, url, **kwargs):  # type: ignore[misc]
         return getattr(requests, method.lower())(url, **kwargs)
 
-    def lm_post_stream_compatible(url, json_data=None, headers=None, timeout=None):
+    def lm_post_stream_compatible(url, json_data=None, headers=None, timeout=None):  # type: ignore[misc]
         return requests.post(url, json=json_data, timeout=timeout)
 
     LM_DEFAULT_TIMEOUT = 5

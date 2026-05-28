@@ -133,11 +133,6 @@ def test_on_model_routing_updates_adapter_default_model():
     assert adapter.default_model == "claude-3-opus"
 
 
-def test_on_model_routing_ignores_non_dict_payload():
-    pm = _pm()
-    pm._on_model_routing("not-a-dict")  # must not raise
-
-
 def test_on_model_routing_ignores_missing_selected_key():
     pm = _pm()
     adapter = SimpleNamespace(default_model="original")

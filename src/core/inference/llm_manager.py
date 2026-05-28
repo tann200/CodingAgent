@@ -41,9 +41,10 @@ except Exception:  # pragma: no cover — circular import guard for early tests
         return None
 
 
+guilogger: Any = None
 try:
     # Prefer the app's central logger object (recommended)
-    from src.core.logger import logger as guilogger
+    from src.core.logger import logger as guilogger  # type: ignore[assignment]
 except Exception:
     import logging
 
@@ -67,7 +68,7 @@ except Exception:
     # Fallback: simple shim that calls loop.run_in_executor when event_bus isn't importable
     T = TypeVar("T")
 
-    def run_with_correlation(
+    def run_with_correlation(  # type: ignore[misc]
         loop: Any, executor: Any, fn: Callable[..., T], *args: Any
     ) -> Awaitable[T]:
         """Fallback run_with_correlation that safely copies the current Context
@@ -83,7 +84,7 @@ except Exception:
             def _worker() -> T:
                 rv = fn(*args)
                 if inspect.isawaitable(rv):
-                    return asyncio.run(rv)  # type: ignore[return-value]
+                    return asyncio.run(rv)  # type: ignore[return-value, arg-type]
                 return rv  # type: ignore[return-value]
 
             sel_executor = executor
@@ -111,14 +112,14 @@ except Exception:
 
 
 # Simple in-memory caches (protected by RLock for thread safety - C8 fix)
-import threading as _threading
+import threading as _threading  # noqa: E402
 
-from src.core.inference.model_cache import (
+from src.core.inference.model_cache import (  # noqa: E402
     extract_models_from_api_response as _extract_models_from_api_response,
     get_cached_models_if_fresh as _get_cached_models_if_fresh,
     store_cached_models as _store_cached_models,
 )
-from src.core.inference.model_selection import (
+from src.core.inference.model_selection import (  # noqa: E402
     canonical_provider as _select_canonical_provider,
     load_provider as _load_provider_helper,
     lmstudio_full_id as _normalize_lmstudio_full_id,
@@ -129,20 +130,20 @@ from src.core.inference.model_selection import (
     set_provider_active as _set_provider_active_helper,
     select_model_name as _select_model_name,
 )
-from src.core.inference.call_postprocess import (
+from src.core.inference.call_postprocess import (  # noqa: E402
     attempt_model_fallback as _attempt_model_fallback,
     publish_llm_response_hook as _publish_llm_response_hook,
     record_token_usage as _record_token_usage,
     update_circuit_breaker_for_result as _update_circuit_breaker_for_result,
 )
-from src.core.inference.provider_fallback import get_fallback_chain as _get_fallback_chain
-from src.core.inference.runtime_call import (
+from src.core.inference.provider_fallback import get_fallback_chain as _get_fallback_chain  # noqa: E402
+from src.core.inference.runtime_call import (  # noqa: E402
     call_adapter_with_fallbacks as _call_adapter_with_fallbacks,
     instantiate_runtime_adapter as _instantiate_runtime_adapter,
     prepare_call_extra_args as _prepare_call_extra_args,
     select_runtime_provider_config as _select_runtime_provider_config,
 )
-from src.core.inference.streaming import (
+from src.core.inference.streaming import (  # noqa: E402
     decode_sse_line as _decode_sse_line,
     extract_stream_deltas as _extract_stream_deltas,
     finalize_stream as _finalize_stream,
@@ -150,14 +151,14 @@ from src.core.inference.streaming import (
     publish_stream_chunk as _publish_stream_chunk,
     split_thinking_content as _split_thinking_content,
 )
-from src.core.inference.provider_discovery import (
+from src.core.inference.provider_discovery import (  # noqa: E402
     get_active_models as _get_active_models_helper,
     get_models_for_provider_key as _get_models_for_provider_key_helper,
     get_models_from_provider_adapter as _get_models_from_provider_adapter,
     get_models_from_provider_cache as _get_models_from_provider_cache,
     get_models_from_provider_config as _get_models_from_provider_config,
 )
-from src.core.inference.provider_loading import (
+from src.core.inference.provider_loading import (  # noqa: E402
     attach_provider_metadata as _attach_provider_metadata,
     cache_static_provider_models as _cache_static_provider_models,
     instantiate_adapter as _instantiate_adapter,
@@ -165,7 +166,7 @@ from src.core.inference.provider_loading import (
     load_provider_entries as _load_provider_entries,
     resolve_adapter_class as _resolve_adapter_class,
 )
-from src.core.inference.provider_probe import (
+from src.core.inference.provider_probe import (  # noqa: E402
     cache_probed_models as _cache_probed_models,
     determine_explicit_status as _determine_explicit_status,
     probe_adapter_models as _probe_adapter_models,
@@ -175,14 +176,14 @@ from src.core.inference.provider_probe import (
     should_probe_provider as _should_probe_provider,
     validate_provider_connection as _validate_provider_connection,
 )
-from src.core.inference.provider_config import (
+from src.core.inference.provider_config import (  # noqa: E402
     get_active_provider_name as _get_active_provider_name_helper,
     canonical_provider_name as _canonical_provider_name,
     normalize_provider_models as _normalize_provider_models,
     resolve_providers_config_path as _resolve_providers_config_path,
     set_provider_active_flag as _set_provider_active_flag,
 )
-from src.core.utils.strings import valid_str as _valid_str
+from src.core.utils.strings import valid_str as _valid_str  # noqa: E402
 
 
 def _set_active_context_length_lazy(context_length: int, provider_key: str = "") -> None:
@@ -262,7 +263,7 @@ def _get_models_for_provider_key(provider_key: str) -> List[str]:
         manager=_provider_manager,
         cache=_MODEL_CACHE,
         cache_time=_MODEL_CACHE_TIME,
-        cache_lock=_MODEL_CACHE_LOCK,
+        cache_lock=_MODEL_CACHE_LOCK,  # type: ignore[arg-type]
         cache_ttl=_CACHE_TTL,
         now=time.time,
         get_cached_models_if_fresh=_get_cached_models_if_fresh,
@@ -270,7 +271,7 @@ def _get_models_for_provider_key(provider_key: str) -> List[str]:
         get_models_from_provider_cache_fn=_get_models_from_provider_cache,
         get_models_from_provider_adapter_fn=_get_models_from_provider_adapter,
         get_models_from_provider_config_fn=_get_models_from_provider_config,
-        extract_models_from_api_response=_extract_models_from_api_response,
+        extract_models_from_api_response=lambda r: _extract_models_from_api_response(r, valid_str=_valid_str),  # type: ignore[arg-type]
         normalize_lmstudio_models=lambda items: [_lmstudio_full_id(x) for x in items],
         load_provider=load_provider,
         normalize_models_for_provider=normalize_models_for_provider,
@@ -897,7 +898,7 @@ class ProviderManager:
             providers_config_path=self.providers_config_path,
             resolve_config_path=resolve_config_path,
             canonical_provider=canonical_provider,
-            lock=_providers_json_lock,
+            lock=_providers_json_lock,  # type: ignore[arg-type]
         )
 
     async def initialize(self):
@@ -1069,6 +1070,7 @@ async def get_structured_llm(
         await mgr.initialize()
 
     # Use module-level UserPrefs symbol so tests can monkeypatch src.core.llm_manager.UserPrefs.load
+    prefs: Any = None
     try:
         prefs = UserPrefs.load()
     except Exception:
@@ -1469,7 +1471,7 @@ try:
     from src.core.user_prefs import UserPrefs  # type: ignore
 except Exception:
 
-    class UserPrefs:  # minimal fallback used only during import-time when real module is unavailable
+    class UserPrefs:  # type: ignore[no-redef]  # minimal fallback used only during import-time when real module is unavailable
         def __init__(
             self, data: Optional[Dict[str, Any]] = None, path: Optional[Path] = None
         ):

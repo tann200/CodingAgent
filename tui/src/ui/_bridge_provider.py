@@ -14,8 +14,13 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     pass
 
+from ._bridge_protocol import AgentBridgeProtocol
+from .logging import get_logger
 
-class BridgeProviderMixin:
+logger = get_logger("bridge")
+
+
+class BridgeProviderMixin(AgentBridgeProtocol):
     """Mixin providing provider and model event handlers."""
 
     def _publish_system_settings(self) -> None:
@@ -92,8 +97,7 @@ class BridgeProviderMixin:
                 },
             )
         except Exception as exc:
-            import logging as _logging
-            _logging.getLogger("bridge").debug(f"_publish_system_settings: {exc}")
+            logger.debug(f"_publish_system_settings: {exc}")
 
         # Also publish startup / running events so UI banners reflect state
         try:
@@ -206,8 +210,7 @@ class BridgeProviderMixin:
                 except Exception:
                     pass
         except Exception as exc:
-            import logging as _logging
-            _logging.getLogger("bridge").debug(f"_publish_active_provider_status: {exc}")
+            logger.debug(f"_publish_active_provider_status: {exc}")
 
     def _check_provider_auth_on_startup(self) -> None:
         """Post a warning if the active provider requires auth but has no token.
@@ -262,8 +265,7 @@ class BridgeProviderMixin:
                     )
                 )
         except Exception as exc:
-            import logging as _logging
-            _logging.getLogger("bridge").debug(f"_check_provider_auth_on_startup: {exc}")
+            logger.debug(f"_check_provider_auth_on_startup: {exc}")
 
     def _on_orchestrator_startup(self, payload: dict) -> None:
         from tui.tui_src.ui.bus import OrchestratorReadyEvent
@@ -313,9 +315,19 @@ class BridgeProviderMixin:
             )
         )
 
+    def _on_provider_unavailable(self, payload: dict) -> None:
+        from tui.tui_src.ui.bus import NotificationEvent
+
+        reason = payload.get("reason", "Provider unavailable")
+        self._post(
+            NotificationEvent(
+                level="warning",
+                message=f"[bold yellow]⚠ Provider unavailable:[/] {reason} [dim]— run /provider to try again[/]",
+            )
+        )
+
     def _on_models_list(self, payload: dict) -> None:
-        import logging as _logging
-        _logging.getLogger("bridge").debug(
+        logger.debug(
             f"Models: {payload.get('provider')} — {len(payload.get('models', []))} models"
         )
 
@@ -331,8 +343,7 @@ class BridgeProviderMixin:
 
     def _on_model_response(self, payload: dict) -> None:
         tokens = payload.get("tokens", 0)
-        import logging as _logging
-        _logging.getLogger("bridge").info(f"Model response complete: {tokens} tokens")
+        logger.info(f"Model response complete: {tokens} tokens")
 
     def _on_model_token(self, payload: dict) -> None:
         from tui.tui_src.ui.bus import StreamChunkEvent

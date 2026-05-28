@@ -41,7 +41,7 @@ def validate_plan(
         }
     """
     errors = []
-    warnings = []
+    warnings: list[str] = []
 
     if not plan:
         errors.append("Plan is empty")

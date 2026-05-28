@@ -41,16 +41,16 @@ from src.core.utils.strings import valid_str as _valid_str
 
 _logger = logging.getLogger(__name__)
 
+ModelTier: Any = None
 # GAP-4: lazy imports for model classification and thinking-token stripping.
 # Wrapped in try/except so the adapter remains functional in minimal test envs.
 try:
     from src.core.inference.model_tiers import (
-        ModelTier,
+        ModelTier,  # type: ignore[assignment]  # noqa: F401
         classify_model as _classify_model,
     )
 except Exception:  # pragma: no cover
     _classify_model = None  # type: ignore[assignment]
-    ModelTier = None  # type: ignore[assignment]
 
 try:
     from src.core.inference.thinking_utils import (

@@ -104,6 +104,16 @@ def example_registry() -> ToolRegistry:
         )
     except Exception:
         pass
+    reg.register(
+        "repo_overview",
+        repo_read_tools.repo_overview,
+        description="repo_overview(workdir, max_depth, max_files) -> Return a lightweight directory tree and project metadata.",
+    )
+    reg.register(
+        "find_files",
+        repo_read_tools.find_files,
+        description="find_files(pattern, workdir) -> Find files matching a glob pattern.",
+    )
 
     # Core file operations
     reg.register(

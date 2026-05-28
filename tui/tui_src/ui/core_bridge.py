@@ -20,7 +20,6 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
-from ._core_paths_loader import get_data_dir
 from ._bridge_subscriptions import BridgeSubscriptionsMixin
 from ._bridge_provider import BridgeProviderMixin
 from ._bridge_tools import BridgeToolsMixin
@@ -45,34 +44,6 @@ except Exception:
 
 logger = get_logger("bridge")
 
-
-_AGENT_DIR = get_data_dir()
-
-HISTORY_PATH = _AGENT_DIR / "tui_conversation_history.json"
-
-TIER3_PREFIXES = (
-    "pip ",
-    "pip3 ",
-    "curl ",
-    "wget ",
-    "npm install",
-    "npm i ",
-    "cargo install",
-    "go install",
-    "go get",
-    "apt ",
-    "apt-get ",
-    "yum ",
-    "dnf ",
-    "brew ",
-    "sudo ",
-    "su ",
-    "chmod ",
-    "chown ",
-    "rm ",
-    "del ",
-)
-
 # TUI-02: Map TUI-expected event names → CodingAgent-published event names.
 # When the bridge subscribes to a TUI event name, the actual bus subscription
 # is made against the CodingAgent name so events are received correctly.
@@ -87,13 +58,6 @@ _EVENT_MAP: dict[str, str] = {
     "delegation.start": "delegation.start",
     "delegation.finish": "delegation.finish",
     "spawn.permission_required": "spawn.permission_required",
-}
-
-# AUTO-03: Map TUI role names to CodingAgent system prompt names.
-TUI_ROLE_TO_PROMPT: dict[str, str] = {
-    "lead_architect": "strategic",  # planning, design
-    "full_stack_engineer": "operational",  # execution, coding
-    "qa_lead": "reviewer",  # review, testing
 }
 
 

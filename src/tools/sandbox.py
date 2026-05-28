@@ -109,7 +109,7 @@ def _probe_sandbox_exec_enforced() -> bool:
                 with os.fdopen(_fd, "w") as f:
                     f.write(profile)
                 cmd = [
-                    _SANDBOX_EXEC_PATH,
+                    str(_SANDBOX_EXEC_PATH),
                     "-f", profile_path,
                     "sh", "-c",
                     f"echo canary > {target_outside} 2>/dev/null; echo $?",
@@ -400,7 +400,7 @@ def run_sandboxed(
             try:
                 profile_path = _write_sandbox_exc_profile(cwd, level)
                 try:
-                    sbox_cmd = [_SANDBOX_EXEC_PATH, "-f", profile_path] + cmd
+                    sbox_cmd = [str(_SANDBOX_EXEC_PATH), "-f", profile_path] + cmd
                     # Note: sandbox-exec does not support --unshare-net; network
                     # is denied via the profile instead.
                     result = subprocess.run(

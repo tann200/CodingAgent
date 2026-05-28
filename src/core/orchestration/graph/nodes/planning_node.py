@@ -95,13 +95,14 @@ def _hydrate_repo_context_from_index(
 
 def _get_last_plan_path(workdir: str) -> Path:
     """Get the path to the last plan JSON file."""
+    _agent_context_path: Any = None
     try:
-        from src.tools.tools_config import agent_context_path
+        from src.tools.tools_config import agent_context_path as _agent_context_path  # type: ignore[assignment]
     except Exception:
-        agent_context_path = None
+        pass
     return get_last_plan_path(
         workdir=workdir,
-        agent_context_path_fn=agent_context_path,
+        agent_context_path_fn=_agent_context_path,
     )
 
 
@@ -116,10 +117,10 @@ def _load_last_plan(workdir: str) -> Dict[str, Any]:
 
 def _save_last_plan(workdir: str, plan: list, task: str, step: int = 0) -> None:
     """Save plan to JSON (cross-session persistence) and append to audit log."""
-    _kw = dict(workdir=workdir, plan=plan, task=task, step=step,
+    _kw: Dict[str, Any] = dict(workdir=workdir, plan=plan, task=task, step=step,
                get_last_plan_path_fn=_get_last_plan_path, logger=logger, now_fn=datetime.now)
-    save_last_plan(**_kw)
-    append_plan_audit_log(**_kw)
+    save_last_plan(**_kw)  # type: ignore[arg-type]
+    append_plan_audit_log(**_kw)  # type: ignore[arg-type]
 
 
 def _build_planning_task_description(

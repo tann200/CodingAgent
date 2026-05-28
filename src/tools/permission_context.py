@@ -72,9 +72,9 @@ class ToolPermissionContext:
         if self.is_empty():
             return registry
         try:
-            all_names: list[str] = registry.list()  # type: ignore[union-attr]
+            all_names: list[str] = registry.list()  # type: ignore[attr-defined]
             allowed = [n for n in all_names if not self.blocks(n)]
-            return registry.filter_by_names(allowed)  # type: ignore[union-attr]
+            return registry.filter_by_names(allowed)  # type: ignore[attr-defined]
         except Exception:
             return registry
 

@@ -8,6 +8,8 @@ import traceback
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional
 
+from src.core.inference._protocols import LockProtocol, LoggerProtocol
+
 
 def canonical_provider_name(name: Optional[str]) -> str:
     if not name:
@@ -38,8 +40,8 @@ def set_provider_active_flag(
     active: bool,
     resolve_config_path: Callable[[Optional[str]], Path],
     canonical_provider: Callable[[Optional[str]], str],
-    lock: object,
-    logger: object,
+    lock: LockProtocol,
+    logger: LoggerProtocol,
     traceback_formatter: Callable[[], str] = traceback.format_exc,
 ) -> None:
     cfg_path = resolve_config_path(None)
@@ -113,7 +115,7 @@ def get_active_provider_name(
     providers_config_path: Optional[str],
     resolve_config_path: Callable[[Optional[str]], Path],
     canonical_provider: Callable[[Optional[str]], str],
-    lock: object,
+    lock: LockProtocol,
 ) -> Optional[str]:
     try:
         cfg_path = resolve_config_path(providers_config_path)

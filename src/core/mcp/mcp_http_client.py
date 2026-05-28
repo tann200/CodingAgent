@@ -221,7 +221,7 @@ class McpHttpClient:
 
     async def _handle_sse(self, response: httpx.Response) -> Dict[str, Any]:
         """Handle SSE stream response."""
-        result = {"content": [], "tools": []}
+        result: Dict[str, Any] = {"content": [], "tools": []}
         try:
             for line in response.text.split("\n"):
                 line = line.strip()

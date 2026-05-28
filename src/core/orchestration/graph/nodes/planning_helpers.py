@@ -237,7 +237,7 @@ def hydrate_repo_context_from_index(
     task: str,
     relevant_files: Sequence[str],
     key_symbols: Sequence[str],
-    get_symbols_for_task_fn: Callable[..., Sequence[Mapping[str, Any]]],
+    get_symbols_for_task_fn: Callable[..., Sequence[dict[str, Any]]],
     logger: Any,
     max_results: int = 8,
     max_files: int = 10,

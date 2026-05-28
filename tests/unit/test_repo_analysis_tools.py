@@ -1,10 +1,10 @@
-"""Tests for src/tools/repo_analysis_tools.py — AST-based repo analysis."""
+"""Tests for repo_read_tools — AST-based repo analysis (moved from repo_analysis_tools)."""
 
 # ruff: noqa: E501
 
 import json
 
-from src.tools.repo_analysis_tools import analyze_repository, _analyze_file
+from src.tools.repo_read_tools import analyze_repository, _analyze_file
 
 
 class TestAnalyzeFile:

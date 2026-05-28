@@ -316,7 +316,7 @@ def multi_file_summary(
         status, summaries (dict of path -> file info)
     """
     wd = Path(workdir) if workdir else Path.cwd()
-    results = {}
+    results: Dict[str, Any] = {}
 
     for path in paths:
         try:

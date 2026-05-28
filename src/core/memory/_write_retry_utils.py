@@ -68,7 +68,7 @@ def write_with_retry(
             time.sleep(delay)
 
     # This should never be reached due to the raise in the loop, but just in case
-    raise last_exception
+    raise last_exception or RuntimeError("write_with_retry: all attempts exhausted")
 
 
 def atomic_write_json(
@@ -89,7 +89,7 @@ def atomic_write_json(
     try:
         from src.core.io_utils import atomic_write_json as central_atomic_write
 
-        ok = central_atomic_write(filepath, data, logger=log)
+        ok = central_atomic_write(Path(filepath), data, logger=log)
         if ok:
             return True
         log.warning(

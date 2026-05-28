@@ -97,7 +97,7 @@ def run_with_correlation(
         try:
             if inspect.isawaitable(rv):
                 # Run awaitable to completion inside this worker thread.
-                return asyncio.run(rv)  # type: ignore[return-value]
+                return asyncio.run(rv)  # type: ignore[return-value, arg-type]
         except Exception:
             # If anything goes wrong executing the awaitable, propagate the
             # exception to the caller via the Future returned by run_in_executor.

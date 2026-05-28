@@ -11,8 +11,9 @@ from pathlib import Path
 from typing import Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .components import FilePickerOverlay, StreamView
+    from .components import FilePickerOverlay
     from .components import SubagentProgress
+    from .features.oauth.screen import OAuthDeviceFlowScreen
 
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
@@ -142,7 +143,7 @@ class AgentApp(
         _init_wd: Optional[Path] = getattr(self, "_initial_working_dir", None)
         self._bridge = AgentBridge(self, working_dir=_init_wd)
         self._session_id: str = str(_uuid.uuid4())
-        self._current_stream: Optional[StreamView] = None
+        self._current_stream = None  # type: ignore[assignment]
         self._role_cycle = ["lead_architect", "full_stack_engineer", "qa_lead"]
         self._role_idx = 0
         self._modified_files: list[str] = []
@@ -172,7 +173,7 @@ class AgentApp(
         self._at_file_cache_ts: float = 0.0
         self._palette_active: bool = False
         self._palette_matches: list[str] = []
-        self._oauth_screen: Optional[object] = None
+        self._oauth_screen: Optional[OAuthDeviceFlowScreen] = None
         self._device_flow_cancel: threading.Event = threading.Event()
         logger.info("AgentApp initialized")
 
@@ -652,9 +653,9 @@ class AgentApp(
         try:
             from .features.settings.screen import SettingsScreen
 
-            for screen in list(self.screen_stack):
-                if isinstance(screen, SettingsScreen):
-                    screen.dismiss()
+            for _scr in list(self.screen_stack):
+                if isinstance(_scr, SettingsScreen):
+                    _scr.dismiss()
                     break
         except Exception as _settings_err:
             pass

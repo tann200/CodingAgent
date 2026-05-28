@@ -13,7 +13,13 @@ from src.core.logger import logger as guilogger
 
 
 def _init_providers(orch: Any) -> None:
-    """Select and activate the LLM provider adapter."""
+    """Select and activate the LLM provider adapter.
+
+    On connection failure (e.g. Ollama not running) sets
+    ``orch._provider_degraded = True`` and publishes a
+    ``provider.unavailable`` event so the TUI can display a banner
+    instead of hard-crashing the process.
+    """
     pm = None
     try:
         pm = get_provider_manager()
@@ -29,8 +35,12 @@ def _init_providers(orch: Any) -> None:
                     _publish_active_config_impl(orch)
                 except Exception:
                     pass
-    except Exception:
-        pass
+            else:
+                orch._provider_degraded = True
+                _publish_provider_unavailable(orch, "No adapter selected — no active provider found")
+    except Exception as exc:
+        orch._provider_degraded = True
+        _publish_provider_unavailable(orch, f"Provider init failed: {exc}")
 
     _publish_startup_events(orch, pm)
 
@@ -90,5 +100,14 @@ def _publish_startup_events(orch: Any, pm: Any) -> None:
                 pm_bus.publish("orchestrator.startup", payload)
         except Exception:
             pass
+    except Exception:
+        pass
+
+
+def _publish_provider_unavailable(orch: Any, reason: str) -> None:
+    """Publish a provider.unavailable event so the TUI can show a banner."""
+    try:
+        orch.event_bus.publish("provider.unavailable", {"reason": reason})
+        guilogger.warning("Provider unavailable: %s", reason)
     except Exception:
         pass

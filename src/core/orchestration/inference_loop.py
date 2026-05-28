@@ -208,9 +208,10 @@ def run_agent_once_impl(
     # tasks cannot exceed the configured turn budget regardless of graph state.
     try:
         from src.core.config_loader import get as _cfg_get
+        _cfg_get_fn: Any = _cfg_get
     except Exception:
-        _cfg_get = None
-    _max_turns = resolve_max_turns(initial_state=initial_state, config_getter=_cfg_get)
+        _cfg_get_fn = None
+    _max_turns = resolve_max_turns(initial_state=initial_state, config_getter=_cfg_get_fn)
     _turn_count = int(initial_state.get("turn_count") or 0)
     if _turn_count >= _max_turns:
         guilogger.warning(
@@ -257,7 +258,7 @@ def run_agent_once_impl(
 
             # Loop safeguard: track iterations for no-progress detection
             loop_iteration = 0
-            last_assistant_tracker = {"last": "", "count": 0}
+            last_assistant_tracker: dict[str, Any] = {"last": "", "count": 0}
 
             for round_idx in range(max_rounds):
                 # Check for cancellation at the start of each round

@@ -15,6 +15,8 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     pass
 
+from ._bridge_protocol import AgentBridgeProtocol
+
 TIER3_PREFIXES = (
     "pip ",
     "pip3 ",
@@ -39,7 +41,7 @@ TIER3_PREFIXES = (
 )
 
 
-class BridgeToolsMixin:
+class BridgeToolsMixin(AgentBridgeProtocol):
     """Mixin providing tool, plan, file and permission event handlers."""
 
     def _on_tool_start(self, payload: dict) -> None:

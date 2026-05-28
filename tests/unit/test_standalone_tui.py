@@ -604,6 +604,10 @@ class TestAppStructure:
         src_file = Path(_TUI_SRC) / "ui" / "app.py"
         return src_file.read_text()
 
+    def _get_mixin_source(self, name: str) -> str:
+        src_file = Path(_TUI_SRC) / "ui" / f"{name}.py"
+        return src_file.read_text()
+
     def test_no_src_core_direct_imports(self):
         """The app must not have top-level (module-scope) src.core imports.
 
@@ -633,7 +637,9 @@ class TestAppStructure:
 
     def test_timeline_import_is_lazy(self):
         text = self._get_source()
-        assert "from .screens.timeline import TimelineScreen" in text
+        ext = self._get_mixin_source("_app_slash_commands_mixin")
+        assert ("from .screens.timeline import TimelineScreen" in text
+                or "from .screens.timeline import TimelineScreen" in ext)
 
     def test_mcp_status_chip_in_compose(self):
         text = self._get_source()
@@ -641,16 +647,19 @@ class TestAppStructure:
 
     def test_tool_permission_handler(self):
         text = self._get_source()
-        assert "handle_tool_permission" in text
-        assert "ToolPermissionEvent" in text
+        ext = self._get_mixin_source("_app_message_handlers_mixin")
+        assert "handle_tool_permission" in text or "handle_tool_permission" in ext
+        assert "ToolPermissionEvent" in text or "ToolPermissionEvent" in ext
 
     def test_step_start_handler(self):
         text = self._get_source()
-        assert "handle_step_start" in text
+        ext = self._get_mixin_source("_app_message_handlers_mixin")
+        assert "handle_step_start" in text or "handle_step_start" in ext
 
     def test_step_finish_handler(self):
         text = self._get_source()
-        assert "handle_step_finish" in text
+        ext = self._get_mixin_source("_app_message_handlers_mixin")
+        assert "handle_step_finish" in text or "handle_step_finish" in ext
 
     def test_at_picker_widget_set_in_on_mount(self):
         """_at_picker_widget must be assigned in on_mount, not in compose."""
@@ -664,18 +673,20 @@ class TestAppStructure:
     def test_sub_title_at_app_level(self):
         """Must use self.sub_title (App attribute), not header.sub_title."""
         text = self._get_source()
-        assert "self.sub_title" in text
+        ext = self._get_mixin_source("_app_slash_commands_mixin")
+        assert "self.sub_title" in text or "self.sub_title" in ext
         assert "header.sub_title" not in text
 
     def test_severity_cast_present(self):
         """severity= argument for notify must be cast to SeverityLevel."""
         text = self._get_source()
-        assert 'cast("SeverityLevel"' in text
+        ext = self._get_mixin_source("_app_status_handlers_mixin")
+        assert 'cast("SeverityLevel"' in text or 'cast("SeverityLevel"' in ext
 
     def test_text_changed_handler(self):
         text = self._get_source()
-        assert "ChatTextArea.TextChanged" in text
-        # The old Changed handler must be gone
+        ext = self._get_mixin_source("_app_message_handlers_mixin")
+        assert "ChatTextArea.TextChanged" in text or "ChatTextArea.TextChanged" in ext
         assert "ChatTextArea.Changed" not in text
 
     def test_ctrl_q_binding(self):
@@ -688,7 +699,8 @@ class TestAppStructure:
 
     def test_expand_at_tokens_method(self):
         text = self._get_source()
-        assert "_expand_at_tokens" in text
+        chat = self._get_mixin_source("components/chat_mixin")
+        assert "_expand_at_tokens" in text or "_expand_at_tokens" in chat
 
     def test_save_session_snapshot_method(self):
         text = self._get_source()
@@ -696,7 +708,8 @@ class TestAppStructure:
 
     def test_get_sessions_dir_method(self):
         text = self._get_source()
-        assert "_get_sessions_dir" in text
+        ext = self._get_mixin_source("_app_session_mixin")
+        assert "_get_sessions_dir" in text or "_get_sessions_dir" in ext
 
 
 # ──────────────────────────────────────────────────────────────────────────────

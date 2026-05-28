@@ -21,13 +21,14 @@ import importlib.util
 import threading
 from typing import Any, Dict, List, Optional, Callable
 
+from src.core.paths import get_user_config_path, get_agent_context_dir
+
+_get_config_reloader: Any = None
 # Lazy import to avoid circular dependency with hot reload
 try:
-    from src.core.config_hot_reload import get_config_reloader
+    from src.core.config_hot_reload import get_config_reloader as _get_config_reloader  # type: ignore[assignment]
 except Exception:
-    get_config_reloader = None
-
-from src.core.paths import get_user_config_path, get_agent_context_dir
+    pass
 
 logger = logging.getLogger(__name__)
 
@@ -153,11 +154,11 @@ def load_merged_config(working_dir: Optional[Path] = None) -> Dict[str, Any]:
         logger.debug(f"Skipped missing config paths: {skipped}")
 
     # Apply hot-reload update if enabled
-    if get_config_reloader is not None:
+    if _get_config_reloader is not None:
         try:
             # get_config_reloader takes the current merged config as its
             # initial state and returns an object with changed()/load().
-            reloader = get_config_reloader(result)
+            reloader = _get_config_reloader(result)
             try:
                 if reloader.changed():
                     logger.debug("Hot-reload detected config change, applying")
@@ -198,8 +199,14 @@ def get(key: str, default: Any = None, working_dir: Optional[Path] = None) -> An
     """Convenience shortcut for fetching a single config value.
 
     Example: get("max_turns", default=50, working_dir=tmpdir)
+
+    Uses the 5-minute in-process cache when no working_dir is specified to
+    avoid a disk read on every call.
     """
-    cfg = load_merged_config(working_dir=working_dir)
+    if working_dir is None:
+        cfg = get_global_config()
+    else:
+        cfg = load_merged_config(working_dir=working_dir)
     if not isinstance(cfg, dict):
         return default
     return cfg.get(key, default)
@@ -411,12 +418,13 @@ class ConfigWatcher:
             return False
 
     def _on_change(self, changed_paths: set) -> None:
-        # Invoke all callbacks (exceptions swallowed)
+        # Invoke all callbacks; log failures but do not let one broken callback
+        # prevent others from running.
         for cb in list(self._callbacks):
             try:
                 cb(changed_paths)
             except Exception:
-                pass
+                logger.warning("config_watcher: callback %r raised an exception", cb, exc_info=True)
 
         # Publish event if an event bus is provided (exceptions swallowed)
         if self._event_bus is not None:

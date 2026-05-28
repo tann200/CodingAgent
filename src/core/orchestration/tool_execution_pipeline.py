@@ -97,7 +97,7 @@ except Exception:
     def discard_tool_denied(tool_id: str) -> None:  # type: ignore[misc]
         pass
 
-    _tool_denied: set = set()
+    _tool_denied: set = set()  # type: ignore[no-redef]
 
 
 try:

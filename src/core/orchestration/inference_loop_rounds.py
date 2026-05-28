@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextvars as _cv
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 from src.core.logger import logger as guilogger
@@ -132,7 +133,7 @@ def _prepare_next_round_state(
         _token_est = _est(_next_history)
         if _token_est > _HISTORY_TOKEN_THRESHOLD:
             _wdir = _prev_working_dir or final_state.get("working_dir") or ""
-            _prose = _compact(_next_history, _wdir)
+            _prose = _compact(_next_history, Path(_wdir) if _wdir else None)
             if _prose:
                 # Replace history with a single summary message, keeping the
                 # most recent messages intact (distiller handles _KEEP_RECENT internally).

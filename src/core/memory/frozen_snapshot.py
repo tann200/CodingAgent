@@ -13,7 +13,7 @@ The frozen snapshot pattern:
 """
 
 import threading
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from src.core.paths import get_memory_path
 
@@ -112,7 +112,7 @@ class FrozenMemoryStore:
         """Get the current live entries from memory."""
         return self._live_entries.copy()
 
-    def get_usage(self) -> Dict[str, any]:
+    def get_usage(self) -> Dict[str, Any]:
         """Get current memory usage stats."""
         if not self._live_entries:
             return {
@@ -184,6 +184,6 @@ def get_memory_live_entries() -> List[str]:
     return get_memory_store().get_live_entries()
 
 
-def get_memory_usage() -> Dict[str, any]:
+def get_memory_usage() -> Dict[str, Any]:
     """Get memory usage stats."""
     return get_memory_store().get_usage()

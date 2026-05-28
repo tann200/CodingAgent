@@ -116,8 +116,8 @@ async def _stream(bus, text: str, delay: float = 0.014) -> None:
 
 
 class MockSimulationApp(AgentApp):
-    def on_mount(self):
-        super().on_mount()
+    async def on_mount(self):
+        await super().on_mount()
         self.run_simulation()
 
     @on(RequestSystemSettings)

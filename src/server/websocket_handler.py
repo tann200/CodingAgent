@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import logging
 from typing import Any, Callable, Dict
 
@@ -25,7 +26,6 @@ from src.server.websocket_control import (
 )
 
 logger = logging.getLogger(__name__)
-
 
 def _make_websocket_handler(
     event_bus: EventBus,
@@ -105,7 +105,7 @@ async def websocket_session_handler(
 
     if admin_token:
         token = extract_admin_token_from_headers(websocket.headers)
-        if not token or token != admin_token:
+        if not token or not hmac.compare_digest(token, admin_token):
             try:
                 await websocket.close(code=1008)
             except Exception:
@@ -239,6 +239,7 @@ async def websocket_session_handler(
         except asyncio.CancelledError:
             return
         except Exception:
+            logger.warning("WebSocket _receiver: unexpected error, closing receiver", exc_info=True)
             return
 
     sender_task = asyncio.create_task(_sender())

@@ -244,7 +244,7 @@ class RollbackManager:
             else:
                 return {"ok": False, "error": f"Snapshot {snapshot_id} not found"}
 
-        snapshots = self.snapshots.get(snapshot_id, [])  # type: ignore[call-overload]
+        snapshots = self.snapshots.get(snapshot_id, [])  # type: ignore[call-overload, arg-type]
 
         restored_files = []
         failed_files: list = []

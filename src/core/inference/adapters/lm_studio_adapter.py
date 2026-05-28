@@ -228,7 +228,7 @@ class LmStudioAdapter(OpenAICompatibleAdapter):
         except Exception:
             return 0
 
-        items = []
+        items: list = []
         if isinstance(data, dict):
             items = data.get("data") or data.get("models") or []
         elif isinstance(data, list):
@@ -275,13 +275,13 @@ class LmStudioAdapter(OpenAICompatibleAdapter):
 
             if self.models:
                 for m in self.models:
-                    raw_key = (
+                    raw_key: Any = (
                         m.get("id") or m.get("key") or m.get("name")
                         if isinstance(m, dict)
                         else m
                     )
                     if raw_key:
-                        short = str(raw_key).split("/")[-1]
+                        short: str = str(raw_key).split("/")[-1]
                         if (
                             short == model_name
                             or model_name in variants(short)
@@ -294,7 +294,7 @@ class LmStudioAdapter(OpenAICompatibleAdapter):
                 for m in api_models["models"]:
                     if isinstance(m, dict):
                         raw_key = m.get("id") or m.get("key") or m.get("name")
-                        short = str(raw_key).split("/")[-1] if raw_key else None
+                        short = str(raw_key).split("/")[-1] if raw_key else ""
                         if short and (
                             short == model_name
                             or model_name in variants(short)

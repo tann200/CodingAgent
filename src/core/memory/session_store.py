@@ -45,7 +45,7 @@ def _resolve_backend(explicit: Optional[str] = None) -> str:
     """Resolve which backend to use: explicit arg > env var > default jsonl."""
     if explicit:
         return str(explicit).lower()
-    env = os.getenv("CODINGAGENT_STORAGE_BACKEND") or os.getenv("CODING_AGENT_STORAGE_BACKEND", "")
+    env = (os.getenv("CODINGAGENT_STORAGE_BACKEND") or os.getenv("CODING_AGENT_STORAGE_BACKEND") or "")
     env = env.lower()
     if env in ("jsonl", "sqlite"):
         return env
@@ -118,8 +118,14 @@ def get_session_store(workdir: Optional[str] = None, backend: Optional[str] = No
         try:
             return _instantiate_raw(workdir, backend)
         except Exception:
-            # If instantiation fails, fall back to the wrapper to preserve
-            # overall functionality.
+            # Log error before falling back so data loss is not silent.
+            logger.error(
+                "get_session_store: failed to instantiate backend %r for workdir %r; "
+                "falling back to default SessionStore wrapper. Data may be inaccessible.",
+                backend,
+                workdir,
+                exc_info=True,
+            )
             return SessionStore(workdir)
 
     # No explicit backend: resolve configured backend and decide.
@@ -133,6 +139,12 @@ def get_session_store(workdir: Optional[str] = None, backend: Optional[str] = No
 
             return _Json(workdir)
         except Exception:
+            logger.error(
+                "get_session_store: failed to instantiate JsonlSessionStore for workdir %r; "
+                "falling back to default SessionStore wrapper.",
+                workdir,
+                exc_info=True,
+            )
             return SessionStore(workdir)
 
     # Default: return the compatibility wrapper (typically for sqlite)

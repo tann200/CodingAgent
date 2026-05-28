@@ -121,3 +121,20 @@ def _init_services(orch: Any) -> None:
     except Exception as e:
         guilogger.warning(f"Failed to start HTTP/SSE server: {e}")
         orch._http_server_thread = None
+
+    # P3-5: Conditionally init OpenTelemetry exporter
+    try:
+        for _var in ("OTEL_EXPORTER_OTLP_ENDPOINT", "OTEL_SERVICE_NAME"):
+            import os
+            if os.environ.get(_var):
+                from src.core.observability.otel_exporter import OtelExporter
+
+                orch._otel_exporter = OtelExporter()
+                orch._otel_exporter.subscribe(orch.event_bus)
+                guilogger.info(
+                    "OpenTelemetry exporter enabled (endpoint=%s)",
+                    orch._otel_exporter._endpoint or "env-default",
+                )
+                break
+    except Exception:
+        orch._otel_exporter = None

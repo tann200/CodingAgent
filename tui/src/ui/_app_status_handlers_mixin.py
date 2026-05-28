@@ -32,6 +32,8 @@ from .bus import (
 from .components import SideBySideDiff
 from .logging import get_logger
 
+from ._app_protocol import AgentAppProtocol
+
 if TYPE_CHECKING:
     from textual.notifications import SeverityLevel
 
@@ -40,14 +42,12 @@ logger = get_logger("app_status")
 _COST_INPUT_PER_1K: float = 0.001
 _COST_OUTPUT_PER_1K: float = 0.003
 
-
 def _budget_color(percent: float) -> str:
     if percent >= 86:
         return "#ff5555"
     if percent >= 61:
         return "#facc15"
     return "#22c55e"
-
 
 class AppStatusHandlersMixin:
     """Token budget, git, notification, role, provider, file, task, and retry handlers.
@@ -70,7 +70,7 @@ class AppStatusHandlersMixin:
     # ── Token budget (§12.4) ──────────────────────────────────────────────
 
     @on(TokenBudgetEvent)
-    def handle_token_budget(self, event) -> None:
+    def handle_token_budget(self: AgentAppProtocol, event) -> None:
         color = _budget_color(event.percent)
         self.total_tokens = event.used
         self.context_window = event.limit
@@ -93,7 +93,7 @@ class AppStatusHandlersMixin:
     # ── Git branch (T_SIDEBAR) ─────────────────────────────────────────────
 
     @on(GitBranchEvent)
-    def handle_git_branch(self, event) -> None:
+    def handle_git_branch(self: AgentAppProtocol, event) -> None:
         dirty_mark = " [bold #facc15]*[/]" if event.dirty else ""
         ahead_behind = ""
         if event.ahead:
@@ -111,7 +111,7 @@ class AppStatusHandlersMixin:
     # ── Old token usage (backwards compat) ────────────────────────────────
 
     @on(TokenUsageEvent)
-    def handle_token_usage(self, event) -> None:
+    def handle_token_usage(self: AgentAppProtocol, event) -> None:
         self.total_tokens = event.total or event.total_tokens
         self.context_window = event.model_window or 32000
         used_pct = (
@@ -140,7 +140,7 @@ class AppStatusHandlersMixin:
     # ── Notifications (§4.5 ui.notification) ─────────────────────────────
 
     @on(NotificationEvent)
-    def handle_notification(self, event) -> None:
+    def handle_notification(self: AgentAppProtocol, event) -> None:
         severity_map = {
             "success": "information",
             "error": "error",
@@ -153,19 +153,19 @@ class AppStatusHandlersMixin:
     # ── Session health ────────────────────────────────────────────────────
 
     @on(SessionHealthEvent)
-    async def handle_session_health(self, event) -> None:
+    async def handle_session_health(self: AgentAppProtocol, event) -> None:
         await self._chat_handle_session_health(event)
 
     # ── Status + role ─────────────────────────────────────────────────────
 
     @on(StatusUpdate)
-    def handle_status(self, event) -> None:
+    def handle_status(self: AgentAppProtocol, event) -> None:
         logger.info(f"Status: {event.message}")
         self._update_status_text(event.message)
         self.notify(event.message, timeout=3)
 
     @on(RoleTransitionEvent)
-    async def handle_role_transition(self, event) -> None:
+    async def handle_role_transition(self: AgentAppProtocol, event) -> None:
         self._finalize_stream()
         self.active_role = event.to_role
         self._update_role_display(event.to_role)
@@ -186,7 +186,7 @@ class AppStatusHandlersMixin:
         await self._mount_chat_widget(widget)
 
     @on(ProviderStatusChangeEvent)
-    def handle_provider_status(self, event) -> None:
+    def handle_provider_status(self: AgentAppProtocol, event) -> None:
         logger.info(
             f"Provider {event.provider}: {event.old_status} → {event.new_status}"
         )
@@ -202,7 +202,7 @@ class AppStatusHandlersMixin:
             pass
 
     @on(TaskQueueUpdatedEvent)
-    def handle_task_queue(self, event) -> None:
+    def handle_task_queue(self: AgentAppProtocol, event) -> None:
         self.pending_tasks = event.pending_count
         self.queue_size = event.queue_size
         try:
@@ -215,7 +215,7 @@ class AppStatusHandlersMixin:
     # ── File modification ─────────────────────────────────────────────────
 
     @on(FileModifiedEvent)
-    async def handle_file_modified(self, event) -> None:
+    async def handle_file_modified(self: AgentAppProtocol, event) -> None:
         logger.info(f"File modified: {event.file_path}")
         if event.file_path and event.file_path not in self._modified_files:
             self._modified_files.append(event.file_path)
@@ -248,7 +248,7 @@ class AppStatusHandlersMixin:
     # ── Task escalation ───────────────────────────────────────────────────
 
     @on(TaskEscalatedEvent)
-    async def handle_task_escalated(self, event) -> None:
+    async def handle_task_escalated(self: AgentAppProtocol, event) -> None:
         logger.warning(f"Task escalated: {event.task_id} - {event.reason}")
         widget = Static(
             f"[bold #ff5555]Escalation:[/] Task {event.task_id} — {event.reason} (retry {event.retry_count})",
@@ -260,23 +260,23 @@ class AppStatusHandlersMixin:
     # ── Context compaction/degradation ────────────────────────────────────
 
     @on(ContextCompactedEvent)
-    async def handle_context_compacted(self, event) -> None:
+    async def handle_context_compacted(self: AgentAppProtocol, event) -> None:
         await self._chat_handle_context_compacted(event)
 
     @on(ContextDegradedEvent)
-    async def handle_context_degraded(self, event) -> None:
+    async def handle_context_degraded(self: AgentAppProtocol, event) -> None:
         await self._chat_handle_context_degraded(event)
 
     # ── Retry events ──────────────────────────────────────────────────────
 
     @on(RetryAttemptEvent)
-    async def handle_retry_attempt(self, event) -> None:
+    async def handle_retry_attempt(self: AgentAppProtocol, event) -> None:
         await self._chat_handle_retry_attempt(event)
 
     @on(RetrySucceededEvent)
-    async def handle_retry_succeeded(self, event) -> None:
+    async def handle_retry_succeeded(self: AgentAppProtocol, event) -> None:
         await self._chat_handle_retry_succeeded(event)
 
     @on(RetryFailedEvent)
-    async def handle_retry_failed(self, event) -> None:
+    async def handle_retry_failed(self: AgentAppProtocol, event) -> None:
         await self._chat_handle_retry_failed(event)

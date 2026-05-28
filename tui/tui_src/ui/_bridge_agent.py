@@ -13,6 +13,11 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     pass
 
+from ._bridge_protocol import AgentBridgeProtocol
+from .logging import get_logger
+
+logger = get_logger("bridge")
+
 # AUTO-03: Map TUI role names to CodingAgent system prompt names.
 TUI_ROLE_TO_PROMPT: dict[str, str] = {
     "lead_architect": "strategic",  # planning, design
@@ -21,7 +26,7 @@ TUI_ROLE_TO_PROMPT: dict[str, str] = {
 }
 
 
-class BridgeAgentMixin:
+class BridgeAgentMixin(AgentBridgeProtocol):
     """Mixin providing agent execution, interrupt, and usage tracking."""
 
     def send_prompt(self, text: str) -> bool:
@@ -34,12 +39,12 @@ class BridgeAgentMixin:
         immediately dispatched.
         """
         with self._agent_lock:
-            if self._agent_running:
+            if self._agent_running:  # type: ignore[has-type]
                 # MID-INJ: buffer for mid-run injection
                 self._pending_injections.append(text)
                 return False
+            self._cancel_event.clear()  # clear inside lock to avoid race with interrupt()
             self._agent_running = True
-        self._cancel_event.clear()
         # MID-INJ: clear any stale injections from a previous run
         with self._agent_lock:
             self._pending_injections.clear()
@@ -56,7 +61,7 @@ class BridgeAgentMixin:
         """Run the agent on a background thread (§7.1)."""
         from tui.tui_src.ui.bus import AgentFinalResponse, WorkerError, AgentRunningEvent
 
-        _logger = __import__("logging").getLogger("bridge")
+        _logger = logger
         try:
             self._post(AgentRunningEvent(running=True))
             if self._orchestrator:
@@ -67,7 +72,7 @@ class BridgeAgentMixin:
                 # from start_new_session() (triggered by /new).
                 # AUTO-02: apply per-role autonomy settings before each run
                 try:
-                    from src.core.config_loader import (  # type: ignore[import]
+                    from src.core.config_loader import (  # type: ignore[import, attr-defined]
                         get_role_config,
                         load_merged_config,
                     )

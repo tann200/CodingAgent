@@ -97,7 +97,7 @@ class SkillLoader:
             return None
 
         # Parse frontmatter (YAML between --- lines)
-        metadata = {}
+        metadata: dict[str, Any] = {}
         skill_content = content
 
         if content.startswith("---\n"):
@@ -111,7 +111,6 @@ class SkillLoader:
                 else:
                     # No closing ---, treat as all content
                     skill_content = content[4:]  # Skip opening ---
-                    metadata = {}
             except Exception as e:
                 logger.warning(f"Could not parse frontmatter in {file_path}: {e}")
                 metadata = {}

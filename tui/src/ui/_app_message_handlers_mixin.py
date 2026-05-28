@@ -29,8 +29,9 @@ from .components import ChatTextArea, HistoryInput
 from .events import AgentInterrupt, SlashCommand, ToolPermissionApproved
 from .logging import get_logger
 
-logger = get_logger("app_msghandlers")
+from ._app_protocol import AgentAppProtocol
 
+logger = get_logger("app_msghandlers")
 
 class AppMessageHandlersMixin:
     """Streaming output, agent-running gating, message queuing, and text-input handlers.
@@ -63,7 +64,7 @@ class AppMessageHandlersMixin:
     # ── Agent running gate ────────────────────────────────────────────────
 
     @on(AgentRunningEvent)
-    def handle_agent_running(self, event) -> None:
+    def handle_agent_running(self: AgentAppProtocol, event) -> None:
         self.agent_running = event.running
         self._update_status_bar()
         try:
@@ -78,7 +79,7 @@ class AppMessageHandlersMixin:
         if not event.running and self._queued_messages:
             self.call_later(self._drain_message_queue)
 
-    def _drain_message_queue(self) -> None:
+    def _drain_message_queue(self: AgentAppProtocol) -> None:
         while self._queued_messages and not self.agent_running:
             msg = self._queued_messages.popleft()
             logger.info(f"Draining queued message: {msg[:60]}")
@@ -87,7 +88,7 @@ class AppMessageHandlersMixin:
     # ── Model routing ─────────────────────────────────────────────────────
 
     @on(ModelRoutingEvent)
-    def handle_model_routing(self, event) -> None:
+    def handle_model_routing(self: AgentAppProtocol, event) -> None:
         logger.info(f"Model routing: {event.provider} / {event.model}")
         try:
             self.query_one("#sb_provider", Static).update(event.provider)
@@ -102,29 +103,29 @@ class AppMessageHandlersMixin:
     # ── Streaming display — thin delegates to ChatDisplayMixin ────────────
 
     @on(StreamChunkEvent)
-    def handle_stream_chunk(self, event) -> None:
+    def handle_stream_chunk(self: AgentAppProtocol, event) -> None:
         self._chat_handle_stream_chunk(event)
 
     @on(StreamingThinkingUpdate)
-    def handle_thinking_update(self, event) -> None:
+    def handle_thinking_update(self: AgentAppProtocol, event) -> None:
         self._chat_handle_thinking_update(event)
 
     @on(DisplayReasoning)
-    async def handle_reasoning(self, event) -> None:
+    async def handle_reasoning(self: AgentAppProtocol, event) -> None:
         await self._chat_handle_reasoning(event)
 
     @on(AgentFinalResponse)
-    async def handle_final_response(self, event) -> None:
+    async def handle_final_response(self: AgentAppProtocol, event) -> None:
         await self._chat_handle_final_response(event)
 
     @on(WorkerError)
-    async def handle_error(self, event) -> None:
+    async def handle_error(self: AgentAppProtocol, event) -> None:
         await self._chat_handle_error(event)
 
     # ── Step boundary events ──────────────────────────────────────────────
 
     @on(StepStartEvent)
-    def handle_step_start(self, event) -> None:
+    def handle_step_start(self: AgentAppProtocol, event) -> None:
         label = f"⟳ {event.tool}"
         if event.step and event.total:
             label = f"⟳ {event.tool} [{event.step}/{event.total}]"
@@ -134,7 +135,7 @@ class AppMessageHandlersMixin:
             pass
 
     @on(StepFinishEvent)
-    def handle_step_finish(self, event) -> None:
+    def handle_step_finish(self: AgentAppProtocol, event) -> None:
         icon = "✓" if event.ok else "✗"
         elapsed = f" {event.elapsed_ms}ms" if event.elapsed_ms is not None else ""
         label = f"{icon} {event.tool}{elapsed}"
@@ -146,13 +147,13 @@ class AppMessageHandlersMixin:
     # ── MCP server status chip ─────────────────────────────────────────────
 
     @on(McpServerStatusEvent)
-    def handle_mcp_status(self, event) -> None:
+    def handle_mcp_status(self: AgentAppProtocol, event) -> None:
         self._update_mcp_status_chip(event.running, event.count, event.has_error)
 
     # ── Tool permission gate ───────────────────────────────────────────────
 
     @on(ToolPermissionEvent)
-    async def handle_tool_permission(self, event) -> None:
+    async def handle_tool_permission(self: AgentAppProtocol, event) -> None:
         logger.warning(f"Tool permission required: {event.tool}  id={event.tool_id}")
         if not hasattr(self, "_perm_tool_names"):
             self._perm_tool_names: dict[str, str] = {}
@@ -189,17 +190,17 @@ class AppMessageHandlersMixin:
     # ── Per-turn usage summary / doom loop ────────────────────────────────
 
     @on(UsageTurnSummaryEvent)
-    def handle_usage_turn_summary(self, event) -> None:
+    def handle_usage_turn_summary(self: AgentAppProtocol, event) -> None:
         self._chat_handle_usage_turn_summary(event)
 
     @on(DoomLoopEvent)
-    async def handle_doom_loop(self, event) -> None:
+    async def handle_doom_loop(self: AgentAppProtocol, event) -> None:
         await self._chat_handle_doom_loop(event)
 
     # ── Input handling: ChatTextArea ──────────────────────────────────────
 
     @on(ChatTextArea.Submitted)
-    async def on_chat_text_area_submitted(self, event) -> None:
+    async def on_chat_text_area_submitted(self: AgentAppProtocol, event) -> None:
         raw_val = event.text.strip()
         if not raw_val:
             return
@@ -207,7 +208,7 @@ class AppMessageHandlersMixin:
         event.text_area.clear()
         event.text_area.history_index = -1
         self._palette_active = False
-        self._palette_matches = []
+        self._palette_matches: list[str] = []
         self._at_picker_hide()
 
         if raw_val.startswith("/"):
@@ -261,13 +262,13 @@ class AppMessageHandlersMixin:
             self.notify("Agent already running", severity="warning")
 
     @on(ChatTextArea.TextChanged)
-    def on_chat_text_area_changed(self, event) -> None:
+    def on_chat_text_area_changed(self: AgentAppProtocol, event) -> None:
         self._chat_handle_text_changed(event)
 
     # ── Interrupt signal from HistoryInput (kept for compat) ──────────────
 
     @on(HistoryInput.InterruptSignal)
-    def handle_interrupt(self, event) -> None:
+    def handle_interrupt(self: AgentAppProtocol, event) -> None:
         logger.warning("Double-Esc interrupt signal received")
         self._bridge.force_interrupt()
         self._finalize_stream()

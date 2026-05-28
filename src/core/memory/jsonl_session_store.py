@@ -103,7 +103,8 @@ class JsonlSessionStore:
         self._workdir = Path(workdir) if workdir else Path.cwd()
         # Defer canonical path resolution to first write-time call of
         # _get_sessions_dir(). Avoids creating directories during tests.
-        self._agent_context_dir = None
+        self._agent_context_dir: Optional[Path] = None
+        self._sessions_dir: Optional[Path] = None
         self._rotation_bytes = rotation_bytes
         # Per-session locks: session_id → threading.Lock
         self._locks: Dict[str, threading.Lock] = {}
@@ -120,7 +121,7 @@ class JsonlSessionStore:
         cached on the instance so subsequent calls reuse the same path.
         """
         if getattr(self, "_sessions_dir", None) is not None:
-            return self._sessions_dir
+            return self._sessions_dir  # type: ignore[return-value]
 
         try:
             from src.tools.tools_config import agent_context_path
@@ -568,11 +569,10 @@ class JsonlSessionStore:
             )
         except Exception as e:
             # Write diagnostic on failure (preserving original behavior)
-            self._write_diagnostic_on_failure(session_id, e)
+            self._write_diagnostic_on_failure(session_id or "", e)
             return False
 
     def _write_diagnostic_on_failure(self, session_id: str, exc: Exception) -> None:
-        """Write diagnostic information on write failure for debugging."""
         try:
             # Write directly to .codingAgent directory (not sessions subdirectory)
             # to match what SessionStore._write_with_retry does
@@ -865,20 +865,26 @@ class JsonlSessionStore:
                     key = str(p) if p is not None else ""
                     map_parent.setdefault(key, []).append(r)
 
-        def _build(sid: str) -> Dict[str, Any]:
+        def _build(sid: str, _visited: set | None = None) -> Dict[str, Any]:
+            if _visited is None:
+                _visited = set()
+            if sid in _visited:
+                logger.warning("get_session_tree: cycle detected at session_id=%r, stopping recursion", sid)
+                return {"session_id": sid, "children": [], "cycle": True}
+            _visited = _visited | {sid}
             children = []
             for ch in map_parent.get(str(sid), []):
                 child_id = ch.get("child_session_id")
                 if child_id is None:
                     continue
-                children.append(_build(child_id))
+                children.append(_build(child_id, _visited))
             return {"session_id": sid, "children": children}
 
         return _build(session_id)
 
     def get_session_summary(self, session_id: str) -> Dict[str, Any]:
         records = self._read_all_records(session_id)
-        summary = {
+        summary: Dict[str, Any] = {
             "session_id": session_id,
             "messages": 0,
             "message_count": 0,

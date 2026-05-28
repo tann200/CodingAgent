@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 import logging
 import math
 import json
@@ -67,6 +67,7 @@ except Exception:
     _HOOK_CONTEXT_BUILT = "context.built"
     _HAS_HOOKS = False
 
+_ModelTier: Any = None
 # Lazy imports — guarded against circular-import and optional-dependency failures.
 try:
     from src.core.inference.model_tiers import (
@@ -77,7 +78,6 @@ try:
 
     _ModelTier = ModelTier
 except Exception:
-    _ModelTier = None  # type: ignore[assignment]
     _get_tool_limit = None  # type: ignore[assignment]
     _get_plan_step_limit = None  # type: ignore[assignment]
 
@@ -88,31 +88,26 @@ try:
 except Exception:
     _get_context_budget = None  # type: ignore[assignment]
 
+_VectorStore: Any = None
 try:
-    from src.core.indexing.vector_store import VectorStore as _VectorStore
+    from src.core.indexing.vector_store import VectorStore as _VectorStore  # type: ignore[assignment]
 except Exception:
-    _VectorStore = None  # type: ignore[assignment]
+    pass
 
 try:
     from src.core.context.instruction_files import (
-        load_instruction_files as _load_instruction_files,
-        get_instruction_summary as _get_instruction_summary,
         discover_instruction_files as _discover_instruction_files,
         render_instruction_files as _render_instruction_files,
     )
 except Exception:
-    _load_instruction_files = None  # type: ignore[assignment]
-    _get_instruction_summary = None  # type: ignore[assignment]
     _discover_instruction_files = None  # type: ignore[assignment]
     _render_instruction_files = None  # type: ignore[assignment]
 
 try:
     from src.core.orchestration.instruction_loader import (
-        load_instructions as _load_instructions,
         load_project_instructions as _load_project_instructions,
     )
 except Exception:
-    _load_instructions = None  # type: ignore[assignment]
     _load_project_instructions = None  # type: ignore[assignment]
 
 try:
@@ -674,9 +669,10 @@ class ContextBuilder:
                 return result.stdout.strip()
         except Exception as exc:
             logger.debug("context_builder: git branch detection failed: %s", exc)
+        return ""
 
     def _build_model_constraints_block(
-        self, model_tier: Optional[str], tools: list
+        self, model_tier: Optional[str], tools: Any
     ) -> str:
         """Return the <model_constraints> block for NANO/SMALL tiers, or ''."""
         return _build_model_constraints_block_helper(
@@ -691,8 +687,8 @@ class ContextBuilder:
         """Return <project_instructions> block from ancestor .md files, or ''."""
         return _build_instruction_files_block_helper(
             workdir=self._agent_context_dir.parent,
-            discover_instruction_files=_discover_instruction_files,
-            render_instruction_files=_render_instruction_files,
+            discover_instruction_files=_discover_instruction_files,  # type: ignore[arg-type]
+            render_instruction_files=_render_instruction_files,  # type: ignore[arg-type]
         )
 
     def _build_project_instructions_block(self) -> str:
@@ -724,7 +720,7 @@ class ContextBuilder:
             provider_capabilities=provider_capabilities,
             is_reasoning_model_fn=_is_reasoning_model,
             select_prompt_partial_fn=lambda mt, pc, ir: self._select_prompt_partial(
-                mt, pc, ir
+                mt, pc, ir  # type: ignore[arg-type]
             ),
         )
 
@@ -807,7 +803,7 @@ class ContextBuilder:
             build_project_instructions_block_fn=self._build_project_instructions_block,
             render_tools_for_tier_fn=lambda ts, mt: self._render_tools_for_tier(ts, mt),
             build_thinking_guidance_block_fn=lambda mt, pc, mn: self._build_thinking_guidance_block(
-                mt, pc, mn
+                mt, pc, mn  # type: ignore[arg-type]
             ),
             is_reasoning_model_fn=_is_reasoning_model,
             build_thinking_mode_block_fn=lambda tier, is_rm: self._build_thinking_mode_block(

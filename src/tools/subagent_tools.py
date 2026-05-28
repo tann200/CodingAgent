@@ -54,16 +54,17 @@ def _atomic_write_json(target: Path, obj: dict, logger=None) -> bool:
     return _central(target, obj, logger=logger)
 
 
+DispatchEvent: Any = None
+DispatchResultEvent: Any = None
+DispatchEvents: Any = None
 try:
     from src.core.orchestration.event_bus import (
-        DispatchEvent,
-        DispatchResultEvent,
-        DispatchEvents,
+        DispatchEvent,  # type: ignore[assignment]
+        DispatchResultEvent,  # type: ignore[assignment]
+        DispatchEvents,  # type: ignore[assignment]  # noqa: F401
     )
 except ImportError:
-    DispatchEvent = None
-    DispatchResultEvent = None
-    DispatchEvents = None
+    pass
 
 # SPAWN-W1: ContextVar that carries the parent orchestrator reference into tool calls.
 # Set by Orchestrator.execute_tool() before dispatching; cleared automatically on exit.
@@ -78,10 +79,11 @@ _PARENT_ORCHESTRATOR_VAR: ContextVar[Any] = ContextVar(
 _DELEGATION_DEPTH_VAR: ContextVar[int] = ContextVar("_delegation_depth", default=0)
 _MAX_DELEGATION_DEPTH = 3
 
+_get_agent_brain_manager: Any = None
 try:
-    from src.core.orchestration.agent_brain import get_agent_brain_manager
+    from src.core.orchestration.agent_brain import get_agent_brain_manager as _get_agent_brain_manager  # type: ignore[assignment]
 except ImportError:
-    get_agent_brain_manager = None
+    pass
 
 try:
     from src.core.orchestration.role_config import (
@@ -118,7 +120,7 @@ except ImportError:
         "coder": "operational",
         "researcher": "analyst",
     }
-    CANONICAL_ROLE_CONFIGS: Dict[str, Any] = {}
+    CANONICAL_ROLE_CONFIGS: Dict[str, Any] = {}  # type: ignore[no-redef]
 
 
 logger = logging.getLogger(__name__)
@@ -271,9 +273,9 @@ def _resolve_delegate_setup(
     effective_allowed, effective_denied)``.
     """
     canonical_role = canonicalize_subagent_role(role)
-    if get_agent_brain_manager is None:
+    if _get_agent_brain_manager is None:
         raise RuntimeError("AgentBrainManager is not available (src.core not importable)")
-    brain = get_agent_brain_manager()
+    brain = _get_agent_brain_manager()
     system_prompt = brain.compile_system_prompt(canonical_role)
 
     # SPAWN-W2: Resolve allowed_tools from explicit param or AgentDefinition registry.

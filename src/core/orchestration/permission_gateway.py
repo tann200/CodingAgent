@@ -40,10 +40,11 @@ if TYPE_CHECKING:
 # every tool call; repeated re-imports add unnecessary overhead.
 # Each import is wrapped in a try/except fallback so the gateway degrades
 # gracefully when optional modules are absent (e.g. in minimal test environments).
+_PlanMode: Any = None
 try:
-    from src.core.orchestration.plan_mode import PlanMode as _PlanMode
+    from src.core.orchestration.plan_mode import PlanMode as _PlanMode  # type: ignore[assignment]
 except Exception:
-    _PlanMode = None  # type: ignore[assignment]
+    pass
 
 try:
     from src.core.orchestration.role_config import (
@@ -61,16 +62,16 @@ except Exception:
     _PERMISSION_REQUIRED_TOOLS = set()  # type: ignore[assignment]
     _PERM_ORDER = {"read_only": 0, "workspace_write": 1, "danger": 2, "prompt": 3, "allow": 4}  # type: ignore[assignment]
 
+_PermissionLevel: Any = None
 try:
     from src.tools.tools_config import (
         get_tool_permission as _get_tool_permission,
-        PermissionLevel as _PermissionLevel,
+        PermissionLevel as _PermissionLevel,  # type: ignore[assignment]
         is_autonomous as _is_autonomous,
         get_active_permission_mode as _get_active_permission_mode,
     )
 except Exception:
     _get_tool_permission = None  # type: ignore[assignment]
-    _PermissionLevel = None  # type: ignore[assignment]
     _is_autonomous = None  # type: ignore[assignment]
     _get_active_permission_mode = None  # type: ignore[assignment]
 
@@ -83,16 +84,16 @@ except Exception:
     _register_tool_gate = None  # type: ignore[assignment]
     _tool_denied_map = None  # type: ignore[assignment]
 
+_PermissionPolicy: Any = None
+_Behavior: Any = None
 try:
     from src.core.orchestration.permission_policy import (
         get_permission_policy as _get_permission_policy,
-        PermissionPolicy as _PermissionPolicy,
-        Behavior as _Behavior,
+        PermissionPolicy as _PermissionPolicy,  # type: ignore[assignment]
+        Behavior as _Behavior,  # type: ignore[assignment]
     )
 except Exception:
     _get_permission_policy = None  # type: ignore[assignment]
-    _PermissionPolicy = None  # type: ignore[assignment]
-    _Behavior = None  # type: ignore[assignment]
 
 try:
     from src.tools.permission_context import (

@@ -15,7 +15,11 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
+from ._bridge_protocol import AgentBridgeProtocol
 from ._core_paths_loader import get_data_dir
+from .logging import get_logger
+
+logger = get_logger("bridge")
 
 if TYPE_CHECKING:
     pass
@@ -24,7 +28,7 @@ _AGENT_DIR = get_data_dir()
 HISTORY_PATH = _AGENT_DIR / "tui_conversation_history.json"
 
 
-class BridgeSessionMixin:
+class BridgeSessionMixin(AgentBridgeProtocol):
     """Mixin providing history persistence and session lifecycle methods."""
 
     # SES-W1: versioned history envelope.  Version 1 wraps the list in a dict
@@ -55,11 +59,9 @@ class BridgeSessionMixin:
                     for item in entries
                     if isinstance(item, (list, tuple)) and len(item) == 2
                 ]
-            import logging as _logging
-            _logging.getLogger("bridge").info(f"History loaded: {len(self.history)} entries")
+            logger.info(f"History loaded: {len(self.history)} entries")
         except Exception as e:
-            import logging as _logging
-            _logging.getLogger("bridge").warning(f"History load failed (starting fresh): {e}")
+            logger.warning(f"History load failed (starting fresh): {e}")
 
     def _save_history(self) -> None:
         """Atomic write after every agent result (§15.4)."""
@@ -68,23 +70,22 @@ class BridgeSessionMixin:
         with self._history_lock:
             payload = {"version": self._HISTORY_VERSION, "history": list(self.history)}
 
-        _logger = __import__("logging").getLogger("bridge")
         try:
             from src.core.io_utils import atomic_write_json
 
-            _logger.debug("bridge: attempting atomic_write_json for %s", HISTORY_PATH)
-            ok = atomic_write_json(HISTORY_PATH, payload, logger=_logger)
+            logger.debug("bridge: attempting atomic_write_json for %s", HISTORY_PATH)
+            ok = atomic_write_json(HISTORY_PATH, payload, logger=logger)
             if ok:
-                _logger.info("History written atomically: %s", HISTORY_PATH)
+                logger.info("History written atomically: %s", HISTORY_PATH)
                 return
-            _logger.warning(
+            logger.warning(
                 "bridge: atomic_write_json returned False for %s; falling back",
                 HISTORY_PATH,
             )
         except Exception as _e:
             import traceback as _traceback
 
-            _logger.debug(
+            logger.debug(
                 "bridge: atomic_write_json unavailable or failed for %s; falling back: %s\n%s",
                 HISTORY_PATH,
                 _e,
@@ -103,7 +104,7 @@ class BridgeSessionMixin:
                 json.dump(payload, fobj, ensure_ascii=False, indent=2)
             os.replace(tmp, str(HISTORY_PATH))
         except Exception as e:
-            _logger.error("History save failed: %s", e)
+            logger.error("History save failed: %s", e)
             try:
                 os.unlink(tmp)
             except Exception:
@@ -134,8 +135,7 @@ class BridgeSessionMixin:
                 ):
                     removed = self.history.pop(i)
                     self._save_history()
-                    import logging as _logging
-                    _logging.getLogger("bridge").info(f"Undo: removed user message '{removed[1][:50]}...'")
+                    logger.info(f"Undo: removed user message '{removed[1][:50]}...'")
                     return True
             return False
 
@@ -211,24 +211,23 @@ class BridgeSessionMixin:
             data.sort(key=_score, reverse=True)
             data = data[:500]
 
-            _logger = __import__("logging").getLogger("bridge")
             # Prefer central atomic writer; fall back to mkstemp+replace
             try:
                 from src.core.io_utils import atomic_write_json
 
-                _logger.debug("bridge: attempting atomic_write_json for %s", p)
-                ok = atomic_write_json(p, data, logger=_logger)
+                logger.debug("bridge: attempting atomic_write_json for %s", p)
+                ok = atomic_write_json(p, data, logger=logger)
                 if ok:
-                    _logger.debug("bridge: prompt history written atomically: %s", p)
+                    logger.debug("bridge: prompt history written atomically: %s", p)
                     return
-                _logger.warning(
+                logger.warning(
                     "bridge: atomic_write_json returned False for %s; falling back",
                     p,
                 )
             except Exception as _e:
                 import traceback as _traceback
 
-                _logger.debug(
+                logger.debug(
                     "bridge: atomic_write_json unavailable or failed for %s; falling back: %s\n%s",
                     p,
                     _e,
@@ -273,8 +272,7 @@ class BridgeSessionMixin:
                 try:
                     start_fn()
                 except Exception as exc:
-                    import logging as _logging
-                    _logging.getLogger("bridge").warning(f"start_new_task() failed: {exc}")
+                    logger.warning(f"start_new_task() failed: {exc}")
         self.publish_session_new()
 
     def restore_and_continue(
@@ -287,9 +285,7 @@ class BridgeSessionMixin:
             if callable(restore_fn):
                 try:
                     restore_fn(continue_state)
-                    import logging as _logging
-                    _logging.getLogger("bridge").info("restore_and_continue: state restored")
+                    logger.info("restore_and_continue: state restored")
                 except Exception as exc:
-                    import logging as _logging
-                    _logging.getLogger("bridge").warning(f"restore_and_continue: restore failed: {exc}")
+                    logger.warning(f"restore_and_continue: restore failed: {exc}")
         return self.send_prompt(last_task)

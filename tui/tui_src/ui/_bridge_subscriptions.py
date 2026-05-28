@@ -10,8 +10,13 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     pass
 
+from ._bridge_protocol import AgentBridgeProtocol
+from .logging import get_logger
 
-class BridgeSubscriptionsMixin:
+logger = get_logger("bridge")
+
+
+class BridgeSubscriptionsMixin(AgentBridgeProtocol):
     """Mixin providing EventBus subscription lifecycle methods."""
 
     def setup_subscriptions(self) -> None:
@@ -20,6 +25,7 @@ class BridgeSubscriptionsMixin:
         # provider / model
         self._subscribe("orchestrator.startup", self._on_orchestrator_startup)
         self._subscribe("provider.status.changed", self._on_provider_status)
+        self._subscribe("provider.unavailable", self._on_provider_unavailable)
         self._subscribe("provider.models.list", self._on_models_list)
         self._subscribe("provider.models.cached", self._on_models_list)
         self._subscribe("provider.models.empty", lambda p: None)
@@ -94,9 +100,7 @@ class BridgeSubscriptionsMixin:
         self._subscribe("delegation.start", self._on_delegation_start)
         self._subscribe("delegation.finish", self._on_delegation_finish)
 
-        import logging as _logging
-        _logger = _logging.getLogger("bridge")
-        _logger.info(f"EventBus: subscribed to {len(self._subscriptions)} events")
+        logger.info(f"EventBus: subscribed to {len(self._subscriptions)} events")
 
         # RACE-FIX: Immediately seed the token monitor and sidebar with the
         # context length from providers.json so the TOKEN BUDGET max is correct
@@ -160,6 +164,4 @@ class BridgeSubscriptionsMixin:
             except Exception:
                 pass
         self._subscriptions.clear()
-        import logging as _logging
-        _logger = _logging.getLogger("bridge")
-        _logger.info("EventBus: all subscriptions removed")
+        logger.info("EventBus: all subscriptions removed")

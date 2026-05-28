@@ -163,9 +163,9 @@ def parse_with_regex(path: Path, language: str) -> Dict[str, Any]:
 
 
 def compute_file_hash(path: Path) -> str:
-    """Compute MD5 hash of file content for change detection."""
+    """Compute SHA-256 hash of file content for change detection."""
     try:
-        return hashlib.md5(path.read_bytes()).hexdigest()
+        return hashlib.sha256(path.read_bytes()).hexdigest()
     except Exception:
         return ""
 
@@ -373,7 +373,7 @@ def index_repository(workdir: str, incremental: bool = True) -> Dict[str, Any]:
     # Merge with existing index for unchanged files
     existing_files_set = set(current_files.keys()) - set(files_to_index.keys())
     existing_file_data = {f["path"]: f for f in existing_index.get("files", [])}
-    existing_symbols_by_file = {}
+    existing_symbols_by_file: dict[str, list] = {}
     for sym in existing_index.get("symbols", []):
         fp = sym.get("file_path")
         if fp:
@@ -394,8 +394,11 @@ def index_repository(workdir: str, incremental: bool = True) -> Dict[str, Any]:
 
     # Save updated index
     index_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(index_path, "w", encoding="utf-8") as f:
-        json.dump(repo_index, f, indent=2)
+    if _atomic_write_json is not None:
+        _atomic_write_json(index_path, repo_index)
+    else:
+        with open(index_path, "w", encoding="utf-8") as f:
+            json.dump(repo_index, f, indent=2)
 
     # Save metadata for next incremental update
     metadata = {
@@ -562,7 +565,17 @@ def refresh_file_in_index(file_path: str, working_dir: str) -> bool:
             rel = str(p.relative_to(Path(working_dir).resolve()))
         except ValueError:
             rel = str(p)
-        data.setdefault("files", {})[rel] = parsed
+        files_list = data.get("files", [])
+        if not isinstance(files_list, list):
+            files_list = []
+        # Update existing entry or append new one
+        for i, entry in enumerate(files_list):
+            if isinstance(entry, dict) and entry.get("path") == rel:
+                files_list[i] = parsed
+                break
+        else:
+            files_list.append(parsed)
+        data["files"] = files_list
         if _atomic_write_json is not None:
             return bool(_atomic_write_json(index_path, data))
         # Fallback: plain write (no atomicity guarantee)

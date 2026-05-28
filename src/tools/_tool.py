@@ -170,7 +170,7 @@ class ToolDefinition:
             },
         }
         if required:
-            schema["function"]["parameters"]["required"] = required
+            schema["function"]["parameters"]["required"] = required  # type: ignore[index]
         return schema
 
     def validate_args(self, args: dict) -> list[str]:

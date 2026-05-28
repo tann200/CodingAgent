@@ -138,7 +138,7 @@ class TestDelegateTask:
         _parent_orch.active_agent = None
 
         with (
-            patch("src.tools.subagent_tools.get_agent_brain_manager") as mock_brain_mgr,
+            patch("src.tools.subagent_tools._get_agent_brain_manager") as mock_brain_mgr,
             patch("src.tools.subagent_tools._PARENT_ORCHESTRATOR_VAR") as mock_ctxvar,
             patch(
                 "src.tools.subagent_tools._resolve_subagent_graph",

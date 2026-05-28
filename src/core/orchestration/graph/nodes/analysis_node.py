@@ -442,7 +442,7 @@ Use this repository context to plan your deep-dive searches."""
                 sg.update_file(str(full_path))
 
         # P3-1: Collect call graph as structured JSON dict {symbol: [callers]}
-        call_graph_data: dict = {}
+        call_graph_data: dict = {}  # type: ignore[no-redef]
         for sym in key_symbols[:5]:
             callers = sg.find_calls(sym)
             if callers:
@@ -451,7 +451,7 @@ Use this repository context to plan your deep-dive searches."""
         # P3-1: Collect test map as structured JSON dict {module_stem: [test_paths]}
         # RA-3 fix: normalise find_tests_for_module output to plain string paths so
         # planning_node's ', '.join(unique_tests) doesn't fail on dict items.
-        test_map_data: dict = {}
+        test_map_data: dict = {}  # type: ignore[no-redef]
         for fp in relevant_files[:5]:
             module_name = Path(fp).stem
             tests = sg.find_tests_for_module(module_name)

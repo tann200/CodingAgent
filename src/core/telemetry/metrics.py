@@ -100,9 +100,9 @@ class TelemetryMetrics:
                 lines.append(f"# TYPE {k} counter")
                 lines.append(f"{k} {v}")
             # gauges
-            for k, v in sorted(self.gauges.items()):
+            for k, gv in sorted(self.gauges.items()):
                 lines.append(f"# TYPE {k} gauge")
-                lines.append(f"{k} {v}")
+                lines.append(f"{k} {gv}")
             # histograms -> output count and sum
             for k, vals in sorted(self.histograms.items()):
                 cnt = len(vals)

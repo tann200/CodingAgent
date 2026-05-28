@@ -23,6 +23,7 @@ are additive and do not interfere with the parent's bindings.
 from __future__ import annotations
 
 import json
+import logging
 import subprocess
 import time
 from pathlib import Path
@@ -35,6 +36,8 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Label, Static
 
 from .session_list import SessionListScreen
+
+_log = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -203,12 +206,16 @@ class SessionScreen(SessionListScreen):
             if not cwd.is_dir():
                 raise RuntimeError(f"Working directory not found: {working_dir}")
             # Stash any local changes first so the checkout doesn't fail
-            subprocess.run(
+            stash_result = subprocess.run(
                 ["git", "stash", "--include-untracked"],
                 cwd=str(cwd),
                 capture_output=True,
+                text=True,
                 timeout=15,
             )
+            if stash_result.returncode != 0:
+                stash_err = (stash_result.stderr or "").strip()[:120]
+                _log.warning("git stash failed (proceeding anyway): %s", stash_err)
             result = subprocess.run(
                 ["git", "checkout", git_sha],
                 cwd=str(cwd),

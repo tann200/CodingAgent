@@ -21,10 +21,10 @@ def register_config_reload_handlers(orch: Any) -> None:
     # orchestrator instances are garbage collected.
     try:
         if not hasattr(register_config_reload_handlers, "_registered"):
-            register_config_reload_handlers._registered = weakref.WeakSet()
-        if orch in register_config_reload_handlers._registered:
+            register_config_reload_handlers._registered = weakref.WeakSet()  # type: ignore[attr-defined]
+        if orch in register_config_reload_handlers._registered:  # type: ignore[attr-defined]
             return
-        register_config_reload_handlers._registered.add(orch)
+        register_config_reload_handlers._registered.add(orch)  # type: ignore[attr-defined]
     except Exception:
         # If weakref operations fail for any reason, proceed (best-effort).
         pass

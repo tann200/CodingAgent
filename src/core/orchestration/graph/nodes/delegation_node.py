@@ -202,7 +202,7 @@ async def delegation_node(state: StateLike, config: RunnableConfig) -> Dict[str,
         ]
 
         # Phase 1: Execute READ agents in parallel
-        read_results = {}
+        read_results: dict[str, Any] = {}
         if read_delegations:
             read_tasks = [
                 _execute_delegation_with_locks(
@@ -323,9 +323,9 @@ async def delegation_node(state: StateLike, config: RunnableConfig) -> Dict[str,
 
         # Standard execution path (non-PRSW)
         if len(delegations) == 1:
-            result = await run_delegation(delegations[0], 0)
-            if result is not None:
-                result_key, value = result
+            single_result = await run_delegation(delegations[0], 0)
+            if single_result is not None:
+                result_key, value = single_result
                 results["delegation_results"][result_key] = value
         else:
             tasks = [run_delegation(d, i) for i, d in enumerate(delegations)]
@@ -333,7 +333,7 @@ async def delegation_node(state: StateLike, config: RunnableConfig) -> Dict[str,
                 *tasks, return_exceptions=True
             )
 
-            for result in delegation_results_list:
+            for result in delegation_results_list:  # type: ignore[assignment]
                 if isinstance(result, Exception):
                     logger.error(f"delegation_node: exception in gather: {result}")
                     continue

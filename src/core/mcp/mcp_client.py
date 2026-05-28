@@ -376,8 +376,8 @@ class McpStdioClient:
         if not self._process or not self._process.stdout:
             return
         try:
-            async for line in self._process.stdout:
-                line = line.decode(errors="replace").strip()
+            async for raw_line in self._process.stdout:
+                line = raw_line.decode(errors="replace").strip()
                 if not line:
                     continue
                 try:

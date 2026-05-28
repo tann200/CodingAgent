@@ -1,12 +1,11 @@
 """repo_read_tools — read-only repository analysis tools.
 
-Consolidates tools from the following former modules (all still importable
-for backward compatibility, but no longer listed in _BUILTIN_MODULES):
+Consolidates tools from the following former modules (now merged here):
 
-- repo_overview_tool.py  → repo_overview()
-- repo_summary.py        → helper functions (not @tool-decorated)
-- repo_tools.py          → find_files(), search_code(), find_symbol(), find_references()
-- repo_analysis_tools.py → analyze_repository()
+- repo_overview_tool  → repo_overview()
+- repo_summary        → helper functions (not @tool-decorated)
+- repo_tools          → find_files(), search_code(), find_symbol(), find_references()
+- repo_analysis_tools → analyze_repository()
 
 Grouping convention
 -------------------
@@ -365,7 +364,7 @@ def _get_cached_repo_summary(workdir: str) -> Optional[Dict[str, Any]]:
     """Load cached repo summary if config files haven't changed."""
     try:
         cache_dir = (
-            Path(agent_context_path(workdir))
+            Path(agent_context_path(Path(workdir)))
             if agent_context_path is not None
             else Path(workdir) / ".codingAgent"
         )
@@ -389,7 +388,7 @@ def _save_repo_summary_cache(workdir: str, summary: Dict[str, Any]) -> None:
     """Save repo summary to cache."""
     try:
         cache_dir = (
-            Path(agent_context_path(workdir))
+            Path(agent_context_path(Path(workdir)))
             if agent_context_path is not None
             else Path(workdir) / ".codingAgent"
         )
@@ -591,9 +590,6 @@ def find_references(name: str, workdir: str) -> Dict[str, Any]:
     Uses word-boundary matching to avoid false positives (e.g. 'run' won't match 'running').
     Returns per-match line numbers and snippets.
     """
-    import json
-    import re
-
     try:
         base = Path(workdir)
         index_path = agent_context_path(base) / "repo_index.json"
@@ -690,7 +686,7 @@ def analyze_repository(workdir: str) -> Dict[str, Any]:
             languages["rust"] = rs_data
 
         # Build module_summaries + dependency_relationships from all languages
-        repo_memory = {
+        repo_memory: Dict[str, Any] = {
             "module_summaries": {},
             "dependency_relationships": {},
             "languages": {},
@@ -815,7 +811,7 @@ def _analyze_python_files(files: List[Path]) -> Dict[str, Any]:
 
 
 def _analyze_python_file(file_path: Path):
-    summary = {"classes": [], "functions": []}
+    summary: Dict[str, Any] = {"classes": [], "functions": []}
     imports = []
     with open(file_path, "r", encoding="utf-8") as f:
         try:

@@ -243,6 +243,12 @@ class _AgentStateSpec(TypedDict, total=False):
     """
 
     # ── Core task ──────────────────────────────────────────────────────────
+    # LIFECYCLE: Set by orchestrator_bootstrap / builder; read by every node.
+    #   task, original_task, working_dir — immutable after bootstrap
+    #   session_id, parent_session_id — set once by bootstrap
+    #   turn_count, max_turns — incremented by perception_node, read by loop_guards
+    #   rounds — incremented by frontier_loop_node
+    #   agent_mode, model_tier, deterministic, seed — set by workflow_selector
     task: str
     original_task: str | None
     working_dir: str
@@ -258,6 +264,12 @@ class _AgentStateSpec(TypedDict, total=False):
     seed: int | None
 
     # ── Conversation history ───────────────────────────────────────────────
+    # LIFECYCLE: Written by perception_node, execution_node; read by all nodes.
+    #   history — primary message list; appended by perception & execution
+    #   verified_reads — written by verification_node
+    #   task_history — snapshot by memory_sync_node
+    #   recent_tool_calls — updated by execution_node, read by loop_guards
+    #   errors — appended by any node on failure; cleared on new turn
     history: Annotated[List[Dict[str, Any]], merge_or_replace_list]
     verified_reads: Annotated[List[str], merge_or_replace_list]
     task_history: List[Dict[str, Any]] | None
@@ -265,6 +277,20 @@ class _AgentStateSpec(TypedDict, total=False):
     errors: List[str]
 
     # ── Plan & step ────────────────────────────────────────────────────────
+    # LIFECYCLE: Written by planning_node, plan_validator; read by execution_node.
+    #   current_plan, plan_dag — set by planning_node
+    #   current_step — incremented by execution_node step completion
+    #   planned_action — set during plan breakdown
+    #   plan_progress — updated by execution_node
+    #   execution_waves, current_wave — set by planner, read by execution
+    #   plan_attempts, replan_attempts — incremented on replan
+    #   replan_required — set by execution_node when stuck
+    #   plan_resumed, last_plan_hash — set on session resume
+    #   task_decomposed, task_complexity — set by planning_node
+    #   step_retry_counts — dict keyed by step index; updated by execution
+    #   no_plan_fail_count — incremented on consecutive no-plan failures
+    #   step_lint_warnings — set by linter after tool execution
+    #   affected_files — aggregated by execution_node
     current_plan: List[Dict[str, Any]] | None
     current_step: int | None
     step_description: str | None
@@ -286,6 +312,15 @@ class _AgentStateSpec(TypedDict, total=False):
     affected_files: List[str] | None
 
     # ── Plan approval / preview ────────────────────────────────────────────
+    # LIFECYCLE: Written by plan_mode, preview_service; read by execution_node.
+    #   plan_validation — set by plan_validator
+    #   plan_enforce_warnings, plan_strict_mode — config flags, immutable
+    #   plan_mode_enabled, awaiting_plan_approval — managed by plan_mode
+    #   plan_mode_approved — set true on user approval
+    #   plan_mode_blocked_tool — set when tool blocked in plan mode
+    #   pending_preview_id — set by preview_service on /preview
+    #   preview_mode_enabled, preview_confirmed — toggle flags
+    #   awaiting_user_input — set by any node needing user input
     plan_validation: Dict[str, Any] | None
     plan_enforce_warnings: bool | None
     plan_strict_mode: bool | None
@@ -299,6 +334,15 @@ class _AgentStateSpec(TypedDict, total=False):
     awaiting_user_input: bool | None
 
     # ── Tool execution ─────────────────────────────────────────────────────
+    # LIFECYCLE: Written by execution_node / frontier_loop_node; read by verification_node, loop_guards.
+    #   next_action — the pending tool call (set then consumed each iteration)
+    #   last_result — outcome of last tool call
+    #   last_tool_name — name of last executed tool
+    #   action_failed — bool flag for recovery branching
+    #   tool_call_count, max_tool_calls — counter / cap for tool loop
+    #   tool_last_used — dict[user_tool_name -> turn_number] for throttling
+    #   files_read — tracking for read-before-write guard
+    #   snapshots — fork snapshot IDs created during session
     next_action: Dict[str, Any] | None
     last_result: Dict[str, Any] | None
     last_tool_name: str | None
@@ -310,6 +354,12 @@ class _AgentStateSpec(TypedDict, total=False):
     snapshots: List[str] | None
 
     # ── Debug & recovery ───────────────────────────────────────────────────
+    # LIFECYCLE: Written by recovery_node / loop_guards; read by perception_node, execution_node.
+    #   debug_attempts, max_debug_attempts — incrementing loop counter / cap
+    #   total_debug_attempts — lifetime counter (never reset)
+    #   last_debug_error_type, total_recovery_attempts — diagnostic fields
+    #   last_error_code — set on tool failure; cleared on success
+    #   needs_clarification — set when user clarification required
     debug_attempts: int | None
     max_debug_attempts: int | None
     total_debug_attempts: int | None
@@ -319,6 +369,10 @@ class _AgentStateSpec(TypedDict, total=False):
     needs_clarification: bool | None
 
     # ── Verification ───────────────────────────────────────────────────────
+    # LIFECYCLE: Written by verification_node; read by evaluation_node, memory_sync_node.
+    #   verification_passed, verification_result — linter/check verification
+    #   evaluation_result — overall pass/fail from LLM evaluator
+    #   evaluation_llm_verdict, evaluation_llm_reason — LLM rationale
     verification_passed: bool | None
     verification_result: Dict[str, Any] | None
     evaluation_result: str | None
@@ -326,6 +380,14 @@ class _AgentStateSpec(TypedDict, total=False):
     evaluation_llm_reason: str | None
 
     # ── Analysis & context ─────────────────────────────────────────────────
+    # LIFECYCLE: Written by analysis_node, analyst_delegation_node; read by planning_node, execution_node.
+    #   analysis_summary — LLM distillation of repo context
+    #   relevant_files, key_symbols — file/symbol lists from repo analysis
+    #   analyst_findings — free-text findings from analyst subagent
+    #   repo_summary_data — cached repo structure overview
+    #   call_graph, test_map — dependency graphs from analysis_node
+    #   step_controller_enabled — config flag for step-by-step mode
+    #   empty_response_count — counter for LLM returning empty responses
     analysis_summary: str | None
     relevant_files: List[str] | None
     key_symbols: List[str] | None
@@ -337,11 +399,23 @@ class _AgentStateSpec(TypedDict, total=False):
     empty_response_count: int | None
 
     # ── Delegation ─────────────────────────────────────────────────────────
+    # LIFECYCLE: Written by delegation_node / analyst_delegation_node; read by wait_for_delegations.
+    #   delegation_results — merged results after all sub-delegations complete
+    #   delegations — list of pending delegation tasks
+    #   delegation_depth — current nesting depth (prevents infinite recursion)
     delegation_results: Dict[str, Any] | None
     delegations: List[Dict[str, Any]] | None
     delegation_depth: int | None
 
     # ── Memory / distillation ──────────────────────────────────────────────
+    # LIFECYCLE: Written by perception_node, memory_sync_node; read by perception_node.
+    #   _should_distill — set when context budget exceeds threshold
+    #   _force_compact — set true by /compact command
+    #   _budget_compaction — set when token budget is tight
+    #   _compacted_history — result of last compaction
+    #   _compaction_last_round — turn number of last compaction
+    #   last_compact_at, last_compact_turn — diagnostic timestamps
+    #   context_degradation_detected — set when compaction quality is low
     _should_distill: bool | None
     _force_compact: bool | None
     _budget_compaction: bool | None
@@ -352,6 +426,8 @@ class _AgentStateSpec(TypedDict, total=False):
     context_degradation_detected: bool | None
 
     # ── Cost & telemetry ───────────────────────────────────────────────────
+    # LIFECYCLE: Written by evaluation_node / memory_sync_node; read by TUI bridge.
+    #   session_cost_usd — cumulative cost accumulator
     session_cost_usd: float | None
 
     # ── Internal / private ─────────────────────────────────────────────────

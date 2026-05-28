@@ -23,6 +23,8 @@ from textual.widgets import Static
 
 from ..logging import get_logger
 
+from .._app_protocol import AgentAppProtocol
+
 if TYPE_CHECKING:
     pass
 
@@ -43,7 +45,6 @@ ROLE_COLORS: dict[str, str] = {
     "system": "#666666",
 }
 
-
 class StatusBarMixin:
     """Mixin providing status-bar update methods for ``AgentApp``.
 
@@ -62,7 +63,7 @@ class StatusBarMixin:
     # Permission badge (footer chip)
     # ------------------------------------------------------------------
 
-    def _update_perm_badge(self, delta: int = 0) -> None:
+    def _update_perm_badge(self: AgentAppProtocol, delta: int = 0) -> None:
         """GAP-FOOTER-1: update the pending-permission count chip in the footer."""
         self._pending_perm_count = max(0, self._pending_perm_count + delta)
         try:
@@ -80,7 +81,7 @@ class StatusBarMixin:
     # Role display (sidebar + sub_title)
     # ------------------------------------------------------------------
 
-    def _update_role_display(self, role: str) -> None:
+    def _update_role_display(self: AgentAppProtocol, role: str) -> None:
         """Update ``#sb_role`` sidebar widget and ``App.sub_title``."""
         label = ROLE_LABELS.get(role, role.upper().replace("_", " "))
         color = ROLE_COLORS.get(role, "#888888")
@@ -94,7 +95,7 @@ class StatusBarMixin:
     # Status bar (footer left chip)
     # ------------------------------------------------------------------
 
-    def _update_status_bar(self) -> None:
+    def _update_status_bar(self: AgentAppProtocol) -> None:
         """Refresh the ``#status_left`` footer chip with role, tokens, and state flags."""
         role = self.active_role
         label = ROLE_LABELS.get(role, role.upper().replace("_", " "))
@@ -114,7 +115,7 @@ class StatusBarMixin:
     # MCP status chip (footer)
     # ------------------------------------------------------------------
 
-    def _update_mcp_status_chip(self, running: bool, count: int, has_error: bool) -> None:
+    def _update_mcp_status_chip(self: AgentAppProtocol, running: bool, count: int, has_error: bool) -> None:
         """GAP-FOOTER-2: update the MCP server status chip.
 
         Extracted from ``handle_mcp_status()`` so the rendering logic can be
@@ -145,7 +146,7 @@ class StatusBarMixin:
     # ------------------------------------------------------------------
 
     def _update_provider_status_widgets(
-        self,
+        self: AgentAppProtocol,
         provider: str,
         new_status: str,
         model: str = "",
@@ -186,7 +187,7 @@ class StatusBarMixin:
     # Status text (sidebar)
     # ------------------------------------------------------------------
 
-    def _update_status_text(self, message: str) -> None:
+    def _update_status_text(self: AgentAppProtocol, message: str) -> None:
         """Update the ``#sb_status`` sidebar widget."""
         try:
             self.query_one("#sb_status", Static).update(f"Status: {message}")

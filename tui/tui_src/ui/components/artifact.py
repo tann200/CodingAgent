@@ -5,6 +5,9 @@ from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.console import RenderableType
 from rich.text import Text
+import logging
+
+_log = logging.getLogger(__name__)
 
 
 class AgentArtifact(Static):
@@ -24,8 +27,8 @@ class AgentArtifact(Static):
     def watch__stream_content(self, new_content: str) -> None:
         try:
             self.update(self._build_renderable(new_content))
-        except Exception:
-            pass
+        except Exception as _err:
+            _log.warning("artifact render error (kind=%s): %s", self.kind, _err)
 
     def append_chunk(self, chunk: str) -> None:
         self._content_str += chunk

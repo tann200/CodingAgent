@@ -1,3 +1,4 @@
+# DEPRECATED: use `scripts/run.sh` or `uv run codingagent` instead.
 # start.ps1 - PowerShell startup script for CodingAgent
 # Behavior mirrors start.sh:
 # - Prefer python3.11

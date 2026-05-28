@@ -3,6 +3,8 @@ from __future__ import annotations
 import importlib
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
+from src.core.inference._protocols import LockProtocol
+
 
 def load_provider_entries(raw: Any) -> List[dict]:
     providers = (
@@ -97,7 +99,7 @@ def cache_static_provider_models(
     provider_models_cache: Dict[str, List[str]],
     module_models_cache: Dict[str, List[str]],
     module_models_cache_time: Dict[str, float],
-    model_cache_lock: object,
+    model_cache_lock: LockProtocol,
     now: Callable[[], float],
     event_bus: Any,
 ) -> None:
@@ -133,7 +135,7 @@ def load_registered_providers(
     provider_models_cache: Dict[str, List[str]],
     module_models_cache: Dict[str, List[str]],
     module_models_cache_time: Dict[str, float],
-    model_cache_lock: object,
+    model_cache_lock: LockProtocol,
     now: Callable[[], float],
     event_bus: Any,
     providers_config_path: Optional[str],

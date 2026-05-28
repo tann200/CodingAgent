@@ -85,3 +85,9 @@ explicit_package_bases = true
 # Project-local virtualenv that must be used for development and testing
 venv = ".venv"
 enforce_venv = true
+
+[dependency-groups]
+dev = [
+    "types-pyyaml>=6.0.12.20260518",
+    "types-requests>=2.33.0.20260518",
+]

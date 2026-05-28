@@ -15,8 +15,13 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     pass
 
+from ._bridge_protocol import AgentBridgeProtocol
+from .logging import get_logger
 
-class BridgeContextMixin:
+logger = get_logger("bridge")
+
+
+class BridgeContextMixin(AgentBridgeProtocol):
     """Mixin providing context window, token budget, and session event handlers."""
 
     def _get_active_context_length(self) -> int:
@@ -222,8 +227,7 @@ class BridgeContextMixin:
         self._schedule_callback(self.app._handle_session_new)
 
     def _on_session_hydrated(self, payload: dict) -> None:
-        import logging as _logging
-        _logging.getLogger("bridge").info("Session hydrated from backend")
+        logger.info("Session hydrated from backend")
 
     def _on_session_health(self, payload: dict) -> None:
         from tui.tui_src.ui.bus import SessionHealthEvent
@@ -299,10 +303,8 @@ class BridgeContextMixin:
             if callable(fn):
                 try:
                     fn()
-                    import logging as _logging
-                    _logging.getLogger("bridge").info(f"compact_context: called orchestrator.{method}()")
+                    logger.info(f"compact_context: called orchestrator.{method}()")
                     return True
                 except Exception as exc:
-                    import logging as _logging
-                    _logging.getLogger("bridge").warning(f"compact_context: {method}() failed: {exc}")
+                    logger.warning(f"compact_context: {method}() failed: {exc}")
         return False

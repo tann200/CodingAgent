@@ -46,7 +46,7 @@ def test_dispatch_result_event_published_to_parent(tmp_path: Path) -> None:
     # Patch the canonical graph resolver, AgentBrainManager, and the parent-context var
     with (
         patch("src.tools.subagent_tools._resolve_subagent_graph") as mock_resolver,
-        patch("src.tools.subagent_tools.get_agent_brain_manager") as mock_brain_mgr,
+        patch("src.tools.subagent_tools._get_agent_brain_manager") as mock_brain_mgr,
         patch("src.tools.subagent_tools._PARENT_ORCHESTRATOR_VAR") as mock_ctxvar,
     ):
         mock_resolver.return_value = mock_graph

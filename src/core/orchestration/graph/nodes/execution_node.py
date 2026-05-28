@@ -260,7 +260,7 @@ async def _execution_node_impl(state: Mapping[str, Any], config: RunnableConfig)
     # Phase A: Wave-based execution support
     execution_waves = state.get("execution_waves")
     current_wave = state.get("current_wave") or 0
-    wave_advance = {}  # Initialize for all code paths
+    wave_advance: Dict[str, Any] = {}  # Initialize for all code paths
 
     log_wave_execution_start(
         execution_waves=execution_waves,
@@ -316,7 +316,7 @@ async def _execution_node_impl(state: Mapping[str, Any], config: RunnableConfig)
             inc_step_retry=increment_step_retry_count,
         )
         log_no_action_outcome(content=content, logger=logger, regex_module=re)
-        return no_action_result
+        return no_action_result or {}
 
     tool_name = action["name"]
     args = action.get("arguments", {})
@@ -471,8 +471,8 @@ async def _execution_node_impl(state: Mapping[str, Any], config: RunnableConfig)
             _refresh_file_in_index(_written_path, _working_dir)
 
     # Successful tool execution
-    verified_update = []
-    plan_advance = {}
+    verified_update: list[Dict[str, Any]] = []
+    plan_advance: Dict[str, Any] = {}
     _tool_last_used_update, _files_read_update, _current_count = update_tool_tracking(
         state=state,
         tool_name=tool_name,
@@ -583,7 +583,7 @@ async def _execution_node_impl(state: Mapping[str, Any], config: RunnableConfig)
     return build_execution_return_payload(
         result=res,
         tool_name=tool_name,
-        verified_reads=verified_update,
+        verified_reads=verified_update,  # type: ignore[arg-type]
         history=new_messages,
         tool_call_count=post_tool_updates["tool_call_count"],
         tool_last_used=_tool_last_used_update,

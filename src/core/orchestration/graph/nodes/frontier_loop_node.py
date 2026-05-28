@@ -592,7 +592,7 @@ async def _call_llm_for_turn(
         if choices and len(choices) > 0:
             choice = choices[0] if isinstance(choices[0], dict) else {}
             msg = choice.get("message", {}) if isinstance(choice, dict) else {}
-            tool_calls = []
+            tool_calls: list[Any] = []
             if isinstance(msg, dict):
                 tool_calls = msg.get("tool_calls") or []
             if not tool_calls and isinstance(choice, dict):

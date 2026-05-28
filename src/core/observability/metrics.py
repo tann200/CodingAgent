@@ -22,7 +22,7 @@ from typing import Dict, Optional, Callable
 
 class RollingHistogram:
     def __init__(self, maxlen: int = 1000) -> None:
-        self._samples = deque(maxlen=maxlen)
+        self._samples: deque[float] = deque(maxlen=maxlen)
         self._lock = threading.Lock()
 
     def record(self, value: float) -> None:

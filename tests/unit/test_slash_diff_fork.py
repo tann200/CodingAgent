@@ -5,7 +5,7 @@ Unit tests for /diff and /fork TUI slash commands.
 We test:
   - SLASH_COMMANDS list contains /diff and /fork
   - SLASH_COMMAND_DESCRIPTIONS contains both with meaningful text
-  - SLASH_HELP contains the command descriptions
+  - registry.help_text() contains the command descriptions
   - _slash_diff handler exists on AgentApp
   - _slash_fork handler exists on AgentApp
   - fork_session integration via SessionStore (full round-trip)
@@ -49,22 +49,40 @@ class TestSlashCommandRegistry:
 
 
 # ---------------------------------------------------------------------------
-# SC-5 – SC-6: SLASH_HELP text in app.py
+# SC-5 – SC-6: Commands registered in CommandRegistry
 # ---------------------------------------------------------------------------
 
 
 class TestSlashHelp:
-    def test_sc5_diff_in_help_text(self) -> None:
-        """SC-5: /diff appears in SLASH_HELP."""
-        from tui.tui_src.ui.app import SLASH_HELP
+    def test_sc5_diff_in_registry(self) -> None:
+        """SC-5: /diff registered in CommandRegistry."""
+        from tui.tui_src.ui.commands.registry import CommandRegistry
 
-        assert "/diff" in SLASH_HELP
+        r = CommandRegistry()
+        # Check that _init_slash_registry registers diff
+        import pathlib
+        src = pathlib.Path("tui/tui_src/ui/_app_slash_commands_mixin.py").read_text()
+        assert '"diff"' in src or "'diff'" in src
+        assert "_slash_diff" in src
 
-    def test_sc6_fork_in_help_text(self) -> None:
-        """SC-6: /fork appears in SLASH_HELP."""
-        from tui.tui_src.ui.app import SLASH_HELP
+    def test_sc6_fork_in_registry(self) -> None:
+        """SC-6: /fork registered in CommandRegistry."""
+        import pathlib
+        src = pathlib.Path("tui/tui_src/ui/_app_slash_commands_mixin.py").read_text()
+        assert '"fork"' in src or "'fork'" in src
+        assert "_slash_fork" in src
 
-        assert "/fork" in SLASH_HELP
+    def test_help_text_contains_diff_and_fork(self) -> None:
+        """registry.help_text() includes /diff and /fork descriptions."""
+        from tui.tui_src.ui.commands import CommandRegistry
+        from tui.tui_src.ui.commands import SlashCommand
+
+        r = CommandRegistry()
+        r.register(SlashCommand("diff", "show working-directory diff", lambda app, _a: None))
+        r.register(SlashCommand("fork", "fork current session", lambda app, _a: None))
+        help_text = r.help_text()
+        assert "/diff" in help_text
+        assert "/fork" in help_text
 
 
 # ---------------------------------------------------------------------------
@@ -91,24 +109,27 @@ class TestAgentAppHandlers:
 
 
 # ---------------------------------------------------------------------------
-# SC-9 – SC-10: handle_slash_command routes diff / fork
+# SC-9 – SC-10: handle_slash_command routes via registry
 # ---------------------------------------------------------------------------
 
 
 class TestSlashCommandRouting:
-    def test_sc9_handle_slash_command_routes_diff(self) -> None:
-        """SC-9: handle_slash_command dispatches 'diff' to _slash_diff."""
+    _MIXIN = "tui/tui_src/ui/_app_slash_commands_mixin.py"
+
+    def test_sc9_registry_dispatches_diff(self) -> None:
+        """SC-9: registry has 'diff' pointing to _slash_diff."""
         import pathlib
 
-        src = pathlib.Path("tui/tui_src/ui/app.py").read_text()
-        # Verify 'elif cmd == "diff"' and '_slash_diff' are both present
-        assert 'cmd == "diff"' in src
+        src = pathlib.Path(self._MIXIN).read_text()
+        assert '"diff"' in src
         assert "_slash_diff" in src
+        assert "SlashCommand" in src
 
-    def test_sc10_handle_slash_command_routes_fork(self) -> None:
-        """SC-10: handle_slash_command dispatches 'fork' to _slash_fork."""
+    def test_sc10_registry_dispatches_fork(self) -> None:
+        """SC-10: registry has 'fork' pointing to _slash_fork."""
         import pathlib
 
-        src = pathlib.Path("tui/tui_src/ui/app.py").read_text()
-        assert 'cmd == "fork"' in src
+        src = pathlib.Path(self._MIXIN).read_text()
+        assert '"fork"' in src
         assert "_slash_fork" in src
+        assert "SlashCommand" in src

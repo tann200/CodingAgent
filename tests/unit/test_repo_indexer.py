@@ -159,7 +159,7 @@ def new_function():
         try:
             hash1 = compute_file_hash(temp_path)
             assert hash1 is not None
-            assert len(hash1) == 32  # MD5 hash length
+            assert len(hash1) == 64  # SHA-256 hash length
 
             # Modify file
             temp_path.write_text("modified content")

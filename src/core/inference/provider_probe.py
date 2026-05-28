@@ -3,6 +3,8 @@ from __future__ import annotations
 import inspect
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
+from src.core.inference._protocols import LockProtocol
+
 
 def should_probe_provider(
     *, provider_config: Optional[dict], canonical_provider: Callable[[Any], str]
@@ -90,7 +92,7 @@ def cache_probed_models(
     provider_models_cache: Dict[str, List[str]],
     module_models_cache: Dict[str, List[str]],
     module_models_cache_time: Dict[str, float],
-    model_cache_lock: object,
+    model_cache_lock: LockProtocol,
     now: Callable[[], float],
 ) -> None:
     provider_models_cache[provider_key] = models
@@ -153,7 +155,7 @@ def run_provider_probe_cycle(
     provider_models_cache: Dict[str, List[str]],
     module_models_cache: Dict[str, List[str]],
     module_models_cache_time: Dict[str, float],
-    model_cache_lock: object,
+    model_cache_lock: LockProtocol,
     now: Callable[[], float],
     event_bus: Any,
     canonical_provider: Callable[[Any], str],

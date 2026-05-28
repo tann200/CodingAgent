@@ -213,12 +213,10 @@ class TestRepoToolsConsolidation:
         import src.tools.repo_write_tools as rwt
         assert callable(getattr(rwt, "initialize_repo_intelligence", None))
 
-    def test_old_modules_still_importable(self):
-        """Backward compat: original files must remain importable."""
-        import src.tools.repo_tools  # noqa: F401
-        import src.tools.repo_analysis_tools  # noqa: F401
-        import src.tools.repo_overview_tool  # noqa: F401
-        import src.tools.repo_summary  # noqa: F401
+    def test_consolidated_modules_importable(self):
+        """Consolidated repo tools must remain importable."""
+        import src.tools.repo_read_tools  # noqa: F401
+        import src.tools.repo_write_tools  # noqa: F401
 
     def test_registry_has_repo_overview(self):
         """build_registry should register repo_overview via repo_read_tools."""

@@ -197,11 +197,11 @@ def _matching_commands(
                 commands.append(cmd)
         elif isinstance(e, dict):
             matcher = str(e.get("matcher", "*")).lower()
-            cmd = e.get("command")
-            if not isinstance(cmd, str):
+            dict_cmd = e.get("command")
+            if not isinstance(dict_cmd, str):
                 continue
             if fnmatch.fnmatch(lname, matcher):
-                commands.append(cmd)
+                commands.append(dict_cmd)
     return commands
 
 

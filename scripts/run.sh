@@ -1,25 +1,12 @@
 #!/usr/bin/env bash
-# CodingAgent — canonical launch script.
+set -euo pipefail
+# Canonical CodingAgent entrypoint.  Use instead of start.sh / start_tui.sh.
 #
 # Usage:
-#   scripts/run.sh [--tui] [--headless] [--task "..."] [any other args]
+#   ./scripts/run.sh --help
+#   ./scripts/run.sh --tui
+#   ./scripts/run.sh --task "list files"
 #
-# Preferred: use `uv run codingagent [args]` when uv is available.
-# This script is a fallback that activates the local venv then delegates.
-#
-# Examples:
-#   scripts/run.sh --tui
-#   scripts/run.sh --task "list all Python files"
-#   uv run codingagent --tui
-
-set -euo pipefail
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
-
-# Activate virtual environment if present and not already active
-if [ -z "${VIRTUAL_ENV:-}" ] && [ -f "$PROJECT_ROOT/.venv/bin/activate" ]; then
-    source "$PROJECT_ROOT/.venv/bin/activate"
-fi
-
-exec python -m src.main "$@"
+# Depends on `uv` being installed and the virtual environment being active.
+cd "$(dirname "$0")/.."
+exec uv run python -m src.main "$@"

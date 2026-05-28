@@ -47,7 +47,7 @@ class AdapterWrapper:
         try:
             if self.event_bus is not None:
                 try:
-                    if _publish_model_response:
+                    if _publish_model_response is not None:
                         _publish_model_response(
                             self.event_bus,
                             str(out.get("provider") or "unknown"),

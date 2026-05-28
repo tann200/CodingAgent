@@ -169,7 +169,7 @@ def resolve_provider_capabilities(
                 _map_provider_family_impl as _map_pf,
             )
 
-            resolved["provider_family"] = _map_pf(resolved["provider_name"])
+            resolved["provider_family"] = _map_pf(resolved["provider_name"])  # type: ignore[arg-type]
         except Exception:
             pass
     return resolved

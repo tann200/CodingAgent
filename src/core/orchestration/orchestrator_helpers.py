@@ -126,9 +126,8 @@ def _publish_active_config_impl(orch: Any) -> None:
             # 3) ProviderManager unavailable; try direct ProviderManager lookup
             try:
                 if getattr(orch, "_adapter", None):
-                    from src.core.inference.llm_manager import get_provider_manager
-
-                    pm = get_provider_manager()
+                    from src.core.inference.llm_manager import get_provider_manager as _get_pm_local
+                    pm = _get_pm_local()
                     if pm:
                         try:
                             caps = pm.get_provider_capabilities(orch._adapter)
@@ -566,18 +565,19 @@ def _background_model_check_impl(orch: Any) -> None:
     """Check for available models in the background (non-blocking)."""
     start_ts = time.time()
     # Guarded import to avoid circular imports during tests or when the
+    _get_provider_manager: Any = None
     # provider manager module is unavailable in isolated environments.
     try:
-        from src.core.inference.llm_manager import get_provider_manager
+        from src.core.inference.llm_manager import get_provider_manager as _get_provider_manager  # type: ignore[assignment]
     except Exception:
-        get_provider_manager = None
+        pass
 
     try:
-        if not get_provider_manager:
+        if _get_provider_manager is None:
             return
         pm = None
         try:
-            pm = get_provider_manager()
+            pm = _get_provider_manager()
         except Exception:
             pm = None
 

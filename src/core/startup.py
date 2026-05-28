@@ -126,7 +126,7 @@ async def provider_health_check(timeout: float = 5.0) -> Dict[str, Dict[str, Any
                 norm: list = []
                 try:
                     for m in models:
-                        cand = _extract_str(m)
+                        cand = _extract_str(m)  # type: ignore[assignment]
                         if cand and _valid_str(cand):
                             norm.append(cand)
                 except Exception:

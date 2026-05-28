@@ -74,13 +74,13 @@ except Exception:
     _get_token_budget_monitor = None  # type: ignore[assignment]
 
 # v2: workflow_selector integration
+WorkflowType: Any = None
 try:
     from src.core.inference.workflow_selector import (
-        WorkflowType,
+        WorkflowType,  # type: ignore[assignment]  # noqa: F401
         should_use_single_loop as _should_use_single_loop,
     )
 except Exception:
-    WorkflowType = None  # type: ignore[assignment]
     _should_use_single_loop = None  # type: ignore[assignment]
 
 # D-11: Named routing constants — avoids magic numbers in router functions.
@@ -648,7 +648,6 @@ def build_tier_graph(tier: str):
             cache_key,
             compile_frontier_graph_fn=_compile_frontier_graph,
             compile_lite_graph_fn=_compile_lite_graph,
-            compile_agent_graph_fn=compile_agent_graph,
         )
         _GRAPH_CACHE[cache_key] = compiled
         logger.info("build_tier_graph: '%s' graph compiled and cached", cache_key)

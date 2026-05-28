@@ -76,9 +76,9 @@ async def debug_node(state: StateLike, config: RunnableConfig) -> Dict[str, Any]
     from src.core.config_loader import get_agent_loop_constant, MAX_DEBUG_ATTEMPTS, TOTAL_DEBUG_CEILING
 
     current_attempt: int = int(state.get("debug_attempts") or 0)
-    max_attempts: int = int(state.get("max_debug_attempts") or get_agent_loop_constant("max_debug_attempts", MAX_DEBUG_ATTEMPTS))
-    total_debug_attempts: int = int(state.get("total_debug_attempts") or 0)
-    total_debug_ceiling: int = int(state.get("total_debug_ceiling") or get_agent_loop_constant("total_debug_ceiling", TOTAL_DEBUG_CEILING))
+    max_attempts: int = int(state.get("max_debug_attempts") or get_agent_loop_constant("max_debug_attempts", MAX_DEBUG_ATTEMPTS))  # type: ignore[arg-type]
+    total_debug_attempts: int = int(state.get("total_debug_attempts") or 0)  # type: ignore[arg-type]
+    total_debug_ceiling: int = int(state.get("total_debug_ceiling") or get_agent_loop_constant("total_debug_ceiling", TOTAL_DEBUG_CEILING))  # type: ignore[arg-type]
     last_result = state.get("last_result") or {}
     verification_result = state.get("verification_result") or {}
 

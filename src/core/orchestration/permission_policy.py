@@ -58,6 +58,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Dict, Iterator, List, Optional, Sequence, Tuple
 
+from src.core.orchestration._protocols import CLIContextProtocol
 from src.core.paths import get_permissions_path
 
 logger = logging.getLogger(__name__)
@@ -216,7 +217,7 @@ class PermissionPolicy:
     # ------------------------------------------------------------------
 
     def combined_check(
-        self, tool_name: str, cli_context: Optional[object] = None
+        self, tool_name: str, cli_context: Optional[CLIContextProtocol] = None
     ) -> Behavior:
         """Check *tool_name* against both this policy and a CLI context.
 
@@ -237,7 +238,7 @@ class PermissionPolicy:
 
         if cli_context is not None:
             try:
-                if cli_context.blocks(tool_name):  # type: ignore[union-attr]
+                if cli_context.blocks(tool_name):
                     return Behavior.DENY
             except Exception:
                 pass

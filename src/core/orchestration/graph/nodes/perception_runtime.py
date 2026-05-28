@@ -82,7 +82,7 @@ def _validate_call_model_and_adapter(
     logger: logging.Logger,
 ) -> tuple[Any, Optional[dict[str, Any]]]:
     """Validate perception runtime dependencies before prompt construction."""
-    base_payload = {
+    base_payload: dict[str, Any] = {
         "history": [],
         "next_action": None,
         "rounds": (state.get("rounds") or 0) + 1,

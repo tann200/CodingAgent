@@ -13,8 +13,9 @@ from textual.widgets import Static
 
 from .logging import get_logger
 
-logger = get_logger("app_session")
+from ._app_protocol import AgentAppProtocol
 
+logger = get_logger("app_session")
 
 class AppSessionMixin:
     """Session lifecycle helpers — snapshot, new session, sidebar reset.
@@ -33,7 +34,7 @@ class AppSessionMixin:
 
     # ── Session snapshot ──────────────────────────────────────────────────
 
-    def _get_sessions_dir(self) -> Path:
+    def _get_sessions_dir(self: AgentAppProtocol) -> Path:
         # Cross-platform sessions directory — prefer core.paths.get_sessions_dir()
         from ._core_paths_loader import get_sessions_dir as _get_sessions_dir_helper
 
@@ -41,7 +42,7 @@ class AppSessionMixin:
         d.mkdir(parents=True, exist_ok=True)
         return d
 
-    def _save_session_snapshot(self) -> None:
+    def _save_session_snapshot(self: AgentAppProtocol) -> None:
         """Snapshot current session to the sessions directory returned by
         ``src.core.paths.get_sessions_dir()`` (fallback to ~/.coding_agent/sessions
         in TUI dev mode).
@@ -143,12 +144,12 @@ class AppSessionMixin:
 
     # ── §10.3 New session ─────────────────────────────────────────────────
 
-    def _handle_session_new(self) -> None:
+    def _handle_session_new(self: AgentAppProtocol) -> None:
         """Called from bridge when session.new fires."""
         self._clear_chat_panel()
         self._reset_sidebar()
 
-    def _reset_sidebar(self) -> None:
+    def _reset_sidebar(self: AgentAppProtocol) -> None:
         self._modified_files.clear()
         self.total_tokens = 0
         self.pending_tasks = 0

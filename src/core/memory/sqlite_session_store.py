@@ -539,11 +539,10 @@ class SqliteSessionStore:
             )
         except Exception as e:
             # Write diagnostic on failure (preserving original behavior)
-            self._write_diagnostic_on_failure(session_id, e)
+            self._write_diagnostic_on_failure(session_id or "", e)
             return False
 
     def _write_diagnostic_on_failure(self, session_id: str, exc: Exception) -> None:
-        """Write diagnostic information on write failure for debugging."""
         try:
             import time
 
@@ -673,10 +672,16 @@ class SqliteSessionStore:
             c = r["child_session_id"]
             map_parent.setdefault(str(p), []).append(str(c))
 
-        def _build(sid: str) -> Dict[str, Any]:
+        def _build(sid: str, _visited: set | None = None) -> Dict[str, Any]:
+            if _visited is None:
+                _visited = set()
+            if sid in _visited:
+                logger.warning("get_session_tree: cycle detected at session_id=%r, stopping recursion", sid)
+                return {"session_id": sid, "children": [], "cycle": True}
+            _visited = _visited | {sid}
             children = []
             for ch in map_parent.get(str(sid), []):
-                children.append(_build(ch))
+                children.append(_build(ch, _visited))
             return {"session_id": sid, "children": children}
 
         return _build(session_id)

@@ -10,6 +10,7 @@ is honoured when the core helpers are unavailable.
 from __future__ import annotations
 
 import json
+import logging
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -19,6 +20,8 @@ from textual.containers import Container, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import Label, Static
 from textual.events import Key
+
+_log = logging.getLogger(__name__)
 
 
 _ROLE_COLORS: Dict[str, str] = {
@@ -94,7 +97,8 @@ class SubagentDetailScreen(ModalScreen[None]):
         path = self._sessions_dir / f"session_{self._child_session_id}.json"
         try:
             return json.loads(path.read_text(encoding="utf-8"))
-        except Exception:
+        except Exception as _err:
+            _log.warning("could not load subagent session %s: %s", path.name, _err)
             return None
 
     def compose(self) -> ComposeResult:

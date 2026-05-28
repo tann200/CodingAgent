@@ -213,7 +213,7 @@ def test_find_references_traversal_path_ignored(tmp_workdir):
             }
         )
     )
-    from src.tools.repo_tools import find_references
+    from src.tools.repo_read_tools import find_references
 
     result = find_references("root", str(tmp_workdir))
     assert result["status"] == "ok"
@@ -237,7 +237,7 @@ def test_find_references_normal_file(tmp_workdir):
             }
         )
     )
-    from src.tools.repo_tools import find_references
+    from src.tools.repo_read_tools import find_references
 
     result = find_references("hello", str(tmp_workdir))
     assert result["status"] == "ok"

@@ -11,20 +11,22 @@ Grouping convention
 
 from __future__ import annotations
 
-from typing import Dict, Any
-
-# Lazy imports — degrade gracefully when src.core is not available
-try:
-    from src.core.indexing.repo_indexer import index_repository
-except ImportError:
-    index_repository = None
-
-try:
-    from src.core.indexing.vector_store import VectorStore
-except ImportError:
-    VectorStore = None
+from typing import Any, Dict
 
 from src.tools._tool import tool
+
+# Lazy imports — degrade gracefully when src.core is not available
+_index_repository: Any = None
+try:
+    from src.core.indexing.repo_indexer import index_repository as _index_repository  # type: ignore[assignment]
+except ImportError:
+    pass
+
+_VectorStore: Any = None
+try:
+    from src.core.indexing.vector_store import VectorStore as _VectorStore  # type: ignore[assignment]
+except ImportError:
+    pass
 
 
 @tool(side_effects=["write"], tags=["coding"])
@@ -32,12 +34,12 @@ def initialize_repo_intelligence(workdir: str) -> Dict[str, Any]:
     """
     Initializes or updates the repository index and vector store.
     """
-    if index_repository is None or VectorStore is None:
+    if _index_repository is None or _VectorStore is None:
         return {"status": "error", "error": "src.core.indexing not available"}
     try:
-        repo_index = index_repository(workdir)
+        repo_index = _index_repository(workdir)
 
-        vs = VectorStore(workdir)
+        vs = _VectorStore(workdir)
         vs.index_code(repo_index)
 
         return {

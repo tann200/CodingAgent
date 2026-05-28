@@ -162,7 +162,7 @@ class FileLockManager:
 
     def get_lock_status(self, path: str) -> Dict:
         """Get lock status for a file."""
-        status = {"path": path, "readers": [], "writer": None}
+        status: Dict[str, object] = {"path": path, "readers": [], "writer": None}
 
         if path in self._read_locks:
             status["readers"] = list(self._read_locks[path])

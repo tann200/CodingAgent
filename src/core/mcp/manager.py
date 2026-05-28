@@ -194,19 +194,21 @@ class McpServerManager:
             # repository-scoped files.
             cfg_env = cfg.get("env") if isinstance(cfg.get("env"), dict) else None
 
-            # If a CONTEXT7_API_KEY exists in the process environment and the
-            # server did not explicitly provide an API key, prefer the process
-            # environment. This allows users to `export CONTEXT7_API_KEY=...`
-            # before launching the agent.
+            # If a CONTEXT7_API_KEY exists in the process environment, only
+            # inject it when this MCP server appears to be a Context7 server
+            # (name or url contains "context7"). Injecting into every server
+            # would expose the key to unrelated/untrusted subprocesses.
             if cfg_env is None:
                 cfg_env = {}
-            if "CONTEXT7_API_KEY" not in cfg_env and os.environ.get("CONTEXT7_API_KEY"):
+            _is_context7 = "context7" in name.lower() or "context7" in str(url or "").lower()
+            if _is_context7 and "CONTEXT7_API_KEY" not in cfg_env and os.environ.get("CONTEXT7_API_KEY"):
                 cfg_env["CONTEXT7_API_KEY"] = os.environ.get("CONTEXT7_API_KEY")
 
             # Ensure we have a server state object for reporting/status updates
             st = McpServerState(name=name, transport=transport)
             self._states[name] = st
 
+            client: Any = None
             if transport in ("http", "sse", "ws", "websocket") and url:
                 ws_url = str(url)
                 # Build headers from cfg or environment API key
@@ -214,7 +216,7 @@ class McpServerManager:
                 # Allow cfg to specify headers directly
                 if isinstance(cfg.get("headers"), dict):
                     headers.update(
-                        {str(k): str(v) for k, v in cfg.get("headers").items()}
+                        {str(k): str(v) for k, v in (cfg.get("headers") or {}).items()}
                     )
                 # If an API key is available in cfg_env, prefer it for Authorization
                 api_key = cfg_env.get("CONTEXT7_API_KEY")

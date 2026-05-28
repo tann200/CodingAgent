@@ -18,7 +18,7 @@ import os
 import shutil
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Dict, List, Optional, Callable, Any, Union
+from typing import Awaitable, Callable, Dict, List, Optional, Any, Union
 from pathlib import Path
 import json
 
@@ -63,7 +63,7 @@ class Subscription:
     subscription_id: str
     session_id: str
     topic_pattern: str  # Supports wildcards: "agent.*", "session.*"
-    callback: Callable[[CrossSessionMessage], None]
+    callback: Callable[[CrossSessionMessage], Union[None, Awaitable[None]]]
     created_at: float
 
 
@@ -150,7 +150,7 @@ class CrossSessionBus:
     def subscribe(
         self,
         topic: str,
-        callback: Callable[[CrossSessionMessage], None],
+        callback: Callable[[CrossSessionMessage], Union[None, Awaitable[None]]],
         session_id: Optional[str] = None,
         subscription_id: Optional[str] = None,
     ) -> str:
@@ -479,7 +479,9 @@ class CrossSessionBus:
     ) -> None:
         """Deliver message to async callback."""
         try:
-            await sub.callback(message)  # type: ignore[misc]
+            result = sub.callback(message)
+            if result is not None:
+                await result  # type: ignore[misc]
         except Exception as e:
             logger.error(f"Error in async delivery to {sub.subscription_id}: {e}")
 

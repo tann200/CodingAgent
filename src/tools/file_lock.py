@@ -17,7 +17,7 @@ import threading
 import time
 import traceback
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -146,7 +146,7 @@ class FileLock:
             import fcntl
             self._fcntl = fcntl
         except Exception:
-            self._fcntl = None
+            self._fcntl = None  # type: ignore[assignment]
 
     def _parse_lockfile(self, data: str):
         m = re.search(r"pid=\s*(\d+)", data)
@@ -270,7 +270,7 @@ class FileLock:
                     raise TimeoutError(f"Timeout acquiring lock {self.lock_path}")
                 time.sleep(0.05)
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
+    def __exit__(self, exc_type: object, exc_val: object, exc_tb: object) -> Optional[bool]:  # type: ignore[exit-return]
         if self._fcntl is not None:
             try:
                 if self._fp is not None:

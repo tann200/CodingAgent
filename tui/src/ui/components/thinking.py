@@ -1,10 +1,14 @@
 from typing import Optional
+import logging
 import time
 from textual.app import ComposeResult
 from textual.widgets import Static, Label
 from textual.containers import Vertical
 from textual import on, events
 from rich.markdown import Markdown
+from rich.text import Text
+
+_log = logging.getLogger(__name__)
 
 
 class ThinkingProcess(Vertical):
@@ -27,8 +31,9 @@ class ThinkingProcess(Vertical):
             safe = "".join(ch for ch in content_str if ord(ch) >= 32 or ch in "\n\t")
             try:
                 md = Markdown(safe)
-            except Exception:
-                md = content_str
+            except Exception as _err:
+                _log.debug("Markdown render failed, falling back to plain text: %s", _err)
+                md = Text(safe)  # type: ignore[assignment]
         yield Static(md, classes="content")
 
     def on_mount(self) -> None:

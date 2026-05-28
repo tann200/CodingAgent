@@ -238,7 +238,7 @@ class SessionManager:
             if self.msg_mgr and hasattr(self.msg_mgr, "messages"):
                 history = list(self.msg_mgr.messages)
             tool_call_count = sum(usage_buffer.values()) if usage_buffer else 0
-            state = {
+            state: dict[str, Any] = {
                 "task": "",
                 "history": history,
                 "current_step": 0,

@@ -172,7 +172,7 @@ class ContextController:
         relevant_lines = sorted(set(relevant_line_indices))
         snippets = []
 
-        current_group = []
+        current_group: list[str] = []
         last_idx = -1
         for idx in relevant_lines:
             if current_group and idx != last_idx + 1:

@@ -13,6 +13,8 @@ from textual.widgets import Button, Label, Static
 
 from .logging import get_logger
 
+from ._app_protocol import AgentAppProtocol
+
 logger = get_logger("app_slash")
 
 SLASH_HELP = """\
@@ -39,7 +41,6 @@ Available commands:
   /mcp [list|add <name> <cmd…>|status] — manage MCP servers
   /quit          — exit the application"""
 
-
 def _load_config_loader_module():
     """Return the real src.core.config_loader module, cached in sys.modules."""
     import importlib.util
@@ -61,7 +62,6 @@ def _load_config_loader_module():
         raise
     return mod
 
-
 class AppSlashCommandsMixin:
     """Slash-command dispatcher and individual command implementations.
 
@@ -81,7 +81,7 @@ class AppSlashCommandsMixin:
 
     # ── Slash command dispatcher (§11) ────────────────────────────────────
 
-    async def handle_slash_command(self, event) -> None:
+    async def handle_slash_command(self: AgentAppProtocol, event) -> None:
         cmd = event.command.lower()
         args = event.args.strip()
         logger.info(f"Slash command: /{cmd} {args}")
@@ -218,7 +218,7 @@ class AppSlashCommandsMixin:
             else:
                 self.notify(f"Unknown command: /{cmd}", severity="warning")
 
-    async def _slash_undo_with_confirm(self) -> None:
+    async def _slash_undo_with_confirm(self: AgentAppProtocol) -> None:
         """P2-2: Show a confirmation dialog before removing the last user message."""
         from textual.screen import ModalScreen
 
@@ -278,7 +278,7 @@ class AppSlashCommandsMixin:
 
         self.push_screen(_UndoConfirmScreen(), _after_confirm)
 
-    async def _slash_fast(self) -> None:
+    async def _slash_fast(self: AgentAppProtocol) -> None:
         """S8-C: /fast — switch to the smallest/fastest configured model (NANO tier)."""
         try:
             result = self._bridge.get_fast_model()
@@ -317,7 +317,7 @@ class AppSlashCommandsMixin:
         except Exception as exc:
             self.notify(f"/fast error: {exc}", severity="warning")
 
-    async def _slash_provider(self, args: str) -> None:
+    async def _slash_provider(self: AgentAppProtocol, args: str) -> None:
         from .settings import SettingsStore
 
         providers = self._settings.available_providers
@@ -368,7 +368,7 @@ class AppSlashCommandsMixin:
             )
             self.notify(f"Switched to provider: {pid}")
 
-    async def _slash_model(self, args: str) -> None:
+    async def _slash_model(self: AgentAppProtocol, args: str) -> None:
         all_models = self._settings.get_all_models_flat()
         if not args:
             if not all_models:
@@ -428,7 +428,7 @@ class AppSlashCommandsMixin:
             )
             self.notify(f"Model switched to: {target_model}")
 
-    async def _slash_mcp(self, args: str) -> None:
+    async def _slash_mcp(self: AgentAppProtocol, args: str) -> None:
         """S3-C: /mcp [list|add <name> <cmd…>|status] — manage MCP servers."""
         try:
             _cl = _load_config_loader_module()
@@ -587,7 +587,7 @@ class AppSlashCommandsMixin:
         except Exception as exc:
             self.notify(f"/mcp error: {exc}", severity="error")
 
-    async def _slash_diff(self) -> None:
+    async def _slash_diff(self: AgentAppProtocol) -> None:
         """Show working-directory diff since the last git snapshot."""
         try:
             orch = self._bridge._orchestrator
@@ -633,7 +633,7 @@ class AppSlashCommandsMixin:
         except Exception as exc:
             self.notify(f"diff failed: {exc}", severity="error")
 
-    async def _slash_fork(self) -> None:
+    async def _slash_fork(self: AgentAppProtocol) -> None:
         """Fork the current session to a new independent copy."""
         try:
             orch = self._bridge._orchestrator
@@ -659,7 +659,7 @@ class AppSlashCommandsMixin:
         except Exception as exc:
             self.notify(f"fork failed: {exc}", severity="error")
 
-    async def _slash_share(self) -> None:
+    async def _slash_share(self: AgentAppProtocol) -> None:
         """GAP-CMD-2: export conversation to markdown; copy to clipboard if pyperclip available."""
         import datetime as _dt
 
@@ -770,7 +770,7 @@ class AppSlashCommandsMixin:
                 )
         await self._mount_chat_widget(w)
 
-    async def _slash_rename(self, args: str) -> None:
+    async def _slash_rename(self: AgentAppProtocol, args: str) -> None:
         """GAP-CMD-3: rename the current session."""
         new_name = args.strip()
         if not new_name:
@@ -811,7 +811,7 @@ class AppSlashCommandsMixin:
         w = Static(msg, classes="system_msg", markup=True)
         await self._mount_chat_widget(w)
 
-    async def _slash_worktree(self, args: str) -> None:
+    async def _slash_worktree(self: AgentAppProtocol, args: str) -> None:
         """GAP-WORKTREE-1: manage git worktree isolation for tasks."""
         from pathlib import Path as _Path
 

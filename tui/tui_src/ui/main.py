@@ -54,16 +54,16 @@ class TextualAppStub:
     def run(
         self,
         *,
-        headless: bool = False,
-        inline: bool = False,
-        mouse: bool = True,
-        size: Optional[tuple[int, int]] = None,
-        **kwargs: object,
+        _headless: bool = False,
+        _inline: bool = False,
+        _mouse: bool = True,
+        _size: Optional[tuple[int, int]] = None,
+        **_kwargs: object,
     ) -> None:
         """No-op run; stub cannot actually render a TUI."""
 
 
-def _get_app(headless: bool = False) -> "AgentApp | TextualAppStub":
+def _get_app(_headless: bool = False) -> "AgentApp | TextualAppStub":
     """Return a real AgentApp when Textual is available, else a stub."""
     try:
         return create_app()

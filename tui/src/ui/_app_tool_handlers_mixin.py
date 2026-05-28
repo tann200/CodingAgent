@@ -34,6 +34,8 @@ from .events import (
 )
 from .logging import get_logger
 
+from ._app_protocol import AgentAppProtocol
+
 logger = get_logger("tool_handlers")
 
 # ── Per-tool icons matching OpenCode's InlineTool icons.
@@ -78,7 +80,6 @@ _TODO_STATUS_COLORS: dict[str, str] = {
     "done": "#22c55e",
 }
 
-
 def _fmt_args(tool_args: dict) -> str:
     """Format tool args per §6.2: truncate >120 chars; omit content/patch."""
     parts = []
@@ -92,7 +93,6 @@ def _fmt_args(tool_args: dict) -> str:
             parts.append(f'{k}="{sv}"')
     return "  ".join(parts)
 
-
 def _plan_bar(step: int, total: int) -> str:
     """ASCII progress bar §12.3."""
     if total <= 0:
@@ -100,7 +100,6 @@ def _plan_bar(step: int, total: int) -> str:
     filled = int(10 * step / total)
     bar = "▓" * filled + "▒" * (10 - filled)
     return bar
-
 
 def _render_todo_block(args: dict, result_text: str) -> str:
     """GAP-TUI-4: Render todowrite / manage_todo call as a '# Todos' block."""
@@ -142,7 +141,6 @@ def _render_todo_block(args: dict, result_text: str) -> str:
         return f"[bold #22c55e]⚙ Todo {action}[/]"
     return ""
 
-
 def _render_question_block(args: dict, result_text: str) -> str:
     """GAP-TUI-5: Render question / ask_user call as a '# Questions' Q&A block."""
     import json as _json
@@ -182,7 +180,6 @@ def _render_question_block(args: dict, result_text: str) -> str:
 
     return ""
 
-
 class AppToolHandlersMixin:
     """Tool-call, subagent, diff, plan, and button-handler mixin.
 
@@ -203,7 +200,7 @@ class AppToolHandlersMixin:
     # ── Tool call 3-beat lifecycle (§6.1) ─────────────────────────────────
 
     @on(ToolCallStartEvent)
-    def handle_tool_start(self, event) -> None:
+    def handle_tool_start(self: AgentAppProtocol, event) -> None:
         logger.info(f"Tool start: {event.tool_name}  id={event.tool_id}")
         self._tool_call_count += 1
         icon = _TOOL_ICONS.get(event.tool_name.lower(), "⠿")
@@ -238,7 +235,7 @@ class AppToolHandlersMixin:
         self._sched_chat_widget(widget)
 
     @on(ToolCallFinishEvent)
-    def handle_tool_finish(self, event) -> None:
+    def handle_tool_finish(self: AgentAppProtocol, event) -> None:
         logger.info(f"Tool finish: {event.tool_name}  ok={event.ok}")
         icon = _TOOL_ICONS.get(event.tool_name.lower(), "✓" if event.ok else "✗")
         ok_icon = "✓" if event.ok else "✗"
@@ -359,7 +356,7 @@ class AppToolHandlersMixin:
         if event.tool_id and event.tool_id in self._tool_widgets:
             w = self._tool_widgets.pop(event.tool_id)
             self.call_later(
-                lambda widget=w, ic=ok_icon, col=color, r=result_display, lbl=label, s=sep: (
+                lambda widget=w, col=color, r=result_display, lbl=label, s=sep: (
                     widget.update(f"[bold {col}]{lbl}[/]{s}{r}")
                 )
             )
@@ -379,7 +376,7 @@ class AppToolHandlersMixin:
             pass
 
     @on(ToolCallErrorEvent)
-    def handle_tool_error(self, event) -> None:
+    def handle_tool_error(self: AgentAppProtocol, event) -> None:
         logger.error(f"Tool error: {event.tool_name}  {event.error}")
         if event.tool_id and event.tool_id in self._tool_widgets:
             w = self._tool_widgets.pop(event.tool_id)
@@ -402,7 +399,7 @@ class AppToolHandlersMixin:
 
     # ── Subagent lifecycle (SUBAGENT-VIS-4) ──────────────────────────────
 
-    def _update_subagent_footer(self) -> None:
+    def _update_subagent_footer(self: AgentAppProtocol) -> None:
         active = len(self._subagent_widgets)
         try:
             chip = self.query_one("#subagent_footer_chip", Button)
@@ -415,7 +412,7 @@ class AppToolHandlersMixin:
             pass
 
     @on(SubagentProgress.Clicked)
-    async def handle_subagent_clicked(self, event) -> None:
+    async def handle_subagent_clicked(self: AgentAppProtocol, event) -> None:
         from .screens.subagent_detail import SubagentDetailScreen
 
         self.push_screen(
@@ -428,7 +425,7 @@ class AppToolHandlersMixin:
         )
 
     @on(SubagentStartEvent)
-    def handle_subagent_start(self, event) -> None:
+    def handle_subagent_start(self: AgentAppProtocol, event) -> None:
         logger.info(f"Subagent start: {event.role}  id={event.child_session_id}")
         from .components import SubagentProgress
 
@@ -446,7 +443,7 @@ class AppToolHandlersMixin:
         self._update_subagent_footer()
 
     @on(SubagentFinishEvent)
-    def handle_subagent_finish(self, event) -> None:
+    def handle_subagent_finish(self: AgentAppProtocol, event) -> None:
         logger.info(
             f"Subagent finish: {event.role}  ok={event.ok}  id={event.child_session_id}"
         )
@@ -462,7 +459,7 @@ class AppToolHandlersMixin:
         self._update_subagent_footer()
 
     @on(ToolExecutionNotice)
-    def handle_tool_notice(self, event) -> None:
+    def handle_tool_notice(self: AgentAppProtocol, event) -> None:
         logger.info(f"Tool: {event.tool_name}")
         args_fmt = _fmt_args(event.arguments)
         widget = Static(
@@ -475,7 +472,7 @@ class AppToolHandlersMixin:
     # ── Diff preview — side-by-side (§6.4, T_DIFF) ───────────────────────
 
     @on(DiffPreviewEvent)
-    async def handle_diff_preview(self, event) -> None:
+    async def handle_diff_preview(self: AgentAppProtocol, event) -> None:
         logger.info(f"Diff preview: {event.path}")
         use_inline = self._settings.get("diff_style", "side-by-side") == "inline"
         if use_inline:
@@ -495,7 +492,7 @@ class AppToolHandlersMixin:
         await self._mount_chat_widget(widget)
 
     @on(SideBySideDiff.Accepted)
-    async def handle_diff_accepted(self, event) -> None:
+    async def handle_diff_accepted(self: AgentAppProtocol, event) -> None:
         logger.info(f"Diff accepted: {event.path}")
         w = Static(
             f"[bold #22c55e]✓ Accepted:[/] {event.path}",
@@ -509,7 +506,7 @@ class AppToolHandlersMixin:
             pass
 
     @on(SideBySideDiff.Rejected)
-    async def handle_diff_rejected(self, event) -> None:
+    async def handle_diff_rejected(self: AgentAppProtocol, event) -> None:
         logger.info(f"Diff rejected: {event.path}")
         w = Static(
             f"[bold #ff5555]✗ Rejected:[/] {event.path}",
@@ -525,7 +522,7 @@ class AppToolHandlersMixin:
     # ── Plan progress (§12.3) ─────────────────────────────────────────────
 
     @on(PlanProgressEvent)
-    def handle_plan_progress(self, event) -> None:
+    def handle_plan_progress(self: AgentAppProtocol, event) -> None:
         bar = _plan_bar(event.step, event.total)
         try:
             self.query_one("#sb_plan_bar", Static).update(
@@ -538,13 +535,13 @@ class AppToolHandlersMixin:
     # ── Plan approval UI (§14.1) ──────────────────────────────────────────
 
     @on(PlanRequestedEvent)
-    async def handle_plan_requested(self, event) -> None:
+    async def handle_plan_requested(self: AgentAppProtocol, event) -> None:
         await self._chat_handle_plan_requested(event)
 
     # ── Bash tier-3 approval gate (§16.1) ─────────────────────────────────
 
     @on(BashApprovalEvent)
-    async def handle_bash_approval(self, event) -> None:
+    async def handle_bash_approval(self: AgentAppProtocol, event) -> None:
         logger.warning(f"Bash tier-3 approval required: {event.command}")
         self._update_perm_badge(+1)
         chat_log = self.query_one("#chat_log", VerticalScroll)
@@ -563,7 +560,7 @@ class AppToolHandlersMixin:
         self._prune_chat_log()
 
     @on(Button.Pressed)
-    async def on_any_button(self, event) -> None:
+    async def on_any_button(self: AgentAppProtocol, event) -> None:
         btn_id = event.button.id or ""
 
         _handled = (
@@ -740,7 +737,7 @@ class AppToolHandlersMixin:
                     )
 
                     policy = get_permission_policy()
-                    policy.add_rule(
+                    policy.add_rule(  # type: ignore[attr-defined]
                         PermissionRule(pattern=tool_name, behavior=Behavior.ALLOW)
                     )
                     policy.save()

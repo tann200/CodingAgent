@@ -1,4 +1,5 @@
 import logging
+import sys
 from collections import deque
 from pathlib import Path
 from typing import Callable, Optional
@@ -38,8 +39,10 @@ class InMemoryHandler(logging.Handler):
             for cb in list(self._callbacks):
                 try:
                     cb(msg)
-                except Exception:
-                    pass
+                except Exception as _cb_err:
+                    # Use handleError so the logging system itself doesn't crash,
+                    # but we still surface the failure rather than silently dropping it.
+                    sys.stderr.write(f"[logging] callback error: {_cb_err!r}\n")
         except Exception:
             self.handleError(record)
 

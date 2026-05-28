@@ -98,7 +98,6 @@ def test_compile_tier_graph_for_key_dispatches_to_matching_compiler():
         "capable",
         compile_frontier_graph_fn=lambda: calls.append("frontier") or "frontier-graph",
         compile_lite_graph_fn=lambda: calls.append("lite") or "lite-graph",
-        compile_agent_graph_fn=lambda: calls.append("standard") or "standard-graph",
     )
     assert result == "frontier-graph"
 
@@ -106,7 +105,6 @@ def test_compile_tier_graph_for_key_dispatches_to_matching_compiler():
         "lite",
         compile_frontier_graph_fn=lambda: calls.append("frontier") or "frontier-graph",
         compile_lite_graph_fn=lambda: calls.append("lite") or "lite-graph",
-        compile_agent_graph_fn=lambda: calls.append("standard") or "standard-graph",
     )
     assert result == "lite-graph"
 
@@ -124,7 +122,6 @@ def test_compile_tier_graph_for_key_raises_on_unknown_key():
             "unknown_tier",
             compile_frontier_graph_fn=lambda: "frontier-graph",
             compile_lite_graph_fn=lambda: "lite-graph",
-            compile_agent_graph_fn=lambda: "standard-graph",
         )
 
 

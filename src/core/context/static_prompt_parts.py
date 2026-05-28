@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
-from typing import Callable, Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -87,8 +87,8 @@ def prune_tools(
     *,
     tools: List[Dict],
     model_tier: Optional[str],
-    model_tier_enum: object,
-    get_tool_limit: Optional[Callable[[object], int]],
+    model_tier_enum: Any,
+    get_tool_limit: Optional[Callable[[Any], int]],
     core_tool_names: Sequence[str],
 ) -> List[Dict]:
     try:
@@ -112,7 +112,7 @@ def render_tools_for_tier(
     tools: List[Dict],
     model_tier: Optional[str],
     sanitize_text: Callable[[str], str],
-    model_tier_enum: object,
+    model_tier_enum: Any,
 ) -> str:
     try:
         if model_tier_enum is None:
@@ -136,9 +136,9 @@ def render_tools_for_tier(
 def build_model_constraints_block(
     *,
     model_tier: Optional[str],
-    tools: Sequence[object],
-    model_tier_enum: object,
-    get_plan_step_limit: Optional[Callable[[object], int]],
+    tools: Sequence[Any],
+    model_tier_enum: Any,
+    get_plan_step_limit: Optional[Callable[[Any], int]],
     get_context_budget: Optional[Callable[..., int]],
 ) -> str:
     tier_str = (model_tier or "").lower()

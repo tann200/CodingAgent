@@ -269,8 +269,6 @@ class AsyncGate:
         except Exception as exc:
             logger.debug("AsyncGate.wait: error: %s", exc)
             return False
-        # BUG-FIX #6: explicit return to prevent None on edge case
-        return False
 
     def set(self) -> None:
         """Signal the gate (resolves any waiting coroutine or thread).

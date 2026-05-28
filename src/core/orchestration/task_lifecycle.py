@@ -252,7 +252,7 @@ def start_new_task_impl(orch) -> str:
     # .agent-context/config.json so project-specific tool restrictions
     # are enforced at the start of each task.
     try:
-        from src.core.config_loader import get_project_tool_overrides
+        from src.core.config_loader import get_project_tool_overrides  # type: ignore[attr-defined]
 
         _wd_str = str(orch.working_dir) if orch.working_dir else ""
         if _wd_str and hasattr(orch, "tool_registry"):

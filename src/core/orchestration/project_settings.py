@@ -240,7 +240,7 @@ def watch_project_settings(
                 except Exception:
                     pass
 
-    _poll.running = True
+    _poll.running = True  # type: ignore[attr-defined]
     thread = threading.Thread(target=_poll, daemon=True)
     thread.start()
     return _poll

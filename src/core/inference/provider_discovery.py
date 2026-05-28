@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from typing import Any, Callable, List, Optional
 
+from src.core.inference._protocols import LockProtocol, ProviderManagerProtocol
+
 
 def get_models_from_provider_cache(
     *,
-    manager: object,
+    manager: ProviderManagerProtocol,
     provider_key: str,
     normalize_lmstudio_models: Callable[[List[str]], List[str]],
 ) -> Optional[List[str]]:
@@ -20,7 +22,7 @@ def get_models_from_provider_cache(
 
 def get_models_from_provider_adapter(
     *,
-    manager: object,
+    manager: ProviderManagerProtocol,
     provider_key: str,
     extract_models_from_api_response: Callable[[object], List[str]],
     normalize_lmstudio_models: Callable[[List[str]], List[str]],
@@ -42,7 +44,7 @@ def get_models_from_provider_adapter(
 
 def get_models_from_provider_config(
     *,
-    manager: object,
+    manager: ProviderManagerProtocol,
     provider_key: str,
     load_provider: Callable[[Optional[str]], Any],
     normalize_models_for_provider: Callable[[dict], List[str]],
@@ -65,7 +67,7 @@ def get_models_from_provider_config(
     return None
 
 
-def get_active_models(*, manager: object) -> List[str]:
+def get_active_models(*, manager: ProviderManagerProtocol) -> List[str]:
     try:
         active = manager.get_active_provider_name()
         if not active:
@@ -91,10 +93,10 @@ def get_active_models(*, manager: object) -> List[str]:
 def get_models_for_provider_key(
     *,
     provider_key: str,
-    manager: object,
+    manager: ProviderManagerProtocol,
     cache: dict[str, List[str]],
     cache_time: dict[str, float],
-    cache_lock: object,
+    cache_lock: LockProtocol,
     cache_ttl: int,
     now: Callable[[], float],
     get_cached_models_if_fresh: Callable[..., Optional[List[str]]],
@@ -133,7 +135,7 @@ def get_models_for_provider_key(
             manager=manager,
             provider_key=provider_key,
             extract_models_from_api_response=lambda response: extract_models_from_api_response(
-                response, valid_str=valid_str
+                response, valid_str=valid_str  # type: ignore[call-arg]
             ),
             normalize_lmstudio_models=normalize_lmstudio_models,
         )
@@ -158,3 +160,4 @@ def get_models_for_provider_key(
     except Exception:
         pass
     return []
+

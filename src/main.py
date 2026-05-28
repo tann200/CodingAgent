@@ -479,7 +479,7 @@ def _run_headless(
             _session_path = _Path(resume_session)
             if _session_path.exists() and _session_path.suffix == ".json":
                 _data = _json.loads(_session_path.read_text(encoding="utf-8"))
-                _stored = StoredSession(
+                _stored: Optional[StoredSession] = StoredSession(
                     version=int(_data.get("version", 1)),
                     session_id=str(_data.get("session_id") or ""),
                     task_name=str(_data.get("task_name", "")),
@@ -491,9 +491,9 @@ def _run_headless(
                     output_tokens=int(_data.get("output_tokens", 0)),
                     created_at=str(_data.get("created_at", "")),
                 )
-                _messages = _stored.messages
+                _messages = _stored.messages  # type: ignore[union-attr]
                 print(
-                    f"[SESSION] Resumed session {_stored.session_id}", file=sys.stderr
+                    f"[SESSION] Resumed session {_stored.session_id}", file=sys.stderr  # type: ignore[union-attr]
                 )
             else:
                 # Try loading by session_id

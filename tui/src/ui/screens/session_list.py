@@ -8,6 +8,7 @@ No src.core imports — communicates only via self.app methods.
 from __future__ import annotations
 
 import json
+import logging
 import shutil
 import time
 from pathlib import Path
@@ -18,6 +19,8 @@ from textual.containers import Container
 from textual.screen import ModalScreen
 from textual.widgets import Input, Label, Static
 from textual.events import Key
+
+_log = logging.getLogger(__name__)
 
 
 class SessionListScreen(ModalScreen[None]):
@@ -93,7 +96,11 @@ class SessionListScreen(ModalScreen[None]):
 
     def _load_sessions(self) -> None:
         try:
-            sessions_dir: Any = getattr(self.app, "_get_sessions_dir", lambda: None)()
+            _get_sessions_dir = getattr(self.app, "_get_sessions_dir", None)
+            if _get_sessions_dir is None:
+                _log.warning("app has no _get_sessions_dir — session list will be empty")
+                return
+            sessions_dir: Any = _get_sessions_dir()
             if not sessions_dir:
                 return
             files = sorted(Path(sessions_dir).glob("session_*.json"), reverse=True)
@@ -102,8 +109,8 @@ class SessionListScreen(ModalScreen[None]):
                 try:
                     payload: Dict[str, Any] = json.loads(f.read_text(encoding="utf-8"))
                     self._all_sessions.append((f, payload))
-                except Exception:
-                    pass
+                except Exception as _parse_err:
+                    _log.warning("skipping corrupt session file %s: %s", f.name, _parse_err)
             # GAP-FOOTER-3: pre-filter to subagent sessions only when requested
             if self._filter_subagents:
                 self._all_sessions = [

@@ -87,14 +87,14 @@ except ImportError:
             # msvcrt.locking provides basic file locking
             # Note: This is per-process, not per-file-handle
             try:
-                msvcrt.locking(fh.fileno(), msvcrt.LK_LOCK, 1)
+                msvcrt.locking(fh.fileno(), msvcrt.LK_LOCK, 1)  # type: ignore[attr-defined]
             except (OSError, ImportError):
                 # Locking failed or not available - continue with threading lock only
                 pass
 
         def _unlock_file(fh: IO) -> None:
             try:
-                msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+                msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)  # type: ignore[attr-defined]
             except (OSError, ImportError):
                 pass
 

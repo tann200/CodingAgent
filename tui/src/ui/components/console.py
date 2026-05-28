@@ -50,8 +50,8 @@ class ConsolePanel(Vertical):
             log_widget = self.query_one("#console_output", RichLog)
             self._write_styled_line(log_widget, line)
             self.line_count += 1
-        except Exception:
-            pass
+        except Exception as _err:
+            logger.debug("console _on_new_log error (widget likely unmounted): %s", _err)
 
     def _write_styled_line(self, log_widget: RichLog, line: str) -> None:
         color = "#888888"

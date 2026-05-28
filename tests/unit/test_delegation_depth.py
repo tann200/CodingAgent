@@ -53,7 +53,7 @@ def test_delegate_task_sets_initial_state_delegation_depth(tmp_path: Path) -> No
 
     with (
         patch("src.tools.subagent_tools._resolve_subagent_graph") as mock_gf,
-        patch("src.tools.subagent_tools.get_agent_brain_manager") as mock_brain_mgr,
+        patch("src.tools.subagent_tools._get_agent_brain_manager") as mock_brain_mgr,
         patch("src.tools.subagent_tools._PARENT_ORCHESTRATOR_VAR") as mock_ctxvar,
     ):
         mock_gf.return_value = mock_graph
@@ -122,7 +122,7 @@ def test_delegate_task_concurrent_contextvar_isolation(tmp_path: Path) -> None:
 
     with (
         patch("src.tools.subagent_tools._resolve_subagent_graph") as mock_gf,
-        patch("src.tools.subagent_tools.get_agent_brain_manager") as mock_brain_mgr,
+        patch("src.tools.subagent_tools._get_agent_brain_manager") as mock_brain_mgr,
         patch("src.tools.subagent_tools._PARENT_ORCHESTRATOR_VAR") as mock_ctxvar,
     ):
         mock_gf.return_value = mock_graph

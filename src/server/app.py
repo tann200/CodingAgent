@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hmac
 import logging
 import threading
 from typing import Dict, Optional
@@ -75,6 +76,7 @@ sse_adapter: Optional[ServerEventBusAdapter] = None
 _REGISTERED_CORRECTIVE_BUS: Optional[EventBus] = None
 _REGISTER_EVENT_BUS_LOCK = threading.Lock()
 
+
 def register_event_bus(bus: EventBus) -> None:
     """Bind a provided EventBus to the server and register internal subscribers.
 
@@ -125,7 +127,7 @@ def _require_admin_auth(request: Request) -> None:
         return
     inc_admin_auth_counter("attempts")
     token = extract_admin_token_from_headers(request.headers)
-    if token and token == admin_token:
+    if token and hmac.compare_digest(token, admin_token):
         inc_admin_auth_counter("successes")
         return
     inc_admin_auth_counter("failures")

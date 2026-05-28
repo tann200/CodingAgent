@@ -206,7 +206,7 @@ class SymbolGraph:
             # commented-out definitions (RA-2).  _strip_comments preserves
             # newlines so line numbers in the stripped text match the original.
             source = self._strip_comments(raw_source, path.suffix)
-            functions = [
+            functions: list[dict] = [
                 {
                     "name": m.group(1),
                     "line": source[: m.start()].count("\n") + 1,
@@ -215,7 +215,7 @@ class SymbolGraph:
                 }
                 for m in patterns["function"].finditer(source)
             ]
-            classes = [
+            classes: list[dict] = [
                 {
                     "name": m.group(1),
                     "line": source[: m.start()].count("\n") + 1,
@@ -241,7 +241,7 @@ class SymbolGraph:
             source = path.read_text(encoding="utf-8")
             tree = ast.parse(source)
 
-            symbols = {
+            symbols: dict[str, Any] = {
                 "classes": [],
                 "functions": [],
                 "imports": [],

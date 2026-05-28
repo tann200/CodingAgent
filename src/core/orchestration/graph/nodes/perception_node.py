@@ -158,24 +158,25 @@ try:
 except Exception:
     _gas = None  # type: ignore[assignment]
 
+_SymbolGraph: Any = None
 try:
-    from src.core.indexing.symbol_graph import SymbolGraph as _SymbolGraph
+    from src.core.indexing.symbol_graph import SymbolGraph as _SymbolGraph  # type: ignore[assignment]
 except Exception:
-    _SymbolGraph = None  # type: ignore[assignment]
+    pass
 
 try:
     from src.core.orchestration.loop_guards import MODIFYING_TOOLS as _MODIFYING_TOOLS
 except Exception:
     _MODIFYING_TOOLS = set()  # type: ignore[assignment]
 
+_AutoCompactConfig: Any = None
 try:
     from src.core.memory.auto_compactor import (
-        AutoCompactConfig as _AutoCompactConfig,
+        AutoCompactConfig as _AutoCompactConfig,  # type: ignore[assignment]
         should_compact as _should_compact,
         compact_messages as _compact_messages,
     )
 except Exception:
-    _AutoCompactConfig = None  # type: ignore[assignment]
     _should_compact = None  # type: ignore[assignment]
     _compact_messages = None  # type: ignore[assignment]
 
@@ -397,10 +398,11 @@ def _parse_yaml_tool_call_from_content(content: str) -> dict | None:
 # Delegate LLM waiting/call helpers to shared implementation in llm_helpers.
 # The original implementations below are preserved for fallback if llm_helpers
 # is unavailable. This avoids code divergence while maintaining test compatibility.
+_llm_helpers: Any = None
 try:
-    from src.core.inference import llm_helpers as _llm_helpers
+    from src.core.inference import llm_helpers as _llm_helpers  # type: ignore[assignment]
 except Exception:
-    _llm_helpers = None
+    pass
 
 
 if _llm_helpers is not None:
