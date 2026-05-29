@@ -258,8 +258,29 @@ Respond ONLY with the JSON array, no other text."""
             # Try to extract JSON array from response
             json_match = re.search(r"\[[\s\S]*\]", content)
             if json_match:
-                new_steps = json.loads(json_match.group())
-                logger.info(f"replan_node: generated {len(new_steps)} new steps")
+                parsed = json.loads(json_match.group())
+                # A3: Validate that the LLM returned a list of dicts with at
+                # least a "description" or "action" key.  Reject malformed
+                # payloads rather than letting non-dict items corrupt the plan
+                # or cause a TypeError in dict(s) below.
+                if isinstance(parsed, list):
+                    sanitised = []
+                    for item in parsed:
+                        if isinstance(item, dict):
+                            sanitised.append(item)
+                        else:
+                            logger.warning(
+                                "replan_node: skipping non-dict step in LLM response: %r",
+                                item,
+                            )
+                    new_steps = sanitised
+                else:
+                    logger.warning(
+                        "replan_node: LLM response JSON is not a list (got %s), ignoring",
+                        type(parsed).__name__,
+                    )
+                if new_steps:
+                    logger.info("replan_node: generated %d new steps", len(new_steps))
         except Exception as e:
             logger.warning(f"replan_node: failed to parse LLM response: {e}")
 

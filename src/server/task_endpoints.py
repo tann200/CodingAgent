@@ -310,6 +310,9 @@ async def cancel_task(task_id: str, request: Request):
 async def list_tasks(request: Request, limit: int = 50):
     if _deps.require_admin_auth is not None:
         _deps.require_admin_auth(request)
+    # A4: Cap limit to prevent a caller from dumping the entire registry in one
+    # response.  Values outside [1, 500] are silently clamped.
+    limit = max(1, min(limit, 500))
     with _TASK_REGISTRY_LOCK:
         items = list(_TASK_REGISTRY.values())
     items.sort(key=lambda r: r.get("started_at") or 0.0, reverse=True)

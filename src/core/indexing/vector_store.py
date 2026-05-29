@@ -65,8 +65,13 @@ except Exception:
 
 
 # v2 Phase 3: LRU cache for embeddings (RAM optimization)
+# A2 FIX: protect with a threading.Lock so concurrent executor threads (which
+# call _get_cached_embedding via _DummyModel.encode) don't race on the
+# OrderedDict's move_to_end + __setitem__ sequence.
+import threading as _threading
 _EMBEDDING_CACHE: OrderedDict[str, List[float]] = OrderedDict()
 _EMBEDDING_CACHE_LIMIT = 10000  # Max embeddings to cache
+_EMBEDDING_CACHE_LOCK = _threading.Lock()
 
 
 def _get_cached_embedding(text: str, dim: int = 8) -> List[float]:
@@ -74,13 +79,19 @@ def _get_cached_embedding(text: str, dim: int = 8) -> List[float]:
 
     For 64GB RAM systems, caching up to 10K embeddings is safe
     (~10K * 8 * 4 bytes = 320KB for float32).
-    """
-    cache_key = f"{text[:256]}"  # Truncate for cache key
-    if cache_key in _EMBEDDING_CACHE:
-        _EMBEDDING_CACHE.move_to_end(cache_key)
-        return _EMBEDDING_CACHE[cache_key]
 
-    # Compute embedding
+    A1 FIX: cache key is the full SHA-256 hex digest of the text, not a
+    truncated prefix.  Truncating to 256 chars caused silent cache collisions
+    for texts that share the same prefix but differ elsewhere.
+    """
+    # A1: use full-text hash as cache key to avoid prefix-collision false hits.
+    cache_key = hashlib.sha256(text.encode()).hexdigest()
+    with _EMBEDDING_CACHE_LOCK:
+        if cache_key in _EMBEDDING_CACHE:
+            _EMBEDDING_CACHE.move_to_end(cache_key)
+            return _EMBEDDING_CACHE[cache_key]
+
+    # Compute embedding (outside the lock — pure CPU, no shared state)
     h = hashlib.sha256(str(text).encode()).digest()
     vec: List[float] = []
     for i in range(dim):
@@ -89,10 +100,10 @@ def _get_cached_embedding(text: str, dim: int = 8) -> List[float]:
         v = ((b1 << 8) + b2) / 65535.0
         vec.append((v * 2.0) - 1.0)
 
-    # Cache it
-    _EMBEDDING_CACHE[cache_key] = vec
-    if len(_EMBEDDING_CACHE) > _EMBEDDING_CACHE_LIMIT:
-        _EMBEDDING_CACHE.popitem(last=False)  # LRU eviction
+    with _EMBEDDING_CACHE_LOCK:
+        _EMBEDDING_CACHE[cache_key] = vec
+        if len(_EMBEDDING_CACHE) > _EMBEDDING_CACHE_LIMIT:
+            _EMBEDDING_CACHE.popitem(last=False)  # LRU eviction
 
     return vec
 
