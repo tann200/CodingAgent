@@ -261,6 +261,13 @@ class Orchestrator:
 
         return begin_step_transaction_impl(self)
 
+    def commit_step_transaction(self) -> None:
+        from src.core.orchestration.orchestrator_helpers import (
+            commit_step_transaction_impl,
+        )
+
+        commit_step_transaction_impl(self)
+
     def rollback_step_transaction(self) -> dict:
         from src.core.orchestration.orchestrator_helpers import (
             rollback_step_transaction_impl,

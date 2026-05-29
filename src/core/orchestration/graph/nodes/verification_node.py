@@ -346,5 +346,18 @@ async def _verification_node_impl(state: StateLike, config: RunnableConfig) -> D
             logger.warning(
                 f"verification_node: step rollback error (non-fatal): {rb_err}"
             )
+    elif verification_passed and need_verify:
+        # F5: Commit (clean up) the step snapshot so snapshot data does not
+        # accumulate unboundedly across successful steps.  Only the rollback
+        # path was ever handled — the success path leaked every snapshot.
+        try:
+            orchestrator = _resolve_orchestrator(state, config)
+            if orchestrator and hasattr(orchestrator, "commit_step_transaction"):
+                if getattr(orchestrator, "_step_snapshot_id", None):
+                    orchestrator.commit_step_transaction()
+        except Exception as _commit_err:
+            logger.debug(
+                "verification_node: step commit (non-fatal): %s", _commit_err
+            )
 
     return {"verification_result": results, "verification_passed": verification_passed}

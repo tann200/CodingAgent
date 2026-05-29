@@ -344,6 +344,29 @@ def rollback_step_transaction_impl(orch: Any) -> dict:
     return result
 
 
+def commit_step_transaction_impl(orch: Any) -> None:
+    """Commit (clean up) the current step transaction.
+
+    Called after verification passes.  Removes the snapshot data associated
+    with the current step so it does not accumulate in memory and on disk.
+    """
+    snap_id = getattr(orch, "_step_snapshot_id", None)
+    if not snap_id:
+        guilogger.debug("commit_step_transaction: no active step transaction — nothing to commit")
+        return
+    try:
+        if hasattr(orch, "rollback_manager") and orch.rollback_manager is not None:
+            orch.rollback_manager.commit_step(snap_id)
+            guilogger.debug("commit_step_transaction: committed snapshot %s", snap_id)
+    except Exception:
+        guilogger.debug(
+            "commit_step_transaction: commit failed for %s (non-fatal, snapshot may leak)",
+            snap_id,
+        )
+    finally:
+        orch._step_snapshot_id = None
+
+
 # ---------------------------------------------------------------------------
 # Tool helpers
 # ---------------------------------------------------------------------------
