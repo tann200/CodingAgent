@@ -66,7 +66,7 @@ DEFAULTS: Dict[str, Any] = {
     # GAP-CONFIG-2: mouse/keyboard scroll speed (lines per tick, 1–10)
     "scroll_speed": 3,
     # GAP-CONFIG-3: conceal sensitive values (API keys, tokens) in TUI output
-    "conceal_sensitive": False,
+    "conceal_sensitive": True,
 }
 
 

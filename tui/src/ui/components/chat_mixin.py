@@ -136,8 +136,8 @@ class ChatDisplayMixin:
     def _clear_chat_panel(self: AgentAppProtocol) -> None:
         """Clear the stream, tool widget caches, and all chat log children."""
         self._finalize_stream()
-        self._tool_widgets.clear()
-        self._tool_args.clear()
+        self._tool_widgets = {}
+        self._tool_args = {}
         try:
             self.query_one("#chat_log", VerticalScroll).remove_children()
         except Exception:

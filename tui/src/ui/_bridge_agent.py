@@ -51,7 +51,7 @@ class BridgeAgentMixin(AgentBridgeProtocol):
         with self._history_lock:
             self.history.append(("user", text))
         pool = getattr(self, "_thread_pool", None)
-        if pool is None:
+        if pool is None or pool._shutdown:
             pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="bridge")
             self._thread_pool = pool
         pool.submit(self._run_agent, text)
@@ -140,7 +140,7 @@ class BridgeAgentMixin(AgentBridgeProtocol):
                 # assignment and there is no data race.
                 _r = result
                 self.app.call_from_thread(
-                    lambda r=_r: setattr(self.app, "_continue_state", r)
+                    lambda r=_r, _app=self.app: setattr(_app, "_continue_state", r)
                 )
             # else: mock mode — events come through EventBus from mock_engine
         except Exception as exc:

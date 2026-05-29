@@ -466,6 +466,19 @@ class AppSlashCommandsMixin:
                     return
                 new_name = parts[0]
                 new_cmd = parts[1:]
+                import re as _re
+                if not _re.match(r"^[a-zA-Z0-9_-]+$", new_name):
+                    self.notify(
+                        f"Invalid server name '{new_name}': use only letters, digits, - and _",
+                        severity="warning",
+                    )
+                    return
+                if _re.search(r"[;&$`\\|<>]", " ".join(new_cmd)):
+                    self.notify(
+                        "Command contains unsafe shell characters",
+                        severity="warning",
+                    )
+                    return
                 agent_dir = (
                     _Path(
                         getattr(
@@ -757,11 +770,14 @@ class AppSlashCommandsMixin:
                         classes="system_msg",
                         markup=True,
                     )
-                w = Static(
-                    f"[bold]✓ Exported[/] {len(history)} messages\n  → {export_path}",
-                    classes="system_msg",
-                    markup=True,
-                )
+                    await self._mount_chat_widget(w)
+                else:
+                    w = Static(
+                        f"[bold]✓ Exported[/] {len(history)} messages\n  → {export_path}",
+                        classes="system_msg",
+                        markup=True,
+                    )
+                    await self._mount_chat_widget(w)
             except Exception as exc:
                 w = Static(
                     f"[bold #ff5555]✗ Export failed:[/] {exc}",
