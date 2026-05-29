@@ -29,7 +29,22 @@ async def _replan_node_impl(state: StateLike, config: RunnableConfig) -> Dict[st
 
     replan_reason = state.get("replan_required", "Patch exceeded size limit")
     current_plan = state.get("current_plan") or []
-    current_step = state.get("current_step") or 0
+    try:
+        current_step = int(state.get("current_step") or 0)
+    except (ValueError, TypeError):
+        current_step = 0
+    # C3: Clamp negative step — if the plan is empty there's nothing to replan
+    if current_step < 0:
+        current_step = 0
+    if not current_plan:
+        logger.warning("replan_node: current_plan is empty, nothing to replan")
+        return {
+            "replan_required": None,
+            "action_failed": False,
+            "replan_attempts": 0,
+            "total_recovery_attempts": total_recovery_attempts,
+            "errors": ["current_plan is empty"],
+        }
     # P1-3: Increment inner replan-loop counter
     replan_attempts = int(state.get("replan_attempts") or 0) + 1
     # P2-A: global recovery cap (shared with debug_node)
@@ -267,7 +282,17 @@ Respond ONLY with the JSON array, no other text."""
                     sanitised = []
                     for item in parsed:
                         if isinstance(item, dict):
-                            sanitised.append(item)
+                            # C3: Ensure each step has a description or action
+                            # key — missing either would break downstream
+                            # nodes that expect one of these fields.
+                            if "description" in item or "action" in item:
+                                sanitised.append(item)
+                            else:
+                                logger.warning(
+                                    "replan_node: skipping LLM step with neither "
+                                    "description nor action: %r",
+                                    item,
+                                )
                         else:
                             logger.warning(
                                 "replan_node: skipping non-dict step in LLM response: %r",
@@ -294,8 +319,11 @@ Respond ONLY with the JSON array, no other text."""
                     + new_steps
                     + [dict(s) for s in current_plan[current_step + 1 :]]
                 )
+                next_step = current_step  # Start from the first new step
             else:
+                # C3: current_step is out of bounds — fall back to entire plan
                 new_plan = new_steps
+                next_step = 0
 
             # WR-6 fix: recompute execution_waves since step indices changed
             new_waves: Optional[List[List[str]]] = None
@@ -329,7 +357,7 @@ Respond ONLY with the JSON array, no other text."""
 
             return {
                 "current_plan": new_plan,
-                "current_step": current_step,  # Start from first new step
+                "current_step": next_step,
                 "execution_waves": new_waves,  # WR-6 fix: include recomputed waves
                 "replan_required": None,
                 "action_failed": False,

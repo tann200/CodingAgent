@@ -239,14 +239,21 @@ async def get_lsp_manager_async(workspace: Optional[Path] = None) -> LSPManager:
     SEC-1: Uses the module-level asyncio.Lock to prevent a race condition where
     two coroutines both observe ``key not in _MANAGERS`` and each create a
     separate ``LSPManager`` instance — causing duplicate LSP server processes.
+
+    C2: Fast-path dict reads also hold _MANAGERS_THREAD_LOCK so they don't
+    race with concurrent sync ``get_manager`` calls from other threads.
     """
     root = (workspace or Path.cwd()).resolve()
     key = str(root)
-    if key in _MANAGERS:
-        return _MANAGERS[key]
+    # Fast path: atomic dict read under thread lock (no await inside this block)
+    with _MANAGERS_THREAD_LOCK:
+        if key in _MANAGERS:
+            return _MANAGERS[key]
+    # Slow path: coordinate creation with async lock
     async with _get_manager_lock():
-        # Double-checked locking: re-check inside the lock in case another
-        # coroutine created the manager while we were waiting.
-        if key not in _MANAGERS:
-            _MANAGERS[key] = LSPManager(workspace=root)
-        return _MANAGERS[key]
+        # Double-check: re-read under thread lock inside async lock so the
+        # check and the insert are atomic with respect to sync get_manager.
+        with _MANAGERS_THREAD_LOCK:
+            if key not in _MANAGERS:
+                _MANAGERS[key] = LSPManager(workspace=root)
+            return _MANAGERS[key]
