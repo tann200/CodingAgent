@@ -3,6 +3,7 @@ skill_registry.py — Registry for managing available skills.
 """
 
 import logging
+import threading
 from pathlib import Path
 from typing import Dict, List, Optional
 from dataclasses import dataclass, field
@@ -19,17 +20,24 @@ class SkillRegistry:
     loader: SkillLoader
     _skill_aliases: Dict[str, str] = field(default_factory=dict)
     _skill_tags: Dict[str, List[str]] = field(default_factory=dict)
+    # E1: Lock guards _skill_aliases and _skill_tags against concurrent
+    # read/write from the scheduler thread and registration API callers.
+    _lock: threading.Lock = field(default_factory=threading.Lock)
 
     def __init__(self, skills_dir: Optional[Path] = None):
         """Initialize registry."""
         object.__setattr__(self, "loader", SkillLoader(skills_dir))
         object.__setattr__(self, "_skill_aliases", {})
         object.__setattr__(self, "_skill_tags", {})
+        object.__setattr__(self, "_lock", threading.Lock())
         self.reload()
 
     def reload(self) -> None:
         """Reload all skills from the loader."""
         self.loader.load_skills(reload=True)
+        with self._lock:
+            self._skill_aliases.clear()
+            self._skill_tags.clear()
         logger.info(f"Reloaded skill registry with {len(self.list_skills())} skills")
 
     def register_skill_alias(self, alias: str, skill_name: str) -> None:
@@ -46,7 +54,8 @@ class SkillRegistry:
             )
             return
 
-        self._skill_aliases[alias] = skill_name
+        with self._lock:
+            self._skill_aliases[alias] = skill_name
         logger.debug(f"Registered alias '{alias}' -> '{skill_name}'")
 
     def register_skill_tags(self, skill_name: str, tags: List[str]) -> None:
@@ -61,7 +70,8 @@ class SkillRegistry:
             logger.warning(f"Cannot register tags for unknown skill '{skill_name}'")
             return
 
-        self._skill_tags[skill_name] = tags
+        with self._lock:
+            self._skill_tags[skill_name] = tags
         logger.debug(f"Registered tags {tags} for skill '{skill_name}'")
 
     def get_skill(self, name: str) -> Optional[Skill]:
@@ -75,7 +85,8 @@ class SkillRegistry:
             Skill object or None if not found
         """
         # Check if it's an alias first
-        actual_name = self._skill_aliases.get(name, name)
+        with self._lock:
+            actual_name = self._skill_aliases.get(name, name)
 
         # If it's still not found and looks like it might be an alias, try without prefix
         if actual_name not in self.loader.list_skills() and "." in actual_name:
@@ -107,7 +118,8 @@ class SkillRegistry:
         Returns:
             Dictionary mapping aliases to skill names
         """
-        return self._skill_aliases.copy()
+        with self._lock:
+            return self._skill_aliases.copy()
 
     def get_skill_tags(self, skill_name: str) -> List[str]:
         """
@@ -119,7 +131,8 @@ class SkillRegistry:
         Returns:
             List of tags (empty list if no tags)
         """
-        return self._skill_tags.get(skill_name, [])
+        with self._lock:
+            return self._skill_tags.get(skill_name, [])
 
     def find_skills_by_tag(self, tag: str) -> List[str]:
         """
@@ -132,9 +145,10 @@ class SkillRegistry:
             List of skill names that have the tag
         """
         matching_skills = []
-        for skill_name, tags in self._skill_tags.items():
-            if tag in tags:
-                matching_skills.append(skill_name)
+        with self._lock:
+            for skill_name, tags in self._skill_tags.items():
+                if tag in tags:
+                    matching_skills.append(skill_name)
         return matching_skills
 
     def get_skill_content(self, name: str) -> Optional[str]:
@@ -153,20 +167,25 @@ class SkillRegistry:
 
 # Global skill registry instance
 _skill_registry: Optional[SkillRegistry] = None
+# E1: Lock guards _skill_registry lazy-init so concurrent threads don't
+# create separate instances.
+_SKILL_REGISTRY_LOCK = threading.Lock()
 
 
 def get_skill_registry() -> SkillRegistry:
     """Get the global skill registry instance."""
     global _skill_registry
     if _skill_registry is None:
-        _skill_registry = SkillRegistry()
+        with _SKILL_REGISTRY_LOCK:
+            if _skill_registry is None:
+                _skill_registry = SkillRegistry()
     return _skill_registry
 
 
 def reload_skill_registry() -> None:
     """Reload the global skill registry."""
-    if _skill_registry is not None:
-        _skill_registry.reload()
+    registry = get_skill_registry()
+    registry.reload()
 
 
 if __name__ == "__main__":
