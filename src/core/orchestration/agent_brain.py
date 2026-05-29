@@ -82,12 +82,24 @@ class AgentBrainManager:
         self._skill_cache: Dict[str, str] = {}
         # SK-1: Cache parsed frontmatter per skill for summary listing
         self._skill_meta_cache: Dict[str, dict] = {}
+        # D1: RLock protects all cache reads and writes so reload() cannot race
+        # with concurrent calls to get_role() / get_skill() / list_skills_summary().
+        self._cache_lock = threading.RLock()
         self._load_all()
         self._initialized = True
         logger.info("AgentBrainManager initialized with caches")
 
     def _load_all(self):
-        """Load all identity, role, and skill files into memory."""
+        """Load all identity, role, and skill files into memory.
+
+        D1: Reads are isolated under _cache_lock so a concurrent reload()
+        cannot cause getters to see partially-populated state.
+        """
+        with self._cache_lock:
+            self._load_all_impl()
+
+    def _load_all_impl(self):
+        """Unlocked implementation — caller must hold _cache_lock."""
         brain_dir = _agent_brain_dir()
 
         # Load identity files
@@ -157,23 +169,28 @@ class AgentBrainManager:
     def get_identity(self, name: str = "soul") -> str:
         """Get identity content by name (soul, laws)."""
         key = name.lower()
-        return self._identity_cache.get(key, "")
+        with self._cache_lock:
+            return self._identity_cache.get(key, "")
 
     def get_role(self, role_name: str) -> str:
         """Get role content by name (strategic, operational, etc.)."""
-        return self._role_cache.get(role_name, "")
+        with self._cache_lock:
+            return self._role_cache.get(role_name, "")
 
     def get_skill(self, skill_name: str) -> str:
         """Get skill content by name (dry, context_hygiene, etc.)."""
-        return self._skill_cache.get(skill_name, "")
+        with self._cache_lock:
+            return self._skill_cache.get(skill_name, "")
 
     def get_all_roles(self) -> Dict[str, str]:
         """Get all cached roles."""
-        return self._role_cache.copy()
+        with self._cache_lock:
+            return self._role_cache.copy()
 
     def get_all_skills(self) -> Dict[str, str]:
         """Get all cached skills."""
-        return self._skill_cache.copy()
+        with self._cache_lock:
+            return self._skill_cache.copy()
 
     def list_skills_summary(self) -> str:
         """SK-1: Return a compact multi-line summary of available skills.
@@ -186,19 +203,21 @@ class AgentBrainManager:
         ``list_skills`` first.
         """
         lines = []
-        for skill_name in sorted(self._skill_meta_cache):
-            meta = self._skill_meta_cache[skill_name]
-            display_name = meta.get("name", skill_name)
-            # Prefer triggers list as a compact "when to use" hint
-            triggers = meta.get("triggers", None)
-            if triggers:
-                if isinstance(triggers, list):
-                    hint = ", ".join(str(t) for t in triggers[:5])
+        with self._cache_lock:
+            sorted_names = sorted(self._skill_meta_cache)
+            for skill_name in sorted_names:
+                meta = self._skill_meta_cache[skill_name]
+                display_name = meta.get("name", skill_name)
+                # Prefer triggers list as a compact "when to use" hint
+                triggers = meta.get("triggers", None)
+                if triggers:
+                    if isinstance(triggers, list):
+                        hint = ", ".join(str(t) for t in triggers[:5])
+                    else:
+                        hint = str(triggers)
                 else:
-                    hint = str(triggers)
-            else:
-                hint = meta.get("description", "general coding skill")
-            lines.append(f"  • {display_name} — {hint}")
+                    hint = meta.get("description", "general coding skill")
+                lines.append(f"  • {display_name} — {hint}")
         if not lines:
             return ""
         return "\n".join(lines)
@@ -246,12 +265,20 @@ class AgentBrainManager:
         return "\n".join(parts)
 
     def reload(self):
-        """Reload all caches from disk."""
-        self._identity_cache.clear()
-        self._role_cache.clear()
-        self._skill_cache.clear()
-        self._skill_meta_cache.clear()
-        self._load_all()
+        """Reload all caches from disk atomically.
+
+        D1: The entire clear-then-reload sequence holds _cache_lock so
+        concurrent readers never see a partially-populated or empty cache.
+        """
+        with self._cache_lock:
+            self._identity_cache.clear()
+            self._role_cache.clear()
+            self._skill_cache.clear()
+            self._skill_meta_cache.clear()
+            # _load_all acquires _cache_lock (RLock), which is safe here:
+            # the lock is reentrant so the acquisition is a no-op in the
+            # same thread. The load runs, then both lock frames unwind.
+            self._load_all()
         logger.info("AgentBrainManager reloaded")
 
 
