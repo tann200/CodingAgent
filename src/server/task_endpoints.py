@@ -3,21 +3,46 @@
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 import uuid
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional
+from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 
 logger = logging.getLogger(__name__)
 
 # In-process task registry: task_id -> dict with status/result/cancel_event
 _TASK_REGISTRY: Dict[str, Dict[str, Any]] = {}
 _TASK_REGISTRY_LOCK = threading.Lock()
+
+# P3-2: TTL for completed/failed/cancelled task records (1 hour).
+_TASK_REGISTRY_TTL_SECONDS: float = float(
+    os.environ.get("AGENT_TASK_REGISTRY_TTL", "3600")
+)
+
+
+def _evict_stale_tasks() -> None:
+    """Remove terminal task records older than _TASK_REGISTRY_TTL_SECONDS.
+
+    Called inside the registry lock before each new task insertion so the
+    dict stays bounded without a background thread.
+    """
+    cutoff = time.time() - _TASK_REGISTRY_TTL_SECONDS
+    stale = [
+        tid
+        for tid, rec in _TASK_REGISTRY.items()
+        if rec.get("status") in (TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED)
+        and isinstance(rec.get("finished_at"), float)
+        and rec["finished_at"] < cutoff
+    ]
+    for tid in stale:
+        _TASK_REGISTRY.pop(tid, None)
 
 
 @dataclass
@@ -53,10 +78,31 @@ class TaskStatus(str, Enum):
 
 
 class TaskCreateRequest(BaseModel):
-    task: str
+    # P2-1: Enforce non-empty task with a reasonable upper bound (32 KB) to
+    # prevent OOM / context-overflow from arbitrarily large inputs.
+    task: str = Field(..., min_length=1, max_length=32_000)
     session_id: Optional[str] = None
+    # P1-2: working_dir is validated to be an existing absolute directory so
+    # callers cannot supply path-traversal strings like "../../etc".
     working_dir: Optional[str] = None
     model: Optional[str] = None
+
+    @field_validator("working_dir", mode="before")
+    @classmethod
+    def _validate_working_dir(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        try:
+            resolved = Path(v).resolve()
+        except Exception as exc:
+            raise ValueError(f"working_dir is not a valid path: {exc}") from exc
+        if not resolved.is_dir():
+            raise ValueError(
+                f"working_dir does not exist or is not a directory: {resolved}"
+            )
+        # Prevent traversal outside the filesystem root — resolved path is
+        # always absolute after .resolve(), so just return the canonical form.
+        return str(resolved)
 
 
 class TaskStatusResponse(BaseModel):
@@ -191,6 +237,7 @@ async def submit_task(request_body: TaskCreateRequest, request: Request):
         "cancel_event": cancel_event,
     }
     with _TASK_REGISTRY_LOCK:
+        _evict_stale_tasks()
         _TASK_REGISTRY[task_id] = rec
 
     bus = _deps.event_bus

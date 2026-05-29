@@ -218,25 +218,43 @@ class VectorStore:
             return []
 
         # --- Semantic search path (sentence-transformers available) ---
+        # P1-1 FIX: use the returned `st` model directly — NOT self._model which
+        # is always the _DummyModel stub regardless of whether sentence-transformers
+        # is installed.  self._model.encode() was silently defeating semantic search
+        # even when the real ST model was successfully loaded.
         st = _get_st_model()
         if st is not None:
             try:
                 import math
 
-                q_vec = self._model.encode(query)[0]
+                q_vec = st.encode([query])[0]
                 q_norm = math.sqrt(sum(x * x for x in q_vec)) or 1.0
 
-                scored: List[tuple[float, Dict[str, Any]]] = []
-                for sym in symbols:
-                    s_vec = sym.get("vector")
-                    if not s_vec:
-                        # Embed on demand (first time after index_code without vectors)
+                # Pre-filter: collect symbols that need on-demand embedding, then
+                # batch-encode them to avoid O(N) individual encode() calls (P2-5).
+                needs_embed: List[int] = []
+                texts_to_embed: List[str] = []
+                for i, sym in enumerate(symbols):
+                    if not sym.get("vector"):
                         text = " ".join(filter(None, [
                             sym.get("symbol_name") or sym.get("name"),
                             sym.get("file_path"),
                             sym.get("docstring") or sym.get("summary"),
                         ]))
-                        s_vec = self._model.encode(text)[0]
+                        needs_embed.append(i)
+                        texts_to_embed.append(text or sym.get("file_path", ""))
+
+                if texts_to_embed:
+                    batch_vecs = st.encode(texts_to_embed)
+                    for idx, vec in zip(needs_embed, batch_vecs):
+                        symbols[idx] = dict(symbols[idx])
+                        symbols[idx]["vector"] = list(vec)
+
+                scored: List[tuple[float, Dict[str, Any]]] = []
+                for sym in symbols:
+                    s_vec = sym.get("vector") or []
+                    if not s_vec:
+                        continue
                     s_norm = math.sqrt(sum(x * x for x in s_vec)) or 1.0
                     cosine = sum(a * b for a, b in zip(q_vec, s_vec)) / (q_norm * s_norm)
                     scored.append((cosine, sym))

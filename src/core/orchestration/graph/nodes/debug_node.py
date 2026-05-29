@@ -343,6 +343,15 @@ Generate a JSON function call to fix the issue. Use edit_file, write_file, or ba
                 format_json=False,
             )
         )
+        # P2-6: Retain a done-callback so that if an exception is raised before
+        # the while-loop below runs and the frame is GC'd, the error is still
+        # logged rather than silently dropped.
+        def _log_llm_task_exc(task: asyncio.Task) -> None:
+            if not task.cancelled():
+                exc = task.exception()
+                if exc is not None:
+                    logger.warning("debug_node: LLM task raised an exception: %s", exc)
+        llm_task.add_done_callback(_log_llm_task_exc)
         _debug_deadline = (
             asyncio.get_running_loop().time() + _debug_llm_timeout
             if _debug_llm_timeout

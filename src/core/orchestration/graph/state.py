@@ -227,6 +227,29 @@ def replace_state_list(items: list[Any] | None) -> ReplaceList:
     """Wrap a list so LangGraph reducers replace instead of append."""
     return ReplaceList(items or [])
 
+
+# P2-4: plan_history needs a capped-append reducer so LangGraph appends
+# entries rather than replacing the whole list on each state update.
+# Cap at 10 to prevent unbounded growth across many replan cycles.
+_PLAN_HISTORY_CAP = 10
+
+
+def _append_plan_history(
+    left: List[Dict[str, Any]] | None,
+    right: List[Dict[str, Any]] | None,
+) -> List[Dict[str, Any]]:
+    """Append new plan-history entries from *right* onto *left*, capped at
+    _PLAN_HISTORY_CAP.  When *right* is a ReplaceList it replaces *left*.
+    """
+    if isinstance(right, ReplaceList):
+        result = list(right)
+    else:
+        result = list(left or []) + list(right or [])
+    # Keep only the most recent entries.
+    if len(result) > _PLAN_HISTORY_CAP:
+        result = result[-_PLAN_HISTORY_CAP:]
+    return result
+
 # ---------------------------------------------------------------------------
 # AgentState — shared state of the LangGraph cognitive pipeline.
 # All Optional[X] annotations are written as X | None (Python 3.10+ union
@@ -308,10 +331,10 @@ class _AgentStateSpec(TypedDict, total=False):
     task_complexity: str | None
     step_retry_counts: Dict[str, int] | None
     no_plan_fail_count: int | None
-    # P3-4: Plan versioning — list of previous plan snapshots with timestamps.
-    # Populated by planning_node each time current_plan is overwritten.
+    # P3-4 / P2-4: Plan versioning — list of previous plan snapshots with timestamps.
+    # Uses _append_plan_history reducer so LangGraph appends rather than replaces.
     # Each entry: {"timestamp": ISO8601, "plan": [...], "reason": str}
-    plan_history: List[Dict[str, Any]] | None
+    plan_history: Annotated[List[Dict[str, Any]], _append_plan_history] | None
     step_lint_warnings: List[str] | None
     affected_files: List[str] | None
 

@@ -57,7 +57,26 @@ _USER_TIER_LIMITS = {
 _DEFAULT_TIER = "standard"
 
 # Memory file and limits
-_MEMORY_FILE = get_memory_path()
+# P2-2 FIX: evaluate get_memory_path() lazily inside functions rather than
+# once at module import time.  A module-level constant captures the path from
+# whatever CWD/data-dir is active at first import, which is wrong when the
+# process serves multiple projects or when tests change the data directory.
+#
+# _MEMORY_FILE may be set by tests via monkeypatch to redirect writes; when it
+# is None (default) _get_memory_file() calls get_memory_path() dynamically.
+_MEMORY_FILE = None
+
+
+def _get_memory_file():
+    """Return the current memory file path.
+
+    Returns the module-level override (_MEMORY_FILE) when set by tests, or
+    calls get_memory_path() dynamically on each invocation so changes to the
+    data directory are picked up without restarting the process.
+    """
+    if _MEMORY_FILE is not None:
+        return _MEMORY_FILE
+    return get_memory_path()
 
 
 def _get_agent_tier_from_state(agent_state: Optional[Dict[str, Any]] = None) -> str:
@@ -183,6 +202,7 @@ def memory_save(
     entry = f"- [{cat}] {ts}: {content}\n"
 
     try:
+        _MEMORY_FILE = _get_memory_file()
         _MEMORY_FILE.parent.mkdir(parents=True, exist_ok=True)
 
         # TASK-REL-2: serialise the entire read-modify-write under an exclusive

@@ -268,7 +268,6 @@ def _build_resolved_plan_result(
     affected_files: list,
     execution_waves: Any,
     prior_plan: list | None = None,
-    plan_history: list | None = None,
     plan_history_reason: str = "new_plan",
 ) -> dict:
     """Compatibility wrapper around resolved plan payload assembly.
@@ -286,7 +285,9 @@ def _build_resolved_plan_result(
         affected_files=affected_files,
         execution_waves=execution_waves,
     )
-    # P3-4: Append prior plan to history when plan changes.
+    # P3-4 / P2-4: Append prior plan to history when plan changes.
+    # The _append_plan_history reducer on AgentState.plan_history handles
+    # merging and capping — just return the single new delta entry.
     if prior_plan:
         from datetime import datetime as _dt
         _entry = {
@@ -294,12 +295,7 @@ def _build_resolved_plan_result(
             "plan": list(prior_plan),
             "reason": plan_history_reason,
         }
-        _history: list = list(plan_history) if plan_history else []
-        # Cap at 10 versions to avoid unbounded growth.
-        _history.append(_entry)
-        if len(_history) > 10:
-            _history = _history[-10:]
-        result["plan_history"] = _history
+        result["plan_history"] = [_entry]
     return result
 
 
@@ -690,7 +686,6 @@ async def _planning_node_impl(state: Mapping[str, Any], config: RunnableConfig) 
                 affected_files=_extract_affected_files(steps),
                 execution_waves=waves,
                 prior_plan=list(current_plan) if current_plan else None,
-                plan_history=list(s.get("plan_history") or []),
                 plan_history_reason="llm_generated",
             )
     except Exception as e:
@@ -715,7 +710,6 @@ async def _planning_node_impl(state: Mapping[str, Any], config: RunnableConfig) 
             affected_files=_extract_affected_files(fallback_plan),
             execution_waves=waves,
             prior_plan=list(current_plan) if current_plan else None,
-            plan_history=list(s.get("plan_history") or []),
             plan_history_reason="fallback_parse_failed",
         )
 

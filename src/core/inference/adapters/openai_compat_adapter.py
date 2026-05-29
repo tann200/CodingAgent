@@ -433,6 +433,10 @@ class OpenAICompatibleAdapter(LLMClient):
                                 pass
                             break
                 time.sleep(_retry_wait)
+                # P2-3: time.sleep() here is intentional and safe.
+                # chat() is a synchronous method that must ALWAYS be called via
+                # loop.run_in_executor() (see llm_manager.py run_with_correlation).
+                # Sleeping inside the worker thread does not block the event loop.
 
         if last_exc is not None and r is None:
             raise last_exc
