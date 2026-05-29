@@ -35,6 +35,10 @@ def _get_encoder(encoding_name: str):
 
 # v2 Phase 3: HuggingFace tokenizer cache
 _HF_TOKENIZERS: Dict[str, Any] = {}
+# B3: Lock guards check-then-set on _HF_TOKENIZERS to prevent duplicate loads
+# when two threads race on the same model key.
+import threading as _threading
+_HF_TOKENIZERS_LOCK = _threading.Lock()
 
 
 def _get_hf_tokenizer(model_hint: Optional[str]) -> Optional[Any]:
@@ -61,11 +65,13 @@ def _get_hf_tokenizer(model_hint: Optional[str]) -> Optional[Any]:
     if not any(k in m for k in hf_models):
         return None
 
-    # Check cache
+    # Check cache (fast path outside lock — worst case we load twice and one
+    # result is discarded, which is safe).
     if m in _HF_TOKENIZERS:
         return _HF_TOKENIZERS[m]
 
     # Try to load
+    tokenizer = None
     try:
         from transformers import AutoTokenizer  # type: ignore[import]
 
@@ -74,25 +80,25 @@ def _get_hf_tokenizer(model_hint: Optional[str]) -> Optional[Any]:
                 f"models/{model_hint}",  # Local model path
                 local_files_only=True,
             )
-            _HF_TOKENIZERS[m] = tokenizer
-            return tokenizer
         except Exception:
             pass
 
-        # Try from HuggingFace Hub (requires internet)
-        try:
-            tokenizer = AutoTokenizer.from_pretrained(
-                _hf_model_name(model_hint),
-                trust_remote_code=True,
-            )
-            _HF_TOKENIZERS[m] = tokenizer
-            return tokenizer
-        except Exception:
-            pass
+        if tokenizer is None:
+            # Try from HuggingFace Hub (requires internet)
+            try:
+                tokenizer = AutoTokenizer.from_pretrained(
+                    _hf_model_name(model_hint),
+                    trust_remote_code=True,
+                )
+            except Exception:
+                pass
     except Exception:
         pass
 
-    return None
+    if tokenizer is not None:
+        with _HF_TOKENIZERS_LOCK:
+            _HF_TOKENIZERS[m] = tokenizer
+    return tokenizer
 
 
 def _hf_model_name(model_hint: str) -> str:
@@ -208,9 +214,9 @@ def clear_tokenizer_cache(model_hint: Optional[str] = None) -> None:
     """
     global _HF_TOKENIZERS
 
-    if model_hint:
-        m = model_hint.lower()
-        if m in _HF_TOKENIZERS:
-            del _HF_TOKENIZERS[m]
-    else:
-        _HF_TOKENIZERS.clear()
+    with _HF_TOKENIZERS_LOCK:
+        if model_hint:
+            m = model_hint.lower()
+            _HF_TOKENIZERS.pop(m, None)
+        else:
+            _HF_TOKENIZERS.clear()

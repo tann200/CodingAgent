@@ -22,6 +22,9 @@ _JOBS: Dict[str, Dict[str, Any]] = {}
 _JOB_FACTORIES: Dict[str, Dict[str, Any]] = {}
 _THREAD: Optional[threading.Thread] = None
 _STOP_EVENT = threading.Event()
+# B3: Lock guards _JOBS and _JOB_FACTORIES against concurrent mutation from
+# the scheduler loop thread and the registration API (called from any thread).
+_JOBS_LOCK = threading.Lock()
 
 
 def register_job(name: str, fn: Callable[[], None], interval_seconds: int) -> None:
@@ -29,7 +32,8 @@ def register_job(name: str, fn: Callable[[], None], interval_seconds: int) -> No
 
     The job function receives no arguments; it must handle its own errors.
     """
-    _JOBS[name] = {"fn": fn, "interval": interval_seconds, "last_run": 0}
+    with _JOBS_LOCK:
+        _JOBS[name] = {"fn": fn, "interval": interval_seconds, "last_run": 0}
 
 
 def list_jobs() -> Dict[str, Dict[str, Any]]:
@@ -37,31 +41,35 @@ def list_jobs() -> Dict[str, Dict[str, Any]]:
 
     The returned dict maps job name -> {"interval": int, "last_run": float}.
     """
-    return {
-        name: {"interval": job.get("interval"), "last_run": job.get("last_run")}
-        for name, job in _JOBS.items()
-    }
+    with _JOBS_LOCK:
+        return {
+            name: {"interval": job.get("interval"), "last_run": job.get("last_run")}
+            for name, job in _JOBS.items()
+        }
 
 
 def list_job_factories() -> Dict[str, Dict[str, Any]]:
     """Return a shallow copy of registered job factories (name -> interval)."""
-    return {
-        name: {"interval": fact.get("interval")}
-        for name, fact in _JOB_FACTORIES.items()
-    }
+    with _JOBS_LOCK:
+        return {
+            name: {"interval": fact.get("interval")}
+            for name, fact in _JOB_FACTORIES.items()
+        }
 
 
 def unregister_job(name: str) -> bool:
     """Unregister a job by name. Returns True if a job was removed."""
     try:
-        return _JOBS.pop(name, None) is not None
+        with _JOBS_LOCK:
+            return _JOBS.pop(name, None) is not None
     except Exception:
         return False
 
 
 def clear_jobs() -> None:
     """Clear all registered jobs. This does not stop the scheduler thread."""
-    _JOBS.clear()
+    with _JOBS_LOCK:
+        _JOBS.clear()
 
 
 def register_job_factory(
@@ -73,9 +81,10 @@ def register_job_factory(
     enabling it after a disable. This avoids losing the callable when the job
     is unregistered.
     """
-    _JOB_FACTORIES[name] = {"fn": fn, "interval": interval_seconds}
-    if name not in _JOBS:
-        register_job(name, fn, interval_seconds)
+    with _JOBS_LOCK:
+        _JOB_FACTORIES[name] = {"fn": fn, "interval": interval_seconds}
+        if name not in _JOBS:
+            _JOBS[name] = {"fn": fn, "interval": interval_seconds, "last_run": 0}
 
 
 def enable_job(name: str) -> bool:
@@ -84,13 +93,14 @@ def enable_job(name: str) -> bool:
     Returns True if the job was registered (or already present), False if no
     factory for the job exists.
     """
-    if name in _JOBS:
+    with _JOBS_LOCK:
+        if name in _JOBS:
+            return True
+        fact = _JOB_FACTORIES.get(name)
+        if not fact:
+            return False
+        _JOBS[name] = {"fn": fact["fn"], "interval": fact.get("interval", 0), "last_run": 0}
         return True
-    fact = _JOB_FACTORIES.get(name)
-    if not fact:
-        return False
-    register_job(name, fact["fn"], fact.get("interval", 0))
-    return True
 
 
 def disable_job(name: str) -> bool:
@@ -104,18 +114,19 @@ def update_job_interval(name: str, interval_seconds: int) -> bool:
     Returns True if the job or factory existed and was updated.
     """
     updated = False
-    if name in _JOBS:
-        try:
-            _JOBS[name]["interval"] = int(interval_seconds)
-            updated = True
-        except Exception:
-            pass
-    if name in _JOB_FACTORIES:
-        try:
-            _JOB_FACTORIES[name]["interval"] = int(interval_seconds)
-            updated = True
-        except Exception:
-            pass
+    with _JOBS_LOCK:
+        if name in _JOBS:
+            try:
+                _JOBS[name]["interval"] = int(interval_seconds)
+                updated = True
+            except Exception:
+                pass
+        if name in _JOB_FACTORIES:
+            try:
+                _JOB_FACTORIES[name]["interval"] = int(interval_seconds)
+                updated = True
+            except Exception:
+                pass
     return updated
 
 
@@ -141,8 +152,11 @@ def _scheduler_loop(orch, heartbeat_interval: int) -> None:
 
     while not _STOP_EVENT.wait(timeout=heartbeat_interval):
         now = time.time()
-        # Run due jobs
-        for name, job in list(_JOBS.items()):
+        # Run due jobs — take a snapshot under the lock so mutations from
+        # register/unregister don't cause dict-changed-during-iteration errors.
+        with _JOBS_LOCK:
+            _jobs_snapshot = list(_JOBS.items())
+        for name, job in _jobs_snapshot:
             try:
                 last = job.get("last_run", 0)
                 interval = job.get("interval", heartbeat_interval)

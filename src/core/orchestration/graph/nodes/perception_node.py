@@ -819,7 +819,18 @@ async def _perception_node_impl(
                             tools_schema = _reduced
             except Exception:
                 pass
-    except Exception:
+    except Exception as _ts_exc:
+        # B1: Log at WARNING so tool-stripping failures are visible in traces.
+        # Falling back to tools_schema=None means the LLM is called with no
+        # tools, which effectively stalls the agent — this should never be silent.
+        logger.warning(
+            "perception_node: failed to build tools_schema; LLM will have no tools. "
+            "role=%s model=%s error=%s",
+            _perception_role,
+            model,
+            _ts_exc,
+            exc_info=True,
+        )
         tools_schema = None
 
     # LLM Inference
