@@ -106,15 +106,8 @@ class AgentSessionManager:
         }
         self._pending_p2p: List[Dict] = []
         self._p2p_lock = threading.Lock()
+        self._session_state_lock = threading.Lock()  # Consolidates _state_lock + _sessions_lock
         self._current_session_state: Optional[SessionState] = None
-        # Thread-safety: _current_session_state is read/written from both the orchestrator
-        # main thread (update_session_state) and the EventBus delivery thread
-        # (_handle_state_request → get_session_state). Guard all accesses with this lock.
-        self._state_lock = threading.Lock()
-        # D-1: _sessions and _role_subscriptions are mutated from multiple threads
-        # (register_agent, unregister_agent, subscribe_to_role, get_active_agents).
-        # Guard every read/write with this dedicated lock.
-        self._sessions_lock = threading.Lock()
         # D-5: index from session_id → agent_id for O(1) teardown lookup.
         self._session_id_to_agent_id: Dict[str, str] = {}
         self._setup_hydration_handler()
@@ -145,17 +138,17 @@ class AgentSessionManager:
         self,
         session_id: Optional[str] = None,
         task: Optional[str] = None,
-        message_history: Optional[List[Dict[str, str]]] = None,
-        current_plan: Optional[List[Dict[str, Any]]] = None,
-        current_step: Optional[int] = None,
+        message_history: Optional[List[Dict[str, Any]]] = None,
+        current_plan: Optional[Dict[str, Any]] = None,
+        current_step: Optional[Dict[str, Any]] = None,
         provider: Optional[str] = None,
         model: Optional[str] = None,
-        token_budget: Optional[Dict[str, Any]] = None,
+        token_budget: Optional[int] = None,
         files_modified: Optional[List[str]] = None,
         files_read: Optional[List[str]] = None,
     ) -> None:
         """Update the current session state (for hydration)."""
-        with self._state_lock:
+        with self._session_state_lock:
             if self._current_session_state is None:
                 self._current_session_state = SessionState()
 
@@ -181,29 +174,25 @@ class AgentSessionManager:
             if files_read is not None:
                 state.files_read = files_read
 
-            # Sync pending P2P messages
+            # Sync pending P2P messages (safe to call here now)
             state.pending_p2p = self.flush_pending_p2p()
 
     def get_session_state(self) -> SessionState:
         """Get current session state for hydration."""
-        with self._state_lock:
+        with self._session_state_lock:
             if self._current_session_state is None:
                 self._current_session_state = SessionState()
                 self._current_session_state.session_id = "default"
-            # Snapshot active agents under the lock so the returned state is
-            # consistent, but flush P2P *outside* to avoid an AB-BA deadlock
-            # between _state_lock and _p2p_lock.
+            
+            # Snapshot active agents under the same lock for consistency
             state = self._current_session_state
-            with self._sessions_lock:
-                state.active_agents = {
-                    k: v for k, v in self._sessions.items() if v.status == "running"
-                }
-
-        # Flush P2P messages outside _state_lock to prevent deadlock:
-        # flush_pending_p2p() acquires _p2p_lock, and any thread that holds
-        # _p2p_lock and then tries to acquire _state_lock would deadlock.
-        state.pending_p2p = self.flush_pending_p2p()
-        return state
+            state.active_agents = {
+                k: v for k, v in self._sessions.items() if v.status == "running"
+            }
+            
+            # Sync pending P2P messages (safe to call here now)
+            state.pending_p2p = self.flush_pending_p2p()
+            return state
 
     @classmethod
     def get_instance(cls) -> "AgentSessionManager":
@@ -248,7 +237,7 @@ class AgentSessionManager:
             status="running",
             callbacks={},
         )
-        with self._sessions_lock:
+        with self._session_state_lock:
             self._sessions[agent_id] = session
             self._role_subscriptions[role].add(agent_id)
             self._session_id_to_agent_id[session_id] = agent_id
@@ -270,7 +259,7 @@ class AgentSessionManager:
                 callback(msg)
 
         eb.subscribe(topic, wrapped)
-        with self._sessions_lock:
+        with self._session_state_lock:
             if agent_id in self._sessions:
                 self._sessions[agent_id].callbacks[topic] = wrapped
 
@@ -292,12 +281,12 @@ class AgentSessionManager:
 
     def get_active_agents(self) -> Dict[str, AgentSession]:
         """Get all active agent sessions."""
-        with self._sessions_lock:
+        with self._session_state_lock:
             return {k: v for k, v in self._sessions.items() if v.status == "running"}
 
     def unregister_agent(self, agent_id: str):
         """Unregister an agent session."""
-        with self._sessions_lock:
+        with self._session_state_lock:
             if agent_id in self._sessions:
                 session = self._sessions[agent_id]
                 session.status = "terminated"

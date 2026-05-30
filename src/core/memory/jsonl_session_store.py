@@ -112,6 +112,8 @@ class JsonlSessionStore:
         self._decisions_lock = threading.Lock()
         # Schema version for compatibility with older tests/tools
         self._SCHEMA_VERSION = 2
+        # Maximum records to read in _read_all_records to prevent OOM
+        self._MAX_RECORDS = 10_000
 
     def _get_sessions_dir(self) -> Path:
         """Resolve and return the sessions directory.
@@ -239,20 +241,35 @@ class JsonlSessionStore:
                 )
 
     def _read_all_records(self, session_id: str) -> List[Dict[str, Any]]:
-        """Read and parse all records across all rotated files for *session_id*."""
+        """Read and parse all records across all rotated files for *session_id*.
+        
+        Limits reading to _MAX_RECORDS to prevent OOM issues.
+        """
         records: List[Dict[str, Any]] = []
+        records_read = 0
+        
         for fpath in self._session_files(session_id):
+            if records_read >= self._MAX_RECORDS:
+                logger.warning(
+                    "JsonlSessionStore: reached max records (%d) for session %s, stopping read",
+                    self._MAX_RECORDS, session_id
+                )
+                break
+                
             try:
                 # Use a shared/read lock when reading to avoid races with
                 # concurrent writers in other processes.
                 try:
                     with locked_file(fpath, mode="r") as f:
                         for raw_line in f:
+                            if records_read >= self._MAX_RECORDS:
+                                break
                             line = raw_line.strip()
                             if not line:
                                 continue
                             try:
                                 records.append(json.loads(line))
+                                records_read += 1
                             except json.JSONDecodeError:
                                 logger.debug(
                                     "JsonlSessionStore: skipping malformed line in %s",
@@ -263,11 +280,14 @@ class JsonlSessionStore:
                     # the platform doesn't support it.
                     with fpath.open("r", encoding="utf-8", errors="replace") as f:
                         for raw_line in f:
+                            if records_read >= self._MAX_RECORDS:
+                                break
                             line = raw_line.strip()
                             if not line:
                                 continue
                             try:
                                 records.append(json.loads(line))
+                                records_read += 1
                             except json.JSONDecodeError:
                                 logger.debug(
                                     "JsonlSessionStore: skipping malformed line in %s",
@@ -275,6 +295,13 @@ class JsonlSessionStore:
                                 )
             except Exception as exc:
                 logger.warning("JsonlSessionStore: could not read %s: %s", fpath, exc)
+        
+        if records_read >= self._MAX_RECORDS:
+            logger.warning(
+                "JsonlSessionStore: session %s truncated to %d records (max: %d)",
+                session_id, records_read, self._MAX_RECORDS
+            )
+        
         return records
 
     # ------------------------------------------------------------------

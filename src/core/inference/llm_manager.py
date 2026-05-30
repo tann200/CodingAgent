@@ -84,7 +84,23 @@ except Exception:
             def _worker() -> T:
                 rv = fn(*args)
                 if inspect.isawaitable(rv):
-                    return asyncio.run(rv)  # type: ignore[return-value, arg-type]
+                    # Handle asyncio.run() safely in worker threads
+                    try:
+                        loop = asyncio.get_running_loop()
+                        # If we're in a thread with a running loop, create a new one
+                        if loop.is_running():
+                            new_loop = asyncio.new_event_loop()
+                            asyncio.set_event_loop(new_loop)
+                            try:
+                                return new_loop.run_until_complete(rv)
+                            finally:
+                                new_loop.close()
+                        else:
+                            # Loop exists but not running - safe to use run_until_complete
+                            return asyncio.run_until_complete(rv)
+                    except RuntimeError:
+                        # No running loop - safe to use asyncio.run
+                        return asyncio.run(rv)  # type: ignore[return-value, arg-type]
                 return rv  # type: ignore[return-value]
 
             sel_executor = executor

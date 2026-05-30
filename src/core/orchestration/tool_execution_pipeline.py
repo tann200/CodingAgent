@@ -592,8 +592,26 @@ def _dispatch_tool_call(
         if _inspect.isawaitable(rv):
             import asyncio as _asyncio
             from typing import Coroutine
-
-            return _asyncio.run(cast(Coroutine[Any, Any, Any], rv))
+            
+            # Check if we're in a thread with an existing event loop
+            try:
+                loop = _asyncio.get_running_loop()
+                # If we're in a thread with a running loop, use run_coroutine_threadsafe
+                if loop.is_running():
+                    # This should be called from the main thread, but we're in a worker thread
+                    # So we need to handle this carefully - create a new event loop for this thread
+                    new_loop = _asyncio.new_event_loop()
+                    _asyncio.set_event_loop(new_loop)
+                    try:
+                        return new_loop.run_until_complete(rv)
+                    finally:
+                        new_loop.close()
+                else:
+                    # Loop exists but not running - safe to use run_until_complete
+                    return _asyncio.run_until_complete(rv)
+            except RuntimeError:
+                # No running loop - safe to use asyncio.run
+                return _asyncio.run(cast(Coroutine[Any, Any, Any], rv))
         return rv
 
     orch_token = None
