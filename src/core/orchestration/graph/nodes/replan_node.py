@@ -36,6 +36,11 @@ async def _replan_node_impl(state: StateLike, config: RunnableConfig) -> Dict[st
     # C3: Clamp negative step — if the plan is empty there's nothing to replan
     if current_step < 0:
         current_step = 0
+    # P2-A: Must be incremented before the early-return below so that
+    # total_recovery_attempts is defined when referenced on line ~47.
+    total_recovery_attempts = int(state.get("total_recovery_attempts") or 0) + 1
+    # P1-3: Increment inner replan-loop counter
+    replan_attempts = int(state.get("replan_attempts") or 0) + 1
     if not current_plan:
         logger.warning("replan_node: current_plan is empty, nothing to replan")
         return {
@@ -45,10 +50,6 @@ async def _replan_node_impl(state: StateLike, config: RunnableConfig) -> Dict[st
             "total_recovery_attempts": total_recovery_attempts,
             "errors": ["current_plan is empty"],
         }
-    # P1-3: Increment inner replan-loop counter
-    replan_attempts = int(state.get("replan_attempts") or 0) + 1
-    # P2-A: global recovery cap (shared with debug_node)
-    total_recovery_attempts = int(state.get("total_recovery_attempts") or 0) + 1
 
     # H-02: Detect LangGraph node replay by comparing the pre-replan plan hash.
     # On replay LangGraph re-reads the pre-node checkpoint, so replan_attempts

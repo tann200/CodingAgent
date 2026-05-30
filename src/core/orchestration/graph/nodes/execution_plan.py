@@ -61,7 +61,8 @@ def compute_plan_step_updates(
     if not current_plan or current_step >= len(current_plan):
         return plan_advance, wave_advance
 
-    execution_ok = bool(result.get("ok") or result.get("status") == "ok")
+    _ok_flag = result.get("ok")
+    execution_ok = (_ok_flag is True) or (_ok_flag is None and result.get("status") == "ok")
     if not execution_ok:
         return plan_advance, wave_advance
 
@@ -118,7 +119,8 @@ def compute_no_plan_fail_update(
     if state.get("current_plan"):
         return {}
 
-    execution_ok = bool(result.get("ok") or result.get("status") == "ok")
+    _ok_flag = result.get("ok")
+    execution_ok = (_ok_flag is True) or (_ok_flag is None and result.get("status") == "ok")
     is_format_error = "format_error" in str(result.get("error", ""))
     if execution_ok:
         return {"no_plan_fail_count": 0}
@@ -137,7 +139,7 @@ def compute_plan_approval_consumed(
     if (
         state.get("plan_mode_approved")
         and tool_name in modifying_tools
-        and (result.get("ok") or result.get("status") == "ok")
+        and ((result.get("ok") is True) or (result.get("ok") is None and result.get("status") == "ok"))
     ):
         return {"plan_mode_approved": False}
     return {}

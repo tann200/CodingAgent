@@ -130,11 +130,10 @@ class AdapterWrapper:
                     )
 
                 # token accounting may be missing; set 0 if not present
-                prompt_tokens = int(res.get("usage", {}).get("prompt_tokens") or 0)
-                completion_tokens = int(
-                    res.get("usage", {}).get("completion_tokens") or 0
-                )
-                total_tokens = int(res.get("usage", {}).get("total_tokens") or 0)
+                _usage = res.get("usage") or {}
+                prompt_tokens = int(_usage.get("prompt_tokens") or 0)
+                completion_tokens = int(_usage.get("completion_tokens") or 0)
+                total_tokens = int(_usage.get("total_tokens") or 0)
 
                 out = {
                     "ok": True,

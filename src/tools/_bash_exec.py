@@ -37,7 +37,8 @@ from src.tools._approval import is_tier3 as _is_tier3
 from src.tools.tools_config import is_autonomous as _is_autonomous
 from src.core.orchestration.approval_gate import (
     register_bash_gate,
-    _bash_denied,
+    is_bash_denied,
+    discard_bash_denied,
 )
 from src.core.orchestration.event_bus import get_event_bus as _get_event_bus
 
@@ -366,7 +367,9 @@ def bash(
     # Blocks &&, ||, ;, |, >, >>, <, $(, ` and destructive keywords on the
     # normalised (whitespace-collapsed, lowercased) command string so spacing
     # tricks like "r m  -rf" or "ls  |  grep" cannot bypass the check.
+    # Quotes are stripped first so that `rm '-rf' /` still matches `rm -rf`.
     _cmd_lower = _re.sub(r"\s+", " ", command).lower()
+    _cmd_lower = _cmd_lower.replace("'", "").replace('"', "")
     for pattern in DANGEROUS_PATTERNS:
         if pattern in _cmd_lower:
             return {
@@ -782,11 +785,17 @@ def _check_tier3_approval(command: str) -> Optional[Dict[str, Any]]:
                 {"tool_id": _tool_id, "command": command},
             )
         except Exception:
-            pass
+            discard_bash_denied(_tool_id)
+            _logger.warning("Failed to publish bash.approval_required event", exc_info=True)
+            return {
+                "status": "error",
+                "error": "Bash command was denied (approval gate not available)",
+                "tool_id": _tool_id,
+            }
 
         _approved = _gate_ev.wait(timeout=120.0)
-        if not _approved or _tool_id in _bash_denied:
-            _bash_denied.discard(_tool_id)
+        if not _approved or is_bash_denied(_tool_id):
+            discard_bash_denied(_tool_id)
             return {
                 "status": "error",
                 "error": "Bash command was denied by approval gate",

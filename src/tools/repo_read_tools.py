@@ -401,12 +401,22 @@ def _save_repo_summary_cache(workdir: str, summary: Dict[str, Any]) -> None:
             "config_mtimes": _get_config_files_mtime(workdir),
             "summary": summary,
         }
-        # Write atomically: temp file + os.replace to avoid partial-write corruption.
+        # Write atomically: temp file + os.replace (shutil.move fallback for cross-device).
+        import shutil
         _fd, _tmp = tempfile.mkstemp(dir=str(cache_dir), suffix=".tmp")
         try:
-            with os.fdopen(_fd, "w") as _f:
-                json.dump(cache, _f)
-            os.replace(_tmp, str(cache_path))
+            try:
+                with os.fdopen(_fd, "w") as _f:
+                    _fd = None  # ownership transferred to fdopen
+                    json.dump(cache, _f)
+            finally:
+                if _fd is not None:
+                    os.close(_fd)
+                    _fd = None
+            try:
+                os.replace(_tmp, str(cache_path))
+            except OSError:
+                shutil.move(_tmp, str(cache_path))
         except Exception:
             try:
                 os.unlink(_tmp)

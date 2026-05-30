@@ -366,14 +366,25 @@ def read_file(
     if not p.exists():
         return {"path": str(p), "status": "not_found"}
 
-    # Binary detection: check first 512 bytes for null bytes
-    raw_bytes = p.read_bytes()
-    if b"\x00" in raw_bytes[:512]:
+    # Binary detection: read first 512 bytes for null-byte check
+    # without loading the entire file into memory (OOM-1 fix).
+    try:
+        with p.open("rb") as _fh:
+            _header = _fh.read(512)
+    except Exception as _e:
+        return {"path": str(p), "status": "error", "error": f"Failed to read: {_e}"}
+    if b"\x00" in _header:
         return {
             "path": str(p),
             "status": "error",
-            "error": f"Binary file detected ({len(raw_bytes)} bytes). Use a binary-aware tool.",
+            "error": f"Binary file detected. Use a binary-aware tool.",
         }
+
+    try:
+        with p.open("rb") as _fh:
+            raw_bytes = _fh.read(_READ_FILE_MAX_CHARS * 4)
+    except Exception as _e:
+        return {"path": str(p), "status": "error", "error": f"Failed to read: {_e}"}
 
     try:
         content = raw_bytes.decode("utf-8")
@@ -681,16 +692,48 @@ def tail_log_file(
         n = int(lines)
     except (TypeError, ValueError):
         return {"status": "error", "error": f"lines must be an integer, got {lines!r}"}
-    content = p.read_text(encoding="utf-8")
-    all_lines = content.splitlines(keepends=True)
-    tail = all_lines[-n:] if n < len(all_lines) else all_lines
-    return {
-        "path": str(p),
-        "status": "ok",
-        "content": "".join(tail),
-        "total_lines": len(all_lines),
-        "lines_shown": len(tail),
-    }
+    try:
+        import os as _os
+
+        with p.open("rb") as _fh:
+            _fh.seek(0, _os.SEEK_END)
+            _size = _fh.tell()
+            if _size == 0:
+                return {"path": str(p), "status": "ok", "content": "", "total_lines": 0, "lines_shown": 0}
+            _chunk = 4096
+            _buf = bytearray()
+            _pos = _size
+            _found_lines = 0
+            while _pos > 0 and _found_lines <= n:
+                _read_size = min(_chunk, _pos)
+                _pos -= _read_size
+                _fh.seek(_pos)
+                _buf = bytearray(_fh.read(_read_size)) + _buf
+                _found_lines = _buf.count(b"\n")
+            # Ensure we start at a newline boundary
+            if _found_lines > n:
+                _idx = _buf.find(b"\n")
+                # Skip the first newline to get exactly n lines (or start from the buffer's
+                # offset if we didn't overshoot).  Use a simple loop to count newlines.
+                _nl_count = 0
+                for _i, _b in enumerate(_buf):
+                    if _b == 10:  # \n
+                        _nl_count += 1
+                        if _nl_count > n:
+                            _buf = _buf[_i + 1:]
+                            break
+            content = _buf.decode("utf-8", errors="replace")
+        all_lines = content.splitlines(keepends=True)
+        tail = all_lines[-n:] if n < len(all_lines) else all_lines
+        return {
+            "path": str(p),
+            "status": "ok",
+            "content": "".join(tail),
+            "total_lines": _size,
+            "lines_shown": len(tail),
+        }
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
 
 
 @tool(
@@ -738,7 +781,8 @@ def read_file_bytes(
             "error": f"max_bytes must be an integer, got {max_bytes!r}",
         }
     try:
-        data = p.read_bytes()[:mb]
+        with p.open("rb") as _fh:
+            data = _fh.read(mb)
         return {
             "path": str(p),
             "status": "ok",

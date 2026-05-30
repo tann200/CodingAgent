@@ -3,6 +3,7 @@ import asyncio
 import inspect
 import json
 import logging
+import threading
 from typing import Any, Dict, List, Optional
 from pathlib import Path
 
@@ -42,23 +43,28 @@ def _atomic_write_json(target: Path, payload: Any) -> bool:
     return atomic_write_json(target, payload, logger=logger)
 
 
+_DISTILLER_LLM_LOCK: threading.Lock = threading.Lock()
+
+
 def _get_distiller_executor() -> concurrent.futures.ThreadPoolExecutor:
     global _DISTILLER_LLM_EXECUTOR
     if _DISTILLER_LLM_EXECUTOR is None:
-        # F-01: Use max_workers=2 so a leaked/timed-out thread does not
-        # permanently saturate the pool.  With max_workers=1, any call that
-        # times out occupies the single worker indefinitely (future.cancel()
-        # is a no-op on an already-running thread), causing every subsequent
-        # distillation call to queue behind the leaked thread and also time out.
-        _DISTILLER_LLM_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
-            max_workers=2, thread_name_prefix="distiller_llm"
-        )
-        # F-02: Register atexit shutdown so the interpreter does not hang on
-        # threads blocked in asyncio.run() at process exit.  wait=False avoids
-        # blocking teardown on an in-flight LLM request.
-        import atexit as _atexit
+        with _DISTILLER_LLM_LOCK:
+            if _DISTILLER_LLM_EXECUTOR is None:
+                # F-01: Use max_workers=2 so a leaked/timed-out thread does not
+                # permanently saturate the pool.  With max_workers=1, any call that
+                # times out occupies the single worker indefinitely (future.cancel()
+                # is a no-op on an already-running thread), causing every subsequent
+                # distillation call to queue behind the leaked thread and also time out.
+                _DISTILLER_LLM_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
+                    max_workers=2, thread_name_prefix="distiller_llm"
+                )
+                # F-02: Register atexit shutdown so the interpreter does not hang on
+                # threads blocked in asyncio.run() at process exit.  wait=False avoids
+                # blocking teardown on an in-flight LLM request.
+                import atexit as _atexit
 
-        _atexit.register(_DISTILLER_LLM_EXECUTOR.shutdown, False)
+                _atexit.register(_DISTILLER_LLM_EXECUTOR.shutdown, False)
     return _DISTILLER_LLM_EXECUTOR
 
 

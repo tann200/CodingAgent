@@ -237,10 +237,7 @@ class McpStdioClient:
         Returns a ``McpToolResult`` with ``ok=True`` on success.
         """
         try:
-            resp = await asyncio.wait_for(
-                self._request("tools/call", {"name": name, "arguments": arguments}),
-                timeout=_CALL_TIMEOUT,
-            )
+            resp = await self._request("tools/call", {"name": name, "arguments": arguments}, timeout=_CALL_TIMEOUT)
             # MCP spec: result has a "content" list of content blocks
             content = resp.get("content", resp)
             # Flatten text blocks to a single string for convenience
@@ -326,7 +323,9 @@ class McpStdioClient:
         self._process.stdin.write(raw.encode())
         await self._process.stdin.drain()
 
-    async def _request(self, method: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    async def _request(
+        self, method: str, params: Dict[str, Any], timeout: float = _INITIALIZE_TIMEOUT
+    ) -> Dict[str, Any]:
         """Send a JSON-RPC request and await the response."""
         req_id = self._next_id()
         fut: asyncio.Future = asyncio.get_running_loop().create_future()
@@ -337,9 +336,13 @@ class McpStdioClient:
             "method": method,
             "params": params,
         }
-        await self._send(msg)
         try:
-            return await asyncio.wait_for(fut, timeout=_INITIALIZE_TIMEOUT)
+            await asyncio.wait_for(self._send(msg), timeout=timeout)
+        except asyncio.TimeoutError:
+            self._pending.pop(req_id, None)
+            raise
+        try:
+            return await asyncio.wait_for(fut, timeout=timeout)
         finally:
             self._pending.pop(req_id, None)
 

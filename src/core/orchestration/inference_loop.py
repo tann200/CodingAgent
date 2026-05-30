@@ -32,6 +32,18 @@ from src.core.orchestration.inference_loop_state import (
 )
 from src.core.orchestration.work_summary import _generate_work_summary
 
+# Cache config_loader module so _cfg_get() always resolves through the live module
+# (allowing unittest.mock.patch to intercept config_loader.get at test time).
+import src.core.config_loader as _config_loader_module
+
+
+def _cfg_get(key: str, default: Any = None) -> Any:
+    """Thread-safe live lookup of config_loader.get(). Never raises."""
+    try:
+        return _config_loader_module.get(key, default)
+    except Exception:
+        return default
+
 # Compatibility note for source-inspection tests: initial_state still includes
 # keys like "agent_mode" and "max_turns"; construction now lives in
 # inference_loop_state.build_initial_state().
@@ -206,12 +218,7 @@ def run_agent_once_impl(
 
     # TASK-12: max_turns guard — enforce before invoking the graph so runaway
     # tasks cannot exceed the configured turn budget regardless of graph state.
-    try:
-        from src.core.config_loader import get as _cfg_get
-        _cfg_get_fn: Any = _cfg_get
-    except Exception:
-        _cfg_get_fn = None
-    _max_turns = resolve_max_turns(initial_state=initial_state, config_getter=_cfg_get_fn)
+    _max_turns = resolve_max_turns(initial_state=initial_state, config_getter=_cfg_get)
     _turn_count = int(initial_state.get("turn_count") or 0)
     if _turn_count >= _max_turns:
         guilogger.warning(

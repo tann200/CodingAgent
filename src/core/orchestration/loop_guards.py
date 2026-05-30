@@ -103,6 +103,18 @@ ALTERNATING_LOOP_WINDOW: int = 10
 ALTERNATING_TOOL_DIVERSITY: int = 2
 
 
+def _fail_read_before_write(path_arg: str, reason: str) -> Dict[str, Any]:
+    """Build a fail-closed error response for read-before-write violations."""
+    msg = {
+        "traversal": f"Path '{path_arg}' escapes the working directory.",
+    }.get(reason, f"Security violation for '{path_arg}'.")
+    return {
+        "last_result": {"ok": False, "error": msg},
+        "history": [],
+        "next_action": None,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Guard 1 — Read-before-write
 # ---------------------------------------------------------------------------
@@ -138,7 +150,14 @@ def check_read_before_write(
         return None
 
     try:
-        resolved = str((Path(working_dir) / path_arg).resolve())
+        _wd_resolved = Path(working_dir).resolve()
+        _arg_resolved = (_wd_resolved / path_arg).resolve()
+        # Guard: reject if resolved path escapes working directory.
+        try:
+            _arg_resolved.relative_to(_wd_resolved)
+        except ValueError:
+            return _fail_read_before_write(path_arg, "traversal")
+        resolved = str(_arg_resolved)
         if not Path(resolved).exists():
             # New files don't need a prior read.
             return None
@@ -170,9 +189,14 @@ def check_read_before_write(
                 "next_action": None,
             }
     except Exception as exc:
-        logger.debug(
-            "loop_guards.check_read_before_write: exception (non-fatal): %s", exc
+        logger.error(
+            "loop_guards.check_read_before_write: exception (fail-closed): %s", exc
         )
+        return {
+            "last_result": {"ok": False, "error": "Guard check failed — operation blocked."},
+            "history": [],
+            "next_action": None,
+        }
 
     return None
 

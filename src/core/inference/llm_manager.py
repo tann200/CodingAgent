@@ -213,7 +213,7 @@ _CACHE_TTL = 300
 
 # Shared lock for all atomic providers.json read-modify-write operations.
 # Imported by settings_panel.py so both modules share the same lock object.
-_providers_json_lock = _threading.Lock()
+_providers_json_lock = _threading.RLock()
 
 # --- Helper functions ---
 

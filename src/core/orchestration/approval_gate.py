@@ -38,10 +38,9 @@ old ``threading.Event.wait(timeout)`` so existing callers need no changes
 
 Internal state
 --------------
-    _pending_bash : dict[str, AsyncGate]
-    _bash_denied  : set[str]
-    _pending_tool : dict[str, AsyncGate]
-    _tool_denied  : set[str]
+    Stored in ``_bash_registry`` and ``_tool_registry`` (``_GateRegistry`` instances).
+    Use the public API functions (``is_bash_denied``, ``is_tool_denied``, etc.) instead of
+    accessing internal state directly.
 """
 
 from __future__ import annotations
@@ -114,15 +113,15 @@ class _GateRegistry:
 _bash_registry = _GateRegistry()
 _tool_registry = _GateRegistry()
 
-# Keep the old module-level names as aliases for external code that reads them directly.
-# (Most callers use the functions below; these aliases preserve backward compat.)
-_pending_bash = _bash_registry._pending
-_bash_denied = _bash_registry._denied
-_bash_result = _bash_registry._results
+# Public-facing API functions below — use them instead of accessing aliases directly.
 
-_pending_tool = _tool_registry._pending
-_tool_denied = _tool_registry._denied
-_tool_result = _tool_registry._results
+# Cache the optional event-bus helper at module level (avoids deferred imports on
+# every wait_async call).  Set to None when unavailable (circular import risk).
+_run_with_correlation = None
+try:
+    from src.core.orchestration.event_bus import run_with_correlation as _run_with_correlation  # type: ignore[assignment]  # noqa: E501
+except ImportError:
+    pass
 
 # Unified lock (now provided by each registry internally; kept for compat)
 _gate_lock: threading.Lock = threading.Lock()
@@ -198,31 +197,14 @@ class AsyncGate:
                 # Prefer the central helper which copies the current context
                 # and runs the callable in the executor so ContextVars
                 # (eg. correlation id) propagate into the worker thread.
-                try:
-                    from src.core.orchestration.event_bus import run_with_correlation
-
-                    await _asyncio.wait_for(
-                        run_with_correlation(loop, None, lambda: ev.wait(timeout)),
-                        timeout=timeout + 1,
-                    )
-                except Exception:
-                    # Best-effort fallback when the helper isn't importable
-                    # (circular import risk): copy the current context and
-                    # use loop.run_in_executor with ctx.run.
-                    import contextvars as _contextvars
-
-                    ctx = _contextvars.copy_context()
-
-                    # Wrap ctx.run in a zero-argument callable so run_in_executor
-                    # receives a single callable; this avoids typechecker/LSP
-                    # complaints about variadic call signatures.
-                    def _wait_in_thread() -> bool:
-                        return ctx.run(lambda: ev.wait(timeout))
-
-                    await _asyncio.wait_for(
-                        loop.run_in_executor(None, _wait_in_thread),
-                        timeout=timeout + 1,
-                    )
+                #
+                # Import is deferred (circular import risk) but done *once*
+                # and cached so the hot path never re-imports.
+                _wait_coro = _run_with_correlation(loop, None, lambda: ev.wait(timeout))
+                await _asyncio.wait_for(
+                    _wait_coro,
+                    timeout=timeout + 1,
+                )
                 return ev.is_set()
             except _asyncio.TimeoutError:
                 return False
@@ -323,6 +305,11 @@ def resolve_bash_gate(tool_id: str, approved: bool) -> None:
 def is_bash_denied(tool_id: str) -> bool:
     """Return True if *tool_id* was explicitly denied by the user."""
     return _bash_registry.is_denied(tool_id)
+
+
+def discard_bash_denied(tool_id: str) -> None:
+    """Remove *tool_id* from the bash denied set (no-op if not present)."""
+    _bash_registry.discard_denied(tool_id)
 
 
 # ---------------------------------------------------------------------------

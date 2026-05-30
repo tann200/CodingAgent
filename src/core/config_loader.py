@@ -409,6 +409,7 @@ class ConfigWatcher:
             list(reload_callbacks) if reload_callbacks else []
         )
         self._stop_flag: bool = False
+        self._stop_event: threading.Event = threading.Event()
         self._thread: Optional[threading.Thread] = None
         # Pre-compute availability to let tests override easily
         self._available: bool = self._check_watchfiles()
@@ -454,6 +455,7 @@ class ConfigWatcher:
             return True
         # Clear/ensure stop flag
         self._stop_flag = False
+        self._stop_event.clear()
         t = threading.Thread(
             target=self._watch_loop, daemon=True, name="config-watcher"
         )
@@ -463,6 +465,7 @@ class ConfigWatcher:
 
     def stop(self) -> None:
         self._stop_flag = True
+        self._stop_event.set()
 
     def _watch_loop(self) -> None:
         """Watch the workspace .agent directory using watchfiles.watch.
@@ -482,7 +485,7 @@ class ConfigWatcher:
         # tests that inject a fake module (or real watchfiles) can still drive
         # the loop.
         try:
-            for changes in watchfiles.watch(str(watch_dir), stop_event=None):
+            for changes in watchfiles.watch(str(watch_dir), stop_event=self._stop_event):
                 # Exit early if requested
                 if self._stop_flag:
                     break

@@ -87,8 +87,8 @@ def test_model_profile_safe_context():
     safe_tokens = profile.estimate_safe_context(vram_gb=16.0, overhead_gb=2.0)
     # weights_gb = 3.5, available = 16 - 3.5 - 2 = 10.5GB
     # tokens_per_gb = 1024 / 1.6 = 640
-    # expected = 10.5 * 640 = 6720
-    assert safe_tokens == 6720
+    # expected = 10.5 * 640 * 1000 = 6,720,000, clamped to max_context (32768)
+    assert safe_tokens == 32768
 
     # Test minimum bound
     tiny_profile = ModelProfile(

@@ -54,7 +54,6 @@ import uuid
 import os
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
 
 from src.core.memory.file_lock import locked_file
 from src.core.memory.jsonl_sidecar_io import atomic_write_json_with_fallback
@@ -384,6 +383,19 @@ class JsonlSessionStore:
             try:
                 with target_file.open("r+b") as f:
                     f.truncate(target_offset)
+                # If the active file has been rotated since the snapshot,
+                # truncating the old (rotated) file is not enough — the
+                # current active file also needs to be reset so subsequent
+                # appends don't mix old + new data.
+                active = self._active_file(session_id)
+                if active and active.resolve() != target_file.resolve():
+                    logger.info(
+                        "JsonlSessionStore: file rotated since snapshot; "
+                        "clearing active file %s",
+                        active,
+                    )
+                    with active.open("w") as f:
+                        f.truncate(0)
                 logger.info(
                     "JsonlSessionStore: reverted '%s' to offset %d in %s",
                     session_id,

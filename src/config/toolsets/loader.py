@@ -241,6 +241,7 @@ class ToolsetManager:
         toolset_tools = get_tools_for_toolset(toolset_name)
 
         if not toolset_tools:
+            self._current_toolset = None
             return self.base_tools
 
         self._current_toolset = toolset_name

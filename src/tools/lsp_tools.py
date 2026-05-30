@@ -302,6 +302,15 @@ async def lsp_rename(
                     file_path = Path(unquote(file_uri[7:]))
                 else:
                     file_path = Path(unquote(file_uri))
+                resolved_path = file_path.resolve()
+                workdir_path = Path(working_dir).resolve() if working_dir else Path.cwd()
+                if not resolved_path.is_relative_to(workdir_path):
+                    logger.debug(
+                        "lsp_rename: path %s is outside workdir %s, skipping",
+                        resolved_path,
+                        workdir_path,
+                    )
+                    continue
                 if not file_path.exists():
                     continue
                 content = file_path.read_text(encoding="utf-8")

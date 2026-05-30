@@ -81,7 +81,7 @@ def parse_tool_block(text: str) -> Optional[Dict[str, Any]]:
     # Strip channel thought tags from the raw text first, preserving code fences
     # so the fence-based json/yaml patterns below still find their delimiters.
     cleaned_text = re.sub(
-        r"<\|channel\|>thought.*?<channel\|>", "", text, flags=re.DOTALL
+        r"<\|channel\|>thought.*?<\|/channel\|>", "", text, flags=re.DOTALL
     ).strip()
 
     # E-01: Prepare a fence-stripped version for last-resort inline parsing.
@@ -157,7 +157,7 @@ def parse_tool_block(text: str) -> Optional[Dict[str, Any]]:
     try:
         inline_parsed = yaml.safe_load(fenceless_text)
         if isinstance(inline_parsed, dict):
-            if inline_parsed.get("name") and inline_parsed.get("arguments"):
+            if inline_parsed.get("name") and inline_parsed.get("arguments") is not None:
                 args = inline_parsed["arguments"]
                 if isinstance(args, str):
                     try:

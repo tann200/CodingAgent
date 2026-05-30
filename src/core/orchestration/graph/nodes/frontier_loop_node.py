@@ -566,11 +566,24 @@ async def _call_llm_for_turn(
         [bool(m.get("tool_calls")) for m in messages],
     )
 
-    response = await call_model(
-        messages=messages,
-        provider=provider_name,
-        model=model_name,
-        tools=tools_schema or None,
+    _llm_timeout: int | None = 120
+    try:
+        from src.core.orchestration.project_settings import get_active_settings as _gas_fl
+
+        _ps_fl = _gas_fl()
+        if _ps_fl is not None:
+            _llm_timeout = _ps_fl.max_llm_wait_seconds or None
+    except Exception:
+        pass
+
+    response = await asyncio.wait_for(
+        call_model(
+            messages=messages,
+            provider=provider_name,
+            model=model_name,
+            tools=tools_schema or None,
+        ),
+        timeout=_llm_timeout,
     )
 
     guilogger.info(

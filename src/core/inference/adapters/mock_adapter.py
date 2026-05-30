@@ -30,6 +30,7 @@ Usage::
 
 from __future__ import annotations
 
+import threading
 from typing import Any, Callable, Dict, Iterator, List, Optional, Union
 
 ResponseEntry = Union[str, Callable[[List[Dict[str, Any]]], str]]
@@ -63,7 +64,8 @@ class MockAdapter:
         self._responses: List[ResponseEntry] = list(responses or [""])
         self._strict = strict
         self.call_count: int = 0
-        self.call_log: List[List[Dict[str, Any]]] = []  # record of all messages lists
+        self.call_log: List[List[Dict[str, Any]]] = []
+        self._call_lock = threading.Lock()
 
     # ------------------------------------------------------------------
     # Public interface matching OpenAICompatibleAdapter.generate()
@@ -79,10 +81,10 @@ class MockAdapter:
         **kwargs,
     ) -> Dict[str, Any]:
         """Return the next scripted response as a normalised payload."""
-        # Record call for inspection in tests
-        self.call_log.append(list(messages))
-        text = self._next_response(messages)
-        self.call_count += 1
+        with self._call_lock:
+            self.call_log.append(list(messages))
+            text = self._next_response(messages)
+            self.call_count += 1
 
         if stream:
             # Minimal streaming response — wraps text as a single chunk generator

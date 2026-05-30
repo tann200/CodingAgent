@@ -103,7 +103,7 @@ def atomic_write_json(target: Path, obj: Any, logger=None) -> bool:
         # Fallback: try the simple write_text path
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(_json.dumps(obj, indent=2), encoding="utf-8")
+            target.write_text(_json.dumps(obj, indent=2, default=str), encoding="utf-8")
             try:
                 st = target.stat()
                 logger.info(

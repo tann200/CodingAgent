@@ -265,7 +265,8 @@ class AgentSessionManager:
         topic = f"agent.{role.value}.broadcast"
 
         def wrapped(msg):
-            if msg.agent_id != agent_id:
+            # msg is a dict from publish_to_role: {"from": sender_id, "role": ..., "payload": ...}
+            if msg.get("from") != agent_id:
                 callback(msg)
 
         eb.subscribe(topic, wrapped)

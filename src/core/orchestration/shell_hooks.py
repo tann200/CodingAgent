@@ -252,9 +252,20 @@ def _run_one_command(
     ``"deny"``, or ``"warn"``; *message* is captured stdout / warning text
     or None.
     """
-    # Copy environment for hook subprocesses but remove delegation depth keys
-    # to avoid leaking process-global counters to child hook scripts.
-    env = dict(os.environ)
+    # Copy environment for hook subprocesses and strip secrets so hook
+    # scripts cannot read API keys, tokens, or passwords from the env.
+    env = {
+        k: v for k, v in os.environ.items()
+        if k.isupper()
+        and not any(
+            _pat in k.upper()
+            for _pat in ("KEY", "SECRET", "TOKEN", "PASSWORD", "PASSWD", "CREDENTIAL", "AUTH")
+        )
+    }
+    # Also include lowercase vars that are typically safe (PATH, HOME, etc.)
+    for _k in ("PATH", "HOME", "USER", "LANG", "LC_ALL", "SHELL", "TMPDIR", "TERM"):
+        if _k in os.environ:
+            env.setdefault(_k, os.environ[_k])
     env.pop("CODINGAGENT_DELEGATION_DEPTH", None)
     env.pop("AGENT_DELEGATION_DEPTH", None)
     env["HOOK_EVENT"] = event

@@ -94,10 +94,11 @@ class ServerEventBusAdapter:
         handlers = []
         for event_type in key_event_types:
             handler = make_handler(event_type)
-            self.event_bus.subscribe(event_type, handler)
             handlers.append((event_type, handler))
 
         self._session_handlers[connection_id] = handlers
+        for event_type, handler in handlers:
+            self.event_bus.subscribe(event_type, handler)
 
         try:
             async def _keepalive_sender():

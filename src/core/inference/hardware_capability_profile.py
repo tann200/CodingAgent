@@ -407,6 +407,6 @@ def compute_safe_context_tokens(
     if available <= 0:
         return 8192  # Minimum safe context even if tight
     tokens_per_gb = 1024 / kv_per_token_mb
-    safe_tokens = int(available * tokens_per_gb)
+    safe_tokens = int(available * tokens_per_gb * 1000)
     # Minimum floor: 8K tokens for any useful context
     return max(safe_tokens, 8192)

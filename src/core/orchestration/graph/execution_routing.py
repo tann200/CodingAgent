@@ -24,7 +24,10 @@ _RECOVERY_CAPS: dict[str, int] = {
 
 def _is_success(result: Any) -> bool:
     """Simple result success check - did execution succeed?"""
-    return bool(result and (result.get("ok") or result.get("status") == "ok"))
+    if not result:
+        return False
+    _ok_flag = result.get("ok")
+    return (_ok_flag is True) or (_ok_flag is None and result.get("status") == "ok")
 
 
 def should_after_execution(
@@ -103,7 +106,8 @@ def should_after_execution(
             )
             return "memory_sync"
 
-        execution_ok = last_result.get("ok") or last_result.get("status") == "ok"
+        _ok_flag = last_result.get("ok")
+        execution_ok = (_ok_flag is True) or (_ok_flag is None and last_result.get("status") == "ok")
         if execution_ok:
             task = (state.get("task") or "").lower()
             last_tool = state.get("last_tool_name")
@@ -424,9 +428,8 @@ def _check_no_plan_fast_path(state: Mapping[str, Any]) -> str | None:
     last_tool = state.get("last_tool_name", "")
     read_only_tools = READ_ONLY_TOOLS
     last_result = state.get("last_result") or {}
-    execution_failed = not (
-        last_result.get("ok", False) or last_result.get("status") == "ok"
-    )
+    _ok_flag = last_result.get("ok")
+    execution_failed = not ((_ok_flag is True) or (_ok_flag is None and last_result.get("status") == "ok"))
 
     if last_result.get("_completion_detected"):
         logger.info(

@@ -84,6 +84,8 @@ class PermissionTable:
         self._db_path = db_path or _default_db_path()
         self._lock = threading.Lock()
         self._local = threading.local()
+        self._all_connections: list[sqlite3.Connection] = []
+        self._all_connections_lock = threading.Lock()
         self._ensure_schema()
 
     def _get_connection(self) -> sqlite3.Connection:
@@ -93,7 +95,19 @@ class PermissionTable:
             conn = sqlite3.connect(str(self._db_path), check_same_thread=False)
             conn.execute("PRAGMA journal_mode=WAL")
             self._local.conn = conn
+            with self._all_connections_lock:
+                self._all_connections.append(conn)
         return self._local.conn
+
+    def close(self) -> None:
+        """Close all thread-local SQLite connections."""
+        with self._all_connections_lock:
+            for conn in self._all_connections:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+            self._all_connections.clear()
 
     # ------------------------------------------------------------------
     # Public API

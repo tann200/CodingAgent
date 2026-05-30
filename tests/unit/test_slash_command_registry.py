@@ -61,17 +61,14 @@ class TestCallableCommand:
         cmd = _CallableCommand(name="noop", description="", handler=handler)
         assert cmd.execute("") == ""
 
-    def test_execute_async_handler_returns_sentinel_string(self):
+    def test_execute_async_handler_runs_coroutine(self):
         async def async_handler(args: str) -> str:
             return "done"
 
         cmd = _CallableCommand(name="async_cmd", description="", handler=async_handler)
-        import warnings
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", RuntimeWarning)
-            result = cmd.execute("arg")
+        result = cmd.execute("arg")
         assert isinstance(result, str)
-        assert "async" in result.lower() or "async_cmd" in result
+        assert result == "done", f"Expected coroutine result 'done', got {result!r}"
 
     def test_name_description_aliases_stored(self):
         cmd = _CallableCommand(

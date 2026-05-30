@@ -136,6 +136,7 @@ class LSPManager:
                     and not existing.available
                     and not existing._shutting_down
                 ):
+                    existing._started = False
                     await existing.start()
                 return self._clients[language]
 

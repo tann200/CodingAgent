@@ -41,8 +41,8 @@ _MEMORY_THREAT_PATTERNS = [
     (r"authorized_keys", "ssh_backdoor"),
     (r"\.ssh/", "ssh_access"),
     # Command execution with secrets
-    (r"exec\s*\(.*\$", "exec_injection"),
-    (r"eval\s*\(.*\$", "eval_injection"),
+    (r"exec\s*\([^)]*?\$[^)]*\)", "exec_injection"),
+    (r"eval\s*\([^)]*?\$[^)]*\)", "eval_injection"),
 ]
 
 # Invisible Unicode characters that could be used for injection

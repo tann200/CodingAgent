@@ -3,6 +3,7 @@ from typing import Any, Dict, List, Optional
 from pathlib import Path
 import json
 import logging
+import time
 import requests
 
 # Import helper shims from llm_manager with safe fallbacks
@@ -183,12 +184,34 @@ class OllamaAdapter(LLMClient):
         self.missing_provider = False if (self.provider or base_url) else True
 
     def _save_provider(self):
+        if self.provider is None:
+            return
         return lm_save_provider(
             self.provider, self.config_path, self._initial_config_path
         )
 
     def _select_model_name(self, model):
         return lm_select_model_name(self.models, model)
+
+    def _request_with_retry(self, method: str, url: str, timeout: float = 30.0, **kwargs) -> requests.Response:
+        """Make an HTTP request with retry and exponential backoff."""
+        _MAX_RETRIES = 3
+        last_response = None
+        for _attempt in range(_MAX_RETRIES):
+            try:
+                request_method = getattr(requests, method.lower())
+                response = request_method(url, timeout=timeout, **kwargs)
+                if response.status_code >= 500 and _attempt < _MAX_RETRIES - 1:
+                    time.sleep(2 ** _attempt)
+                    last_response = response
+                    continue
+                return response
+            except requests.exceptions.ConnectionError:
+                if _attempt < _MAX_RETRIES - 1:
+                    time.sleep(2 ** _attempt)
+                    continue
+                raise
+        return last_response
 
     def _base_variants(self) -> List[str]:
         if not self.base_url:
@@ -234,7 +257,7 @@ class OllamaAdapter(LLMClient):
         for url in candidates:
             try:
                 tried.append(url)
-                response = requests.get(url, timeout=10)
+                response = self._request_with_retry('get', url, timeout=10)
                 try:
                     data = response.json()
                 except Exception:
@@ -664,7 +687,7 @@ class OllamaAdapter(LLMClient):
                         if isinstance(parsed_fb, (dict, list)):
                             parsed = parsed_fb
 
-                if not format_json and isinstance(content, str):
+                if format_json and isinstance(content, str):
                     try:
                         maybe = json.loads(content)
                         if isinstance(maybe, (dict, list)):

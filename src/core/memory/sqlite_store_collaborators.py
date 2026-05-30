@@ -118,8 +118,14 @@ class ConnectionManager:
                     traceback.format_exc(),
                 )
             self._local.connection.row_factory = sqlite3.Row
-            self._local.connection.execute("PRAGMA journal_mode=WAL")
-            self._local.connection.execute("PRAGMA busy_timeout=1000")
+            try:
+                self._local.connection.execute("PRAGMA journal_mode=WAL")
+            except Exception as exc:
+                logger.debug("ConnectionManager: PRAGMA journal_mode failed: %s", exc)
+            try:
+                self._local.connection.execute("PRAGMA busy_timeout=1000")
+            except Exception as exc:
+                logger.debug("ConnectionManager: PRAGMA busy_timeout failed: %s", exc)
         return self._local.connection
 
     # ------------------------------------------------------------------
@@ -136,21 +142,23 @@ class ConnectionManager:
             is created.  Used by SqliteSessionStore to trigger ``_ensure_tables``.
         """
         if self._writer_conn is None:
-            dbp = self.resolve_db_path()
-            dbp.parent.mkdir(parents=True, exist_ok=True)
-            conn = sqlite3.connect(str(dbp), timeout=30.0, check_same_thread=False)
-            conn.row_factory = sqlite3.Row
-            conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("PRAGMA busy_timeout=1000")
-            self._writer_conn = conn
-            if on_first_create is not None:
-                try:
-                    on_first_create()
-                except Exception:
-                    logger.debug(
-                        "ConnectionManager: on_first_create callback failed\n%s",
-                        traceback.format_exc(),
-                    )
+            with self._lock:
+                if self._writer_conn is None:
+                    dbp = self.resolve_db_path()
+                    dbp.parent.mkdir(parents=True, exist_ok=True)
+                    conn = sqlite3.connect(str(dbp), timeout=30.0, check_same_thread=False)
+                    conn.row_factory = sqlite3.Row
+                    conn.execute("PRAGMA journal_mode=WAL")
+                    conn.execute("PRAGMA busy_timeout=1000")
+                    self._writer_conn = conn
+                    if on_first_create is not None:
+                        try:
+                            on_first_create()
+                        except Exception:
+                            logger.debug(
+                                "ConnectionManager: on_first_create callback failed\n%s",
+                                traceback.format_exc(),
+                            )
         return self._writer_conn
 
     # ------------------------------------------------------------------
@@ -433,8 +441,8 @@ class SnapshotManager:
                             "INSERT INTO session_snapshot_rows (snapshot_id, table_name, rows_json) VALUES (?, ?, ?)",
                             (snap_id, tbl, json.dumps(serialised, ensure_ascii=False)),
                         )
-                    except Exception:
-                        pass
+                    except Exception as _exc:
+                        logger.warning("SnapshotManager.save_snapshot: %s", _exc)
 
                 wconn.commit()
             except Exception:

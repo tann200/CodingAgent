@@ -175,10 +175,10 @@ class RollbackManager:
                         except Exception:
                             pass
                     try:
-                        os.replace(tmp_path, str(snapshot_file))
+                        shutil.move(tmp_path, str(snapshot_file))
                     except Exception:
                         try:
-                            shutil.move(tmp_path, str(snapshot_file))
+                            os.replace(tmp_path, str(snapshot_file))
                         except Exception:
                             # final fallback
                             snapshot_file.write_text(
@@ -288,9 +288,9 @@ class RollbackManager:
                             except Exception:
                                 pass
                         try:
-                            os.replace(tmpf, str(file_path))
-                        except Exception:
                             shutil.move(tmpf, str(file_path))
+                        except Exception:
+                            os.replace(tmpf, str(file_path))
                         restored_files.append(snap.path)
                     except Exception:
                         try:

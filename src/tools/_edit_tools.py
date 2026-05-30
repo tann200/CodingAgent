@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -25,15 +26,19 @@ def _atomic_write(path: Path, content: str, encoding: str = "utf-8") -> None:
     Guarantees that readers either see the old or the new content — never a
     partially-written file — even if the process is interrupted mid-write.
     """
+    _target = path.resolve()
     fd, tmp = tempfile.mkstemp(
-        dir=str(path.parent),
-        prefix=f".{path.stem}.write.",
-        suffix=path.suffix or ".tmp",
+        dir=str(_target.parent),
+        prefix=f".{_target.stem}.write.",
+        suffix=_target.suffix or ".tmp",
     )
     try:
         with os.fdopen(fd, "w", encoding=encoding) as fh:
             fh.write(content)
-        os.replace(tmp, str(path))
+        try:
+            os.replace(tmp, str(_target))
+        except OSError:
+            shutil.move(tmp, str(_target))
     except Exception:
         try:
             os.unlink(tmp)

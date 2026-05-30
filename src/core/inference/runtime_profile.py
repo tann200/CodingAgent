@@ -142,10 +142,15 @@ def preview_runtime(model_name: str, vram_gb: float, quant: str = "q4") -> dict:
     """
     from .model_capability_profile import Architecture
 
+    try:
+        # Extract param count from model name (e.g. "qwen3.5-9b" → 9.0)
+        _params = float(model_name.split("-")[1].replace("b", "").replace("B", ""))
+    except (IndexError, ValueError, AttributeError):
+        _params = 7.0  # fallback: assume small model
     model = ModelProfile(
         name=model_name,
         architecture=Architecture.DENSE,
-        params_total=float(model_name.split("-")[1].replace("b", "").replace("B", "")),
+        params_total=_params,
         quantization=quant,
         weights_gb=None,
     )

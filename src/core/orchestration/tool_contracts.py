@@ -1,5 +1,8 @@
+import logging
 from typing import Dict, Type, Any, Optional, List
 from pydantic import BaseModel, Field
+
+logger = logging.getLogger(__name__)
 
 # Edit size limits
 MAX_PATCH_LINES = 200
@@ -142,5 +145,5 @@ try:
     register_tool_contract("bash", BashContract)
     register_tool_contract("glob", GlobContract)
     register_tool_contract("grep", GrepContract)
-except Exception:
-    pass
+except Exception as _e:
+    logger.warning("tool_contracts: registration failed: %s", _e)

@@ -69,6 +69,10 @@ PERMISSION_REQUIRED_TOOLS: frozenset = frozenset(
 )
 
 
+MAX_AUDIT_FILE_SIZE: int = 1_048_576  # 1 MiB — rotate when exceeded
+_MAX_AUDIT_KEEP_LINES: int = 1_000  # keep at most this many entries after rotation
+
+
 def _write_permission_audit(
     working_dir: Any,
     tool_name: str,
@@ -79,8 +83,9 @@ def _write_permission_audit(
     """PERM-W5: Append a permission audit entry to .agent/permission_audit.jsonl.
 
     Each line is a JSON object with fields: timestamp, tool, decision, reason.
-    The file uses append-only JSONL so it never grows unboundedly per-process
-    (a new process or session resets nothing — the file accumulates across runs).
+    The file is rotated when it exceeds MAX_AUDIT_FILE_SIZE (1 MiB) to prevent
+    unbounded growth across sessions.  Older entries beyond _MAX_AUDIT_KEEP_LINES
+    are discarded on rotation.
     Args are not logged to avoid leaking sensitive values.
     """
     try:
@@ -99,6 +104,11 @@ def _write_permission_audit(
 
         audit_path = audit_dir / "permission_audit.jsonl"
         audit_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Rotate if the file has grown past the size limit.
+        if audit_path.exists() and audit_path.stat().st_size >= MAX_AUDIT_FILE_SIZE:
+            _rotate_audit_log(audit_path)
+
         entry = json.dumps(
             {
                 "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
@@ -111,3 +121,17 @@ def _write_permission_audit(
             _f.write(entry + "\n")
     except Exception:
         pass  # audit failures must never block tool execution
+
+
+def _rotate_audit_log(path: Path) -> None:
+    """Truncate *path* to at most ``_MAX_AUDIT_KEEP_LINES`` recent entries."""
+    try:
+        with path.open("r", encoding="utf-8") as _f:
+            lines = _f.readlines()
+        if len(lines) <= _MAX_AUDIT_KEEP_LINES:
+            return
+        # Keep only the *last* N lines (most recent entries).
+        with path.open("w", encoding="utf-8") as _f:
+            _f.writelines(lines[-_MAX_AUDIT_KEEP_LINES:])
+    except Exception:
+        pass  # rotation failures must never block tool execution

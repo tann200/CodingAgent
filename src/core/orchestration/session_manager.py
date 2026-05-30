@@ -297,8 +297,10 @@ class SessionManager:
                     "is_git_repo": _is_git_repo(str(workdir_path)),
                 },
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning(
+                "session.files_changed event dropped (non-fatal): %s", exc
+            )
 
     # ------------------------------------------------------------------
     # AgentSessionManager hydration

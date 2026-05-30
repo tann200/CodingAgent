@@ -46,7 +46,8 @@ def should_after_memory_sync(
     current_plan = state.get("current_plan") or []
     next_action = state.get("next_action")
     last_result = state.get("last_result") or {}
-    execution_ok = last_result.get("ok") or last_result.get("status") == "ok"
+    _ok_flag = last_result.get("ok")
+    execution_ok = (_ok_flag is True) or (_ok_flag is None and last_result.get("status") == "ok")
     rounds = int(state.get("rounds") or 0)
     # Fast-path to END: breaks the memory_sync→perception→memory_sync loop for
     # simple no-plan tasks (e.g. "list all files") where verification/evaluation

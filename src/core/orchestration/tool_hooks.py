@@ -209,9 +209,11 @@ class ToolHookRunner:
             if not cmd or not _matches(pattern, tool_name):
                 continue
             try:
+                import os as _os
+
+                _shell_path = "/bin/sh" if _os.name != "nt" else "cmd"
                 proc = subprocess.run(
-                    shlex.split(cmd),
-                    shell=False,
+                    [_shell_path, "-c", cmd],
                     capture_output=True,
                     text=True,
                     timeout=_PRE_HOOK_TIMEOUT,
@@ -253,9 +255,11 @@ class ToolHookRunner:
             if not cmd or not _matches(pattern, tool_name):
                 continue
             try:
+                import os as _os
+
+                _shell_path = "/bin/sh" if _os.name != "nt" else "cmd"
                 subprocess.run(
-                    shlex.split(cmd),
-                    shell=False,
+                    [_shell_path, "-c", cmd],
                     capture_output=True,
                     text=True,
                     timeout=_POST_HOOK_TIMEOUT,

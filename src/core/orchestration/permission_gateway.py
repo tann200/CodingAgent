@@ -78,11 +78,13 @@ except Exception:
 try:
     from src.core.orchestration.approval_gate import (
         register_tool_gate as _register_tool_gate,
-        _tool_denied as _tool_denied_map,
+        is_tool_denied as _is_tool_denied,
+        discard_tool_denied as _discard_tool_denied,
     )
 except Exception:
     _register_tool_gate = None  # type: ignore[assignment]
-    _tool_denied_map = None  # type: ignore[assignment]
+    _is_tool_denied = None  # type: ignore[assignment]
+    _discard_tool_denied = None  # type: ignore[assignment]
 
 _PermissionPolicy: Any = None
 _Behavior: Any = None
@@ -308,11 +310,15 @@ class PermissionGateway:
             return result
 
         # TASK-PERM-3: Gate 2c — SQLite PermissionTable "allow always" / "deny always" rules.
-        # Runs before gate5 so persisted "allow always" rules skip the interactive prompt.
-        if needs_gate and not _gate5_handled:
+        # Runs unconditionally before gate5 so persisted "allow always" rules skip
+        # the interactive prompt, and "deny always" rules cannot be bypassed by
+        # a policy-ASK approval.
+        if needs_gate:
             table_result = self._gate2c_permission_table(name, args)
             if table_result is not None:
                 return table_result
+
+        if needs_gate and not _gate5_handled:
             result = self._gate5_user_approval(name, args)
             if result.blocked:
                 return result
@@ -670,7 +676,7 @@ class PermissionGateway:
             return PermissionResult(allowed=True)
 
         try:
-            if _register_tool_gate is not None and _tool_denied_map is not None:
+            if _register_tool_gate is not None and _is_tool_denied is not None:
                 _t5_id = f"{uuid.uuid4().hex[:8]}"
                 _t5_ev = _register_tool_gate(_t5_id)
                 # SPAWN-W5: Fire spawn event for delegate_task
@@ -714,8 +720,8 @@ class PermissionGateway:
                 # internally when a loop is available, threading.Event otherwise).
                 # Never skip this wait: doing so would silently grant approval.
                 granted = _t5_ev.wait(timeout=120.0)
-                if not granted or _t5_id in _tool_denied_map:
-                    _tool_denied_map.discard(_t5_id)
+                if not granted or _is_tool_denied(_t5_id):
+                    _discard_tool_denied(_t5_id)
                     return PermissionResult(
                         allowed=False,
                         gate=5,

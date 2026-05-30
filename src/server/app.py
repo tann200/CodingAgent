@@ -5,6 +5,7 @@ from __future__ import annotations
 import hmac
 import logging
 import threading
+import uuid
 from typing import Dict, Optional
 
 import uvicorn
@@ -153,7 +154,7 @@ def _on_perception_corrective(payload: Dict) -> None:
 async def create_session(session_req: SessionCreateRequest, request: Request):
     """Create a new session (or use provided session ID)."""
     _require_admin_auth(request)
-    session_id = session_req.session_id or f"session-{id(session_req)}"
+    session_id = session_req.session_id or f"session-{uuid.uuid4().hex}"
     # In a full implementation, we'd store session metadata
     # For now, just publish a session created event
     if event_bus:

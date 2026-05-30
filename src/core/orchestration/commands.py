@@ -101,14 +101,25 @@ class _CallableCommand(Command):
         self._handler = handler
 
     def execute(self, args: str, session: Optional[Dict[str, Any]] = None) -> str:
-        """Call the handler.  If it returns a coroutine, return a sentinel string."""
+        """Call the handler.  If it returns a coroutine, run it."""
         result = self._handler(args)
         import inspect
+        import asyncio
         if inspect.isawaitable(result):
-            # Async handlers are meant to be awaited by the TUI event loop.
-            # For synchronous callers (e.g. backend dispatch), return a neutral
-            # string rather than raising.
-            return f"/{self.name}: async handler must be awaited by the TUI."
+            # Previously this returned a sentinel and silently dropped the
+            # coroutine (GC collected it), losing the handler's side effects.
+            # Fix: actually run/schedule the coroutine instead.
+            try:
+                _loop = asyncio.get_running_loop()
+            except RuntimeError:
+                _loop = None
+            if _loop is None:
+                # No running loop -- run synchronously.
+                result = asyncio.run(result)
+            else:
+                # Already in an async context -- schedule as a task so it runs.
+                _loop.create_task(result)
+                return f"/{self.name}: async handler scheduled."
         return result if isinstance(result, str) else ""
 
 

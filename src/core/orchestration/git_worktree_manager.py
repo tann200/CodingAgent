@@ -18,6 +18,7 @@ import asyncio
 import logging
 import shutil
 import tempfile
+import threading
 from pathlib import Path
 from typing import Dict, Optional
 
@@ -33,11 +34,13 @@ class GitWorktreeManager:
         self._workspace = workspace.resolve()
         # task_id → worktree path
         self._active: Dict[str, Path] = {}
+        self._lock = threading.Lock()
 
     @property
     def active(self) -> Dict[str, Path]:
         """Read-only view of active task_id → worktree path mappings."""
-        return dict(self._active)
+        with self._lock:
+            return dict(self._active)
 
     async def create(self, task_id: str, branch: Optional[str] = None) -> Path:
         """
@@ -47,8 +50,9 @@ class GitWorktreeManager:
         current HEAD commit.  If the task already has a worktree the existing
         path is returned without creating a new one.
         """
-        if task_id in self._active:
-            return self._active[task_id]
+        with self._lock:
+            if task_id in self._active:
+                return self._active[task_id]
 
         safe_id = "".join(c if c.isalnum() or c in "-_" else "_" for c in task_id)
         wt_dir = Path(tempfile.mkdtemp(prefix=f"{_WORKTREE_PREFIX}{safe_id[:20]}-"))
@@ -86,7 +90,8 @@ class GitWorktreeManager:
 
         Returns True if a worktree was removed, False if none existed.
         """
-        wt_path = self._active.pop(task_id, None)
+        with self._lock:
+            wt_path = self._active.pop(task_id, None)
         if wt_path is None:
             return False
 
@@ -118,7 +123,9 @@ class GitWorktreeManager:
 
     async def remove_all(self) -> None:
         """Remove all active worktrees — call on agent shutdown."""
-        for task_id in list(self._active.keys()):
+        with self._lock:
+            task_ids = list(self._active.keys())
+        for task_id in task_ids:
             await self.remove(task_id)
 
     async def list_registered(self) -> list[dict]:

@@ -75,7 +75,8 @@ def _generate_work_summary(
 
     # Determine overall outcome from last_result
     last_result = final_state.get("last_result") or {}
-    last_ok = last_result.get("ok") or last_result.get("status") == "ok"
+    _ok_flag = last_result.get("ok")
+    last_ok = (_ok_flag is True) or (_ok_flag is None and last_result.get("status") == "ok")
     no_plan_fail = int(final_state.get("no_plan_fail_count") or 0)
     task_failed = (not last_ok and last_result) or no_plan_fail >= 3
 

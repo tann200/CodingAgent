@@ -17,7 +17,7 @@
     "thinking_budget_tokens": 4096,
     "temperature_structured": 0.0,
     "temperature_creative": 0.4,
-    "active": false
+    "active": true
   },
   {
     "name": "ollama",
@@ -27,7 +27,7 @@
     "supports_native_tools": false,
     "provider_supports_parallel_tools": false,
     "disable_thinking": true,
-    "active": true
+    "active": false
   },
   {
     "name": "GitHub Copilot",

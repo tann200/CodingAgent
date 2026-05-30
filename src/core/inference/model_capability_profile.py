@@ -76,7 +76,7 @@ class ModelProfile:
         if available <= 0:
             return 8192
         tokens_per_gb = 1024 / self.kv_per_token_mb
-        safe_tokens = int(available * tokens_per_gb)
+        safe_tokens = int(available * tokens_per_gb * 1000)
         return min(safe_tokens, self.max_context)
 
 
@@ -96,23 +96,7 @@ _PRIMARY_PROFILES: dict[str, ModelProfile] = {
         max_turns=50,
         thinking_mode=ThinkingMode.AUTO,
         native_tool_format="gemma4",
-        weights_gb=2.0,
-    ),
-    "google/gemma-4-26b-a4b": ModelProfile(
-        name="google/gemma-4-26b-a4b",
-        architecture=Architecture.MOE,
-        params_total=26.0,
-        params_active=3.8,
-        quantization="q4",
-        reasoning_score=0.82,
-        tool_call_reliability=0.85,
-        max_context=262144,
-        kv_per_token_mb=1.6,
-        tool_limit=35,
-        max_turns=50,
-        thinking_mode=ThinkingMode.AUTO,
-        native_tool_format="gemma4",
-        weights_gb=2.0,
+        weights_gb=None,
     ),
     "gemma-4-27b-a4b": ModelProfile(
         name="gemma-4-27b-a4b",
@@ -128,7 +112,23 @@ _PRIMARY_PROFILES: dict[str, ModelProfile] = {
         max_turns=50,
         thinking_mode=ThinkingMode.AUTO,
         native_tool_format="gemma4",
-        weights_gb=2.0,
+        weights_gb=None,
+    ),
+    "gemma-4-27b-a4b": ModelProfile(
+        name="gemma-4-27b-a4b",
+        architecture=Architecture.MOE,
+        params_total=27.0,
+        params_active=4.0,
+        quantization="q4",
+        reasoning_score=0.82,
+        tool_call_reliability=0.85,
+        max_context=262144,
+        kv_per_token_mb=1.6,
+        tool_limit=35,
+        max_turns=50,
+        thinking_mode=ThinkingMode.AUTO,
+        native_tool_format="gemma4",
+        weights_gb=None,
     ),
     "qwen3.5-9b": ModelProfile(
         name="qwen3.5-9b",

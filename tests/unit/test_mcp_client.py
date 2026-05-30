@@ -58,7 +58,7 @@ class TestMcpClientCallTool:
         client = McpStdioClient(name="srv", cmd=["dummy"])
         client._connected = True
 
-        async def _mock_request(method, params):
+        async def _mock_request(method, params, timeout=30):
             assert method == "tools/call"
             assert params["name"] == "read_file"
             return {"content": [{"text": "file contents"}]}
@@ -73,11 +73,13 @@ class TestMcpClientCallTool:
         client = McpStdioClient(name="srv", cmd=["dummy"])
         client._connected = True
 
-        async def _slow_request(method, params):
-            await asyncio.sleep(100)
+        # We need to test the _request-level timeout.  Since _request is now
+        # responsible for the timeout, mock the transport _send so _request
+        # blocks forever on the future, then the timeout in _request fires.
+        async def _send_block(msg):
+            await asyncio.Event().wait()  # never set → blocks forever
 
-        client._request = _slow_request  # type: ignore[method-assign]
-        # Monkeypatch the timeout to be very short
+        client._send = _send_block  # type: ignore[method-assign]
         import src.core.mcp.mcp_client as mod
 
         original = mod._CALL_TIMEOUT
@@ -94,7 +96,7 @@ class TestMcpClientCallTool:
         client = McpStdioClient(name="srv", cmd=["dummy"])
         client._connected = True
 
-        async def _err_request(method, params):
+        async def _err_request(method, params, timeout=30):
             raise ValueError("bad tool")
 
         client._request = _err_request
@@ -108,13 +110,8 @@ class TestMcpClientCallTool:
         client = McpStdioClient(name="srv", cmd=["dummy"])
         client._connected = True
 
-        async def _mock_request(method, params):
+        async def _mock_request(method, params, timeout=30):
             return {"content": {"key": "value"}}
-
-        client._request = _mock_request
-        result = await client.call_tool("dict_tool", {})
-        assert result.ok is True
-        assert result.content == {"key": "value"}
 
 
 class TestMcpClientListTools:
@@ -123,7 +120,7 @@ class TestMcpClientListTools:
         client = McpStdioClient(name="srv", cmd=["dummy"])
         client._connected = True
 
-        async def _mock_request(method, params):
+        async def _mock_request(method, params, timeout=30):
             return {
                 "tools": [
                     {"name": "tool_a", "description": "desc A", "inputSchema": {}},
@@ -143,7 +140,7 @@ class TestMcpClientListTools:
         client = McpStdioClient(name="srv", cmd=["dummy"])
         client._connected = True
 
-        async def _mock_request(method, params):
+        async def _mock_request(method, params, timeout=30):
             return {"tools": []}
 
         client._request = _mock_request

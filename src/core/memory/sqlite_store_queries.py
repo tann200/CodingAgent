@@ -67,7 +67,8 @@ def build_like_search_params(
     limit: int,
     session_id: Optional[str],
 ) -> tuple:
-    pattern = f"%{query}%"
+    escaped = query.replace("%", r"\%").replace("_", r"\_")
+    pattern = f"%{escaped}%"
     if session_id:
         return (session_id, pattern, limit)
     return (pattern, limit)

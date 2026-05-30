@@ -166,4 +166,8 @@ async def provider_health_check(timeout: float = 5.0) -> Dict[str, Dict[str, Any
 
 def run_provider_health_check_sync(timeout: float = 5.0) -> Dict[str, Dict[str, Any]]:
     """Sync wrapper for provider_health_check to be called at app startup."""
-    return asyncio.run(provider_health_check(timeout=timeout))
+    try:
+        loop = asyncio.get_running_loop()
+        return loop.run_until_complete(provider_health_check(timeout=timeout))
+    except RuntimeError:
+        return asyncio.run(provider_health_check(timeout=timeout))

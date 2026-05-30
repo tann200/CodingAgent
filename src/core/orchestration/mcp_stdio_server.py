@@ -87,12 +87,14 @@ class MCPStdioServer:
     def _get_event_bus(self):
         """Lazy-load EventBus to avoid circular imports."""
         if self._event_bus is None:
-            try:
-                from src.core.orchestration.event_bus import get_event_bus
+            with self._lock:
+                if self._event_bus is None:
+                    try:
+                        from src.core.orchestration.event_bus import get_event_bus
 
-                self._event_bus = get_event_bus()
-            except Exception as e:
-                logger.error(f"Failed to get EventBus: {e}")
+                        self._event_bus = get_event_bus()
+                    except Exception as e:
+                        logger.error(f"Failed to get EventBus: {e}")
         return self._event_bus
 
     def _parse_json_rpc(
@@ -335,8 +337,12 @@ class MCPStdioServer:
         try:
             _roles_dir = (
                 _Path(__file__).parents[3] / "config" / "agent-brain" / "roles"
-            )
-            _prompt_file = _roles_dir / f"{name}.md"
+            ).resolve()
+            _prompt_file = (_roles_dir / f"{name}.md").resolve()
+            if not str(_prompt_file).startswith(str(_roles_dir) + "/"):
+                return self._build_error_response(
+                    request, -32602, f"Prompt '{name}' not found"
+                )
             if _prompt_file.exists():
                 text = _prompt_file.read_text(encoding="utf-8")
                 messages = [{"role": "user", "content": {"type": "text", "text": text}}]
@@ -627,6 +633,7 @@ class MCPStdioServer:
 
                 await loop.run_in_executor(None, _call_reader_in_thread)
         finally:
+            self._sampling_executor.shutdown(wait=False)
             # TUI-08: notify TUI that MCP server has stopped
             try:
                 bus = self._get_event_bus()
@@ -675,6 +682,7 @@ class MCPStdioServer:
             logger.error(f"MCPStdioServer error: {e}")
         finally:
             self._running = False
+            self._sampling_executor.shutdown(wait=False)
             # TUI-08: notify TUI that MCP server has stopped
             try:
                 bus = self._get_event_bus()

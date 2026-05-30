@@ -468,8 +468,12 @@ def _refresh_access_token_impl(
     resp.raise_for_status()
     data = resp.json()
     if "access_token" not in data:
+        _safe = {
+            k: (v[:8] + "..." if k in ("access_token", "refresh_token") else v)
+            for k, v in data.items()
+        }
         raise ValueError(
-            f"github_copilot_auth: refresh response missing access_token: {data}"
+            f"github_copilot_auth: refresh response missing access_token: {_safe}"
         )
     return TokenResult(
         access_token=data["access_token"],
@@ -529,7 +533,10 @@ def _load_token_impl() -> Optional[str]:
                 exc,
             )
             return access
-    except Exception:
+    except Exception as exc:
+        _logger.warning(
+            "github_copilot_auth: _load_token_impl failed — returning None: %s", exc
+        )
         return None
 
 

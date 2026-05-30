@@ -46,7 +46,12 @@ def _init_providers(orch: Any) -> None:
 
 
 def _wire_provider_manager(orch: Any, pm: Any) -> None:
-    """Attach the orchestrator event bus to the provider manager and initialize it."""
+    """Attach the orchestrator event bus to the provider manager and initialize it.
+
+    If the provider manager already has an event bus (e.g. set by the TUI or a test),
+    the orchestrator adopts that bus instead of replacing it. This ensures subscriptions
+    on the provider-manager bus also receive orchestrator events.
+    """
     if getattr(pm, "_event_bus", None) is None:
         pm.set_event_bus(orch.event_bus)
     else:

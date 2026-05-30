@@ -97,7 +97,8 @@ def should_after_memory_sync_frontier(
     current_plan = state.get("current_plan") or []
     next_action = state.get("next_action")
     last_result = state.get("last_result") or {}
-    execution_ok = last_result.get("ok") or last_result.get("status") == "ok"
+    _ok_flag = last_result.get("ok")
+    execution_ok = (_ok_flag is True) or (_ok_flag is None and last_result.get("status") == "ok")
     rounds = int(state.get("rounds") or 0)
     if not current_plan and not next_action and execution_ok and rounds > 0:
         return "end"

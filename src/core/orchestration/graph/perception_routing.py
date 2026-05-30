@@ -208,7 +208,10 @@ def _is_nano_or_small(state: Mapping[str, Any]) -> bool:
 
 def _is_success(result: Any) -> bool:
     """Simple result success check - did execution succeed?"""
-    return bool(result and (result.get("ok") or result.get("status") == "ok"))
+    if not result:
+        return False
+    _ok_flag = result.get("ok")
+    return (_ok_flag is True) or (_ok_flag is None and result.get("status") == "ok")
 
 
 def _extract_next_action_name(act: Any) -> str | None:

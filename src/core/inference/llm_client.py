@@ -48,16 +48,17 @@ class LLMClient(ABC):
             )
 
         # Best-effort fallback: try to preserve ContextVars by copying the
-        # current context and running ctx.run in the thread executor. If that
-        # fails, finally fall back to asyncio.to_thread.
-        try:
-            import contextvars as _contextvars
-            import functools as _functools
+        # current context and running ctx.run in the thread executor. If the
+        # executor is shut down (RuntimeError), fall back to asyncio.to_thread.
+        import contextvars as _contextvars
+        import functools as _functools
 
-            ctx = _contextvars.copy_context()
-            fn = _functools.partial(ctx.run, self.generate, *args, **kwargs)
+        ctx = _contextvars.copy_context()
+        _gen = lambda: self.generate(*args, **kwargs)
+        fn = _functools.partial(ctx.run, _gen)
+        try:
             from typing import cast
 
             return cast(Dict[str, Any], await loop.run_in_executor(None, fn))
-        except Exception:
-            return await asyncio.to_thread(self.generate, *args, **kwargs)
+        except RuntimeError:
+            return cast(Dict[str, Any], await asyncio.to_thread(fn))

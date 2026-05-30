@@ -9,6 +9,7 @@ from __future__ import annotations
 import datetime
 import json
 import logging
+import threading
 import uuid
 from pathlib import Path
 from typing import Any, Dict, Optional, cast
@@ -18,6 +19,8 @@ logger = logging.getLogger(__name__)
 APPROVAL_TIMEOUT_SECONDS: float = 120.0
 TOOL_EXECUTOR_MAX_WORKERS: int = 4
 TOOL_OUTPUT_MAX_CHARS: int = 8_000
+
+_TOOL_EXECUTOR_LOCK: threading.Lock = threading.Lock()
 
 
 def _truncate_result_strings(result: Any, _depth: int = 0) -> Any:
@@ -81,7 +84,6 @@ except ImportError:
 
 try:
     from src.core.orchestration.approval_gate import (
-        _tool_denied,
         discard_tool_denied,
         is_tool_denied,
         register_tool_gate,
@@ -96,8 +98,6 @@ except Exception:
 
     def discard_tool_denied(tool_id: str) -> None:  # type: ignore[misc]
         pass
-
-    _tool_denied: set = set()  # type: ignore[no-redef]
 
 
 try:
@@ -185,8 +185,10 @@ def _check_workspace_scope_guard(
         workdir = str(orch.working_dir or ".").rstrip("/\\")
 
         def _norm(p: str) -> str:
-            p = str(p)
-            if p.startswith(workdir + "/") or p.startswith(workdir + "\\"):
+            p = str(p).replace("\\", "/")
+            # Collapse . and .. components using the workdir as the anchor
+            p = str((Path(workdir) / p).resolve())
+            if p.startswith(workdir + "/"):
                 p = p[len(workdir) + 1 :]
             elif p.lstrip("/\\").startswith(workdir.lstrip("/\\") + "/"):
                 stripped = p.lstrip("/\\")
@@ -606,10 +608,13 @@ def _dispatch_tool_call(
         if timeout_seconds > 0:
             tool_executor = getattr(orch, "_tool_executor", None)
             if tool_executor is None:
-                tool_executor = _cf.ThreadPoolExecutor(
-                    max_workers=TOOL_EXECUTOR_MAX_WORKERS
-                )
-                orch._tool_executor = tool_executor
+                with _TOOL_EXECUTOR_LOCK:
+                    tool_executor = getattr(orch, "_tool_executor", None)
+                    if tool_executor is None:
+                        tool_executor = _cf.ThreadPoolExecutor(
+                            max_workers=TOOL_EXECUTOR_MAX_WORKERS
+                        )
+                        orch._tool_executor = tool_executor
             try:
                 ctx = _contextvars.copy_context()
                 future = tool_executor.submit(
@@ -1105,8 +1110,15 @@ def _check_agent_permission_override(
                         f"Tool '{name}' is denied by the active agent's permission rules."
                     ),
                 }
-    except Exception:
-        pass
+    except Exception as e:
+        guilogger.error(
+            "tool_execution_pipeline: _check_agent_permission_override failed (fail-closed): %s",
+            e,
+        )
+        return {
+            "ok": False,
+            "error": f"Tool '{name}' denied by agent permission check error.",
+        }
     return None
 
 
@@ -1157,8 +1169,8 @@ def _run_permission_gate(
             },
         )
     except Exception as perm_exc:
-        guilogger.warning(f"Permission gate error for '{name}': {perm_exc}")
-        return None
+        guilogger.error(f"Permission gate error for '{name}' (fail-closed): {perm_exc}")
+        return {"ok": False, "error": f"Permission gate unavailable for '{name}'."}
 
     granted = True
     try:

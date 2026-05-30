@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 import uuid
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional
@@ -145,6 +146,7 @@ class ToolExecutionService:
         self._hook_runner = hook_runner
         # idempotency: set of (name, frozenset(args.items())) processed in this turn
         self._seen_calls: set = set()
+        self._seen_calls_lock = threading.Lock()
 
     # ------------------------------------------------------------------
     # Public API
@@ -163,14 +165,15 @@ class ToolExecutionService:
         """
         # 0. Idempotency guard — skip exact duplicate calls within a single turn.
         _call_key = (name, frozenset((k, str(v)) for k, v in args.items()))
-        if _call_key in self._seen_calls:
-            logger.debug(
-                "ToolExecutionService: duplicate call skipped: %s %s", name, args
-            )
-            return ExecutionVerdict(
-                blocked=True,
-                result={"ok": False, "error": "Duplicate tool call skipped."},
-            )
+        with self._seen_calls_lock:
+            if _call_key in self._seen_calls:
+                logger.debug(
+                    "ToolExecutionService: duplicate call skipped: %s %s", name, args
+                )
+                return ExecutionVerdict(
+                    blocked=True,
+                    result={"ok": False, "error": "Duplicate tool call skipped."},
+                )
         # NOTE: _seen_calls.add is deferred to after all checks pass so that a
         # denied call does not permanently block retries (e.g. after the user
         # grants approval on a second attempt).
@@ -224,7 +227,8 @@ class ToolExecutionService:
 
         # All checks passed — register this call as seen so true duplicates are
         # caught on subsequent invocations within the same turn.
-        self._seen_calls.add(_call_key)
+        with self._seen_calls_lock:
+            self._seen_calls.add(_call_key)
 
         return ExecutionVerdict(blocked=False)
 
@@ -292,7 +296,8 @@ class ToolExecutionService:
 
     def reset_idempotency(self) -> None:
         """Clear the seen-calls set at the start of each agent turn."""
-        self._seen_calls.clear()
+        with self._seen_calls_lock:
+            self._seen_calls.clear()
 
     # ------------------------------------------------------------------
     # Internal checks (each returns an ExecutionVerdict)
@@ -335,7 +340,14 @@ class ToolExecutionService:
                         },
                     )
             except Exception:
-                pass
+                logger.error("ToolExecutionService._check_permission_gate: exception (fail-closed)")
+                return ExecutionVerdict(
+                    blocked=True,
+                    result={
+                        "ok": False,
+                        "error": f"Tool '{name}' was blocked: permission gate check failed.",
+                    },
+                )
             granted = await _t4_ev.wait_async(timeout=120.0)
             if not granted or is_tool_denied(_t4_id):
                 try:
@@ -350,7 +362,14 @@ class ToolExecutionService:
                     },
                 )
         except Exception as exc:
-            logger.debug("ToolExecutionService._check_permission_gate: %s", exc)
+            logger.error("ToolExecutionService._check_permission_gate: unexpected error (fail-closed): %s", exc)
+            return ExecutionVerdict(
+                blocked=True,
+                result={
+                    "ok": False,
+                    "error": f"Tool '{name}' was blocked: permission gate error.",
+                },
+            )
         return ExecutionVerdict(blocked=False)
 
     @staticmethod
@@ -381,7 +400,14 @@ class ToolExecutionService:
                     },
                 )
         except Exception as _e:
-            logger.warning("Permission mode check failed for tool '%s' (fail-open): %s", name, _e)
+            logger.error("Permission mode check failed for tool '%s' (fail-closed): %s", name, _e)
+            return ExecutionVerdict(
+                blocked=True,
+                result={
+                    "ok": False,
+                    "error": f"Tool '{name}' was blocked: permission mode check error.",
+                },
+            )
         return ExecutionVerdict(blocked=False)
 
     @staticmethod
@@ -404,7 +430,14 @@ class ToolExecutionService:
                     },
                 )
         except Exception as _e:
-            logger.warning("Explore mode check failed for tool '%s' (fail-open): %s", name, _e)
+            logger.error("Explore mode check failed for tool '%s' (fail-closed): %s", name, _e)
+            return ExecutionVerdict(
+                blocked=True,
+                result={
+                    "ok": False,
+                    "error": f"Tool '{name}' was blocked: explore mode check error.",
+                },
+            )
         return ExecutionVerdict(blocked=False)
 
     @staticmethod
@@ -434,7 +467,14 @@ class ToolExecutionService:
                         },
                     )
         except Exception as _e:
-            logger.warning("Plan mode check failed for tool '%s' (fail-open): %s", name, _e)
+            logger.error("Plan mode check failed for tool '%s' (fail-closed): %s", name, _e)
+            return ExecutionVerdict(
+                blocked=True,
+                result={
+                    "ok": False,
+                    "error": f"Tool '{name}' was blocked: plan mode check error.",
+                },
+            )
         return ExecutionVerdict(blocked=False)
 
     def _run_pre_hook(self, name: str, args: Dict[str, Any]) -> ExecutionVerdict:
@@ -459,5 +499,5 @@ class ToolExecutionService:
                     result={"ok": False, "error": deny_msg},
                 )
         except Exception as exc:
-            logger.debug("ToolExecutionService._run_pre_hook: %s", exc)
+            logger.error("ToolExecutionService._run_pre_hook: %s", exc)
         return ExecutionVerdict(blocked=False)

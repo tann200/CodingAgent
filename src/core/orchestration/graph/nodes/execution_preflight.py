@@ -36,7 +36,8 @@ def handle_execution_preflight_and_role_gate(
     if not preflight.get("ok"):
         tool_not_found = "not found" in (preflight.get("error") or "").lower()
         prev_result = state.get("last_result") or {}
-        prev_ok = prev_result.get("ok") or prev_result.get("status") == "ok"
+        _prev_ok_flag = prev_result.get("ok")
+        prev_ok = (_prev_ok_flag is True) or (_prev_ok_flag is None and prev_result.get("status") == "ok")
         if tool_not_found and prev_ok and (state.get("rounds") or 0) >= 1:
             logger.info(
                 "route_execution: tool %r not found but task already completed — treating as completion signal",

@@ -132,8 +132,11 @@ class AgentHooks:
         """
         for hook_point, hooks in self._hooks.items():
             for i, hook in enumerate(hooks):
-                # Check if this is our hook by name or by reconstructing expected ID
-                if hook.name == hook_id or hook_id.startswith("hook_"):
+                # Match by exact hook name/ID only — the startswith("hook_")
+                # fallback was removed because it deleted the first hook in the
+                # iteration instead of the target hook (e.g. unregister("hook_5")
+                # would delete hook_0).
+                if hook.name == hook_id:
                     del self._hooks[hook_point][i]
                     logger.debug(
                         f"Unregistered hook '{hook.name}' at {hook_point.value}"

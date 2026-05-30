@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import os
+import random
 import re
 import time
 from typing import Any, Dict, List, Optional, Union
@@ -81,7 +82,7 @@ class OpenAICompatibleAdapter(LLMClient):
             return None
         base = str(self.base_url).rstrip("/")
         lower = base.lower()
-        if "/v" in lower or "/api" in lower:
+        if lower.endswith("/v1") or "/v1/" in lower or lower.endswith("/api") or "/api/" in lower:
             return f"{base}/{path.lstrip('/')}"
         return f"{base}/api/v1/{path.lstrip('/')}"
 
@@ -429,10 +430,10 @@ class OpenAICompatibleAdapter(LLMClient):
                         if _hval:
                             try:
                                 _retry_wait = min(float(_hval), 30.0)
+                                break
                             except ValueError:
-                                pass
-                            break
-                time.sleep(_retry_wait)
+                                continue
+                time.sleep(_retry_wait + random.random())
                 # P2-3: time.sleep() here is intentional and safe.
                 # chat() is a synchronous method that must ALWAYS be called via
                 # loop.run_in_executor() (see llm_manager.py run_with_correlation).

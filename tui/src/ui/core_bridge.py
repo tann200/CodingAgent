@@ -271,7 +271,10 @@ class AgentBridge(
             try:
                 self.app.call_from_thread(fn, *args)
             except Exception as e:
-                logger.debug(f"_schedule_callback (call_from_thread) failed: {e}")
+                logger.warning(
+                    "UI callback %s dropped: %s — UI may be desynced",
+                    fn.__name__, e,
+                )
 
     # ── EventBus subscription management (§4.2) ──────────────────────────
 

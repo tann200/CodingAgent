@@ -30,6 +30,7 @@ import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Set
+import threading
 
 from src.core.paths import get_agents_path
 
@@ -851,6 +852,7 @@ class AgentRegistry:
 # ---------------------------------------------------------------------------
 
 _REGISTRY: Optional[AgentRegistry] = None
+_REGISTRY_LOCK: threading.Lock = threading.Lock()
 
 
 def get_agent_registry() -> AgentRegistry:
@@ -858,8 +860,11 @@ def get_agent_registry() -> AgentRegistry:
     first access."""
     global _REGISTRY
     if _REGISTRY is None:
-        _REGISTRY = AgentRegistry()
-        _REGISTRY.load_custom_agents()
+        with _REGISTRY_LOCK:
+            # Double-check after acquiring lock to prevent races
+            if _REGISTRY is None:
+                _REGISTRY = AgentRegistry()
+                _REGISTRY.load_custom_agents()
     return _REGISTRY
 
 

@@ -3,12 +3,6 @@ from __future__ import annotations
 import json
 from typing import Any, Callable, List, Optional, Tuple
 
-# C-01: carry-buffer for incomplete multi-byte UTF-8 sequences split across SSE chunks.
-# Callers that receive raw bytes should pass their carry-buffer bytearray and update it
-# with the returned remainder; callers that already have str lines may ignore the buffer.
-_SSE_CARRY: bytearray = bytearray()
-
-
 def decode_sse_line(
     raw_line: Any,
     *,
@@ -75,9 +69,10 @@ def extract_stream_deltas(chunk: dict) -> Optional[Tuple[dict, str, str]]:
             return None
         delta = choices[0].get("delta") or {}
         reasoning_delta = delta.get("reasoning_content") or delta.get("thinking") or ""
+        content = delta.get("content") or ""
         if not reasoning_delta and delta.get("is_reasoning"):
-            return delta, delta.get("content") or "", ""
-        return delta, reasoning_delta, delta.get("content") or ""
+            return delta, reasoning_delta, content
+        return delta, reasoning_delta, content
     except (KeyError, IndexError, AttributeError):
         return None
 

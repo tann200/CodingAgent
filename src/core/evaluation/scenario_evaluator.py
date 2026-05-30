@@ -130,9 +130,19 @@ class ScenarioEvaluator:
     """
 
     def __init__(self, workdir: Optional[str] = None):
+        self._own_tempdir = workdir is None
         self.workdir = Path(workdir) if workdir else Path(tempfile.mkdtemp())
         self.scenarios: List[Scenario] = []
         self.results: List[ScenarioResult] = []
+
+    def cleanup(self) -> None:
+        """Remove the temporary work directory if it was created by this instance."""
+        if self._own_tempdir and self.workdir.exists():
+            import shutil as _shutil
+            _shutil.rmtree(self.workdir, ignore_errors=True)
+
+    def __del__(self) -> None:
+        self.cleanup()
 
     def add_scenario(self, scenario: Scenario):
         """Add a scenario to the evaluation suite."""
@@ -161,11 +171,14 @@ class ScenarioEvaluator:
 
     def _setup_scenario(self, scenario: Scenario) -> Path:
         """Setup scenario files in a temporary directory."""
-        scenario_dir = self.workdir / scenario.name
+        _wd = self.workdir.resolve()
+        scenario_dir = _wd / scenario.name
+        scenario_dir.resolve().relative_to(_wd)  # fails if traversal escapes workdir
         scenario_dir.mkdir(parents=True, exist_ok=True)
 
         for filename, content in scenario.setup_files.items():
-            filepath = scenario_dir / filename
+            filepath = (scenario_dir / filename).resolve()
+            filepath.relative_to(_wd)  # fails if traversal escapes workdir
             filepath.parent.mkdir(parents=True, exist_ok=True)
             filepath.write_text(content)
 
@@ -177,9 +190,11 @@ class ScenarioEvaluator:
         """Verify scenario results."""
         output = ""
 
+        _wd = self.workdir.resolve()
         # Check expected files exist with correct content
         for filename, expected_content in scenario.expected_files.items():
-            filepath = scenario_dir / filename
+            filepath = (scenario_dir / filename).resolve()
+            filepath.relative_to(_wd)  # fails if traversal escapes workdir
             if not filepath.exists():
                 return False, f"Expected file not found: {filename}"
 

@@ -44,6 +44,7 @@ _JSONRPC_VERSION = "2.0"
 _INITIALIZE_TIMEOUT = 10.0
 _CALL_TIMEOUT = 30.0
 _LIST_TOOLS_TIMEOUT = 30.0
+_SSE_TIMEOUT = 60.0  # Max time to consume an SSE response
 
 
 class McpHttpClient:
@@ -71,6 +72,7 @@ class McpHttpClient:
         self._info: Optional[Dict[str, Any]] = None
         self._tools: List[McpToolDefinition] = []
         self._connected = False
+        self._request_counter = 0
 
     @property
     def is_connected(self) -> bool:
@@ -198,7 +200,8 @@ class McpHttpClient:
         if not self._client:
             raise RuntimeError("No client. Call connect() first.")
 
-        request_id = f"{self.name}-{method}"
+        self._request_counter += 1
+        request_id = f"{self.name}-{method}-{self._request_counter}"
         payload = {
             "jsonrpc": _JSONRPC_VERSION,
             "id": request_id,
@@ -220,19 +223,30 @@ class McpHttpClient:
             raise
 
     async def _handle_sse(self, response: httpx.Response) -> Dict[str, Any]:
-        """Handle SSE stream response."""
+        """Handle SSE stream response. Times out after _SSE_TIMEOUT to prevent hanging."""
         result: Dict[str, Any] = {"content": [], "tools": []}
-        try:
-            for line in response.text.split("\n"):
+
+        async def _consume_sse():
+            async for line in response.aiter_lines():
                 line = line.strip()
-                if line.startswith("data: "):
-                    data = line[6:]
+                if line.startswith("data:"):
+                    data = line[5:].strip()
+                    if not data:
+                        continue
                     try:
                         event = json.loads(data)
-                        if event.get("method") == "tools/list":
+                        method = event.get("method")
+                        if method == "tools/list":
                             result["tools"] = event.get("params", {}).get("tools", [])
+                        elif event.get("id") is not None:
+                            result["response"] = event.get("result", event)
                     except json.JSONDecodeError:
                         pass
+
+        try:
+            await asyncio.wait_for(_consume_sse(), timeout=_SSE_TIMEOUT)
+        except asyncio.TimeoutError:
+            logger.debug("SSE parse timed out after %.0fs", _SSE_TIMEOUT)
         except Exception as e:
             logger.debug(f"SSE parsing: {e}")
         return result

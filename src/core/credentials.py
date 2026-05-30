@@ -97,10 +97,6 @@ def _write_prefs_data(data: dict, label: str) -> None:
         logger.debug("credentials: attempting atomic_write_json for %s (%s)", _PREFS_PATH, label)
         ok = atomic_write_json(_PREFS_PATH, data, logger=logger)
         if ok:
-            try:
-                os.chmod(_PREFS_PATH, 0o600)
-            except Exception as exc:
-                logger.debug("credentials: chmod failed for %s: %s", _PREFS_PATH, exc)
             return
         logger.warning(
             "credentials: atomic_write_json returned False for %s (%s); falling back",
@@ -115,16 +111,12 @@ def _write_prefs_data(data: dict, label: str) -> None:
             traceback.format_exc(),
         )
 
-    # Fallback: legacy mkstemp + replace flow.
+    # Fallback: legacy mkstemp + replace flow (mkstemp creates files with 0o600).
     fd, tmp = tempfile.mkstemp(dir=_PREFS_PATH.parent, suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             json.dump(data, fh, indent=2)
         os.replace(tmp, _PREFS_PATH)
-        try:
-            os.chmod(_PREFS_PATH, 0o600)
-        except Exception as exc:
-            logger.debug("credentials: chmod failed (fallback) for %s: %s", _PREFS_PATH, exc)
     except Exception:
         try:
             os.unlink(tmp)

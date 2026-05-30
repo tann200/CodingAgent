@@ -1,5 +1,6 @@
 from langchain_core.runnables import RunnableConfig
 import asyncio
+import copy
 import json
 import logging
 import re
@@ -292,7 +293,7 @@ def _build_resolved_plan_result(
         from datetime import datetime as _dt
         _entry = {
             "timestamp": _dt.utcnow().isoformat() + "Z",
-            "plan": list(prior_plan),
+            "plan": copy.deepcopy(prior_plan),
             "reason": plan_history_reason,
         }
         result["plan_history"] = [_entry]

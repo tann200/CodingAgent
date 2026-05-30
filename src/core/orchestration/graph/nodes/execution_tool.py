@@ -96,7 +96,8 @@ def emit_execution_step_finish(
             else None
         )
         if hasattr(orchestrator, "event_bus"):
-            step_ok = bool(result.get("ok") or result.get("status") == "ok")
+            _ok_flag = result.get("ok")
+            step_ok = (_ok_flag is True) or (_ok_flag is None and result.get("status") == "ok")
             orchestrator.event_bus.publish(
                 "step.finish",
                 {

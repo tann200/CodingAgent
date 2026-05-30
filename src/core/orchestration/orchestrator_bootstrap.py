@@ -25,6 +25,7 @@ helpers in order.
 
 from __future__ import annotations
 
+import atexit
 import concurrent.futures as _cf
 import threading as _threading
 from pathlib import Path
@@ -50,6 +51,18 @@ from src.core.orchestration.message_manager import MessageManager
 
 def _init_infrastructure(orch: Any, message_max_tokens: Optional[int]) -> None:
     """Wire MessageManager, thread pools, working directory, and all managers."""
+    # Register executor shutdown for cleanup. Must happen before executor creation
+    # so the cleanup handler is wired first.
+    def _shutdown_executors() -> None:
+        _tool_exe = getattr(orch, "_tool_executor", None)
+        if _tool_exe is not None:
+            _tool_exe.shutdown(wait=False)
+        _graph_exe = getattr(orch, "_graph_executor", None)
+        if _graph_exe is not None:
+            _graph_exe.shutdown(wait=False)
+
+        atexit.register(_shutdown_executors)
+
     # Wire the MessageManager with compaction support so dropped messages
     # are summarised inline rather than silently discarded.
     orch.msg_mgr = MessageManager(

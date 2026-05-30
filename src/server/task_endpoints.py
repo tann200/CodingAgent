@@ -7,6 +7,7 @@ import os
 import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional
@@ -23,7 +24,13 @@ _TASK_REGISTRY_LOCK = threading.Lock()
 
 # P3-2: TTL for completed/failed/cancelled task records (1 hour).
 _TASK_REGISTRY_TTL_SECONDS: float = float(
-    os.environ.get("AGENT_TASK_REGISTRY_TTL", "3600")
+    os.environ.get("CODING_AGENT_TASK_REGISTRY_TTL", "3600")
+)
+
+# Bounded thread pool for task execution — prevents unbounded thread creation.
+_TASK_EXECUTOR = ThreadPoolExecutor(
+    max_workers=int(os.environ.get("CODING_AGENT_TASK_MAX_WORKERS", "10")),
+    thread_name_prefix="task",
 )
 
 
@@ -250,13 +257,15 @@ async def submit_task(request_body: TaskCreateRequest, request: Request):
         except Exception:
             pass
 
-    thread = threading.Thread(
-        target=_run_task_thread,
-        args=(task_id, session_id, request_body.task, request_body.working_dir, request_body.model, cancel_event),
-        daemon=True,
-        name=f"task-{task_id[:8]}",
+    _TASK_EXECUTOR.submit(
+        _run_task_thread,
+        task_id,
+        session_id,
+        request_body.task,
+        request_body.working_dir,
+        request_body.model,
+        cancel_event,
     )
-    thread.start()
 
     return TaskStatusResponse(
         task_id=task_id,

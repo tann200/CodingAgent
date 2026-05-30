@@ -158,7 +158,10 @@ class McpSseClient:
         try:
             async with self._session.get(sse_url) as resp:
                 resp.raise_for_status()
-                async for line_bytes in resp.content:
+                while True:
+                    line_bytes = await resp.content.readline()
+                    if not line_bytes:
+                        break
                     line = line_bytes.decode("utf-8", errors="replace").strip()
                     if not line.startswith("data:"):
                         continue

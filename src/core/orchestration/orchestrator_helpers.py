@@ -458,9 +458,9 @@ def _ensure_working_dir_impl(orch: Any) -> None:
                     with os.fdopen(fd, "w", encoding="utf-8") as f:
                         f.write("# Current Task\n\n# Completed Steps\n\n# Next Step\n")
                     try:
-                        os.replace(tmp, str(task_state_path))
-                    except Exception:
                         shutil.move(tmp, str(task_state_path))
+                    except Exception:
+                        os.replace(tmp, str(task_state_path))
                 except Exception:
                     try:
                         if os.path.exists(tmp):

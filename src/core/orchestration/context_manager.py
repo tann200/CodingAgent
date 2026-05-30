@@ -20,6 +20,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from typing import Optional
+import threading
 
 from src.core.memory.auto_compactor import (
     AutoCompactConfig,
@@ -112,10 +113,13 @@ class ContextManager:
         self._current_turn = 0
         self._last_compact_turn = 0
 
+    _instance_lock: threading.Lock = threading.Lock()
+
     @classmethod
     def get_instance(cls, session_id: str = "default") -> "ContextManager":
-        if cls._instance is None or cls._instance.session_id != session_id:
-            cls._instance = cls(session_id=session_id)
+        with cls._instance_lock:
+            if cls._instance is None or cls._instance.session_id != session_id:
+                cls._instance = cls(session_id=session_id)
         return cls._instance
 
     def update_tokens(self, used: int, max_tokens: Optional[int] = None) -> None:

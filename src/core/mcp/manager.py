@@ -12,7 +12,9 @@ Transport support:
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -69,6 +71,7 @@ class McpServerManager:
         self._clients: Dict[str, Any] = {}
         self._states: Dict[str, McpServerState] = {}
         self._started: bool = False
+        self._lock = threading.RLock()
 
     def _normalize_server_cmd(self, cfg: Dict[str, Any]) -> List[str]:
         cmd = cfg.get("cmd")
@@ -100,28 +103,29 @@ class McpServerManager:
         )
 
     def _publish_status(self) -> None:
-        connected_names = [s.name for s in self._states.values() if s.connected]
-        has_error = any(
-            (not s.connected) and (s.last_error or s.needs_auth)
-            for s in self._states.values()
-        )
-        payload = {
-            "running": bool(connected_names),
-            "count": len(connected_names),
-            "server_names": connected_names,
-            "has_error": has_error,
-            "servers": {
-                name: {
-                    "transport": st.transport,
-                    "status": st.status,
-                    "connected": st.connected,
-                    "needs_auth": st.needs_auth,
-                    "tool_count": st.tool_count,
-                    "error": st.last_error,
-                }
-                for name, st in self._states.items()
-            },
-        }
+        with self._lock:
+            connected_names = [s.name for s in self._states.values() if s.connected]
+            has_error = any(
+                (not s.connected) and (s.last_error or s.needs_auth)
+                for s in self._states.values()
+            )
+            payload = {
+                "running": bool(connected_names),
+                "count": len(connected_names),
+                "server_names": connected_names,
+                "has_error": has_error,
+                "servers": {
+                    name: {
+                        "transport": st.transport,
+                        "status": st.status,
+                        "connected": st.connected,
+                        "needs_auth": st.needs_auth,
+                        "tool_count": st.tool_count,
+                        "error": st.last_error,
+                    }
+                    for name, st in self._states.items()
+                },
+            }
         try:
             self._event_bus.publish("mcp.server.status", payload)
         except Exception:
@@ -149,16 +153,18 @@ class McpServerManager:
 
     async def refresh_tools(self, server_name: str) -> int:
         """Re-list and register tools from one connected server."""
-        client = self._clients.get(server_name)
-        if client is None:
-            return 0
+        with self._lock:
+            client = self._clients.get(server_name)
+            if client is None:
+                return 0
         count = await client.register_tools(self._registry)
-        st = self._states.get(server_name)
-        if st is not None:
-            st.tool_count = count
-            st.connected = True
-            st.last_error = ""
-            st.needs_auth = False
+        with self._lock:
+            st = self._states.get(server_name)
+            if st is not None:
+                st.tool_count = count
+                st.connected = True
+                st.last_error = ""
+                st.needs_auth = False
         self._publish_status()
         return count
 
@@ -166,11 +172,17 @@ class McpServerManager:
         self, servers: List[Dict[str, Any]], *, auto_register_default: bool = True
     ) -> None:
         """Start and connect all configured outbound MCP servers."""
-        if self._started:
-            return
-
-        self._states.clear()
-        self._clients.clear()
+        with self._lock:
+            if self._started:
+                return
+            # Disconnect any existing clients before clearing (prevents connection leak on re-entry).
+            for _name, client in list(self._clients.items()):
+                try:
+                    await client.disconnect()
+                except Exception:
+                    pass
+            self._states.clear()
+            self._clients.clear()
 
         for cfg in servers:
             name = str(cfg.get("name") or "").strip()
@@ -180,9 +192,10 @@ class McpServerManager:
 
             supported_transports = {"stdio", "http", "sse", "ws", "websocket"}
             if transport not in supported_transports:
-                st = McpServerState(name=name, transport=transport)
-                self._states[name] = st
-                st.last_error = f"Unsupported MCP transport: {transport}"
+                with self._lock:
+                    st = McpServerState(name=name, transport=transport)
+                    self._states[name] = st
+                    st.last_error = f"Unsupported MCP transport: {transport}"
                 self._publish_status()
                 continue
 
@@ -205,8 +218,9 @@ class McpServerManager:
                 cfg_env["CONTEXT7_API_KEY"] = os.environ.get("CONTEXT7_API_KEY")
 
             # Ensure we have a server state object for reporting/status updates
-            st = McpServerState(name=name, transport=transport)
-            self._states[name] = st
+            with self._lock:
+                st = McpServerState(name=name, transport=transport)
+                self._states[name] = st
 
             client: Any = None
             if transport in ("http", "sse", "ws", "websocket") and url:
@@ -255,30 +269,35 @@ class McpServerManager:
                     # ignore and continue.
                     pass
             else:
-                st = McpServerState(name=name, transport=transport)
-                self._states[name] = st
-                if transport in ("http", "sse", "ws", "websocket"):
-                    st.last_error = "Missing MCP server URL (url/endpoint)"
-                else:
-                    st.last_error = "Missing MCP server command (cmd/command)"
+                with self._lock:
+                    st = McpServerState(name=name, transport=transport)
+                    self._states[name] = st
+                    if transport in ("http", "sse", "ws", "websocket"):
+                        st.last_error = "Missing MCP server URL (url/endpoint)"
+                    else:
+                        st.last_error = "Missing MCP server command (cmd/command)"
                 self._publish_status()
                 continue
 
             try:
                 await client.connect()
-                st.connected = True
-                self._clients[name] = client
+                with self._lock:
+                    st.connected = True
+                    self._clients[name] = client
 
                 should_register = cfg.get("auto_register_tools")
                 if should_register is None:
                     should_register = auto_register_default
                 if should_register:
-                    st.tool_count = await client.register_tools(self._registry)
+                    count = await client.register_tools(self._registry)
+                    with self._lock:
+                        st.tool_count = count
 
             except Exception as exc:  # noqa: BLE001
-                st.connected = False
-                st.last_error = str(exc)
-                st.needs_auth = self._is_auth_error(st.last_error)
+                with self._lock:
+                    st.connected = False
+                    st.last_error = str(exc)
+                    st.needs_auth = self._is_auth_error(st.last_error)
                 logger.warning("mcp manager: server %s failed to start: %s", name, exc)
 
             self._publish_status()
@@ -297,16 +316,23 @@ class McpServerManager:
 
     async def stop(self) -> None:
         """Disconnect all connected MCP servers."""
-        for name, client in list(self._clients.items()):
+        with self._lock:
+            names = list(self._clients.keys())
+        for name in names:
+            client = self._clients.get(name)
+            if client is None:
+                continue
             try:
                 await client.disconnect()
             except Exception as exc:  # pragma: no cover
                 logger.debug("mcp manager: disconnect failed for %s: %s", name, exc)
-            st = self._states.get(name)
-            if st is not None:
-                st.connected = False
-        self._clients.clear()
-        self._started = False
+        with self._lock:
+            for name in names:
+                st = self._states.get(name)
+                if st is not None:
+                    st.connected = False
+            self._clients.clear()
+            self._started = False
         self._publish_status()
 
     def stop_sync(self) -> None:
@@ -316,18 +342,19 @@ class McpServerManager:
         then clears the client registry.  Non-stdio transports are skipped
         since they have no local subprocess to clean up.
         """
-        for name, client in list(self._clients.items()):
-            proc = getattr(client, "_process", None)
-            if proc is not None and proc.returncode is None:
-                try:
-                    proc.terminate()
-                except Exception:
+        with self._lock:
+            for name, client in list(self._clients.items()):
+                proc = getattr(client, "_process", None)
+                if proc is not None and proc.returncode is None:
                     try:
-                        proc.kill()
+                        proc.terminate()
                     except Exception:
-                        pass
-            st = self._states.get(name)
-            if st is not None:
-                st.connected = False
-        self._clients.clear()
-        self._started = False
+                        try:
+                            proc.kill()
+                        except Exception:
+                            pass
+                st = self._states.get(name)
+                if st is not None:
+                    st.connected = False
+            self._clients.clear()
+            self._started = False

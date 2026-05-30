@@ -55,7 +55,7 @@ async def step_controller_node(state: StateLike, config: RunnableConfig) -> Dict
     step_failed = bool(
         last_result
         and isinstance(last_result, dict)
-        and not (last_result.get("ok") or last_result.get("status") == "ok")
+        and not ((last_result.get("ok") is True) or (last_result.get("ok") is None and last_result.get("status") == "ok"))
     )
     if step_failed:
         step_retry_counts[step_key] = int(step_retry_counts.get(step_key, 0)) + 1
