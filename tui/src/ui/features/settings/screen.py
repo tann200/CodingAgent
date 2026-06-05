@@ -57,12 +57,17 @@ class SettingsScreen(ModalScreen):
         self.settings = settings_store
         # Build providers lookup: {provider_id: {name, models, ...}}
         # Filter out any entries with empty/missing names to avoid silent key errors.
+        raw_providers = settings_store.available_providers or []
         self._providers: list[dict] = [
-            p for p in (settings_store.available_providers or []) if p.get("name")
+            p for p in raw_providers if isinstance(p, dict) and p.get("name")
         ]
-        self._prov_models: dict[str, list[str]] = {
-            SettingsStore._normalize_provider_id(p): list(p.get("models", [])) for p in self._providers
-        }
+        self._prov_models: dict[str, list[str]] = {}
+        for p in self._providers:
+            pid = SettingsStore._normalize_provider_id(p)
+            models = p.get("models") or []
+            if not isinstance(models, list):
+                models = []
+            self._prov_models[pid] = list(models)
         # Check Copilot auth state once at construction time (cheap — no network call)
         self._copilot_authenticated: bool = self._check_copilot_auth()
 
@@ -83,9 +88,12 @@ class SettingsScreen(ModalScreen):
             yield _Label(f"[bold red]Settings error:[/] {exc}", markup=True)
 
     def _compose_inner(self):
-        prov_options = [(_NO_PROVIDER, _NO_PROVIDER)] + [
-            (p["name"], SettingsStore._normalize_provider_id(p)) for p in self._providers
-        ]
+        prov_options = [(_NO_PROVIDER, _NO_PROVIDER)]
+        for p in self._providers:
+            name = str(p.get("name") or "").strip()
+            if not name:
+                continue
+            prov_options.append((name, SettingsStore._normalize_provider_id(p)))
 
         with Vertical(id="settings_box"):
             yield Label("Settings", classes="settings_title")
@@ -201,7 +209,9 @@ class SettingsScreen(ModalScreen):
                                     classes="apikey_dot",
                                     markup=True,
                                 )
-                                yield Label(p["name"], classes="apikey_name")
+                                yield Label(
+                                    str(p.get("name") or pid), classes="apikey_name"
+                                )
                                 if authenticated:
                                     yield Static(
                                         "[bold #22c55e]Connected[/]",
@@ -233,7 +243,9 @@ class SettingsScreen(ModalScreen):
                                     classes="apikey_dot",
                                     markup=True,
                                 )
-                                yield Label(p["name"], classes="apikey_name")
+                                yield Label(
+                                    str(p.get("name") or pid), classes="apikey_name"
+                                )
                                 yield Input(
                                     value=current_url,
                                     placeholder="http://localhost:1234/v1",
@@ -249,7 +261,9 @@ class SettingsScreen(ModalScreen):
                                     classes="apikey_dot",
                                     markup=True,
                                 )
-                                yield Label(p["name"], classes="apikey_name")
+                                yield Label(
+                                    str(p.get("name") or pid), classes="apikey_name"
+                                )
                                 yield Input(
                                     password=True,
                                     placeholder="sk-… (leave blank to keep current)",
@@ -323,12 +337,18 @@ class SettingsScreen(ModalScreen):
         opts = [(_NO_PROVIDER, _NO_PROVIDER)]
         if provider_id and provider_id != _NO_PROVIDER:
             for m in self._prov_models.get(provider_id, []):
-                opts.append((m, m))
+                if not m:
+                    continue
+                opts.append((str(m), str(m)))
         else:
             # No provider selected → show all models across all providers
             for p in self._providers:
                 for m in p.get("models", []):
-                    opts.append((f"{p['name']}: {m}", m))
+                    if not m:
+                        continue
+                    prov_name = str(p.get("name") or "").strip() or "provider"
+                    model_name = str(m)
+                    opts.append((f"{prov_name}: {model_name}", model_name))
         return opts
 
     def _update_model_select(self, aid: str, provider_id: str) -> None:

@@ -76,12 +76,30 @@ class BridgeToolsMixin(AgentBridgeProtocol):
         tool_name = payload.get("title") or payload.get("tool", "unknown")
         tool_id = payload.get("toolCallId", "")
         content = payload.get("content", [])
+        result_text = ""
         if content and isinstance(content, list) and isinstance(content[0], dict):
             result_text = content[0].get("text", "")
-        else:
-            result_text = str(
-                payload.get("result_formatted") or payload.get("result", "")
-            )
+
+        if not result_text:
+            formatted = payload.get("result_formatted")
+            if not formatted:
+                formatted = payload.get("result")
+            if formatted:
+                result_text = str(formatted)
+
+        if not result_text:
+            raw_output = payload.get("rawOutput") or payload.get("raw_output")
+            if raw_output is not None:
+                if isinstance(raw_output, dict):
+                    raw_result = raw_output.get("result") or raw_output.get("error")
+                    if raw_result is None:
+                        raw_result = raw_output
+                    result_text = str(raw_result)
+                else:
+                    result_text = str(raw_output)
+
+        if not result_text:
+            result_text = "(no output)"
         ok = payload.get("ok", True)
         self._post(
             ToolCallFinishEvent(
