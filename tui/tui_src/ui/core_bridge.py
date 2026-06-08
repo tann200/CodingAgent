@@ -29,6 +29,7 @@ from ._bridge_agent import BridgeAgentMixin
 
 if TYPE_CHECKING:
     from tui.tui_src.ui.app import AgentApp
+    from src.core.messaging import Event, EventHandler
 
 try:
     from tui.tui_src.ui.logging import get_logger
@@ -103,6 +104,21 @@ def _get_event_bus():
         from tui.tui_src.ui.mock_eventbus import get_mock_event_bus
 
         return get_mock_event_bus()
+
+
+def _get_typed_bus():
+    """Return a MessageBus instance, or None in mock/dev mode.
+
+    The MessageBus is a shared singleton used across the bridge layer.
+    Returns None when ``src.core`` is unavailable so the bridge degrades
+    gracefully in mock-engine mode.
+    """
+    try:
+        from src.core.messaging.bus import MessageBus  # type: ignore[import]
+
+        return MessageBus(max_queue_size=256, worker_threads=4)
+    except Exception:
+        return None
 
 
 def _get_orchestrator(app_obj):
@@ -188,7 +204,9 @@ class AgentBridge(
     def __init__(self, app: "AgentApp", working_dir: Optional[Path] = None) -> None:
         self.app = app
         self._bus = _get_event_bus()
+        self._typed_bus: Any = _get_typed_bus()
         self._subscriptions: list[tuple[str, Callable]] = []
+        self._typed_subscriptions: list[tuple[type, Any]] = []
 
         # §9 threading contract
         self._agent_lock = threading.Lock()
@@ -261,13 +279,22 @@ class AgentBridge(
             try:
                 self.app.call_from_thread(fn, *args)
             except Exception as e:
-                logger.debug(f"_schedule_callback (call_from_thread) failed: {e}")
+                logger.warning(
+                    "UI callback %s dropped: %s — UI may be desynced",
+                    fn.__name__, e,
+                )
 
     # ── EventBus subscription management (§4.2) ──────────────────────────
 
     def _subscribe(self, event: str, cb: Callable) -> None:
         self._bus.subscribe(event, cb)
         self._subscriptions.append((event, cb))
+
+    def _subscribe_typed(self, event_cls: type, handler: "EventHandler") -> None:
+        """Register a typed subscription on the MessageBus (if available)."""
+        if self._typed_bus is not None:
+            self._typed_bus.subscribe(event_cls, handler)
+            self._typed_subscriptions.append((event_cls, handler))
 
     def _post(self, msg) -> None:
         self._schedule_callback(self.app.post_message, msg)
@@ -310,3 +337,10 @@ class AgentBridge(
 
     def publish(self, event: str, payload: dict | None = None) -> None:
         self._bus.publish(event, payload or {})
+
+    def publish_typed(self, event: "Event") -> None:
+        """Publish a typed event on the MessageBus (if available)."""
+        if self._typed_bus is not None:
+            self._typed_bus.publish(event)
+        # Also emit via the old bus for compatibility during migration
+        self._bus.publish(type(event).__name__, event.to_dict())
