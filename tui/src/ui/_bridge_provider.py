@@ -107,10 +107,10 @@ class BridgeProviderMixin(AgentBridgeProtocol):
             )
         except Exception:
             pass
-        # Call directly (don't rely on the bus event being received — the
-        # _EVENT_MAP remaps "orchestrator.startup" → "system.startup" for
-        # inbound subscriptions, but the above publish uses the TUI name which
-        # has no subscriber after setup_subscriptions() maps it.)
+        # The orchestrator startup subscription is now direct (the old
+        # _EVENT_MAP remapping has been removed), so the bus event will be
+        # received normally.  We also eagerly publish active provider status
+        # here for immediate UI feedback.
         self._publish_active_provider_status()
         self._check_provider_auth_on_startup()
         try:

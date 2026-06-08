@@ -44,21 +44,11 @@ except Exception:
 
 logger = get_logger("bridge")
 
-# TUI-02: Map TUI-expected event names → CodingAgent-published event names.
-# When the bridge subscribes to a TUI event name, the actual bus subscription
-# is made against the CodingAgent name so events are received correctly.
-_EVENT_MAP: dict[str, str] = {
-    "orchestrator.startup": "system.startup",
-    "tool.execute.start": "tool.call.start",
-    "tool.execute.finish": "tool.call.finish",
-    "tool.execute.error": "tool.call.error",
-    "plan.requested": "plan.mode",
-    "log.new": "log.line",
-    "task.file_modified": "file.modified",
-    "delegation.start": "delegation.start",
-    "delegation.finish": "delegation.finish",
-    "spawn.permission_required": "spawn.permission_required",
-}
+# TUI-02 (removed): _EVENT_MAP was a historical remapping table that mapped
+# TUI subscription names to non-existent event names, causing 6 subscriptions
+# to silently go unanswered (orchestrator.startup → system.startup,
+# tool.execute.start → tool.call.start, etc.).  All bridge subscriptions now
+# use the same event names the backend publishes, so the map is empty.
 
 
 def _load_copilot_auth_module():
@@ -276,10 +266,8 @@ class AgentBridge(
     # ── EventBus subscription management (§4.2) ──────────────────────────
 
     def _subscribe(self, event: str, cb: Callable) -> None:
-        # TUI-02: remap TUI event names to the names CodingAgent actually publishes
-        actual = _EVENT_MAP.get(event, event)
-        self._bus.subscribe(actual, cb)
-        self._subscriptions.append((actual, cb))
+        self._bus.subscribe(event, cb)
+        self._subscriptions.append((event, cb))
 
     def _post(self, msg) -> None:
         self._schedule_callback(self.app.post_message, msg)

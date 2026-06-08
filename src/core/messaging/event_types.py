@@ -2,12 +2,17 @@
 Typed Event classes for all system event types.
 
 Events are grouped by domain:
-  - Agent lifecycle      (AgentStart, AgentStatus, AgentEnd, AgentModeChanged, AgentPlanCommitted)
+  - Agent lifecycle      (AgentStart, AgentStatus, AgentEnd, AgentModeChanged,
+                          AgentPlanCommitted, AgentMessage, AgentWaitingForUser)
   - Tool execution       (ToolExecuteStart, ToolInvoked, ToolExecuteFinish, ToolExecuteError,
                           ToolResult, ToolPermissionRequired, ToolDoomLoopDetected)
   - Permission / approval (SpawnPermissionRequired, BashApprovalGranted, BashApprovalDenied)
+  - Preview / plan       (PreviewPending, PreviewConfirmed, PreviewRejected,
+                          PlanRequested, PlanProgress)
+  - Step (graph nodes)   (StepStart, StepFinish)
   - Session              (SessionCreated, SessionNew, SessionHydrated, SessionTitleGenerated,
-                          SessionFilesChanged)
+                          SessionFilesChanged, SessionRegistered, SessionUnregistered,
+                          SessionHealthAlert, SessionRequestState)
   - Provider / model     (ProviderStatusChanged, ProviderModelsList, ProviderModelsCached,
                           ProviderModelsEmpty, ProviderModelsUpdated, ProviderSelectionChanged,
                           ProviderContextWindow, ProviderUnavailable, ProviderConfigMissing,
@@ -15,25 +20,26 @@ Events are grouped by domain:
   - Inference / streaming (ResponseStreamChunk, ResponseStreamEnd, ModelToken, LLMToken,
                            ModelResponse, ModelRouting, ModelRoutingComplete)
   - Context / memory     (ContextOverflow, ContextCompacted, ContextAutoCompacted,
-                          ContextCompactFailed, MessageTruncation, MessageCompactionApplied)
-  - Token budget         (TokenBudget, TokenBudgetUpdate, UsageTurnSummary, UsageBudgetExceeded)
-  - File system          (FileModified, FileDeleted)
-  - Preview / plan       (PreviewPending, PreviewConfirmed, PreviewRejected,
-                          PlanRequested, PlanProgress)
-  - Step (graph nodes)   (StepStart, StepFinish)
-  - Delegation           (DelegationComplete, AgentScoutFilesDiscovered,
-                          AgentResearcherDocSummary, AgentReviewerBugFound)
+                          ContextCompactFailed, ContextDegraded,
+                          MessageTruncation, MessageCompactionApplied)
+  - Token budget / usage (TokenBudget, TokenBudgetUpdate, TokenBudgetWarning,
+                          UsageTurnSummary, UsageBudgetExceeded, UsageSubagentCost)
+  - File system          (FileModified, FileDeleted, FileDiffPreview)
+  - Role                 (RoleTransition)
+  - Retry                (RetryAttempt, RetrySucceeded, RetryFailed)
+  - Task                 (TaskQueueUpdated, TaskTurnLimit)
+  - Delegation           (DelegationStart, DelegationFinish, DelegationComplete,
+                          AgentScoutFilesDiscovered, AgentResearcherDocSummary,
+                          AgentReviewerBugFound)
   - Scheduler            (SchedulerDistillRequest, SchedulerDistillCompleted)
   - MCP                  (McpServerStatus, McpToolsListChanged)
-  - Config               (ConfigReloaded)
+  - Config               (ConfigReloaded, SystemSettings)
   - Orchestrator         (OrchestratorStartup, OrchestratorModelsCheckStarted,
                           OrchestratorModelsCheckCompleted, OrchestratorModelsCheckFailed)
-  - UI / notifications   (UiNotification, HookMessage, GitBranch, WorkingDirUnavailable)
-  - Perception           (PerceptionCorrectivePrompt, TaskTurnLimit)
+  - UI / notifications   (UiNotification, HookMessage, LogEntry,
+                          GitBranch, WorkingDirUnavailable)
+  - Perception           (PerceptionCorrectivePrompt)
   - Subagent dispatch    (SubagentDispatch, SubagentResult)
-
-Each event carries the fields published at the matching site plus the
-inherited `correlation_id` and `timestamp` from the `Event` base class.
 """
 
 from __future__ import annotations
@@ -126,6 +132,38 @@ class AgentPlanCommitted(Event):
     """
     step_count: int
     tool: str
+
+
+@dataclass
+class AgentMessage(Event):
+    """
+    Published when the agent sends a human-readable status message.
+
+    Publishers:
+        src/tools/interaction_tools.py:229
+
+    Subscribers:
+        TUI bridge (agent message widget)
+
+    Use-case: Display agent-generated message in chat log.
+    """
+    message: str
+    attachments: Optional[List[Any]] = None
+    status: Optional[str] = None
+
+
+@dataclass
+class AgentWaitingForUser(Event):
+    """
+    Published when the agent pauses for user input (question / choice).
+
+    Publishers:
+        src/tools/interaction_tools.py:66
+
+    Use-case: Show question prompt with selectable options.
+    """
+    question: str
+    choices: Optional[List[str]] = None
 
 
 # ---------------------------------------------------------------------------
@@ -483,6 +521,57 @@ class SessionFilesChanged(Event):
     is_git_repo: bool
 
 
+@dataclass
+class SessionRegistered(Event):
+    """
+    Published when a session is registered with the event bus (mock / dev mode).
+
+    Publishers:
+        tui/mock_engine.py (mock mode only)
+
+    Use-case: Track active sessions; update session list widget.
+    """
+    session_id: str
+
+
+@dataclass
+class SessionUnregistered(Event):
+    """
+    Published when a session is unregistered from the event bus.
+
+    Use-case: Remove session from active list; clean up resources.
+    """
+    session_id: str
+
+
+@dataclass
+class SessionHealthAlert(Event):
+    """
+    Published when a session health check detects an issue.
+
+    Subscribers:
+        TUI bridge (session health banner)
+
+    Use-case: Show health-warning in UI; suggest /new session.
+    """
+    session_id: str
+    message: str
+    level: Literal["info", "warning", "error"] = "warning"
+
+
+@dataclass
+class SessionRequestState(Event):
+    """
+    Published from the TUI bridge to request the backend to persist session state.
+
+    Publishers:
+        tui/src/ui/_bridge_session.py:259
+
+    Use-case: Trigger session state snapshot from the UI.
+    """
+    session_id: str
+
+
 # ---------------------------------------------------------------------------
 # Provider / model
 # ---------------------------------------------------------------------------
@@ -810,6 +899,21 @@ class ContextAutoCompacted(Event):
 
 
 @dataclass
+class ContextDegraded(Event):
+    """
+    Published when context quality degrades (e.g. repeated truncation).
+
+    Subscribers:
+        TUI bridge (context quality warning)
+
+    Use-case: Show "context degraded" warning; suggest compaction.
+    """
+    session_id: str
+    reason: str
+    tokens_lost: Optional[int] = None
+
+
+@dataclass
 class ContextCompactFailed(Event):
     """
     Published when compaction fails.
@@ -928,6 +1032,40 @@ class UsageBudgetExceeded(Event):
     budget_ceiling_usd: float
 
 
+@dataclass
+class TokenBudgetWarning(Event):
+    """
+    Published when token usage approaches the configured limit.
+
+    Subscribers:
+        TUI bridge (token warning banner)
+
+    Use-case: Warning-level notification to user; suggest compaction.
+    """
+    used: int
+    limit: int
+    percent: float
+    message: Optional[str] = None
+
+
+@dataclass
+class UsageSubagentCost(Event):
+    """
+    Published per sub-agent turn with its cost and role.
+
+    Publishers:
+        src/tools/subagent_tools.py:404
+
+    Subscribers:
+        TUI bridge (sub-agent cost breakdown)
+
+    Use-case: Accumulate sub-agent costs for session total.
+    """
+    child_session_id: str
+    role: str
+    cost_usd: float
+
+
 # ---------------------------------------------------------------------------
 # File system
 # ---------------------------------------------------------------------------
@@ -961,9 +1099,65 @@ class FileDeleted(Event):
     workdir: str
 
 
+@dataclass
+class FileDiffPreview(Event):
+    """
+    Published when a diff preview is ready for user review.
+
+    Publishers:
+        src/tools/_diff_gate.py:189
+
+    Subscribers:
+        TUI bridge (diff preview panel)
+
+    Use-case: Show side-by-side diff; wait for user accept/reject.
+    """
+    path: str
+    diff: str
+    is_new_file: bool = False
+
+
 # ---------------------------------------------------------------------------
 # Delegation
 # ---------------------------------------------------------------------------
+
+@dataclass
+class DelegationStart(Event):
+    """
+    Published when a new sub-agent delegation begins.
+
+    Publishers:
+        src/tools/subagent_tools.py:345
+
+    Subscribers:
+        TUI bridge (sub-agent progress widget)
+
+    Use-case: Show sub-agent start in UI; track delegation chain.
+    """
+    child_session_id: str
+    parent_session_id: str
+    role: str
+    task: str
+
+
+@dataclass
+class DelegationFinish(Event):
+    """
+    Published when a sub-agent delegation completes.
+
+    Publishers:
+        src/tools/subagent_tools.py:384
+
+    Subscribers:
+        TUI bridge (sub-agent finish indicator)
+
+    Use-case: Mark sub-agent done; update cost display.
+    """
+    child_session_id: str
+    role: str
+    ok: bool
+    cost_usd: float
+
 
 @dataclass
 class DelegationComplete(Event):
@@ -1230,6 +1424,135 @@ class WorkingDirUnavailable(Event):
     """
     path: str
     error: str
+
+
+@dataclass
+class SystemSettings(Event):
+    """
+    Published from the TUI bridge with resolved configuration values.
+
+    Publishers:
+        tui/src/ui/_bridge_provider.py:86
+
+    Subscribers:
+        TUI app (apply settings to UI state)
+
+    Use-case: Seed UI state with backend config after startup.
+    """
+    active_mode: str
+    theme: str
+    context_window: int
+    default_provider: str
+    default_model: str
+    providers: List[Dict[str, Any]]
+    autonomous_mode: bool
+    max_turns: int
+
+
+@dataclass
+class LogEntry(Event):
+    """
+    Published for each log line emitted by the core logger.
+
+    Publishers:
+        src/core/logger.py:173
+
+    Subscribers:
+        TUI bridge (log panel / debug view)
+
+    Use-case: Display real-time log stream in TUI debug panel.
+    """
+    level: str
+    message: str
+    timestamp: float
+    logger: Optional[str] = None
+
+
+# ---------------------------------------------------------------------------
+# Role
+# ---------------------------------------------------------------------------
+
+@dataclass
+class RoleTransition(Event):
+    """
+    Published when the agent's role changes (e.g. coding → planning).
+
+    Publishers:
+        src/tools/role_tools.py:43  (published as ``role.changed``)
+
+    Subscribers:
+        TUI bridge (role display in footer)
+
+    Use-case: Update role indicator; re-render role-specific UI.
+    """
+    role: str
+
+
+# ---------------------------------------------------------------------------
+# Retry
+# ---------------------------------------------------------------------------
+
+@dataclass
+class RetryAttempt(Event):
+    """
+    Published when a retry is attempted after a failure.
+
+    Subscribers:
+        TUI bridge (retry indicator in chat)
+
+    Use-case: Show retry countdown / attempt number.
+    """
+    attempt: int
+    max_attempts: int
+    reason: str
+
+
+@dataclass
+class RetrySucceeded(Event):
+    """
+    Published when a retry attempt succeeds.
+
+    Subscribers:
+        TUI bridge (clear retry indicator)
+
+    Use-case: Remove retry warning; show success.
+    """
+    attempt: int
+    reason: str
+
+
+@dataclass
+class RetryFailed(Event):
+    """
+    Published when all retry attempts are exhausted.
+
+    Subscribers:
+        TUI bridge (show permanent failure)
+
+    Use-case: Show "retry exhausted" error; offer abort options.
+    """
+    attempt: int
+    max_attempts: int
+    reason: str
+
+
+# ---------------------------------------------------------------------------
+# Task
+# ---------------------------------------------------------------------------
+
+@dataclass
+class TaskQueueUpdated(Event):
+    """
+    Published when the pending task queue changes.
+
+    Subscribers:
+        TUI bridge (task queue count in footer)
+
+    Use-case: Update pending-task badge; show queue depth.
+    """
+    pending_tasks: int
+    queue_size: int
+    session_id: str
 
 
 # ---------------------------------------------------------------------------

@@ -12,6 +12,8 @@ UC-AG-02  Agent status visible       AgentStatus (working/idle)  frontier_loop_n
 UC-AG-03  Agent task ends            AgentEnd (success/fail)     task_endpoints.py:211
 UC-AG-04  Execution mode switches    AgentModeChanged            tool_execution_pipeline.py:749
 UC-AG-05  Multi-step plan committed  AgentPlanCommitted          tool_execution_pipeline.py:759
+UC-AG-06  Agent status message       AgentMessage                interaction_tools.py:229
+UC-AG-07  Agent asks user question   AgentWaitingForUser         interaction_tools.py:66
 
 UC-TL-01  Tool execution starts      ToolExecuteStart            tool_execution_pipeline.py:1034
 UC-TL-02  Tool dispatched            ToolInvoked                 tool_execution_pipeline.py:804
@@ -39,6 +41,10 @@ UC-SE-02  New blank session          SessionNew                  settings/contro
 UC-SE-03  Session history loaded     SessionHydrated             orchestrator_event_subscriptions.py:109
 UC-SE-04  Auto-title generated       SessionTitleGenerated       inference_loop.py:153
 UC-SE-05  Workspace files changed    SessionFilesChanged         session_manager.py:292
+UC-SE-06  Session registered         SessionRegistered           mock_engine.py (mock mode)
+UC-SE-07  Session unregistered       SessionUnregistered         (future)
+UC-SE-08  Session health alert       SessionHealthAlert          (future)
+UC-SE-09  Session state requested    SessionRequestState         _bridge_session.py:259
 
 UC-PR-01  Provider connects/drops    ProviderStatusChanged       provider_probe.py:123,129,143,197
 UC-PR-02  Fresh model list           ProviderModelsList          provider_probe.py:115
@@ -65,21 +71,27 @@ UC-CM-01  Context overflows          ContextOverflow             perception_post
 UC-CM-02  Manual compaction done     ContextCompacted            compaction_service.py:262
 UC-CM-03  Auto-compaction done       ContextAutoCompacted        perception_compaction.py:132
 UC-CM-04  Compaction failed          ContextCompactFailed        compaction_service.py:272
-UC-CM-05  Messages dropped           MessageTruncation           message_manager.py:236
-UC-CM-06  Scheduler compaction done  MessageCompactionApplied    orchestrator_event_subscriptions.py:188
+UC-CM-05  Context degraded           ContextDegraded             (future)
+UC-CM-06  Messages dropped           MessageTruncation           message_manager.py:236
+UC-CM-07  Scheduler compaction done  MessageCompactionApplied    orchestrator_event_subscriptions.py:188
 
 UC-TB-01  Budget summary             TokenBudget                 tool_execution_pipeline.py:912
 UC-TB-02  Budget raw update          TokenBudgetUpdate           tool_execution_pipeline.py:900
-UC-TB-03  Turn cost summary          UsageTurnSummary            session_cost_tracker.py:373
-UC-TB-04  Budget ceiling exceeded    UsageBudgetExceeded         session_cost_tracker.py:395
+UC-TB-03  Budget warning             TokenBudgetWarning          (future)
+UC-TB-04  Turn cost summary          UsageTurnSummary            session_cost_tracker.py:373
+UC-TB-05  Budget ceiling exceeded    UsageBudgetExceeded         session_cost_tracker.py:395
+UC-TB-06  Sub-agent cost             UsageSubagentCost           subagent_tools.py:404
 
 UC-FS-01  File modified by tool      FileModified                tool_execution_pipeline.py:836
 UC-FS-02  File deleted by tool       FileDeleted                 tool_execution_pipeline.py:854
+UC-FS-03  File diff preview          FileDiffPreview             _diff_gate.py:189
 
-UC-DL-01  Delegation complete        DelegationComplete          delegation_node.py:391
-UC-DL-02  Scout discovers files      AgentScoutFilesDiscovered   delegation_node.py:85
-UC-DL-03  Researcher summarises doc  AgentResearcherDocSummary   delegation_node.py:90
-UC-DL-04  Reviewer finds bugs        AgentReviewerBugFound       delegation_node.py:95
+UC-DL-01  Delegation started         DelegationStart             subagent_tools.py:345
+UC-DL-02  Delegation finished        DelegationFinish            subagent_tools.py:384
+UC-DL-03  Delegation complete        DelegationComplete          delegation_node.py:391
+UC-DL-04  Scout discovers files      AgentScoutFilesDiscovered   delegation_node.py:85
+UC-DL-05  Researcher summarises doc  AgentResearcherDocSummary   delegation_node.py:90
+UC-DL-06  Reviewer finds bugs        AgentReviewerBugFound       delegation_node.py:95
 
 UC-SC-01  Distillation requested     SchedulerDistillRequest     orchestrator_scheduler.py:28
 UC-SC-02  Distillation complete      SchedulerDistillCompleted   orchestrator_event_subscriptions.py:208
@@ -88,6 +100,7 @@ UC-MC-01  MCP server status          McpServerStatus             mcp_stdio_serve
 UC-MC-02  MCP tool list changed      McpToolsListChanged         mcp/manager.py:147
 
 UC-CF-01  Config hot-reloaded        ConfigReloaded              orchestrator_config_reload.py:104
+UC-CF-02  System settings loaded     SystemSettings              _bridge_provider.py:86
 
 UC-OR-01  Orchestrator ready         OrchestratorStartup         orchestrator_provider_init.py:97
 UC-OR-02  Model probe started        OrchestratorModelsCheckStarted   event_subscriptions.py:65
@@ -96,8 +109,17 @@ UC-OR-04  Model probe failed         OrchestratorModelsCheckFailed    event_subs
 
 UC-UI-01  Warning/error notification UiNotification              orchestrator_event_subscriptions.py:17
 UC-UI-02  Hook message               HookMessage                 shell_hooks.py:490
-UC-UI-03  Git branch status          GitBranch                   orchestrator_helpers.py:735
-UC-UI-04  Working dir inaccessible   WorkingDirUnavailable       orchestrator_helpers.py:538
+UC-UI-03  Log entry                  LogEntry                    logger.py:173
+UC-UI-04  Git branch status          GitBranch                   orchestrator_helpers.py:735
+UC-UI-05  Working dir inaccessible   WorkingDirUnavailable       orchestrator_helpers.py:538
+
+UC-RL-01  Role changed               RoleTransition              role_tools.py:43
+
+UC-RT-01  Retry attempt              RetryAttempt                (future)
+UC-RT-02  Retry succeeded            RetrySucceeded              (future)
+UC-RT-03  Retry failed               RetryFailed                 (future)
+
+UC-TQ-01  Task queue updated         TaskQueueUpdated            (future)
 
 UC-PC-01  Corrective prompt injected PerceptionCorrectivePrompt  perception_no_tool.py:74
 UC-PC-02  Turn limit reached         TaskTurnLimit               perception_runtime.py:58
@@ -116,6 +138,7 @@ import pytest
 from src.core.messaging.event_types import (
     # Agent lifecycle
     AgentEnd,
+    AgentMessage,
     AgentModeChanged,
     AgentPlanCommitted,
     AgentResearcherDocSummary,
@@ -123,6 +146,7 @@ from src.core.messaging.event_types import (
     AgentScoutFilesDiscovered,
     AgentStart,
     AgentStatus,
+    AgentWaitingForUser,
     # Permission / approval
     BashApprovalDenied,
     BashApprovalGranted,
@@ -132,11 +156,15 @@ from src.core.messaging.event_types import (
     ContextAutoCompacted,
     ContextCompactFailed,
     ContextCompacted,
+    ContextDegraded,
     ContextOverflow,
     # Delegation
     DelegationComplete,
+    DelegationFinish,
+    DelegationStart,
     # File system
     FileDeleted,
+    FileDiffPreview,
     FileModified,
     # Git / UI
     GitBranch,
@@ -144,6 +172,8 @@ from src.core.messaging.event_types import (
     HookMessage,
     # Streaming / inference
     LLMToken,
+    # Logging
+    LogEntry,
     # MCP
     McpServerStatus,
     McpToolsListChanged,
@@ -181,15 +211,25 @@ from src.core.messaging.event_types import (
     ProviderUnavailable,
     ResponseStreamChunk,
     ResponseStreamEnd,
+    # Retry
+    RetryAttempt,
+    RetryFailed,
+    RetrySucceeded,
+    # Role
+    RoleTransition,
     # Scheduler
     SchedulerDistillCompleted,
     SchedulerDistillRequest,
     # Session
     SessionCreated,
     SessionFilesChanged,
+    SessionHealthAlert,
     SessionHydrated,
     SessionNew,
+    SessionRegistered,
+    SessionRequestState,
     SessionTitleGenerated,
+    SessionUnregistered,
     # Spawn
     SpawnPermissionRequired,
     # Steps
@@ -198,11 +238,15 @@ from src.core.messaging.event_types import (
     # Subagent
     SubagentDispatch,
     SubagentResult,
-    # Task turn limit
+    # Config / settings
+    SystemSettings,
+    # Task
+    TaskQueueUpdated,
     TaskTurnLimit,
     # Token / usage
     TokenBudget,
     TokenBudgetUpdate,
+    TokenBudgetWarning,
     # Tool execution
     ToolDoomLoopDetected,
     ToolExecuteError,
@@ -214,6 +258,7 @@ from src.core.messaging.event_types import (
     # UI notification
     UiNotification,
     UsageBudgetExceeded,
+    UsageSubagentCost,
     UsageTurnSummary,
     WorkingDirUnavailable,
 )
@@ -1009,6 +1054,8 @@ class TestSerialisation:
         AgentEnd(task_id="t1", session_id="s1", status="completed"),
         AgentModeChanged(mode="act", tool="bash"),
         AgentPlanCommitted(step_count=3, tool="delegate"),
+        AgentMessage(message="hello", attachments=None, status="info"),
+        AgentWaitingForUser(question="Continue?"),
         ToolExecuteStart(tool="bash", args={}, tool_call_id="tc1"),
         ToolResult(tool="grep", result={}, turn=1),
         ToolPermissionRequired(tool_id="tc1", tool="bash", args={}),
@@ -1023,6 +1070,10 @@ class TestSerialisation:
         StepFinish(step=1, total=2, tool="bash", ok=True, elapsed_ms=10.0, tool_call_count=1, session_id="s1"),
         SessionCreated(session_id="s1"),
         SessionTitleGenerated(title="Test session"),
+        SessionRegistered(session_id="s1"),
+        SessionUnregistered(session_id="s1"),
+        SessionHealthAlert(session_id="s1", message="stale"),
+        SessionRequestState(session_id="s1"),
         ProviderStatusChanged(provider="anthropic", status="connected"),
         ProviderModelsList(provider="anthropic", models=["m1"]),
         ProviderModelsEmpty(provider="ollama"),
@@ -1035,25 +1086,42 @@ class TestSerialisation:
         LLMToken(text="hi", partial=False, is_reasoning=False),
         ContextOverflow(prompt_tokens=0, budget=0, reserved=0, session_id="s1", source="api_error"),
         ContextCompactFailed(message="failed"),
+        ContextDegraded(session_id="s1", reason="truncation"),
         MessageTruncation(dropped_count=5, dropped_tokens=1000, tokens_after=5000),
         TokenBudget(used=100, limit=200, percent=50.0, warning=False),
+        TokenBudgetWarning(used=180, limit=200, percent=90.0),
         UsageBudgetExceeded(session_cost_usd=6.0, budget_ceiling_usd=5.0),
+        UsageSubagentCost(child_session_id="cs1", role="analyst", cost_usd=0.05),
         FileModified(path="a.py", tool="write_file", workdir="/repo"),
         FileDeleted(path="b.py", workdir="/repo"),
+        FileDiffPreview(path="a.py", diff="--- a\n+++ b\n@@ -1 +1 @@\n-old\n+new"),
+        DelegationStart(child_session_id="cs1", parent_session_id="ps1", role="analyst", task="review"),
+        DelegationFinish(child_session_id="cs1", role="analyst", ok=True, cost_usd=0.1),
         DelegationComplete(count=1, keys=["k1"], session_id="s1"),
         SchedulerDistillRequest(source="scheduler", time=1.0),
         SchedulerDistillCompleted(source="scheduler"),
         McpServerStatus(running=True, count=1),
         McpToolsListChanged(server="mcp", params={}),
         ConfigReloaded(changed_paths=["c.json"]),
+        SystemSettings(
+            active_mode="auto", theme="dark", context_window=128000,
+            default_provider="anthropic", default_model="sonnet",
+            providers=[], autonomous_mode=True, max_turns=50,
+        ),
         OrchestratorStartup(time=1.0, working_dir="/repo"),
         OrchestratorModelsCheckStarted(payload={}),
         OrchestratorModelsCheckCompleted(payload={}),
         OrchestratorModelsCheckFailed(payload={}),
         UiNotification(level="info", message="ok"),
         HookMessage(tool_name="bash", event="post_run", message="ok"),
+        LogEntry(level="INFO", message="hello", timestamp=1.0),
         GitBranch(branch="main", dirty=False, ahead=0, behind=0),
         WorkingDirUnavailable(path="/x", error="not found"),
+        RoleTransition(role="coding"),
+        RetryAttempt(attempt=1, max_attempts=3, reason="timeout"),
+        RetrySucceeded(attempt=2, reason="recovered"),
+        RetryFailed(attempt=3, max_attempts=3, reason="exhausted"),
+        TaskQueueUpdated(pending_tasks=2, queue_size=5, session_id="s1"),
         PerceptionCorrectivePrompt(session_id="s1", attempt=1, reason="no_tool", model_tier="sonnet", truncated_yaml=""),
         TaskTurnLimit(turn_count=10, max_turns=10),
         SubagentDispatch(delegation_key="dk1", role="analyst", task="t"),

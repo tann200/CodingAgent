@@ -17,6 +17,7 @@ from src.core.messaging.metrics import MessageBusMetrics
 from src.core.messaging.event_types import (
     # Agent lifecycle
     AgentStart, AgentStatus, AgentEnd, AgentModeChanged, AgentPlanCommitted,
+    AgentMessage, AgentWaitingForUser,
     # Tool execution
     ToolExecuteStart, ToolInvoked, ToolExecuteFinish, ToolExecuteError,
     ToolResult, ToolPermissionRequired, ToolDoomLoopDetected,
@@ -27,7 +28,9 @@ from src.core.messaging.event_types import (
     # Step
     StepStart, StepFinish,
     # Session
-    SessionCreated, SessionNew, SessionHydrated, SessionTitleGenerated, SessionFilesChanged,
+    SessionCreated, SessionNew, SessionHydrated, SessionTitleGenerated,
+    SessionFilesChanged, SessionRegistered, SessionUnregistered,
+    SessionHealthAlert, SessionRequestState,
     # Provider / model
     ProviderStatusChanged, ProviderModelsList, ProviderModelsCached, ProviderModelsEmpty,
     ProviderModelsUpdated, ProviderSelectionChanged, ProviderContextWindow,
@@ -36,28 +39,35 @@ from src.core.messaging.event_types import (
     ResponseStreamChunk, ResponseStreamEnd, ModelToken, LLMToken,
     ModelResponse, ModelRouting, ModelRoutingComplete,
     # Context / memory
-    ContextOverflow, ContextCompacted, ContextAutoCompacted, ContextCompactFailed,
-    MessageTruncation, MessageCompactionApplied,
+    ContextOverflow, ContextCompacted, ContextAutoCompacted, ContextDegraded,
+    ContextCompactFailed, MessageTruncation, MessageCompactionApplied,
     # Token budget / usage
-    TokenBudget, TokenBudgetUpdate, UsageTurnSummary, UsageBudgetExceeded,
+    TokenBudget, TokenBudgetUpdate, TokenBudgetWarning,
+    UsageTurnSummary, UsageBudgetExceeded, UsageSubagentCost,
     # File system
-    FileModified, FileDeleted,
+    FileModified, FileDeleted, FileDiffPreview,
     # Delegation
-    DelegationComplete, AgentScoutFilesDiscovered, AgentResearcherDocSummary,
-    AgentReviewerBugFound,
+    DelegationStart, DelegationFinish, DelegationComplete,
+    AgentScoutFilesDiscovered, AgentResearcherDocSummary, AgentReviewerBugFound,
     # Scheduler
     SchedulerDistillRequest, SchedulerDistillCompleted,
     # MCP
     McpServerStatus, McpToolsListChanged,
     # Config
-    ConfigReloaded,
+    ConfigReloaded, SystemSettings,
     # Orchestrator lifecycle
     OrchestratorStartup, OrchestratorModelsCheckStarted,
     OrchestratorModelsCheckCompleted, OrchestratorModelsCheckFailed,
     # UI / notifications
-    UiNotification, HookMessage, GitBranch, WorkingDirUnavailable,
+    UiNotification, HookMessage, LogEntry, GitBranch, WorkingDirUnavailable,
+    # Role
+    RoleTransition,
+    # Retry
+    RetryAttempt, RetrySucceeded, RetryFailed,
+    # Task
+    TaskQueueUpdated, TaskTurnLimit,
     # Perception
-    PerceptionCorrectivePrompt, TaskTurnLimit,
+    PerceptionCorrectivePrompt,
     # Subagent dispatch
     SubagentDispatch, SubagentResult,
 )
@@ -69,6 +79,7 @@ __all__ = [
     "MessageBusMetrics",
     # Agent lifecycle
     "AgentStart", "AgentStatus", "AgentEnd", "AgentModeChanged", "AgentPlanCommitted",
+    "AgentMessage", "AgentWaitingForUser",
     # Tool execution
     "ToolExecuteStart", "ToolInvoked", "ToolExecuteFinish", "ToolExecuteError",
     "ToolResult", "ToolPermissionRequired", "ToolDoomLoopDetected",
@@ -79,7 +90,9 @@ __all__ = [
     # Step
     "StepStart", "StepFinish",
     # Session
-    "SessionCreated", "SessionNew", "SessionHydrated", "SessionTitleGenerated", "SessionFilesChanged",
+    "SessionCreated", "SessionNew", "SessionHydrated", "SessionTitleGenerated",
+    "SessionFilesChanged", "SessionRegistered", "SessionUnregistered",
+    "SessionHealthAlert", "SessionRequestState",
     # Provider / model
     "ProviderStatusChanged", "ProviderModelsList", "ProviderModelsCached", "ProviderModelsEmpty",
     "ProviderModelsUpdated", "ProviderSelectionChanged", "ProviderContextWindow",
@@ -88,28 +101,35 @@ __all__ = [
     "ResponseStreamChunk", "ResponseStreamEnd", "ModelToken", "LLMToken",
     "ModelResponse", "ModelRouting", "ModelRoutingComplete",
     # Context / memory
-    "ContextOverflow", "ContextCompacted", "ContextAutoCompacted", "ContextCompactFailed",
-    "MessageTruncation", "MessageCompactionApplied",
+    "ContextOverflow", "ContextCompacted", "ContextAutoCompacted", "ContextDegraded",
+    "ContextCompactFailed", "MessageTruncation", "MessageCompactionApplied",
     # Token budget / usage
-    "TokenBudget", "TokenBudgetUpdate", "UsageTurnSummary", "UsageBudgetExceeded",
+    "TokenBudget", "TokenBudgetUpdate", "TokenBudgetWarning",
+    "UsageTurnSummary", "UsageBudgetExceeded", "UsageSubagentCost",
     # File system
-    "FileModified", "FileDeleted",
+    "FileModified", "FileDeleted", "FileDiffPreview",
     # Delegation
-    "DelegationComplete", "AgentScoutFilesDiscovered", "AgentResearcherDocSummary",
-    "AgentReviewerBugFound",
+    "DelegationStart", "DelegationFinish", "DelegationComplete",
+    "AgentScoutFilesDiscovered", "AgentResearcherDocSummary", "AgentReviewerBugFound",
     # Scheduler
     "SchedulerDistillRequest", "SchedulerDistillCompleted",
     # MCP
     "McpServerStatus", "McpToolsListChanged",
     # Config
-    "ConfigReloaded",
+    "ConfigReloaded", "SystemSettings",
     # Orchestrator lifecycle
     "OrchestratorStartup", "OrchestratorModelsCheckStarted",
     "OrchestratorModelsCheckCompleted", "OrchestratorModelsCheckFailed",
     # UI / notifications
-    "UiNotification", "HookMessage", "GitBranch", "WorkingDirUnavailable",
+    "UiNotification", "HookMessage", "LogEntry", "GitBranch", "WorkingDirUnavailable",
+    # Role
+    "RoleTransition",
+    # Retry
+    "RetryAttempt", "RetrySucceeded", "RetryFailed",
+    # Task
+    "TaskQueueUpdated", "TaskTurnLimit",
     # Perception
-    "PerceptionCorrectivePrompt", "TaskTurnLimit",
+    "PerceptionCorrectivePrompt",
     # Subagent dispatch
     "SubagentDispatch", "SubagentResult",
 ]
