@@ -403,13 +403,28 @@ def get_event_bus() -> EventBus:
     Uses a double-checked lock so the singleton is safe under concurrent
     initialisation from multiple threads (e.g. executor threads starting before
     the main thread has completed setup).
+
+    Migration: the returned bus is wrapped in a ``DualPublishBus`` that also
+    emits typed events on the ``MessageBus``.  Existing callers see the same
+    ``publish()`` / ``subscribe()`` API, so **zero** publish sites need to
+    change during the transition.
     """
     global _default_bus
     if _default_bus is None:
         with _bus_lock:
             if _default_bus is None:  # double-checked lock
                 _default_bus = EventBus()
-    return _default_bus
+                try:
+                    from src.core.messaging.event_bus_adapter import (  # type: ignore[import-untyped]
+                        DualPublishBus,
+                        get_typed_bus,
+                    )
+                    _default_bus = DualPublishBus(
+                        _default_bus, typed_bus=get_typed_bus()
+                    )
+                except Exception:
+                    pass
+    return _default_bus  # type: ignore[return-value]
 
 
 # P2-T5: safety events that must always be visible, even in headless/CLI mode.

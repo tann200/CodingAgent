@@ -14,6 +14,7 @@ the untyped EventBus. Key features:
 from src.core.messaging.events import Event
 from src.core.messaging.bus import MessageBus, EventHandler
 from src.core.messaging.metrics import MessageBusMetrics
+from src.core.messaging.event_bus_adapter import DualPublishBus, get_typed_bus, reset_typed_bus
 from src.core.messaging.event_types import (
     # Agent lifecycle
     AgentStart, AgentStatus, AgentEnd, AgentModeChanged, AgentPlanCommitted,
@@ -77,6 +78,9 @@ __all__ = [
     "MessageBus",
     "EventHandler",
     "MessageBusMetrics",
+    "DualPublishBus",
+    "get_typed_bus",
+    "reset_typed_bus",
     # Agent lifecycle
     "AgentStart", "AgentStatus", "AgentEnd", "AgentModeChanged", "AgentPlanCommitted",
     "AgentMessage", "AgentWaitingForUser",
