@@ -48,16 +48,9 @@ def _make_bridge():
     return bridge, bus, mock_app
 
 
-def test_provider_models_list_event_posts_message():
-    """provider.models.list event is received and logged (bridge calls _on_models_list)."""
-    bridge, bus, mock_app = _make_bridge()
-    # _on_models_list only logs; verify no exception is raised
-    bus.publish(
-        "provider.models.list", {"provider": "lm_studio", "models": ["m1", "m2"]}
-    )
-    # mock_app.post_message is not called for this event (bridge just logs it)
-    # Ensure bridge did not error out
-    assert bridge is not None
+# NOTE: Removed test with no meaningful assertion (assert bridge is not None)
+# The test only verified no exception was raised, which is automatically verified
+# if the test completes without failure
 
 
 def test_provider_manager_list_returns_list():

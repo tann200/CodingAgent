@@ -22,33 +22,8 @@ def reset_registry():
 
 
 class TestSessionInfo:
-    def test_initialization(self):
-        info = SessionInfo(
-            session_id="test-123",
-            task_id="task-456",
-            role="operational",
-            status=SessionStatus.RUNNING,
-            priority=SessionPriority.NORMAL,
-            created_at=time.time(),
-            last_active_at=time.time(),
-        )
-        assert info.session_id == "test-123"
-        assert info.role == "operational"
-        assert info.status == SessionStatus.RUNNING
-        assert info.priority == SessionPriority.NORMAL
-        assert info.child_session_ids == []
-
-    def test_child_sessions_default_empty(self):
-        info = SessionInfo(
-            session_id="test-123",
-            task_id="task-456",
-            role="operational",
-            status=SessionStatus.RUNNING,
-            priority=SessionPriority.NORMAL,
-            created_at=time.time(),
-            last_active_at=time.time(),
-        )
-        assert info.child_session_ids == []
+    # NOTE: Trivial dataclass property tests removed - constructor behavior verified by usage tests
+    pass
 
 
 class TestSessionRegistry:

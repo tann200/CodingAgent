@@ -81,17 +81,7 @@ def test_event_bus_list_agents():
     assert "agent2" in agents
 
 
-def test_agent_message_properties():
-    msg = AgentMessage(
-        agent_id="test",
-        payload={"key": "value"},
-        priority=MessagePriority.HIGH,
-        reply_to="parent",
-    )
-    assert msg.agent_id == "test"
-    assert msg.payload["key"] == "value"
-    assert msg.priority == MessagePriority.HIGH
-    assert msg.reply_to == "parent"
+# NOTE: Trivial dataclass property test removed - constructor behavior doesn't need testing
 
 
 def test_event_bus_reply_to():

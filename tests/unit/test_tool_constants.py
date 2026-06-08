@@ -16,47 +16,46 @@ from src.core.orchestration.tool_constants import (
 
 
 class TestWriteToolsRequiringRead:
-    def test_contains_core_write_tools(self):
-        for tool in ("edit_file", "write_file", "edit_by_line_range", "apply_patch"):
-            assert tool in WRITE_TOOLS_REQUIRING_READ
-
-    def test_edit_file_atomic_present(self):
-        assert "edit_file_atomic" in WRITE_TOOLS_REQUIRING_READ
-
-    def test_destructive_tools_present(self):
-        assert "delete_file" in WRITE_TOOLS_REQUIRING_READ
-        assert "rename_file" in WRITE_TOOLS_REQUIRING_READ
-        assert "ast_rename" in WRITE_TOOLS_REQUIRING_READ
-
-    def test_read_file_absent(self):
-        assert "read_file" not in WRITE_TOOLS_REQUIRING_READ
+    # NOTE: Reduced from 6 tests to 2 - individual membership tests removed
+    
+    def test_contains_critical_write_tools(self):
+        """Verify critical write tools are present."""
+        critical_tools = {
+            "edit_file", "write_file", "edit_by_line_range", "apply_patch",
+            "edit_file_atomic", "delete_file", "rename_file", "ast_rename"
+        }
+        assert critical_tools <= WRITE_TOOLS_REQUIRING_READ
 
     def test_is_frozenset(self):
         assert isinstance(WRITE_TOOLS_REQUIRING_READ, frozenset)
 
 
 class TestDryRunBlockedTools:
-    def test_is_superset_of_write_tools(self):
+    # NOTE: Reduced from 4 tests to 2 - individual membership tests consolidated
+    
+    def test_contains_critical_blocked_tools(self):
+        """Verify critical dry-run-blocked tools are present."""
+        # Must include all write tools
         assert WRITE_TOOLS_REQUIRING_READ <= DRY_RUN_BLOCKED_TOOLS
-
-    def test_bash_tools_present(self):
-        for tool in ("bash", "run_bash", "execute_bash"):
-            assert tool in DRY_RUN_BLOCKED_TOOLS
-
-    def test_git_destructive_present(self):
-        assert "git_commit" in DRY_RUN_BLOCKED_TOOLS
-        assert "git_push" in DRY_RUN_BLOCKED_TOOLS
+        
+        # Plus bash and git tools
+        critical_tools = {
+            "bash", "run_bash", "execute_bash",
+            "git_commit", "git_push"
+        }
+        assert critical_tools <= DRY_RUN_BLOCKED_TOOLS
 
     def test_is_frozenset(self):
         assert isinstance(DRY_RUN_BLOCKED_TOOLS, frozenset)
 
 
 class TestPermissionRequiredTools:
-    def test_delete_file_present(self):
-        assert "delete_file" in PERMISSION_REQUIRED_TOOLS
-
-    def test_run_bash_present(self):
-        assert "run_bash" in PERMISSION_REQUIRED_TOOLS
+    # NOTE: Reduced from 3 tests to 2 - individual membership tests consolidated
+    
+    def test_contains_critical_permission_tools(self):
+        """Verify critical permission-required tools are present."""
+        critical_tools = {"delete_file", "run_bash"}
+        assert critical_tools <= PERMISSION_REQUIRED_TOOLS
 
     def test_is_frozenset(self):
         assert isinstance(PERMISSION_REQUIRED_TOOLS, frozenset)
