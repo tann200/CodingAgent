@@ -16,6 +16,8 @@ from typing import List, Optional
 from src.core.inference.llm_manager import get_provider_manager, _providers_json_lock
 from src.core.logger import logger as guilogger
 from src.core.orchestration.event_bus import get_event_bus
+from src.core.messaging.event_types import ProviderModelsUpdated, ProviderSelectionChanged, SessionNew
+
 from src.core.user_prefs import UserPrefs
 from src.core.utils.strings import valid_str as _valid_str
 import json
@@ -158,10 +160,7 @@ class SettingsPanelController:
                     # publish event so ProviderManager/Orchestrator and UI can refresh
                     try:
                         if self.event_bus:
-                            self.event_bus.publish(
-                                "provider.models.updated",
-                                {"provider": provider_key, "models": models},
-                            )
+                            self.event_bus.publish_typed(ProviderModelsUpdated(provider=provider_key, models=models))
                     except Exception:
                         pass
                 return models
@@ -213,10 +212,7 @@ class SettingsPanelController:
             # publish selection event
             try:
                 if self.event_bus:
-                    self.event_bus.publish(
-                        "provider.selection.changed",
-                        {"provider": provider_key, "model": model_name},
-                    )
+                    self.event_bus.publish_typed(ProviderSelectionChanged(provider=provider_key, model=model_name))
             except Exception:
                 pass
             return True
@@ -315,11 +311,11 @@ class SettingsPanelController:
         """Emit an event to start a new session. Listeners should clear conversation state."""
         try:
             if self.event_bus:
-                self.event_bus.publish("session.new", {"timestamp": time.time()})
+                self.event_bus.publish_typed(SessionNew(timestamp=time.time()))
         except Exception:
             try:
                 # fallback if get_event_bus not available
                 eb = get_event_bus()
-                eb.publish("session.new", {"timestamp": time.time()})
+                eb.publish_typed(SessionNew(timestamp=time.time()))
             except Exception:
                 pass

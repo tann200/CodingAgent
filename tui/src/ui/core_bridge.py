@@ -1,9 +1,13 @@
 """
-AgentBridge: Connects the Textual UI to the backend EventBus.
+AgentBridge: Connects the Textual UI to the backend via MessageBus.
 
-When src.core is available, subscribes to the real EventBus obtained via
-get_event_bus().  Otherwise falls back to the MockEventBus so mock_engine.py
-keeps working in dev mode.
+Phase 5: The bridge subscribes exclusively through the typed MessageBus.
+The ``publish()`` convenience method still uses the old EventBus for
+outbound events (will be migrated in Phase 5c).
+
+When src.core is available, creates a real MessageBus and EventBus.
+Otherwise falls back to the MockEventBus so mock_engine.py keeps
+working in dev mode.
 
 Implements the full threading contract from §9 of the spec:
   _agent_lock, _cancel_event, _history_lock, send_prompt(), interrupt(),
@@ -95,7 +99,7 @@ def _load_copilot_auth_module():
 
 
 def _get_event_bus():
-    """Return the real EventBus, falling back to MockEventBus."""
+    """Return the real EventBus (with built-in MessageBus emission), falling back to MockEventBus."""
     try:
         from src.core.orchestration.event_bus import get_event_bus  # type: ignore[import]
 
@@ -114,9 +118,8 @@ def _get_typed_bus():
     gracefully in mock-engine mode.
     """
     try:
-        from src.core.messaging.bus import MessageBus  # type: ignore[import]
-
-        return MessageBus(max_queue_size=256, worker_threads=4)
+        from src.core.orchestration.event_bus import get_typed_bus  # type: ignore[import]
+        return get_typed_bus()
     except Exception:
         return None
 
@@ -205,7 +208,6 @@ class AgentBridge(
         self.app = app
         self._bus = _get_event_bus()
         self._typed_bus: Any = _get_typed_bus()
-        self._subscriptions: list[tuple[str, Callable]] = []
         self._typed_subscriptions: list[tuple[type, Any]] = []
 
         # §9 threading contract
@@ -286,10 +288,6 @@ class AgentBridge(
 
     # ── EventBus subscription management (§4.2) ──────────────────────────
 
-    def _subscribe(self, event: str, cb: Callable) -> None:
-        self._bus.subscribe(event, cb)
-        self._subscriptions.append((event, cb))
-
     def _subscribe_typed(self, event_cls: type, handler: "EventHandler") -> None:
         """Register a typed subscription on the MessageBus (if available)."""
         if self._typed_bus is not None:
@@ -342,5 +340,3 @@ class AgentBridge(
         """Publish a typed event on the MessageBus (if available)."""
         if self._typed_bus is not None:
             self._typed_bus.publish(event)
-        # Also emit via the old bus for compatibility during migration
-        self._bus.publish(type(event).__name__, event.to_dict())

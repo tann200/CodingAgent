@@ -10,6 +10,8 @@ bash_approved, bash_denied, confirm_file_preview, reject_file_preview.
 
 from __future__ import annotations
 
+
+from src.core.messaging.event_types import BashApprovalDenied, BashApprovalGranted, PreviewConfirmed, PreviewRejected
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -76,12 +78,30 @@ class BridgeToolsMixin(AgentBridgeProtocol):
         tool_name = payload.get("title") or payload.get("tool", "unknown")
         tool_id = payload.get("toolCallId", "")
         content = payload.get("content", [])
+        result_text = ""
         if content and isinstance(content, list) and isinstance(content[0], dict):
             result_text = content[0].get("text", "")
-        else:
-            result_text = str(
-                payload.get("result_formatted") or payload.get("result", "")
-            )
+
+        if not result_text:
+            formatted = payload.get("result_formatted")
+            if not formatted:
+                formatted = payload.get("result")
+            if formatted:
+                result_text = str(formatted)
+
+        if not result_text:
+            raw_output = payload.get("rawOutput") or payload.get("raw_output")
+            if raw_output is not None:
+                if isinstance(raw_output, dict):
+                    raw_result = raw_output.get("result") or raw_output.get("error")
+                    if raw_result is None:
+                        raw_result = raw_output
+                    result_text = str(raw_result)
+                else:
+                    result_text = str(raw_output)
+
+        if not result_text:
+            result_text = "(no output)"
         ok = payload.get("ok", True)
         self._post(
             ToolCallFinishEvent(
@@ -242,24 +262,24 @@ class BridgeToolsMixin(AgentBridgeProtocol):
     def approve_plan(self) -> None:
         if self._orchestrator:
             self._orchestrator.approve_plan()
-        self._bus.publish("preview.confirmed", {"preview_id": "plan"})
+        self._bus.publish_typed(PreviewConfirmed(preview_id="plan"))
 
     def reject_plan(self) -> None:
         if self._orchestrator:
             self._orchestrator.reject_plan()
-        self._bus.publish("preview.rejected", {"preview_id": "plan"})
+        self._bus.publish_typed(PreviewRejected(preview_id="plan"))
 
     def bash_approved(self, tool_id: str) -> None:
         # TUI-03: publish bash.approval_granted so the backend gate resolves
-        self._bus.publish("bash.approval_granted", {"tool_id": tool_id})
+        self._bus.publish_typed(BashApprovalGranted(tool_id=tool_id))
         # Legacy preview event for backwards-compat
-        self._bus.publish("preview.confirmed", {"preview_id": tool_id})
+        self._bus.publish_typed(PreviewConfirmed(preview_id=tool_id))
 
     def bash_denied(self, tool_id: str) -> None:
         # TUI-03: publish bash.approval_denied so the backend gate releases
-        self._bus.publish("bash.approval_denied", {"tool_id": tool_id})
+        self._bus.publish_typed(BashApprovalDenied(tool_id=tool_id))
         # Legacy preview event for backwards-compat
-        self._bus.publish("preview.rejected", {"preview_id": tool_id})
+        self._bus.publish_typed(PreviewRejected(preview_id=tool_id))
 
     def confirm_file_preview(self, path: str) -> None:
         """User accepted the diff preview for a file write — resolve the gate.
@@ -268,7 +288,7 @@ class BridgeToolsMixin(AgentBridgeProtocol):
         ``PreviewCoordinator._on_confirmed`` can resolve the threading.Event
         gate registered in ``file_tools.register_preview_gate()``.
         """
-        self._bus.publish("preview.confirmed", {"path": path})
+        self._bus.publish_typed(PreviewConfirmed(path=path))
 
     def reject_file_preview(self, path: str) -> None:
         """User rejected the diff preview for a file write — resolve the gate.
@@ -277,4 +297,4 @@ class BridgeToolsMixin(AgentBridgeProtocol):
         ``PreviewCoordinator._on_rejected`` can set the rejected flag in
         ``file_tools._preview_rejected`` and unblock the gate.
         """
-        self._bus.publish("preview.rejected", {"path": path})
+        self._bus.publish_typed(PreviewRejected(path=path))

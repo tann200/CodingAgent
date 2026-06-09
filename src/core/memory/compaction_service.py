@@ -55,6 +55,8 @@ Usage
 
 from __future__ import annotations
 
+
+from src.core.messaging.event_types import ContextCompactFailed, ContextCompacted
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -259,19 +261,8 @@ class CompactionService:
             return
         try:
             if result.success:
-                self._event_bus.publish(
-                    "context.compacted",
-                    {
-                        "message": "Context compacted",
-                        "method": result.method,
-                        "tokens_before": result.tokens_before,
-                        "tokens_after": result.tokens_after,
-                    },
-                )
+                self._event_bus.publish_typed(ContextCompacted(message="Context compacted", method=result.method, tokens_before=result.tokens_before, tokens_after=result.tokens_after))
             else:
-                self._event_bus.publish(
-                    "context.compact.failed",
-                    {"message": f"Context compaction failed: {result.error}"},
-                )
+                self._event_bus.publish_typed(ContextCompactFailed(message=f"Context compaction failed: {result.error}"))
         except Exception as exc:
             logger.debug("CompactionService: event publish failed: %s", exc)

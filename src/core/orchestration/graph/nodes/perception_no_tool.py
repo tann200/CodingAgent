@@ -1,3 +1,4 @@
+from src.core.messaging.event_types import PerceptionCorrectivePrompt
 import logging
 from typing import Any, Mapping
 
@@ -71,7 +72,7 @@ def _handle_no_tool_or_empty_response(
                 "truncated_yaml": _is_truncated_yaml,
             }
             try:
-                orchestrator.event_bus.publish("perception.corrective_prompt", event)
+                orchestrator.event_bus.publish_typed(PerceptionCorrectivePrompt(**event))
             except Exception:
                 publish = getattr(orchestrator.event_bus, "publish", None)
                 if callable(publish):

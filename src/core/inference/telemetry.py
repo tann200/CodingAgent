@@ -8,6 +8,8 @@ try:
 except Exception:
     _get_event_bus = None  # type: ignore[assignment]
 
+from src.core.messaging.event_types import ModelResponse
+
 logger = logging.getLogger(__name__)
 
 
@@ -37,7 +39,7 @@ def publish_model_response(
             pass
     try:
         if event_bus and hasattr(event_bus, "publish"):
-            event_bus.publish("model.response", payload)
+            event_bus.publish_typed(ModelResponse(**payload))
     except Exception:
         # best-effort
         pass

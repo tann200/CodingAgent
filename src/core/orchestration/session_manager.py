@@ -37,10 +37,12 @@ guilogger = logging.getLogger("codingagent")
 
 if TYPE_CHECKING:
     from src.core.orchestration.event_bus import EventBus
+
     from src.core.memory.session_store import SessionStore
     from src.core.orchestration.session_lifecycle import SessionLifecycleManager
 
 
+from src.core.messaging.event_types import SessionFilesChanged
 def _is_git_repo(path: str) -> bool:
     """Return True if *path* is inside a git repository."""
     try:
@@ -289,14 +291,7 @@ class SessionManager:
                 except Exception:
                     changes.append({"path": str(f), "absolute": str(f)})
 
-            self.event_bus.publish(
-                "session.files_changed",
-                {
-                    "files": changes,
-                    "workdir": str(workdir_path),
-                    "is_git_repo": _is_git_repo(str(workdir_path)),
-                },
-            )
+            self.event_bus.publish_typed(SessionFilesChanged(files=changes, workdir=str(workdir_path), is_git_repo=_is_git_repo(str(workdir_path))))
         except Exception as exc:
             logger.warning(
                 "session.files_changed event dropped (non-fatal): %s", exc

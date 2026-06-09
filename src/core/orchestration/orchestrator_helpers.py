@@ -8,6 +8,8 @@ All functions take ``orch`` as the first argument (the Orchestrator instance).
 
 from __future__ import annotations
 
+
+from src.core.messaging.event_types import ContextCompactFailed, GitBranch, McpServerStatus, ModelRouting, ProviderModelsCached, WorkingDirUnavailable
 import datetime
 import json
 import logging
@@ -168,14 +170,7 @@ def _publish_active_config_impl(orch: Any) -> None:
                 available_models = getattr(adapter, "models", []) or []
 
         try:
-            orch.event_bus.publish(
-                "model.routing",
-                {
-                    "selected": model or "",
-                    "provider": provider or "",
-                    "available_models": available_models,
-                },
-            )
+            orch.event_bus.publish_typed(ModelRouting(selected=model or "", provider=provider or "", available_models=available_models))
         except Exception:
             pass
 
@@ -254,10 +249,7 @@ def compact_context_impl(orch: Any) -> bool:
         try:
             _bus = getattr(orch, "event_bus", None)
             if _bus:
-                _bus.publish(
-                    "context.compact.failed",
-                    {"message": f"Context compaction failed: {exc}"},
-                )
+                _bus.publish_typed(ContextCompactFailed(message=f"Context compaction failed: {exc}"))
         except Exception:
             pass
         return False
@@ -535,10 +527,7 @@ def _ensure_working_dir_impl(orch: Any) -> None:
             orch._working_dir_unavailable = True
             _bus = getattr(orch, "event_bus", None)
             if _bus:
-                _bus.publish(
-                    "working_dir.unavailable",
-                    {"path": str(orch.working_dir), "error": str(e)},
-                )
+                _bus.publish_typed(WorkingDirUnavailable(path=str(orch.working_dir), error=str(e)))
         except Exception:
             pass
     finally:
@@ -624,9 +613,7 @@ def _background_model_check_impl(orch: Any) -> None:
                     pass
 
             try:
-                orch.event_bus.publish(
-                    "provider.models.cached", {"provider": "lm_studio"}
-                )
+                orch.event_bus.publish_typed(ProviderModelsCached(provider="lm_studio"))
                 orch.event_bus.publish(
                     "provider.models.probing.completed", {"provider": "lm_studio"}
                 )
@@ -732,10 +719,7 @@ def _publish_git_status_impl(orch: Any) -> None:
         pass
 
     try:
-        orch.event_bus.publish(
-            "git.branch",
-            {"branch": branch, "dirty": dirty, "ahead": ahead, "behind": behind},
-        )
+        orch.event_bus.publish_typed(GitBranch(branch=branch, dirty=dirty, ahead=ahead, behind=behind))
     except Exception:
         pass
 
@@ -753,7 +737,7 @@ async def start_mcp_server_impl(orch: Any) -> None:
         orch._mcp_server = MCPStdioServer(orchestrator=orch)
         logger.info("Orchestrator: starting MCP STDIO server")
         try:
-            orch.event_bus.publish("mcp.server.status", {"running": True, "count": 1})
+            orch.event_bus.publish_typed(McpServerStatus(running=True, count=1))
         except Exception:
             pass
         await orch._mcp_server.run_async()
@@ -762,7 +746,7 @@ async def start_mcp_server_impl(orch: Any) -> None:
     finally:
         orch._mcp_server = None
         try:
-            orch.event_bus.publish("mcp.server.status", {"running": False, "count": 0})
+            orch.event_bus.publish_typed(McpServerStatus(running=False, count=0))
         except Exception:
             pass
 

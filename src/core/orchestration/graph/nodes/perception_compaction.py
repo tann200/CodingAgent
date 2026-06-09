@@ -1,3 +1,4 @@
+from src.core.messaging.event_types import ContextAutoCompacted
 import logging
 from pathlib import Path
 from typing import Any, Mapping
@@ -129,16 +130,7 @@ def _run_auto_compaction(
             # than the old context.compacted event).
             try:
                 if event_bus:
-                    event_bus.publish(
-                        "context.auto_compacted",
-                        {
-                            "method": result.method,
-                            "tokens_before": result.tokens_before,
-                            "tokens_after": result.tokens_after,
-                            "new_message_count": len(history_for_prompt),
-                            "session_id": state.get("session_id"),
-                        },
-                    )
+                    event_bus.publish_typed(ContextAutoCompacted(method=result.method, tokens_before=result.tokens_before, tokens_after=result.tokens_after, new_message_count=len(history_for_prompt), session_id=state.get("session_id")))
             except Exception:
                 pass
 

@@ -1,11 +1,11 @@
 """
-Tests for the bridge typed-subscription wiring (Phase 3).
+Tests for the bridge typed-subscription wiring (Phase 3/5).
 
 These tests verify that:
   1. _make_typed_adapter() wraps an _on_* dict-handler to accept typed Event objects.
   2. TYPED_EVENT_ROUTING contains all 47 entries with valid classes and method names.
   3. _setup_typed_subscriptions() subscribes every entry via _subscribe_typed().
-  4. cleanup() unsubscribes from both MessageBus and EventBus.
+  4. cleanup() unsubscribes from MessageBus (old EventBus subscriptions removed in Phase 5a).
   5. Typed event → dict field mapping preserves correct values.
 
 Use-case table
@@ -13,7 +13,7 @@ Use-case table
 UC-BS-01  _make_typed_adapter calls _on_* handler with typed event's to_dict()
 UC-BS-02  All TYPED_EVENT_ROUTING entries resolve to real classes and methods
 UC-BS-03  _setup_typed_subscriptions calls _subscribe_typed for every entry
-UC-BS-04  cleanup unregisters all typed + old subscriptions
+UC-BS-04  cleanup unregisters all typed subscriptions
 UC-BS-05  Typed event fields survive to_dict() → handler passthrough
 """
 

@@ -13,7 +13,6 @@ A local-first autonomous coding agent built on LangGraph. Runs on local LLMs (LM
 - **Repository intelligence** — SHA-256 incremental indexing, symbol graph, semantic code search
 - **Model tiers** — NANO (8 tools) → FRONTIER (60 tools) based on model capability
 - **Session fork/revert** — branch sessions for experimental changes
-- **Audit history** — 29+ cycles completed, 0 Critical/High issues
 
 ## Requirements
 
@@ -70,24 +69,175 @@ python -m src.main --task "fix bug" --output-format json
 
 ## Architecture
 
-See `docs/ARCHITECTURE.md` for complete documentation.
+### System Overview
 
-### Key Components
+```mermaid
+flowchart TB
+    %% Entry points
+    CLI[CLI / main.py] --> Orch[Orchestrator]
+    TUI[Textual TUI] --> Bridge[TUI Bridge]
+    HTTP[HTTP Server] --> Orch
+    Scheduler[Scheduler] --> Orch
+
+    %% Core pipeline
+    subgraph Core["Core Engine"]
+        Orch --> Graph[LangGraph Pipeline]
+        Graph --> Nodes[16 Cognitive Nodes]
+        Graph --> State[AgentState]
+        Graph --> Tools[ToolRegistry 60+]
+    end
+
+    %% Event system
+    subgraph Events["Event System"]
+        EB[EventBus<br/>string-based]
+        MB[MessageBus<br/>typed events]
+        Bridge --> EB
+        Bridge --> MB
+        Graph --> EB
+        EB -.->|dual emit| MB
+    end
+
+    %% Services
+    subgraph Services["Infrastructure Services"]
+        MM[MessageManager]
+        CTX[ContextBuilder]
+        MEM[Memory / SessionStore]
+        IDX[Repo Indexer / LSP]
+        MCP[MCP Client]
+        PRV[PreviewService]
+    end
+
+    %% Sources
+    subgraph Sources["Data Sources"]
+        SQL[(SQLite)]
+        VS[(Vector Store)]
+        FS[File System]
+        MCP_SRV[MCP Servers]
+    end
+
+    Orch --> Services
+    Graph --> Services
+    Services --> Sources
+    Nodes --> EB
+    TUI ---> UIComp[TUI Components]
+    EB --> TUI
+    MB --> Bridge
+```
+
+### Event System Architecture
+
+The event system has two cooperating buses. Phase 5 eliminated the separate `DualPublishBus` adapter by folding dual-emission directly into `EventBus`:
+
+```mermaid
+flowchart LR
+    %% Backend publishers
+    subgraph Publishers["Event Publishers"]
+        GN[Graph Nodes]
+        TE[Tool Execution]
+        SM[Session Manager]
+        CFG[Config Watcher]
+        ORC[Orchestrator]
+    end
+
+    %% EventBus
+    subgraph Bus["EventBus (orchestration/event_bus.py)"]
+        OLD[String subscribers<br/>publish(\"name\", dict)]
+        NEW[Typed emission<br/>publish_typed(Event(...))]
+        MAP[EVENT_NAME_TO_TYPED<br/>90+ event mappings]
+    end
+
+    %% MessageBus
+    MB[MessageBus<br/>typed Event handlers]
+
+    %% Consumers
+    subgraph Consumers["Consumers"]
+        TUI[Textual TUI Bridge]
+        HTTP[HTTP/SSE Server]
+        LOG[Logger / Telemetry]
+    end
+
+    Publishers --> OLD
+    OLD --> MAP -->|auto-build| MB
+    NEW --> MB
+    MB -->|to_dict| OLD
+
+    MB --> TUI
+    MB --> HTTP
+    OLD --> LOG
+    OLD --> HTTP
+```
+
+**Key design points:**
+- `EventBus.publish("name", dict)` delivers to old string subscribers **and** auto-emits a typed event on `MessageBus` via `_build_typed_event()`.
+- `EventBus.publish_typed(Event(...))` emits on `MessageBus` first, then delivers `event.to_dict()` to old string subscribers.
+- The bridge subscribes exclusively through `MessageBus` (typed events), with `_DictBridgeAdapter` converting typed events to dicts for existing handlers.
+- `get_event_bus()` returns `EventBus(typed_bus=get_typed_bus())` — no separate adapter wrapper.
+
+### Cognitive Pipeline
+
+```mermaid
+flowchart TD
+    P[perception] -->|route| A[analysis]
+    P -->|fast-path| E[execution]
+    P -->|overflow| MS[memory_sync]
+
+    A --> AD[analyst_delegation]
+    A --> PL[planning]
+
+    AD --> PL
+    PL --> PV[plan_validator]
+    PV -->|valid| E
+    PV -->|invalid| PL
+    PV --> WAIT[wait_for_user]
+
+    E --> SC[step_controller]
+    E -->|verify| V[verification]
+    E --> MS
+    E --> RP[replan]
+
+    SC --> E
+    SC --> V
+
+    V --> EV[evaluation]
+    RP --> SC
+    RP --> P
+
+    EV -->|pass| MS
+    EV -->|fail| DB[debug]
+    EV --> RP
+
+    DB -->|fixed| E
+    DB --> MS
+
+    MS -->|delegate| DL[delegation]
+    MS --> P
+    MS --> END((END))
+
+    WAIT -->|approve| E
+    WAIT --> P
+```
+
+### Component Overview
 
 | Component | File | Purpose |
 |-----------|------|---------|
 | Orchestrator | `src/core/orchestration/orchestrator.py` | Main agent class |
 | Graph Builder | `src/core/orchestration/graph/builder.py` | LangGraph compilation |
+| EventBus | `src/core/orchestration/event_bus.py` | Thread-safe event bus + typed dual-emission |
+| MessageBus | `src/core/messaging/bus.py` | Typed event delivery with error isolation |
 | Tool Registry | `src/tools/_registry.py` | Tool auto-discovery |
 | Context Builder | `src/core/context/context_builder.py` | Prompt building |
 | Model Tiers | `src/core/inference/model_tiers.py` | Tier classification |
+| TUI Bridge | `tui/src/ui/core_bridge.py` | TUI-backend connectivity |
+| Session Store | `src/core/memory/session_store.py` | SQLite persistence |
 
-### Pipeline
+### Pipeline Paths
 
 ```
 Fast-path: perception → execution → verification → evaluation → memory_sync
-Full: perception → analysis → planning → plan_validator → execution → verification → evaluation → memory_sync
+Full:     perception → analysis → planning → plan_validator → execution → verification → evaluation → memory_sync
 Frontier: perception → frontier_loop → verification → evaluation → memory_sync
+Overflow: perception → memory_sync → perception (context compaction)
 ```
 
 ## Testing
@@ -140,11 +290,11 @@ ruff check src/
 
 | Document | Description |
 |----------|-------------|
-| `docs/ARCHITECTURE.md` | Full system architecture |
+| `docs/ARCHITECTURE_FLOWS.md` | Flow-first architecture with Mermaid diagrams |
+| `docs/codingagent-architecture.md` | Comprehensive system architecture reference |
 | `docs/DEVELOPMENT.md` | Developer guide |
-| `docs/audit/` | Audit reports (vol1–vol29) |
+| `docs/audit/` | Audit reports (vol1–vol33) |
 | `docs/TODO_METRICS.md` | How to enable and use TODO metrics (Prometheus) |
-| `docs/CODEBASE_FINDINGS.md` | Known issues |
 
 ## Model Tiers
 
@@ -175,7 +325,7 @@ ruff check src/
 
 ## Test Baseline
 
-- **3844** unit tests passing
+- **4388** unit tests passing
 - **7** benchmark tests
 - **0** Critical issues
 - **0** High issues

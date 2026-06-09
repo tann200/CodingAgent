@@ -51,6 +51,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional, Sequence, Union
 
+from src.core.messaging.event_types import HookMessage
+
 logger = logging.getLogger(__name__)
 
 try:
@@ -487,10 +489,7 @@ class ShellHookRunner:
             return
         try:
             for msg in messages:
-                self._event_bus.publish(
-                    "hook.message",
-                    {"tool_name": tool_name, "event": event, "message": msg},
-                )
+                self._event_bus.publish_typed(HookMessage(tool_name=tool_name, event=event, message=msg))
         except Exception as exc:
             logger.debug("ShellHookRunner: event_bus publish failed: %s", exc)
 

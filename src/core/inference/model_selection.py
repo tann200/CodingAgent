@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+
+from src.core.messaging.event_types import ProviderModelMissing
 import re
 from typing import Any, Callable, Dict, List, Optional
 from pathlib import Path
@@ -252,14 +254,7 @@ def resolve_requested_model(
             return selected
         try:
             if event_bus:
-                event_bus.publish(
-                    "provider.model.missing",
-                    {
-                        "provider": provider_key,
-                        "requested": requested,
-                        "available": models,
-                    },
-                )
+                event_bus.publish_typed(ProviderModelMissing(provider=provider_key, requested=requested, available=models))
         except Exception:
             pass
     except Exception:

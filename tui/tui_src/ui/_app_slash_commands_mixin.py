@@ -6,6 +6,8 @@ AgentApp to a ≤400-line core.
 
 from __future__ import annotations
 
+
+from src.core.messaging.event_types import ModelRouting
 from pathlib import Path
 
 from textual.containers import Horizontal
@@ -296,14 +298,7 @@ class AppSlashCommandsMixin:
             if nano_model:
                 self._settings.set("default_model", nano_model)
                 self._settings.save()
-                self._bridge.publish(
-                    "model.routing",
-                    {
-                        "provider": self._settings.get("default_provider", ""),
-                        "selected": nano_model,
-                        "model_tier": "nano",
-                    },
-                )
+                self._bridge.publish_typed(ModelRouting(provider=self._settings.get("default_provider", ""), selected=nano_model, model_tier="nano"))
                 try:
                     self.query_one("#sb_model_info", Static).update(nano_model)
                 except Exception:
@@ -363,9 +358,7 @@ class AppSlashCommandsMixin:
                 banner.add_class("connected")
             except Exception:
                 pass
-            self._bridge.publish(
-                "model.routing", {"provider": pid, "selected": first_model}
-            )
+            self._bridge.publish_typed(ModelRouting(provider=pid, selected=first_model))
             self.notify(f"Switched to provider: {pid}")
 
     async def _slash_model(self: AgentAppProtocol, args: str) -> None:
@@ -418,14 +411,8 @@ class AppSlashCommandsMixin:
                     banner.update(f"  {provider_id}  ·  {target_model}")
             except Exception:
                 pass
-            self._bridge.publish(
-                "model.routing",
-                {
-                    "provider": target_provider
-                    or self._settings.get("default_provider", ""),
-                    "selected": target_model,
-                },
-            )
+            self._bridge.publish_typed(ModelRouting(provider=target_provider
+                    or self._settings.get("default_provider", ""), selected=target_model))
             self.notify(f"Model switched to: {target_model}")
 
     async def _slash_mcp(self: AgentAppProtocol, args: str) -> None:
@@ -466,6 +453,19 @@ class AppSlashCommandsMixin:
                     return
                 new_name = parts[0]
                 new_cmd = parts[1:]
+                import re as _re
+                if not _re.match(r"^[a-zA-Z0-9_-]+$", new_name):
+                    self.notify(
+                        f"Invalid server name '{new_name}': use only letters, digits, - and _",
+                        severity="warning",
+                    )
+                    return
+                if _re.search(r"[;&$`\\|<>]", " ".join(new_cmd)):
+                    self.notify(
+                        "Command contains unsafe shell characters",
+                        severity="warning",
+                    )
+                    return
                 agent_dir = (
                     _Path(
                         getattr(
@@ -757,11 +757,14 @@ class AppSlashCommandsMixin:
                         classes="system_msg",
                         markup=True,
                     )
-                w = Static(
-                    f"[bold]✓ Exported[/] {len(history)} messages\n  → {export_path}",
-                    classes="system_msg",
-                    markup=True,
-                )
+                    await self._mount_chat_widget(w)
+                else:
+                    w = Static(
+                        f"[bold]✓ Exported[/] {len(history)} messages\n  → {export_path}",
+                        classes="system_msg",
+                        markup=True,
+                    )
+                    await self._mount_chat_widget(w)
             except Exception as exc:
                 w = Static(
                     f"[bold #ff5555]✗ Export failed:[/] {exc}",

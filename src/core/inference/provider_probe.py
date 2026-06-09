@@ -4,6 +4,7 @@ import inspect
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from src.core.inference._protocols import LockProtocol
+from src.core.messaging.event_types import ProviderContextWindow, ProviderModelsCached, ProviderModelsEmpty, ProviderModelsList, ProviderStatusChanged
 
 
 def should_probe_provider(
@@ -112,24 +113,12 @@ def publish_provider_probe_events(
         return
     try:
         if models:
-            event_bus.publish(
-                "provider.models.list",
-                {"provider": provider_key, "models": list(models)},
-            )
-            event_bus.publish(
-                "provider.models.cached",
-                {"provider": provider_key, "models": list(models)},
-            )
-            event_bus.publish(
-                "provider.status.changed",
-                {"provider": provider_key, "status": explicit_status or "connected"},
-            )
+            event_bus.publish_typed(ProviderModelsList(provider=provider_key, models=list(models)))
+            event_bus.publish_typed(ProviderModelsCached(provider=provider_key, models=list(models)))
+            event_bus.publish_typed(ProviderStatusChanged(provider=provider_key, status=explicit_status or "connected"))
         else:
-            event_bus.publish("provider.models.empty", {"provider": provider_key})
-            event_bus.publish(
-                "provider.status.changed",
-                {"provider": provider_key, "status": explicit_status or "disconnected"},
-            )
+            event_bus.publish_typed(ProviderModelsEmpty(provider=provider_key))
+            event_bus.publish_typed(ProviderStatusChanged(provider=provider_key, status=explicit_status or "disconnected"))
     except Exception:
         pass
 
@@ -140,10 +129,7 @@ def publish_unknown_provider_status(
     if not event_bus:
         return
     try:
-        event_bus.publish(
-            "provider.status.changed",
-            {"provider": provider_key, "status": explicit_status or "unknown"},
-        )
+        event_bus.publish_typed(ProviderStatusChanged(provider=provider_key, status=explicit_status or "unknown"))
     except Exception:
         pass
 
@@ -194,10 +180,7 @@ def run_provider_probe_cycle(
                     provider_models_cache[provider_key] = []
                 if event_bus:
                     try:
-                        event_bus.publish(
-                            "provider.status.changed",
-                            {"provider": provider_key, "status": "disconnected"},
-                        )
+                        event_bus.publish_typed(ProviderStatusChanged(provider=provider_key, status="disconnected"))
                     except Exception:
                         pass
                 continue
@@ -238,14 +221,7 @@ def run_provider_probe_cycle(
                             if context_length and context_length > 0:
                                 if is_active_provider_fn(provider_key, provider_config):
                                     set_active_context_length_fn(context_length, provider_key)
-                                    event_bus.publish(
-                                        "provider.context_window",
-                                        {
-                                            "provider": provider_key,
-                                            "model": active_model,
-                                            "context_window": context_length,
-                                        },
-                                    )
+                                    event_bus.publish_typed(ProviderContextWindow(provider=provider_key, model=active_model, context_window=context_length))
                         except Exception:
                             pass
                 else:

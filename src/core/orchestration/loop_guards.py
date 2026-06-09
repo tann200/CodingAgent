@@ -49,6 +49,8 @@ Usage
 
 from __future__ import annotations
 
+
+from src.core.messaging.event_types import ToolDoomLoopDetected
 import json
 import logging
 from pathlib import Path
@@ -398,14 +400,7 @@ def check_doom_loop(
 
         if doom_behavior == Behavior.ASK and event_bus is not None:
             try:
-                event_bus.publish(
-                    "tool.doom_loop_detected",
-                    {
-                        "tool": tool_name,
-                        "fingerprint": fingerprint,
-                        "behavior": "ask",
-                    },
-                )
+                event_bus.publish_typed(ToolDoomLoopDetected(tool=tool_name, fingerprint=fingerprint, behavior="ask"))
             except Exception as pub_exc:
                 logger.debug(
                     "loop_guards.check_doom_loop: event_bus publish failed: %s", pub_exc

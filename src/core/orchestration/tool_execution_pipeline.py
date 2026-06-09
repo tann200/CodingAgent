@@ -14,6 +14,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, Optional, cast
 
+from src.core.messaging.event_types import AgentModeChanged, AgentPlanCommitted, FileDeleted, FileModified, PreviewPending, SpawnPermissionRequired, TokenBudget, TokenBudgetUpdate, ToolExecuteError, ToolExecuteFinish, ToolExecuteStart, ToolInvoked, ToolPermissionRequired
 logger = logging.getLogger(__name__)
 
 APPROVAL_TIMEOUT_SECONDS: float = 120.0
@@ -670,18 +671,7 @@ def _handle_tool_execution_error(
 ) -> Dict[str, Any]:
     """Record error telemetry/session state and return a structured error dict."""
     try:
-        orch.event_bus.publish(
-            "tool.execute.error",
-            {
-                "sessionUpdate": "tool_call_update",
-                "toolCallId": tool_call_id,
-                "title": name,
-                "status": "failed",
-                "content": [{"type": "text", "text": str(exc)}],
-                "error": str(exc),
-                "workdir": str(orch.working_dir),
-            },
-        )
+        orch.event_bus.publish_typed(ToolExecuteError(session_update="tool_call_update", tool_call_id=tool_call_id, title=name, status="failed", content=[{"type": "text", "text": str(exc)}], error=str(exc), workdir=str(orch.working_dir)))
     except Exception:
         pass
 
@@ -746,20 +736,14 @@ def _run_post_execution(
         new_mode = res.get("agent_mode", "execution")
         setattr(orch, "_agent_mode", new_mode)
         try:
-            orch.event_bus.publish(
-                "agent.mode_changed",
-                {"mode": new_mode, "tool": name},
-            )
+            orch.event_bus.publish_typed(AgentModeChanged(mode=new_mode, tool=name))
         except Exception:
             pass
         if name == "plan_exit" and res.get("steps"):
             setattr(orch, "_committed_plan_steps", res["steps"])
             setattr(orch, "_plan_mode_approved", True)
             try:
-                orch.event_bus.publish(
-                    "agent.plan_committed",
-                    {"step_count": len(res["steps"]), "tool": name},
-                )
+                orch.event_bus.publish_typed(AgentPlanCommitted(step_count=len(res["steps"]), tool=name))
             except Exception:
                 pass
 
@@ -801,17 +785,7 @@ def _run_post_execution(
         orch._usage_buffer[name] = orch._usage_buffer.get(name, 0) + 1
         orch.cost_tracker.record_tool_call(name)
         try:
-            orch.event_bus.publish(
-                "tool.invoked",
-                {
-                    "sessionUpdate": "tool_call_update",
-                    "toolCallId": tool_call_id,
-                    "title": name,
-                    "status": "invoked",
-                    "timestamp": ts,
-                    "workdir": str(orch.working_dir),
-                },
-            )
+            orch.event_bus.publish_typed(ToolInvoked(session_update="tool_call_update", tool_call_id=tool_call_id, title=name, status="invoked", timestamp=ts, workdir=str(orch.working_dir)))
         except Exception:
             pass
     except Exception:
@@ -833,14 +807,7 @@ def _run_post_execution(
                 )
                 orch._session_modified_files.add(resolved_path)
                 try:
-                    orch.event_bus.publish(
-                        "file.modified",
-                        {
-                            "path": resolved_path,
-                            "tool": name,
-                            "workdir": str(orch.working_dir),
-                        },
-                    )
+                    orch.event_bus.publish_typed(FileModified(path=resolved_path, tool=name, workdir=str(orch.working_dir)))
                 except Exception:
                     pass
             except Exception:
@@ -851,13 +818,7 @@ def _run_post_execution(
                     (Path(orch.working_dir or ".") / path_arg).resolve()
                 )
                 try:
-                    orch.event_bus.publish(
-                        "file.deleted",
-                        {
-                            "path": resolved_path,
-                            "workdir": str(orch.working_dir),
-                        },
-                    )
+                    orch.event_bus.publish_typed(FileDeleted(path=resolved_path, workdir=str(orch.working_dir)))
                 except Exception:
                     pass
             except Exception:
@@ -877,18 +838,7 @@ def _run_post_execution(
 
     try:
         formatted = _format_tool_result(res, name)
-        orch.event_bus.publish(
-            "tool.execute.finish",
-            {
-                "sessionUpdate": "tool_call_update",
-                "toolCallId": tool_call_id,
-                "title": name,
-                "status": "completed",
-                "content": [{"type": "text", "text": formatted}],
-                "rawOutput": res,
-                "workdir": str(orch.working_dir),
-            },
-        )
+        orch.event_bus.publish_typed(ToolExecuteFinish(session_update="tool_call_update", tool_call_id=tool_call_id, title=name, status="completed", content=[{"type": "text", "text": formatted}], raw_output=res, workdir=str(orch.working_dir)))
     except Exception:
         pass
 
@@ -897,27 +847,11 @@ def _run_post_execution(
             budget = orch.token_monitor.get_budget(
                 session_id=getattr(orch, "_current_task_id", "default")
             )
-            orch.event_bus.publish(
-                "token.budget.update",
-                {
-                    "used_tokens": budget.used_tokens,
-                    "max_tokens": budget.max_tokens,
-                    "usage_ratio": budget.usage_ratio,
-                    "session_id": getattr(orch, "_current_task_id", "default"),
-                },
-            )
+            orch.event_bus.publish_typed(TokenBudgetUpdate(used_tokens=budget.used_tokens, max_tokens=budget.max_tokens, usage_ratio=budget.usage_ratio, session_id=getattr(orch, "_current_task_id", "default")))
             used = budget.used_tokens
             limit = budget.max_tokens or 32_768
             pct = min(100, int(used / limit * 100)) if limit else 0
-            orch.event_bus.publish(
-                "token.budget",
-                {
-                    "used": used,
-                    "limit": limit,
-                    "percent": pct,
-                    "warning": pct >= 80,
-                },
-            )
+            orch.event_bus.publish_typed(TokenBudget(used=used, limit=limit, percent=pct, warning=pct >= 80))
     except Exception:
         pass
 
@@ -925,10 +859,7 @@ def _run_post_execution(
         if hasattr(orch, "preview_service") and getattr(
             orch, "_pending_preview_id", None
         ):
-            orch.event_bus.publish(
-                "preview.pending",
-                {"preview_id": orch._pending_preview_id},
-            )
+            orch.event_bus.publish_typed(PreviewPending(preview_id=orch._pending_preview_id))
     except Exception:
         pass
 
@@ -1031,14 +962,7 @@ def execute_tool_impl(orch: Any, tool_call: Dict[str, Any]) -> Dict[str, Any]:
         return permission_gate
 
     try:
-        orch.event_bus.publish(
-            "tool.execute.start",
-            {
-                "tool": name,
-                "args": {k: str(v)[:200] for k, v in args.items() if k != "content"},
-                "tool_call_id": tool_call_id,
-            },
-        )
+        orch.event_bus.publish_typed(ToolExecuteStart(tool=name, args={k: str(v)[:200] for k, v in args.items() if k != "content"}, tool_call_id=tool_call_id))
     except Exception:
         pass
 
@@ -1167,25 +1091,10 @@ def _run_permission_gate(
         gate_event = register_tool_gate(tool_call_id)
         if name == "delegate_task":
             try:
-                orch.event_bus.publish(
-                    "spawn.permission_required",
-                    {
-                        "tool": name,
-                        "role": args.get("role", ""),
-                        "task": str(args.get("subtask_description", ""))[:200],
-                        "tool_id": tool_call_id,
-                    },
-                )
+                orch.event_bus.publish_typed(SpawnPermissionRequired(tool=name, role=args.get("role", ""), task=str(args.get("subtask_description", ""))[:200], tool_id=tool_call_id))
             except Exception:
                 pass
-        orch.event_bus.publish(
-            "tool.permission_required",
-            {
-                "tool": name,
-                "args": {k: str(v)[:200] for k, v in args.items() if k != "content"},
-                "tool_id": tool_call_id,
-            },
-        )
+        orch.event_bus.publish_typed(ToolPermissionRequired(tool=name, args={k: str(v)[:200] for k, v in args.items() if k != "content"}, tool_id=tool_call_id))
     except Exception as perm_exc:
         guilogger.error(f"Permission gate error for '{name}' (fail-closed): {perm_exc}")
         return {"ok": False, "error": f"Permission gate unavailable for '{name}'."}

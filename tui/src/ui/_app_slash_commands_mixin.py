@@ -6,6 +6,8 @@ AgentApp to a ≤400-line core.
 
 from __future__ import annotations
 
+
+from src.core.messaging.event_types import ModelRouting
 from pathlib import Path
 
 from textual.containers import Horizontal
@@ -296,14 +298,7 @@ class AppSlashCommandsMixin:
             if nano_model:
                 self._settings.set("default_model", nano_model)
                 self._settings.save()
-                self._bridge.publish(
-                    "model.routing",
-                    {
-                        "provider": self._settings.get("default_provider", ""),
-                        "selected": nano_model,
-                        "model_tier": "nano",
-                    },
-                )
+                self._bridge.publish_typed(ModelRouting(provider=self._settings.get("default_provider", ""), selected=nano_model, model_tier="nano"))
                 try:
                     self.query_one("#sb_model_info", Static).update(nano_model)
                 except Exception:
@@ -363,9 +358,7 @@ class AppSlashCommandsMixin:
                 banner.add_class("connected")
             except Exception:
                 pass
-            self._bridge.publish(
-                "model.routing", {"provider": pid, "selected": first_model}
-            )
+            self._bridge.publish_typed(ModelRouting(provider=pid, selected=first_model))
             self.notify(f"Switched to provider: {pid}")
 
     async def _slash_model(self: AgentAppProtocol, args: str) -> None:
@@ -418,14 +411,8 @@ class AppSlashCommandsMixin:
                     banner.update(f"  {provider_id}  ·  {target_model}")
             except Exception:
                 pass
-            self._bridge.publish(
-                "model.routing",
-                {
-                    "provider": target_provider
-                    or self._settings.get("default_provider", ""),
-                    "selected": target_model,
-                },
-            )
+            self._bridge.publish_typed(ModelRouting(provider=target_provider
+                    or self._settings.get("default_provider", ""), selected=target_model))
             self.notify(f"Model switched to: {target_model}")
 
     async def _slash_mcp(self: AgentAppProtocol, args: str) -> None:

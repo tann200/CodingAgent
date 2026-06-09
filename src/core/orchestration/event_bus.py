@@ -30,10 +30,15 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import ContextVar
-from typing import Any, Callable, Dict, List, Optional, Set, TypeVar, Awaitable
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Set, Tuple, Type as TypingType, TypeVar, Awaitable
 
 from dataclasses import dataclass, field
 from enum import IntEnum
+
+if TYPE_CHECKING:
+    from src.core.messaging.bus import MessageBus
+
+from src.core.messaging.event_types import Event
 
 _logger = logging.getLogger(__name__)
 
@@ -166,12 +171,289 @@ class DispatchEvents:
     SUBAGENT_COMPLETE = "subagent.complete"
 
 
+# ── Typed event mapping ──────────────────────────────────────────────────
+
+_EVENT_MAP_LOCK = threading.Lock()
+_EVENT_NAME_TO_TYPED: Optional[Dict[str, Tuple[TypingType[Event], Optional[Dict[str, str]]]]] = None
+_EVENT_NAME_FROM_CLASS: Optional[Dict[TypingType[Event], str]] = None
+_INHERITED_EVENT_FIELDS = frozenset({"_correlation_id", "correlation_id"})
+
+
+def _get_event_name_map():
+    global _EVENT_NAME_TO_TYPED, _EVENT_NAME_FROM_CLASS
+    with _EVENT_MAP_LOCK:
+        if _EVENT_NAME_TO_TYPED is not None:
+            return _EVENT_NAME_TO_TYPED, _EVENT_NAME_FROM_CLASS
+
+        from src.core.messaging.event_types import (
+            AgentEnd,
+            AgentMessage as TAgentMessage,
+            AgentModeChanged,
+            AgentPlanCommitted,
+            AgentResearcherDocSummary,
+            AgentReviewerBugFound,
+            AgentScoutFilesDiscovered,
+            AgentStart,
+            AgentStatus,
+            AgentWaitingForUser,
+            BashApprovalDenied,
+            BashApprovalGranted,
+            ConfigReloaded,
+            ContextAutoCompacted,
+            ContextCompactFailed,
+            ContextCompacted,
+            ContextDegraded,
+            ContextOverflow,
+            DelegationComplete,
+            DelegationFinish,
+            DelegationStart,
+            FileDeleted,
+            FileDiffPreview,
+            FileModified,
+            GitBranch,
+            HookMessage,
+            LogEntry,
+            LLMToken,
+            McpServerStatus,
+            McpToolsListChanged,
+            MessageCompactionApplied,
+            MessageTruncation,
+            ModelResponse,
+            ModelRouting,
+            ModelRoutingComplete,
+            ModelToken,
+            OrchestratorModelsCheckCompleted,
+            OrchestratorModelsCheckFailed,
+            OrchestratorModelsCheckStarted,
+            OrchestratorStartup,
+            PerceptionCorrectivePrompt,
+            PlanProgress,
+            PlanRequested,
+            PreviewConfirmed,
+            PreviewPending,
+            PreviewRejected,
+            ProviderConfigMissing,
+            ProviderContextWindow,
+            ProviderLimit,
+            ProviderModelMissing,
+            ProviderModelsCached,
+            ProviderModelsEmpty,
+            ProviderModelsList,
+            ProviderModelsUpdated,
+            ProviderSelectionChanged,
+            ProviderStatusChanged,
+            ProviderUnavailable,
+            ResponseStreamChunk,
+            ResponseStreamEnd,
+            RetryAttempt,
+            RetryFailed,
+            RetrySucceeded,
+            RoleTransition,
+            SchedulerDistillCompleted,
+            SchedulerDistillRequest,
+            SessionCreated,
+            SessionFilesChanged,
+            SessionHealthAlert,
+            SessionHydrated,
+            SessionNew,
+            SessionRegistered,
+            SessionRequestState,
+            SessionTitleGenerated,
+            SessionUnregistered,
+            SpawnPermissionRequired,
+            StepFinish,
+            StepStart,
+            SystemSettings,
+            TaskQueueUpdated,
+            TaskTurnLimit,
+            TokenBudget,
+            TokenBudgetUpdate,
+            TokenBudgetWarning,
+            ToolDoomLoopDetected,
+            ToolExecuteError,
+            ToolExecuteFinish,
+            ToolExecuteStart,
+            ToolInvoked,
+            ToolPermissionRequired,
+            ToolResult,
+            UiNotification,
+            UsageBudgetExceeded,
+            UsageSubagentCost,
+            UsageTurnSummary,
+            WorkingDirUnavailable,
+        )
+
+        _EVENT_NAME_TO_TYPED = {
+            "agent.start": (AgentStart, None),
+            "agent.end": (AgentEnd, None),
+            "agent.status": (AgentStatus, None),
+            "agent.mode_changed": (AgentModeChanged, None),
+            "agent.plan_committed": (AgentPlanCommitted, None),
+            "agent.message": (TAgentMessage, None),
+            "agent.waiting_for_user": (AgentWaitingForUser, None),
+            "tool.execute.start": (ToolExecuteStart, None),
+            "tool.invoked": (ToolInvoked, {"sessionUpdate": "session_update", "toolCallId": "tool_call_id"}),
+            "tool.execute.finish": (ToolExecuteFinish, {"sessionUpdate": "session_update", "toolCallId": "tool_call_id", "rawOutput": "raw_output"}),
+            "tool.execute.error": (ToolExecuteError, {"sessionUpdate": "session_update", "toolCallId": "tool_call_id", "rawOutput": "raw_output"}),
+            "tool.result": (ToolResult, None),
+            "tool.permission_required": (ToolPermissionRequired, None),
+            "tool.doom_loop_detected": (ToolDoomLoopDetected, None),
+            "spawn.permission_required": (SpawnPermissionRequired, None),
+            "bash.approval_granted": (BashApprovalGranted, None),
+            "bash.approval_denied": (BashApprovalDenied, None),
+            "preview.pending": (PreviewPending, None),
+            "preview.confirmed": (PreviewConfirmed, None),
+            "preview.rejected": (PreviewRejected, None),
+            "plan.requested": (PlanRequested, None),
+            "plan.progress": (PlanProgress, None),
+            "step.start": (StepStart, None),
+            "step.finish": (StepFinish, None),
+            "session.created": (SessionCreated, None),
+            "session.new": (SessionNew, None),
+            "session.hydrated": (SessionHydrated, {"messageHistory": "message_history", "currentTask": "current_task", "workingDir": "working_dir"}),
+            "session.title_generated": (SessionTitleGenerated, None),
+            "session.files_changed": (SessionFilesChanged, None),
+            "session.registered": (SessionRegistered, None),
+            "session.unregistered": (SessionUnregistered, None),
+            "session.health_alert": (SessionHealthAlert, None),
+            "session.request_state": (SessionRequestState, None),
+            "provider.status.changed": (ProviderStatusChanged, None),
+            "provider.unavailable": (ProviderUnavailable, None),
+            "provider.models.list": (ProviderModelsList, None),
+            "provider.models.cached": (ProviderModelsCached, None),
+            "provider.models.empty": (ProviderModelsEmpty, None),
+            "provider.models.updated": (ProviderModelsUpdated, None),
+            "provider.selection.changed": (ProviderSelectionChanged, None),
+            "provider.context_window": (ProviderContextWindow, None),
+            "provider.config.missing": (ProviderConfigMissing, None),
+            "provider.model.missing": (ProviderModelMissing, None),
+            "provider.limit": (ProviderLimit, None),
+            "response.stream_chunk": (ResponseStreamChunk, None),
+            "response.stream_end": (ResponseStreamEnd, None),
+            "model.token": (ModelToken, None),
+            "llm.token": (LLMToken, None),
+            "model.response": (ModelResponse, None),
+            "model.routing": (ModelRouting, None),
+            "model.routing.complete": (ModelRoutingComplete, None),
+            "context.overflow": (ContextOverflow, {"context_window": "budget"}),
+            "context.compacted": (ContextCompacted, None),
+            "context.auto_compacted": (ContextAutoCompacted, None),
+            "context.compact.failed": (ContextCompactFailed, None),
+            "context.degraded": (ContextDegraded, None),
+            "message.truncation": (MessageTruncation, None),
+            "message.compaction_applied": (MessageCompactionApplied, None),
+            "token.budget": (TokenBudget, None),
+            "token.budget.update": (TokenBudgetUpdate, None),
+            "token.budget.warning": (TokenBudgetWarning, None),
+            "usage.turn_summary": (UsageTurnSummary, None),
+            "usage.budget_exceeded": (UsageBudgetExceeded, None),
+            "usage.subagent_cost": (UsageSubagentCost, None),
+            "file.modified": (FileModified, None),
+            "file.deleted": (FileDeleted, None),
+            "file.diff.preview": (FileDiffPreview, None),
+            "delegation.start": (DelegationStart, None),
+            "delegation.finish": (DelegationFinish, None),
+            "delegation.complete": (DelegationComplete, None),
+            "agent.scout.files_discovered": (AgentScoutFilesDiscovered, None),
+            "agent.researcher.doc_summary": (AgentResearcherDocSummary, None),
+            "agent.reviewer.bug_found": (AgentReviewerBugFound, None),
+            "scheduler.distill_request": (SchedulerDistillRequest, None),
+            "scheduler.distill_completed": (SchedulerDistillCompleted, None),
+            "mcp.server.status": (McpServerStatus, None),
+            "mcp.tools.list_changed": (McpToolsListChanged, None),
+            "config.reloaded": (ConfigReloaded, None),
+            "system.settings": (SystemSettings, None),
+            "orchestrator.startup": (OrchestratorStartup, None),
+            "orchestrator.models.check.started": (OrchestratorModelsCheckStarted, None),
+            "orchestrator.models.check.completed": (OrchestratorModelsCheckCompleted, None),
+            "orchestrator.models.check.failed": (OrchestratorModelsCheckFailed, None),
+            "ui.notification": (UiNotification, None),
+            "hook.message": (HookMessage, None),
+            "log.new": (LogEntry, None),
+            "git.branch": (GitBranch, None),
+            "working_dir.unavailable": (WorkingDirUnavailable, None),
+            "role.changed": (RoleTransition, None),
+            "role.transition": (RoleTransition, None),
+            "retry.attempt": (RetryAttempt, None),
+            "retry.succeeded": (RetrySucceeded, None),
+            "retry.failed": (RetryFailed, None),
+            "task.queue.updated": (TaskQueueUpdated, None),
+            "task.turn_limit": (TaskTurnLimit, None),
+            "perception.corrective_prompt": (PerceptionCorrectivePrompt, None),
+        }
+
+        _EVENT_NAME_FROM_CLASS = {
+            cls: name for name, (cls, _) in _EVENT_NAME_TO_TYPED.items()
+        }
+
+    return _EVENT_NAME_TO_TYPED, _EVENT_NAME_FROM_CLASS
+
+
+def _build_typed_event(event_name: str, payload: Optional[Any]) -> Optional[Event]:
+    mapping, _ = _get_event_name_map()
+    entry = mapping.get(event_name)
+    if entry is None:
+        return None
+    cls, mapper = entry
+
+    if payload is None:
+        payload = {}
+
+    if not isinstance(payload, dict):
+        return None
+
+    if mapper:
+        mapped = {}
+        for k, v in payload.items():
+            if k not in _INHERITED_EVENT_FIELDS:
+                mapped[mapper.get(k, k)] = v
+    else:
+        mapped = {k: v for k, v in payload.items() if k not in _INHERITED_EVENT_FIELDS}
+
+    try:
+        return cls(**mapped)
+    except Exception as exc:
+        _logger.debug("_build_typed_event: failed to build %s from payload: %s", cls.__name__, exc)
+        return None
+
+
+# ── Shared MessageBus singleton ──────────────────────────────────────────
+
+_typed_bus: Optional["MessageBus"] = None
+_typed_bus_lock = threading.Lock()
+
+
+def get_typed_bus() -> "MessageBus":
+    from src.core.messaging.bus import MessageBus
+
+    global _typed_bus
+    if _typed_bus is None:
+        with _typed_bus_lock:
+            if _typed_bus is None:
+                _typed_bus = MessageBus(max_queue_size=512, worker_threads=4)
+    return _typed_bus
+
+
+def reset_typed_bus() -> None:
+    from src.core.messaging.bus import MessageBus
+
+    global _typed_bus
+    bus = _typed_bus
+    _typed_bus = None
+    if bus is not None:
+        try:
+            bus.shutdown(timeout=2.0)
+        except Exception:
+            pass
+
+
 class EventBus:
-    def __init__(self) -> None:
+    def __init__(self, typed_bus: Optional[MessageBus] = None) -> None:
         self._lock = threading.RLock()
         self._subscribers: Dict[str, List[Callable[[Any], None]]] = {}
         self._agent_subscribers: Dict[str, List[Callable[[AgentMessage], None]]] = {}
         self._agent_ids: Set[str] = set()
+        self._typed = typed_bus
 
     def subscribe(self, event_name: str, callback: Callable[[Any], None]) -> None:
         if not callable(callback):
@@ -203,6 +485,9 @@ class EventBus:
         If *payload* is a dict and does not already contain ``_correlation_id``,
         the current context correlation ID (or the supplied *correlation_id*) is
         injected automatically so every subscriber can trace the event.
+
+        When a ``typed_bus`` is configured, also emits the typed equivalent on
+        the shared ``MessageBus`` (if an ``EVENT_NAME_TO_TYPED`` entry exists).
         """
         cid = correlation_id or _current_correlation_id.get()
         if (
@@ -224,6 +509,51 @@ class EventBus:
                     _exc,
                 )
                 continue
+
+        # Also emit typed event on MessageBus
+        if self._typed is not None:
+            typed = _build_typed_event(event_name, payload)
+            if typed is not None:
+                try:
+                    self._typed.publish(typed)
+                except Exception as exc:
+                    _logger.debug("EventBus: typed publish failed for %s: %s", event_name, exc)
+
+    def publish_typed(self, event: Event) -> None:
+        """Publish a typed event on the MessageBus AND deliver to old-bus subscribers.
+
+        The typed event is emitted on the ``MessageBus`` first, then old string-based
+        ``EventBus`` subscribers receive the dict equivalent (via ``event.to_dict()``).
+
+        Note: this does NOT call ``self.publish()`` to avoid double emission on the
+        typed bus (``publish()`` also emits typed events via ``_build_typed_event``).
+        """
+        if self._typed is not None:
+            try:
+                self._typed.publish(event)
+            except Exception as exc:
+                _logger.debug("EventBus: typed publish failed for %s: %s", type(event).__name__, exc)
+
+        # Deliver to old-bus subscribers directly (skip publish() → no re-typed)
+        _, name_from_class = _get_event_name_map()
+        event_name = name_from_class.get(type(event))
+        if event_name is not None:
+            payload = event.to_dict()
+            cid = _current_correlation_id.get()
+            if cid is not None and "_correlation_id" not in payload:
+                payload = {**payload, "_correlation_id": cid}
+            with self._lock:
+                subs = list(self._subscribers.get(event_name, []))
+            for cb in subs:
+                try:
+                    cb(payload)
+                except Exception as _exc:
+                    _logger.warning(
+                        "EventBus: subscriber %r raised on event %r: %s",
+                        cb,
+                        event_name,
+                        _exc,
+                    )
 
     def subscribe_to_agent(
         self, agent_id: str, callback: Callable[[AgentMessage], None]
@@ -404,27 +734,16 @@ def get_event_bus() -> EventBus:
     initialisation from multiple threads (e.g. executor threads starting before
     the main thread has completed setup).
 
-    Migration: the returned bus is wrapped in a ``DualPublishBus`` that also
-    emits typed events on the ``MessageBus``.  Existing callers see the same
-    ``publish()`` / ``subscribe()`` API, so **zero** publish sites need to
-    change during the transition.
+    The returned ``EventBus`` references the shared ``MessageBus`` singleton
+    (see ``get_typed_bus()``) so that every ``publish()`` call also emits the
+    typed equivalent on the typed bus.
     """
     global _default_bus
     if _default_bus is None:
         with _bus_lock:
             if _default_bus is None:  # double-checked lock
-                _default_bus = EventBus()
-                try:
-                    from src.core.messaging.event_bus_adapter import (  # type: ignore[import-untyped]
-                        DualPublishBus,
-                        get_typed_bus,
-                    )
-                    _default_bus = DualPublishBus(
-                        _default_bus, typed_bus=get_typed_bus()
-                    )
-                except Exception:
-                    pass
-    return _default_bus  # type: ignore[return-value]
+                _default_bus = EventBus(typed_bus=get_typed_bus())
+    return _default_bus
 
 
 # P2-T5: safety events that must always be visible, even in headless/CLI mode.

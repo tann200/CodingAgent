@@ -27,7 +27,6 @@ class AgentBridgeProtocol(Protocol):
     _bus: Any  # Old EventBus instance
     _typed_bus: Any  # New MessageBus instance (or None in mock mode)
     _typed_subscriptions: list[tuple[type, Any]]  # MessageBus subscriptions
-    _subscriptions: list[tuple[str, Callable]]
 
     _orchestrator: Any  # Orchestrator | None
     _working_dir: str
@@ -48,7 +47,6 @@ class AgentBridgeProtocol(Protocol):
 
     # ── Methods that mixins call on ``self`` ──────────────────────────────
 
-    def _subscribe(self, event: str, cb: Callable) -> None: ...
     def _subscribe_typed(self, event_cls: type, cb: Callable) -> None: ...
     def _post(self, msg: Any) -> None: ...
     def _schedule_callback(self, fn: Callable, *args: Any) -> None: ...

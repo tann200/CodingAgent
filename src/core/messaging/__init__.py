@@ -14,7 +14,6 @@ the untyped EventBus. Key features:
 from src.core.messaging.events import Event
 from src.core.messaging.bus import MessageBus, EventHandler
 from src.core.messaging.metrics import MessageBusMetrics
-from src.core.messaging.event_bus_adapter import DualPublishBus, get_typed_bus, reset_typed_bus
 from src.core.messaging.event_types import (
     # Agent lifecycle
     AgentStart, AgentStatus, AgentEnd, AgentModeChanged, AgentPlanCommitted,
@@ -78,7 +77,6 @@ __all__ = [
     "MessageBus",
     "EventHandler",
     "MessageBusMetrics",
-    "DualPublishBus",
     "get_typed_bus",
     "reset_typed_bus",
     # Agent lifecycle
@@ -137,3 +135,13 @@ __all__ = [
     # Subagent dispatch
     "SubagentDispatch", "SubagentResult",
 ]
+
+
+def __getattr__(name: str):
+    """Lazy import ``get_typed_bus`` / ``reset_typed_bus`` to break a circular
+    dependency: this package's ``__init__`` is loaded during ``import src.core.messaging``,
+    but ``event_bus.py`` also imports from this package."""
+    if name in ("get_typed_bus", "reset_typed_bus"):
+        from src.core.orchestration.event_bus import get_typed_bus, reset_typed_bus
+        return locals()[name]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+
+from src.core.messaging.event_types import OrchestratorStartup, ProviderUnavailable
 import time
 from typing import Any
 
@@ -94,7 +96,7 @@ def _publish_startup_events(orch: Any, pm: Any) -> None:
         payload = {"time": time.time(), "working_dir": str(orch.working_dir)}
         try:
             guilogger.info("Orchestrator: publishing startup to orch.event_bus")
-            orch.event_bus.publish("orchestrator.startup", payload)
+            orch.event_bus.publish_typed(OrchestratorStartup(**payload))
         except Exception:
             pass
 
@@ -102,7 +104,7 @@ def _publish_startup_events(orch: Any, pm: Any) -> None:
             pm_bus = getattr(pm, "_event_bus", None)
             if pm_bus and pm_bus is not orch.event_bus:
                 guilogger.info("Orchestrator: publishing startup to pm_bus")
-                pm_bus.publish("orchestrator.startup", payload)
+                pm_bus.publish_typed(OrchestratorStartup(**payload))
         except Exception:
             pass
     except Exception:
@@ -112,7 +114,7 @@ def _publish_startup_events(orch: Any, pm: Any) -> None:
 def _publish_provider_unavailable(orch: Any, reason: str) -> None:
     """Publish a provider.unavailable event so the TUI can show a banner."""
     try:
-        orch.event_bus.publish("provider.unavailable", {"reason": reason})
+        orch.event_bus.publish_typed(ProviderUnavailable(reason=reason))
         guilogger.warning("Provider unavailable: %s", reason)
     except Exception:
         pass

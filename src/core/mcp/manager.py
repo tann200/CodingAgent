@@ -12,6 +12,8 @@ Transport support:
 
 from __future__ import annotations
 
+
+from src.core.messaging.event_types import McpServerStatus, McpToolsListChanged
 import asyncio
 import logging
 import threading
@@ -127,7 +129,7 @@ class McpServerManager:
                 },
             }
         try:
-            self._event_bus.publish("mcp.server.status", payload)
+            self._event_bus.publish_typed(McpServerStatus(**payload))
         except Exception:
             pass
 
@@ -144,10 +146,7 @@ class McpServerManager:
                     exc,
                 )
             try:
-                self._event_bus.publish(
-                    "mcp.tools.list_changed",
-                    {"server": server_name, "params": params},
-                )
+                self._event_bus.publish_typed(McpToolsListChanged(server=server_name, params=params))
             except Exception:
                 pass
 

@@ -1,3 +1,4 @@
+from src.core.messaging.event_types import TaskTurnLimit, UiNotification
 import logging
 from typing import Any, Mapping, Optional
 
@@ -55,10 +56,7 @@ def _maybe_handle_turn_limit(
         max_turns,
     )
     try:
-        orchestrator.event_bus.publish(
-            "task.turn_limit",
-            {"turn_count": turn_count, "max_turns": max_turns},
-        )
+        orchestrator.event_bus.publish_typed(TaskTurnLimit(turn_count=turn_count, max_turns=max_turns))
     except Exception:
         pass
     return {
@@ -344,14 +342,7 @@ def _maybe_warn_small_context_window(
         logger.warning("GAP-10 context-window warning: %s", warn_msg)
         try:
             if orchestrator and hasattr(orchestrator, "event_bus"):
-                orchestrator.event_bus.publish(
-                    "ui.notification",
-                    {
-                        "level": "warning",
-                        "message": warn_msg,
-                        "source": "context_window_check",
-                    },
-                )
+                orchestrator.event_bus.publish_typed(UiNotification(level="warning", message=warn_msg, source="context_window_check"))
         except Exception:
             pass
     except Exception:

@@ -1,3 +1,4 @@
+from src.core.messaging.event_types import ContextOverflow
 from langchain_core.runnables import RunnableConfig
 import logging
 import re
@@ -880,16 +881,7 @@ async def _perception_node_impl(
         )
         try:
             if orchestrator and hasattr(orchestrator, "event_bus"):
-                orchestrator.event_bus.publish(
-                    "context.overflow",
-                    {
-                        "prompt_tokens": 0,
-                        "budget": 0,
-                        "reserved": 0,
-                        "session_id": state.get("session_id"),
-                        "source": "api_error",
-                    },
-                )
+                orchestrator.event_bus.publish_typed(ContextOverflow(prompt_tokens=0, budget=0, reserved=0, session_id=state.get("session_id"), source="api_error"))
         except Exception:
             pass
 

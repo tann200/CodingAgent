@@ -16,6 +16,8 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator
 
+from src.core.messaging.event_types import AgentEnd, AgentStart, SessionCreated
+
 logger = logging.getLogger(__name__)
 
 # In-process task registry: task_id -> dict with status/result/cancel_event
@@ -151,10 +153,7 @@ def _run_task_thread(
 
     if bus:
         try:
-            bus.publish(
-                "agent.start",
-                {"task_id": task_id, "session_id": session_id, "task": task[:200]},
-            )
+            bus.publish_typed(AgentStart(task_id=task_id, session_id=session_id, task=task[:200]))
         except Exception:
             pass
 
@@ -162,7 +161,6 @@ def _run_task_thread(
     error_text: Optional[str] = None
     try:
         from src.server.app import _get_or_create_orchestrator as orchestrator_factory
-
         orch = orchestrator_factory(working_dir, model)
         if bus:
             try:
@@ -208,16 +206,7 @@ def _run_task_thread(
 
     if bus:
         try:
-            bus.publish(
-                "agent.end",
-                {
-                    "task_id": task_id,
-                    "session_id": session_id,
-                    "status": final_status.value,
-                    "result": (result_text or "")[:500],
-                    "error": error_text,
-                },
-            )
+            bus.publish_typed(AgentEnd(task_id=task_id, session_id=session_id, status=final_status.value, result=(result_text or "")[:500], error=error_text))
         except Exception:
             pass
 
@@ -250,10 +239,7 @@ async def submit_task(request_body: TaskCreateRequest, request: Request):
     bus = _deps.event_bus
     if bus:
         try:
-            bus.publish(
-                "session.created",
-                {"session_id": session_id, "task_id": task_id},
-            )
+            bus.publish_typed(SessionCreated(session_id=session_id, task_id=task_id))
         except Exception:
             pass
 

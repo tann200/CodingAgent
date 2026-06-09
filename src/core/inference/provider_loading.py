@@ -4,6 +4,7 @@ import importlib
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from src.core.inference._protocols import LockProtocol
+from src.core.messaging.event_types import ProviderModelsCached, ProviderModelsList
 
 
 def load_provider_entries(raw: Any) -> List[dict]:
@@ -115,13 +116,8 @@ def cache_static_provider_models(
 
         if event_bus:
             try:
-                event_bus.publish(
-                    "provider.models.list", {"provider": provider_key, "models": models}
-                )
-                event_bus.publish(
-                    "provider.models.cached",
-                    {"provider": provider_key, "models": models},
-                )
+                event_bus.publish_typed(ProviderModelsList(provider=provider_key, models=models))
+                event_bus.publish_typed(ProviderModelsCached(provider=provider_key, models=models))
             except Exception:
                 pass
     except Exception:

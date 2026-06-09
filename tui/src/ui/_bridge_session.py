@@ -8,6 +8,8 @@ start_new_session, restore_and_continue.
 
 from __future__ import annotations
 
+
+from src.core.messaging.event_types import SessionNew, SessionRequestState
 import json
 import os
 import tempfile
@@ -256,13 +258,13 @@ class BridgeSessionMixin(AgentBridgeProtocol):
         the real provider state immediately instead of staying at
         "connecting…" / "disconnected".
         """
-        self._bus.publish("session.request_state", {"session_id": "default"})
+        self._bus.publish_typed(SessionRequestState(session_id="default"))
         # Kick off the startup chain so the UI status indicators are updated.
         self._publish_system_settings()
 
     def publish_session_new(self) -> None:
         """Publish session.new on /new command (§10.3)."""
-        self._bus.publish("session.new", {"timestamp": time.time()})
+        self._bus.publish_typed(SessionNew(timestamp=time.time()))
 
     def start_new_session(self) -> None:
         """Public: reset orchestrator task state + publish session.new (§10.3)."""

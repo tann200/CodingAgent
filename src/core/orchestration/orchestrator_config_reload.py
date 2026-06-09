@@ -7,6 +7,7 @@ from typing import Any, Optional
 import weakref
 
 from src.core.logger import logger as guilogger
+from src.core.messaging.event_types import ConfigReloaded
 from src.core.orchestration.orchestrator_scheduler import _init_scheduler
 
 
@@ -101,9 +102,7 @@ def register_config_reload_handlers(orch: Any) -> None:
 
             # 5) Publish a top-level event so UIs or other subsystems can react.
             try:
-                orch.event_bus.publish(
-                    "config.reloaded", {"changed_paths": list(changed_paths or [])}
-                )
+                orch.event_bus.publish_typed(ConfigReloaded(changed_paths=list(changed_paths or [])))
             except Exception:
                 guilogger.debug(
                     "Failed to publish orchestrator-level config.reloaded event"

@@ -19,6 +19,7 @@ from typing import Any, Dict, Optional, Callable
 from dataclasses import dataclass, field
 from enum import Enum
 
+from src.core.messaging.event_types import McpServerStatus, SessionRequestState
 logger = logging.getLogger(__name__)
 
 
@@ -180,7 +181,7 @@ class MCPStdioServer:
         """Handle 'session/request_state' — forward to EventBus and ack."""
         eb = self._get_event_bus()
         if eb:
-            eb.publish("session.request_state", request.params)
+            eb.publish_typed(SessionRequestState(**request.params))
         return self._build_response(request, {"status": "requested"})
 
     def _handle_tools_list(self, request: JsonRpcRequest) -> str:
@@ -601,10 +602,7 @@ class MCPStdioServer:
         try:
             bus = self._get_event_bus()
             if bus:
-                bus.publish(
-                    "mcp.server.status",
-                    {"running": True, "count": 1, "server_names": ["codingagent"]},
-                )
+                bus.publish_typed(McpServerStatus(running=True, count=1, server_names=["codingagent"]))
         except Exception:
             pass
 
@@ -638,10 +636,7 @@ class MCPStdioServer:
             try:
                 bus = self._get_event_bus()
                 if bus:
-                    bus.publish(
-                        "mcp.server.status",
-                        {"running": False, "count": 0, "server_names": []},
-                    )
+                    bus.publish_typed(McpServerStatus(running=False, count=0, server_names=[]))
             except Exception:
                 pass
 
@@ -655,10 +650,7 @@ class MCPStdioServer:
         try:
             bus = self._get_event_bus()
             if bus:
-                bus.publish(
-                    "mcp.server.status",
-                    {"running": True, "count": 1, "server_names": ["codingagent"]},
-                )
+                bus.publish_typed(McpServerStatus(running=True, count=1, server_names=["codingagent"]))
         except Exception:
             pass
 
@@ -687,10 +679,7 @@ class MCPStdioServer:
             try:
                 bus = self._get_event_bus()
                 if bus:
-                    bus.publish(
-                        "mcp.server.status",
-                        {"running": False, "count": 0, "server_names": []},
-                    )
+                    bus.publish_typed(McpServerStatus(running=False, count=0, server_names=[]))
             except Exception:
                 pass
 

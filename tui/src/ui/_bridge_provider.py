@@ -8,6 +8,8 @@ _on_model_token, _on_stream_chunk, _on_provider_context_window, get_fast_model.
 
 from __future__ import annotations
 
+
+from src.core.messaging.event_types import OrchestratorStartup, SystemSettings
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -83,28 +85,13 @@ class BridgeProviderMixin(AgentBridgeProtocol):
             _context_window = 32_768
 
         try:
-            self._bus.publish(
-                "system.settings",
-                {
-                    "active_mode": cfg.get("active_mode", "lead_architect"),
-                    "theme": cfg.get("theme", "textual-dark"),
-                    "context_window": _context_window,
-                    "default_provider": cfg.get("default_provider", "none"),
-                    "default_model": cfg.get("default_model", "none"),
-                    "providers": providers,
-                    "autonomous_mode": cfg.get("autonomous_mode", False),
-                    "max_turns": cfg.get("max_turns", 50),
-                },
-            )
+            self._bus.publish_typed(SystemSettings(active_mode=cfg.get("active_mode", "lead_architect"), theme=cfg.get("theme", "textual-dark"), context_window=_context_window, default_provider=cfg.get("default_provider", "none"), default_model=cfg.get("default_model", "none"), providers=providers, autonomous_mode=cfg.get("autonomous_mode", False), max_turns=cfg.get("max_turns", 50)))
         except Exception as exc:
             logger.debug(f"_publish_system_settings: {exc}")
 
         # Also publish startup / running events so UI banners reflect state
         try:
-            self._bus.publish(
-                "orchestrator.startup",
-                {"working_dir": self._working_dir or str(Path.cwd())},
-            )
+            self._bus.publish_typed(OrchestratorStartup(working_dir=self._working_dir or str(Path.cwd())))
         except Exception:
             pass
         # The orchestrator startup subscription is now direct (the old

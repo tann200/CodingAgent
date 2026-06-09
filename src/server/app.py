@@ -17,6 +17,8 @@ from contextlib import asynccontextmanager
 from pydantic import BaseModel
 
 from src.core.orchestration.event_bus import EventBus
+from src.core.messaging.event_types import SessionCreated
+
 from src.server.websocket_handler import websocket_session_handler
 from src.server import task_endpoints as _task_endpoints
 from src.server.server_config import (
@@ -158,10 +160,7 @@ async def create_session(session_req: SessionCreateRequest, request: Request):
     # In a full implementation, we'd store session metadata
     # For now, just publish a session created event
     if event_bus:
-        event_bus.publish(
-            "session.created",
-            {"session_id": session_id, "metadata": session_req.metadata or {}},
-        )
+        event_bus.publish_typed(SessionCreated(session_id=session_id, metadata=session_req.metadata or {}))
     return SessionResponse(session_id=session_id)
 
 

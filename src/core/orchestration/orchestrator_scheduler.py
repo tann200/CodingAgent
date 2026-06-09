@@ -6,6 +6,7 @@ import time
 from typing import Any
 
 from src.core.logger import logger as guilogger
+from src.core.messaging.event_types import SchedulerDistillRequest
 
 
 def _init_scheduler(orch: Any) -> None:
@@ -25,10 +26,7 @@ def _init_scheduler(orch: Any) -> None:
 
         def _publish_distill_request() -> None:
             try:
-                orch.event_bus.publish(
-                    "scheduler.distill_request",
-                    {"source": "scheduler", "time": time.time()},
-                )
+                orch.event_bus.publish_typed(SchedulerDistillRequest(source="scheduler", time=time.time()))
             except Exception:
                 try:
                     guilogger.warning("Scheduler: failed to publish distill_request")
@@ -37,7 +35,6 @@ def _init_scheduler(orch: Any) -> None:
 
         try:
             from src.core.config_loader import get as _cfg_get
-
             _sched_cfg = _cfg_get("scheduler_jobs", {}) or {}
         except Exception:
             _sched_cfg = {}

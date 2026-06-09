@@ -2,12 +2,13 @@ import contextlib
 import logging
 from typing import Mapping, Any, Optional
 
+from src.core.messaging.event_types import ProviderLimit
+
 logger = logging.getLogger(__name__)
 
 # OTel tracing — shared no-op wrapper so each node file doesn't duplicate this.
 try:
     from src.core.telemetry.tracer import span_node as _otel_span_node
-
     _HAS_TRACER = True
 except Exception:
     _otel_span_node = None  # type: ignore[assignment]
@@ -149,6 +150,6 @@ def _notify_provider_limit(error_msg: str) -> None:
             from src.core.orchestration.event_bus import get_event_bus
 
             event_bus = get_event_bus()
-            event_bus.publish("provider.limit", {"error": error_msg})
+            event_bus.publish_typed(ProviderLimit(error=error_msg))
         except Exception as _eb_err:
             logger.debug("node_utils: event_bus publish failed: %s", _eb_err)

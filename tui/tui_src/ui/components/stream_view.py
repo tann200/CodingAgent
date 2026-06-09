@@ -1,5 +1,6 @@
 from textual.widgets import Static
 from rich.text import Text
+import threading
 
 
 class StreamView(Static):
@@ -8,12 +9,14 @@ class StreamView(Static):
         self._role = role
         self._raw = ""
         self._flush_pending = False
+        self._flush_lock = threading.Lock()
 
     def append_chunk(self, chunk: str) -> None:
-        self._raw += chunk
-        if not self._flush_pending:
-            self._flush_pending = True
-            self.call_later(self._flush)
+        with self._flush_lock:
+            self._raw += chunk
+            if not self._flush_pending:
+                self._flush_pending = True
+                self.call_later(self._flush)
 
     def _flush(self) -> None:
         self._flush_pending = False

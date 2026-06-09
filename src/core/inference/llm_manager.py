@@ -202,6 +202,7 @@ from src.core.inference.provider_config import (  # noqa: E402
 from src.core.utils.strings import valid_str as _valid_str  # noqa: E402
 
 
+from src.core.messaging.event_types import ModelRoutingComplete, ProviderConfigMissing
 def _set_active_context_length_lazy(context_length: int, provider_key: str = "") -> None:
     """Lazy wrapper for provider_context.set_active_context_length to avoid circular imports."""
     import importlib
@@ -580,14 +581,7 @@ class ProviderManager:
             # --- Publish completion event -------------------------------------
             if self._event_bus:
                 try:
-                    self._event_bus.publish(
-                        "model.routing.complete",
-                        {
-                            "model": selected_model,
-                            "provider": provider_key,
-                            "switched_provider": switched_provider,
-                        },
-                    )
+                    self._event_bus.publish_typed(ModelRoutingComplete(model=selected_model, provider=provider_key, switched_provider=switched_provider))
                 except Exception:
                     pass
         except Exception:
@@ -930,9 +924,7 @@ class ProviderManager:
                     # No providers.json present; publish missing event and mark initialized
                     if self._event_bus:
                         try:
-                            self._event_bus.publish(
-                                "provider.config.missing", {"path": str(cfg)}
-                            )
+                            self._event_bus.publish_typed(ProviderConfigMissing(path=str(cfg)))
                         except Exception:
                             pass
                     self._initialized = True

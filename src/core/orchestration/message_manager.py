@@ -1,3 +1,4 @@
+from src.core.messaging.event_types import MessageTruncation
 from typing import List, Dict, Any, Callable, Optional
 import re
 import logging
@@ -233,7 +234,7 @@ class MessageManager:
                     "dropped_tokens": dropped_tokens,
                     "tokens_after": after_total,
                 }
-                self.event_bus.publish("message.truncation", payload)
+                self.event_bus.publish_typed(MessageTruncation(**payload))
         except Exception:
             pass
 

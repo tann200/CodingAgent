@@ -4,6 +4,8 @@ Extracted from execution_helpers.py (P3-4) for improved modularity.
 """
 from __future__ import annotations
 
+
+from src.core.messaging.event_types import PlanProgress, StepFinish, StepStart
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 
@@ -23,7 +25,7 @@ def emit_plan_progress_and_sync_todo(
     progress_payload = plan_progress_event["plan_progress"]
     try:
         if hasattr(orchestrator, "event_bus"):
-            orchestrator.event_bus.publish("plan.progress", progress_payload)
+            orchestrator.event_bus.publish_typed(PlanProgress(**progress_payload))
     except Exception:
         pass
 
@@ -58,16 +60,7 @@ def emit_execution_step_start(
     )
     try:
         if hasattr(orchestrator, "event_bus"):
-            orchestrator.event_bus.publish(
-                "step.start",
-                {
-                    "step": step_num,
-                    "total": total_steps,
-                    "tool": tool_name,
-                    "description": description,
-                    "session_id": state.get("session_id"),
-                },
-            )
+            orchestrator.event_bus.publish_typed(StepStart(step=step_num, total=total_steps, tool=tool_name, description=description, session_id=state.get("session_id")))
     except Exception:
         pass
     return {
@@ -98,18 +91,7 @@ def emit_execution_step_finish(
         if hasattr(orchestrator, "event_bus"):
             _ok_flag = result.get("ok")
             step_ok = (_ok_flag is True) or (_ok_flag is None and result.get("status") == "ok")
-            orchestrator.event_bus.publish(
-                "step.finish",
-                {
-                    "step": step_num,
-                    "total": total_steps,
-                    "tool": tool_name,
-                    "ok": step_ok,
-                    "elapsed_ms": elapsed_ms,
-                    "tool_call_count": int(state.get("tool_call_count") or 0) + 1,
-                    "session_id": state.get("session_id"),
-                },
-            )
+            orchestrator.event_bus.publish_typed(StepFinish(step=step_num, total=total_steps, tool=tool_name, ok=step_ok, elapsed_ms=elapsed_ms, tool_call_count=int(state.get("tool_call_count") or 0) + 1, session_id=state.get("session_id")))
     except Exception:
         pass
 

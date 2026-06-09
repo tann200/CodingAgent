@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+
+from src.core.messaging.event_types import LLMToken, ModelToken, ResponseStreamChunk, ResponseStreamEnd
 import json
 from typing import Any, Callable, List, Optional, Tuple
 
@@ -81,13 +83,10 @@ def publish_stream_chunk(*, bus: Any, chunk: str, is_reasoning: bool) -> None:
     if not bus or not chunk:
         return
     try:
-        bus.publish("response.stream_chunk", {"chunk": chunk, "is_reasoning": is_reasoning})
+        bus.publish_typed(ResponseStreamChunk(chunk=chunk, is_reasoning=is_reasoning))
         if not is_reasoning:
-            bus.publish("model.token", {"text": chunk, "partial": True})
-            bus.publish(
-                "llm.token",
-                {"text": chunk, "partial": True, "is_reasoning": False},
-            )
+            bus.publish_typed(ModelToken(text=chunk, partial=True))
+            bus.publish_typed(LLMToken(text=chunk, partial=True, is_reasoning=False))
     except Exception:
         pass
 
@@ -142,9 +141,9 @@ def finalize_stream(*, bus: Any, accumulated: List[str]) -> str:
     full_text = "".join(accumulated)
     if bus and full_text:
         try:
-            bus.publish("model.token", {"text": "", "partial": False, "full": full_text})
-            bus.publish("llm.token", {"text": "", "partial": False, "full": full_text})
-            bus.publish("response.stream_end", {"full_text": full_text})
+            bus.publish_typed(ModelToken(text="", partial=False, full=full_text))
+            bus.publish_typed(LLMToken(text="", partial=False, full=full_text))
+            bus.publish_typed(ResponseStreamEnd(full_text=full_text))
         except Exception:
             pass
     return full_text

@@ -15,6 +15,8 @@ from typing import Any, Dict, List, Optional
 
 from src.core.logger import logger as guilogger
 from src.core.orchestration.event_bus import new_correlation_id
+from src.core.messaging.event_types import SessionTitleGenerated
+
 from src.core.orchestration.inference_loop_responses import (
     _build_graph_failure_response,
     _build_success_response,
@@ -150,7 +152,7 @@ def run_agent_once_impl(
                 _t = generate_session_title(p)
                 if _t:
                     orch._session_title = _t
-                    orch.event_bus.publish("session.title_generated", {"title": _t})
+                    orch.event_bus.publish_typed(SessionTitleGenerated(title=_t))
             except Exception:
                 pass
 

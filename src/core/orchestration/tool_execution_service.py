@@ -34,6 +34,8 @@ Usage::
 
 from __future__ import annotations
 
+
+from src.core.messaging.event_types import ToolPermissionRequired
 import asyncio
 import logging
 import threading
@@ -331,14 +333,7 @@ class ToolExecutionService:
             _t4_ev = register_tool_gate(_t4_id)
             try:
                 if self._event_bus is not None and hasattr(self._event_bus, "publish"):
-                    self._event_bus.publish(
-                        "tool.permission_required",
-                        {
-                            "tool": name,
-                            "args": {k: str(v)[:200] for k, v in args.items() if k != "content"},
-                            "tool_id": _t4_id,
-                        },
-                    )
+                    self._event_bus.publish_typed(ToolPermissionRequired(tool=name, args={k: str(v)[:200] for k, v in args.items() if k != "content"}, tool_id=_t4_id))
             except Exception:
                 logger.error("ToolExecutionService._check_permission_gate: exception (fail-closed)")
                 return ExecutionVerdict(

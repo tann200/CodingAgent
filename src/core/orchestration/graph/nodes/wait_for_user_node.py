@@ -1,3 +1,4 @@
+from src.core.messaging.event_types import PlanRequested
 """wait_for_user_node.py - Suspends graph until user confirms preview or approves plan.
 
 CRITICAL: This node uses asyncio.Event to properly suspend LangGraph.
@@ -63,14 +64,7 @@ async def wait_for_user_node(state: StateLike, config: RunnableConfig) -> Dict[s
         try:
             event_bus = getattr(orchestrator, "event_bus", None)
             if event_bus:
-                event_bus.publish(
-                    "plan.requested",
-                    {
-                        "plan": state.get("current_plan"),
-                        "blocked_tool": state.get("plan_mode_blocked_tool"),
-                        "session_id": state.get("session_id"),
-                    },
-                )
+                event_bus.publish_typed(PlanRequested(plan=state.get("current_plan"), blocked_tool=state.get("plan_mode_blocked_tool"), session_id=state.get("session_id")))
         except Exception as e:
             logger.warning(f"wait_for_user_node: failed to publish plan.requested: {e}")
 

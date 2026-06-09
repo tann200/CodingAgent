@@ -39,7 +39,7 @@
 ```
 CodingAgent/
 ├── src/                               # Main source package
-│   ├── core/                          # Orchestration, inference, memory, context, indexing
+│   ├── core/                          # Orchestration, inference, memory, context, indexing, messaging
 │   │   ├── paths.py                   # OS-agnostic path utilities (localappdata vs per-user CodingAgent data dir — use src.core.paths.get_data_dir())
 │   │   ├── orchestration/             # LangGraph pipeline + orchestrator + services
 │   │   ├── inference/                 # LLM adapters, model tiers, tokenizer
@@ -86,7 +86,7 @@ src/core/orchestration/
 │   ├── builder.py                  # compile_agent_graph() + router functions
 │   ├── graph_factory.py            # GraphFactory: planner / coder / reviewer / researcher variants
 │   └── nodes/                      # 16 node files (one per cognitive role)
-├── event_bus.py                    # Thread-safe in-process EventBus + ContextVar correlation IDs
+├── event_bus.py                    # Thread-safe in-process EventBus + ContextVar correlation IDs + typed dual-emission
 ├── tool_preflight.py               # Pre-execution validation (name, bash patterns, path containment, P3-D fuzzy)
 ├── task_lifecycle.py               # start_new_task_impl, restore_continue_state_impl
 ├── loop_guards.py                  # Stuck-loop + doom-loop detection
@@ -1094,40 +1094,77 @@ MockAdapter                — CI / unit tests (script-driven responses)
 
 ### EventBus (`src/core/orchestration/event_bus.py`)
 
+**Phase 5 refactoring:** The `DualPublishBus` adapter (`src/core/messaging/event_bus_adapter.py`, 483 lines) was deleted. `EventBus` now natively references a `MessageBus` instance for typed event dual-emission.
+
 ```python
 class EventBus:
+    def __init__(self, typed_bus: Optional[MessageBus] = None) -> None
+
     def subscribe(event_name, callback) -> None
     def unsubscribe(event_name, callback) -> None
     def publish(event_name, payload, correlation_id=None) -> None
-        # auto-stamps dict payloads with correlation_id
+        # Delivers to old subscribers AND auto-emits typed event on MessageBus
+        # via _build_typed_event()
+
+    def publish_typed(event: Event) -> None
+        # Emits on MessageBus, then delivers event.to_dict() to old subscribers
+        # (bypasses self.publish() to avoid double typed emission)
 
     def subscribe_to_agent(agent_id, callback) -> None
     def publish_to_agent(agent_id, payload) -> None
 
+# Shared MessageBus singleton
+def get_typed_bus() -> MessageBus     # Returns process-wide MessageBus
+def reset_typed_bus() -> None          # For testing
+
 # Correlation ID — ContextVar propagated across async/thread boundaries
 def new_correlation_id() -> str
-def run_with_correlation(loop, executor, fn, *args)  # D-07
+def run_with_correlation(loop, executor, fn, *args) -> Awaitable[T]  # D-07
 ```
 
-### Key published events
+**Event mapping (90+ entries):** `_get_event_name_map()` lazily imports event classes and builds:
+- `EVENT_NAME_TO_TYPED: Dict[str, Tuple[Type[Event], Optional[Dict[str, str]]]]` — string name → (typed class, optional camelCase→snake_case field mapper)
+- `_EVENT_NAME_FROM_CLASS: Dict[Type[Event], str]` — reverse map for `publish_typed()` → old-bus delivery
 
-| Event | Publisher | Payload |
-|---|---|---|
-| `plan.requested` | `planning_node` | plan steps, task |
-| `plan.approved` / `plan.rejected` | `approval_gate` | — |
-| `plan.progress` | `execution_node` | step index, description |
-| `tool.preview_requested` | `preview_service` | diff content |
-| `tool.executed` | `tool_execution_service` | tool name, result |
-| `context.compacted` | `orchestrator` | summary |
-| `config.reloaded` | `ConfigWatcher` | changed keys |
-| `git.status` | `task_lifecycle` | branch, files |
-| `agent.started` / `agent.finished` | `orchestrator` | task, cost |
-| `provider.active` | bootstrap | provider name, model |
+Unmapped events (e.g., `scope.violation`, `scheduler.heartbeat`) gracefully degrade to old-bus-only delivery with no crash.
+
+### MessageBus (`src/core/messaging/bus.py`)
+
+Typed event delivery with error isolation:
+- Subscribers register on typed event classes (not string names)
+- Failed handlers don't kill the publisher
+- Delivery guarantees with explicit drop logging
+- Configurable max queue size and worker thread count
+
+### Published event categories
+
+| Category | Events |
+|---|---|
+| Agent lifecycle | `agent.start`, `agent.end`, `agent.status`, `agent.mode_changed`, `agent.plan_committed`, `agent.message`, `agent.waiting_for_user` |
+| Tool execution | `tool.execute.start`, `tool.invoked`, `tool.execute.finish`, `tool.execute.error`, `tool.result`, `tool.permission_required`, `tool.doom_loop_detected` |
+| Permission | `spawn.permission_required`, `bash.approval_granted`, `bash.approval_denied` |
+| Preview/Plan | `preview.pending`, `preview.confirmed`, `preview.rejected`, `plan.requested`, `plan.progress` |
+| Session | `session.created`, `session.new`, `session.hydrated`, `session.title_generated`, `session.files_changed`, `session.registered`, `session.unregistered`, `session.health_alert`, `session.request_state` |
+| Provider/Model | `provider.status.changed`, `provider.unavailable`, `provider.models.*`, `provider.selection.changed`, `provider.context_window`, `provider.config.missing`, `provider.model.missing`, `provider.limit` |
+| Inference | `response.stream_chunk`, `response.stream_end`, `model.token`, `llm.token`, `model.response`, `model.routing`, `model.routing.complete` |
+| Context/Memory | `context.overflow`, `context.compacted`, `context.auto_compacted`, `context.compact.failed`, `context.degraded`, `message.truncation`, `message.compaction_applied` |
+| Token/Usage | `token.budget`, `token.budget.update`, `token.budget.warning`, `usage.turn_summary`, `usage.budget_exceeded`, `usage.subagent_cost` |
+| File system | `file.modified`, `file.deleted`, `file.diff.preview` |
+| Delegation | `delegation.start`, `delegation.finish`, `delegation.complete`, `agent.scout.*`, `agent.researcher.*`, `agent.reviewer.*` |
+| Scheduler | `scheduler.distill_request`, `scheduler.distill_completed` |
+| MCP | `mcp.server.status`, `mcp.tools.list_changed` |
+| Config | `config.reloaded`, `system.settings` |
+| Orchestrator | `orchestrator.startup`, `orchestrator.models.check.*` |
+| UI | `ui.notification`, `hook.message`, `log.new`, `git.branch`, `working_dir.unavailable` |
+| Role | `role.changed`, `role.transition` |
+| Retry | `retry.attempt`, `retry.succeeded`, `retry.failed` |
+| Task | `task.queue.updated`, `task.turn_limit` |
+| Perception | `perception.corrective_prompt` |
 
 ### Telemetry
 
 `src/core/inference/telemetry.py` — per-turn token usage flushed once per task
-(PB-4 buffer flush), published to `usage.recorded` event.
+(PB-4 buffer flush), published as typed events.
 
 Execution trace: `_execution_trace_buffer` flushed to
 `.codingAgent/execution_trace.json` at task end (`flush_execution_trace()`).
@@ -1501,5 +1538,5 @@ See `docs/ARCHITECTURE_V2.md` for the target architecture.
 
 ---
 
-*Document generated 2026-04-26. Source: `/Users/tann200/PycharmProjects/CodingAgent`.*
+*Document generated 2026-06-10. Source: `/Users/tann200/PycharmProjects/CodingAgent`.*
 *Companion document: `docs/claw-code-architecture.md`.*

@@ -24,6 +24,8 @@ so it can be constructed cheaply and replaced in tests via dependency injection.
 
 from __future__ import annotations
 
+
+from src.core.messaging.event_types import SpawnPermissionRequired, ToolPermissionRequired
 import logging
 import uuid
 
@@ -682,15 +684,7 @@ class PermissionGateway:
                 # SPAWN-W5: Fire spawn event for delegate_task
                 if name == "delegate_task":
                     try:
-                        self._orch.event_bus.publish(
-                            "spawn.permission_required",
-                            {
-                                "tool": name,
-                                "role": args.get("role", ""),
-                                "task": str(args.get("subtask_description", ""))[:200],
-                                "tool_id": _t5_id,
-                            },
-                        )
+                        self._orch.event_bus.publish_typed(SpawnPermissionRequired(tool=name, role=args.get("role", ""), task=str(args.get("subtask_description", ""))[:200], tool_id=_t5_id))
                     except Exception as e:
                         _logger.warning(
                             "failed to publish spawn.permission_required, falling through: %s",
@@ -698,18 +692,11 @@ class PermissionGateway:
                         )
                 _orch_bus = getattr(self._orch, "event_bus", None)
                 if _orch_bus:
-                    _orch_bus.publish(
-                        "tool.permission_required",
-                        {
-                            "tool_id": _t5_id,
-                            "tool": name,
-                            "args": {
+                    _orch_bus.publish_typed(ToolPermissionRequired(tool_id=_t5_id, tool=name, args={
                                 k: str(v)[:200]
                                 for k, v in args.items()
                                 if k != "content"
-                            },
-                        },
-                    )
+                            }))
                 else:
                     _logger.warning(
                         "orchestrator event_bus is None, cannot publish tool.permission_required for %s",

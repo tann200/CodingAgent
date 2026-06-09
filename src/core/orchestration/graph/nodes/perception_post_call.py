@@ -1,3 +1,4 @@
+from src.core.messaging.event_types import ContextOverflow
 import logging
 from typing import Any, Mapping
 
@@ -23,16 +24,7 @@ def _process_post_call_tokens(
         overflow_compaction = {"_budget_compaction": True, "_should_distill": True}
         try:
             if orchestrator and hasattr(orchestrator, "event_bus"):
-                orchestrator.event_bus.publish(
-                    "context.overflow",
-                    {
-                        "prompt_tokens": 0,
-                        "budget": 0,
-                        "reserved": 0,
-                        "session_id": state.get("session_id"),
-                        "source": "api_error",
-                    },
-                )
+                orchestrator.event_bus.publish_typed(ContextOverflow(prompt_tokens=0, budget=0, reserved=0, session_id=state.get("session_id"), source="api_error"))
         except Exception:
             pass
 
@@ -120,15 +112,7 @@ def _process_post_call_tokens(
                 }
                 try:
                     if orchestrator and hasattr(orchestrator, "event_bus"):
-                        orchestrator.event_bus.publish(
-                            "context.overflow",
-                            {
-                                "prompt_tokens": prompt_tokens,
-                                "context_window": budget,
-                                "reserved": reserved_output_buffer,
-                                "session_id": state.get("session_id"),
-                            },
-                        )
+                        orchestrator.event_bus.publish_typed(ContextOverflow(prompt_tokens=prompt_tokens, budget=budget, reserved=reserved_output_buffer, session_id=state.get("session_id")))
                 except Exception:
                     pass
         except Exception as overflow_error:

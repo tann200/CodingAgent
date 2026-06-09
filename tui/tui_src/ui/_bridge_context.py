@@ -307,4 +307,4 @@ class BridgeContextMixin(AgentBridgeProtocol):
                     return True
                 except Exception as exc:
                     logger.warning(f"compact_context: {method}() failed: {exc}")
-        return False
+                    return False

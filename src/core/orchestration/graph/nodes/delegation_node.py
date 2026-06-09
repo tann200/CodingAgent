@@ -1,3 +1,4 @@
+from src.core.messaging.event_types import DelegationComplete
 from langchain_core.runnables import RunnableConfig
 import asyncio
 import logging
@@ -388,14 +389,7 @@ async def delegation_node(state: StateLike, config: RunnableConfig) -> Dict[str,
             # Publish delegation.complete event so TUI can show subagent results
             try:
                 if orchestrator and hasattr(orchestrator, "event_bus"):
-                    orchestrator.event_bus.publish(
-                        "delegation.complete",
-                        {
-                            "count": len(summary_parts),
-                            "keys": list(completed.keys()),
-                            "session_id": state.get("session_id"),
-                        },
-                    )
+                    orchestrator.event_bus.publish_typed(DelegationComplete(count=len(summary_parts), keys=list(completed.keys()), session_id=state.get("session_id")))
             except Exception:
                 pass
 

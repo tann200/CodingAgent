@@ -13,6 +13,8 @@ later layer.
 
 from __future__ import annotations
 
+
+from src.core.messaging.event_types import ConfigReloaded
 import json
 import logging
 import time
@@ -439,7 +441,7 @@ class ConfigWatcher:
         if self._event_bus is not None:
             try:
                 payload = {"changed_paths": list(changed_paths)}
-                self._event_bus.publish("config.reloaded", payload)
+                self._event_bus.publish_typed(ConfigReloaded(**payload))
             except Exception:
                 pass
 

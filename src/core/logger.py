@@ -15,6 +15,7 @@ import logging
 from src.core.orchestration.event_bus import get_event_bus
 
 
+from src.core.messaging.event_types import LogEntry
 class AuditEventType(Enum):
     """Types of security-sensitive events to audit."""
 
@@ -170,7 +171,7 @@ class GUILogger:
         try:
             bus = get_event_bus()
             try:
-                bus.publish("log.new", entry)
+                bus.publish_typed(LogEntry(**entry))
             except Exception:
                 # non-fatal: don't let UI failures break logging
                 pass
