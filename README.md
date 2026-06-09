@@ -290,8 +290,8 @@ ruff check src/
 
 | Document | Description |
 |----------|-------------|
-| `docs/ARCHITECTURE_FLOWS.md` | Flow-first architecture with Mermaid diagrams |
-| `docs/codingagent-architecture.md` | Comprehensive system architecture reference |
+| `ARCHITECTURE.md` | **Single source of truth** — system overview, event system, pipeline, component map |
+| `AGENTS.md` | Agent instructions, conventions, code layout |
 | `docs/DEVELOPMENT.md` | Developer guide |
 | `docs/audit/` | Audit reports (vol1–vol33) |
 | `docs/TODO_METRICS.md` | How to enable and use TODO metrics (Prometheus) |

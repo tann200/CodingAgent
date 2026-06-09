@@ -17,7 +17,7 @@ from ._app_protocol import AgentAppProtocol
 
 logger = get_logger("app_session")
 
-class AppSessionMixin:
+class AppSessionMixin(AgentAppProtocol):
     """Session lifecycle helpers — snapshot, new session, sidebar reset.
 
     Expects the host class to expose:

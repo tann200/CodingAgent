@@ -49,7 +49,7 @@ def _budget_color(percent: float) -> str:
         return "#facc15"
     return "#22c55e"
 
-class AppStatusHandlersMixin:
+class AppStatusHandlersMixin(AgentAppProtocol):
     """Token budget, git, notification, role, provider, file, task, and retry handlers.
 
     Expects the host class to expose:

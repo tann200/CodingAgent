@@ -45,7 +45,7 @@ ROLE_COLORS: dict[str, str] = {
     "system": "#666666",
 }
 
-class StatusBarMixin:
+class StatusBarMixin(AgentAppProtocol):
     """Mixin providing status-bar update methods for ``AgentApp``.
 
     Expects the host class to expose:

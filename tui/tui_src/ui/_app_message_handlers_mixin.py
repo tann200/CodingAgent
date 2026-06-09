@@ -33,7 +33,7 @@ from ._app_protocol import AgentAppProtocol
 
 logger = get_logger("app_msghandlers")
 
-class AppMessageHandlersMixin:
+class AppMessageHandlersMixin(AgentAppProtocol):
     """Streaming output, agent-running gating, message queuing, and text-input handlers.
 
     Expects the host class to expose:

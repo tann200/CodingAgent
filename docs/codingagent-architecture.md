@@ -1,5 +1,8 @@
 # CodingAgent Architecture Reference
 
+> **DEPRECATED** — Content consolidated into `/ARCHITECTURE.md` (repo root). This file
+> is kept temporarily for reference; do not add new content here.
+>
 > **Purpose:** Comprehensive reference document covering the architecture, patterns,
 > and practices of the CodingAgent repository. Structured to mirror
 > `docs/claw-code-architecture.md` for direct comparison analysis.

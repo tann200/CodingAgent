@@ -180,7 +180,7 @@ def _render_question_block(args: dict, result_text: str) -> str:
 
     return ""
 
-class AppToolHandlersMixin:
+class AppToolHandlersMixin(AgentAppProtocol):
     """Tool-call, subagent, diff, plan, and button-handler mixin.
 
     Expects the host class to expose:

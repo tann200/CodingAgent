@@ -1,8 +1,9 @@
 # CodingAgent Orchestration And Tool Flows
 
-Snapshot date: 2026-05-08
+> **DEPRECATED** — Content consolidated into `/ARCHITECTURE.md` (repo root). This file
+> is kept temporarily for reference; do not add new content here.
 
-This document complements `docs/codingagent-architecture.md` with a flow-first view of the live architecture: orchestration graph shape, delegated subagent execution, tool registry/toolset selection, and runtime service boundaries.
+Snapshot date: 2026-05-08
 
 ## Positioning
 

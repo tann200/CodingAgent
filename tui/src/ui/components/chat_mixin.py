@@ -74,7 +74,7 @@ _AT_SKIP_DIRS: frozenset[str] = frozenset(
     {".git", "__pycache__", ".venv", "node_modules", ".mypy_cache"}
 )
 
-class ChatDisplayMixin:
+class ChatDisplayMixin(AgentAppProtocol):
     """Mixin owning chat-log rendering and stream lifecycle helpers.
 
     All methods use only ``self.query_one()``, ``self._current_stream``,

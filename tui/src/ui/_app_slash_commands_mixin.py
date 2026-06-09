@@ -64,7 +64,7 @@ def _load_config_loader_module():
         raise
     return mod
 
-class AppSlashCommandsMixin:
+class AppSlashCommandsMixin(AgentAppProtocol):
     """Slash-command dispatcher and individual command implementations.
 
     Expects the host class to expose:
