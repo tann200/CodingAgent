@@ -696,16 +696,27 @@ The TUI connects through a dual-bus bridge. EventBus for outbound events, Messag
     │  └──────────────┬──────────────────┘                           │
     │                 │                                              │
     │  ┌──────────────▼──────────────────┐                           │
-    │  │  MessageBus (messaging/bus.py)   │                          │
+    │  │  MessageBus (messaging/bus.py)  │                          │
+    │  │  Async internals, sync API     │                           │
     │  │                                 │                           │
-    │  │  Typed event delivery:          │                           │
-    │  │  subscribe(GitBranch, handler)  │                           │
-    │  │  publish(GitBranch(...))        │                           │
+    │  │  publish(Event) — sync:         │                           │
+    │  │  thread-safe sync_queue         │                           │
+    │  │  put_nowait → immediate         │                           │
+    │  │  (no deferred event loop)       │                           │
     │  │                                 │                           │
-    │  │  Error isolation:              │                           │
-    │  │  failed handler ≠ kill pub     │                           │
-    │  │  Configurable max_queue_size     │                          │
-    │  │  Worker thread pool (4)         │                           │
+    │  │  _bridge (async task):          │                           │
+    │  │  run_in_executor → get from     │                           │
+    │  │  sync_queue → create dispatch   │                           │
+    │  │                                 │                           │
+    │  │  _dispatch (one-shot task):     │                           │
+    │  │  deliver handler via            │                           │
+    │  │  run_in_executor (blocks don't  │                           │
+    │  │  block event loop)              │                           │
+    │  │                                 │                           │
+    │  │  Error isolation:               │                           │
+    │  │  failed handler ≠ kill pub      │                           │
+    │  │  Configurable max_queue_size    │                           │
+    │  │  Daemon event loop thread       │                           │
     │  └─────────────────────────────────┘                           │
     │                                                                 │
     │  EVENT NAME          TYPED CLASS         FIELD MAPPER          │

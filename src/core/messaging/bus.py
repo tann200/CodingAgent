@@ -7,14 +7,22 @@ Features:
 - Error isolation (failed handlers don't kill bus)
 - Delivery guarantees with explicit drop logging
 - Metrics for observability
+
+Architecture:
+- Events are queued via a thread-safe ``queue.Queue`` (synchronous ``publish``)
+- A bridge task transfers events to the event loop as they arrive
+- Async worker tasks deliver events to handlers via ``run_in_executor`` (so
+  blocking handlers don't block the event loop)
+- The event loop runs on a dedicated daemon thread
 """
 
+import asyncio
 import logging
+import queue as sync_queue
 import threading
 import time
-from queue import Empty, Full, Queue
-from threading import Thread
-from typing import Callable, Dict, List, Protocol, Type
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, Protocol, Type
 
 from src.core.messaging.events import Event
 from src.core.messaging.metrics import MessageBusMetrics
@@ -23,148 +31,133 @@ logger = logging.getLogger(__name__)
 
 
 class EventHandler(Protocol):
-    """
-    Protocol for event handlers.
-    
-    Handlers receive events from the MessageBus and perform side effects
-    (update UI, write logs, send metrics, etc.).
-    
-    Implementations should:
-    - Not raise exceptions (catch and log internally)
-    - Return quickly (offload heavy work to threads)
-    - Be idempotent (may receive duplicate events)
-    
-    Example:
-        ```python
-        class MyHandler:
-            def handle(self, event: Event) -> None:
-                if isinstance(event, AgentStarted):
-                    print(f"Agent {event.session_id} started: {event.task}")
-        
-        bus = MessageBus()
-        bus.subscribe(AgentStarted, MyHandler())
-        ```
-    """
-    
     def handle(self, event: Event) -> None:
-        """
-        Handle incoming event.
-        
-        Args:
-            event: The event to handle
-        """
         ...
 
 
+@dataclass
+class _SyncDelivery:
+    event: Event
+    delivered: threading.Event
+
+
 class MessageBus:
-    """
-    Asynchronous message bus with typed events.
-    
-    Events are queued and delivered asynchronously by worker threads.
-    Failed handlers are isolated - exceptions don't kill the worker or
-    affect other handlers.
-    
-    Features:
-    - Type-safe event delivery
-    - Bounded queue with backpressure
-    - Error isolation (failed handlers don't kill bus)
-    - Delivery guarantees with explicit drop logging
-    - Metrics for observability
-    
-    Example:
-        ```python
-        # Create bus
-        bus = MessageBus(max_queue_size=1000, worker_threads=1)
-        
-        # Subscribe handler
-        class MyHandler:
-            def handle(self, event: Event):
-                print(f"Received: {event}")
-        
-        bus.subscribe(AgentStarted, MyHandler())
-        
-        # Publish event
-        bus.publish(AgentStarted(
-            session_id="sess_123",
-            role="operational",
-            task="Fix bug"
-        ))
-        
-        # Shutdown gracefully
-        bus.shutdown()
-        ```
-    
-    Thread Safety:
-        All public methods are thread-safe. Multiple threads can publish
-        and subscribe concurrently.
-    
-    Backpressure:
-        If queue is full, events are dropped and logged at ERROR level.
-        Metric `dropped` is incremented for monitoring.
-    
-    Error Handling:
-        Handler exceptions are caught, logged at WARNING level, and
-        metric `handler_failed` is incremented. Other handlers continue
-        processing.
-    """
-    
     def __init__(
         self,
         max_queue_size: int = 1000,
         worker_threads: int = 1,
         enable_metrics: bool = True,
     ):
-        """
-        Initialize MessageBus.
-        
-        Args:
-            max_queue_size: Maximum events in queue before backpressure
-            worker_threads: Number of worker threads for event delivery
-            enable_metrics: Whether to collect metrics
-        """
-        self._queue: Queue[Event] = Queue(maxsize=max_queue_size)
+        self._max_queue_size = max_queue_size
+        self._worker_count = worker_threads
+        self._enable_metrics = enable_metrics
+        self._metrics = MessageBusMetrics()
+
         self._handlers: Dict[Type[Event], List[EventHandler]] = {}
         self._lock = threading.RLock()
+
         self._shutdown_flag = threading.Event()
-        self._workers: List[Thread] = []
-        self._enable_metrics = enable_metrics
-        
-        # Metrics
-        self._metrics = MessageBusMetrics()
-        
-        # Start worker threads
-        for i in range(worker_threads):
-            worker = Thread(
-                target=self._process_events,
-                name=f"MessageBus-Worker-{i}",
-                daemon=True,
+
+        # Thread-safe sync queue — publish() writes from caller thread
+        self._sync_queue: sync_queue.Queue = sync_queue.Queue(maxsize=max_queue_size)
+
+        # Async infrastructure runs on daemon loop thread
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._loop_thread: Optional[threading.Thread] = None
+        self._bridge_task: Optional[asyncio.Task] = None
+        self._started = threading.Event()
+
+        self._start()
+
+    def _start(self) -> None:
+        self._loop = asyncio.new_event_loop()
+        self._loop_thread = threading.Thread(
+            target=self._run_loop,
+            name="MessageBus-EventLoop",
+            daemon=True,
+        )
+        self._loop_thread.start()
+        self._started.wait(timeout=10.0)
+        if not self._started.is_set():
+            logger.error("MessageBus: event loop thread failed to start")
+
+    def _run_loop(self) -> None:
+        asyncio.set_event_loop(self._loop)
+        self._bridge_task = self._loop.create_task(self._bridge())
+        for i in range(self._worker_count):
+            self._loop.create_task(self._worker(i))
+        self._started.set()
+        try:
+            self._loop.run_forever()
+        finally:
+            self._loop.close()
+
+    async def _bridge(self) -> None:
+        """Transfer items from sync queue to event loop for async dispatch.
+
+        Runs as a task on the event loop. Blocks on the sync queue using
+        run_in_executor so the event loop stays responsive. When an item
+        arrives, it schedules it for delivery by an async worker.
+        """
+        while not self._shutdown_flag.is_set():
+            try:
+                item = await asyncio.get_event_loop().run_in_executor(
+                    None, self._sync_queue.get, True, 0.5
+                )
+            except sync_queue.Empty:
+                continue
+            except Exception as e:
+                logger.error(
+                    "MessageBus: bridge error: %s", e, exc_info=True
+                )
+                continue
+
+            self._loop.create_task(self._dispatch(item))
+
+        # Drain remaining items after shutdown
+        while True:
+            try:
+                item = self._sync_queue.get_nowait()
+            except sync_queue.Empty:
+                break
+            self._loop.create_task(self._dispatch(item))
+
+    async def _dispatch(self, item: Any) -> None:
+        """Deliver a single item to handlers (runs as a one-shot task)."""
+        if isinstance(item, _SyncDelivery):
+            await asyncio.get_event_loop().run_in_executor(
+                None, self._deliver_to_handlers, item.event
             )
-            worker.start()
-            self._workers.append(worker)
-            logger.info("MessageBus: started worker thread %s", worker.name)
-    
+            item.delivered.set()
+        elif callable(item):
+            try:
+                await asyncio.get_event_loop().run_in_executor(None, item)
+            except Exception as e:
+                logger.error(
+                    "MessageBus: sync delivery function failed: %s",
+                    e, exc_info=True,
+                )
+        else:
+            await asyncio.get_event_loop().run_in_executor(
+                None, self._deliver_to_handlers, item
+            )
+
+    async def _worker(self, worker_id: int) -> None:
+        """Legacy worker stub — dispatch now handled by _bridge + _dispatch.
+
+        Kept for API compatibility and to match the worker_threads count.
+        Will be removed when all callers migrate to the async API.
+        """
+        # Workers are no longer needed as individual consumers — _bridge
+        # creates _dispatch tasks. Keep the task alive until shutdown so
+        # the worker_threads count is respected for backward compatibility.
+        await asyncio.get_event_loop().run_in_executor(
+            None, self._shutdown_flag.wait
+        )
+
     def subscribe(
         self, event_type: Type[Event], handler: EventHandler
     ) -> None:
-        """
-        Register a handler for specific event type.
-        
-        The handler will be called asynchronously whenever an event of
-        the specified type is published.
-        
-        Args:
-            event_type: The Event class to subscribe to
-            handler: Object with handle(event) method
-        
-        Example:
-            ```python
-            bus.subscribe(AgentStarted, MyHandler())
-            bus.subscribe(ToolCallFinished, MyHandler())
-            ```
-        
-        Thread Safety:
-            Safe to call from any thread.
-        """
         with self._lock:
             self._handlers.setdefault(event_type, []).append(handler)
             logger.debug(
@@ -172,20 +165,10 @@ class MessageBus:
                 handler.__class__.__name__,
                 event_type.__name__,
             )
-    
+
     def unsubscribe(
         self, event_type: Type[Event], handler: EventHandler
     ) -> None:
-        """
-        Remove handler subscription.
-        
-        Args:
-            event_type: The Event class to unsubscribe from
-            handler: The handler to remove
-        
-        Thread Safety:
-            Safe to call from any thread.
-        """
         with self._lock:
             if event_type in self._handlers:
                 try:
@@ -201,210 +184,82 @@ class MessageBus:
                         handler.__class__.__name__,
                         event_type.__name__,
                     )
-    
+
     def publish(self, event: Event) -> None:
-        """
-        Publish event for async delivery.
-        
-        Events are queued and delivered by worker thread.
-        If queue is full, event is dropped and logged at ERROR level.
-        
-        Args:
-            event: The event to publish
-        
-        Example:
-            ```python
-            bus.publish(AgentStarted(
-                session_id="sess_123",
-                role="operational",
-                task="Fix bug"
-            ))
-            ```
-        
-        Thread Safety:
-            Safe to call from any thread.
-        
-        Backpressure:
-            If queue is full, event is dropped (not blocking).
-            Metric `dropped` is incremented.
-        """
         if self._shutdown_flag.is_set():
             logger.warning(
                 "MessageBus: publish after shutdown, dropping: %s", event
             )
             return
-        
+
         try:
-            self._queue.put_nowait(event)
+            self._sync_queue.put_nowait(event)
             if self._enable_metrics:
                 self._metrics.increment_published(type(event).__name__)
-        except Full:
+        except sync_queue.Full:
             logger.error(
                 "MessageBus: queue full (%d events), dropping: %s",
-                self._queue.qsize(),
+                self._sync_queue.qsize(),
                 event,
             )
             if self._enable_metrics:
                 self._metrics.increment_dropped(type(event).__name__)
-    
+
     def publish_sync(self, event: Event, timeout: float = 5.0) -> bool:
-        """
-        Publish event and wait for delivery (blocking).
-        
-        This is useful for testing or when you need to ensure event
-        is delivered before proceeding.
-        
-        Args:
-            event: The event to publish
-            timeout: Maximum time to wait for delivery (seconds)
-        
-        Returns:
-            True if delivered, False if timeout or dropped
-        
-        Example:
-            ```python
-            success = bus.publish_sync(
-                AgentStarted(...),
-                timeout=2.0
-            )
-            if not success:
-                print("Event delivery timed out or queue full")
-            ```
-        
-        Thread Safety:
-            Safe to call from any thread (but will block caller).
-        """
         if self._shutdown_flag.is_set():
             logger.warning(
                 "MessageBus: publish_sync after shutdown, dropping: %s", event
             )
             return False
-        
-        delivered = threading.Event()
-        event_type_name = type(event).__name__
 
-        def deliver_and_signal() -> None:
-            try:
-                self._deliver_to_handlers(event)
-            finally:
-                delivered.set()
-
+        delivery = _SyncDelivery(
+            event=event,
+            delivered=threading.Event(),
+        )
         try:
-            # Queue the delivery function
-            self._queue.put(deliver_and_signal, timeout=timeout)  # type: ignore
+            self._sync_queue.put(delivery, timeout=timeout)
             if self._enable_metrics:
-                self._metrics.increment_published(event_type_name)
-            # Wait for delivery to complete
-            return delivered.wait(timeout=timeout)
-        except Full:
+                self._metrics.increment_published(type(event).__name__)
+        except sync_queue.Full:
             logger.error("MessageBus: sync publish queue full")
             if self._enable_metrics:
-                self._metrics.increment_dropped(event_type_name)
+                self._metrics.increment_dropped(type(event).__name__)
             return False
-    
-    def _process_events(self) -> None:
-        """
-        Worker thread: dequeue and deliver events.
 
-        Runs until shutdown flag is set AND the queue is empty.
-        After the shutdown flag is set the worker keeps draining so that
-        events published before shutdown() was called are still delivered.
-        Catches all exceptions to ensure the worker thread stays alive.
-        """
-        logger.info(
-            "MessageBus worker started: %s", threading.current_thread().name
-        )
+        return delivery.delivered.wait(timeout=timeout)
 
-        def _process_one(item: object) -> None:
-            # Handle callable (from publish_sync)
-            if callable(item):
-                try:
-                    item()
-                except Exception as e:
-                    logger.error(
-                        "MessageBus: sync delivery function failed: %s",
-                        e,
-                        exc_info=True,
-                    )
-                finally:
-                    self._queue.task_done()
-                return
-
-            # Handle Event
-            try:
-                self._deliver_to_handlers(item)  # type: ignore[arg-type]
-            except Exception as e:
-                logger.error(
-                    "MessageBus: unexpected error delivering %s: %s",
-                    type(item).__name__,
-                    e,
-                    exc_info=True,
-                )
-            finally:
-                self._queue.task_done()
-
-        while True:
-            # Normal operation: block until an item arrives or poll period elapses.
-            if not self._shutdown_flag.is_set():
-                try:
-                    item = self._queue.get(timeout=0.5)
-                    _process_one(item)
-                except Empty:
-                    continue
-            else:
-                # Shutdown requested: drain remaining items without blocking,
-                # then exit the loop.
-                try:
-                    item = self._queue.get_nowait()
-                    _process_one(item)
-                except Empty:
-                    break  # queue fully drained — worker can stop
-
-        logger.info(
-            "MessageBus worker stopped: %s", threading.current_thread().name
-        )
-    
     def _deliver_to_handlers(self, event: Event) -> None:
-        """
-        Deliver event to all registered handlers.
-        
-        Handlers are called sequentially. If a handler raises an exception,
-        it is caught and logged, and other handlers continue processing.
-        
-        Args:
-            event: The event to deliver
-        """
         event_type = type(event)
-        
-        # Get handler list (copy to avoid holding lock during delivery)
+
         with self._lock:
             handlers = self._handlers.get(event_type, []).copy()
-        
+
         if not handlers:
-            logger.debug("MessageBus: no handlers for %s", event_type.__name__)
+            logger.debug(
+                "MessageBus: no handlers for %s", event_type.__name__
+            )
             return
-        
-        # Deliver to each handler
+
         for handler in handlers:
             try:
                 start = time.perf_counter()
                 handler.handle(event)
                 duration_ms = (time.perf_counter() - start) * 1000
-                
+
                 if self._enable_metrics:
                     self._metrics.record_delivery(
                         event_type.__name__,
                         handler.__class__.__name__,
                         duration_ms,
                     )
-                
+
                 logger.debug(
                     "MessageBus: delivered %s to %s (%.2fms)",
                     event_type.__name__,
                     handler.__class__.__name__,
                     duration_ms,
                 )
-                
+
             except Exception as e:
                 logger.warning(
                     "MessageBus: handler %s failed for %s: %s",
@@ -417,60 +272,36 @@ class MessageBus:
                     self._metrics.increment_handler_failed(
                         event_type.__name__, handler.__class__.__name__
                     )
-    
+
     def shutdown(self, timeout: float = 10.0) -> None:
-        """
-        Gracefully shutdown message bus.
-        
-        Waits for queue to drain, then stops workers.
-        
-        Args:
-            timeout: Maximum time to wait for shutdown (seconds)
-        
-        Example:
-            ```python
-            bus.shutdown(timeout=5.0)
-            ```
-        
-        Thread Safety:
-            Safe to call from any thread.
-        """
         logger.info("MessageBus: shutting down...")
         self._shutdown_flag.set()
 
-        # Workers will drain remaining queued items after seeing the shutdown
-        # flag, then exit.  We join them with a bounded timeout so we never
-        # block forever if a handler is pathologically slow/stuck.
-        worker_timeout = timeout / max(len(self._workers), 1)
-        for worker in self._workers:
-            worker.join(timeout=worker_timeout)
-            if worker.is_alive():
+        if self._loop is not None and not self._loop.is_closed():
+            asyncio.run_coroutine_threadsafe(
+                self._async_shutdown(), self._loop
+            )
+
+        if self._loop_thread is not None and self._loop_thread.is_alive():
+            self._loop_thread.join(timeout=timeout)
+            if self._loop_thread.is_alive():
                 logger.warning(
-                    "MessageBus: worker %s did not stop within %.1fs — "
-                    "a handler may be blocked",
-                    worker.name,
-                    worker_timeout,
+                    "MessageBus: loop thread did not stop within %.1fs",
+                    timeout,
                 )
 
         logger.info("MessageBus: shutdown complete")
-    
-    def get_metrics(self) -> Dict[str, any]:
-        """
-        Return current metrics snapshot.
-        
-        Returns:
-            Dictionary with all metrics (published, delivered, dropped, etc.)
-        
-        Example:
-            ```python
-            metrics = bus.get_metrics()
-            print(f"Published: {metrics['published']}")
-            print(f"Dropped: {metrics['dropped']}")
-            print(f"P99 latency: {metrics['p99_delivery_ms']}")
-            ```
-        """
+
+    async def _async_shutdown(self) -> None:
+        me = asyncio.current_task()
+        all_tasks = asyncio.all_tasks(self._loop)
+        others = [t for t in all_tasks if t is not me]
+        if others:
+            await asyncio.wait(others, timeout=10.0)
+        self._loop.stop()
+
+    def get_metrics(self) -> Dict[str, Any]:
         return self._metrics.snapshot()
-    
+
     def reset_metrics(self) -> None:
-        """Reset all metrics (useful for testing)."""
         self._metrics.reset()

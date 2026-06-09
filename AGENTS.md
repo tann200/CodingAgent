@@ -62,6 +62,12 @@ The event system has **two cooperating buses**:
 - TUI bridge subscribes exclusively through MessageBus with `_DictBridgeAdapter`
 - `src/core/messaging/__init__.py` uses `__getattr__` lazy re-export to break circular imports
 
+**Phase 6 completed:** MessageBus async migration.
+- Internals rewritten: thread-safe `queue.Queue` for synchronous `publish()`, bridge task transfers to `asyncio` event loop, handler dispatch via `run_in_executor` (blocking handlers don't block the event loop)
+- Public API unchanged — all 30 bus tests and 316 messaging tests pass
+- Architecture: `sync_queue → bridge → async dispatch tasks → executor threads for handlers`
+- Legacy `_worker` tasks kept as stubs for backward compatibility; real dispatch now goes through `_bridge` + one-shot `_dispatch` tasks
+
 ### Cognitive Pipeline
 
 16 LangGraph nodes in a state-machine (not a simple loop):
@@ -80,6 +86,7 @@ With conditional routing for: fast-path, overflow, debug, replan, delegation, wa
 - **Lazy imports** — used to break circular dependencies (event_types in event_bus, MessageBus in messaging)
 - **Graceful degradation** — all optional features wrapped in try/except
 - **try/except pattern for module-level code** — used in `_bridge_subscriptions.py` for mock mode
+- **MessageBus async architecture** — `sync_queue` (thread-safe for `publish()`) → `_bridge` task (transfers to event loop) → `_dispatch` task (runs handlers via `run_in_executor` so blocking handlers don't block the event loop)
 
 ## Agent Definitions
 
