@@ -6,142 +6,106 @@ adapter ensures that every ``EventBus.publish()`` call from the backend
 still reaches these typed handlers.
 
 Contains: setup_subscriptions, _seed_context_window_from_config, cleanup.
+
+Phase 3.3: per-symbol lazy loading via importlib.  A single missing symbol
+logs a warning but does not affect any other subscription.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Callable, Type
+import importlib as _importlib
+import logging as _logging
+from typing import TYPE_CHECKING, Any, Callable
 
 if TYPE_CHECKING:
-    from src.core.messaging import Event, EventHandler
+    from src.core.messaging import Event
 
 from ._bridge_protocol import AgentBridgeProtocol
 from .logging import get_logger
 
+
+# ── Lazy symbol resolution ──────────────────────────────────────────────────
+# Each event class is imported individually so a missing symbol does not
+# silently break all subscriptions.  The module is imported once and cached.
+# ----------------------------------------------------------------------------
+
+_SYMBOL_MODULE_PATH = "src.core.messaging"
+_SYMBOL_MODULE = None
+
+_log = _logging.getLogger("bridge")
+
+
+def _resolve_event_class(name: str):
+    global _SYMBOL_MODULE
+    if _SYMBOL_MODULE is None:
+        try:
+            _SYMBOL_MODULE = _importlib.import_module(_SYMBOL_MODULE_PATH)
+        except Exception as exc:
+            _log.warning("bridge: cannot import %s — %s", _SYMBOL_MODULE_PATH, exc)
+            return None
+    try:
+        return getattr(_SYMBOL_MODULE, name)
+    except AttributeError:
+        _log.warning("bridge: symbol %r not found in %s — skipping subscription", name, _SYMBOL_MODULE_PATH)
+        return None
+
+
 # ── Typed event routing table ────────────────────────────────────────────────
-# Maps each typed event class to the handler method that should receive it.
+# Maps each typed event class name to the handler method that should receive it.
 # The handler receives a dict payload converted from the typed event via
 # event.to_dict().  Events with lambda no-op handlers in the old subscription
 # block are deliberately omitted.
+# Order matches the old setup_subscriptions() block for maintainability.
 # ---------------------------------------------------------------------------
 
-try:
-    from src.core.messaging import (
-        AgentMessage,
-        # Agent lifecycle
-        ContextCompacted,
-        ContextDegraded,
-        DelegationFinish,
-        DelegationStart,
-        FileDeleted,
-        FileDiffPreview,
-        FileModified,
-        GitBranch,
-        LogEntry,
-        McpServerStatus,
-        ModelResponse,
-        ModelRouting,
-        ModelToken,
-        # Context / memory
-        # Delegation
-        # File system
-        # UI / notifications
-        # Retry
-        # Tool execution
-        # Session
-        # Token budget
-        # Step
-        # Provider / model
-        # Preview / plan
-        OrchestratorStartup,
-        PlanProgress,
-        PlanRequested,
-        PreviewPending,
-        ProviderContextWindow,
-        ProviderModelsCached,
-        ProviderModelsList,
-        ProviderStatusChanged,
-        ProviderUnavailable,
-        ResponseStreamChunk,
-        RetryAttempt,
-        RetryFailed,
-        RetrySucceeded,
-        RoleTransition,
-        SessionHealthAlert,
-        SessionHydrated,
-        SessionNew,
-        SpawnPermissionRequired,
-        StepFinish,
-        StepStart,
-        SystemSettings,
-        TaskQueueUpdated,
-        TokenBudget,
-        TokenBudgetUpdate,
-        TokenBudgetWarning,
-        ToolDoomLoopDetected,
-        ToolExecuteError,
-        ToolExecuteFinish,
-        ToolExecuteStart,
-        ToolPermissionRequired,
-        UiNotification,
-        UsageSubagentCost,
-        UsageTurnSummary,
-    )
-except Exception:
-    # Mock / dev mode — ignore
-    pass
-
-
-# (event_cls, handler_method_name)
-# Order matches the old setup_subscriptions() block for maintainability.
-TYPED_EVENT_ROUTING: list[tuple[type, str]] = [
-    (SystemSettings, "_on_system_settings"),
-    (OrchestratorStartup, "_on_orchestrator_startup"),
-    (ProviderStatusChanged, "_on_provider_status"),
-    (ProviderUnavailable, "_on_provider_unavailable"),
-    (ProviderModelsList, "_on_models_list"),
-    (ProviderModelsCached, "_on_models_list"),
-    (ModelRouting, "_on_model_routing"),
-    (ModelResponse, "_on_model_response"),
-    (ModelToken, "_on_model_token"),
-    (ResponseStreamChunk, "_on_stream_chunk"),
-    (ToolExecuteStart, "_on_tool_start"),
-    (ToolExecuteFinish, "_on_tool_finish"),
-    (ToolExecuteError, "_on_tool_error"),
-    (FileDiffPreview, "_on_diff_preview"),
-    (FileModified, "_on_file_modified"),
-    (FileDeleted, "_on_file_deleted"),
-    (PlanProgress, "_on_plan_progress"),
-    (PlanRequested, "_on_plan_requested"),
-    (SessionNew, "_on_session_new"),
-    (SessionHydrated, "_on_session_hydrated"),
-    (SessionHealthAlert, "_on_session_health"),
-    (UiNotification, "_on_ui_notification"),
-    (LogEntry, "_on_log_new"),
-    (TokenBudgetUpdate, "_on_token_budget"),
-    (TokenBudgetWarning, "_on_token_budget_warning"),
-    (TokenBudget, "_on_token_budget"),
-    (ProviderContextWindow, "_on_provider_context_window"),
-    (RoleTransition, "_on_role_transition"),
-    (PreviewPending, "_on_preview_pending"),
-    (GitBranch, "_on_git_branch"),
-    (RetryAttempt, "_on_retry_attempt"),
-    (RetrySucceeded, "_on_retry_succeeded"),
-    (RetryFailed, "_on_retry_failed"),
-    (ContextDegraded, "_on_context_degraded"),
-    (ContextCompacted, "_on_context_compacted"),
-    (TaskQueueUpdated, "_on_task_queue_updated"),
-    (StepStart, "_on_step_start"),
-    (StepFinish, "_on_step_finish"),
-    (McpServerStatus, "_on_mcp_server_status"),
-    (ToolPermissionRequired, "_on_tool_permission_required"),
-    (SpawnPermissionRequired, "_on_spawn_permission_required"),
-    (UsageTurnSummary, "_on_usage_turn_summary"),
-    (UsageSubagentCost, "_on_subagent_cost"),
-    (ToolDoomLoopDetected, "_on_doom_loop_detected"),
-    (AgentMessage, "_on_agent_message"),
-    (DelegationStart, "_on_delegation_start"),
-    (DelegationFinish, "_on_delegation_finish"),
+TYPED_EVENT_ROUTING: list[tuple[str, str]] = [
+    ("SystemSettings", "_on_system_settings"),
+    ("OrchestratorStartup", "_on_orchestrator_startup"),
+    ("ProviderStatusChanged", "_on_provider_status"),
+    ("ProviderUnavailable", "_on_provider_unavailable"),
+    ("ProviderModelsList", "_on_models_list"),
+    ("ProviderModelsCached", "_on_models_list"),
+    ("ModelRouting", "_on_model_routing"),
+    ("ModelResponse", "_on_model_response"),
+    ("ModelToken", "_on_model_token"),
+    ("ResponseStreamChunk", "_on_stream_chunk"),
+    ("ToolExecuteStart", "_on_tool_start"),
+    ("ToolExecuteFinish", "_on_tool_finish"),
+    ("ToolExecuteError", "_on_tool_error"),
+    ("FileDiffPreview", "_on_diff_preview"),
+    ("FileModified", "_on_file_modified"),
+    ("FileDeleted", "_on_file_deleted"),
+    ("PlanProgress", "_on_plan_progress"),
+    ("PlanRequested", "_on_plan_requested"),
+    ("SessionNew", "_on_session_new"),
+    ("SessionHydrated", "_on_session_hydrated"),
+    ("SessionHealthAlert", "_on_session_health"),
+    ("UiNotification", "_on_ui_notification"),
+    ("LogEntry", "_on_log_new"),
+    ("TokenBudgetUpdate", "_on_token_budget"),
+    ("TokenBudgetWarning", "_on_token_budget_warning"),
+    ("TokenBudget", "_on_token_budget"),
+    ("ProviderContextWindow", "_on_provider_context_window"),
+    ("RoleTransition", "_on_role_transition"),
+    ("PreviewPending", "_on_preview_pending"),
+    ("GitBranch", "_on_git_branch"),
+    ("RetryAttempt", "_on_retry_attempt"),
+    ("RetrySucceeded", "_on_retry_succeeded"),
+    ("RetryFailed", "_on_retry_failed"),
+    ("ContextDegraded", "_on_context_degraded"),
+    ("ContextCompacted", "_on_context_compacted"),
+    ("TaskQueueUpdated", "_on_task_queue_updated"),
+    ("StepStart", "_on_step_start"),
+    ("StepFinish", "_on_step_finish"),
+    ("McpServerStatus", "_on_mcp_server_status"),
+    ("ToolPermissionRequired", "_on_tool_permission_required"),
+    ("SpawnPermissionRequired", "_on_spawn_permission_required"),
+    ("UsageTurnSummary", "_on_usage_turn_summary"),
+    ("UsageSubagentCost", "_on_subagent_cost"),
+    ("ToolDoomLoopDetected", "_on_doom_loop_detected"),
+    ("AgentMessage", "_on_agent_message"),
+    ("DelegationStart", "_on_delegation_start"),
+    ("DelegationFinish", "_on_delegation_finish"),
 ]
 
 
@@ -170,11 +134,16 @@ class BridgeSubscriptionsMixin(AgentBridgeProtocol):
         """Register all typed event subscriptions on the MessageBus."""
         imported = 0
         skipped = 0
-        for event_cls, method_name in TYPED_EVENT_ROUTING:
+        for cls_name, method_name in TYPED_EVENT_ROUTING:
+            event_cls = _resolve_event_class(cls_name)
+            if event_cls is None:
+                skipped += 1
+                continue
             try:
                 self._subscribe_typed(event_cls, self._make_typed_adapter(method_name))
                 imported += 1
-            except Exception:
+            except Exception as exc:
+                logger.warning("bridge: failed to subscribe %s: %s", cls_name, exc)
                 skipped += 1
         if imported:
             logger.info(
@@ -248,7 +217,7 @@ class BridgeSubscriptionsMixin(AgentBridgeProtocol):
             for event_cls, handler in self._typed_subscriptions:
                 try:
                     typed_bus.unsubscribe(event_cls, handler)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning("bridge: failed to unsubscribe %s: %s", event_cls.__name__, exc)
         self._typed_subscriptions.clear()
         logger.info("MessageBus: all subscriptions removed")

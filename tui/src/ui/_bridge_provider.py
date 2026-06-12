@@ -9,12 +9,19 @@ _on_model_token, _on_stream_chunk, _on_provider_context_window, get_fast_model.
 from __future__ import annotations
 
 
-from src.core.messaging.event_types import OrchestratorStartup, SystemSettings
+import importlib
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    pass
+    from src.core.messaging.event_types import OrchestratorStartup, SystemSettings
+
+
+def _import_event(name: str) -> Any:
+    try:
+        return getattr(importlib.import_module("src.core.messaging.event_types"), name)
+    except Exception:
+        return None
 
 from ._bridge_protocol import AgentBridgeProtocol
 from .logging import get_logger
@@ -84,16 +91,21 @@ class BridgeProviderMixin(AgentBridgeProtocol):
         if not _context_window:
             _context_window = 32_768
 
-        try:
-            self._bus.publish_typed(SystemSettings(active_mode=cfg.get("active_mode", "lead_architect"), theme=cfg.get("theme", "textual-dark"), context_window=_context_window, default_provider=cfg.get("default_provider", "none"), default_model=cfg.get("default_model", "none"), providers=providers, autonomous_mode=cfg.get("autonomous_mode", False), max_turns=cfg.get("max_turns", 50)))
-        except Exception as exc:
-            logger.debug(f"_publish_system_settings: {exc}")
+        cls_sys = _import_event("SystemSettings")
+        if cls_sys is not None:
+            try:
+                self._bus.publish_typed(cls_sys(active_mode=cfg.get("active_mode", "lead_architect"), theme=cfg.get("theme", "textual-dark"), context_window=_context_window, default_provider=cfg.get("default_provider", "none"), default_model=cfg.get("default_model", "none"), providers=providers, autonomous_mode=cfg.get("autonomous_mode", False), max_turns=cfg.get("max_turns", 50)))
+            except Exception as exc:
+                logger.debug(f"_publish_system_settings: {exc}")
 
         # Also publish startup / running events so UI banners reflect state
-        try:
-            self._bus.publish_typed(OrchestratorStartup(working_dir=self._working_dir or str(Path.cwd())))
-        except Exception:
-            pass
+        cls_startup = _import_event("OrchestratorStartup")
+        if cls_startup is not None:
+            import time
+            try:
+                self._bus.publish_typed(cls_startup(time=time.time(), working_dir=self._working_dir or str(Path.cwd())))
+            except Exception:
+                pass
         # The orchestrator startup subscription is now direct (the old
         # _EVENT_MAP remapping has been removed), so the bus event will be
         # received normally.  We also eagerly publish active provider status
