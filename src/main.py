@@ -30,6 +30,44 @@ def _dbg(msg: str) -> None:
             pass
 
 
+def _err(msg: str) -> None:
+    """Print *msg* to stderr unconditionally (startup failures must be visible)."""
+    try:
+        print(f"[codingagent] {msg}", file=sys.stderr, flush=True)
+    except Exception:
+        pass
+
+
+def _check_tui_imports() -> Optional[str]:
+    """Verify TUI module imports before attempting to start the app.
+
+    Returns an error message string if a known import-time issue is detected,
+    or None if everything looks healthy.
+    """
+    try:
+        # Check that textual.app.App metaclass is compatible with mixin protocols.
+        # AgentAppProtocol intentionally avoids inheriting from typing.Protocol
+        # because _ProtocolMeta conflicts with App's _MessagePumpMeta metaclass.
+        # If someone accidentally adds `Protocol` back, catch it early.
+        from textual.app import App
+        app_meta = type(App)
+
+        from tui.tui_src.ui._app_protocol import AgentAppProtocol
+        proto_meta = type(AgentAppProtocol)
+
+        from tui.tui_src.ui.components.status_bar import StatusBarMixin
+        mixin_meta = type(StatusBarMixin)
+
+        if not issubclass(mixin_meta, app_meta) and not issubclass(app_meta, mixin_meta):
+            return (
+                f"Metaclass conflict: {mixin_meta.__name__} and {app_meta.__name__} "
+                f"are incompatible. AgentAppProtocol must NOT inherit from typing.Protocol."
+            )
+    except Exception:
+        pass  # Import checks are best-effort; don't block startup.
+    return None
+
+
 # Ensure project root is on sys.path when executed as script
 if __package__ is None:
     _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -196,6 +234,12 @@ def _parse_args(argv: list) -> argparse.Namespace:
             "on (always enable), off (disable for small models). "
             "For models like Qwen3 that emit <think> blocks."
         ),
+    )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        default=False,
+        help="Enable debug logging (sets CODINGAGENT_DEBUG=1).",
     )
     # Allow unknown flags so future args don't break older wrappers
     known, _ = parser.parse_known_args(argv)
@@ -591,6 +635,15 @@ def main(argv: Optional[list] = None) -> int:
 
     args = _parse_args(argv)
 
+    # Apply --debug flag: set env var so _dbg() activates everywhere
+    if getattr(args, "debug", False):
+        os.environ["CODINGAGENT_DEBUG"] = "1"
+
+    # Run pre-startup health checks (metaclass compatibility, etc.)
+    _check_result = _check_tui_imports()
+    if _check_result is not None:
+        _err(f"Pre-flight check failed: {_check_result}")
+
     # TASK-10: Dispatch `init` subcommand
     if getattr(args, "subcommand", None) == "init":
         return _run_init(
@@ -735,6 +788,7 @@ def main(argv: Optional[list] = None) -> int:
         return 0
     except Exception as e:
         _dbg(f"[src.main] Failed to start app: {e}")
+        _err(f"Failed to start TUI: {e}")
         return 2
 
 

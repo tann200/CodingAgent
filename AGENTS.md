@@ -182,3 +182,28 @@ When a task is complete:
 2. Output a brief summary of what was done
 3. Do NOT read back the file to verify (the system handles this)
 4. Move on to next task or indicate completion
+
+## Prevention Patterns
+
+### Metaclass incompatibility with textual.app.App
+
+- `textual.app.App` uses `_MessagePumpMeta` metaclass
+- If a mixin inherits from `typing.Protocol`, it gets `_ProtocolMeta` metaclass
+- These metaclasses are incompatible; `AgentApp` cannot inherit from both
+- **Fix**: protocol-like mixin bases must NOT inherit from `typing.Protocol`. Use a plain class instead. The structural subtyping of `Protocol` is not needed for mixins since they are explicitly inherited, not structurally matched.
+- **New pattern**: When creating a base class for TUI mixins, use `class MyProtocol:` (plain class), not `class MyProtocol(Protocol):`
+- The `_check_tui_imports()` function in `src/main.py` detects this at startup
+
+### Startup errors must always be visible
+
+- `_dbg()` requires `CODINGAGENT_DEBUG` env var — hidden from normal users
+- Use `_err()` in `src/main.py` for startup failures that always prints to stderr
+- **CLI**: `--debug` flag sets `CODINGAGENT_DEBUG=1` automatically
+
+### When to scope mixin metaclass usage
+
+| Scope | Base class | Metaclass | Compatible with |
+|-------|-----------|-----------|-----------------|
+| App mixins (`StatusBarMixin`, etc.) | `AgentAppProtocol` (plain class) | `type` | `App._MessagePumpMeta` |
+| Bridge mixins (`BridgeProviderMixin`, etc.) | `AgentBridgeProtocol` (Protocol) | `_ProtocolMeta` | Only other Protocol classes |
+

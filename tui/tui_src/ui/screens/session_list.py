@@ -26,7 +26,10 @@ _log = logging.getLogger(__name__)
 class SessionListScreen(ModalScreen[None]):
     """Browse, resume, and delete saved sessions."""
 
-    BINDINGS = [("escape", "close_sessions", "Close")]
+    BINDINGS = [
+        ("escape", "close_sessions", "Close"),
+        ("n", "new_session", "New"),
+    ]
 
     DEFAULT_CSS = """
     SessionListScreen {
@@ -70,6 +73,7 @@ class SessionListScreen(ModalScreen[None]):
         self._all_sessions: List[Tuple[Path, Dict[str, Any]]] = []
         self._filtered: List[Tuple[Path, Dict[str, Any]]] = []
         self._selected: int = 0
+        self._show_new_session: bool = True
 
     def compose(self) -> ComposeResult:
         with Container(id="sessions_dialog"):
@@ -77,7 +81,7 @@ class SessionListScreen(ModalScreen[None]):
             yield Input(placeholder="Search sessions...", id="sessions_search")
             yield Static("", id="sessions_list")
             yield Static(
-                "↑/↓ navigate  Enter resume/view  d delete  Esc close",
+                "↑/↓ navigate  Enter resume  n new session  d delete  Esc close",
                 id="sessions_hint",
             )
 
@@ -130,13 +134,23 @@ class SessionListScreen(ModalScreen[None]):
             or q in str(p).lower()
             or q in data.get("role", "").lower()
         ]
+        # Hide "new session" entry when actively searching
+        self._show_new_session = not q
         self._selected = 0
         self._render_list()
 
     def _render_list(self) -> None:
         lines = []
+        # "Start new session" entry at the top (hidden when searching)
+        if self._show_new_session:
+            if self._selected == 0:
+                lines.append("[bold white on #005f87]  ➕ Start new session [/bold white on #005f87]")
+            else:
+                lines.append("[bold #4fc1ff]  ➕ Start new session [/bold #4fc1ff]")
         if not self._filtered:
-            lines = ["[dim]No sessions found.[/dim]"]
+            lines.append("[dim]No sessions found.[/dim]")
+        # offset: if "new session" entry is shown, session items start at index 1
+        _offset = 1 if self._show_new_session else 0
         for i, (_, data) in enumerate(self._filtered[:20]):
             ts = data.get("timestamp", 0)
             date_str = (
@@ -154,7 +168,7 @@ class SessionListScreen(ModalScreen[None]):
                 ok_tag = " [bold #22c55e]✓[/]" if ok else " [bold #ff5555]✗[/]"
                 role_tag = f"[dim #a78bfa] ↳ {role}[/] "
             indent = "  " if is_child else ""
-            if i == self._selected:
+            if i + _offset == self._selected:
                 lines.append(
                     f"[bold white on #005f87]{indent}{role_tag}{date_str}  {task:<36} {msgs}m{ok_tag}[/bold white on #005f87]"
                 )
@@ -178,7 +192,8 @@ class SessionListScreen(ModalScreen[None]):
             self._render_list()
             event.prevent_default()
         elif event.key == "down":
-            self._selected = min(len(self._filtered) - 1, self._selected + 1)
+            _max = len(self._filtered) + (1 if self._show_new_session else 0) - 1
+            self._selected = min(max(0, _max), self._selected + 1)
             self._render_list()
             event.prevent_default()
         elif event.key == "enter":
@@ -186,12 +201,31 @@ class SessionListScreen(ModalScreen[None]):
             event.prevent_default()
         elif event.key == "d":
             self._delete_selected()
+        elif event.key == "n":
+            self._start_new_session()
+
+    def _start_new_session(self) -> None:
+        """Signal the app to start a new session and close this modal."""
+        try:
+            from tui.tui_src.ui.events import SlashCommand
+            self.app.post_message(SlashCommand("new"))
+        except Exception:
+            pass
+        self.dismiss()
 
     def _open_selected(self) -> None:
         """Route to detail screen for subagent sessions; resume for parent sessions."""
-        if not self._filtered or self._selected >= len(self._filtered):
+        if not self._filtered:
             return
-        _, data = self._filtered[self._selected]
+        # "Start new session" entry selected
+        if self._show_new_session and self._selected == 0:
+            self._start_new_session()
+            return
+        _offset = 1 if self._show_new_session else 0
+        idx = self._selected - _offset
+        if idx < 0 or idx >= len(self._filtered):
+            return
+        _, data = self._filtered[idx]
         if data.get("parent_session_id"):
             # Child session — open detail view
             from .subagent_detail import SubagentDetailScreen
@@ -252,3 +286,6 @@ class SessionListScreen(ModalScreen[None]):
 
     def action_close_sessions(self) -> None:
         self.dismiss()
+
+    def action_new_session(self) -> None:
+        self._start_new_session()
