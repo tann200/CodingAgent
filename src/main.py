@@ -52,9 +52,6 @@ def _check_tui_imports() -> Optional[str]:
         from textual.app import App
         app_meta = type(App)
 
-        from tui.tui_src.ui._app_protocol import AgentAppProtocol
-        proto_meta = type(AgentAppProtocol)
-
         from tui.tui_src.ui.components.status_bar import StatusBarMixin
         mixin_meta = type(StatusBarMixin)
 
