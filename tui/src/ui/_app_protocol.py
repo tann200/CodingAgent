@@ -1,24 +1,23 @@
-"""AgentAppProtocol — structural interface required by all AgentApp mixin classes.
+"""AgentAppProtocol — interface required by all AgentApp mixin classes.
 
-Every App*Mixin, ChatDisplayMixin, and StatusBarMixin inherits from this Protocol
-so mypy can resolve ``self.*`` attribute access without needing the concrete
+Every App*Mixin, ChatDisplayMixin, and StatusBarMixin inherits from this base
+class so mypy can resolve ``self.*`` attribute access without needing the concrete
 ``AgentApp`` class at definition time.  ``AgentApp`` in ``app.py`` provides all
 concrete implementations.
 
-PEP 544: a class that inherits ``Protocol`` (without ``@runtime_checkable``)
-becomes a partial implementation — mypy resolves ``self.X`` against the declared
-members, and the concrete class satisfies the protocol structurally.
+Note: this intentionally does NOT inherit from ``typing.Protocol`` because
+that would give it a ``_ProtocolMeta`` metaclass which conflicts with the
+``_MessagePumpMeta`` metaclass used by ``textual.app.App``.
 """
 
 from __future__ import annotations
 
 import collections
 from pathlib import Path
-from typing import Any, Callable, Literal, Optional, Protocol
+from typing import Any, Callable, Literal, Optional
 
 
-class AgentAppProtocol(Protocol):
-    """Structural interface shared by all AgentApp mixin classes."""
+class AgentAppProtocol:
 
     # ── Textual App methods (provided by textual.app.App) ─────────────────
 
