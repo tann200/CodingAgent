@@ -6,15 +6,16 @@ import os
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Optional, Set
 
 _FileLock: Any = None
+_load_todo_json: Optional[Callable[..., Any]] = None
+_lock_path: Optional[Callable[..., Any]] = None
+_save_todo: Optional[Callable[..., Any]] = None
 try:
     from src.tools.todo_tools import _load_todo_json, _lock_path, _FileLock, _save_todo  # type: ignore[assignment]
 except ImportError:
-    _load_todo_json = None  # type: ignore[assignment]
-    _lock_path = None  # type: ignore[assignment]
-    _save_todo = None  # type: ignore[assignment]
+    pass
 
 logger = logging.getLogger(__name__)
 
@@ -119,6 +120,7 @@ class PlanDAG:
         try:
             # Prefer lock-aware loader from todo_tools to avoid races with writers
             try:
+                assert _load_todo_json is not None
                 todo_data = _load_todo_json(str(path.parent.parent))
             except Exception:
                 todo_data = json.loads(path.read_text())
@@ -155,6 +157,7 @@ class PlanDAG:
         try:
             # Read under the same lock when possible to avoid races
             try:
+                assert _lock_path is not None
                 lockp = _lock_path(str(todo_md.parent.parent))
                 with _FileLock(lockp, timeout=1.0):
                     content = todo_md.read_text()
@@ -276,6 +279,7 @@ class PlanDAG:
 
             # _save_todo writes both TODO.md and todo.json and performs
             # RBW notifications; it raises on failure so callers can react.
+            assert _save_todo is not None
             _save_todo(workdir, todo_data)
             logger.info(f"PlanDAG: synced to {todo_path} and {todo_json_path}")
         except Exception:

@@ -127,7 +127,7 @@ def _extract_content_text(response: Any) -> str:
                             elif isinstance(item, dict):
                                 parts.append(item.get("text", ""))
                         return "\n".join(p for p in parts if p)
-        content = response.content if hasattr(response, "content") else response
+        content = response.content if hasattr(response, "content") else response  # type: ignore[union-attr]
         if isinstance(content, str):
             return content
         if isinstance(content, list):

@@ -30,7 +30,7 @@ import logging
 import uuid
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional, TYPE_CHECKING
+from typing import Any, Callable, Dict, Optional, TYPE_CHECKING
 
 _logger = logging.getLogger(__name__)
 
@@ -678,7 +678,7 @@ class PermissionGateway:
             return PermissionResult(allowed=True)
 
         try:
-            if _register_tool_gate is not None and _is_tool_denied is not None:
+            if _register_tool_gate is not None and _is_tool_denied is not None and _discard_tool_denied is not None:
                 _t5_id = f"{uuid.uuid4().hex[:8]}"
                 _t5_ev = _register_tool_gate(_t5_id)
                 # SPAWN-W5: Fire spawn event for delegate_task

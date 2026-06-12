@@ -162,7 +162,7 @@ def normalize_provider_models(
             continue
 
         model_str = str(model_id).strip()
-        if "lm" in provider_type or canonical_provider(provider.get("name")) == "lm_studio":
+        if "lm" in provider_type or canonical_provider(str(provider.get("name") or "")) == "lm_studio":
             try:
                 full = lmstudio_full_id(model_str)
                 out.append(full if valid_str(full) else model_str)

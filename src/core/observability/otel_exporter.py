@@ -71,13 +71,13 @@ class OtelExporter:
 
     def _init_opentelemetry(self) -> None:
         try:
-            from opentelemetry import trace
-            from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
+            from opentelemetry import trace  # type: ignore[import-not-found]
+            from opentelemetry.exporter.otlp.proto.http.trace_exporter import (  # type: ignore[import-not-found]
                 OTLPSpanExporter,
             )
-            from opentelemetry.sdk.resources import Resource
-            from opentelemetry.sdk.trace import TracerProvider
-            from opentelemetry.sdk.trace.export import BatchSpanProcessor
+            from opentelemetry.sdk.resources import Resource  # type: ignore[import-not-found]
+            from opentelemetry.sdk.trace import TracerProvider  # type: ignore[import-not-found]
+            from opentelemetry.sdk.trace.export import BatchSpanProcessor  # type: ignore[import-not-found]
 
             resource = Resource.create(
                 {"service.name": self._service_name}
@@ -247,7 +247,7 @@ class OtelExporter:
         if not self._enabled:
             return
         try:
-            from opentelemetry import trace
+            from opentelemetry import trace  # type: ignore[import-not-found]
             provider = trace.get_tracer_provider()
             if hasattr(provider, "force_flush"):
                 provider.force_flush()

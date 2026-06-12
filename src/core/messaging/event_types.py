@@ -195,11 +195,10 @@ class ToolInvoked(Event):
 
     Use-case: Persist invocation record in session store.
     """
-    session_update: Dict[str, Any]
+    session_update: str
     tool_call_id: str
     title: str
     status: Literal["invoked"]
-    timestamp: float  # overrides base-class timestamp intentionally
     workdir: str
 
 
@@ -213,7 +212,7 @@ class ToolExecuteFinish(Event):
 
     Use-case: Update tool widget to show result; write session record.
     """
-    session_update: Dict[str, Any]
+    session_update: str
     tool_call_id: str
     title: str
     status: Literal["completed"]
@@ -232,7 +231,7 @@ class ToolExecuteError(Event):
 
     Use-case: Mark tool widget as failed; log error for diagnostics.
     """
-    session_update: Dict[str, Any]
+    session_update: str
     tool_call_id: str
     title: str
     status: Literal["failed"]
@@ -387,7 +386,7 @@ class PlanRequested(Event):
     Use-case: Render plan approval dialog.
     """
     plan: Any
-    blocked_tool: str
+    blocked_tool: Optional[str]
     session_id: str
 
 
@@ -439,7 +438,7 @@ class StepFinish(Event):
     total: int
     tool: str
     ok: bool
-    elapsed_ms: float
+    elapsed_ms: Optional[float]
     tool_call_count: int
     session_id: str
 
@@ -474,7 +473,6 @@ class SessionNew(Event):
 
     Use-case: Reset chat view; start fresh conversation.
     """
-    timestamp: float  # overrides base-class timestamp
 
 
 @dataclass
@@ -659,7 +657,7 @@ class ProviderSelectionChanged(Event):
     Use-case: Switch active provider; persist preference.
     """
     provider: str
-    model: str
+    model: Optional[str]
 
 
 @dataclass
@@ -713,8 +711,8 @@ class ProviderModelMissing(Event):
 
     Use-case: Warn user; fall back to first available model.
     """
-    provider: str
-    requested: str
+    provider: Optional[str]
+    requested: Optional[str]
     available: List[str]
 
 
@@ -839,8 +837,8 @@ class ModelRoutingComplete(Event):
     Use-case: Confirm model switch in settings UI.
     """
     model: str
-    provider: str
-    switched_provider: bool
+    provider: Optional[str]
+    switched_provider: Optional[str]
 
 
 # ---------------------------------------------------------------------------
@@ -1464,13 +1462,8 @@ class LogEntry(Event):
     """
     level: str
     message: str
-    timestamp: float
     logger: Optional[str] = None
 
-
-# ---------------------------------------------------------------------------
-# Role
-# ---------------------------------------------------------------------------
 
 @dataclass
 class RoleTransition(Event):

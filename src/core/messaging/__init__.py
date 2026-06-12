@@ -142,6 +142,6 @@ def __getattr__(name: str):
     dependency: this package's ``__init__`` is loaded during ``import src.core.messaging``,
     but ``event_bus.py`` also imports from this package."""
     if name in ("get_typed_bus", "reset_typed_bus"):
-        from src.core.orchestration.event_bus import get_typed_bus, reset_typed_bus
+        from src.core.orchestration.event_bus import get_typed_bus, reset_typed_bus  # noqa: F401
         return locals()[name]
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

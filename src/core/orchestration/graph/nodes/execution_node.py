@@ -204,7 +204,7 @@ async def _execute_tool_with_locks(
                 logger.error(f"Failed to release lock for {f}: {release_err}")
 
         if is_write and lock_manager:
-            lock_manager.reset_cancel()
+            lock_manager.reset_cancel(owner=agent_id)
 
 
 async def execution_node(state: StateLike, config: RunnableConfig) -> Dict[str, Any]:

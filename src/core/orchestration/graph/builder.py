@@ -87,6 +87,12 @@ except Exception:
 _MAX_ROUNDS_PLANNING = _planning_routing._MAX_ROUNDS_PLANNING
 _AUTONOMOUS_MAX_TOOL_CALLS = 100  # default budget for autonomous/full graph
 
+# Fast-Path Stabilization: When True, all 16 cognitive nodes are active.
+# When False (default during stabilization), only the Fast-Path nodes are active:
+#   perception → execution → verification → evaluation → memory_sync
+# Set to True to re-enable the full 16-node graph after stabilization is complete.
+_USE_FULL_GRAPH = False
+
 
 _READ_ONLY_ROLES = _tier_graph_routing.READ_ONLY_ROLES
 _WRITE_ROLES = _tier_graph_routing.WRITE_ROLES
@@ -110,16 +116,15 @@ def _is_lite_mode(state: Mapping[str, Any]) -> bool:
     )
 
 
-def compile_agent_graph():
-    """
-    Assembles the LangGraph cognitive pipeline with:
-    - perception -> analysis -> planning -> execution -> step_controller -> verification
-    - verification success -> memory_sync
-    - verification failure -> debug -> execution (with retry limit)
+def _compile_full_graph():
+    """Assemble the full 16-node LangGraph cognitive pipeline.
+
+    All nodes active: perception, analysis, planning, plan_validator, execution,
+    step_controller, verification, debug, evaluation, memory_sync, delegation,
+    analyst_delegation, replan, wait_for_user.
     """
     workflow = StateGraph(AgentState)
 
-    # 1. Add Nodes — pass node functions directly (no wrapper overhead)
     workflow.add_node("perception", perception_node)
     workflow.add_node("analysis", analysis_node)
     workflow.add_node("planning", planning_node)
@@ -135,14 +140,8 @@ def compile_agent_graph():
     workflow.add_node("evaluation", evaluation_node)
     workflow.add_node("wait_for_user", wait_for_user_node)
 
-    # 2. Define Flow
     workflow.set_entry_point("perception")
 
-    # Phase 2.1: Fast-Path Routing
-    # - Tool call + simple -> execution
-    # - No next action + last result OK -> memory_sync (task complete)
-    # - Simple task (first round, no action) -> planning (bypass analysis)
-    # - Otherwise -> analysis for context
     workflow.add_conditional_edges(
         "perception",
         route_after_perception,
@@ -150,87 +149,62 @@ def compile_agent_graph():
             "execution": "execution",
             "analysis": "analysis",
             "memory_sync": "memory_sync",
-            "planning": "planning",  # P2-A: simple tasks bypass analysis
+            "planning": "planning",
         },
     )
 
-    # analysis -> analyst_delegation (complex) or planning (simple) — #56
     workflow.add_conditional_edges(
         "analysis",
         should_after_analysis,
         {"analyst_delegation": "analyst_delegation", "planning": "planning"},
     )
 
-    # analyst_delegation -> planning (always — provides findings for planning prompt)
     workflow.add_edge("analyst_delegation", "planning")
-
-    # planning -> plan_validator (validate plan before execution)
     workflow.add_edge("planning", "plan_validator")
 
-    # After plan_validator, execute, re-plan, or wait for user approval (plan mode)
     workflow.add_conditional_edges(
         "plan_validator",
         should_after_plan_validator,
         {
             "execute": "execution",
             "planning": "planning",
-            "wait_for_user": "wait_for_user",  # Plan Mode: valid plan needs user approval
+            "wait_for_user": "wait_for_user",
         },
     )
 
-    # After planning decide if we execute, sync memory, or end
-    # Note: This is now handled by plan_validator
-    # workflow.add_conditional_edges(
-    #     "planning",
-    #     should_after_planning,
-    #     {"execute": "execution", "memory_sync": "memory_sync", "end": END},
-    # )
-
-    # After execution, decide whether to continue via step_controller, replan,
-    # go back to perception, or go to verification/memory_sync.
-    # W5 fix: "execution" self-loop replaced with "step_controller" so the step
-    # controller always loads the next step's description before execution.
     workflow.add_conditional_edges(
         "execution",
         route_execution,
         {
             "wait_for_user": "wait_for_user",
             "step_controller": "step_controller",
-            # WR-1 fix: fast-path routes
             "perception": "perception",
             "memory_sync": "memory_sync",
-            # CF-2 fix: replan_required and W2 (fail→analysis) routes now live
             "replan": "replan",
             "analysis": "analysis",
         },
     )
 
-    # wait_for_user -> execute (confirmed/approved), perception (preview rejected),
-    #                   or planning (plan rejected — re-plan with feedback)
     workflow.add_conditional_edges(
         "wait_for_user",
         route_after_wait_for_user,
         {
             "execute": "execution",
             "perception": "perception",
-            "planning": "planning",  # Plan Mode: user rejected plan → re-plan
+            "planning": "planning",
         },
     )
 
-    # Replan -> step_controller (to execute new smaller steps)
     workflow.add_conditional_edges(
         "replan",
         should_after_replan,
         {
             "step_controller": "step_controller",
             "perception": "perception",
-            "memory_sync": "memory_sync",  # P2-A: global recovery cap exit
+            "memory_sync": "memory_sync",
         },
     )
 
-    # Step controller -> execution, verification, planning, or end
-    # P3-T1: extended routing handles plan-exhausted (end), no-plan (planning),
-    # and cancellation (end) in addition to the normal execution/verification paths.
     workflow.add_conditional_edges(
         "step_controller",
         should_after_step_controller,
@@ -242,15 +216,8 @@ def compile_agent_graph():
         },
     )
 
-    # After verification, go to evaluation for overall state review
-    # Evaluation will check if task is complete or needs more work
     workflow.add_edge("verification", "evaluation")
 
-    # Evaluation decides:
-    #   complete     → memory_sync
-    #   replan       → step_controller (remaining plan steps)
-    #   debug        → debug (verification failed, generate fix — bounded by debug_attempts)
-    #   end          → END
     workflow.add_conditional_edges(
         "evaluation",
         should_after_evaluation,
@@ -262,9 +229,6 @@ def compile_agent_graph():
         },
     )
 
-    # Debug → execution (apply fix) or memory_sync (give up) or end
-    # debug_attempts is incremented by evaluation_node before routing here,
-    # so this path is bounded to max_debug_attempts iterations.
     workflow.add_conditional_edges(
         "debug",
         should_after_debug,
@@ -277,12 +241,106 @@ def compile_agent_graph():
         {"delegation": "delegation", "perception": "perception", "end": END},
     )
 
-    # After delegation, always end — delegations are terminal (fire-and-forget after memory_sync).
-    # Routing back to memory_sync caused an infinite loop because delegation_results is
-    # always set (even as an empty dict) after the first delegation run.
     workflow.add_edge("delegation", END)
 
     return workflow.compile()
+
+
+def _compile_fast_path_graph():
+    """Assemble the Fast-Path graph (6 nodes).
+
+    Stabilization mode: only the core feedback loop is active.
+    Topology::
+
+        perception → execution → verification → evaluation → memory_sync → END
+            ↑                                                    │
+            └────────────────────────────────────────────────────┘
+
+    Complex nodes (analysis, planning, plan_validator, replan, debug,
+    delegation, analyst_delegation, wait_for_user, step_controller)
+    are frozen and not included.
+    """
+    workflow = StateGraph(AgentState)
+
+    workflow.add_node("perception", perception_node)
+    workflow.add_node("execution", execution_node)
+    workflow.add_node("verification", verification_node)
+    workflow.add_node("evaluation", evaluation_node)
+    workflow.add_node("memory_sync", memory_update_node)
+
+    workflow.set_entry_point("perception")
+
+    # perception → execution (all tool calls route directly)
+    # memory_sync when no action and last result OK
+    workflow.add_conditional_edges(
+        "perception",
+        route_after_perception,
+        {
+            "execution": "execution",
+            "analysis": "execution",  # bypass: route analysis→execution
+            "memory_sync": "memory_sync",
+            "planning": "execution",  # bypass: route planning→execution
+        },
+    )
+
+    # execution → verification (post-tool verification)
+    #         → perception (continue loop)
+    #         → memory_sync (task complete)
+    workflow.add_conditional_edges(
+        "execution",
+        route_execution,
+        {
+            "wait_for_user": "execution",    # bypass: no user wait in fast-path
+            "step_controller": "verification", # step_controller bypassed → verify
+            "perception": "perception",
+            "memory_sync": "memory_sync",
+            "replan": "verification",         # bypass: replan→verify
+            "analysis": "verification",       # bypass: fail→verify
+        },
+    )
+
+    # verification → evaluation
+    workflow.add_edge("verification", "evaluation")
+
+    # evaluation → memory_sync (complete) | end
+    workflow.add_conditional_edges(
+        "evaluation",
+        should_after_evaluation,
+        {
+            "memory_sync": "memory_sync",
+            "step_controller": "memory_sync",  # bypass: route to memory_sync
+            "debug": "memory_sync",             # bypass: route to memory_sync
+            "end": END,
+        },
+    )
+
+    # memory_sync → perception (continue) | end
+    workflow.add_conditional_edges(
+        "memory_sync",
+        should_after_memory_sync,
+        {
+            "delegation": END,      # bypass: no delegation in fast-path → end
+            "perception": "perception",
+            "end": END,
+        },
+    )
+
+    return workflow.compile()
+
+
+def compile_agent_graph():
+    """
+    Assembles the LangGraph cognitive pipeline.
+
+    When ``_USE_FULL_GRAPH`` is True, all 16 cognitive nodes are active.
+    When False (default, stabilization mode), only the 6 Fast-Path nodes are active:
+    perception → execution → verification → evaluation → memory_sync.
+    """
+    if _USE_FULL_GRAPH:
+        logger.info("compile_agent_graph: FULL graph (16 nodes)")
+        return _compile_full_graph()
+    logger.info("compile_agent_graph: FAST-PATH graph (6 nodes) — complex nodes frozen")
+    return _compile_fast_path_graph()
 
 
 # P1 fix: module-level singleton so the graph is compiled once per process.

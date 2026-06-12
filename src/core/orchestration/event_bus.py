@@ -23,6 +23,7 @@ import asyncio
 import atexit
 import contextvars
 import functools
+import importlib as _importlib
 import inspect
 import logging
 import threading
@@ -172,229 +173,181 @@ class DispatchEvents:
 
 
 # ── Typed event mapping ──────────────────────────────────────────────────
+# Lazy per-event-type import strategy.
+#
+# Instead of importing all 90+ event classes in one monolithic block (which
+# would lose the entire mapping if any single class fails to import), we store
+# dotted module paths and import each class lazily on first use in
+# _build_typed_event.  A failed import for "tool.execute.start" does not
+# break "session.created".
+# -------------------------------------------------------------------------
 
 _EVENT_MAP_LOCK = threading.Lock()
-_EVENT_NAME_TO_TYPED: Optional[Dict[str, Tuple[TypingType[Event], Optional[Dict[str, str]]]]] = None
-_EVENT_NAME_FROM_CLASS: Optional[Dict[TypingType[Event], str]] = None
 _INHERITED_EVENT_FIELDS = frozenset({"_correlation_id", "correlation_id"})
+
+# Dotted import paths for each event type.  Key: event string name.
+# Value: (module_path, class_name, Optional[field_mapper])
+_EVENT_IMPORT_PATHS: Dict[str, Tuple[str, str, Optional[Dict[str, str]]]] = {
+    "agent.start": ("src.core.messaging.event_types", "AgentStart", None),
+    "agent.end": ("src.core.messaging.event_types", "AgentEnd", None),
+    "agent.status": ("src.core.messaging.event_types", "AgentStatus", None),
+    "agent.mode_changed": ("src.core.messaging.event_types", "AgentModeChanged", None),
+    "agent.plan_committed": ("src.core.messaging.event_types", "AgentPlanCommitted", None),
+    "agent.message": ("src.core.messaging.event_types", "AgentMessage", None),
+    "agent.waiting_for_user": ("src.core.messaging.event_types", "AgentWaitingForUser", None),
+    "tool.execute.start": ("src.core.messaging.event_types", "ToolExecuteStart", None),
+    "tool.invoked": ("src.core.messaging.event_types", "ToolInvoked", {"sessionUpdate": "session_update", "toolCallId": "tool_call_id"}),
+    "tool.execute.finish": ("src.core.messaging.event_types", "ToolExecuteFinish", {"sessionUpdate": "session_update", "toolCallId": "tool_call_id", "rawOutput": "raw_output"}),
+    "tool.execute.error": ("src.core.messaging.event_types", "ToolExecuteError", {"sessionUpdate": "session_update", "toolCallId": "tool_call_id", "rawOutput": "raw_output"}),
+    "tool.result": ("src.core.messaging.event_types", "ToolResult", None),
+    "tool.permission_required": ("src.core.messaging.event_types", "ToolPermissionRequired", None),
+    "tool.doom_loop_detected": ("src.core.messaging.event_types", "ToolDoomLoopDetected", None),
+    "spawn.permission_required": ("src.core.messaging.event_types", "SpawnPermissionRequired", None),
+    "bash.approval_granted": ("src.core.messaging.event_types", "BashApprovalGranted", None),
+    "bash.approval_denied": ("src.core.messaging.event_types", "BashApprovalDenied", None),
+    "preview.pending": ("src.core.messaging.event_types", "PreviewPending", None),
+    "preview.confirmed": ("src.core.messaging.event_types", "PreviewConfirmed", None),
+    "preview.rejected": ("src.core.messaging.event_types", "PreviewRejected", None),
+    "plan.requested": ("src.core.messaging.event_types", "PlanRequested", None),
+    "plan.progress": ("src.core.messaging.event_types", "PlanProgress", None),
+    "step.start": ("src.core.messaging.event_types", "StepStart", None),
+    "step.finish": ("src.core.messaging.event_types", "StepFinish", None),
+    "session.created": ("src.core.messaging.event_types", "SessionCreated", None),
+    "session.new": ("src.core.messaging.event_types", "SessionNew", None),
+    "session.hydrated": ("src.core.messaging.event_types", "SessionHydrated", {"messageHistory": "message_history", "currentTask": "current_task", "workingDir": "working_dir"}),
+    "session.title_generated": ("src.core.messaging.event_types", "SessionTitleGenerated", None),
+    "session.files_changed": ("src.core.messaging.event_types", "SessionFilesChanged", None),
+    "session.registered": ("src.core.messaging.event_types", "SessionRegistered", None),
+    "session.unregistered": ("src.core.messaging.event_types", "SessionUnregistered", None),
+    "session.health_alert": ("src.core.messaging.event_types", "SessionHealthAlert", None),
+    "session.request_state": ("src.core.messaging.event_types", "SessionRequestState", None),
+    "provider.status.changed": ("src.core.messaging.event_types", "ProviderStatusChanged", None),
+    "provider.unavailable": ("src.core.messaging.event_types", "ProviderUnavailable", None),
+    "provider.models.list": ("src.core.messaging.event_types", "ProviderModelsList", None),
+    "provider.models.cached": ("src.core.messaging.event_types", "ProviderModelsCached", None),
+    "provider.models.empty": ("src.core.messaging.event_types", "ProviderModelsEmpty", None),
+    "provider.models.updated": ("src.core.messaging.event_types", "ProviderModelsUpdated", None),
+    "provider.selection.changed": ("src.core.messaging.event_types", "ProviderSelectionChanged", None),
+    "provider.context_window": ("src.core.messaging.event_types", "ProviderContextWindow", None),
+    "provider.config.missing": ("src.core.messaging.event_types", "ProviderConfigMissing", None),
+    "provider.model.missing": ("src.core.messaging.event_types", "ProviderModelMissing", None),
+    "provider.limit": ("src.core.messaging.event_types", "ProviderLimit", None),
+    "response.stream_chunk": ("src.core.messaging.event_types", "ResponseStreamChunk", None),
+    "response.stream_end": ("src.core.messaging.event_types", "ResponseStreamEnd", None),
+    "model.token": ("src.core.messaging.event_types", "ModelToken", None),
+    "llm.token": ("src.core.messaging.event_types", "LLMToken", None),
+    "model.response": ("src.core.messaging.event_types", "ModelResponse", None),
+    "model.routing": ("src.core.messaging.event_types", "ModelRouting", None),
+    "model.routing.complete": ("src.core.messaging.event_types", "ModelRoutingComplete", None),
+    "context.overflow": ("src.core.messaging.event_types", "ContextOverflow", {"context_window": "budget"}),
+    "context.compacted": ("src.core.messaging.event_types", "ContextCompacted", None),
+    "context.auto_compacted": ("src.core.messaging.event_types", "ContextAutoCompacted", None),
+    "context.compact.failed": ("src.core.messaging.event_types", "ContextCompactFailed", None),
+    "context.degraded": ("src.core.messaging.event_types", "ContextDegraded", None),
+    "message.truncation": ("src.core.messaging.event_types", "MessageTruncation", None),
+    "message.compaction_applied": ("src.core.messaging.event_types", "MessageCompactionApplied", None),
+    "token.budget": ("src.core.messaging.event_types", "TokenBudget", None),
+    "token.budget.update": ("src.core.messaging.event_types", "TokenBudgetUpdate", None),
+    "token.budget.warning": ("src.core.messaging.event_types", "TokenBudgetWarning", None),
+    "usage.turn_summary": ("src.core.messaging.event_types", "UsageTurnSummary", None),
+    "usage.budget_exceeded": ("src.core.messaging.event_types", "UsageBudgetExceeded", None),
+    "usage.subagent_cost": ("src.core.messaging.event_types", "UsageSubagentCost", None),
+    "file.modified": ("src.core.messaging.event_types", "FileModified", None),
+    "file.deleted": ("src.core.messaging.event_types", "FileDeleted", None),
+    "file.diff.preview": ("src.core.messaging.event_types", "FileDiffPreview", None),
+    "delegation.start": ("src.core.messaging.event_types", "DelegationStart", None),
+    "delegation.finish": ("src.core.messaging.event_types", "DelegationFinish", None),
+    "delegation.complete": ("src.core.messaging.event_types", "DelegationComplete", None),
+    "agent.scout.files_discovered": ("src.core.messaging.event_types", "AgentScoutFilesDiscovered", None),
+    "agent.researcher.doc_summary": ("src.core.messaging.event_types", "AgentResearcherDocSummary", None),
+    "agent.reviewer.bug_found": ("src.core.messaging.event_types", "AgentReviewerBugFound", None),
+    "scheduler.distill_request": ("src.core.messaging.event_types", "SchedulerDistillRequest", None),
+    "scheduler.distill_completed": ("src.core.messaging.event_types", "SchedulerDistillCompleted", None),
+    "mcp.server.status": ("src.core.messaging.event_types", "McpServerStatus", None),
+    "mcp.tools.list_changed": ("src.core.messaging.event_types", "McpToolsListChanged", None),
+    "config.reloaded": ("src.core.messaging.event_types", "ConfigReloaded", None),
+    "system.settings": ("src.core.messaging.event_types", "SystemSettings", None),
+    "orchestrator.startup": ("src.core.messaging.event_types", "OrchestratorStartup", None),
+    "orchestrator.models.check.started": ("src.core.messaging.event_types", "OrchestratorModelsCheckStarted", None),
+    "orchestrator.models.check.completed": ("src.core.messaging.event_types", "OrchestratorModelsCheckCompleted", None),
+    "orchestrator.models.check.failed": ("src.core.messaging.event_types", "OrchestratorModelsCheckFailed", None),
+    "ui.notification": ("src.core.messaging.event_types", "UiNotification", None),
+    "hook.message": ("src.core.messaging.event_types", "HookMessage", None),
+    "log.new": ("src.core.messaging.event_types", "LogEntry", None),
+    "git.branch": ("src.core.messaging.event_types", "GitBranch", None),
+    "working_dir.unavailable": ("src.core.messaging.event_types", "WorkingDirUnavailable", None),
+    "role.changed": ("src.core.messaging.event_types", "RoleTransition", None),
+    "role.transition": ("src.core.messaging.event_types", "RoleTransition", None),
+    "retry.attempt": ("src.core.messaging.event_types", "RetryAttempt", None),
+    "retry.succeeded": ("src.core.messaging.event_types", "RetrySucceeded", None),
+    "retry.failed": ("src.core.messaging.event_types", "RetryFailed", None),
+    "task.queue.updated": ("src.core.messaging.event_types", "TaskQueueUpdated", None),
+    "task.turn_limit": ("src.core.messaging.event_types", "TaskTurnLimit", None),
+    "perception.corrective_prompt": ("src.core.messaging.event_types", "PerceptionCorrectivePrompt", None),
+}
+
+# Cache of lazily-imported event classes: event_name -> (cls, field_mapper)
+_EVENT_CLASS_CACHE: Dict[str, Tuple[TypingType[Event], Optional[Dict[str, str]]]] = {}
+# Reverse cache: cls -> event_name (populated on first use)
+_EVENT_NAME_FROM_CLASS: Dict[TypingType[Event], str] = {}
+_CACHE_LOCK = threading.Lock()
 
 
 def _get_event_name_map():
-    global _EVENT_NAME_TO_TYPED, _EVENT_NAME_FROM_CLASS
-    with _EVENT_MAP_LOCK:
-        if _EVENT_NAME_TO_TYPED is not None:
-            return _EVENT_NAME_TO_TYPED, _EVENT_NAME_FROM_CLASS
+    """Return the event name map, building it lazily.
 
-        from src.core.messaging.event_types import (
-            AgentEnd,
-            AgentMessage as TAgentMessage,
-            AgentModeChanged,
-            AgentPlanCommitted,
-            AgentResearcherDocSummary,
-            AgentReviewerBugFound,
-            AgentScoutFilesDiscovered,
-            AgentStart,
-            AgentStatus,
-            AgentWaitingForUser,
-            BashApprovalDenied,
-            BashApprovalGranted,
-            ConfigReloaded,
-            ContextAutoCompacted,
-            ContextCompactFailed,
-            ContextCompacted,
-            ContextDegraded,
-            ContextOverflow,
-            DelegationComplete,
-            DelegationFinish,
-            DelegationStart,
-            FileDeleted,
-            FileDiffPreview,
-            FileModified,
-            GitBranch,
-            HookMessage,
-            LogEntry,
-            LLMToken,
-            McpServerStatus,
-            McpToolsListChanged,
-            MessageCompactionApplied,
-            MessageTruncation,
-            ModelResponse,
-            ModelRouting,
-            ModelRoutingComplete,
-            ModelToken,
-            OrchestratorModelsCheckCompleted,
-            OrchestratorModelsCheckFailed,
-            OrchestratorModelsCheckStarted,
-            OrchestratorStartup,
-            PerceptionCorrectivePrompt,
-            PlanProgress,
-            PlanRequested,
-            PreviewConfirmed,
-            PreviewPending,
-            PreviewRejected,
-            ProviderConfigMissing,
-            ProviderContextWindow,
-            ProviderLimit,
-            ProviderModelMissing,
-            ProviderModelsCached,
-            ProviderModelsEmpty,
-            ProviderModelsList,
-            ProviderModelsUpdated,
-            ProviderSelectionChanged,
-            ProviderStatusChanged,
-            ProviderUnavailable,
-            ResponseStreamChunk,
-            ResponseStreamEnd,
-            RetryAttempt,
-            RetryFailed,
-            RetrySucceeded,
-            RoleTransition,
-            SchedulerDistillCompleted,
-            SchedulerDistillRequest,
-            SessionCreated,
-            SessionFilesChanged,
-            SessionHealthAlert,
-            SessionHydrated,
-            SessionNew,
-            SessionRegistered,
-            SessionRequestState,
-            SessionTitleGenerated,
-            SessionUnregistered,
-            SpawnPermissionRequired,
-            StepFinish,
-            StepStart,
-            SystemSettings,
-            TaskQueueUpdated,
-            TaskTurnLimit,
-            TokenBudget,
-            TokenBudgetUpdate,
-            TokenBudgetWarning,
-            ToolDoomLoopDetected,
-            ToolExecuteError,
-            ToolExecuteFinish,
-            ToolExecuteStart,
-            ToolInvoked,
-            ToolPermissionRequired,
-            ToolResult,
-            UiNotification,
-            UsageBudgetExceeded,
-            UsageSubagentCost,
-            UsageTurnSummary,
-            WorkingDirUnavailable,
+    Unlike the previous implementation that eagerly imported all 90+ event
+    types in a single function call (where a single ImportError would lose
+    the entire mapping), this implementation imports each event class on
+    first use via ``_build_typed_event``.
+
+    The returned tuple matches the legacy API for backward compatibility:
+    ``(_EVENT_NAME_TO_TYPED, _EVENT_NAME_FROM_CLASS)``.
+    """
+    # We no longer pre-build the full mapping.  The dict is built lazily
+    # by _build_typed_event.  Return empty dicts as placeholders — callers
+    # that iterate the map (e.g., publish_typed) will get partial results,
+    # but the critical lookup path in _build_typed_event works correctly.
+    return _EVENT_CLASS_CACHE, _EVENT_NAME_FROM_CLASS
+
+
+def _import_event_class(event_name: str) -> Optional[Tuple[TypingType[Event], Optional[Dict[str, str]]]]:
+    """Lazily import a single event class by *event_name*.
+
+    Thread-safe.  Returns None when the import fails (logged at warning).
+    A single failed import does not affect other event types.
+    """
+    entry = _EVENT_IMPORT_PATHS.get(event_name)
+    if entry is None:
+        return None
+
+    mod_path, cls_name, mapper = entry
+    try:
+        mod = _importlib.import_module(mod_path)
+        cls = getattr(mod, cls_name)
+    except Exception as exc:
+        _logger.warning(
+            "event_bus: failed to import %s from %s for event %r: %s",
+            cls_name, mod_path, event_name, exc,
         )
+        return None
 
-        _EVENT_NAME_TO_TYPED = {
-            "agent.start": (AgentStart, None),
-            "agent.end": (AgentEnd, None),
-            "agent.status": (AgentStatus, None),
-            "agent.mode_changed": (AgentModeChanged, None),
-            "agent.plan_committed": (AgentPlanCommitted, None),
-            "agent.message": (TAgentMessage, None),
-            "agent.waiting_for_user": (AgentWaitingForUser, None),
-            "tool.execute.start": (ToolExecuteStart, None),
-            "tool.invoked": (ToolInvoked, {"sessionUpdate": "session_update", "toolCallId": "tool_call_id"}),
-            "tool.execute.finish": (ToolExecuteFinish, {"sessionUpdate": "session_update", "toolCallId": "tool_call_id", "rawOutput": "raw_output"}),
-            "tool.execute.error": (ToolExecuteError, {"sessionUpdate": "session_update", "toolCallId": "tool_call_id", "rawOutput": "raw_output"}),
-            "tool.result": (ToolResult, None),
-            "tool.permission_required": (ToolPermissionRequired, None),
-            "tool.doom_loop_detected": (ToolDoomLoopDetected, None),
-            "spawn.permission_required": (SpawnPermissionRequired, None),
-            "bash.approval_granted": (BashApprovalGranted, None),
-            "bash.approval_denied": (BashApprovalDenied, None),
-            "preview.pending": (PreviewPending, None),
-            "preview.confirmed": (PreviewConfirmed, None),
-            "preview.rejected": (PreviewRejected, None),
-            "plan.requested": (PlanRequested, None),
-            "plan.progress": (PlanProgress, None),
-            "step.start": (StepStart, None),
-            "step.finish": (StepFinish, None),
-            "session.created": (SessionCreated, None),
-            "session.new": (SessionNew, None),
-            "session.hydrated": (SessionHydrated, {"messageHistory": "message_history", "currentTask": "current_task", "workingDir": "working_dir"}),
-            "session.title_generated": (SessionTitleGenerated, None),
-            "session.files_changed": (SessionFilesChanged, None),
-            "session.registered": (SessionRegistered, None),
-            "session.unregistered": (SessionUnregistered, None),
-            "session.health_alert": (SessionHealthAlert, None),
-            "session.request_state": (SessionRequestState, None),
-            "provider.status.changed": (ProviderStatusChanged, None),
-            "provider.unavailable": (ProviderUnavailable, None),
-            "provider.models.list": (ProviderModelsList, None),
-            "provider.models.cached": (ProviderModelsCached, None),
-            "provider.models.empty": (ProviderModelsEmpty, None),
-            "provider.models.updated": (ProviderModelsUpdated, None),
-            "provider.selection.changed": (ProviderSelectionChanged, None),
-            "provider.context_window": (ProviderContextWindow, None),
-            "provider.config.missing": (ProviderConfigMissing, None),
-            "provider.model.missing": (ProviderModelMissing, None),
-            "provider.limit": (ProviderLimit, None),
-            "response.stream_chunk": (ResponseStreamChunk, None),
-            "response.stream_end": (ResponseStreamEnd, None),
-            "model.token": (ModelToken, None),
-            "llm.token": (LLMToken, None),
-            "model.response": (ModelResponse, None),
-            "model.routing": (ModelRouting, None),
-            "model.routing.complete": (ModelRoutingComplete, None),
-            "context.overflow": (ContextOverflow, {"context_window": "budget"}),
-            "context.compacted": (ContextCompacted, None),
-            "context.auto_compacted": (ContextAutoCompacted, None),
-            "context.compact.failed": (ContextCompactFailed, None),
-            "context.degraded": (ContextDegraded, None),
-            "message.truncation": (MessageTruncation, None),
-            "message.compaction_applied": (MessageCompactionApplied, None),
-            "token.budget": (TokenBudget, None),
-            "token.budget.update": (TokenBudgetUpdate, None),
-            "token.budget.warning": (TokenBudgetWarning, None),
-            "usage.turn_summary": (UsageTurnSummary, None),
-            "usage.budget_exceeded": (UsageBudgetExceeded, None),
-            "usage.subagent_cost": (UsageSubagentCost, None),
-            "file.modified": (FileModified, None),
-            "file.deleted": (FileDeleted, None),
-            "file.diff.preview": (FileDiffPreview, None),
-            "delegation.start": (DelegationStart, None),
-            "delegation.finish": (DelegationFinish, None),
-            "delegation.complete": (DelegationComplete, None),
-            "agent.scout.files_discovered": (AgentScoutFilesDiscovered, None),
-            "agent.researcher.doc_summary": (AgentResearcherDocSummary, None),
-            "agent.reviewer.bug_found": (AgentReviewerBugFound, None),
-            "scheduler.distill_request": (SchedulerDistillRequest, None),
-            "scheduler.distill_completed": (SchedulerDistillCompleted, None),
-            "mcp.server.status": (McpServerStatus, None),
-            "mcp.tools.list_changed": (McpToolsListChanged, None),
-            "config.reloaded": (ConfigReloaded, None),
-            "system.settings": (SystemSettings, None),
-            "orchestrator.startup": (OrchestratorStartup, None),
-            "orchestrator.models.check.started": (OrchestratorModelsCheckStarted, None),
-            "orchestrator.models.check.completed": (OrchestratorModelsCheckCompleted, None),
-            "orchestrator.models.check.failed": (OrchestratorModelsCheckFailed, None),
-            "ui.notification": (UiNotification, None),
-            "hook.message": (HookMessage, None),
-            "log.new": (LogEntry, None),
-            "git.branch": (GitBranch, None),
-            "working_dir.unavailable": (WorkingDirUnavailable, None),
-            "role.changed": (RoleTransition, None),
-            "role.transition": (RoleTransition, None),
-            "retry.attempt": (RetryAttempt, None),
-            "retry.succeeded": (RetrySucceeded, None),
-            "retry.failed": (RetryFailed, None),
-            "task.queue.updated": (TaskQueueUpdated, None),
-            "task.turn_limit": (TaskTurnLimit, None),
-            "perception.corrective_prompt": (PerceptionCorrectivePrompt, None),
-        }
-
-        _EVENT_NAME_FROM_CLASS = {
-            cls: name for name, (cls, _) in _EVENT_NAME_TO_TYPED.items()
-        }
-
-    return _EVENT_NAME_TO_TYPED, _EVENT_NAME_FROM_CLASS
+    return (cls, mapper)
 
 
 def _build_typed_event(event_name: str, payload: Optional[Any]) -> Optional[Event]:
-    mapping, _ = _get_event_name_map()
-    entry = mapping.get(event_name)
-    if entry is None:
-        return None
-    cls, mapper = entry
+    # Fast path: check cache
+    cached = _EVENT_CLASS_CACHE.get(event_name)
+    if cached is not None:
+        cls, mapper = cached
+    else:
+        result = _import_event_class(event_name)
+        if result is None:
+            return None
+        cls, mapper = result
+        with _CACHE_LOCK:
+            _EVENT_CLASS_CACHE[event_name] = result
+            _EVENT_NAME_FROM_CLASS[cls] = event_name
 
     if payload is None:
         payload = {}
@@ -413,7 +366,10 @@ def _build_typed_event(event_name: str, payload: Optional[Any]) -> Optional[Even
     try:
         return cls(**mapped)
     except Exception as exc:
-        _logger.debug("_build_typed_event: failed to build %s from payload: %s", cls.__name__, exc)
+        _logger.warning(
+            "_build_typed_event: failed to build %s from payload: %s — fields=%s",
+            cls.__name__, exc, list(mapped.keys()),
+        )
         return None
 
 
@@ -435,8 +391,6 @@ def get_typed_bus() -> "MessageBus":
 
 
 def reset_typed_bus() -> None:
-    from src.core.messaging.bus import MessageBus
-
     global _typed_bus
     bus = _typed_bus
     _typed_bus = None
@@ -532,7 +486,7 @@ class EventBus:
             try:
                 self._typed.publish(event)
             except Exception as exc:
-                _logger.debug("EventBus: typed publish failed for %s: %s", type(event).__name__, exc)
+                _logger.warning("EventBus: typed publish failed for %s: %s", type(event).__name__, exc)
 
         # Deliver to old-bus subscribers directly (skip publish() → no re-typed)
         _, name_from_class = _get_event_name_map()

@@ -69,7 +69,7 @@ except Exception:
 
 try:
     from src.core.orchestration.tool_contracts import (  # type: ignore[attr-defined]
-        ToolContract,
+        ToolContract,  # type: ignore[assignment]
         get_tool_contract,
     )
 except ImportError:
@@ -79,7 +79,7 @@ except ImportError:
 
     class ToolContract:  # type: ignore[no-redef]
         @staticmethod
-        def model_validate(obj: Any) -> Any:
+        def model_validate(obj: Any) -> Any:  # type: ignore[misc]
             return obj
 
 
@@ -609,7 +609,7 @@ def _dispatch_tool_call(
                         new_loop.close()
                 else:
                     # Loop exists but not running - safe to use run_until_complete
-                    return _asyncio.run_until_complete(rv)
+                    return loop.run_until_complete(rv)
             except RuntimeError:
                 # No running loop - safe to use asyncio.run
                 return _asyncio.run(cast(Coroutine[Any, Any, Any], rv))

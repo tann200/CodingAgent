@@ -125,7 +125,7 @@ async def _execute_delegation_with_locks(
                 logger.error(f"Failed to release lock for {f}: {release_err}")
 
         if lock_type == "write" and lock_manager:
-            lock_manager.reset_cancel()
+            lock_manager.reset_cancel(owner=agent_id)
 
 
 async def delegation_node(state: StateLike, config: RunnableConfig) -> Dict[str, Any]:
@@ -389,7 +389,7 @@ async def delegation_node(state: StateLike, config: RunnableConfig) -> Dict[str,
             # Publish delegation.complete event so TUI can show subagent results
             try:
                 if orchestrator and hasattr(orchestrator, "event_bus"):
-                    orchestrator.event_bus.publish_typed(DelegationComplete(count=len(summary_parts), keys=list(completed.keys()), session_id=state.get("session_id")))
+                    orchestrator.event_bus.publish_typed(DelegationComplete(count=len(summary_parts), keys=list(completed.keys()), session_id=state.get("session_id") or ""))
             except Exception:
                 pass
 

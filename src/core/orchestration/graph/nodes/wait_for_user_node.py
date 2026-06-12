@@ -64,7 +64,7 @@ async def wait_for_user_node(state: StateLike, config: RunnableConfig) -> Dict[s
         try:
             event_bus = getattr(orchestrator, "event_bus", None)
             if event_bus:
-                event_bus.publish_typed(PlanRequested(plan=state.get("current_plan"), blocked_tool=state.get("plan_mode_blocked_tool"), session_id=state.get("session_id")))
+                event_bus.publish_typed(PlanRequested(plan=state.get("current_plan"), blocked_tool=state.get("plan_mode_blocked_tool"), session_id=state.get("session_id") or ""))
         except Exception as e:
             logger.warning(f"wait_for_user_node: failed to publish plan.requested: {e}")
 

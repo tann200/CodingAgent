@@ -129,9 +129,11 @@ def _init_infrastructure(orch: Any, message_max_tokens: Optional[int]) -> None:
     orch._step_snapshot_id = None  # type: ignore[attr-defined]
 
     # Initialize FileLockManager for PRSW (Parallel Reads, Sequential Writes)
+    # Uses reset_instance to ensure a clean state on orchestrator re-initialization
+    # (e.g., TUI bridge reconnection or hot-reload).
     from src.core.orchestration.file_lock_manager import FileLockManager
 
-    orch.file_lock_manager = FileLockManager(
+    orch.file_lock_manager = FileLockManager.reset_instance(
         workdir=str(orch.working_dir),
         cancel_event=getattr(orch, "cancel_event", None),
     )

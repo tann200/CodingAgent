@@ -440,8 +440,7 @@ class ConfigWatcher:
         # Publish event if an event bus is provided (exceptions swallowed)
         if self._event_bus is not None:
             try:
-                payload = {"changed_paths": list(changed_paths)}
-                self._event_bus.publish_typed(ConfigReloaded(**payload))
+                self._event_bus.publish_typed(ConfigReloaded(changed_paths=list(changed_paths)))
             except Exception:
                 pass
 
@@ -478,7 +477,7 @@ class ConfigWatcher:
         exits.
         """
         try:
-            import watchfiles
+            import watchfiles  # type: ignore[import-not-found]
         except Exception:
             return
 
@@ -495,11 +494,10 @@ class ConfigWatcher:
                 changed: set = set()
                 try:
                     for ch in changes:
-                        if isinstance(ch, tuple):
-                            if len(ch) >= 2:
-                                changed.add(str(ch[1]))
-                            else:
-                                changed.add(str(ch[0]))
+                        if isinstance(ch, (list, tuple)) and len(ch) >= 2:
+                            changed.add(str(ch[1]))
+                        elif isinstance(ch, (list, tuple)):
+                            changed.add(str(ch[0]) if isinstance(ch, (list, tuple)) else str(ch))  # type: ignore[index]
                         else:
                             changed.add(str(ch))
                 except Exception:

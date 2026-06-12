@@ -139,11 +139,11 @@ class AgentSessionManager:
         session_id: Optional[str] = None,
         task: Optional[str] = None,
         message_history: Optional[List[Dict[str, Any]]] = None,
-        current_plan: Optional[Dict[str, Any]] = None,
-        current_step: Optional[Dict[str, Any]] = None,
+        current_plan: Optional[List[Dict[str, Any]]] = None,
+        current_step: Optional[int] = None,
         provider: Optional[str] = None,
         model: Optional[str] = None,
-        token_budget: Optional[int] = None,
+        token_budget: Optional[Dict[str, Any]] = None,
         files_modified: Optional[List[str]] = None,
         files_read: Optional[List[str]] = None,
     ) -> None:
@@ -296,7 +296,7 @@ class AgentSessionManager:
 
     def unregister_agent_by_session_id(self, session_id: str) -> bool:
         """Unregister an agent session by its session_id (O(1) lookup). Returns True if found."""
-        with self._sessions_lock:
+        with self._session_state_lock:
             agent_id = self._session_id_to_agent_id.get(session_id)
             if agent_id and agent_id in self._sessions:
                 session = self._sessions[agent_id]

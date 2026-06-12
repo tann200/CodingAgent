@@ -171,7 +171,7 @@ class GUILogger:
         try:
             bus = get_event_bus()
             try:
-                bus.publish_typed(LogEntry(**entry))
+                bus.publish_typed(LogEntry(level=entry.get("level", "INFO"), message=entry.get("message", "")))
             except Exception:
                 # non-fatal: don't let UI failures break logging
                 pass

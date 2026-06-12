@@ -128,7 +128,7 @@ AGENT_METHODS = [
 
 BRIDGE_OWN_METHODS = [
     "__init__", "_ensure_deferred_init", "_schedule_callback",
-    "_subscribe", "_post", "get_status", "is_running", "publish",
+    "_subscribe_typed", "_post", "get_status", "is_running", "publish",
 ]
 
 

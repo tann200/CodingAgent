@@ -31,8 +31,10 @@ import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, List, Optional, Set
 
+from src.core.messaging.event_types import SessionFilesChanged
 from src.core.utils.strings import valid_str as _valid_str, extract_str as _extract_str
 
+logger = logging.getLogger(__name__)
 guilogger = logging.getLogger("codingagent")
 
 if TYPE_CHECKING:
@@ -42,7 +44,6 @@ if TYPE_CHECKING:
     from src.core.orchestration.session_lifecycle import SessionLifecycleManager
 
 
-from src.core.messaging.event_types import SessionFilesChanged
 def _is_git_repo(path: str) -> bool:
     """Return True if *path* is inside a git repository."""
     try:

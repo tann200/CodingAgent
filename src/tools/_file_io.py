@@ -377,7 +377,7 @@ def read_file(
         return {
             "path": str(p),
             "status": "error",
-            "error": f"Binary file detected. Use a binary-aware tool.",
+            "error": "Binary file detected. Use a binary-aware tool.",
         }
 
     try:

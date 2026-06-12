@@ -97,7 +97,7 @@ except Exception:
                                 new_loop.close()
                         else:
                             # Loop exists but not running - safe to use run_until_complete
-                            return asyncio.run_until_complete(rv)
+                            return loop.run_until_complete(rv)
                     except RuntimeError:
                         # No running loop - safe to use asyncio.run
                         return asyncio.run(rv)  # type: ignore[return-value, arg-type]
@@ -200,6 +200,7 @@ from src.core.inference.provider_config import (  # noqa: E402
     set_provider_active_flag as _set_provider_active_flag,
 )
 from src.core.utils.strings import valid_str as _valid_str  # noqa: E402
+from src.core.inference._protocols import ProviderManagerProtocol  # noqa: E402
 
 
 from src.core.messaging.event_types import ModelRoutingComplete, ProviderConfigMissing
@@ -451,7 +452,7 @@ def _camelize(s: str) -> str:
 
 
 # --- ProviderManager ---
-class ProviderManager:
+class ProviderManager(ProviderManagerProtocol):
     def __init__(self, providers_config_path: Optional[str] = None):
         self._providers: Dict[str, Any] = {}
         self._initialized = False
@@ -938,7 +939,7 @@ class ProviderManager:
                     provider_models_cache=self._models_cache,
                     module_models_cache=_MODEL_CACHE,
                     module_models_cache_time=_MODEL_CACHE_TIME,
-                    model_cache_lock=_MODEL_CACHE_LOCK,
+                    model_cache_lock=_MODEL_CACHE_LOCK,  # type: ignore[arg-type]
                     now=time.time,
                     event_bus=self._event_bus,
                     providers_config_path=self.providers_config_path,
@@ -958,7 +959,7 @@ class ProviderManager:
                     provider_models_cache=self._models_cache,
                     module_models_cache=_MODEL_CACHE,
                     module_models_cache_time=_MODEL_CACHE_TIME,
-                    model_cache_lock=_MODEL_CACHE_LOCK,
+                    model_cache_lock=_MODEL_CACHE_LOCK,  # type: ignore[arg-type]
                     now=time.time,
                     event_bus=self._event_bus,
                     canonical_provider=canonical_provider,

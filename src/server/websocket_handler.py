@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 def _make_websocket_handler(
     event_bus: EventBus,
     session_id: str,
-    q: asyncio.Queue[object | None],
+    q: asyncio.Queue[Any],
     drop_policy: str,
     loop: asyncio.AbstractEventLoop,
 ) -> Callable[[str], Callable[[dict[str, Any]], None]]:
@@ -122,7 +122,7 @@ async def websocket_session_handler(
     await websocket.accept()
 
     loop = asyncio.get_running_loop()
-    q: asyncio.Queue[object | None] = asyncio.Queue(maxsize=max(1, int(qms)))
+    q: asyncio.Queue[Any] = asyncio.Queue(maxsize=max(1, int(qms)))
 
     initial_events = resolve_initial_websocket_events(events_param)
 

@@ -234,7 +234,7 @@ class MessageManager:
                     "dropped_tokens": dropped_tokens,
                     "tokens_after": after_total,
                 }
-                self.event_bus.publish_typed(MessageTruncation(**payload))
+                self.event_bus.publish_typed(MessageTruncation(**payload))  # type: ignore[arg-type]
         except Exception:
             pass
 

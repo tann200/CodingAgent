@@ -7,12 +7,14 @@ Features:
 - Error isolation (failed handlers don't kill bus)
 - Delivery guarantees with explicit drop logging
 - Metrics for observability
+- Sequenced dispatch: critical event types (tool/step/delegation lifecycle)
+  are delivered in publication order within their category
 
 Architecture:
 - Events are queued via a thread-safe ``queue.Queue`` (synchronous ``publish``)
 - A bridge task transfers events to the event loop as they arrive
-- Async worker tasks deliver events to handlers via ``run_in_executor`` (so
-  blocking handlers don't block the event loop)
+- Sequenced events are routed to per-category FIFO queues for ordered delivery
+- Non-sequenced events are dispatched concurrently via ``run_in_executor``
 - The event loop runs on a dedicated daemon thread
 """
 
@@ -28,6 +30,47 @@ from src.core.messaging.events import Event
 from src.core.messaging.metrics import MessageBusMetrics
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Sequenced event categories
+# Events in the same category are delivered to handlers in FIFO publication
+# order.  Categories are independent (tool events don't block delegation).
+# ---------------------------------------------------------------------------
+_SEQUENCED_CATEGORIES: Dict[Type[Event], str] = {}
+
+# Lazy-populated on first access.  We populate outside the class to break
+# the circular dep: bus.py cannot eagerly import event_types.py (which
+# imports Event from events.py — a module that also references bus types).
+def _get_sequenced_category(event_type: Type[Event]) -> Optional[str]:
+    """Return the sequenced category for *event_type*, or None.
+
+    Categories (defined below) ensure that tool lifecycle, step lifecycle,
+    and delegation lifecycle events are always delivered in order within
+    their group.  All other events are non-sequenced and may be dispatched
+    concurrently.
+    """
+    global _SEQUENCED_CATEGORIES
+    if not _SEQUENCED_CATEGORIES:
+        from src.core.messaging.event_types import (
+            DelegationFinish,
+            DelegationStart,
+            StepFinish,
+            StepStart,
+            ToolExecuteError,
+            ToolExecuteFinish,
+            ToolExecuteStart,
+        )
+
+        _SEQUENCED_CATEGORIES = {
+            ToolExecuteStart: "tool",
+            ToolExecuteFinish: "tool",
+            ToolExecuteError: "tool",
+            StepStart: "step",
+            StepFinish: "step",
+            DelegationStart: "delegation",
+            DelegationFinish: "delegation",
+        }
+    return _SEQUENCED_CATEGORIES.get(event_type)
 
 
 class EventHandler(Protocol):
@@ -67,6 +110,11 @@ class MessageBus:
         self._bridge_task: Optional[asyncio.Task] = None
         self._started = threading.Event()
 
+        # Sequenced dispatch: per-category FIFO queues + consumer tasks.
+        # Populated lazily when the first sequenced event arrives.
+        self._seq_queues: Dict[str, asyncio.Queue] = {}
+        self._seq_consumers: Dict[str, asyncio.Task] = {}
+
         self._start()
 
     def _start(self) -> None:
@@ -82,6 +130,7 @@ class MessageBus:
             logger.error("MessageBus: event loop thread failed to start")
 
     def _run_loop(self) -> None:
+        assert self._loop is not None
         asyncio.set_event_loop(self._loop)
         self._bridge_task = self._loop.create_task(self._bridge())
         for i in range(self._worker_count):
@@ -97,8 +146,12 @@ class MessageBus:
 
         Runs as a task on the event loop. Blocks on the sync queue using
         run_in_executor so the event loop stays responsive. When an item
-        arrives, it schedules it for delivery by an async worker.
+        arrives, it dispatches it:
+        - Sequenced events (tool/step/delegation lifecycle) go to per-category
+          FIFO queues for ordered delivery.
+        - Non-sequenced events are dispatched immediately.
         """
+        assert self._loop is not None
         while not self._shutdown_flag.is_set():
             try:
                 item = await asyncio.get_event_loop().run_in_executor(
@@ -112,6 +165,12 @@ class MessageBus:
                 )
                 continue
 
+            if isinstance(item, Event):
+                seq_cat = _get_sequenced_category(type(item))
+                if seq_cat is not None:
+                    await self._seq_put(item, seq_cat)
+                    continue
+
             self._loop.create_task(self._dispatch(item))
 
         # Drain remaining items after shutdown
@@ -120,6 +179,11 @@ class MessageBus:
                 item = self._sync_queue.get_nowait()
             except sync_queue.Empty:
                 break
+            if isinstance(item, Event):
+                seq_cat = _get_sequenced_category(type(item))
+                if seq_cat is not None:
+                    self._loop.create_task(self._dispatch(item))
+                    continue
             self._loop.create_task(self._dispatch(item))
 
     async def _dispatch(self, item: Any) -> None:
@@ -141,6 +205,49 @@ class MessageBus:
             await asyncio.get_event_loop().run_in_executor(
                 None, self._deliver_to_handlers, item
             )
+
+    async def _seq_put(self, event: Event, category: str) -> None:
+        """Enqueue a sequenced event for ordered delivery within *category*.
+
+        Lazily creates the per-category ``asyncio.Queue`` and consumer task
+        on first use.
+        """
+        assert self._loop is not None
+        if category not in self._seq_queues:
+            q: asyncio.Queue = asyncio.Queue()
+            self._seq_queues[category] = q
+            self._seq_consumers[category] = self._loop.create_task(
+                self._seq_consumer(category, q)
+            )
+        await self._seq_queues[category].put(event)
+
+    async def _seq_consumer(self, category: str, q: asyncio.Queue) -> None:
+        """Consume sequenced events from *q* one at a time, in FIFO order.
+
+        Only one event per category is dispatched at a time, ensuring
+        handlers see them in publication order.  Categories are independent
+        (a slow tool event does not block delegation events).
+        """
+        while not self._shutdown_flag.is_set():
+            try:
+                event = await asyncio.wait_for(q.get(), timeout=0.5)
+            except asyncio.TimeoutError:
+                continue
+            except Exception as e:
+                logger.error(
+                    "MessageBus: seq_consumer(%s) error: %s", category, e, exc_info=True
+                )
+                continue
+
+            try:
+                await asyncio.get_event_loop().run_in_executor(
+                    None, self._deliver_to_handlers, event
+                )
+            except Exception as e:
+                logger.error(
+                    "MessageBus: seq_consumer(%s) dispatch failed: %s",
+                    category, e, exc_info=True,
+                )
 
     async def _worker(self, worker_id: int) -> None:
         """Legacy worker stub — dispatch now handled by _bridge + _dispatch.
@@ -293,6 +400,7 @@ class MessageBus:
         logger.info("MessageBus: shutdown complete")
 
     async def _async_shutdown(self) -> None:
+        assert self._loop is not None
         me = asyncio.current_task()
         all_tasks = asyncio.all_tasks(self._loop)
         others = [t for t in all_tasks if t is not me]

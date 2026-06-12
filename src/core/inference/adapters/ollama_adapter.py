@@ -193,7 +193,7 @@ class OllamaAdapter(LLMClient):
     def _select_model_name(self, model):
         return lm_select_model_name(self.models, model)
 
-    def _request_with_retry(self, method: str, url: str, timeout: float = 30.0, **kwargs) -> requests.Response:
+    def _request_with_retry(self, method: str, url: str, timeout: float = 30.0, **kwargs) -> Optional[requests.Response]:
         """Make an HTTP request with retry and exponential backoff."""
         _MAX_RETRIES = 3
         last_response = None
@@ -258,6 +258,8 @@ class OllamaAdapter(LLMClient):
             try:
                 tried.append(url)
                 response = self._request_with_retry('get', url, timeout=10)
+                if response is None:
+                    continue
                 try:
                     data = response.json()
                 except Exception:

@@ -54,6 +54,7 @@ import uuid
 import os
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 
 from src.core.memory.file_lock import locked_file
 from src.core.memory.jsonl_sidecar_io import atomic_write_json_with_fallback
@@ -952,3 +953,43 @@ class JsonlSessionStore:
             elif t == "decision":
                 summary["decisions"] += 1
         return summary
+
+    def get_recent_sessions(self, limit: int = 10) -> List[Dict[str, Any]]:
+        session_ids = set()
+        sessions_dir = self._get_sessions_dir()
+        if not sessions_dir.exists():
+            return []
+        for f in sessions_dir.iterdir():
+            if f.suffix == ".jsonl":
+                sid = f.stem.split(".")[0]
+                session_ids.add(sid)
+        recent = []
+        for sid in sorted(session_ids)[:limit]:
+            recent.append({"session_id": sid, "summary": self.get_session_summary(sid)})
+        return recent
+
+    def get_session_text_summary(self, session_id: str, max_chars: int = 500) -> str:
+        summary = self.get_session_summary(session_id)
+        parts = []
+        if summary.get("message_count", 0):
+            parts.append(f"{summary['message_count']} messages")
+        if summary.get("tool_call_count", 0):
+            parts.append(f"{summary['tool_call_count']} tool calls")
+        return ", ".join(parts) if parts else "empty session"
+
+    def add_mistake(
+        self,
+        session_id: str,
+        summary: str,
+        context: Optional[str] = None,
+        tool: Optional[str] = None,
+    ) -> None:
+        rec = {
+            "type": "mistake",
+            "session_id": session_id or "",
+            "summary": summary,
+            "context": context or "",
+            "tool": tool or "",
+            "ts": _utc_now(),
+        }
+        self._append(session_id, rec)

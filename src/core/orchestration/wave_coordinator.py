@@ -131,7 +131,7 @@ class WaveCoordinator:
         finally:
             for f in acquired:
                 await self.lock_manager.release_write(f, agent_id)
-            self.lock_manager.reset_cancel()
+            self.lock_manager.reset_cancel(owner=agent_id)
 
 
 def create_wave_coordinator(lock_manager, event_bus=None) -> WaveCoordinator:

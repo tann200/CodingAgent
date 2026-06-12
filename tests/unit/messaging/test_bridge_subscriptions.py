@@ -36,6 +36,7 @@ from src.core.messaging.event_types import (
 from tui.src.ui._bridge_subscriptions import (
     TYPED_EVENT_ROUTING,
     BridgeSubscriptionsMixin,
+    _resolve_event_class,
 )
 
 # Import the mixin's base protocol for testing
@@ -138,15 +139,17 @@ class TestTypedEventRoutingTable:
         """Every entry's event class is importable and is an Event subclass."""
         from src.core.messaging import Event
 
-        for event_cls, method_name in TYPED_EVENT_ROUTING:
-            assert isinstance(event_cls, type), f"{event_cls} is not a type"
+        for cls_name, method_name in TYPED_EVENT_ROUTING:
+            event_cls = _resolve_event_class(cls_name)
+            assert event_cls is not None, f"{cls_name} could not be imported"
+            assert isinstance(event_cls, type), f"{cls_name} resolved to {event_cls}, not a type"
             assert issubclass(event_cls, Event), (
-                f"{event_cls.__name__} is not an Event subclass"
+                f"{cls_name} is not an Event subclass"
             )
 
     def test_all_entries_resolve_to_method_names(self):
         """Every entry's method name is a valid string."""
-        for event_cls, method_name in TYPED_EVENT_ROUTING:
+        for cls_name, method_name in TYPED_EVENT_ROUTING:
             assert isinstance(method_name, str), f"{method_name} is not a string"
             assert method_name.startswith("_on_"), (
                 f"{method_name} should start with _on_"
@@ -154,9 +157,9 @@ class TestTypedEventRoutingTable:
 
     def test_no_duplicate_event_classes(self):
         """No event class appears more than once in the table."""
-        classes = [cls for cls, _ in TYPED_EVENT_ROUTING]
-        assert len(classes) == len(set(classes)), (
-            "Duplicate event classes in TYPED_EVENT_ROUTING"
+        class_names = [name for name, _ in TYPED_EVENT_ROUTING]
+        assert len(class_names) == len(set(class_names)), (
+            "Duplicate event class names in TYPED_EVENT_ROUTING"
         )
 
 
@@ -231,7 +234,9 @@ class TestSetupTypedSubscriptions:
 
         assert len(subscribed) == 47
         subscribed_classes = {cls for cls, _ in subscribed}
-        expected_classes = {cls for cls, _ in TYPED_EVENT_ROUTING}
+        expected_classes = {
+            _resolve_event_class(name) for name, _ in TYPED_EVENT_ROUTING
+        }
         assert subscribed_classes == expected_classes
 
     def test_skips_when_no_typed_bus(self):

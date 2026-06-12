@@ -189,7 +189,7 @@ async def health_check():
     # is installed and real embedding-based search is active.
     _semantic_search_available = False
     try:
-        import sentence_transformers  # noqa: F401
+        import sentence_transformers  # type: ignore[import-not-found]  # noqa: F401
         _semantic_search_available = True
     except ImportError:
         pass

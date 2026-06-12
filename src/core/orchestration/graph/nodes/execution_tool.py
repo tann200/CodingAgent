@@ -60,7 +60,7 @@ def emit_execution_step_start(
     )
     try:
         if hasattr(orchestrator, "event_bus"):
-            orchestrator.event_bus.publish_typed(StepStart(step=step_num, total=total_steps, tool=tool_name, description=description, session_id=state.get("session_id")))
+            orchestrator.event_bus.publish_typed(StepStart(step=step_num, total=total_steps, tool=tool_name, description=description, session_id=state.get("session_id", "")))
     except Exception:
         pass
     return {
@@ -91,7 +91,7 @@ def emit_execution_step_finish(
         if hasattr(orchestrator, "event_bus"):
             _ok_flag = result.get("ok")
             step_ok = (_ok_flag is True) or (_ok_flag is None and result.get("status") == "ok")
-            orchestrator.event_bus.publish_typed(StepFinish(step=step_num, total=total_steps, tool=tool_name, ok=step_ok, elapsed_ms=elapsed_ms, tool_call_count=int(state.get("tool_call_count") or 0) + 1, session_id=state.get("session_id")))
+            orchestrator.event_bus.publish_typed(StepFinish(step=step_num, total=total_steps, tool=tool_name, ok=step_ok, elapsed_ms=elapsed_ms, tool_call_count=int(state.get("tool_call_count") or 0) + 1, session_id=state.get("session_id", "")))
     except Exception:
         pass
 

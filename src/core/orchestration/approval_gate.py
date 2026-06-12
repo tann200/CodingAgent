@@ -48,7 +48,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
-from typing import Optional
+from typing import Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -117,9 +117,10 @@ _tool_registry = _GateRegistry()
 
 # Cache the optional event-bus helper at module level (avoids deferred imports on
 # every wait_async call).  Set to None when unavailable (circular import risk).
-_run_with_correlation = None
+
+_run_with_correlation: Optional[Callable[..., Any]] = None
 try:
-    from src.core.orchestration.event_bus import run_with_correlation as _run_with_correlation  # type: ignore[assignment]  # noqa: E501
+    from src.core.orchestration.event_bus import run_with_correlation as _run_with_correlation  # noqa: E501
 except ImportError:
     pass
 
@@ -200,6 +201,7 @@ class AsyncGate:
                 #
                 # Import is deferred (circular import risk) but done *once*
                 # and cached so the hot path never re-imports.
+                assert _run_with_correlation is not None
                 _wait_coro = _run_with_correlation(loop, None, lambda: ev.wait(timeout))
                 await _asyncio.wait_for(
                     _wait_coro,

@@ -115,10 +115,10 @@ class _CallableCommand(Command):
                 _loop = None
             if _loop is None:
                 # No running loop -- run synchronously.
-                result = asyncio.run(result)
+                result = asyncio.run(result)  # type: ignore[arg-type]
             else:
                 # Already in an async context -- schedule as a task so it runs.
-                _loop.create_task(result)
+                _loop.create_task(result)  # type: ignore[arg-type]
                 return f"/{self.name}: async handler scheduled."
         return result if isinstance(result, str) else ""
 

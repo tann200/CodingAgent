@@ -39,7 +39,7 @@ tui/
     └── ...                  # Screens, components, mixins
 
 tests/
-└── unit/                    # 4388 tests (pytest)
+└── unit/                    # 4415 tests (pytest)
     ├── messaging/           # MessageBus + EventBus + adapter tests
     ├── test_event_bus.py
     └── ...
@@ -85,8 +85,22 @@ With conditional routing for: fast-path, overflow, debug, replan, delegation, wa
 - **Correlation IDs** — `ContextVar` propagated across async/thread boundaries via `run_with_correlation()`
 - **Lazy imports** — used to break circular dependencies (event_types in event_bus, MessageBus in messaging)
 - **Graceful degradation** — all optional features wrapped in try/except
-- **try/except pattern for module-level code** — used in `_bridge_subscriptions.py` for mock mode
+- **Per-symbol import safety** — Instead of one monolithic `from ... import (...)` block (where any single ImportError destroys the entire mapping), use an `_EVENT_IMPORT_PATHS` dict with dotted module paths and import each class lazily via `importlib.import_module()` on first use. Cache imported classes under a thread lock. A single failed import degrades only that event type.
 - **MessageBus async architecture** — `sync_queue` (thread-safe for `publish()`) → `_bridge` task (transfers to event loop) → `_dispatch` task (runs handlers via `run_in_executor` so blocking handlers don't block the event loop)
+- **Sequenced dispatch** — Critical lifecycle events (tool/step/delegation) are delivered in FIFO order within their category via per-category `asyncio.Queue` consumer tasks. Categories are independent (tool does not block delegation).
+- **Owner-scoped cancellation** — `FileLockManager.cancel(owner=)` / `reset_cancel(owner=)` prevents cross-coroutine cancel corruption. When an owner is set, `reset_cancel()` with no owner or non-matching owner is a no-op. Guard condition: `if self._cancel_owner is not None: if owner is None or owner != self._cancel_owner: return`.
+- **File lock auto-release** — `_auto_release_after_timeout` guard task releases write locks after 30s timeout. `reset_instance()` on orchestrator re-init provides clean lock state.
+- **Contract tests** — Each stabilization phase adds dedicated contract tests (`test_fast_path_locks.py`, `test_fast_path_event_ordering.py`) that verify the exact guarantees. These run alongside existing unit tests.
+- **Optional import type-ignoring** — Use `# type: ignore[import-not-found]` for optional dependencies inside try/except blocks (pyright `reportMissingImports`). Use `Optional[Callable[..., Any]]` annotations + `assert is not None` guards for conditional-import-then-call patterns (pyright `reportOptionalCall`). Always add the `Callable` and `Any` to the typing import line rather than adding inline imports.
+- **`state.get("session_id", "")`** — Always provide a default when passing state dict lookups to event constructors that expect `str`. Prevents `Any | None` type mismatch.
+- **`SessionState` field parity** — If `update_session_state()` parameter types in `agent_session_manager.py` don't match `SessionState.__init__` field types, update the method signature (the docstring comment `Consolidates _state_lock + _sessions_lock` is stale if the field was renamed).
+- **Event field types should match callers** — When callers pass `str | None` or `int | None` to event constructors, the event field type should be `Optional[str]` or `Optional[float]` (e.g., `ProviderSelectionChanged.model`, `PlanRequested.blocked_tool`, `StepFinish.elapsed_ms`).
+- **`**dict` splat in event constructors is fragile** — Use explicit keyword args instead (e.g., `LogEntry(level=..., message=...)`) or add `# type: ignore` when dict values may not match event field types.
+- **JsonlSessionStore needs explicit implementations** — When adding methods used by `SessionStoreProtocol` consumers, implement them in `JsonlSessionStore` rather than relying on protocol-only definitions.
+- **`Any | None` return types** — When a function uses `last_response = None` with `return last_response` after a loop, annotate the return type as `Optional[Response]` (not `Response`).
+- **`isinstance` + index access** — `ch[0]` after `isinstance(ch, (list, tuple))` narrows to `tuple[()]` in pyright; use `# type: ignore[index]` or restructure the check.
+- **Optional return from retry functions** — Always guard `response is None` before accessing `.json()`, `.status_code`, etc. on the return of retry wrappers.
+- **Phases in progress** — Fast-path stabilization Phases 0-4 are done; Phase 5a-5h (re-enable frozen graph nodes) is next. Protocol Plan A (TUI mixins) is done; **Plan B (pyright errors) is complete — 0 remaining across src/.**
 
 ## Agent Definitions
 
