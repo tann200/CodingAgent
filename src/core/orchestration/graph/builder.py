@@ -247,25 +247,27 @@ def _compile_full_graph():
 
 
 def _compile_fast_path_graph():
-    """Assemble the Fast-Path graph (8 nodes, step_controller + analysis re-enabled).
+    """Assemble the Fast-Path graph (9 nodes, analysis + step_controller + planning re-enabled).
 
-    Stabilization Phase 5b: analysis is brought into the loop for complex tasks.
+    Stabilization Phase 5c: planning node is active — produces plans from
+    analysis output and routes directly to execution (plan_validator still frozen).
 
     Topology::
 
-        perception → analysis → execution → step_controller → verification → evaluation
-            ↑                                                    ↓              │
-            └─────────────────────── memory_sync ◄───────────────┴──────────────┘
-                                                           │
-                                                           └──→ END
+        perception → analysis → planning → execution → step_controller → verification → evaluation
+            ↑                                                                  ↓              │
+            └───────────────────────────── memory_sync ◄───────────────────────┴──────────────┘
+                                                                       │
+                                                                       └──→ END
 
-    Still frozen: planning, plan_validator, replan, debug,
-    delegation, analyst_delegation, wait_for_user.
+    Still frozen: plan_validator, replan, debug, delegation,
+    analyst_delegation, wait_for_user.
     """
     workflow = StateGraph(AgentState)
 
     workflow.add_node("perception", perception_node)
     workflow.add_node("analysis", analysis_node)
+    workflow.add_node("planning", planning_node)
     workflow.add_node("execution", execution_node)
     workflow.add_node("step_controller", step_controller_node)
     workflow.add_node("verification", verification_node)
@@ -274,7 +276,7 @@ def _compile_fast_path_graph():
 
     workflow.set_entry_point("perception")
 
-    # perception → analysis (complex tasks) | execution (fast-path)
+    # perception → analysis (complex tasks) | execution (fast-path) | planning
     # memory_sync when no action and last result OK
     workflow.add_conditional_edges(
         "perception",
@@ -283,19 +285,22 @@ def _compile_fast_path_graph():
             "execution": "execution",
             "analysis": "analysis",
             "memory_sync": "memory_sync",
-            "planning": "execution",  # bypass: route planning→execution
+            "planning": "planning",
         },
     )
 
-    # analysis → execution (both planning and analyst_delegation bypassed)
+    # analysis → planning (both simple and complex → planning)
     workflow.add_conditional_edges(
         "analysis",
         should_after_analysis,
         {
-            "analyst_delegation": "execution",  # bypass: no analyst_delegation node
-            "planning": "execution",             # bypass: no planning node
+            "analyst_delegation": "planning",  # bypass: no analyst_delegation → planning
+            "planning": "planning",
         },
     )
+
+    # planning → execution (no plan_validator in fast-path yet)
+    workflow.add_edge("planning", "execution")
 
     # execution → step_controller (plan step completed)
     #         → perception (continue loop)
@@ -314,7 +319,7 @@ def _compile_fast_path_graph():
     )
 
     # step_controller → execution (next step) | verification (plan exhausted)
-    #                 → execution (no plan — bypass, no planning node)
+    #                 → planning (no plan)
     #                 → END (cancelled)
     workflow.add_conditional_edges(
         "step_controller",
@@ -322,7 +327,7 @@ def _compile_fast_path_graph():
         {
             "execution": "execution",
             "verification": "verification",
-            "planning": "execution",  # bypass: no planning node in fast-path
+            "planning": "planning",
             "end": END,
         },
     )
