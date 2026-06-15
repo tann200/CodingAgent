@@ -247,27 +247,26 @@ def _compile_full_graph():
 
 
 def _compile_fast_path_graph():
-    """Assemble the Fast-Path graph (9 nodes, analysis + step_controller + planning re-enabled).
+    """Assemble the Fast-Path graph (10 nodes, most cognitive nodes active).
 
-    Stabilization Phase 5c: planning node is active — produces plans from
-    analysis output and routes directly to execution (plan_validator still frozen).
+    Stabilization Phase 5d: plan_validator validates plans before execution.
 
     Topology::
 
-        perception → analysis → planning → execution → step_controller → verification → evaluation
-            ↑                                                                  ↓              │
-            └───────────────────────────── memory_sync ◄───────────────────────┴──────────────┘
-                                                                       │
-                                                                       └──→ END
+        perception → analysis → planning → plan_validator → execution → step_controller → verification → evaluation
+            ↑                                                                              ↓              │
+            └───────────────────────────────────── memory_sync ◄───────────────────────────┴──────────────┘
+                                                                                   │
+                                                                                   └──→ END
 
-    Still frozen: plan_validator, replan, debug, delegation,
-    analyst_delegation, wait_for_user.
+    Still frozen: replan, debug, delegation, analyst_delegation, wait_for_user.
     """
     workflow = StateGraph(AgentState)
 
     workflow.add_node("perception", perception_node)
     workflow.add_node("analysis", analysis_node)
     workflow.add_node("planning", planning_node)
+    workflow.add_node("plan_validator", plan_validator_node)
     workflow.add_node("execution", execution_node)
     workflow.add_node("step_controller", step_controller_node)
     workflow.add_node("verification", verification_node)
@@ -299,8 +298,19 @@ def _compile_fast_path_graph():
         },
     )
 
-    # planning → execution (no plan_validator in fast-path yet)
-    workflow.add_edge("planning", "execution")
+    # planning → plan_validator
+    workflow.add_edge("planning", "plan_validator")
+
+    # plan_validator → execution (plan approved) | planning (re-plan) | execution (bypass wait_for_user)
+    workflow.add_conditional_edges(
+        "plan_validator",
+        should_after_plan_validator,
+        {
+            "execute": "execution",
+            "planning": "planning",
+            "wait_for_user": "execution",  # bypass: no wait_for_user in fast-path
+        },
+    )
 
     # execution → step_controller (plan step completed)
     #         → perception (continue loop)
