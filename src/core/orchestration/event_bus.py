@@ -311,6 +311,17 @@ def _get_event_name_map():
     return _EVENT_CLASS_CACHE, _EVENT_NAME_FROM_CLASS
 
 
+def _get_event_name_for_class(cls: type) -> Optional[str]:
+    """Find the event name for an event class by scanning EVENT_IMPORT_PATHS."""
+    cls_name = getattr(cls, '__name__', None)
+    if cls_name is None:
+        return None
+    for event_name, (_mod_path, candidate_name, _mapper) in _EVENT_IMPORT_PATHS.items():
+        if candidate_name == cls_name:
+            return event_name
+    return None
+
+
 def _import_event_class(event_name: str) -> Optional[Tuple[TypingType[Event], Optional[Dict[str, str]]]]:
     """Lazily import a single event class by *event_name*.
 
@@ -491,6 +502,11 @@ class EventBus:
         # Deliver to old-bus subscribers directly (skip publish() → no re-typed)
         _, name_from_class = _get_event_name_map()
         event_name = name_from_class.get(type(event))
+        if event_name is None:
+            event_name = _get_event_name_for_class(type(event))
+            if event_name is not None:
+                with _CACHE_LOCK:
+                    _EVENT_NAME_FROM_CLASS[type(event)] = event_name
         if event_name is not None:
             payload = event.to_dict()
             cid = _current_correlation_id.get()

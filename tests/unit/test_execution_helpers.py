@@ -952,6 +952,8 @@ def test_emit_plan_progress_and_sync_todo_publishes_and_checks_step():
     class _EventBus:
         def publish(self, name, payload):
             events.append((name, payload))
+        def publish_typed(self, event):
+            events.append((event.__class__.__name__, event.to_dict()))
 
     orchestrator = type("Orch", (), {"event_bus": _EventBus()})()
 
@@ -964,7 +966,11 @@ def test_emit_plan_progress_and_sync_todo_publishes_and_checks_step():
         manage_todo_fn=lambda **kwargs: todo_calls.append(kwargs),
     )
 
-    assert events == [("plan.progress", {"status": "completed", "step": 3})]
+    assert len(events) == 1
+    assert events[0][0] == "PlanProgress"
+    plan_progress = events[0][1]["plan_progress"]
+    assert plan_progress["status"] == "completed"
+    assert plan_progress["step"] == 3
     assert todo_calls == [{"action": "check", "workdir": "/tmp/project", "step_id": 2}]
 
 
@@ -975,6 +981,8 @@ def test_emit_plan_progress_and_sync_todo_skips_when_no_progress_or_unsuccessful
     class _EventBus:
         def publish(self, name, payload):
             events.append((name, payload))
+        def publish_typed(self, event):
+            events.append((event.__class__.__name__, event.to_dict()))
 
     orchestrator = type("Orch", (), {"event_bus": _EventBus()})()
 
@@ -995,7 +1003,9 @@ def test_emit_plan_progress_and_sync_todo_skips_when_no_progress_or_unsuccessful
         manage_todo_fn=lambda **kwargs: todo_calls.append(kwargs),
     )
 
-    assert events == [("plan.progress", {"status": "in_progress"})]
+    assert len(events) == 1
+    assert events[0][0] == "PlanProgress"
+    assert events[0][1]["plan_progress"]["status"] == "in_progress"
     assert todo_calls == []
 
 
@@ -1037,6 +1047,8 @@ def test_emit_execution_step_start_publishes_event_and_returns_metadata():
     class _EventBus:
         def publish(self, name, payload):
             events.append((name, payload))
+        def publish_typed(self, event):
+            events.append((event.__class__.__name__, event.to_dict()))
 
     orchestrator = type("Orch", (), {"event_bus": _EventBus()})()
     meta = emit_execution_step_start(
@@ -1049,18 +1061,11 @@ def test_emit_execution_step_start_publishes_event_and_returns_metadata():
     )
 
     assert meta == {"step_start_ts": 123.0, "step_num": 2, "total_steps": 2}
-    assert events == [
-        (
-            "step.start",
-            {
-                "step": 2,
-                "total": 2,
-                "tool": "write_file",
-                "description": "b",
-                "session_id": "s1",
-            },
-        )
-    ]
+    assert len(events) == 1
+    assert events[0][0] == "StepStart"
+    assert events[0][1]["step"] == 2
+    assert events[0][1]["total"] == 2
+    assert events[0][1]["tool"] == "write_file"
 
 
 def test_emit_execution_step_finish_publishes_elapsed_and_ok_flag():
@@ -1069,6 +1074,8 @@ def test_emit_execution_step_finish_publishes_elapsed_and_ok_flag():
     class _EventBus:
         def publish(self, name, payload):
             events.append((name, payload))
+        def publish_typed(self, event):
+            events.append((event.__class__.__name__, event.to_dict()))
 
     orchestrator = type("Orch", (), {"event_bus": _EventBus()})()
     emit_execution_step_finish(
@@ -1082,20 +1089,14 @@ def test_emit_execution_step_finish_publishes_elapsed_and_ok_flag():
         now_monotonic=10.042,
     )
 
-    assert events == [
-        (
-            "step.finish",
-            {
-                "step": 1,
-                "total": 3,
-                "tool": "read_file",
-                "ok": True,
-                "elapsed_ms": 41,
-                "tool_call_count": 5,
-                "session_id": "s1",
-            },
-        )
-    ]
+    assert len(events) == 1
+    assert events[0][0] == "StepFinish"
+    assert events[0][1]["step"] == 1
+    assert events[0][1]["total"] == 3
+    assert events[0][1]["tool"] == "read_file"
+    assert events[0][1]["ok"] is True
+    assert events[0][1]["elapsed_ms"] == 41
+    assert events[0][1]["tool_call_count"] == 5
 
 
 def test_maybe_build_preview_result_returns_pending_preview(tmp_path):

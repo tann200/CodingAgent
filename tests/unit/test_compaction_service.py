@@ -58,7 +58,7 @@ class TestCompactionServiceConstruction:
 
     def test_history_is_copied(self):
         history = _make_history(2)
-        svc = CompactionService(history)
+        svc = CompactionService(history, prefer_deterministic=True)
         history.clear()
         # Service should still have its own copy
         result = svc.compact()
@@ -207,9 +207,9 @@ class TestEventBusPublishing:
         bus = MagicMock()
         svc = CompactionService(_make_history(3), event_bus=bus, prefer_deterministic=True)
         svc.compact()
-        bus.publish.assert_called_once()
-        call_args = bus.publish.call_args
-        assert call_args[0][0] == "context.compacted"
+        bus.publish_typed.assert_called_once()
+        call_args = bus.publish_typed.call_args
+        assert call_args[0][0].__class__.__name__ == "ContextCompacted"
 
     def test_publishes_failure_event_on_error(self):
         bus = MagicMock()
@@ -219,9 +219,9 @@ class TestEventBusPublishing:
             side_effect=RuntimeError("forced failure"),
         ):
             svc.compact()
-        bus.publish.assert_called_once()
-        call_args = bus.publish.call_args
-        assert call_args[0][0] == "context.compact.failed"
+        bus.publish_typed.assert_called_once()
+        call_args = bus.publish_typed.call_args
+        assert call_args[0][0].__class__.__name__ == "ContextCompactFailed"
 
     def test_no_event_published_for_empty_history(self):
         """Empty history returns method='none' — compaction never ran, no event."""
@@ -229,11 +229,11 @@ class TestEventBusPublishing:
         svc = CompactionService([], event_bus=bus)
         svc.compact()
         # compact() returns early for empty history before _publish_event
-        bus.publish.assert_not_called()
+        bus.publish_typed.assert_not_called()
 
     def test_event_bus_failure_does_not_propagate(self):
         bus = MagicMock()
-        bus.publish.side_effect = RuntimeError("bus broken")
+        bus.publish_typed.side_effect = RuntimeError("bus broken")
         svc = CompactionService(_make_history(3), event_bus=bus, prefer_deterministic=True)
         result = svc.compact()
         # Compaction itself should still succeed
@@ -315,9 +315,9 @@ class TestCompactContextImpl:
             result = compact_context_impl(orch)
 
         assert result is False
-        orch.event_bus.publish.assert_called_once()
-        call_args = orch.event_bus.publish.call_args[0]
-        assert call_args[0] == "context.compact.failed"
+        orch.event_bus.publish_typed.assert_called_once()
+        call_args = orch.event_bus.publish_typed.call_args[0]
+        assert call_args[0].__class__.__name__ == "ContextCompactFailed"
 
     def test_uses_compaction_service_not_distiller_directly(self):
         """After P2-1 fix, compact_context_impl must NOT import distill_context directly.

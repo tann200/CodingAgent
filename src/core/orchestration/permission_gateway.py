@@ -30,7 +30,7 @@ import logging
 import uuid
 
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, Optional, TYPE_CHECKING
+from typing import Any, Dict, Optional, TYPE_CHECKING
 
 _logger = logging.getLogger(__name__)
 

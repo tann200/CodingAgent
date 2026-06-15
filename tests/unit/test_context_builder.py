@@ -243,8 +243,8 @@ def test_build_prompt_native_tools_false():
 
     # Should have YAML format instructions
     assert "```yaml" in system_content
-    # Should NOT have native tools instructions
-    assert "native" not in system_content.lower() or "Use the native" in system_content
+    # Should NOT have native tools instructions (the word may appear elsewhere in docs)
+    assert "# native tools" not in system_content.lower()
 
 
 def test_build_prompt_native_tools_none():

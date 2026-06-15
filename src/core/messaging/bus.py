@@ -160,9 +160,15 @@ class MessageBus:
             except sync_queue.Empty:
                 continue
             except Exception as e:
+                if self._shutdown_flag.is_set():
+                    break
+                if "cannot schedule new futures" in str(e):
+                    self._shutdown_flag.set()
+                    break
                 logger.error(
                     "MessageBus: bridge error: %s", e, exc_info=True
                 )
+                await asyncio.sleep(0.1)
                 continue
 
             if isinstance(item, Event):
@@ -234,6 +240,8 @@ class MessageBus:
             except asyncio.TimeoutError:
                 continue
             except Exception as e:
+                if self._shutdown_flag.is_set():
+                    break
                 logger.error(
                     "MessageBus: seq_consumer(%s) error: %s", category, e, exc_info=True
                 )
@@ -244,6 +252,11 @@ class MessageBus:
                     None, self._deliver_to_handlers, event
                 )
             except Exception as e:
+                if self._shutdown_flag.is_set():
+                    break
+                if "cannot schedule new futures" in str(e):
+                    self._shutdown_flag.set()
+                    break
                 logger.error(
                     "MessageBus: seq_consumer(%s) dispatch failed: %s",
                     category, e, exc_info=True,

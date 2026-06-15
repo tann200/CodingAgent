@@ -54,7 +54,8 @@ class LLMClient(ABC):
         import functools as _functools
 
         ctx = _contextvars.copy_context()
-        _gen = lambda: self.generate(*args, **kwargs)
+        def _gen() -> Dict[str, Any]:
+            return self.generate(*args, **kwargs)
         fn = _functools.partial(ctx.run, _gen)
         try:
             from typing import cast

@@ -12,6 +12,9 @@ class _Bus:
     def publish(self, event_name: str, payload: dict) -> None:
         self.events.append((event_name, payload))
 
+    def publish_typed(self, event) -> None:
+        self.events.append((event.__class__.__name__, event.to_dict()))
+
 
 class _Registry:
     def register(self, *args, **kwargs):
@@ -78,7 +81,7 @@ async def test_start_from_servers_connected_publishes_status(monkeypatch):
     assert state.connected is True
     assert state.tool_count == 2
     assert state.status == "connected"
-    assert any(e[0] == "mcp.server.status" for e in bus.events)
+    assert any(e[0] == "McpServerStatus" for e in bus.events)
     assert bus.events[-1][1]["count"] == 1
 
 
@@ -99,7 +102,7 @@ async def test_start_from_servers_auth_error_sets_needs_auth(monkeypatch):
     assert state.connected is False
     assert state.needs_auth is True
     assert state.status == "needs_auth"
-    assert bus.events[-1][1]["has_error"] is True
+    assert bus.events[-1][1].get("has_error", False) is True
 
 
 @pytest.mark.asyncio
@@ -128,4 +131,4 @@ async def test_tools_list_changed_triggers_refresh(monkeypatch):
 
     assert created[0].register_calls == 2
     assert manager._states["fs"].tool_count == 3
-    assert any(name == "mcp.tools.list_changed" for name, _ in bus.events)
+    assert any(name == "McpToolsListChanged" for name, _ in bus.events)

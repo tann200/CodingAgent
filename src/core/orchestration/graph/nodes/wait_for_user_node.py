@@ -1,4 +1,3 @@
-from src.core.messaging.event_types import PlanRequested
 """wait_for_user_node.py - Suspends graph until user confirms preview or approves plan.
 
 CRITICAL: This node uses asyncio.Event to properly suspend LangGraph.
@@ -15,6 +14,7 @@ from typing import Any, Dict
 
 from langchain_core.runnables import RunnableConfig
 
+from src.core.messaging.event_types import PlanRequested
 from src.core.orchestration.graph.state import StateLike
 
 logger = logging.getLogger(__name__)

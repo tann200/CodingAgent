@@ -14,7 +14,6 @@ from __future__ import annotations
 
 
 from src.core.messaging.event_types import McpServerStatus, McpToolsListChanged
-import asyncio
 import logging
 import threading
 from dataclasses import dataclass

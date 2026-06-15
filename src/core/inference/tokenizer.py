@@ -37,7 +37,7 @@ def _get_encoder(encoding_name: str):
 _HF_TOKENIZERS: Dict[str, Any] = {}
 # B3: Lock guards check-then-set on _HF_TOKENIZERS to prevent duplicate loads
 # when two threads race on the same model key.
-import threading as _threading
+import threading as _threading  # noqa: E402
 _HF_TOKENIZERS_LOCK = _threading.Lock()
 
 

@@ -528,8 +528,8 @@ class TestFrontierLoopNodeMain:
         orch = _make_orchestrator()
         state = _make_state()
         result = await self._run(state, orch)
-        # event_bus.publish should have been called at least twice (status working + idle)
-        assert orch.event_bus.publish.call_count >= 2
+        # event_bus.publish_typed should have been called at least twice (status working + idle)
+        assert orch.event_bus.publish_typed.call_count >= 2
 
     async def test_no_orchestrator_returns_gracefully(self):
         state = _make_state()

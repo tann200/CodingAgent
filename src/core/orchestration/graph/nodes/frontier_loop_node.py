@@ -43,7 +43,7 @@ from src.core.inference.kv_cache_governor import (
 
 logger = logging.getLogger(__name__)
 from src.core.logger import logger as guilogger  # noqa: E402
-from src.core.messaging.event_types import AgentStatus, ToolResult
+from src.core.messaging.event_types import AgentStatus, ToolResult  # noqa: E402
 
 # Core tools for small/local models.  Larger tiers get core + extras up to
 # their ``get_tool_limit()`` via ``_filter_tools_for_tier``.

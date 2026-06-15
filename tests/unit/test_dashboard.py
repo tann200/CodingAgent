@@ -6,6 +6,7 @@ Rewritten to use AgentBridge + MockEventBus so there is no dependency on src.ui.
 
 from __future__ import annotations
 import threading
+from typing import Any, Callable, Dict, List
 
 # ruff: noqa: E501
 from unittest.mock import MagicMock
@@ -13,7 +14,32 @@ from unittest.mock import MagicMock
 from tui.tui_src.ui.mock_eventbus import get_mock_event_bus, reset_mock_event_bus
 from tui.tui_src.ui.core_bridge import AgentBridge
 
+from src.core.messaging.event_types import (
+    FileDeleted,
+    FileModified,
+    SystemSettings,
+    ToolExecuteError,
+    ToolExecuteFinish,
+    ToolExecuteStart,
+)
 from src.core.orchestration.event_bus import EventBus
+
+
+class _MockTypedBus:
+    """Minimal typed-bus stand-in: records subscribe calls and can replay on publish_typed."""
+
+    def __init__(self) -> None:
+        self._handlers: Dict[type, List[Callable]] = {}
+
+    def subscribe(self, event_cls: type, handler: Callable) -> None:
+        self._handlers.setdefault(event_cls, []).append(handler)
+
+    def publish(self, event) -> None:
+        for h in self._handlers.get(type(event), []):
+            if hasattr(h, "handle"):
+                h.handle(event)
+            else:
+                h(event)
 
 
 # ---------------------------------------------------------------------------
@@ -22,15 +48,17 @@ from src.core.orchestration.event_bus import EventBus
 
 
 def _make_bridge():
-    """Return (bridge, bus, mock_app) using MockEventBus."""
+    """Return (bridge, mock_event_bus, typed_bus, mock_app)."""
     reset_mock_event_bus()
     bus = get_mock_event_bus()
+    typed_bus = _MockTypedBus()
     mock_app = MagicMock()
     # Make call_from_thread execute the callback directly (no running event loop in tests)
     mock_app.call_from_thread.side_effect = lambda fn, *a, **kw: fn(*a, **kw)
     bridge = AgentBridge.__new__(AgentBridge)
     bridge.app = mock_app
     bridge._bus = bus
+    bridge._typed_bus = typed_bus
     bridge._orchestrator = None
     bridge._working_dir = ""
     bridge._active_role = "operational"
@@ -41,7 +69,7 @@ def _make_bridge():
     bridge._cancel_event = threading.Event()
     bridge._subscriptions = []
     bridge.setup_subscriptions()
-    return bridge, bus, mock_app
+    return bridge, bus, typed_bus, mock_app
 
 
 # ---------------------------------------------------------------------------
@@ -51,13 +79,13 @@ def _make_bridge():
 
 class TestFileEvents:
     def test_file_modified_posts_message(self):
-        bridge, bus, mock_app = _make_bridge()
-        bus.publish("file.modified", {"path": "/test.py", "tool": "edit_file"})
+        bridge, bus, typed_bus, mock_app = _make_bridge()
+        typed_bus.publish(FileModified(path="/test.py", tool="edit_file", workdir=""))
         mock_app.post_message.assert_called()
 
     def test_file_deleted_posts_message(self):
-        bridge, bus, mock_app = _make_bridge()
-        bus.publish("file.deleted", {"path": "/old.py"})
+        bridge, bus, typed_bus, mock_app = _make_bridge()
+        typed_bus.publish(FileDeleted(path="/old.py", workdir=""))
         mock_app.post_message.assert_called()
 
 
@@ -68,9 +96,10 @@ class TestFileEvents:
 
 class TestToolEvents:
     def test_tool_start_posts_message(self):
-        bridge, bus, mock_app = _make_bridge()
-        bus.publish(
-            "tool.call.start",  # CodingAgent internal name (mapped from tool.execute.start)
+        bridge, bus, typed_bus, mock_app = _make_bridge()
+        # Publish through old-style EventBus (bridge handlers expect camelCase keys)
+        bridge._bus.publish(
+            "tool.call.start",
             {
                 "sessionUpdate": "tool_call_update",
                 "toolCallId": "call_abc123",
@@ -82,8 +111,8 @@ class TestToolEvents:
         mock_app.post_message.assert_called()
 
     def test_tool_finish_posts_message(self):
-        bridge, bus, mock_app = _make_bridge()
-        bus.publish(
+        bridge, bus, typed_bus, mock_app = _make_bridge()
+        bridge._bus.publish(
             "tool.call.finish",
             {
                 "toolCallId": "call_abc123",
@@ -95,8 +124,8 @@ class TestToolEvents:
         mock_app.post_message.assert_called()
 
     def test_tool_error_posts_message(self):
-        bridge, bus, mock_app = _make_bridge()
-        bus.publish(
+        bridge, bus, typed_bus, mock_app = _make_bridge()
+        bridge._bus.publish(
             "tool.call.error",
             {
                 "toolCallId": "call_abc123",
@@ -110,22 +139,20 @@ class TestToolEvents:
 
 class TestSystemSettingsEvents:
     def test_system_settings_posts_system_settings_loaded(self):
-        bridge, bus, mock_app = _make_bridge()
-        bus.publish(
-            "system.settings",
-            {
-                "active_mode": "lead_architect",
-                "theme": "textual-dark",
-                "context_window": 65536,
-                "default_provider": "copilot",
-                "default_model": "gpt-5",
-                "providers": [{"name": "copilot", "models": ["gpt-5"]}],
-                "autonomous_mode": True,
-                "max_turns": 25,
-            },
-        )
+        bridge, bus, typed_bus, mock_app = _make_bridge()
+        typed_bus.publish(SystemSettings(
+            active_mode="lead_architect",
+            theme="textual-dark",
+            context_window=65536,
+            default_provider="copilot",
+            default_model="gpt-5",
+            providers=[{"name": "copilot", "models": ["gpt-5"]}],
+            autonomous_mode=True,
+            max_turns=25,
+        ))
 
-        mock_app.post_message.assert_called()
+        # _seed_context_window_from_config posts an UpdateSettings during setup;
+        # pick the last post which should be SystemSettingsLoaded
         posted = mock_app.post_message.call_args[0][0]
         assert posted.__class__.__name__ == "SystemSettingsLoaded"
         assert posted.settings["context_window"] == 65536
@@ -140,8 +167,8 @@ class TestSystemSettingsEvents:
 
 class TestPlanEvents:
     def test_plan_progress_posts_message(self):
-        bridge, bus, mock_app = _make_bridge()
-        bus.publish(
+        bridge, bus, typed_bus, mock_app = _make_bridge()
+        bridge._bus.publish(
             "plan.progress",
             {
                 "current_step": 2,

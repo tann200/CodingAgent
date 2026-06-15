@@ -435,7 +435,7 @@ class TestInferenceLoopModuleAPI:
         import src.core.orchestration.inference_loop as m
 
         src = inspect.getsource(m)
-        assert "session.title_generated" in src
+        assert "SessionTitleGenerated" in src
 
     def test_source_contains_agent_mode(self):
         import inspect

@@ -1265,6 +1265,7 @@ class McpServerStatus(Event):
     """
     running: bool
     count: int
+    has_error: bool = False
     server_names: List[str] = field(default_factory=list)
     # manager.py passes a rich dict; normalise to flat fields where possible
     servers: Optional[Dict[str, Any]] = None

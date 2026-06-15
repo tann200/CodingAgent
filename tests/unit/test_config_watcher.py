@@ -220,12 +220,11 @@ class TestEventBus:
         watcher = _make_watcher(tmp_path, event_bus=bus)
         paths = {"/cfg/config.json"}
         watcher._on_change(paths)
-        bus.publish.assert_called_once()
-        call_args = bus.publish.call_args
-        event_name = call_args[0][0]
-        payload = call_args[0][1]
-        assert event_name == "config.reloaded"
-        assert set(payload["changed_paths"]) == paths
+        bus.publish_typed.assert_called_once()
+        call_args = bus.publish_typed.call_args
+        event = call_args[0][0]
+        assert event.__class__.__name__ == "ConfigReloaded"
+        assert set(event.changed_paths) == paths
 
     def test_on_change_no_event_bus_is_safe(self, tmp_path: Path) -> None:
         watcher = _make_watcher(tmp_path, event_bus=None)
@@ -234,7 +233,7 @@ class TestEventBus:
 
     def test_on_change_event_bus_exception_swallowed(self, tmp_path: Path) -> None:
         bus = MagicMock()
-        bus.publish.side_effect = RuntimeError("bus error")
+        bus.publish_typed.side_effect = RuntimeError("bus error")
         watcher = _make_watcher(tmp_path, event_bus=bus)
         # Must not raise
         watcher._on_change({"/config.json"})
@@ -243,8 +242,8 @@ class TestEventBus:
         bus = MagicMock()
         watcher = _make_watcher(tmp_path, event_bus=bus)
         watcher._on_change({"/a.json"})
-        payload = bus.publish.call_args[0][1]
-        assert isinstance(payload["changed_paths"], list)
+        event = bus.publish_typed.call_args[0][0]
+        assert isinstance(event.changed_paths, list)
 
 
 # ---------------------------------------------------------------------------

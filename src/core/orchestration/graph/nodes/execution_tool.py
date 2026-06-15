@@ -25,7 +25,7 @@ def emit_plan_progress_and_sync_todo(
     progress_payload = plan_progress_event["plan_progress"]
     try:
         if hasattr(orchestrator, "event_bus"):
-            orchestrator.event_bus.publish_typed(PlanProgress(**progress_payload))
+            orchestrator.event_bus.publish_typed(PlanProgress(plan_progress=progress_payload))
     except Exception:
         pass
 

@@ -203,7 +203,7 @@ from src.core.utils.strings import valid_str as _valid_str  # noqa: E402
 from src.core.inference._protocols import ProviderManagerProtocol  # noqa: E402
 
 
-from src.core.messaging.event_types import ModelRoutingComplete, ProviderConfigMissing
+from src.core.messaging.event_types import ModelRoutingComplete, ProviderConfigMissing  # noqa: E402
 def _set_active_context_length_lazy(context_length: int, provider_key: str = "") -> None:
     """Lazy wrapper for provider_context.set_active_context_length to avoid circular imports."""
     import importlib

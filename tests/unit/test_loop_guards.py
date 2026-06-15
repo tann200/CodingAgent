@@ -357,9 +357,9 @@ class TestCheckDoomLoop:
         ):
             check_doom_loop("read_file", {"path": "x.py"}, state, event_bus=mock_bus)
 
-        mock_bus.publish.assert_called_once()
-        call_args = mock_bus.publish.call_args
-        assert call_args[0][0] == "tool.doom_loop_detected"
+        mock_bus.publish_typed.assert_called_once()
+        call_args = mock_bus.publish_typed.call_args
+        assert call_args[0][0].__class__.__name__ == "ToolDoomLoopDetected"
 
     def test_policy_import_failure_still_blocks(self):
         """If policy lookup fails, the doom loop is still blocked (safe default)."""

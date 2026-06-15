@@ -68,7 +68,7 @@ except Exception:
 # A2 FIX: protect with a threading.Lock so concurrent executor threads (which
 # call _get_cached_embedding via _DummyModel.encode) don't race on the
 # OrderedDict's move_to_end + __setitem__ sequence.
-import threading as _threading
+import threading as _threading  # noqa: E402
 _EMBEDDING_CACHE: OrderedDict[str, List[float]] = OrderedDict()
 _EMBEDDING_CACHE_LIMIT = 10000  # Max embeddings to cache
 _EMBEDDING_CACHE_LOCK = _threading.Lock()
