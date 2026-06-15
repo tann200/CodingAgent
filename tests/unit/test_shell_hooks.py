@@ -17,6 +17,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from src.core.messaging.event_types import HookMessage
 from src.core.orchestration.shell_hooks import (
     HookResult,
     ShellHookRunner,
@@ -281,9 +282,9 @@ class TestShellHookRunnerWithHooks:
         mock_bus = MagicMock()
         runner = ShellHookRunner(workdir=tmp_path, event_bus=mock_bus)
         runner.run_pre("read_file", {})
-        mock_bus.publish.assert_called_once()
-        call_args = mock_bus.publish.call_args
-        assert call_args[0][0] == "hook.message"
+        mock_bus.publish_typed.assert_called_once()
+        call_args = mock_bus.publish_typed.call_args
+        assert isinstance(call_args[0][0], HookMessage)
 
 
 # ---------------------------------------------------------------------------

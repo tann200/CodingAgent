@@ -11,6 +11,14 @@ class DummyBus:
     def publish(self, topic, payload):
         self.events.append((topic, payload))
 
+    def publish_typed(self, event):
+        from src.core.orchestration.event_bus import _get_event_name_for_class
+        name = _get_event_name_for_class(type(event)) or type(event).__name__
+        d = event.to_dict()
+        d.pop("correlation_id", None)
+        d.pop("timestamp", None)
+        self.publish(name, d)
+
 
 class DummyOrch(SimpleNamespace):
     pass

@@ -379,6 +379,14 @@ def test_on_model_routing_cross_provider_calls_persist(tmp_path):
     published: list = []
     bus = MagicMock()
     bus.publish = lambda e, p: published.append((e, p))
+    def _pt(event):
+        from src.core.orchestration.event_bus import _get_event_name_for_class
+        name = _get_event_name_for_class(type(event)) or type(event).__name__
+        d = event.to_dict()
+        d.pop("correlation_id", None)
+        d.pop("timestamp", None)
+        published.append((name, d))
+    bus.publish_typed = _pt
     pm._event_bus = bus
 
     new_adapter = SimpleNamespace(default_model=None)
@@ -403,6 +411,14 @@ def test_on_model_routing_publishes_routing_complete():
     published: list = []
     bus = MagicMock()
     bus.publish = lambda e, p: published.append((e, p))
+    def _pt2(event):
+        from src.core.orchestration.event_bus import _get_event_name_for_class
+        name = _get_event_name_for_class(type(event)) or type(event).__name__
+        d = event.to_dict()
+        d.pop("correlation_id", None)
+        d.pop("timestamp", None)
+        published.append((name, d))
+    bus.publish_typed = _pt2
     pm._event_bus = bus
 
     adapter = SimpleNamespace(default_model=None)

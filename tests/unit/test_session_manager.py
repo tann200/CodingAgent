@@ -212,10 +212,9 @@ class TestPublishFilesChanged:
         sm, _, _, event_bus, _ = _make_sm(tmp_path)
         sm._modified_files = {str(tmp_path / "x.py")}
         sm.publish_files_changed()
-        event_bus.publish.assert_called_once()
-        topic, payload = event_bus.publish.call_args[0]
-        assert topic == "session.files_changed"
-        assert "files" in payload
+        event_bus.publish_typed.assert_called_once()
+        event = event_bus.publish_typed.call_args[0][0]
+        assert len(event.files) > 0
 
     def test_sm9_silent_when_no_modified_files(self, tmp_path):
         sm, _, _, event_bus, _ = _make_sm(tmp_path)

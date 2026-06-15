@@ -13,7 +13,7 @@ def test_publish_active_config_uses_get_provider_capabilities(monkeypatch):
 
     orch = SimpleNamespace()
     orch.get_provider_capabilities = lambda: caps
-    orch.event_bus = SimpleNamespace(publish=fake_publish)
+    orch.event_bus = SimpleNamespace(publish=fake_publish, publish_typed=lambda event: fake_publish("model.routing", event.to_dict()))
 
     # Import and call the helper
     from src.core.orchestration.orchestrator_helpers import _publish_active_config_impl
@@ -37,7 +37,7 @@ def test_publish_active_config_falls_back_to_adapter(monkeypatch):
     orch = SimpleNamespace()
     orch.get_provider_capabilities = lambda: (_ for _ in ()).throw(Exception("boom"))
     orch._adapter = adapter
-    orch.event_bus = SimpleNamespace(publish=fake_publish)
+    orch.event_bus = SimpleNamespace(publish=fake_publish, publish_typed=lambda event: fake_publish("model.routing", event.to_dict()))
 
     from src.core.orchestration.orchestrator_helpers import _publish_active_config_impl
 
@@ -57,7 +57,7 @@ def test_publish_active_config_uses_provider_manager(monkeypatch):
     adapter = SimpleNamespace(provider={"name": "irrelevant"})
     orch = SimpleNamespace()
     orch._adapter = adapter
-    orch.event_bus = SimpleNamespace(publish=fake_publish)
+    orch.event_bus = SimpleNamespace(publish=fake_publish, publish_typed=lambda event: fake_publish("model.routing", event.to_dict()))
 
     caps = {"provider_name": "pmprov", "model": "pm_model"}
 
@@ -92,7 +92,7 @@ def test_publish_active_config_provider_manager_filters_magicmock(monkeypatch):
     )
     orch = SimpleNamespace()
     orch._adapter = adapter
-    orch.event_bus = SimpleNamespace(publish=fake_publish)
+    orch.event_bus = SimpleNamespace(publish=fake_publish, publish_typed=lambda event: fake_publish("model.routing", event.to_dict()))
 
     caps = {"provider_name": "MagicMock name='pm'", "model": "MagicMock name='m'"}
 

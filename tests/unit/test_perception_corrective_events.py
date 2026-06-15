@@ -37,6 +37,14 @@ async def test_perception_emits_corrective_prompt_event_on_empty_response():
     orc.msg_mgr = MagicMock()
     orc.event_bus = MagicMock()
     orc.event_bus.publish = lambda e, p: events.append((e, p))
+    def _pt(event):
+        from src.core.orchestration.event_bus import _get_event_name_for_class
+        name = _get_event_name_for_class(type(event)) or type(event).__name__
+        d = event.to_dict()
+        d.pop("correlation_id", None)
+        d.pop("timestamp", None)
+        events.append((name, d))
+    orc.event_bus.publish_typed = _pt
 
     # Simulate an LLM response that is only thinking text
     fake_response = {
@@ -75,6 +83,14 @@ async def test_perception_emits_corrective_prompt_event_on_truncated_yaml():
     orc.msg_mgr = MagicMock()
     orc.event_bus = MagicMock()
     orc.event_bus.publish = lambda e, p: events.append((e, p))
+    def _pt2(event):
+        from src.core.orchestration.event_bus import _get_event_name_for_class
+        name = _get_event_name_for_class(type(event)) or type(event).__name__
+        d = event.to_dict()
+        d.pop("correlation_id", None)
+        d.pop("timestamp", None)
+        events.append((name, d))
+    orc.event_bus.publish_typed = _pt2
 
     # Simulate truncated/invalid YAML inside a fenced block (no 'name:' key)
     fake_response = {

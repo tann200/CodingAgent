@@ -20,6 +20,14 @@ def test_reactive_overflow_early_exit_emits_event_and_truncates_history():
     orc = MagicMock()
     orc.event_bus = MagicMock()
     orc.event_bus.publish = lambda e, p: events.append((e, p))
+    def _pt(event):
+        from src.core.orchestration.event_bus import _get_event_name_for_class
+        name = _get_event_name_for_class(type(event)) or type(event).__name__
+        d = event.to_dict()
+        d.pop("correlation_id", None)
+        d.pop("timestamp", None)
+        events.append((name, d))
+    orc.event_bus.publish_typed = _pt
 
     state = _make_state(history=[{"role": "assistant", "content": "x"}] * 10)
     resp = {"context_overflow": True}
@@ -49,6 +57,14 @@ def test_postcall_overflow_records_usage_and_estimates_cost():
     orc = MagicMock()
     orc.event_bus = MagicMock()
     orc.event_bus.publish = lambda e, p: events.append((e, p))
+    def _pt2(event):
+        from src.core.orchestration.event_bus import _get_event_name_for_class
+        name = _get_event_name_for_class(type(event)) or type(event).__name__
+        d = event.to_dict()
+        d.pop("correlation_id", None)
+        d.pop("timestamp", None)
+        events.append((name, d))
+    orc.event_bus.publish_typed = _pt2
     orc.token_monitor = MagicMock()
     orc.token_monitor.record_usage = MagicMock()
 

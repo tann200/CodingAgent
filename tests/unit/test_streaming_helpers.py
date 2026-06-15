@@ -6,6 +6,7 @@ from src.core.inference.streaming import (
     publish_stream_chunk,
     split_thinking_content,
 )
+from src.core.messaging.event_types import ResponseStreamChunk, ModelToken, LLMToken, ResponseStreamEnd
 
 
 class _EventBus:
@@ -14,6 +15,9 @@ class _EventBus:
 
     def publish(self, event_name, payload):
         self.events.append((event_name, payload))
+
+    def publish_typed(self, event):
+        self.events.append(event)
 
 
 def test_decode_sse_line_handles_data_and_done_markers():
@@ -51,12 +55,20 @@ def test_publish_stream_chunk_emits_tokens_only_for_non_reasoning():
     publish_stream_chunk(bus=bus, chunk="hello", is_reasoning=False)
     publish_stream_chunk(bus=bus, chunk="thought", is_reasoning=True)
 
-    assert bus.events == [
-        ("response.stream_chunk", {"chunk": "hello", "is_reasoning": False}),
-        ("model.token", {"text": "hello", "partial": True}),
-        ("llm.token", {"text": "hello", "partial": True, "is_reasoning": False}),
-        ("response.stream_chunk", {"chunk": "thought", "is_reasoning": True}),
-    ]
+    assert len(bus.events) == 4
+    assert isinstance(bus.events[0], ResponseStreamChunk)
+    assert bus.events[0].chunk == "hello"
+    assert bus.events[0].is_reasoning is False
+    assert isinstance(bus.events[1], ModelToken)
+    assert bus.events[1].text == "hello"
+    assert bus.events[1].partial is True
+    assert isinstance(bus.events[2], LLMToken)
+    assert bus.events[2].text == "hello"
+    assert bus.events[2].partial is True
+    assert bus.events[2].is_reasoning is False
+    assert isinstance(bus.events[3], ResponseStreamChunk)
+    assert bus.events[3].chunk == "thought"
+    assert bus.events[3].is_reasoning is True
 
 
 def test_split_thinking_content_splits_before_think_and_collects_text():
@@ -101,8 +113,13 @@ def test_finalize_stream_publishes_full_text_and_end_event():
     result = finalize_stream(bus=bus, accumulated=["Hel", "lo"])
 
     assert result == "Hello"
-    assert bus.events == [
-        ("model.token", {"text": "", "partial": False, "full": "Hello"}),
-        ("llm.token", {"text": "", "partial": False, "full": "Hello"}),
-        ("response.stream_end", {"full_text": "Hello"}),
-    ]
+    assert len(bus.events) == 3
+    assert isinstance(bus.events[0], ModelToken)
+    assert bus.events[0].text == ""
+    assert bus.events[0].partial is False
+    assert bus.events[0].full == "Hello"
+    assert isinstance(bus.events[1], LLMToken)
+    assert bus.events[1].partial is False
+    assert bus.events[1].full == "Hello"
+    assert isinstance(bus.events[2], ResponseStreamEnd)
+    assert bus.events[2].full_text == "Hello"

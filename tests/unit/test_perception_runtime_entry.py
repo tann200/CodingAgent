@@ -94,6 +94,14 @@ def test_maybe_handle_turn_limit_publishes_event_and_returns_payload():
         def publish(self, name, payload):
             events.append((name, payload))
 
+        def publish_typed(self, event):
+            from src.core.orchestration.event_bus import _get_event_name_for_class
+            name = _get_event_name_for_class(type(event)) or type(event).__name__
+            d = event.to_dict()
+            d.pop("correlation_id", None)
+            d.pop("timestamp", None)
+            events.append((name, d))
+
     logger = type(
         "L",
         (),

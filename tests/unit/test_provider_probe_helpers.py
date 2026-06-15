@@ -16,6 +16,14 @@ class _EventBus:
     def publish(self, event_name, payload):
         self.events.append((event_name, payload))
 
+    def publish_typed(self, event):
+        from src.core.orchestration.event_bus import _get_event_name_for_class
+        name = _get_event_name_for_class(type(event)) or type(event).__name__
+        d = event.to_dict()
+        d.pop("correlation_id", None)
+        d.pop("timestamp", None)
+        self.publish(name, d)
+
 
 class _Lock:
     def __enter__(self):

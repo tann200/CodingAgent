@@ -117,6 +117,7 @@ def test_metrics_counters_and_export(tmp_path):
 
 def test_publish_model_response_on_wrapper():
     from src.core.inference.adapter_wrappers import AdapterWrapper
+    from src.core.messaging.event_types import ModelResponse
 
     class _DummyBus:
         def __init__(self):
@@ -124,6 +125,9 @@ def test_publish_model_response_on_wrapper():
 
         def publish(self, name, payload):
             self.events.append((name, payload))
+
+        def publish_typed(self, event):
+            self.events.append(event)
 
     class _MockAdapter:
         def chat(self, messages, model=None, stream=False, format_json=False, **kwargs):
@@ -138,7 +142,7 @@ def test_publish_model_response_on_wrapper():
     out = wrapper.generate([{"role": "user", "content": "hi"}], model="test-model")
 
     assert out.get("ok") is True
-    assert any(e[0] == "model.response" for e in bus.events)
-    evt = next(e for e in bus.events if e[0] == "model.response")
+    assert any(isinstance(e, ModelResponse) for e in bus.events)
+    evt = next(e for e in bus.events if isinstance(e, ModelResponse))
     for key in ("provider", "model", "prompt_tokens", "completion_tokens", "latency"):
-        assert key in evt[1], f"Missing key '{key}' in model.response payload"
+        assert hasattr(evt, key), f"Missing attribute '{key}' on ModelResponse"

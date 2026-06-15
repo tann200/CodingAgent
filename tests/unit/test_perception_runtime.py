@@ -75,6 +75,14 @@ def test_maybe_warn_small_context_window_publishes_warning_event():
         def publish(self, event_name, payload):
             events.append((event_name, payload))
 
+        def publish_typed(self, event):
+            from src.core.orchestration.event_bus import _get_event_name_for_class
+            name = _get_event_name_for_class(type(event)) or type(event).__name__
+            d = event.to_dict()
+            d.pop("correlation_id", None)
+            d.pop("timestamp", None)
+            events.append((name, d))
+
     orchestrator = SimpleNamespace(event_bus=EventBus())
     adapter = SimpleNamespace(context_window=7168)
 
@@ -104,6 +112,14 @@ def test_maybe_warn_small_context_window_skips_non_round_zero_or_large_window():
     class EventBus:
         def publish(self, event_name, payload):
             events.append((event_name, payload))
+
+        def publish_typed(self, event):
+            from src.core.orchestration.event_bus import _get_event_name_for_class
+            name = _get_event_name_for_class(type(event)) or type(event).__name__
+            d = event.to_dict()
+            d.pop("correlation_id", None)
+            d.pop("timestamp", None)
+            events.append((name, d))
 
     orchestrator = SimpleNamespace(event_bus=EventBus())
 
