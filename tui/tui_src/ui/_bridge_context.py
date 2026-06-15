@@ -92,7 +92,7 @@ class BridgeContextMixin(AgentBridgeProtocol):
 
         self._post(
             ContextDegradedEvent(
-                target_window=payload.get("target_window", 0),
+                target_window=payload.get("target_window") or payload.get("tokens_lost", 0),
                 reason=payload.get("reason", ""),
             )
         )
@@ -119,11 +119,11 @@ class BridgeContextMixin(AgentBridgeProtocol):
         self._post(
             TaskQueueUpdatedEvent(
                 queue_size=payload.get("queue_size", 0),
-                pending_count=payload.get("pending_count", 0),
+                pending_count=payload.get("pending_tasks") or payload.get("pending_count", 0),
                 task_id=payload.get("task_id"),
                 old_status=payload.get("old_status"),
                 new_status=payload.get("new_status"),
-                run_id=payload.get("run_id", ""),
+                run_id=payload.get("session_id") or payload.get("run_id", ""),
             )
         )
 
@@ -135,7 +135,7 @@ class BridgeContextMixin(AgentBridgeProtocol):
                 tool=payload.get("tool", ""),
                 step=int(payload.get("step", 0) or 0),
                 total=int(payload.get("total", 0) or 0),
-                run_id=payload.get("run_id", ""),
+                run_id=payload.get("session_id") or payload.get("run_id", ""),
             )
         )
 
@@ -148,7 +148,7 @@ class BridgeContextMixin(AgentBridgeProtocol):
                 tool=payload.get("tool", "?"),
                 ok=payload.get("ok", True),
                 elapsed_ms=int(elapsed) if elapsed is not None else None,
-                run_id=payload.get("run_id", ""),
+                run_id=payload.get("session_id") or payload.get("run_id", ""),
             )
         )
 
@@ -158,7 +158,7 @@ class BridgeContextMixin(AgentBridgeProtocol):
 
         self._post(
             RoleTransitionEvent(
-                from_role=payload.get("from_role", "system"),
+                from_role=payload.get("role") or payload.get("from_role", "system"),
                 to_role=payload.get("to_role", "lead_architect"),
                 run_id=payload.get("run_id", ""),
             )
@@ -169,7 +169,7 @@ class BridgeContextMixin(AgentBridgeProtocol):
 
         self._post(
             DiffPreviewEvent(
-                path=payload.get("path") or payload.get("tool", ""),
+                path=payload.get("path") or payload.get("preview_id") or payload.get("tool", ""),
                 diff=payload.get("diff", ""),
                 is_new_file=payload.get("is_new_file", False),
             )
@@ -192,9 +192,9 @@ class BridgeContextMixin(AgentBridgeProtocol):
 
         self._post(
             RetryAttemptEvent(
-                attempt_number=payload.get("attempt_number", 0),
+                attempt_number=payload.get("attempt") or payload.get("attempt_number", 0),
                 max_attempts=payload.get("max_attempts", 0),
-                error_type=payload.get("error_type", ""),
+                error_type=payload.get("reason") or payload.get("error_type", ""),
                 provider=payload.get("provider", ""),
                 run_id=payload.get("run_id", ""),
             )
@@ -205,7 +205,7 @@ class BridgeContextMixin(AgentBridgeProtocol):
 
         self._post(
             RetrySucceededEvent(
-                attempt_number=payload.get("attempt_number", 0),
+                attempt_number=payload.get("attempt") or payload.get("attempt_number", 0),
                 provider=payload.get("provider", ""),
                 run_id=payload.get("run_id", ""),
             )
@@ -216,8 +216,8 @@ class BridgeContextMixin(AgentBridgeProtocol):
 
         self._post(
             RetryFailedEvent(
-                total_attempts=payload.get("total_attempts", 0),
-                error_type=payload.get("error_type", ""),
+                total_attempts=payload.get("attempt") or payload.get("total_attempts", 0),
+                error_type=payload.get("reason") or payload.get("error_type", ""),
                 provider=payload.get("provider", ""),
                 run_id=payload.get("run_id", ""),
             )
@@ -265,8 +265,8 @@ class BridgeContextMixin(AgentBridgeProtocol):
 
         self._post(
             UsageTurnSummaryEvent(
-                input_tokens=int(payload.get("input_tokens", 0)),
-                output_tokens=int(payload.get("output_tokens", 0)),
+                input_tokens=int(payload.get("prompt_tokens") or payload.get("input_tokens", 0)),
+                output_tokens=int(payload.get("completion_tokens") or payload.get("output_tokens", 0)),
                 model=str(payload.get("model", "")),
                 cost_usd=float(payload.get("cost_usd", 0.0)),
             )

@@ -247,43 +247,57 @@ def _compile_full_graph():
 
 
 def _compile_fast_path_graph():
-    """Assemble the Fast-Path graph (6 nodes).
+    """Assemble the Fast-Path graph (8 nodes, step_controller + analysis re-enabled).
 
-    Stabilization mode: only the core feedback loop is active.
+    Stabilization Phase 5b: analysis is brought into the loop for complex tasks.
+
     Topology::
 
-        perception → execution → verification → evaluation → memory_sync → END
-            ↑                                                    │
-            └────────────────────────────────────────────────────┘
+        perception → analysis → execution → step_controller → verification → evaluation
+            ↑                                                    ↓              │
+            └─────────────────────── memory_sync ◄───────────────┴──────────────┘
+                                                           │
+                                                           └──→ END
 
-    Complex nodes (analysis, planning, plan_validator, replan, debug,
-    delegation, analyst_delegation, wait_for_user, step_controller)
-    are frozen and not included.
+    Still frozen: planning, plan_validator, replan, debug,
+    delegation, analyst_delegation, wait_for_user.
     """
     workflow = StateGraph(AgentState)
 
     workflow.add_node("perception", perception_node)
+    workflow.add_node("analysis", analysis_node)
     workflow.add_node("execution", execution_node)
+    workflow.add_node("step_controller", step_controller_node)
     workflow.add_node("verification", verification_node)
     workflow.add_node("evaluation", evaluation_node)
     workflow.add_node("memory_sync", memory_update_node)
 
     workflow.set_entry_point("perception")
 
-    # perception → execution (all tool calls route directly)
+    # perception → analysis (complex tasks) | execution (fast-path)
     # memory_sync when no action and last result OK
     workflow.add_conditional_edges(
         "perception",
         route_after_perception,
         {
             "execution": "execution",
-            "analysis": "execution",  # bypass: route analysis→execution
+            "analysis": "analysis",
             "memory_sync": "memory_sync",
             "planning": "execution",  # bypass: route planning→execution
         },
     )
 
-    # execution → verification (post-tool verification)
+    # analysis → execution (both planning and analyst_delegation bypassed)
+    workflow.add_conditional_edges(
+        "analysis",
+        should_after_analysis,
+        {
+            "analyst_delegation": "execution",  # bypass: no analyst_delegation node
+            "planning": "execution",             # bypass: no planning node
+        },
+    )
+
+    # execution → step_controller (plan step completed)
     #         → perception (continue loop)
     #         → memory_sync (task complete)
     workflow.add_conditional_edges(
@@ -291,7 +305,7 @@ def _compile_fast_path_graph():
         route_execution,
         {
             "wait_for_user": "execution",    # bypass: no user wait in fast-path
-            "step_controller": "verification", # step_controller bypassed → verify
+            "step_controller": "step_controller",
             "perception": "perception",
             "memory_sync": "memory_sync",
             "replan": "verification",         # bypass: replan→verify
@@ -299,16 +313,30 @@ def _compile_fast_path_graph():
         },
     )
 
+    # step_controller → execution (next step) | verification (plan exhausted)
+    #                 → execution (no plan — bypass, no planning node)
+    #                 → END (cancelled)
+    workflow.add_conditional_edges(
+        "step_controller",
+        should_after_step_controller,
+        {
+            "execution": "execution",
+            "verification": "verification",
+            "planning": "execution",  # bypass: no planning node in fast-path
+            "end": END,
+        },
+    )
+
     # verification → evaluation
     workflow.add_edge("verification", "evaluation")
 
-    # evaluation → memory_sync (complete) | end
+    # evaluation → step_controller (partial → next step) | memory_sync | end
     workflow.add_conditional_edges(
         "evaluation",
         should_after_evaluation,
         {
             "memory_sync": "memory_sync",
-            "step_controller": "memory_sync",  # bypass: route to memory_sync
+            "step_controller": "step_controller",
             "debug": "memory_sync",             # bypass: route to memory_sync
             "end": END,
         },

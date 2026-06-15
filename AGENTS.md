@@ -100,9 +100,14 @@ With conditional routing for: fast-path, overflow, debug, replan, delegation, wa
 - **`Any | None` return types** — When a function uses `last_response = None` with `return last_response` after a loop, annotate the return type as `Optional[Response]` (not `Response`).
 - **`isinstance` + index access** — `ch[0]` after `isinstance(ch, (list, tuple))` narrows to `tuple[()]` in pyright; use `# type: ignore[index]` or restructure the check.
 - **Optional return from retry functions** — Always guard `response is None` before accessing `.json()`, `.status_code`, etc. on the return of retry wrappers.
-- **Phases in progress** — Fast-path stabilization Phases 0-4 are done; Phase 5a-5h (re-enable frozen graph nodes) is next. Protocol Plan A (TUI mixins) is done; **Plan B (pyright errors) is complete — 0 remaining across src/.**
+- **Phase 5b done** (analysis re-enabled in fast-path graph). Still frozen: planning, plan_validator, replan, debug, delegation, analyst_delegation, wait_for_user. Protocol Plan A (TUI mixins) is done; **Plan B (pyright errors) is complete — 0 remaining across src/.**
+- **Bridge handler key strategy** — Defensive dual-key lookups: `payload.get("snake_case") or payload.get("camelCase", default)`. Typed event field names are preferred when they differ semantically (e.g., `reason` vs `error_type`).
+- **Test event names must match typed events** — After Phase 5 migration, old string event names changed. Verify `subscribe()` names match the `_EVENT_IMPORT_PATHS` keys in `event_bus.py` (e.g., `"provider.model.missing"` not `"provider.config.missing"`).
 
-## Agent Definitions
+- **MessageBus _bridge infinite error loop** — When `run_in_executor` raises "cannot schedule new futures after shutdown" during Python process exit, `_bridge`'s generic `except Exception: continue` creates a tight error loop that prevents clean shutdown and causes pytest hangs under `pytest-timeout`. Fix: detect the specific shutdown error in `_bridge` and `_seq_consumer`, set `_shutdown_flag`, and `break`.
+- **`_MockTypedBus` in tests** — Must handle both callable handlers and `.handle()`-style adapter objects (used by `_DictBridgeAdapter` in bridge subscriptions). Check `if hasattr(h, "handle"): h.handle(event)`.
+- **Dashboard tests with old EventBus** — Tests that rely on old-style `publish("string.name", dict)` cannot be used with `_MockTypedBus` after Phase 5 removed old subscriptions from the bridge. Convert to typed `publish(TypedEvent(...))` on the typed bus, or use `bridge._bus.publish("string.name", dict)` if the bridge still has a MockEventBus instance.
+- **`_seed_context_window_from_config` posts `UpdateSettings`** — Called during bridge `setup_subscriptions()`. This posts a synthetic `UpdateSettings` event via `app.post_message`. Tests checking `mock_app.post_message.call_args` after setup need to account for this initial message.
 
 ### Available Agents
 

@@ -51,7 +51,7 @@ class BridgeToolsMixin(AgentBridgeProtocol):
 
         tool_name = payload.get("title") or payload.get("tool", "unknown")
         tool_args = payload.get("rawInput") or payload.get("args", {})
-        tool_id = payload.get("toolCallId", "")
+        tool_id = payload.get("tool_call_id") or payload.get("toolCallId", "")
         if not isinstance(tool_args, dict):
             tool_args = {}
 
@@ -76,7 +76,7 @@ class BridgeToolsMixin(AgentBridgeProtocol):
         from tui.tui_src.ui.bus import ToolCallFinishEvent
 
         tool_name = payload.get("title") or payload.get("tool", "unknown")
-        tool_id = payload.get("toolCallId", "")
+        tool_id = payload.get("tool_call_id") or payload.get("toolCallId", "")
         content = payload.get("content", [])
         result_text = ""
         if content and isinstance(content, list) and isinstance(content[0], dict):
@@ -113,7 +113,7 @@ class BridgeToolsMixin(AgentBridgeProtocol):
         from tui.tui_src.ui.bus import ToolCallErrorEvent
 
         tool_name = payload.get("title") or payload.get("tool", "unknown")
-        tool_id = payload.get("toolCallId", "")
+        tool_id = payload.get("tool_call_id") or payload.get("toolCallId", "")
         self._post(
             ToolCallErrorEvent(
                 tool_name=tool_name,
@@ -194,7 +194,7 @@ class BridgeToolsMixin(AgentBridgeProtocol):
     def _on_plan_requested(self, payload: dict) -> None:
         from tui.tui_src.ui.bus import PlanRequestedEvent
 
-        self._post(PlanRequestedEvent(plan_text=payload.get("plan_text", "")))
+        self._post(PlanRequestedEvent(plan_text=payload.get("plan") or payload.get("plan_text", "")))
 
     def _on_mcp_server_status(self, payload: dict) -> None:
         from tui.tui_src.ui.bus import McpServerStatusEvent
@@ -237,7 +237,7 @@ class BridgeToolsMixin(AgentBridgeProtocol):
 
         self._post(
             DoomLoopEvent(
-                tool_name=str(payload.get("tool_name", "")),
+                tool_name=str(payload.get("tool") or payload.get("tool_name", "")),
                 fingerprint=str(payload.get("fingerprint", "")),
                 count=int(payload.get("count", 3)),
                 tool_id=str(payload.get("tool_id", "")),
