@@ -405,6 +405,31 @@ class TestAgentGraphCompilationAndRouting:
         # LangGraph returns a StateGraph, not a callable
         assert hasattr(graph, "invoke")
 
+        expected = {
+            "perception",
+            "analysis",
+            "planning",
+            "plan_validator",
+            "execution",
+            "step_controller",
+            "verification",
+            "evaluation",
+            "memory_sync",
+        }
+        actual = set(g for g in graph.nodes)  # type: ignore[union-attr]
+        missing = expected - actual
+        assert not missing, f"Fast-path graph missing nodes: {missing}"
+
+    def test_fast_path_graph_has_re_enabled_nodes(self):
+        """Verify Phases 5a-5d re-enabled nodes exist in the fast-path graph."""
+        from src.core.orchestration.graph.builder import _compile_fast_path_graph
+
+        graph = _compile_fast_path_graph()
+        node_names = list(graph.nodes)  # type: ignore[union-attr]
+
+        for node in ("analysis", "planning", "plan_validator", "step_controller"):
+            assert node in node_names, f"Phase 5 node {node!r} missing from fast-path graph"
+
     def test_should_after_execution_with_step_controller(self):
         """Test that step controller routing works."""
         from src.core.orchestration.graph.builder import should_after_execution
