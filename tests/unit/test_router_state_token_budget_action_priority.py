@@ -328,7 +328,11 @@ class TestMemoryUpdateNodeAppliesCompactedHistory:
             "src.core.memory.compaction_service.CompactionService",
             return_value=fake_service,
         ):
-            result = asyncio.run(memory_update_node(state, config))  # type: ignore[arg-type]
+            with patch(
+                "src.core.orchestration.graph.nodes.memory_update_node.distill_context",
+                return_value={},
+            ):
+                result = asyncio.run(memory_update_node(state, config))  # type: ignore[arg-type]
 
         assert "history" in result, (
             "memory_update_node must return 'history' when CompactionService compacts"

@@ -376,13 +376,13 @@ def compile_agent_graph():
     Assembles the LangGraph cognitive pipeline.
 
     When ``_USE_FULL_GRAPH`` is True, all 16 cognitive nodes are active.
-    When False (default, stabilization mode), only the 6 Fast-Path nodes are active:
-    perception → execution → verification → evaluation → memory_sync.
+    When False (default, stabilization mode), only the 10 Fast-Path nodes are active:
+    perception → analysis → planning → plan_validator → execution → step_controller → verification → evaluation → memory_sync.
     """
     if _USE_FULL_GRAPH:
         logger.info("compile_agent_graph: FULL graph (16 nodes)")
         return _compile_full_graph()
-    logger.info("compile_agent_graph: FAST-PATH graph (6 nodes) — complex nodes frozen")
+    logger.info("compile_agent_graph: FAST-PATH graph (10 nodes) — Phases 5a-5d")
     return _compile_fast_path_graph()
 
 

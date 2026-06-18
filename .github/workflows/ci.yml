@@ -157,7 +157,7 @@ jobs:
           pip install -e .[dev,server]
       - name: Run mock-backed integration tests
         run: |
-          python -m pytest tests/integration/test_mock_adapter_integration.py tests/integration/test_delegation_mock.py tests/integration/test_langgraph_orchestrator.py tests/integration/test_agent_loop_plaintext_tools.py tests/integration/test_loop_prevention.py -q -p no:logging
+          python -m pytest tests/integration/test_mock_adapter_integration.py tests/integration/test_delegation_mock.py tests/integration/test_langgraph_orchestrator.py tests/integration/test_fast_path_graph_e2e.py tests/integration/test_agent_loop_plaintext_tools.py tests/integration/test_loop_prevention.py -q -p no:logging
 
   e2e-mock:
     runs-on: ubuntu-latest

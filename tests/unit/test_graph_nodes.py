@@ -367,23 +367,23 @@ class TestMemoryUpdateNode:
     @pytest.mark.asyncio
     async def test_memory_update_basic(self):
         """Test memory update basic functionality."""
+        from unittest.mock import patch
+        from src.core.orchestration.graph.nodes.memory_update_node import (
+            memory_update_node,
+        )
+
         state = _make_state(
             history=[{"role": "user", "content": "test"}],
             working_dir=".",
         )
         config = {}
 
-        from src.core.orchestration.graph.nodes.memory_update_node import (
-            memory_update_node,
-        )
-
-        # Should not raise - even if distiller fails
-        try:
+        with patch(
+            "src.core.orchestration.graph.nodes.memory_update_node.distill_context",
+            return_value={},
+        ):
             result = await memory_update_node(state, config)
             assert isinstance(result, dict)
-        except Exception:
-            # May fail if distiller has issues - that's ok for this test
-            pass
 
     @pytest.mark.asyncio
     async def test_memory_update_node_returns_dict_on_failure(self, tmp_path):
