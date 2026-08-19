@@ -12,6 +12,12 @@ def test_metrics_initial_state():
     assert snapshot["delivered"] == {}
     assert snapshot["dropped"] == {}
     assert snapshot["handler_failed"] == {}
+    assert snapshot["admitted_by_class"] == {}
+    assert snapshot["admission_failed_by_class"] == {}
+    assert snapshot["delivered_by_class"] == {}
+    assert snapshot["dropped_by_class"] == {}
+    assert snapshot["queue_depth"] == {}
+    assert snapshot["queue_depth_high_water"] == {}
 
 
 def test_increment_published():
@@ -25,6 +31,41 @@ def test_increment_published():
     snapshot = metrics.snapshot()
     assert snapshot["published"]["AgentStarted"] == 2
     assert snapshot["published"]["ToolCallStarted"] == 1
+
+
+def test_class_metrics_track_admission_delivery_drop_and_depth():
+    metrics = MessageBusMetrics()
+
+    metrics.increment_published("SessionCreated", "reliable")
+    metrics.increment_dropped("ModelToken", "telemetry")
+    metrics.increment_admission_failed("ordered")
+    metrics.record_delivery("SessionCreated", "Handler", 1.5, "reliable")
+    metrics.record_class_delivery("reliable", 4.5)
+    metrics.record_queue_depth("reliable", 2)
+    metrics.record_queue_depth("reliable", 1)
+
+    snapshot = metrics.snapshot()
+    assert snapshot["admitted_by_class"]["reliable"] == 1
+    assert snapshot["dropped_by_class"]["telemetry"] == 1
+    assert snapshot["admission_failed_by_class"]["ordered"] == 1
+    assert snapshot["delivered_by_class"]["reliable"] == 1
+    assert snapshot["queue_depth"]["reliable"] == 1
+    assert snapshot["queue_depth_high_water"]["reliable"] == 2
+    assert snapshot["p50_delivery_ms_by_class"]["reliable"] == 4.5
+
+
+def test_latency_samples_are_bounded():
+    metrics = MessageBusMetrics(max_latency_samples=4)
+
+    for latency in range(10):
+        metrics.record_delivery("Event", "Handler", float(latency))
+        metrics.record_class_delivery("reliable", float(latency))
+
+    snapshot = metrics.snapshot()
+    assert snapshot["latency_sample_count"]["Event:Handler"] == 4
+    assert snapshot["latency_sample_count_by_class"]["reliable"] == 4
+    assert snapshot["p50_delivery_ms"]["Event:Handler"] == 7.5
+    assert snapshot["p50_delivery_ms_by_class"]["reliable"] == 7.5
 
 
 def test_increment_dropped():

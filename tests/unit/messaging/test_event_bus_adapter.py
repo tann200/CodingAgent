@@ -30,6 +30,7 @@ from src.core.messaging import (
     GitBranch,
     MessageBus,
     OrchestratorStartup,
+    ReliableEventAdmissionError,
     ToolInvoked,
 )
 
@@ -155,6 +156,18 @@ class TestPublishDualEmission:
         })
         assert h.wait(timeout=1.0)
         assert h.received[0].correlation_id != "injected_by_old_bus"
+
+    def test_reliable_admission_failure_propagates(self):
+        class RejectingTypedBus:
+            def publish(self, event):
+                raise ReliableEventAdmissionError("reliable lane full")
+
+        bus = EventBus(typed_bus=RejectingTypedBus())
+        with pytest.raises(ReliableEventAdmissionError):
+            bus.publish(
+                "orchestrator.startup",
+                {"time": 1.0, "working_dir": "/tmp"},
+            )
 
 
 # ---------------------------------------------------------------------------

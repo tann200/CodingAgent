@@ -25,13 +25,29 @@ UC-BUS-18  Multiple worker threads process events           scalability
 
 import threading
 import time
+import inspect
 from dataclasses import dataclass
-from typing import List
+from typing import ClassVar, List
 
 import pytest
 
-from src.core.messaging.bus import MessageBus
-from src.core.messaging.events import Event
+from src.core.messaging.bus import (
+    EventDeliveryTimeoutError,
+    MessageBus,
+    MessageBusShutdownError,
+    ReliableEventAdmissionError,
+)
+from src.core.messaging.event_types import (
+    ResponseStreamChunk,
+    SessionCreated,
+    ToolInvoked,
+)
+from src.core.messaging import event_types
+from src.core.messaging.events import (
+    Event,
+    EventDeliveryClass,
+    get_event_delivery_policy,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -41,6 +57,7 @@ from src.core.messaging.events import Event
 @dataclass
 class SampleEvent(Event):
     """Generic test event."""
+    delivery_class: ClassVar[EventDeliveryClass] = EventDeliveryClass.TELEMETRY
     message: str
 
 
@@ -48,6 +65,39 @@ class SampleEvent(Event):
 class OtherEvent(Event):
     """Second event type for routing tests."""
     value: int
+
+
+def test_delivery_policy_is_conservative_and_explicit():
+    assert (
+        get_event_delivery_policy(SampleEvent).delivery_class
+        is EventDeliveryClass.TELEMETRY
+    )
+    assert (
+        get_event_delivery_policy(ResponseStreamChunk).delivery_class
+        is EventDeliveryClass.TELEMETRY
+    )
+    tool_policy = get_event_delivery_policy(ToolInvoked)
+    assert tool_policy.delivery_class is EventDeliveryClass.ORDERED
+    assert tool_policy.sequence_category == "tool"
+    assert (
+        get_event_delivery_policy(SessionCreated).delivery_class
+        is EventDeliveryClass.RELIABLE
+    )
+
+
+def test_every_production_event_type_has_a_delivery_policy():
+    event_classes = [
+        event_type
+        for _, event_type in inspect.getmembers(event_types, inspect.isclass)
+        if event_type is not Event and issubclass(event_type, Event)
+    ]
+
+    assert event_classes
+    for event_type in event_classes:
+        policy = get_event_delivery_policy(event_type)
+        assert isinstance(policy.delivery_class, EventDeliveryClass)
+        if policy.delivery_class is EventDeliveryClass.ORDERED:
+            assert policy.sequence_category
 
 
 class CollectingHandler:
@@ -265,6 +315,140 @@ class TestBackpressure:
             unblock.set()   # release handler so shutdown completes cleanly
             tiny.shutdown(timeout=3.0)
 
+    def test_telemetry_saturation_does_not_block_reliable_delivery(self):
+        telemetry_started = threading.Event()
+        release_telemetry = threading.Event()
+
+        class BlockingTelemetryHandler:
+            def handle(self, event: Event) -> None:
+                telemetry_started.set()
+                release_telemetry.wait(timeout=5.0)
+
+        reliable_handler = CollectingHandler()
+        tiny = MessageBus(max_queue_size=1, worker_threads=1)
+        try:
+            tiny.subscribe(SampleEvent, BlockingTelemetryHandler())
+            tiny.subscribe(OtherEvent, reliable_handler)
+
+            assert tiny.publish(SampleEvent(message="in-flight"))
+            assert telemetry_started.wait(timeout=2.0)
+            assert tiny.publish(SampleEvent(message="queued"))
+            assert not tiny.publish(SampleEvent(message="dropped"))
+
+            assert tiny.publish_sync(OtherEvent(value=42), timeout=2.0)
+            assert reliable_handler.call_count == 1
+
+            metrics = tiny.get_metrics()
+            assert metrics["dropped_by_class"]["telemetry"] == 1
+            assert metrics["admitted_by_class"]["reliable"] == 1
+            assert metrics["queue_depth_high_water"]["telemetry"] == 2
+        finally:
+            release_telemetry.set()
+            tiny.shutdown(timeout=3.0)
+
+    def test_reliable_saturation_fails_loudly_without_drop_metric(self):
+        reliable_started = threading.Event()
+        release_reliable = threading.Event()
+
+        class BlockingReliableHandler:
+            def handle(self, event: Event) -> None:
+                reliable_started.set()
+                release_reliable.wait(timeout=5.0)
+
+        tiny = MessageBus(
+            max_queue_size=1,
+            worker_threads=1,
+            reliable_publish_timeout=0.05,
+        )
+        try:
+            tiny.subscribe(OtherEvent, BlockingReliableHandler())
+
+            assert tiny.publish(OtherEvent(value=1))
+            assert reliable_started.wait(timeout=2.0)
+            assert tiny.publish(OtherEvent(value=2))
+            with pytest.raises(ReliableEventAdmissionError):
+                tiny.publish(OtherEvent(value=3))
+
+            metrics = tiny.get_metrics()
+            assert metrics["admission_failed_by_class"]["reliable"] == 1
+            assert metrics["dropped"].get("OtherEvent", 0) == 0
+        finally:
+            release_reliable.set()
+            tiny.shutdown(timeout=3.0)
+
+    def test_reliable_sync_timeout_distinguishes_eventual_delivery(self):
+        reliable_started = threading.Event()
+        release_reliable = threading.Event()
+        received = []
+
+        class BlockingReliableHandler:
+            def handle(self, event: OtherEvent) -> None:
+                received.append(event.value)
+                reliable_started.set()
+                release_reliable.wait(timeout=5.0)
+
+        tiny = MessageBus(max_queue_size=2, worker_threads=1)
+        try:
+            tiny.subscribe(OtherEvent, BlockingReliableHandler())
+            assert tiny.publish(OtherEvent(value=1))
+            assert reliable_started.wait(timeout=2.0)
+
+            with pytest.raises(EventDeliveryTimeoutError, match="may still complete"):
+                tiny.publish_sync(OtherEvent(value=2), timeout=0.05)
+        finally:
+            release_reliable.set()
+            tiny.shutdown(timeout=3.0)
+
+        assert received == [1, 2]
+
+    def test_stalled_reliable_admission_does_not_block_telemetry(self):
+        reliable_started = threading.Event()
+        release_reliable = threading.Event()
+        third_result = []
+        third_error = []
+
+        class BlockingReliableHandler:
+            def handle(self, event: OtherEvent) -> None:
+                reliable_started.set()
+                release_reliable.wait(timeout=5.0)
+
+        tiny = MessageBus(max_queue_size=1, worker_threads=1)
+        try:
+            tiny.subscribe(OtherEvent, BlockingReliableHandler())
+            assert tiny.publish(OtherEvent(value=1))
+            assert reliable_started.wait(timeout=2.0)
+            assert tiny.publish(OtherEvent(value=2))
+
+            def publish_third() -> None:
+                try:
+                    third_result.append(
+                        tiny.publish(OtherEvent(value=3), timeout=5.0)
+                    )
+                except Exception as exc:
+                    third_error.append(exc)
+
+            publisher = threading.Thread(target=publish_third)
+            publisher.start()
+            with tiny._admission_condition:
+                assert tiny._admission_condition.wait_for(
+                    lambda: tiny._active_admissions.get("reliable", 0) == 1,
+                    timeout=2.0,
+                )
+
+            assert publisher.is_alive()
+            started = time.monotonic()
+            assert tiny.publish(SampleEvent(message="independent telemetry"))
+            assert time.monotonic() - started < 0.5
+
+            release_reliable.set()
+            publisher.join(timeout=2.0)
+            assert not publisher.is_alive()
+            assert third_error == []
+            assert third_result == [True]
+        finally:
+            release_reliable.set()
+            tiny.shutdown(timeout=3.0)
+
 
 # ---------------------------------------------------------------------------
 # UC-BUS-07  publish_sync blocks until handler completes
@@ -336,6 +520,110 @@ class TestShutdown:
             b.publish(SampleEvent(message=f"e{i}"))
         b.shutdown(timeout=5.0)
         assert h.call_count == 10
+
+    def test_shutdown_timeout_surfaces_and_continues_draining(self):
+        handler_started = threading.Event()
+        release_handler = threading.Event()
+        received = []
+
+        class BlockingHandler:
+            def handle(self, event: OtherEvent) -> None:
+                received.append(event.value)
+                handler_started.set()
+                release_handler.wait(timeout=5.0)
+
+        b = MessageBus(max_queue_size=4, worker_threads=1)
+        b.subscribe(OtherEvent, BlockingHandler())
+        assert b.publish(OtherEvent(value=1))
+        assert handler_started.wait(timeout=2.0)
+        assert b.publish(OtherEvent(value=2))
+
+        with pytest.raises(MessageBusShutdownError, match="remains active"):
+            b.shutdown(timeout=0.05)
+        assert b._loop_thread is not None and b._loop_thread.is_alive()
+
+        release_handler.set()
+        b.shutdown(timeout=3.0)
+        assert received == [1, 2]
+
+    def test_publish_shutdown_race_never_loses_accepted_events(self):
+        b = MessageBus(max_queue_size=64, worker_threads=4)
+        handler = CollectingHandler(expected=20)
+        b.subscribe(OtherEvent, handler)
+
+        publishers = 20
+        barrier = threading.Barrier(publishers + 1)
+        accepted = []
+        accepted_lock = threading.Lock()
+
+        def publish_one(value: int) -> None:
+            barrier.wait(timeout=2.0)
+            result = b.publish(OtherEvent(value=value))
+            with accepted_lock:
+                accepted.append(result)
+
+        threads = [
+            threading.Thread(target=publish_one, args=(value,))
+            for value in range(publishers)
+        ]
+        for thread in threads:
+            thread.start()
+
+        barrier.wait(timeout=2.0)
+        b.shutdown(timeout=3.0)
+        for thread in threads:
+            thread.join(timeout=2.0)
+            assert not thread.is_alive()
+
+        assert handler.call_count == sum(1 for result in accepted if result)
+
+    def test_shutdown_deadline_includes_stalled_preclosing_admission(self):
+        handler_started = threading.Event()
+        release_handler = threading.Event()
+        received = []
+        third_result = []
+        third_error = []
+
+        class BlockingHandler:
+            def handle(self, event: OtherEvent) -> None:
+                received.append(event.value)
+                handler_started.set()
+                release_handler.wait(timeout=5.0)
+
+        b = MessageBus(max_queue_size=1, worker_threads=1)
+        b.subscribe(OtherEvent, BlockingHandler())
+        assert b.publish(OtherEvent(value=1))
+        assert handler_started.wait(timeout=2.0)
+        assert b.publish(OtherEvent(value=2))
+
+        def publish_third() -> None:
+            try:
+                third_result.append(
+                    b.publish(OtherEvent(value=3), timeout=5.0)
+                )
+            except Exception as exc:
+                third_error.append(exc)
+
+        publisher = threading.Thread(target=publish_third)
+        publisher.start()
+        with b._admission_condition:
+            assert b._admission_condition.wait_for(
+                lambda: b._active_admissions.get("reliable", 0) == 1,
+                timeout=2.0,
+            )
+
+        started = time.monotonic()
+        with pytest.raises(MessageBusShutdownError, match="remains active"):
+            b.shutdown(timeout=0.05)
+        assert time.monotonic() - started < 0.5
+
+        release_handler.set()
+        publisher.join(timeout=2.0)
+        assert not publisher.is_alive()
+        assert third_error == []
+        assert third_result == [True]
+        b.shutdown(timeout=3.0)
+        assert received == [1, 2, 3]
 
 
 # ---------------------------------------------------------------------------

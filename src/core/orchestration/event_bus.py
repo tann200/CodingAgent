@@ -480,8 +480,22 @@ class EventBus:
             typed = _build_typed_event(event_name, payload)
             if typed is not None:
                 try:
-                    self._typed.publish(typed)
+                    accepted = self._typed.publish(typed)
+                    if not accepted:
+                        _logger.warning(
+                            "EventBus: typed event was not admitted for %s",
+                            event_name,
+                        )
                 except Exception as exc:
+                    from src.core.messaging.bus import ReliableEventAdmissionError
+
+                    if isinstance(exc, ReliableEventAdmissionError):
+                        _logger.error(
+                            "EventBus: reliable typed publish failed for %s: %s",
+                            event_name,
+                            exc,
+                        )
+                        raise
                     _logger.debug("EventBus: typed publish failed for %s: %s", event_name, exc)
 
     def publish_typed(self, event: Event) -> None:
@@ -495,8 +509,22 @@ class EventBus:
         """
         if self._typed is not None:
             try:
-                self._typed.publish(event)
+                accepted = self._typed.publish(event)
+                if not accepted:
+                    _logger.warning(
+                        "EventBus: typed event was not admitted for %s",
+                        type(event).__name__,
+                    )
             except Exception as exc:
+                from src.core.messaging.bus import ReliableEventAdmissionError
+
+                if isinstance(exc, ReliableEventAdmissionError):
+                    _logger.error(
+                        "EventBus: reliable typed publish failed for %s: %s",
+                        type(event).__name__,
+                        exc,
+                    )
+                    raise
                 _logger.warning("EventBus: typed publish failed for %s: %s", type(event).__name__, exc)
 
         # Deliver to old-bus subscribers directly (skip publish() → no re-typed)

@@ -3,18 +3,19 @@ Asynchronous message bus with typed event delivery.
 
 Features:
 - Type-safe event delivery
-- Bounded queue with backpressure
+- Per-class bounded queues with explicit backpressure
 - Error isolation (failed handlers don't kill bus)
-- Delivery guarantees with explicit drop logging
-- Metrics for observability
+- Reliable and ordered events fail loudly instead of being dropped
+- Lossy telemetry remains bounded with explicit drop metrics
+- Queue depth and delivery metrics are reported by delivery class
 - Sequenced dispatch: critical event types (tool/step/delegation lifecycle)
   are delivered in publication order within their category
 
 Architecture:
-- Events are queued via a thread-safe ``queue.Queue`` (synchronous ``publish``)
-- A bridge task transfers events to the event loop as they arrive
+- Events are admitted to delivery-class-specific thread-safe queues
+- One bridge per class prevents telemetry handlers from blocking reliable events
 - Sequenced events are routed to per-category FIFO queues for ordered delivery
-- Non-sequenced events are dispatched concurrently via ``run_in_executor``
+- Reliable and telemetry dispatch use independent concurrency limits
 - The event loop runs on a dedicated daemon thread
 """
 
@@ -23,54 +24,32 @@ import logging
 import queue as sync_queue
 import threading
 import time
+from collections import Counter
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Protocol, Type
+from typing import Any, Dict, List, Optional, Protocol, Set, Type
 
-from src.core.messaging.events import Event
+from src.core.messaging.events import (
+    Event,
+    EventDeliveryClass,
+    EventDeliveryPolicy,
+    get_event_delivery_policy,
+)
 from src.core.messaging.metrics import MessageBusMetrics
 
 logger = logging.getLogger(__name__)
+_SEQUENCE_STOP = object()
 
-# ---------------------------------------------------------------------------
-# Sequenced event categories
-# Events in the same category are delivered to handlers in FIFO publication
-# order.  Categories are independent (tool events don't block delegation).
-# ---------------------------------------------------------------------------
-_SEQUENCED_CATEGORIES: Dict[Type[Event], str] = {}
 
-# Lazy-populated on first access.  We populate outside the class to break
-# the circular dep: bus.py cannot eagerly import event_types.py (which
-# imports Event from events.py — a module that also references bus types).
-def _get_sequenced_category(event_type: Type[Event]) -> Optional[str]:
-    """Return the sequenced category for *event_type*, or None.
+class ReliableEventAdmissionError(RuntimeError):
+    """Raised when a non-lossy event cannot enter its bounded queue."""
 
-    Categories (defined below) ensure that tool lifecycle, step lifecycle,
-    and delegation lifecycle events are always delivered in order within
-    their group.  All other events are non-sequenced and may be dispatched
-    concurrently.
-    """
-    global _SEQUENCED_CATEGORIES
-    if not _SEQUENCED_CATEGORIES:
-        from src.core.messaging.event_types import (
-            DelegationFinish,
-            DelegationStart,
-            StepFinish,
-            StepStart,
-            ToolExecuteError,
-            ToolExecuteFinish,
-            ToolExecuteStart,
-        )
 
-        _SEQUENCED_CATEGORIES = {
-            ToolExecuteStart: "tool",
-            ToolExecuteFinish: "tool",
-            ToolExecuteError: "tool",
-            StepStart: "step",
-            StepFinish: "step",
-            DelegationStart: "delegation",
-            DelegationFinish: "delegation",
-        }
-    return _SEQUENCED_CATEGORIES.get(event_type)
+class EventDeliveryTimeoutError(TimeoutError):
+    """Raised when an admitted non-lossy event is not acknowledged in time."""
+
+
+class MessageBusShutdownError(TimeoutError):
+    """Raised when graceful shutdown has not drained by its deadline."""
 
 
 class EventHandler(Protocol):
@@ -79,9 +58,10 @@ class EventHandler(Protocol):
 
 
 @dataclass
-class _SyncDelivery:
+class _DeliveryItem:
     event: Event
-    delivered: threading.Event
+    admitted_at: float
+    delivered: Optional[threading.Event] = None
 
 
 class MessageBus:
@@ -90,24 +70,46 @@ class MessageBus:
         max_queue_size: int = 1000,
         worker_threads: int = 1,
         enable_metrics: bool = True,
+        reliable_publish_timeout: float = 5.0,
     ):
+        if max_queue_size < 1:
+            raise ValueError("max_queue_size must be at least 1")
+        if worker_threads < 1:
+            raise ValueError("worker_threads must be at least 1")
+        if reliable_publish_timeout < 0:
+            raise ValueError("reliable_publish_timeout cannot be negative")
         self._max_queue_size = max_queue_size
         self._worker_count = worker_threads
         self._enable_metrics = enable_metrics
+        self._reliable_publish_timeout = reliable_publish_timeout
         self._metrics = MessageBusMetrics()
 
         self._handlers: Dict[Type[Event], List[EventHandler]] = {}
         self._lock = threading.RLock()
+        self._admission_condition = threading.Condition()
+        self._active_admissions: Counter = Counter()
+        self._inflight_lock = threading.Lock()
+        self._inflight_by_class: Counter = Counter()
 
         self._shutdown_flag = threading.Event()
+        self._shutdown_future: Optional[Any] = None
 
-        # Thread-safe sync queue — publish() writes from caller thread
-        self._sync_queue: sync_queue.Queue = sync_queue.Queue(maxsize=max_queue_size)
+        # Independent bounded admission lanes prevent telemetry saturation from
+        # consuming reliable/lifecycle capacity.
+        self._queues: Dict[EventDeliveryClass, sync_queue.Queue] = {
+            delivery_class: sync_queue.Queue(maxsize=max_queue_size)
+            for delivery_class in EventDeliveryClass
+        }
 
         # Async infrastructure runs on daemon loop thread
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._loop_thread: Optional[threading.Thread] = None
-        self._bridge_task: Optional[asyncio.Task] = None
+        self._bridge_tasks: Dict[EventDeliveryClass, asyncio.Task] = {}
+        self._lane_events: Dict[EventDeliveryClass, asyncio.Event] = {}
+        self._dispatch_semaphores: Dict[
+            EventDeliveryClass, asyncio.Semaphore
+        ] = {}
+        self._dispatch_tasks: Set[asyncio.Task] = set()
         self._started = threading.Event()
 
         # Sequenced dispatch: per-category FIFO queues + consumer tasks.
@@ -132,73 +134,193 @@ class MessageBus:
     def _run_loop(self) -> None:
         assert self._loop is not None
         asyncio.set_event_loop(self._loop)
-        self._bridge_task = self._loop.create_task(self._bridge())
-        for i in range(self._worker_count):
-            self._loop.create_task(self._worker(i))
+        self._dispatch_semaphores = {
+            EventDeliveryClass.TELEMETRY: asyncio.Semaphore(self._worker_count),
+            EventDeliveryClass.RELIABLE: asyncio.Semaphore(self._worker_count),
+        }
+        self._lane_events = {
+            delivery_class: asyncio.Event()
+            for delivery_class in EventDeliveryClass
+        }
+        self._bridge_tasks = {
+            delivery_class: self._loop.create_task(
+                self._bridge(delivery_class),
+                name=f"message-bus-{delivery_class.value}-bridge",
+            )
+            for delivery_class in EventDeliveryClass
+        }
         self._started.set()
         try:
             self._loop.run_forever()
         finally:
             self._loop.close()
 
-    async def _bridge(self) -> None:
-        """Transfer items from sync queue to event loop for async dispatch.
+    @staticmethod
+    def _event_from_item(item: Any) -> Optional[Event]:
+        if isinstance(item, _DeliveryItem):
+            return item.event
+        return None
 
-        Runs as a task on the event loop. Blocks on the sync queue using
-        run_in_executor so the event loop stays responsive. When an item
-        arrives, it dispatches it:
-        - Sequenced events (tool/step/delegation lifecycle) go to per-category
-          FIFO queues for ordered delivery.
-        - Non-sequenced events are dispatched immediately.
-        """
-        assert self._loop is not None
-        while not self._shutdown_flag.is_set():
-            try:
-                item = await asyncio.get_event_loop().run_in_executor(
-                    None, self._sync_queue.get, True, 0.5
-                )
-            except sync_queue.Empty:
-                continue
-            except Exception as e:
-                if self._shutdown_flag.is_set():
-                    break
-                if "cannot schedule new futures" in str(e):
-                    self._shutdown_flag.set()
-                    break
-                logger.error(
-                    "MessageBus: bridge error: %s", e, exc_info=True
-                )
-                await asyncio.sleep(0.1)
-                continue
+    def _change_inflight(
+        self,
+        delivery_class: EventDeliveryClass,
+        delta: int,
+    ) -> None:
+        with self._inflight_lock:
+            self._inflight_by_class[delivery_class.value] += delta
+            if self._inflight_by_class[delivery_class.value] <= 0:
+                self._inflight_by_class.pop(delivery_class.value, None)
+        self._record_pipeline_depth(delivery_class)
 
-            if isinstance(item, Event):
-                seq_cat = _get_sequenced_category(type(item))
-                if seq_cat is not None:
-                    await self._seq_put(item, seq_cat)
-                    continue
+    def _record_pipeline_depth(
+        self,
+        delivery_class: EventDeliveryClass,
+    ) -> None:
+        if not self._enable_metrics:
+            return
+        with self._inflight_lock:
+            inflight = self._inflight_by_class.get(delivery_class.value, 0)
+        depth = self._queues[delivery_class].qsize() + inflight
+        self._metrics.record_queue_depth(delivery_class.value, depth)
 
-            self._loop.create_task(self._dispatch(item))
+    def _begin_admission(
+        self,
+        delivery_class: EventDeliveryClass,
+    ) -> bool:
+        with self._admission_condition:
+            if self._shutdown_flag.is_set():
+                return False
+            self._active_admissions[delivery_class.value] += 1
+            return True
 
-        # Drain remaining items after shutdown
+    def _end_admission(
+        self,
+        delivery_class: EventDeliveryClass,
+    ) -> None:
+        with self._admission_condition:
+            self._active_admissions[delivery_class.value] -= 1
+            if self._active_admissions[delivery_class.value] <= 0:
+                self._active_admissions.pop(delivery_class.value, None)
+            self._admission_condition.notify_all()
+        self._wake_lane(delivery_class)
+
+    def _has_active_admission(
+        self,
+        delivery_class: EventDeliveryClass,
+    ) -> bool:
+        with self._admission_condition:
+            return self._active_admissions.get(delivery_class.value, 0) > 0
+
+    def _wake_lane(self, delivery_class: EventDeliveryClass) -> None:
+        if self._loop is None or self._loop.is_closed():
+            return
+        lane_event = self._lane_events.get(delivery_class)
+        if lane_event is None:
+            return
+        try:
+            self._loop.call_soon_threadsafe(lane_event.set)
+        except RuntimeError:
+            pass
+
+    async def _bridge(self, delivery_class: EventDeliveryClass) -> None:
+        """Drain one admission lane without blocking the other classes."""
+        lane_queue = self._queues[delivery_class]
+        lane_event = self._lane_events[delivery_class]
+        semaphore = self._dispatch_semaphores.get(delivery_class)
+
         while True:
+            acquired_slot = False
+            if semaphore is not None:
+                await semaphore.acquire()
+                acquired_slot = True
+
             try:
-                item = self._sync_queue.get_nowait()
+                item = lane_queue.get_nowait()
             except sync_queue.Empty:
-                break
-            if isinstance(item, Event):
-                seq_cat = _get_sequenced_category(type(item))
-                if seq_cat is not None:
-                    self._loop.create_task(self._dispatch(item))
-                    continue
-            self._loop.create_task(self._dispatch(item))
+                if acquired_slot and semaphore is not None:
+                    semaphore.release()
+                lane_event.clear()
+                if (
+                    self._shutdown_flag.is_set()
+                    and lane_queue.empty()
+                    and not self._has_active_admission(delivery_class)
+                ):
+                    break
+                if lane_queue.empty():
+                    await lane_event.wait()
+                continue
+
+            if self._enable_metrics:
+                self._change_inflight(delivery_class, 1)
+            else:
+                with self._inflight_lock:
+                    self._inflight_by_class[delivery_class.value] += 1
+
+            try:
+                event = self._event_from_item(item)
+                policy = (
+                    get_event_delivery_policy(type(event))
+                    if event is not None
+                    else EventDeliveryPolicy(delivery_class)
+                )
+                if (
+                    policy.delivery_class is EventDeliveryClass.ORDERED
+                    and policy.sequence_category is not None
+                ):
+                    await self._seq_put(item, policy.sequence_category)
+                else:
+                    assert semaphore is not None
+                    task = self._loop.create_task(
+                        self._dispatch_with_slot(
+                            item,
+                            semaphore,
+                            delivery_class,
+                        )
+                    )
+                    self._track_dispatch_task(task)
+                    acquired_slot = False
+            finally:
+                lane_queue.task_done()
+                if acquired_slot and semaphore is not None:
+                    semaphore.release()
+
+    def _track_dispatch_task(self, task: asyncio.Task) -> None:
+        self._dispatch_tasks.add(task)
+        task.add_done_callback(self._dispatch_tasks.discard)
+
+    async def _dispatch_with_slot(
+        self,
+        item: Any,
+        semaphore: asyncio.Semaphore,
+        delivery_class: EventDeliveryClass,
+    ) -> None:
+        try:
+            await self._dispatch(item)
+        finally:
+            self._change_inflight(delivery_class, -1)
+            semaphore.release()
 
     async def _dispatch(self, item: Any) -> None:
         """Deliver a single item to handlers (runs as a one-shot task)."""
-        if isinstance(item, _SyncDelivery):
-            await asyncio.get_event_loop().run_in_executor(
-                None, self._deliver_to_handlers, item.event
-            )
-            item.delivered.set()
+        if isinstance(item, _DeliveryItem):
+            try:
+                await asyncio.get_event_loop().run_in_executor(
+                    None,
+                    self._deliver_to_handlers,
+                    item.event,
+                )
+            finally:
+                if self._enable_metrics:
+                    delivery_class = get_event_delivery_policy(
+                        type(item.event)
+                    ).delivery_class.value
+                    latency_ms = (time.perf_counter() - item.admitted_at) * 1000
+                    self._metrics.record_class_delivery(
+                        delivery_class,
+                        latency_ms,
+                    )
+                if item.delivered is not None:
+                    item.delivered.set()
         elif callable(item):
             try:
                 await asyncio.get_event_loop().run_in_executor(None, item)
@@ -212,7 +334,7 @@ class MessageBus:
                 None, self._deliver_to_handlers, item
             )
 
-    async def _seq_put(self, event: Event, category: str) -> None:
+    async def _seq_put(self, item: Any, category: str) -> None:
         """Enqueue a sequenced event for ordered delivery within *category*.
 
         Lazily creates the per-category ``asyncio.Queue`` and consumer task
@@ -220,12 +342,13 @@ class MessageBus:
         """
         assert self._loop is not None
         if category not in self._seq_queues:
-            q: asyncio.Queue = asyncio.Queue()
+            q: asyncio.Queue = asyncio.Queue(maxsize=self._max_queue_size)
             self._seq_queues[category] = q
             self._seq_consumers[category] = self._loop.create_task(
-                self._seq_consumer(category, q)
+                self._seq_consumer(category, q),
+                name=f"message-bus-{category}-consumer",
             )
-        await self._seq_queues[category].put(event)
+        await self._seq_queues[category].put(item)
 
     async def _seq_consumer(self, category: str, q: asyncio.Queue) -> None:
         """Consume sequenced events from *q* one at a time, in FIFO order.
@@ -234,46 +357,25 @@ class MessageBus:
         handlers see them in publication order.  Categories are independent
         (a slow tool event does not block delegation events).
         """
-        while not self._shutdown_flag.is_set():
-            try:
-                event = await asyncio.wait_for(q.get(), timeout=0.5)
-            except asyncio.TimeoutError:
-                continue
-            except Exception as e:
-                if self._shutdown_flag.is_set():
-                    break
-                logger.error(
-                    "MessageBus: seq_consumer(%s) error: %s", category, e, exc_info=True
-                )
-                continue
+        while True:
+            item = await q.get()
+            if item is _SEQUENCE_STOP:
+                q.task_done()
+                return
 
             try:
-                await asyncio.get_event_loop().run_in_executor(
-                    None, self._deliver_to_handlers, event
-                )
+                await self._dispatch(item)
             except Exception as e:
-                if self._shutdown_flag.is_set():
-                    break
                 if "cannot schedule new futures" in str(e):
                     self._shutdown_flag.set()
-                    break
+                    return
                 logger.error(
                     "MessageBus: seq_consumer(%s) dispatch failed: %s",
                     category, e, exc_info=True,
                 )
-
-    async def _worker(self, worker_id: int) -> None:
-        """Legacy worker stub — dispatch now handled by _bridge + _dispatch.
-
-        Kept for API compatibility and to match the worker_threads count.
-        Will be removed when all callers migrate to the async API.
-        """
-        # Workers are no longer needed as individual consumers — _bridge
-        # creates _dispatch tasks. Keep the task alive until shutdown so
-        # the worker_threads count is respected for backward compatibility.
-        await asyncio.get_event_loop().run_in_executor(
-            None, self._shutdown_flag.wait
-        )
+            finally:
+                self._change_inflight(EventDeliveryClass.ORDERED, -1)
+                q.task_done()
 
     def subscribe(
         self, event_type: Type[Event], handler: EventHandler
@@ -305,51 +407,129 @@ class MessageBus:
                         event_type.__name__,
                     )
 
-    def publish(self, event: Event) -> None:
-        if self._shutdown_flag.is_set():
-            logger.warning(
-                "MessageBus: publish after shutdown, dropping: %s", event
-            )
-            return
+    def publish(
+        self,
+        event: Event,
+        timeout: Optional[float] = None,
+    ) -> bool:
+        """Publish an event according to its delivery policy.
 
-        try:
-            self._sync_queue.put_nowait(event)
-            if self._enable_metrics:
-                self._metrics.increment_published(type(event).__name__)
-        except sync_queue.Full:
-            logger.error(
-                "MessageBus: queue full (%d events), dropping: %s",
-                self._sync_queue.qsize(),
-                event,
+        Telemetry uses non-blocking admission and returns ``False`` when full.
+        Reliable and ordered events wait for bounded capacity and raise
+        ``ReliableEventAdmissionError`` if that capacity cannot be obtained.
+        """
+        policy = get_event_delivery_policy(type(event))
+        delivery_class = policy.delivery_class
+        lane_queue = self._queues[delivery_class]
+        item = _DeliveryItem(event=event, admitted_at=time.perf_counter())
+        if not self._begin_admission(delivery_class):
+            logger.warning(
+                "MessageBus: publish after shutdown, rejecting: %s", event
             )
+            return False
+        try:
+            if delivery_class is EventDeliveryClass.TELEMETRY:
+                lane_queue.put_nowait(item)
+            else:
+                admission_timeout = (
+                    self._reliable_publish_timeout
+                    if timeout is None
+                    else timeout
+                )
+                lane_queue.put(item, timeout=admission_timeout)
             if self._enable_metrics:
-                self._metrics.increment_dropped(type(event).__name__)
+                self._metrics.increment_published(
+                    type(event).__name__,
+                    delivery_class.value,
+                )
+                self._record_pipeline_depth(delivery_class)
+            return True
+        except sync_queue.Full:
+            if delivery_class is EventDeliveryClass.TELEMETRY:
+                logger.warning(
+                    "MessageBus: telemetry queue full (%d events), dropping: %s",
+                    lane_queue.qsize(),
+                    event,
+                )
+                if self._enable_metrics:
+                    self._metrics.increment_dropped(
+                        type(event).__name__,
+                        delivery_class.value,
+                    )
+                return False
+
+            if self._enable_metrics:
+                self._metrics.increment_admission_failed(delivery_class.value)
+            raise ReliableEventAdmissionError(
+                f"MessageBus {delivery_class.value} queue remained full "
+                f"at {lane_queue.qsize()} events; {type(event).__name__} "
+                "was not admitted"
+            ) from None
+        finally:
+            self._end_admission(delivery_class)
 
     def publish_sync(self, event: Event, timeout: float = 5.0) -> bool:
-        if self._shutdown_flag.is_set():
-            logger.warning(
-                "MessageBus: publish_sync after shutdown, dropping: %s", event
-            )
-            return False
-
-        delivery = _SyncDelivery(
+        delivery = _DeliveryItem(
             event=event,
+            admitted_at=time.perf_counter(),
             delivered=threading.Event(),
         )
-        try:
-            self._sync_queue.put(delivery, timeout=timeout)
-            if self._enable_metrics:
-                self._metrics.increment_published(type(event).__name__)
-        except sync_queue.Full:
-            logger.error("MessageBus: sync publish queue full")
-            if self._enable_metrics:
-                self._metrics.increment_dropped(type(event).__name__)
+        policy = get_event_delivery_policy(type(event))
+        delivery_class = policy.delivery_class
+        lane_queue = self._queues[delivery_class]
+        if not self._begin_admission(delivery_class):
+            logger.warning(
+                "MessageBus: publish_sync after shutdown, rejecting: %s",
+                event,
+            )
             return False
+        try:
+            lane_queue.put(delivery, timeout=timeout)
+            if self._enable_metrics:
+                self._metrics.increment_published(
+                    type(event).__name__,
+                    delivery_class.value,
+                )
+                self._record_pipeline_depth(delivery_class)
+        except sync_queue.Full:
+            logger.error(
+                "MessageBus: synchronous %s publish queue full",
+                delivery_class.value,
+            )
+            if delivery_class is EventDeliveryClass.TELEMETRY:
+                if self._enable_metrics:
+                    self._metrics.increment_dropped(
+                        type(event).__name__,
+                        delivery_class.value,
+                    )
+                return False
 
-        return delivery.delivered.wait(timeout=timeout)
+            if self._enable_metrics:
+                self._metrics.increment_admission_failed(
+                    delivery_class.value
+                )
+            raise ReliableEventAdmissionError(
+                f"MessageBus {delivery_class.value} queue remained full "
+                f"at {lane_queue.qsize()} events; {type(event).__name__} "
+                "was not admitted synchronously"
+            ) from None
+        finally:
+            self._end_admission(delivery_class)
+
+        assert delivery.delivered is not None
+        if delivery.delivered.wait(timeout=timeout):
+            return True
+        if delivery_class is EventDeliveryClass.TELEMETRY:
+            return False
+        raise EventDeliveryTimeoutError(
+            f"{type(event).__name__} was admitted to the "
+            f"{delivery_class.value} lane but was not acknowledged "
+            f"within {timeout:.3f}s; delivery may still complete"
+        )
 
     def _deliver_to_handlers(self, event: Event) -> None:
         event_type = type(event)
+        delivery_class = get_event_delivery_policy(event_type).delivery_class.value
 
         with self._lock:
             handlers = self._handlers.get(event_type, []).copy()
@@ -371,6 +551,7 @@ class MessageBus:
                         event_type.__name__,
                         handler.__class__.__name__,
                         duration_ms,
+                        delivery_class,
                     )
 
                 logger.debug(
@@ -394,34 +575,98 @@ class MessageBus:
                     )
 
     def shutdown(self, timeout: float = 10.0) -> None:
-        logger.info("MessageBus: shutting down...")
-        self._shutdown_flag.set()
-
-        if self._loop is not None and not self._loop.is_closed():
-            asyncio.run_coroutine_threadsafe(
-                self._async_shutdown(), self._loop
+        if threading.current_thread() is self._loop_thread:
+            raise MessageBusShutdownError(
+                "MessageBus.shutdown() cannot block its own event-loop thread"
             )
+
+        with self._admission_condition:
+            if not self._shutdown_flag.is_set():
+                logger.info("MessageBus: shutting down...")
+                self._shutdown_flag.set()
+                self._admission_condition.notify_all()
+                if self._loop is not None and not self._loop.is_closed():
+                    self._shutdown_future = asyncio.run_coroutine_threadsafe(
+                        self._async_shutdown(),
+                        self._loop,
+                    )
+                    self._shutdown_future.add_done_callback(
+                        self._stop_loop_after_drain
+                    )
+            shutdown_future = self._shutdown_future
+        for delivery_class in EventDeliveryClass:
+            self._wake_lane(delivery_class)
+
+        if shutdown_future is not None:
+            try:
+                shutdown_future.result(timeout=timeout)
+            except TimeoutError as exc:
+                raise MessageBusShutdownError(
+                    f"MessageBus did not drain within {timeout:.1f}s; "
+                    "the loop remains active and will stop after draining"
+                ) from exc
+            except Exception as exc:
+                raise MessageBusShutdownError(
+                    f"MessageBus graceful drain failed: {exc}"
+                ) from exc
 
         if self._loop_thread is not None and self._loop_thread.is_alive():
             self._loop_thread.join(timeout=timeout)
             if self._loop_thread.is_alive():
-                logger.warning(
-                    "MessageBus: loop thread did not stop within %.1fs",
-                    timeout,
+                raise MessageBusShutdownError(
+                    f"MessageBus drained but its loop did not stop within "
+                    f"{timeout:.1f}s"
                 )
 
         logger.info("MessageBus: shutdown complete")
 
+    def _stop_loop_after_drain(self, shutdown_future: Any) -> None:
+        try:
+            shutdown_future.result()
+        except Exception:
+            logger.error(
+                "MessageBus: drain failed; event loop left running",
+                exc_info=True,
+            )
+            return
+        if self._loop is not None and not self._loop.is_closed():
+            try:
+                self._loop.call_soon_threadsafe(self._loop.stop)
+            except RuntimeError:
+                pass
+
     async def _async_shutdown(self) -> None:
-        assert self._loop is not None
-        me = asyncio.current_task()
-        all_tasks = asyncio.all_tasks(self._loop)
-        others = [t for t in all_tasks if t is not me]
-        if others:
-            await asyncio.wait(others, timeout=10.0)
-        self._loop.stop()
+        while True:
+            with self._admission_condition:
+                active_admissions = sum(self._active_admissions.values())
+            if active_admissions == 0:
+                break
+            await asyncio.sleep(0.01)
+
+        if self._bridge_tasks:
+            await asyncio.gather(
+                *self._bridge_tasks.values(),
+                return_exceptions=True,
+            )
+
+        for queue in self._seq_queues.values():
+            await queue.put(_SEQUENCE_STOP)
+
+        for queue in self._seq_queues.values():
+            await queue.join()
+
+        pending_dispatch = list(self._dispatch_tasks)
+        if pending_dispatch:
+            await asyncio.gather(*pending_dispatch, return_exceptions=True)
+
+        consumers = list(self._seq_consumers.values())
+        if consumers:
+            await asyncio.gather(*consumers, return_exceptions=True)
 
     def get_metrics(self) -> Dict[str, Any]:
+        if self._enable_metrics:
+            for delivery_class in self._queues:
+                self._record_pipeline_depth(delivery_class)
         return self._metrics.snapshot()
 
     def reset_metrics(self) -> None:
