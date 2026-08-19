@@ -286,8 +286,11 @@ def test_websocket_backpressure_and_drop_policy(monkeypatch, recv_json_ws):
                 get_event_bus().publish(
                     "session.created", {"session_id": "testsession", "seq": i}
                 )
-            # Read a few events (may include keepalive/control messages). Ensure we received at
-            # least one session.created and not all five (some may be dropped under backpressure).
+            # Read a few events (may include keepalive/control messages). The bounded
+            # queue limits pending delivery, not total burst delivery: the sender may
+            # drain it between enqueue callbacks, so this integration test must not
+            # assume every burst produces drops. Overflow behavior is covered
+            # deterministically in test_server_event_delivery.py.
             seen = []
             for _ in range(6):
                 try:
@@ -299,9 +302,6 @@ def test_websocket_backpressure_and_drop_policy(monkeypatch, recv_json_ws):
                 except Exception:
                     break
             assert len(seen) >= 1
-            # It is acceptable for the adapter to have delivered several, but it should not
-            # deterministically deliver all five when queue_max_size=1 and drop_policy=drop_new.
-            assert len(seen) < 5
 
         # Check metrics text contains dropped event metrics header
         r = client.get("/metrics")

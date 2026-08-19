@@ -43,6 +43,27 @@ def test_edit_file_unified_diff(tmp_path):
     assert file_path.read_text() == "line 1\nline 2 modified\nline 3\n"
 
 
+def test_edit_file_rejects_stale_diff_without_modifying_file(tmp_path):
+    from src.tools.file_tools import edit_file, read_file
+
+    file_path = tmp_path / "test.txt"
+    file_path.write_text("current content\n", encoding="utf-8")
+    read_file("test.txt", workdir=tmp_path)
+
+    patch = (
+        "--- test.txt\n"
+        "+++ test.txt\n"
+        "@@ -1 +1 @@\n"
+        "-stale content\n"
+        "+updated content\n"
+    )
+    res = edit_file("test.txt", patch=patch, workdir=tmp_path)
+
+    assert res["status"] == "error"
+    assert "does not match" in res["error"]
+    assert file_path.read_text(encoding="utf-8") == "current content\n"
+
+
 # ---------------------------------------------------------------------------
 # file_tools — path traversal + error paths
 # ---------------------------------------------------------------------------
