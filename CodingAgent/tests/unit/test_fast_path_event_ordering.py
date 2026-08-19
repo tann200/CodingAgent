@@ -131,6 +131,25 @@ class TestToolEventOrdering:
             ToolExecuteStart, ToolExecuteFinish,
         ]
 
+    def test_shutdown_drains_ordered_tool_events(self):
+        bus = MessageBus(max_queue_size=8, worker_threads=1)
+        tracker = OrderTracker(expected=4)
+        bus.subscribe(ToolExecuteStart, tracker)
+        bus.subscribe(ToolExecuteFinish, tracker)
+
+        bus.publish(_TOOL_START)
+        bus.publish(_TOOL_FINISH)
+        bus.publish(_TOOL_START)
+        bus.publish(_TOOL_FINISH)
+        bus.shutdown(timeout=3.0)
+
+        assert tracker.order == [
+            ToolExecuteStart,
+            ToolExecuteFinish,
+            ToolExecuteStart,
+            ToolExecuteFinish,
+        ]
+
 
 # ---------------------------------------------------------------------------
 # Category: step

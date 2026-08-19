@@ -1,1 +1,2 @@
 - [GitHub connector Git writes](github-connector-git-writes.md) — use base64 Git Data API blobs, verify trees, and expect connector-created commit SHA remapping.
+- [Message-bus lane wakeups](message-bus-lane-wakeups.md) — keep queue bridges event-driven; timed async polling can stall or leak delivery capacity under contention.
