@@ -1,0 +1,44 @@
+# formatters.yaml — Auto-formatter configuration for S2-C.
+#
+# Maps file extensions to formatter commands.  The placeholder ``{file}``
+# is replaced by the absolute path of the file to format.
+#
+# Formatters are run after every successful ``write_file`` / ``edit_file``
+# call.  Formatter failure is treated as a warning (not an error) so that
+# missing formatters never block writes.
+
+.py:
+  cmd: ["black", "--quiet", "{file}"]
+  install: "pip install black"
+
+.js:
+  cmd: ["prettier", "--write", "{file}"]
+  install: "npm install -g prettier"
+
+.ts:
+  cmd: ["prettier", "--write", "{file}"]
+  install: "npm install -g prettier"
+
+.tsx:
+  cmd: ["prettier", "--write", "{file}"]
+  install: "npm install -g prettier"
+
+.jsx:
+  cmd: ["prettier", "--write", "{file}"]
+  install: "npm install -g prettier"
+
+.json:
+  cmd: ["prettier", "--write", "{file}"]
+  install: "npm install -g prettier"
+
+.go:
+  cmd: ["gofmt", "-w", "{file}"]
+  install: "bundled with Go toolchain"
+
+.rs:
+  cmd: ["rustfmt", "{file}"]
+  install: "bundled with Rust toolchain"
+
+.java:
+  cmd: ["google-java-format", "--replace", "{file}"]
+  install: "https://github.com/google/google-java-format"

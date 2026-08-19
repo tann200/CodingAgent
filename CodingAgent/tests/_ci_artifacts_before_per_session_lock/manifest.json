@@ -1,0 +1,95 @@
+{
+  "started_at": 1776627175,
+  "results": [
+    {
+      "run": 1,
+      "rc": 0,
+      "timed_out": false,
+      "elapsed": 3.650991201400757,
+      "basetemp": "/tmp/pytest_run_1776627144_1",
+      "agent_context_found": true,
+      "log_path": "tests/_ci_artifacts_before_per_session_lock/run_1.log"
+    },
+    {
+      "run": 2,
+      "rc": 0,
+      "timed_out": false,
+      "elapsed": 3.0539321899414062,
+      "basetemp": "/tmp/pytest_run_1776627147_2",
+      "agent_context_found": true,
+      "log_path": "tests/_ci_artifacts_before_per_session_lock/run_2.log"
+    },
+    {
+      "run": 3,
+      "rc": 0,
+      "timed_out": false,
+      "elapsed": 3.0445241928100586,
+      "basetemp": "/tmp/pytest_run_1776627150_3",
+      "agent_context_found": true,
+      "log_path": "tests/_ci_artifacts_before_per_session_lock/run_3.log"
+    },
+    {
+      "run": 4,
+      "rc": 0,
+      "timed_out": false,
+      "elapsed": 3.070296049118042,
+      "basetemp": "/tmp/pytest_run_1776627153_4",
+      "agent_context_found": true,
+      "log_path": "tests/_ci_artifacts_before_per_session_lock/run_4.log"
+    },
+    {
+      "run": 5,
+      "rc": 0,
+      "timed_out": false,
+      "elapsed": 3.275676965713501,
+      "basetemp": "/tmp/pytest_run_1776627156_5",
+      "agent_context_found": true,
+      "log_path": "tests/_ci_artifacts_before_per_session_lock/run_5.log"
+    },
+    {
+      "run": 6,
+      "rc": 0,
+      "timed_out": false,
+      "elapsed": 3.080138921737671,
+      "basetemp": "/tmp/pytest_run_1776627160_6",
+      "agent_context_found": true,
+      "log_path": "tests/_ci_artifacts_before_per_session_lock/run_6.log"
+    },
+    {
+      "run": 7,
+      "rc": 0,
+      "timed_out": false,
+      "elapsed": 3.1217339038848877,
+      "basetemp": "/tmp/pytest_run_1776627163_7",
+      "agent_context_found": true,
+      "log_path": "tests/_ci_artifacts_before_per_session_lock/run_7.log"
+    },
+    {
+      "run": 8,
+      "rc": 0,
+      "timed_out": false,
+      "elapsed": 3.0332369804382324,
+      "basetemp": "/tmp/pytest_run_1776627166_8",
+      "agent_context_found": true,
+      "log_path": "tests/_ci_artifacts_before_per_session_lock/run_8.log"
+    },
+    {
+      "run": 9,
+      "rc": 0,
+      "timed_out": false,
+      "elapsed": 3.028282880783081,
+      "basetemp": "/tmp/pytest_run_1776627169_9",
+      "agent_context_found": true,
+      "log_path": "tests/_ci_artifacts_before_per_session_lock/run_9.log"
+    },
+    {
+      "run": 10,
+      "rc": 0,
+      "timed_out": false,
+      "elapsed": 3.0573251247406006,
+      "basetemp": "/tmp/pytest_run_1776627172_10",
+      "agent_context_found": true,
+      "log_path": "tests/_ci_artifacts_before_per_session_lock/run_10.log"
+    }
+  ]
+}

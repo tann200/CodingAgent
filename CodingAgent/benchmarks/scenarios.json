@@ -1,0 +1,150 @@
+{
+  "version": "1.0",
+  "description": "CodingAgent canonical benchmark suite — 10 representative coding tasks covering creation, editing, debugging, and refactoring.",
+  "scenarios": [
+    {
+      "name": "hello_world_function",
+      "description": "Create a simple function that returns a greeting string",
+      "difficulty": "easy",
+      "category": "creation",
+      "task": "Create a file called greet.py with a function greet(name) that returns 'Hello, <name>!'",
+      "setup_files": {},
+      "expected_files": {
+        "greet.py": "def greet"
+      },
+      "test_command": "python -c \"from greet import greet; assert greet('World') == 'Hello, World!', f'Got: {greet(\\\"World\\\")}'\"",
+      "tags": ["function", "string"]
+    },
+    {
+      "name": "class_with_methods",
+      "description": "Create a class with initializer and methods",
+      "difficulty": "easy",
+      "category": "creation",
+      "task": "Create a file counter.py with a Counter class. It should have an __init__(self, start=0) method and increment(), decrement(), and value() methods.",
+      "setup_files": {},
+      "expected_files": {
+        "counter.py": "class Counter"
+      },
+      "test_command": "python -c \"from counter import Counter; c = Counter(); c.increment(); c.increment(); assert c.value() == 2; c.decrement(); assert c.value() == 1\"",
+      "tags": ["class", "oop"]
+    },
+    {
+      "name": "fix_syntax_error",
+      "description": "Fix a syntax error in existing code",
+      "difficulty": "easy",
+      "category": "debugging",
+      "task": "Fix the syntax error in buggy.py so it runs correctly",
+      "setup_files": {
+        "buggy.py": "def add(a, b)\n    return a + b\n"
+      },
+      "expected_files": {
+        "buggy.py": "def add"
+      },
+      "test_command": "python -c \"from buggy import add; assert add(2, 3) == 5\"",
+      "tags": ["debugging", "syntax"]
+    },
+    {
+      "name": "add_unit_tests",
+      "description": "Write unit tests for an existing module",
+      "difficulty": "easy",
+      "category": "testing",
+      "task": "Write pytest unit tests for the math_utils module in math_utils.py. Create test_math_utils.py with at least 3 test functions.",
+      "setup_files": {
+        "math_utils.py": "def add(a, b):\n    return a + b\n\ndef multiply(a, b):\n    return a * b\n\ndef is_even(n):\n    return n % 2 == 0\n"
+      },
+      "expected_files": {
+        "test_math_utils.py": "import"
+      },
+      "test_command": "python -m pytest test_math_utils.py -v --tb=short",
+      "tags": ["testing", "pytest"]
+    },
+    {
+      "name": "refactor_extract_function",
+      "description": "Refactor duplicated code into a reusable function",
+      "difficulty": "medium",
+      "category": "refactoring",
+      "task": "Refactor report.py to extract the repeated date-formatting logic into a helper function format_date(dt). The function should format a datetime as 'YYYY-MM-DD'.",
+      "setup_files": {
+        "report.py": "from datetime import datetime\n\ndef report_start(dt):\n    formatted = f\"{dt.year:04d}-{dt.month:02d}-{dt.day:02d}\"\n    return f\"Report started: {formatted}\"\n\ndef report_end(dt):\n    formatted = f\"{dt.year:04d}-{dt.month:02d}-{dt.day:02d}\"\n    return f\"Report ended: {formatted}\"\n"
+      },
+      "expected_files": {
+        "report.py": "def format_date"
+      },
+      "test_command": "python -c \"from report import report_start, report_end, format_date; from datetime import datetime; dt = datetime(2024, 3, 15); assert format_date(dt) == '2024-03-15'; assert 'Report started: 2024-03-15' in report_start(dt)\"",
+      "tags": ["refactoring", "extract-function"]
+    },
+    {
+      "name": "implement_stack",
+      "description": "Implement a stack data structure",
+      "difficulty": "medium",
+      "category": "creation",
+      "task": "Create stack.py implementing a Stack class with push(item), pop() (raises IndexError when empty), peek(), is_empty(), and size() methods.",
+      "setup_files": {},
+      "expected_files": {
+        "stack.py": "class Stack"
+      },
+      "test_command": "python -c \"from stack import Stack; s = Stack(); assert s.is_empty(); s.push(1); s.push(2); assert s.size() == 2; assert s.peek() == 2; assert s.pop() == 2; assert s.size() == 1\"",
+      "tags": ["data-structure", "class"]
+    },
+    {
+      "name": "fix_off_by_one",
+      "description": "Fix an off-by-one error in a loop",
+      "difficulty": "medium",
+      "category": "debugging",
+      "task": "Fix the off-by-one bug in search.py's binary_search function so it correctly returns the index of the target or -1 if not found.",
+      "setup_files": {
+        "search.py": "def binary_search(arr, target):\n    left, right = 0, len(arr)\n    while left < right:\n        mid = (left + right) // 2\n        if arr[mid] == target:\n            return mid\n        elif arr[mid] < target:\n            left = mid + 1\n        else:\n            right = mid\n    return -1\n"
+      },
+      "expected_files": {
+        "search.py": "def binary_search"
+      },
+      "test_command": "python -c \"from search import binary_search; arr = [1,3,5,7,9,11]; assert binary_search(arr, 7) == 3; assert binary_search(arr, 11) == 5; assert binary_search(arr, 4) == -1\"",
+      "tags": ["debugging", "algorithms"]
+    },
+    {
+      "name": "add_type_hints",
+      "description": "Add Python type hints to an existing module",
+      "difficulty": "medium",
+      "category": "refactoring",
+      "task": "Add Python type hints to all functions in typed_utils.py. Use the typing module where needed.",
+      "setup_files": {
+        "typed_utils.py": "def repeat_string(s, n):\n    return s * n\n\ndef flatten(nested):\n    result = []\n    for item in nested:\n        if isinstance(item, list):\n            result.extend(flatten(item))\n        else:\n            result.append(item)\n    return result\n\ndef count_words(text):\n    return len(text.split())\n"
+      },
+      "expected_files": {
+        "typed_utils.py": "str"
+      },
+      "test_command": "python -c \"import ast, pathlib; src = pathlib.Path('typed_utils.py').read_text(); tree = ast.parse(src); hints = [n for n in ast.walk(tree) if isinstance(n, ast.AnnAssign) or (isinstance(n, ast.FunctionDef) and n.returns)]; assert len(hints) >= 1, 'No type annotations found'\"",
+      "tags": ["type-hints", "refactoring"]
+    },
+    {
+      "name": "create_cli_tool",
+      "description": "Create a simple CLI tool using argparse",
+      "difficulty": "hard",
+      "category": "creation",
+      "task": "Create wordcount.py — a CLI tool that accepts a filename argument and prints the number of lines, words, and characters in the file. Use argparse.",
+      "setup_files": {
+        "sample.txt": "Hello world\nThis is a test\nThree lines here\n"
+      },
+      "expected_files": {
+        "wordcount.py": "argparse"
+      },
+      "test_command": "python wordcount.py sample.txt",
+      "tags": ["cli", "argparse"]
+    },
+    {
+      "name": "write_file_processor",
+      "description": "Create a multi-function file processing module",
+      "difficulty": "hard",
+      "category": "creation",
+      "task": "Create file_processor.py with three functions: read_csv(path) that returns a list of dicts from a CSV file, filter_rows(rows, key, value) that returns rows where rows[key]==value, and write_json(data, path) that writes data as pretty-printed JSON.",
+      "setup_files": {
+        "data.csv": "name,age,city\nAlice,30,London\nBob,25,Paris\nCarol,35,London\n"
+      },
+      "expected_files": {
+        "file_processor.py": "def read_csv"
+      },
+      "test_command": "python -c \"from file_processor import read_csv, filter_rows, write_json; rows = read_csv('data.csv'); assert len(rows) == 3; london = filter_rows(rows, 'city', 'London'); assert len(london) == 2; write_json(london, 'out.json'); import json; data = json.loads(open('out.json').read()); assert len(data) == 2\"",
+      "tags": ["csv", "json", "file-processing"]
+    }
+  ]
+}

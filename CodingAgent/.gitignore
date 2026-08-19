@@ -1,0 +1,83 @@
+# Python virtual environments
+.venv/
+venv/
+.env
+
+# Agent working state
+# Primary (new) per-workspace directory used by the codebase
+.localAgent/
+.codingAgent/
+# Legacy names we used previously — keep ignored for developer transitions
+.agent-context/
+.agent/
+# Permission audit and local config overrides (do not commit local secrets)
+.localAgent/permission_audit.jsonl
+.localAgent/config.local.json
+.agent/permission_audit.jsonl
+.agent/config.local.json
+
+# System files
+.DS_Store
+Thumbs.db
+
+# IDEs and editors
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# Python caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Test and build artifacts
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+dist/
+build/
+*.egg-info/
+
+# Collected CI artifacts for timing analysis (do not commit these)
+tests/_ci_artifacts/
+
+# Tooling caches
+.mypy_cache/
+.ruff_cache/
+.ruff_cache/
+
+# GitHub workflows (if you intentionally want to ignore the .github directory, keep this entry)
+# If you want to keep workflows tracked, remove the next line
+
+# Logs
+logs/
+*.log
+
+# Misc
+output/
+
+# Node modules
+node_modules/
+
+# Local secrets
+.env.local
+secrets.json
+
+# Temporary files
+*.swp
+*~
+
+# Test/debug artifacts that must never be committed
+MagicMock/
+tmp_*/
+results/
+brand_new.txt
+dummy_path
+sub/
+coverage.xml
+pyright-output.json
+*.log
+
+# End of .gitignore

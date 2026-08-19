@@ -1,0 +1,45 @@
+# lsp_servers.yaml — Language-to-LSP-server mapping for S2-A.
+#
+# Each entry defines the command to launch a language server, optional
+# install instructions, and a fallback command if the primary is absent.
+#
+# LSPManager reads this file at startup and tries each ``cmd`` in order,
+# falling back to ``fallback_cmds`` when the primary is unavailable.
+# A ``_DummyLSPClient`` is used when no server can be started.
+
+python:
+  cmd: ["pylsp"]
+  install: ["pip install python-lsp-server"]
+  fallback_cmds:
+    - ["pyright", "--stdio"]
+    - ["jedi-language-server"]
+
+typescript:
+  cmd: ["typescript-language-server", "--stdio"]
+  install: ["npm install -g typescript-language-server typescript"]
+  fallback_cmds:
+    - ["deno", "lsp"]
+
+javascript:
+  cmd: ["typescript-language-server", "--stdio"]
+  install: ["npm install -g typescript-language-server typescript"]
+
+go:
+  cmd: ["gopls"]
+  install: ["go install golang.org/x/tools/gopls@latest"]
+
+rust:
+  cmd: ["rust-analyzer"]
+  install: ["rustup component add rust-analyzer"]
+
+java:
+  cmd: ["jdtls"]
+  install: []
+
+c:
+  cmd: ["clangd"]
+  install: []
+
+cpp:
+  cmd: ["clangd"]
+  install: []

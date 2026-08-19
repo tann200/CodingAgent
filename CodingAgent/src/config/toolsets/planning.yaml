@@ -1,0 +1,42 @@
+name: planning
+description: Toolset for task planning and decomposition
+tools:
+  # Reading
+  - read_file
+  - list_files
+  - glob
+  - grep
+  - search_code
+  - find_symbol
+  - find_references
+  - multi_file_summary
+  - batched_file_read
+  # Memory & intelligence
+  - memory_search
+  - analyze_repository
+  - initialize_repo_intelligence
+  # Web
+  - web_search
+  - read_web_page
+  # Parallel execution
+  - batch
+  # Delegation
+  - delegate_task
+  - delegate_tasks_parallel
+  - list_subagent_roles
+  # State / checkpoints
+  - create_state_checkpoint
+  - list_checkpoints
+  - restore_state_checkpoint
+  - submit_plan_for_review
+  - plan_enter
+  - plan_exit
+  - fingerprint_tech_stack
+  - memory_save
+  - send_user_message
+  # Task management
+  - manage_todo
+  - ask_user
+  # Skills
+  - load_skill
+  - list_skills

@@ -1,0 +1,14 @@
+{
+  "tools": {
+    "read_file": {
+      "calls": 1
+    },
+    "edit_file": {
+      "calls": 1
+    },
+    "run_tests": {
+      "calls": 1
+    }
+  },
+  "session_cost_usd": 0.0
+}

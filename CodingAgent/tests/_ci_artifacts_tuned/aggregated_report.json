@@ -1,0 +1,85 @@
+{
+  "total_runs_manifest": 3,
+  "timings_files_count": 3,
+  "sidecar_files_count": 9,
+  "runs_with_timings_count": 3,
+  "runs_with_sidecars_count": 3,
+  "session_store_exhausted": {
+    "total_events": 9,
+    "unique_runs": 3,
+    "percent_runs_affected": 100.0,
+    "elapsed_stats": {
+      "count": 9,
+      "min": 3.3073089122772217,
+      "max": 3.3973891735076904,
+      "mean": 3.3420948452419705,
+      "median": 3.327112913131714,
+      "p95": 3.3928198337554933
+    }
+  },
+  "attempts_distribution": {
+    "3": 9
+  },
+  "phase_counts": {
+    "ensure_working_dir": 3,
+    "begin_step_transaction": 9,
+    "session_store_write_exhausted": 9
+  },
+  "top_runs_by_sidecars": [
+    {
+      "run": 1,
+      "count": 3
+    },
+    {
+      "run": 2,
+      "count": 3
+    },
+    {
+      "run": 3,
+      "count": 3
+    }
+  ],
+  "top_runs_by_exhausted_elapsed": [
+    {
+      "run": 2,
+      "max_elapsed": 3.3973891735076904,
+      "events": 3
+    },
+    {
+      "run": 1,
+      "max_elapsed": 3.3859658241271973,
+      "events": 3
+    },
+    {
+      "run": 3,
+      "max_elapsed": 3.375368118286133,
+      "events": 3
+    }
+  ],
+  "per_phase_elapsed_stats": {
+    "ensure_working_dir": {
+      "count": 3,
+      "min": 0.0004379749298095703,
+      "max": 0.0004658699035644531,
+      "mean": 0.000453948974609375,
+      "median": 0.00045800209045410156,
+      "p95": 0.000465083122253418
+    },
+    "begin_step_transaction": {
+      "count": 9,
+      "min": 0.0,
+      "max": 0.0,
+      "mean": 0.0,
+      "median": 0.0,
+      "p95": 0.0
+    },
+    "session_store_write_exhausted": {
+      "count": 9,
+      "min": 3.3073089122772217,
+      "max": 3.3973891735076904,
+      "mean": 3.3420948452419705,
+      "median": 3.327112913131714,
+      "p95": 3.3928198337554933
+    }
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "started_at": 1776626151,
+  "results": [
+    {
+      "run": 1,
+      "rc": 0,
+      "timed_out": false,
+      "elapsed": 13.714950323104858,
+      "basetemp": "/tmp/pytest_run_1776626111_1",
+      "agent_context_found": true,
+      "log_path": "tests/_ci_artifacts_tuned/run_1.log"
+    },
+    {
+      "run": 2,
+      "rc": 0,
+      "timed_out": false,
+      "elapsed": 13.529991149902344,
+      "basetemp": "/tmp/pytest_run_1776626124_2",
+      "agent_context_found": true,
+      "log_path": "tests/_ci_artifacts_tuned/run_2.log"
+    },
+    {
+      "run": 3,
+      "rc": 0,
+      "timed_out": false,
+      "elapsed": 13.36434292793274,
+      "basetemp": "/tmp/pytest_run_1776626138_3",
+      "agent_context_found": true,
+      "log_path": "tests/_ci_artifacts_tuned/run_3.log"
+    }
+  ]
+}

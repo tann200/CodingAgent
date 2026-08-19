@@ -1,0 +1,8 @@
+# Step limit approaching
+
+You are approaching the maximum number of steps for this session. Prioritise completing the most important remaining work.
+
+- Finish any in-progress file edits.
+- Run a final verification (tests / linter) if possible.
+- Summarise what was done and what remains in a clear message to the user.
+- Do not start new large sub-tasks.

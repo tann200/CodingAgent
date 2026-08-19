@@ -1,0 +1,135 @@
+{
+  "_comment": "Golden-set regression scenarios for CodingAgent (G10). Each scenario is deterministic: the agent response is scripted via MockAdapter so these run fully offline. Categories: file_ops, edit, read, search, multi_step.",
+  "scenarios": [
+    {
+      "name": "gs_write_new_file",
+      "description": "Agent creates a new Python file with specified content.",
+      "task": "Create a file utils.py containing a function add(a, b) that returns a + b.",
+      "category": "file_ops",
+      "difficulty": "easy",
+      "tags": ["write_file", "function"],
+      "setup_files": {},
+      "expected_files": {
+        "utils.py": "def add"
+      }
+    },
+    {
+      "name": "gs_read_and_report",
+      "description": "Agent reads an existing file and reports its content.",
+      "task": "Read config.json and tell me what the 'version' key is set to.",
+      "category": "file_ops",
+      "difficulty": "easy",
+      "tags": ["read_file"],
+      "setup_files": {
+        "config.json": "{\"version\": \"2.1.0\", \"debug\": false}"
+      },
+      "expected_files": {}
+    },
+    {
+      "name": "gs_edit_existing_file",
+      "description": "Agent reads then edits an existing file, replacing a string.",
+      "task": "In greet.py, replace the string 'World' with 'CodingAgent'.",
+      "category": "edit",
+      "difficulty": "easy",
+      "tags": ["read_file", "edit_file"],
+      "setup_files": {
+        "greet.py": "def greet():\n    return 'Hello, World!'\n"
+      },
+      "expected_files": {
+        "greet.py": "CodingAgent"
+      }
+    },
+    {
+      "name": "gs_write_with_subdirectory",
+      "description": "Agent creates a file inside a subdirectory.",
+      "task": "Create src/models/user.py with a User dataclass that has name and email fields.",
+      "category": "file_ops",
+      "difficulty": "medium",
+      "tags": ["write_file", "dataclass", "subdirectory"],
+      "setup_files": {},
+      "expected_files": {
+        "src/models/user.py": "class User"
+      }
+    },
+    {
+      "name": "gs_create_pytest_test",
+      "description": "Agent writes a pytest test file for a given function.",
+      "task": "Create test_utils.py with a pytest test for an add(a, b) function that asserts add(2, 3) == 5.",
+      "category": "file_ops",
+      "difficulty": "easy",
+      "tags": ["write_file", "pytest"],
+      "setup_files": {
+        "utils.py": "def add(a, b):\n    return a + b\n"
+      },
+      "expected_files": {
+        "test_utils.py": "def test_"
+      }
+    },
+    {
+      "name": "gs_multi_step_read_edit_verify",
+      "description": "Agent reads a file, edits it, then reports the new content.",
+      "task": "In app.py, change DEBUG = False to DEBUG = True, then confirm the change.",
+      "category": "multi_step",
+      "difficulty": "medium",
+      "tags": ["read_file", "edit_file", "multi_step"],
+      "setup_files": {
+        "app.py": "DEBUG = False\nPORT = 8080\n"
+      },
+      "expected_files": {
+        "app.py": "DEBUG = True"
+      }
+    },
+    {
+      "name": "gs_create_class_with_methods",
+      "description": "Agent creates a class with __init__, a method, and a property.",
+      "task": "Create rectangle.py with a Rectangle class that has width and height attributes and an area() method.",
+      "category": "file_ops",
+      "difficulty": "medium",
+      "tags": ["write_file", "class"],
+      "setup_files": {},
+      "expected_files": {
+        "rectangle.py": "class Rectangle"
+      }
+    },
+    {
+      "name": "gs_add_docstring",
+      "description": "Agent reads a function file and adds a docstring.",
+      "task": "Read parser.py and add a docstring to the parse() function explaining what it does.",
+      "category": "edit",
+      "difficulty": "medium",
+      "tags": ["read_file", "edit_file", "docstring"],
+      "setup_files": {
+        "parser.py": "def parse(text):\n    return text.strip().split()\n"
+      },
+      "expected_files": {
+        "parser.py": "def parse"
+      }
+    },
+    {
+      "name": "gs_create_requirements_txt",
+      "description": "Agent creates a requirements.txt with specified dependencies.",
+      "task": "Create a requirements.txt file listing requests>=2.28.0, pytest>=7.0, and pydantic>=2.0.",
+      "category": "file_ops",
+      "difficulty": "easy",
+      "tags": ["write_file", "requirements"],
+      "setup_files": {},
+      "expected_files": {
+        "requirements.txt": "requests"
+      }
+    },
+    {
+      "name": "gs_refactor_rename_function",
+      "description": "Agent reads a file and renames a function.",
+      "task": "In helpers.py, rename the function compute() to calculate() and update any calls to it.",
+      "category": "edit",
+      "difficulty": "hard",
+      "tags": ["read_file", "edit_file", "refactor"],
+      "setup_files": {
+        "helpers.py": "def compute(x, y):\n    return x * y\n\nresult = compute(3, 4)\n"
+      },
+      "expected_files": {
+        "helpers.py": "def calculate"
+      }
+    }
+  ]
+}

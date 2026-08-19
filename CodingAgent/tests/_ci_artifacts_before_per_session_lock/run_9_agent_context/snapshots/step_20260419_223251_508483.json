@@ -1,0 +1,12 @@
+{
+  "snapshot_id": "step_20260419_223251_508483",
+  "timestamp": "2026-04-19T22:32:51.509525",
+  "files": [
+    {
+      "path": "src/dummy.py",
+      "content": "def foo(): pass\n",
+      "timestamp": "2026-04-19T22:32:51.509465",
+      "checksum": "1092669bca09f24216435355106e8102"
+    }
+  ]
+}

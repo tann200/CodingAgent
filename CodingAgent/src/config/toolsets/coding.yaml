@@ -1,0 +1,73 @@
+name: coding
+description: Toolset for code editing and implementation tasks
+tools:
+  # Reading
+  - read_file
+  - list_files
+  - glob
+  - grep
+  - find_files
+  - search_code
+  - find_symbol
+  - find_references
+  - read_file_chunk
+  - batched_file_read
+  - multi_file_summary
+  - summarize_structure
+  - summarize_structure_detailed
+  - ast_list_symbols
+  - ast_rename
+  # Writing
+  - write_file
+  - edit_file
+  - edit_file_atomic
+  - multiedit
+  - edit_by_line_range
+  - delete_file
+  - apply_patch
+  - generate_patch
+  - create_directory
+  - rename_file
+  - create_state_checkpoint
+  # Verification
+  - run_tests
+  - run_linter
+  - syntax_check
+  - run_tests_legacy
+  - run_js_tests
+  - run_eslint
+  - run_ts_check
+  # LSP (S2-B) — degrade gracefully when no server installed
+  - lsp_diagnostics
+  - lsp_references
+  - lsp_definition
+  - lsp_symbols
+  - lsp_hover
+  - lsp_rename
+  # Shell
+  - bash
+  - bash_readonly
+  - check_background_task
+  # Git
+  - git_status
+  - git_log
+  - git_diff
+  - git_commit
+  - get_git_diff
+  - git_restore
+  - git_stash
+  # Parallel execution
+  - batch
+  # Web
+  - web_search
+  - read_web_page
+  # Task management
+  - manage_todo
+  - ask_user
+  # Skills
+  - load_skill
+  - list_skills
+  - memory_save
+  - record_mistake
+  - read_file_bytes
+  - tail_log_file

@@ -1,0 +1,13 @@
+# Gemini model guidance
+
+You are running on a Google Gemini model. Follow these rules for reliable tool use and code quality:
+
+- **Use the native JSON function calling API.** Do NOT output markdown YAML blocks for tool calls. Gemini uses structured function call objects.
+- **Think step-by-step.** Write brief internal reasoning before each tool call to confirm the correct approach.
+- **Read before writing.** Always read a file before editing it. Never assume file contents.
+- **Prefer targeted edits.** Use `edit_file` or `edit_file_atomic` for changes to existing files. Only use `write_file` for new files.
+- **Use `delegate_task` for deep research.** Spawn an analyst or researcher subagent for open-ended codebase exploration rather than reading files one by one in the main context.
+- **Verify your work.** After writing code, run the relevant tests. Fix failures before reporting completion.
+- **For multi-step tasks, use the manage_todo tool** to track progress. Mark items in_progress and completed as you go.
+- **Cite file locations as `file_path:line_number`.** Always include line numbers when referencing code.
+- **Be concise.** Avoid unnecessary preamble. Get to the tool call or answer quickly.

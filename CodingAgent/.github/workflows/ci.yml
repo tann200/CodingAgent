@@ -1,0 +1,213 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  schedule:
+    # P3-4: Nightly integration test run at 02:00 UTC
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+    inputs:
+      run_integration:
+        description: 'Run integration tests (requires local provider)'
+        required: false
+        default: 'false'
+
+env:
+  CI: "true"
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      - name: Assert Python requirement in pyproject
+        run: |
+          python - <<'PY'
+          import sys, pathlib
+          try:
+              import tomllib
+          except Exception:
+              print('tomllib not available in this Python environment')
+              sys.exit(1)
+
+          p = pathlib.Path('pyproject.toml')
+          if not p.exists():
+              print('pyproject.toml not found')
+              sys.exit(1)
+
+          data = tomllib.loads(p.read_text())
+          proj = data.get('project', {}) if isinstance(data, dict) else {}
+          spec = proj.get('requires-python')
+          if not spec:
+              print('project.requires-python not set in pyproject.toml')
+              sys.exit(1)
+
+          # Require that 3.11 is present in the spec (and recommend pinning to <3.12)
+          if '3.11' not in str(spec):
+              print(f"project.requires-python ('{spec}') does not include Python 3.11. CI requires Python 3.11.")
+              sys.exit(1)
+
+          if '<3.12' not in str(spec) and '==3.11' not in str(spec):
+              print(f"Warning: project.requires-python is '{spec}'. Recommended: '>=3.11,<3.12' to lock to 3.11.x")
+          print('pyproject Python requirement OK:', spec)
+          PY
+      - name: Install quality dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .[dev]
+      - name: Lint (ruff)
+        run: |
+          python -m ruff check src tests --select=E,F,W --ignore=E501 || true
+      - name: Type check (mypy)
+        run: |
+          python -m mypy src/server src/core/inference/provider_utils.py src/core/orchestration/tool_contracts.py src/core/orchestration/tool_parser.py --ignore-missing-imports --follow-imports=silent --disable-error-code=import-untyped --no-error-summary || true
+
+  unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      - name: Install unit test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .[dev,server]
+      - name: Run unit tests with coverage
+        run: |
+          python -m pytest tests/unit -q -p no:logging --cov=src --cov-report=term-missing --cov-report=xml
+      - name: Check xfail count (IMPL-Q2)
+        # Fail the build if the number of xfail/xpass results exceeds the
+        # allowed threshold.  This prevents xfail from becoming a permanent
+        # workaround that masks real failures.  Current threshold: 10.
+        run: |
+          python - <<'PY'
+          import subprocess, sys, re
+          result = subprocess.run(
+              [sys.executable, "-m", "pytest", "tests/unit", "-q", "--no-header", "-p", "no:logging"],
+              capture_output=True, text=True
+          )
+          output = result.stdout + result.stderr
+          if result.returncode not in (0, 1, 5):
+              print(f"pytest subprocess exited with code {result.returncode}")
+              print("stdout:", result.stdout[:2000])
+              print("stderr:", result.stderr[:2000])
+              sys.exit(1)
+          # Match e.g. "3 xfailed" or "2 xpassed"
+          xfail_match = re.search(r"(\d+) xfailed", output)
+          xpass_match = re.search(r"(\d+) xpassed", output)
+          xfail_count = int(xfail_match.group(1)) if xfail_match else 0
+          xpass_count = int(xpass_match.group(1)) if xpass_match else 0
+          total = xfail_count + xpass_count
+          _MAX_XFAIL = 10
+          print(f"xfail: {xfail_count}, xpass: {xpass_count}, total: {total} (threshold: {_MAX_XFAIL})")
+          if total > _MAX_XFAIL:
+              print(f"ERROR: xfail+xpass count ({total}) exceeds threshold ({_MAX_XFAIL}).")
+              print("Resolve stale xfails before merging.")
+              sys.exit(1)
+          print("xfail count within threshold — OK")
+          PY
+      - name: Upload coverage report
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage.xml
+
+  platform-smoke:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      - name: Install platform smoke dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .[dev,server]
+      - name: Run platform-sensitive unit smoke tests
+        run: |
+          python -m pytest tests/unit/test_sandbox.py tests/unit/test_shell_hooks.py tests/unit/test_task_lifecycle.py -q -p no:logging
+
+  integration-mock:
+    runs-on: ubuntu-latest
+    needs: unit-tests
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      - name: Install integration dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .[dev,server]
+      - name: Run mock-backed integration tests
+        run: |
+          python -m pytest tests/integration/test_mock_adapter_integration.py tests/integration/test_delegation_mock.py tests/integration/test_langgraph_orchestrator.py tests/integration/test_fast_path_graph_e2e.py tests/integration/test_agent_loop_plaintext_tools.py tests/integration/test_loop_prevention.py -q -p no:logging
+
+  e2e-mock:
+    runs-on: ubuntu-latest
+    needs: unit-tests
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      - name: Install e2e dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .[dev,server]
+      - name: Run CI-safe e2e tests
+        run: |
+          python -m pytest tests/e2e/test_agent_scenarios.py tests/e2e/test_basic_workflows.py tests/e2e/test_small_model_pipeline.py -q -p no:logging
+
+  benchmarks:
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' }}
+    needs: unit-tests
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      - name: Install benchmark dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .[dev,server]
+      - name: Run benchmark tests (ET-3)
+        run: |
+          python -m pytest tests/benchmarks -q -p no:logging
+
+  live-provider-checks:
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'schedule' || github.event.inputs.run_integration == 'true' }}
+    needs: unit-tests
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      - name: Install live-provider test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .[dev,server]
+      - name: Run integration tests (optional)
+        run: |
+          RUN_INTEGRATION=1 python -m pytest tests/integration tests/e2e/test_crud_lm_studio.py -q -p no:logging

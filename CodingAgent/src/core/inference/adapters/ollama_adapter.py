@@ -1,0 +1,751 @@
+from __future__ import annotations
+from typing import Any, Dict, List, Optional
+from pathlib import Path
+import json
+import logging
+import time
+import requests
+
+# Import helper shims from llm_manager with safe fallbacks
+try:
+    from src.core.inference.llm_manager import (
+        lm_resolve_config_path,
+        lm_load_provider,
+        lm_save_provider,
+        lm_select_model_name,
+        lm_call_requests,
+        lm_post_stream_compatible,
+        LM_DEFAULT_TIMEOUT,
+    )
+except Exception:
+    # Provide minimal fallbacks to keep adapter operational during tests
+    def lm_resolve_config_path(path=None):  # type: ignore[misc]
+        return Path(path) if path else Path("config/providers.json")
+
+    def lm_load_provider(path=None):  # type: ignore[misc]
+        try:
+            with open(path or "config/providers.json", "r", encoding="utf-8") as fh:
+                return json.load(fh)
+        except Exception:
+            return None
+
+    def lm_save_provider(data, path=None, initial_path=None):  # type: ignore[misc]
+        try:
+            target = (
+                Path(initial_path)
+                if initial_path
+                else Path(path or "config/providers.json")
+            )
+            target.parent.mkdir(parents=True, exist_ok=True)
+            to_write = data
+            if isinstance(data, dict) and target.exists():
+                try:
+                    existing = json.loads(target.read_text(encoding="utf-8"))
+                    if isinstance(existing, list):
+                        name = data.get("name")
+                        updated = [
+                            p
+                            if (not isinstance(p, dict) or p.get("name") != name)
+                            else data
+                            for p in existing
+                        ]
+                        if not any(
+                            isinstance(p, dict) and p.get("name") == name
+                            for p in existing
+                        ):
+                            updated.append(data)
+                        to_write = updated
+                except Exception as exc:
+                    _logger.debug("ollama_adapter: _write_models_cache inner error: %s", exc)
+            target.write_text(json.dumps(to_write), encoding="utf-8")
+            return True
+        except Exception as exc:
+            _logger.debug("ollama_adapter: _write_models_cache failed: %s", exc)
+            return False
+
+    def lm_select_model_name(models, requested=None):  # type: ignore[misc]
+        if not models:
+            return None
+        for m in models:
+            if isinstance(m, dict):
+                if (m.get("id") or m.get("name") or m.get("key")) == requested:
+                    return requested
+        return models[0] if models else None
+
+    def lm_call_requests(method, url, **kwargs):  # type: ignore[misc]
+        return getattr(requests, method.lower())(url, **kwargs)
+
+    def lm_post_stream_compatible(url, json_data=None, headers=None, timeout=None):  # type: ignore[misc]
+        return requests.post(url, json=json_data, timeout=timeout)
+
+    LM_DEFAULT_TIMEOUT = 5
+
+from src.core.inference.llm_client import LLMClient
+from src.core.inference.telemetry import with_telemetry
+from src.core.utils.strings import valid_str as _valid_str
+
+_logger = logging.getLogger(__name__)
+
+# Standard Ollama Generation Options
+OLLAMA_OPTIONS = {
+    "temperature",
+    "seed",
+    "num_predict",
+    "top_k",
+    "top_p",
+    "tfs_z",
+    "typical_p",
+    "repeat_last_n",
+    "repeat_penalty",
+    "presence_penalty",
+    "frequency_penalty",
+    "mirostat",
+    "mirostat_tau",
+    "mirostat_eta",
+    "penalize_newline",
+    "stop",
+    "num_keep",
+    "num_ctx",
+}
+
+
+class OllamaAdapter(LLMClient):
+    # Increased timeout from 5 to 120 to allow for local model loading into VRAM
+    DEFAULT_TIMEOUT = 120.0
+
+    def __init__(
+        self, config_path=None, name=None, base_url=None, api_key=None, models=None
+    ):
+        # Keep initial_config_path for save semantics
+        self._initial_config_path = Path(config_path) if config_path else None
+        # Resolve provider from config_path only if no explicit base_url provided
+        self.config_path = lm_resolve_config_path(config_path)
+        self.provider = None
+        if base_url is None:
+            # attempt to load provider from config file (backwards compatibility)
+            self.provider = lm_load_provider(self.config_path)
+        if isinstance(self.provider, list) and len(self.provider) > 0:
+            # Find the first ollama provider
+            found = None
+            for p in self.provider:
+                if (
+                    str(p.get("type")).lower() == "ollama"
+                    or str(p.get("name")).lower() == "ollama"
+                ):
+                    found = p
+                    break
+            self.provider = found or self.provider[0]
+        # Ensure provider is a dict (or None) for .get() calls downstream
+        if not isinstance(self.provider, dict):
+            self.provider = None
+
+        # If base_url provided by caller, prefer that and consider provider present
+        self.base_url = base_url or (
+            self.provider.get("base_url")  # type: ignore[union-attr]
+            if self.provider
+            else "http://localhost:11434/api"
+        )
+        self.api_key = api_key or (
+            self.provider.get("api_key") if self.provider else None  # type: ignore[union-attr]
+        )
+        # models: prefer explicit models arg, then provider.models from config, otherwise empty list
+        # Guarded import for shared validator to avoid circular imports in tests.
+        if models is not None:
+            # accept list[str] or list[dict], extract string ids conservatively
+            out = []
+            for m in models:
+                if isinstance(m, dict):
+                    fid = m.get("id") or m.get("key") or m.get("name") or m.get("model")
+                else:
+                    fid = m
+                if fid and _valid_str(fid):
+                    out.append(str(fid).strip())
+            self.models = out
+        elif self.provider:
+            out = []
+            models_field = self.provider.get("models")
+            if isinstance(models_field, list):
+                for m in models_field:
+                    if isinstance(m, dict):
+                        fid = (
+                            m.get("id")
+                            or m.get("key")
+                            or m.get("name")
+                            or m.get("model")
+                        )
+                    else:
+                        fid = m
+                    if fid and _valid_str(fid):
+                        out.append(str(fid).strip())
+            self.models = out
+        else:
+            self.models = []
+        # missing_provider: False if either provider config exists or a base_url was explicitly provided
+        self.missing_provider = False if (self.provider or base_url) else True
+
+    def _save_provider(self):
+        if self.provider is None:
+            return
+        return lm_save_provider(
+            self.provider, self.config_path, self._initial_config_path
+        )
+
+    def _select_model_name(self, model):
+        return lm_select_model_name(self.models, model)
+
+    def _request_with_retry(self, method: str, url: str, timeout: float = 30.0, **kwargs) -> Optional[requests.Response]:
+        """Make an HTTP request with retry and exponential backoff."""
+        _MAX_RETRIES = 3
+        last_response = None
+        for _attempt in range(_MAX_RETRIES):
+            try:
+                request_method = getattr(requests, method.lower())
+                response = request_method(url, timeout=timeout, **kwargs)
+                if response.status_code >= 500 and _attempt < _MAX_RETRIES - 1:
+                    time.sleep(2 ** _attempt)
+                    last_response = response
+                    continue
+                return response
+            except requests.exceptions.ConnectionError:
+                if _attempt < _MAX_RETRIES - 1:
+                    time.sleep(2 ** _attempt)
+                    continue
+                raise
+        return last_response
+
+    def _base_variants(self) -> List[str]:
+        if not self.base_url:
+            return ["http://localhost:11434"]
+        b = self.base_url.rstrip("/")
+        variants = [b]
+        if b.endswith("/api"):
+            variants.append(b[:-4])
+            variants.append(b + "/v1")
+        if b.endswith("/v1"):
+            variants.append(b[:-3])
+            variants.append(b + "/api")
+        # ensure common forms
+        variants.append(b + "/api")
+        variants.append(b + "/v1")
+        # dedupe
+        out = []
+        seen = set()
+        for v in variants:
+            if v not in seen:
+                seen.add(v)
+                out.append(v)
+        return out
+
+    def _make_endpoints(self, path: str) -> List[str]:
+        out = []
+        for base in self._base_variants():
+            out.append(base.rstrip("/") + "/" + path.lstrip("/"))
+        return out
+
+    def get_models_from_api(self):
+        # Prefer canonical Ollama API: base may already include '/api'
+        base = (self.base_url or "").rstrip("/")
+        candidates = []
+        if base.endswith("/api"):
+            candidates.append(base + "/tags")
+            candidates.append(base[:-4] + "/tags")
+        else:
+            candidates.append(base + "/api/tags")
+            candidates.append(base + "/tags")
+        candidates.append(base + "/v1/tags")
+        tried = []
+        for url in candidates:
+            try:
+                tried.append(url)
+                response = self._request_with_retry('get', url, timeout=10)
+                if response is None:
+                    continue
+                try:
+                    data = response.json()
+                except Exception:
+                    data = None
+                if response.status_code >= 400:
+                    if isinstance(data, dict) and data.get("error"):
+                        continue
+                    response.raise_for_status()
+                # Ollama tags response often includes 'models' or a list of model dicts
+                models_raw = None
+                if isinstance(data, dict):
+                    if "models" in data and isinstance(data["models"], list):
+                        models_raw = data["models"]
+                    elif "tags" in data and isinstance(data["tags"], list):
+                        models_raw = data["tags"]
+                    else:
+                        # find first list in values
+                        for v in data.values():
+                            if isinstance(v, list):
+                                models_raw = v
+                                break
+                elif isinstance(data, list):
+                    models_raw = data
+                if not models_raw:
+                    continue
+                models_out = []
+                for item in models_raw:
+                    if isinstance(item, dict):
+                        raw_key = (
+                            item.get("name")
+                            or item.get("model")
+                            or item.get("id")
+                            or item.get("key")
+                        )
+                        name = (
+                            str(raw_key).split("/")[-1] if raw_key is not None else None
+                        )
+                        if name:
+                            models_out.append(name)
+                    elif isinstance(item, str):
+                        name = str(item).split("/")[-1]
+                        models_out.append(name)
+                if models_out:
+                    return {"models": models_out}
+            except requests.exceptions.ConnectionError:
+                continue
+            except Exception as e:
+                _logger.debug("get_models_from_api failed for %s: %s", url, e)
+                continue
+        _logger.warning("Ollama service not reachable; tried endpoints: %s", tried)
+        return {"models": []}
+
+    def update_models_list(self):
+        api_models = self.get_models_from_api()
+        # Accept both [{'name':...},...] and ['name', ...] shapes from adapters/tests
+        raw = api_models.get("models", []) or []
+        # Guarded import for shared validator to avoid circular imports in tests.
+        normalized = []
+        for m in raw:
+            if isinstance(m, dict):
+                name = m.get("name") or m.get("id") or m.get("key") or m.get("model")
+                if name and _valid_str(name):
+                    normalized.append(str(name).strip())
+            elif isinstance(m, str) and _valid_str(m):
+                normalized.append(str(m).strip())
+
+        if self.provider is None:
+            self.provider = {}
+        # update provider.models but keep other provider fields intact
+        self.provider["models"] = normalized
+        # Attempt to persist but don't fail tests if write fails
+        try:
+            self._save_provider()
+        except Exception as exc:
+            _logger.debug("ollama_adapter: _save_provider failed: %s", exc)
+
+        # Update adapter.models in-place when possible so references remain valid
+        try:
+            # If models is a list object already present, mutate it in-place
+            if hasattr(self, "models") and isinstance(self.models, list):
+                self.models[:] = normalized
+            else:
+                self.models = normalized
+        except Exception:
+            self.models = normalized
+        return self.models
+
+    def get_model_info(self, model_name=None):
+        if not self.models and model_name is None:
+            # CODE_QUALITY_AUDIT #8 fix: use logger instead of print() so errors
+            # go to the structured log stream, not stdout.
+            _logger.error("get_model_info: no models loaded")
+            return {}
+        model_name = self._select_model_name(model_name)
+        if model_name is None:
+            _logger.error("get_model_info: unable to find a model")
+            return {}
+        # Try show endpoint variants
+        endpoints = self._make_endpoints("/api/show") + self._make_endpoints("/show")
+        payload = {"model": model_name}
+        for url in endpoints:
+            try:
+                resp = self._call_requests("post", url, json=payload, timeout=20)
+                if isinstance(resp, dict) and resp.get("meta"):
+                    return resp
+                # If _call_requests returned requests.Response, handle
+                try:
+                    if hasattr(resp, "status_code"):
+                        if resp.status_code >= 400:  # type: ignore[reportAttributeAccessIssue]
+                            continue
+                        return resp.json()  # type: ignore[reportAttributeAccessIssue]
+                except Exception as exc:
+                    _logger.debug("ollama_adapter: get_model_info response parse failed: %s", exc)
+                if isinstance(resp, dict):
+                    return resp
+            except Exception:
+                continue
+        _logger.debug("get_model_info: no show endpoint succeeded")
+        return {}
+
+    def _parse_json_response_field(self, response_text):
+        """Try to parse a response string as JSON and return python object."""
+        if response_text is None:
+            return None
+        if isinstance(response_text, (dict, list)):
+            return response_text
+        try:
+            text = response_text.strip()
+            return json.loads(text)
+        except Exception:
+            return response_text
+
+    def _extract_ollama_options(self, kwargs: dict) -> tuple[dict, dict]:
+        """Separates Ollama-specific options from generic kwargs."""
+        options = {}
+        payload_kwargs = {}
+        for k, v in kwargs.items():
+            if k in OLLAMA_OPTIONS:
+                options[k] = v
+            else:
+                payload_kwargs[k] = v
+        return options, payload_kwargs
+
+    @with_telemetry
+    def generate(
+        self,
+        messages: List[Dict[str, str]],
+        model: Optional[str] = None,
+        stream: bool = False,
+        timeout: Optional[float] = None,
+        provider: Optional[str] = None,
+        **kwargs,
+    ) -> Dict[str, Any]:
+        """Generate a completion using Ollama. Returns normalized LLMClient payload."""
+        try:
+            raw_response = self._chat_internal(
+                messages, model=model, stream=stream, timeout=timeout, **kwargs
+            )
+
+            if stream:
+                return {
+                    "ok": True,
+                    "provider": "ollama",
+                    "model": model or "unknown",
+                    "latency": 0.0,
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "total_tokens": 0,
+                    "choices": [],
+                    "raw": raw_response,
+                }
+
+            if (
+                isinstance(raw_response, dict)
+                and "meta" in raw_response
+                and raw_response["meta"].get("error")
+            ):
+                return {
+                    "ok": False,
+                    "provider": "ollama",
+                    "model": model or "unknown",
+                    "error": raw_response["meta"]["error"],
+                    "raw": raw_response,
+                }
+
+            # Normalize Ollama response
+            msg = raw_response.get("message", {})
+            choice = {
+                "message": {
+                    "role": msg.get("role", "assistant"),
+                    "content": msg.get("content", ""),
+                },
+                "finish_reason": "stop",
+            }
+            if "tool_calls" in msg:
+                choice["tool_calls"] = msg["tool_calls"]
+
+            p_tokens = raw_response.get("prompt_eval_count", 0)
+            c_tokens = raw_response.get("eval_count", 0)
+
+            return {
+                "ok": True,
+                "provider": "ollama",
+                "model": raw_response.get("model", model or "unknown"),
+                "latency": 0.0,
+                "prompt_tokens": p_tokens,
+                "completion_tokens": c_tokens,
+                "total_tokens": p_tokens + c_tokens,
+                "choices": [choice],
+                "raw": raw_response,
+            }
+        except Exception as e:
+            return {
+                "ok": False,
+                "provider": "ollama",
+                "model": model or "unknown",
+                "error": str(e),
+                "raw": {},
+            }
+
+    def _generate_internal(
+        self, prompt, model=None, stream=False, format_json=False, **kwargs
+    ):
+        """Original generate logic for backward compatibility."""
+        model_name = self._select_model_name(model)
+        if model_name is None:
+            raise ValueError("No model available to generate from.")
+        url = f"{self.base_url}/generate"
+
+        # FIX: Extract Ollama options correctly
+        options, payload_kwargs = self._extract_ollama_options(kwargs)
+
+        payload = {
+            "model": model_name,
+            "prompt": prompt,
+            "stream": stream,
+            **payload_kwargs,
+        }
+        if options:
+            payload["options"] = options
+
+        if format_json and "format" not in payload:
+            payload["format"] = "json"
+
+        try:
+            if stream:
+                try:
+                    response = requests.post(
+                        url, json=payload, stream=True, timeout=120
+                    )
+                except Exception:
+                    response = self._post_stream_compatible(url, payload)
+            else:
+                response = self._call_requests(
+                    "post", url, json=payload, stream=stream, timeout=120
+                )
+            if isinstance(response, dict) and response.get("meta"):
+                return response
+            if hasattr(response, "raise_for_status"):
+                response.raise_for_status()  # type: ignore[union-attr]
+            elif not isinstance(response, dict):
+                return {"error": "unexpected response type"}
+            if stream:
+
+                def _stream_gen(resp):
+                    for line in resp.iter_lines():
+                        if not line:
+                            continue
+                        chunk = ""
+                        try:
+                            chunk = (
+                                line.decode()
+                                if isinstance(line, (bytes, bytearray))
+                                else str(line)
+                            )
+                            yield json.loads(chunk)
+                        except Exception:
+                            try:
+                                yield {"raw": chunk}
+                            except Exception:
+                                yield {"raw_bytes": line}
+
+                return _stream_gen(response)
+            else:
+                data = response.json()  # type: ignore[union-attr]
+                if format_json:
+                    parsed = self._parse_json_response_field(data.get("response"))
+                    if parsed is None or parsed == "" or parsed == data.get("response"):
+                        meta = (
+                            data.get("meta", {})
+                            if isinstance(data.get("meta", {}), dict)
+                            else {}
+                        )
+                        fallback_text = None
+                        if isinstance(meta, dict):
+                            fallback_text = meta.get("thinking") or meta.get("thoughts")
+                        if not fallback_text:
+                            fallback_text = data.get("thinking") or data.get("thoughts")
+                        if fallback_text:
+                            parsed_fb = self._parse_json_response_field(fallback_text)
+                            if isinstance(parsed_fb, (dict, list)):
+                                parsed = parsed_fb
+                    return {
+                        "model": data.get("model"),
+                        "created_at": data.get("created_at"),
+                        "response_raw": data.get("response"),
+                        "response": parsed,
+                        "meta": {
+                            k: v
+                            for k, v in data.items()
+                            if k not in ("model", "created_at", "response")
+                        },
+                    }
+                return data
+        except requests.exceptions.ConnectionError:
+            msg = "Ollama service not available: connection error"
+            _logger.warning(msg)
+            return {"meta": {"error": msg}}
+        except Exception as e:
+            _logger.warning("generate failed: %s", e)
+            return {"meta": {"error": "generate_failed", "exception": str(e)}}
+
+    def _chat_internal(
+        self,
+        messages,
+        model=None,
+        stream=False,
+        format_json=False,
+        timeout=None,
+        **kwargs,
+    ):
+        """Chat with the model using messages (list of {role, content})."""
+        model_name = self._select_model_name(model)
+        if model_name is None:
+            raise ValueError("No model available for chat.")
+        url = f"{self.base_url}/chat"
+
+        # FIX: Extract Ollama options correctly so temperature/seed actually apply
+        options, payload_kwargs = self._extract_ollama_options(kwargs)
+
+        payload = {
+            "model": model_name,
+            "messages": messages,
+            "stream": stream,
+            **payload_kwargs,
+        }
+        if options:
+            payload["options"] = options
+
+        # GAP-SMALL-6: disable thinking tokens for local models when configured.
+        # Ollama ≥0.6.5 accepts "think": false at the top-level payload.
+        _disable_think = False
+        try:
+            if self.provider and isinstance(self.provider, dict):
+                _disable_think = bool(self.provider.get("disable_thinking", False))
+        except Exception as exc:
+            _logger.debug("ollama_adapter: disable_thinking check failed: %s", exc)
+        if _disable_think and "think" not in payload:
+            payload["think"] = False
+
+        if format_json and "format" not in payload:
+            payload["format"] = "json"
+
+        try:
+            if stream:
+                try:
+                    # Extended timeout for VRAM loading
+                    response = requests.post(
+                        url, json=payload, stream=True, timeout=120
+                    )
+                except Exception:
+                    response = self._post_stream_compatible(url, payload)
+            else:
+                response = self._call_requests(
+                    "post", url, json=payload, stream=stream, timeout=120
+                )
+            if isinstance(response, dict) and response.get("meta"):
+                return response
+            if hasattr(response, "raise_for_status"):
+                response.raise_for_status()  # type: ignore[union-attr]
+            elif not isinstance(response, dict):
+                return {"error": "unexpected response type"}
+            if stream:
+
+                def _stream_gen(resp):
+                    for line in resp.iter_lines():
+                        if not line:
+                            continue
+                        chunk = ""
+                        try:
+                            chunk = (
+                                line.decode()
+                                if isinstance(line, (bytes, bytearray))
+                                else str(line)
+                            )
+                            yield json.loads(chunk)
+                        except Exception:
+                            try:
+                                yield {"raw": chunk}
+                            except Exception:
+                                yield {"raw_bytes": line}
+
+                return _stream_gen(response)
+            else:
+                data = response.json()  # type: ignore[union-attr]
+                message = data.get("message") or {}
+                content = message.get("content") if isinstance(message, dict) else None
+                parsed = (
+                    self._parse_json_response_field(content) if format_json else content
+                )
+
+                if format_json and (
+                    parsed is None or parsed == "" or parsed == content
+                ):
+                    meta = (
+                        data.get("meta", {})
+                        if isinstance(data.get("meta", {}), dict)
+                        else {}
+                    )
+                    fallback_text = None
+                    if isinstance(meta, dict):
+                        fallback_text = meta.get("thinking") or meta.get("thoughts")
+                    if not fallback_text:
+                        fallback_text = data.get("thinking") or data.get("thoughts")
+                    if fallback_text:
+                        parsed_fb = self._parse_json_response_field(fallback_text)
+                        if isinstance(parsed_fb, (dict, list)):
+                            parsed = parsed_fb
+
+                if format_json and isinstance(content, str):
+                    try:
+                        maybe = json.loads(content)
+                        if isinstance(maybe, (dict, list)):
+                            parsed = maybe
+                    except Exception as exc:
+                        _logger.debug("ollama_adapter: JSON parse of content failed: %s", exc)
+                result = {
+                    "model": data.get("model"),
+                    "created_at": data.get("created_at"),
+                    "message": message,
+                    "response": parsed,
+                    "meta": {
+                        k: v
+                        for k, v in data.items()
+                        if k not in ("model", "created_at", "message")
+                    },
+                }
+                if not isinstance(result, dict):
+                    result = {"meta": {"error": "invalid_response_shape"}}
+                if "response" not in result and "meta" not in result:
+                    result["meta"] = {"note": "no_response"}
+                return result
+        except requests.exceptions.ConnectionError:
+            msg = "Ollama service not available: connection error"
+            _logger.warning(msg)
+            return {"meta": {"error": msg}}
+        except Exception as e:
+            _logger.warning("chat failed: %s", e)
+            return {"meta": {"error": "chat_failed", "exception": str(e)}}
+
+    def extract_tool_calls(self, chat_response):
+        message = (
+            chat_response.get("message") if isinstance(chat_response, dict) else None
+        )
+        if not message:
+            return []
+        tool_calls = message.get("tool_calls") or message.get("tool_calls", [])
+        if tool_calls:
+            return tool_calls
+        content = message.get("content")
+        parsed = self._parse_json_response_field(content)
+        if isinstance(parsed, dict) and parsed.get("tool_call"):
+            return [parsed.get("tool_call")]
+        return []
+
+    def _do_request(self, method: str, url: str, **kwargs):
+        timeout = kwargs.pop("timeout", self.DEFAULT_TIMEOUT)
+        m = method.lower()
+        if m == "post":
+            return requests.post(url, timeout=timeout, **kwargs)
+        if m == "get":
+            return requests.get(url, timeout=timeout, **kwargs)
+        return requests.request(method, url, timeout=timeout, **kwargs)
+
+    def _call_requests(self, method: str, url: str, **kwargs):
+        return lm_call_requests(method, url, **kwargs)
+
+    def _post_stream_compatible(self, url: str, payload: dict):
+        return lm_post_stream_compatible(url, payload)

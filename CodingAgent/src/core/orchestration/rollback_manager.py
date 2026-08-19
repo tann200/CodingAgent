@@ -1,0 +1,627 @@
+"""
+Automated Rollback Manager for CodingAgent.
+
+This module provides automated rollback functionality when verification fails,
+allowing the agent to recover to a previous state.
+"""
+
+import hashlib
+import json
+import logging
+import shutil
+import os
+from pathlib import Path
+from typing import Dict, Any, List, Optional
+from datetime import datetime
+from dataclasses import dataclass
+
+from src.tools._path_utils import safe_resolve
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class FileSnapshot:
+    """Represents a snapshot of a file at a point in time."""
+
+    path: str
+    content: str
+    timestamp: str
+    checksum: str
+
+
+class RollbackManager:
+    """
+    Manages automated rollback on verification failure.
+
+    Enhanced for DAG support:
+    - Tracks snapshots by step_id for wave-based rollback
+    - Supports atomic multi-file commits per step
+    - Allows rollback to specific step without affecting others
+
+    Usage:
+        rollback_mgr = RollbackManager(workdir)
+
+        # Before making changes
+        rollback_mgr.snapshot_files(["src/main.py", "src/utils.py"])
+
+        # After verification fails
+        if not verification_passed:
+            rollback_mgr.rollback()
+    """
+
+    def __init__(self, workdir: str):
+        self.workdir = Path(workdir)
+        try:
+            from src.tools.tools_config import agent_context_path
+
+            self.snapshot_dir = agent_context_path(self.workdir) / "snapshots"
+        except Exception:
+            self.snapshot_dir = self.workdir / ".codingAgent" / "snapshots"
+        self.snapshot_dir.mkdir(parents=True, exist_ok=True)
+        self.current_snapshot: Optional[str] = None
+        self.snapshots: Dict[str, List[FileSnapshot]] = {}
+        self._step_to_snapshot: Dict[str, str] = {}
+
+    def _compute_checksum(self, content: str) -> str:
+        """Compute a simple checksum for file content."""
+        return hashlib.md5(content.encode()).hexdigest()
+
+    def snapshot_files(
+        self, file_paths: List[str], snapshot_id: Optional[str] = None
+    ) -> str:
+        """
+        Take a snapshot of the specified files.
+
+        Args:
+            file_paths: List of file paths to snapshot
+            snapshot_id: Optional ID for this snapshot (generated if not provided)
+
+        Returns:
+            Snapshot ID
+        """
+        snapshot_id = snapshot_id or datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        self.current_snapshot = snapshot_id
+
+        snapshots: List[FileSnapshot] = []
+
+        for file_path in file_paths:
+            try:
+                path = safe_resolve(file_path, self.workdir)
+            except (PermissionError, ValueError):
+                logger.warning(
+                    f"snapshot_files: path '{file_path}' escapes workspace — skipping"
+                )
+                continue
+            if not path.exists():
+                continue
+
+            try:
+                content = path.read_text(encoding="utf-8")
+                snapshots.append(
+                    FileSnapshot(
+                        path=file_path,
+                        content=content,
+                        timestamp=datetime.now().isoformat(),
+                        checksum=self._compute_checksum(content),
+                    )
+                )
+            except Exception as e:
+                logger.warning(f"Failed to snapshot {file_path}: {e}")
+
+        self.snapshots[snapshot_id] = snapshots
+
+        # Save to disk
+        snapshot_file = self.snapshot_dir / f"{snapshot_id}.json"
+        snapshot_data = {
+            "snapshot_id": snapshot_id,
+            "timestamp": datetime.now().isoformat(),
+            "files": [
+                {
+                    "path": s.path,
+                    "content": s.content,
+                    "timestamp": s.timestamp,
+                    "checksum": s.checksum,
+                }
+                for s in snapshots
+            ],
+        }
+        try:
+            snapshot_file.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                from src.core.io_utils import atomic_write_json
+
+                logger.debug(
+                    "rollback_manager: attempting atomic_write_json for %s",
+                    snapshot_file,
+                )
+                ok = atomic_write_json(snapshot_file, snapshot_data, logger=logger)
+                if ok:
+                    logger.info(
+                        "Created snapshot %s with %d files", snapshot_id, len(snapshots)
+                    )
+                    return snapshot_id
+                logger.warning(
+                    "rollback_manager: atomic_write_json returned False for %s; falling back",
+                    snapshot_file,
+                )
+            except Exception:
+                import traceback
+
+                logger.debug(
+                    "rollback_manager: atomic_write_json unavailable or failed for %s; falling back\n%s",
+                    snapshot_file,
+                    traceback.format_exc(),
+                )
+
+            # Fallback: write via mkstemp -> os.replace + fsync to avoid
+            # exposing partially-written JSON. As a last resort, fall back to
+            # Path.write_text.
+            fd = None
+            tmp_path = None
+            try:
+                import tempfile
+
+                fd, tmp_path = tempfile.mkstemp(
+                    dir=str(snapshot_file.parent), suffix=".tmp"
+                )
+                try:
+                    with os.fdopen(fd, "w", encoding="utf-8") as f:
+                        fd = None
+                        json.dump(snapshot_data, f, indent=2)
+                        try:
+                            f.flush()
+                            os.fsync(f.fileno())
+                        except Exception:
+                            pass
+                    try:
+                        shutil.move(tmp_path, str(snapshot_file))
+                    except Exception:
+                        try:
+                            os.replace(tmp_path, str(snapshot_file))
+                        except Exception:
+                            # final fallback
+                            snapshot_file.write_text(
+                                json.dumps(snapshot_data, indent=2), encoding="utf-8"
+                            )
+                except Exception:
+                    try:
+                        if fd is not None:
+                            os.close(fd)
+                    except Exception:
+                        pass
+                    raise
+                logger.info(
+                    f"Created snapshot {snapshot_id} with {len(snapshots)} files"
+                )
+                return snapshot_id
+            except Exception as e:
+                logger.error(
+                    f"rollback_manager: failed to write snapshot {snapshot_id}: {e}"
+                )
+                try:
+                    if tmp_path and os.path.exists(tmp_path):
+                        os.unlink(tmp_path)
+                except Exception:
+                    pass
+                raise
+        except Exception as e:
+            logger.error(
+                f"rollback_manager: failed to write snapshot {snapshot_id}: {e}"
+            )
+            raise
+
+    def rollback(self, snapshot_id: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Rollback to a previous snapshot.
+
+        Args:
+            snapshot_id: ID of snapshot to restore (uses current if not provided)
+
+        Returns:
+            Status of rollback operation
+        """
+        snapshot_id = snapshot_id or self.current_snapshot
+
+        if not snapshot_id or snapshot_id not in self.snapshots:
+            # Try to load from disk
+            snapshot_file = self.snapshot_dir / f"{snapshot_id}.json"
+            if snapshot_file.exists():
+                try:
+                    data = json.loads(snapshot_file.read_text())
+                    snapshots = [
+                        FileSnapshot(
+                            path=f["path"],
+                            content=f["content"],
+                            timestamp=f["timestamp"],
+                            checksum=f["checksum"],
+                        )
+                        for f in data.get("files", [])
+                    ]
+                    self.snapshots[snapshot_id] = snapshots  # type: ignore[index]
+                except Exception as e:
+                    return {"ok": False, "error": f"Failed to load snapshot: {e}"}
+            else:
+                return {"ok": False, "error": f"Snapshot {snapshot_id} not found"}
+
+        snapshots = self.snapshots.get(snapshot_id, [])  # type: ignore[call-overload, arg-type]
+
+        restored_files = []
+        failed_files: list = []
+        for snap in snapshots:
+            try:
+                file_path = safe_resolve(snap.path, self.workdir)
+            except (PermissionError, ValueError):
+                logger.warning(
+                    f"rollback: path '{snap.path}' escapes workspace — skipping"
+                )
+                failed_files.append({"path": snap.path, "error": "path escapes workspace"})
+                continue
+            try:
+                # Create backup before restoring (best-effort; never abort on backup failure)
+                if file_path.exists():
+                    backup_path = file_path.with_suffix(file_path.suffix + ".backup")
+                    try:
+                        shutil.copy2(file_path, backup_path)
+                    except Exception as _backup_exc:
+                        logger.warning(
+                            f"rollback: could not create backup for {snap.path}: {_backup_exc}"
+                        )
+
+                # Restore content via mkstemp -> replace to avoid partial writes
+                file_path.parent.mkdir(parents=True, exist_ok=True)
+                try:
+                    import tempfile
+
+                    fd = None
+                    tmpf = None
+                    try:
+                        fd, tmpf = tempfile.mkstemp(
+                            dir=str(file_path.parent), suffix=".tmp"
+                        )
+                        with os.fdopen(fd, "w", encoding="utf-8") as f:
+                            fd = None
+                            f.write(snap.content)
+                            try:
+                                f.flush()
+                                os.fsync(f.fileno())
+                            except Exception:
+                                pass
+                        try:
+                            shutil.move(tmpf, str(file_path))
+                        except Exception:
+                            os.replace(tmpf, str(file_path))
+                        restored_files.append(snap.path)
+                    except Exception:
+                        try:
+                            if fd is not None:
+                                os.close(fd)
+                        except Exception:
+                            pass
+                        raise
+                except Exception as e:
+                    logger.error(f"Failed to restore {snap.path}: {e}")
+                    # D-4: collect failure and continue — don't leave remaining files
+                    # unrestored just because one file failed.
+                    failed_files.append({"path": snap.path, "error": str(e)})
+                    continue
+
+            except Exception as e:
+                logger.error(f"Failed to restore {snap.path}: {e}")
+                failed_files.append({"path": snap.path, "error": str(e)})
+                continue
+
+        logger.info(
+            f"Rolled back {len(restored_files)} files from snapshot {snapshot_id}"
+            + (f" ({len(failed_files)} failed)" if failed_files else "")
+        )
+
+        return {
+            "ok": len(failed_files) == 0,
+            "snapshot_id": snapshot_id,
+            "restored_files": restored_files,
+            "restored_count": len(restored_files),
+            "failed_files": failed_files,
+        }
+
+    def append_to_snapshot(self, snapshot_id: str, file_path: str) -> bool:
+        """
+        Add a file to an existing snapshot (for multi-file atomic step transactions).
+
+        If the file is already in the snapshot, it is skipped (already captured).
+
+        Args:
+            snapshot_id: The snapshot to extend.
+            file_path: Relative path to the file to add.
+
+        Returns:
+            True if the file was added, False if skipped or snapshot not found.
+        """
+        try:
+            path = safe_resolve(file_path, self.workdir)
+        except (PermissionError, ValueError):
+            logger.warning(
+                f"append_to_snapshot: path '{file_path}' escapes workspace — skipping"
+            )
+            return False
+        if not path.exists():
+            return False
+
+        # Load snapshot from memory or disk; create empty if first append
+        if snapshot_id not in self.snapshots:
+            snapshot_file = self.snapshot_dir / f"{snapshot_id}.json"
+            if snapshot_file.exists():
+                try:
+                    data = json.loads(snapshot_file.read_text())
+                    self.snapshots[snapshot_id] = [
+                        FileSnapshot(
+                            path=f["path"],
+                            content=f["content"],
+                            timestamp=f["timestamp"],
+                            checksum=f["checksum"],
+                        )
+                        for f in data.get("files", [])
+                    ]
+                except Exception as e:
+                    logger.warning(
+                        f"append_to_snapshot: failed to load {snapshot_id}: {e}"
+                    )
+                    return False
+            else:
+                # First file being added to this transaction — create empty entry
+                self.snapshots[snapshot_id] = []
+
+        existing_paths = {s.path for s in self.snapshots[snapshot_id]}
+        if file_path in existing_paths:
+            return False  # already captured
+
+        try:
+            content = path.read_text(encoding="utf-8")
+            self.snapshots[snapshot_id].append(
+                FileSnapshot(
+                    path=file_path,
+                    content=content,
+                    timestamp=datetime.now().isoformat(),
+                    checksum=self._compute_checksum(content),
+                )
+            )
+        except Exception as e:
+            logger.warning(f"append_to_snapshot: failed to read {file_path}: {e}")
+            return False
+
+        # Persist updated snapshot to disk
+        try:
+            snapshot_file = self.snapshot_dir / f"{snapshot_id}.json"
+            snapshot_data = {
+                "snapshot_id": snapshot_id,
+                "timestamp": datetime.now().isoformat(),
+                "files": [
+                    {
+                        "path": s.path,
+                        "content": s.content,
+                        "timestamp": s.timestamp,
+                        "checksum": s.checksum,
+                    }
+                    for s in self.snapshots[snapshot_id]
+                ],
+            }
+            try:
+                snapshot_file.parent.mkdir(parents=True, exist_ok=True)
+                try:
+                    from src.core.io_utils import atomic_write_json
+
+                    logger.debug(
+                        "rollback_manager.append: attempting atomic_write_json for %s",
+                        snapshot_file,
+                    )
+                    ok = atomic_write_json(snapshot_file, snapshot_data, logger=logger)
+                    if not ok:
+                        # mkstemp fallback for append persistence
+                        fd = None
+                        tmp_path = None
+                        try:
+                            import tempfile
+
+                            fd, tmp_path = tempfile.mkstemp(
+                                dir=str(snapshot_file.parent), suffix=".tmp"
+                            )
+                            try:
+                                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                                    fd = None
+                                    json.dump(snapshot_data, indent=2, fp=f)
+                                    try:
+                                        f.flush()
+                                        os.fsync(f.fileno())
+                                    except Exception:
+                                        pass
+                                try:
+                                    os.replace(tmp_path, str(snapshot_file))
+                                except Exception:
+                                    shutil.move(tmp_path, str(snapshot_file))
+                            except Exception:
+                                try:
+                                    if fd is not None:
+                                        os.close(fd)
+                                except Exception:
+                                    pass
+                                raise
+                        except Exception:
+                            try:
+                                if tmp_path and os.path.exists(tmp_path):
+                                    os.unlink(tmp_path)
+                            except Exception:
+                                pass
+                            # final fallback to Path.write_text
+                            snapshot_file.write_text(
+                                json.dumps(snapshot_data, indent=2), encoding="utf-8"
+                            )
+                except Exception:
+                    import traceback
+
+                    logger.debug(
+                        "rollback_manager.append: atomic_write_json unavailable for %s; falling back\n%s",
+                        snapshot_file,
+                        traceback.format_exc(),
+                    )
+                    # mkstemp fallback
+                    fd = None
+                    tmp_path = None
+                    try:
+                        import tempfile
+
+                        fd, tmp_path = tempfile.mkstemp(
+                            dir=str(snapshot_file.parent), suffix=".tmp"
+                        )
+                        try:
+                            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                                fd = None
+                                json.dump(snapshot_data, f, indent=2)
+                                try:
+                                    f.flush()
+                                    os.fsync(f.fileno())
+                                except Exception:
+                                    pass
+                            try:
+                                os.replace(tmp_path, str(snapshot_file))
+                            except Exception:
+                                shutil.move(tmp_path, str(snapshot_file))
+                        except Exception:
+                            try:
+                                if fd is not None:
+                                    os.close(fd)
+                            except Exception:
+                                pass
+                            raise
+                    except Exception:
+                        try:
+                            if tmp_path and os.path.exists(tmp_path):
+                                os.unlink(tmp_path)
+                        except Exception:
+                            pass
+                        # final fallback
+                        snapshot_file.write_text(
+                            json.dumps(snapshot_data, indent=2), encoding="utf-8"
+                        )
+            except Exception as e:
+                logger.warning(
+                    f"append_to_snapshot: failed to persist snapshot {snapshot_id}: {e}"
+                )
+        except Exception as e:
+            logger.warning(f"append_to_snapshot: failed to persist: {e}")
+
+        logger.debug(f"append_to_snapshot: added {file_path} to {snapshot_id}")
+        return True
+
+    def list_snapshots(self) -> List[Dict[str, Any]]:
+        """List all available snapshots."""
+        snapshots = []
+
+        for snapshot_file in sorted(self.snapshot_dir.glob("*.json"), reverse=True):
+            try:
+                data = json.loads(snapshot_file.read_text())
+                snapshots.append(
+                    {
+                        "snapshot_id": data["snapshot_id"],
+                        "timestamp": data["timestamp"],
+                        "file_count": len(data.get("files", [])),
+                    }
+                )
+            except Exception:
+                continue
+
+        return snapshots
+
+    def delete_snapshot(self, snapshot_id: str) -> bool:
+        """Delete a snapshot."""
+        snapshot_file = self.snapshot_dir / f"{snapshot_id}.json"
+
+        if snapshot_file.exists():
+            snapshot_file.unlink()
+            if snapshot_id in self.snapshots:
+                del self.snapshots[snapshot_id]
+            return True
+
+        return False
+
+    def cleanup_old_snapshots(self, keep_last: int = 5) -> int:
+        """Clean up old snapshots, keeping only the most recent ones."""
+        snapshots = sorted(
+            self.snapshot_dir.glob("*.json"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+
+        deleted = 0
+        for snapshot_file in snapshots[keep_last:]:
+            try:
+                snapshot_file.unlink()
+                deleted += 1
+            except Exception:
+                pass
+
+        return deleted
+
+    def snapshot_step(self, step_id: str, file_paths: List[str]) -> str:
+        """
+        Snapshot files for a specific DAG step.
+
+        Args:
+            step_id: DAG step ID (e.g., "step_0", "step_1")
+            file_paths: Files modified by this step
+
+        Returns:
+            Snapshot ID (format: "step_{id}_{timestamp}")
+        """
+        snapshot_id = f"dag_{step_id}_{datetime.now().strftime('%H%M%S_%f')}"
+
+        self._step_to_snapshot[step_id] = snapshot_id
+
+        return self.snapshot_files(file_paths, snapshot_id)
+
+    def rollback_step(self, step_id: str) -> Dict[str, Any]:
+        """
+        Rollback a specific DAG step.
+
+        This restores only files modified by the specified step,
+        leaving other steps' changes intact.
+        """
+        snapshot_id = self._step_to_snapshot.get(step_id)
+        if not snapshot_id:
+            logger.warning(f"rollback_step: no snapshot found for {step_id}")
+            return {"status": "no_snapshot", "step_id": step_id}
+
+        return self.rollback(snapshot_id)
+
+    def rollback_wave(self, wave_step_ids: List[str]) -> Dict[str, Any]:
+        """
+        Rollback all steps in a wave (for parallel read/sequential write).
+
+        If Wave N fails verification, rollback all steps in that wave.
+        """
+        results = {}
+        for step_id in wave_step_ids:
+            results[step_id] = self.rollback_step(step_id)
+
+        return {"status": "wave_rollback_complete", "rolled_back": results}
+
+    def commit_step(self, step_id: str) -> None:
+        """
+        Commit a step's changes as permanent.
+
+        Removes the snapshot since changes are now final.
+        Called after verification passes.
+        """
+        snapshot_id = self._step_to_snapshot.pop(step_id, None)
+        if snapshot_id and snapshot_id in self.snapshots:
+            del self.snapshots[snapshot_id]
+
+            snapshot_file = self.snapshot_dir / f"{snapshot_id}.json"
+            if snapshot_file.exists():
+                snapshot_file.unlink()
+
+        logger.info(f"commit_step: {step_id} committed, snapshot removed")
+
+
+def create_rollback_manager(workdir: str) -> RollbackManager:
+    """Factory function to create a RollbackManager."""
+    return RollbackManager(workdir)

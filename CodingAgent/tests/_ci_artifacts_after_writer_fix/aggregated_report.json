@@ -1,0 +1,45 @@
+{
+  "total_runs_manifest": 3,
+  "timings_files_count": 3,
+  "sidecar_files_count": 0,
+  "runs_with_timings_count": 3,
+  "runs_with_sidecars_count": 0,
+  "session_store_exhausted": {
+    "total_events": 0,
+    "unique_runs": 0,
+    "percent_runs_affected": 0.0,
+    "elapsed_stats": {
+      "count": 0,
+      "min": null,
+      "max": null,
+      "mean": null,
+      "median": null,
+      "p95": null
+    }
+  },
+  "attempts_distribution": {},
+  "phase_counts": {
+    "ensure_working_dir": 3,
+    "begin_step_transaction": 9
+  },
+  "top_runs_by_sidecars": [],
+  "top_runs_by_exhausted_elapsed": [],
+  "per_phase_elapsed_stats": {
+    "ensure_working_dir": {
+      "count": 3,
+      "min": 0.00043702125549316406,
+      "max": 0.0005159378051757812,
+      "mean": 0.00047659873962402344,
+      "median": 0.000476837158203125,
+      "p95": 0.0005120277404785156
+    },
+    "begin_step_transaction": {
+      "count": 9,
+      "min": 0.0,
+      "max": 0.0,
+      "mean": 0.0,
+      "median": 0.0,
+      "p95": 0.0
+    }
+  }
+}

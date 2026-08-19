@@ -1,0 +1,547 @@
+"""Portable ToolRegistry with auto-discovery and plugin support.
+
+This module provides the single source of truth for tool storage.  It
+replaces the previously duplicated ``src/tools/registry.py`` (module-level
+dict) and the ``ToolRegistry`` class embedded in ``orchestrator.py``.
+
+Both old consumers continue to work — the orchestrator's ``ToolRegistry``
+class is now a thin wrapper that delegates here.
+
+Quick start for external projects::
+
+    from src.tools._registry import ToolRegistry, build_registry
+
+    registry = build_registry(working_dir="/path/to/project")
+    result = registry.call("read_file", path="src/main.py")
+
+Adding a custom tool without modifying any core file::
+
+    import my_module          # contains @tool-decorated functions
+    registry.discover(my_module)
+"""
+
+from __future__ import annotations
+
+import importlib
+import inspect
+import logging
+import os
+import threading
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional
+
+from src.tools._tool import TOOL_ATTR, ToolDefinition, PermissionKind
+
+logger = logging.getLogger(__name__)
+
+# P2-6: Maximum number of *plugin* tools that may be registered in a single
+# ToolRegistry instance.  Builtins and aliases are never counted against this
+# cap.  Override via the TOOL_POOL_MAX_PLUGINS environment variable.
+_DEFAULT_MAX_PLUGIN_TOOLS: int = 50
+
+# Modules that make up the built-in tool set.  Order is irrelevant.
+_BUILTIN_MODULES = [
+    "src.tools.file_tools",
+    "src.tools.git_tools",
+    "src.tools.verification_tools",
+    "src.tools.todo_tools",
+    "src.tools.subagent_tools",
+    # Consolidated repo tools (replaces repo_tools, repo_analysis_tools,
+    # repo_overview_tool, repo_summary — those files are now consolidated
+    # into repo_read_tools / repo_write_tools)
+    "src.tools.repo_read_tools",
+    "src.tools.repo_write_tools",
+    "src.tools.patch_tools",
+    "src.tools.state_tools",
+    "src.tools.system_tools",
+    "src.tools.memory_tools",
+    "src.tools.interaction_tools",
+    "src.tools.guardrails",
+    "src.tools.web_tools",
+    "src.tools.ast_tools",
+    "src.tools.project_tools",
+    "src.tools.batch_tools",
+    "src.tools.skill_tools",
+    "src.tools.plan_mode_tools",
+    "src.tools.rollback_tools",
+]
+
+# Modules that require optional dependencies (e.g. pygls for LSP).
+# ImportError on these is logged at DEBUG level rather than WARNING
+# to avoid alarming users who have not installed the optional extra.
+_OPTIONAL_MODULES: frozenset[str] = frozenset({
+    "src.tools.lsp_tools",
+})
+
+# Built-in aliases: alias_name -> canonical_name
+_BUILTIN_ALIASES: Dict[str, str] = {
+    "fs.read": "read_file",
+    "fs.write": "write_file",
+    "fs.list": "list_files",
+}
+
+
+class ToolRegistry:
+    """Thread-safe registry of agent tools.
+
+    Supports manual registration (``register()``) and automatic discovery of
+    ``@tool``-decorated functions via ``discover(module)``.
+
+    Parameters
+    ----------
+    max_plugin_tools:
+        Maximum number of *plugin* tools (``origin='plugin'``) allowed in
+        this registry.  Attempts to register beyond the cap raise
+        ``RuntimeError``.  Defaults to the ``TOOL_POOL_MAX_PLUGINS``
+        environment variable if set, otherwise ``_DEFAULT_MAX_PLUGIN_TOOLS``
+        (50).  Pass ``0`` to disable the cap entirely.
+    """
+
+    def __init__(self, max_plugin_tools: Optional[int] = None) -> None:
+        self._tools: Dict[str, Dict[str, Any]] = {}
+        self._lock = threading.Lock()
+        # TASK-03: track origin ('builtin' or 'plugin') for each registered name
+        self._origins: Dict[str, str] = {}
+        # P2-6: plugin tool cap
+        if max_plugin_tools is None:
+            try:
+                max_plugin_tools = int(os.environ.get("TOOL_POOL_MAX_PLUGINS", _DEFAULT_MAX_PLUGIN_TOOLS))
+            except (ValueError, TypeError):
+                max_plugin_tools = _DEFAULT_MAX_PLUGIN_TOOLS
+        self._max_plugin_tools: int = max(0, max_plugin_tools)
+        self._plugin_count: int = 0
+
+    # ------------------------------------------------------------------
+    # Registration
+    # ------------------------------------------------------------------
+
+    def register(
+        self,
+        name: str,
+        fn: Callable[..., Any],
+        side_effects: Optional[List[str]] = None,
+        description: str = "",
+        tags: Optional[List[str]] = None,
+        origin: str = "builtin",
+    ) -> None:
+        """Manually register a callable under *name*.
+
+        Parameters
+        ----------
+        name:
+            The tool name the agent will reference.
+        fn:
+            The callable to invoke.
+        side_effects:
+            List of side-effect tokens, e.g. ``["write"]`` or ``["execute"]``.
+        description:
+            Human-readable description used in the OpenAI function schema.
+        tags:
+            Toolset membership hints (e.g. ``["coding", "review"]``).
+        origin:
+            ``'builtin'`` (default) or ``'plugin'``.  Plugin registrations that
+            attempt to overwrite a builtin name raise ``ValueError`` (TASK-03).
+        """
+        entry: Dict[str, Any] = {
+            "fn": fn,
+            "side_effects": list(side_effects or []),
+            "description": description or (fn.__doc__ or "").strip().split("\n")[0],
+            "tags": list(tags or []),
+            "name": name,
+        }
+        # Hold the lock for the entire check-and-register sequence to prevent
+        # TOCTOU races between the builtin-conflict check, the plugin-cap check,
+        # and the final write.
+        with self._lock:
+            existing_origin = self._origins.get(name)
+
+            # TASK-03: Reject plugin attempts to overwrite builtin names
+            if existing_origin == "builtin" and origin == "plugin":
+                raise ValueError(
+                    f"Plugin tool {name!r} conflicts with a built-in tool of the same name. "
+                    "Rename the plugin tool or remove it from your config."
+                )
+
+            # P2-6: Enforce plugin-tool cap (new names only; re-registering an
+            # existing plugin name does not count against the cap a second time).
+            if origin == "plugin":
+                is_new_plugin = existing_origin != "plugin"
+                if is_new_plugin and self._max_plugin_tools > 0 and self._plugin_count >= self._max_plugin_tools:
+                    raise RuntimeError(
+                        f"ToolPool cap reached: cannot register plugin tool {name!r}. "
+                        f"The registry already contains {self._plugin_count} plugin tool(s) "
+                        f"(cap={self._max_plugin_tools}). Raise TOOL_POOL_MAX_PLUGINS or "
+                        "reduce the number of plugin tools."
+                    )
+
+            self._tools[name] = entry
+            self._origins[name] = origin
+            # P2-6: track plugin count (only increment for newly added plugin names)
+            if origin == "plugin" and existing_origin != "plugin":
+                self._plugin_count += 1
+
+    def register_definition(
+        self, defn: ToolDefinition, origin: str = "builtin"
+    ) -> None:
+        """Register from a ``ToolDefinition`` (created by ``@tool``)."""
+        self.register(
+            name=defn.name,
+            fn=defn.fn,
+            side_effects=defn.side_effects,
+            description=defn.description,
+            tags=defn.tags,
+            origin=origin,
+        )
+        # Store the ToolDefinition on the entry so tool_preflight.py can
+        # access validate_args() without re-importing _tool.py at call time.
+        with self._lock:
+            if defn.name in self._tools:
+                self._tools[defn.name]["__tool_meta__"] = defn
+
+    def alias(self, alias_name: str, canonical_name: str) -> None:
+        """Register *alias_name* as an alias for an already-registered tool."""
+        with self._lock:
+            canonical = self._tools.get(canonical_name)
+        if canonical is None:
+            logger.debug(
+                "alias: canonical tool '%s' not found, skipping", canonical_name
+            )
+            return
+        entry = dict(canonical)
+        entry["name"] = alias_name
+        with self._lock:
+            self._tools[alias_name] = entry
+
+    # ------------------------------------------------------------------
+    # Auto-discovery
+    # ------------------------------------------------------------------
+
+    def discover(self, module: Any, origin: str = "builtin") -> int:
+        """Find all ``@tool``-decorated callables in *module* and register them.
+
+        Parameters
+        ----------
+        module:
+            An already-imported Python module object.
+        origin:
+            ``'builtin'`` (default) or ``'plugin'``.  Plugin tools that share a
+            name with an existing builtin raise ``ValueError`` (TASK-03).
+
+        Returns
+        -------
+        int
+            Number of tools discovered and registered.
+        """
+        count = 0
+        for attr_name in dir(module):
+            try:
+                obj = getattr(module, attr_name, None)
+            except Exception:
+                continue
+            if callable(obj) and hasattr(obj, TOOL_ATTR):
+                defn: ToolDefinition = getattr(obj, TOOL_ATTR)
+                try:
+                    self.register_definition(defn, origin=origin)
+                    count += 1
+                except ValueError as conflict_err:
+                    logger.warning("discover: %s", conflict_err)
+        return count
+
+    def discover_module_name(self, module_name: str, origin: str = "builtin") -> int:
+        """Import *module_name* then call ``discover()`` on it.
+
+        Failures are logged at WARNING level and do not propagate so that a
+        missing optional dependency does not prevent the registry from loading.
+        """
+        try:
+            mod = importlib.import_module(module_name)
+            return self.discover(mod, origin=origin)
+        except ImportError as exc:
+            _log_level = "debug" if module_name in _OPTIONAL_MODULES else "warning"
+            getattr(logger, _log_level)(
+                "discover_module_name: could not import '%s': %s", module_name, exc
+            )
+            return 0
+        except Exception as exc:
+            logger.warning("discover_module_name: error in '%s': %s", module_name, exc)
+            return 0
+
+    # ------------------------------------------------------------------
+    # Lookup
+    # ------------------------------------------------------------------
+
+    def get(self, name: str) -> Optional[Dict[str, Any]]:
+        """Return the tool entry dict or *None* if not found."""
+        with self._lock:
+            return self._tools.get(name)
+
+    def get_permission_kind(self, name: str) -> PermissionKind:
+        """Return the PermissionKind for *name*, or PermissionKind.NONE if unknown.
+
+        Reads the ``permission_kind`` field from the ToolDefinition attached to
+        the tool's function, falling back to NONE for tools that predate TASK-3.
+        Also accepts plain-string ``permission_kind`` values stored in LSP-style
+        schema dicts.
+        """
+        entry = self.get(name)
+        if entry is None:
+            return PermissionKind.NONE
+        # Check ToolDefinition attribute (decorator-registered tools)
+        fn = entry.get("fn")
+        if fn is not None:
+            defn: Optional[ToolDefinition] = getattr(fn, TOOL_ATTR, None)
+            if defn is not None:
+                return defn.permission_kind
+        # Check plain-string field (LSP-style schema dicts)
+        raw = entry.get("permission_kind")
+        if raw:
+            try:
+                return PermissionKind(raw)
+            except ValueError:
+                pass
+        return PermissionKind.NONE
+
+    def list(self) -> List[str]:
+        """Return all registered tool names."""
+        with self._lock:
+            return list(self._tools.keys())
+
+    def call(self, name: str, **kwargs: Any) -> Any:
+        """Call the tool registered as *name* with keyword arguments.
+
+        Raises
+        ------
+        KeyError
+            If no tool is registered under *name*.
+        """
+        entry = self.get(name)
+        if entry is None:
+            raise KeyError(f"Tool not found: {name!r}")
+        return entry["fn"](**kwargs)
+
+    def get_openai_functions(self) -> List[Dict[str, Any]]:
+        """Return all tools formatted as OpenAI function-calling schemas.
+
+        Aliases share the same underlying function and therefore produce
+        identical schema entries (same canonical name). We deduplicate by
+        the schema function name so the LLM receives each tool exactly once.
+        """
+        with self._lock:
+            items = list(self._tools.items())
+        seen: set = set()
+        result = []
+        for name, entry in items:
+            fn = entry.get("fn")
+            if not fn:
+                continue
+            defn = getattr(fn, TOOL_ATTR, None)
+            if defn is not None:
+                schema = defn.to_openai_schema()
+            else:
+                # Fallback: build minimal schema from signature
+                schema = _minimal_schema(name, fn, entry.get("description", ""))
+            fn_name = schema.get("function", {}).get("name") or name
+            if fn_name in seen:
+                continue
+            seen.add(fn_name)
+            result.append(schema)
+        return result
+
+    def filter_by_tags(self, *tags: str) -> "ToolRegistry":
+        """Return a new registry containing only tools that match any of *tags*."""
+        sub = ToolRegistry()
+        with self._lock:
+            items = list(self._tools.items())
+        for name, entry in items:
+            tool_tags = set(entry.get("tags", []))
+            if tool_tags & set(tags):
+                with sub._lock:
+                    sub._tools[name] = entry
+        return sub
+
+    def filter_by_names(self, names: List[str]) -> "ToolRegistry":
+        """Return a new registry restricted to the given tool *names*."""
+        sub = ToolRegistry()
+        with self._lock:
+            for n in names:
+                if n in self._tools:
+                    sub._tools[n] = self._tools[n]
+        return sub
+
+    def __len__(self) -> int:
+        with self._lock:
+            return len(self._tools)
+
+    def __contains__(self, name: str) -> bool:
+        with self._lock:
+            return name in self._tools
+
+    @property
+    def plugin_count(self) -> int:
+        """Number of plugin tools currently registered."""
+        with self._lock:
+            return self._plugin_count
+
+    @property
+    def max_plugin_tools(self) -> int:
+        """The cap on plugin tools for this registry (0 = unlimited)."""
+        return self._max_plugin_tools
+
+
+# ---------------------------------------------------------------------------
+# Schema helper
+# ---------------------------------------------------------------------------
+
+
+def _minimal_schema(name: str, fn: Callable, description: str) -> dict:
+    params: dict = {"type": "object", "properties": {}}
+    required: list = []
+    try:
+        sig = inspect.signature(fn)
+        for pname, param in sig.parameters.items():
+            if pname in ("kwargs", "self", "cls", "workdir"):
+                continue
+            ptype = "string"
+            if param.annotation != inspect.Parameter.empty:
+                ann = str(param.annotation).lower()
+                if "int" in ann:
+                    ptype = "integer"
+                elif "float" in ann or "double" in ann:
+                    ptype = "number"
+                elif "bool" in ann:
+                    ptype = "boolean"
+                elif "list" in ann or "array" in ann:
+                    ptype = "array"
+            params["properties"][pname] = {"type": ptype}
+            if param.default is inspect.Parameter.empty:
+                required.append(pname)
+    except Exception:
+        logger.debug("_minimal_schema: failed to inspect signature for tool %r; LLM will receive an empty schema", name, exc_info=True)
+    schema = {
+        "type": "function",
+        "function": {
+            "name": name,
+            "description": description,
+            "parameters": params,
+        },
+    }
+    if required:
+        schema["function"]["parameters"]["required"] = required  # type: ignore[index]
+    return schema
+
+
+# ---------------------------------------------------------------------------
+# build_registry() — one-call setup for external projects
+# ---------------------------------------------------------------------------
+
+
+def build_registry(
+    working_dir: Optional[str] = None,
+    extra_modules: Optional[List[Any]] = None,
+    include_echo: bool = False,
+) -> ToolRegistry:
+    """Build and return a fully populated ``ToolRegistry``.
+
+    This is the recommended entry point for projects that want to use the
+    CodingAgent tool suite.  It:
+
+    1. Optionally configures the default working directory.
+    2. Discovers and registers all built-in tools via ``@tool`` decorators.
+    3. Registers built-in aliases (``fs.read``, ``fs.write``, ``fs.list``).
+    4. Optionally discovers tools from caller-provided *extra_modules*.
+
+    Parameters
+    ----------
+    working_dir:
+        Absolute path to the project root.  When provided,
+        ``tools_config.configure(default_workdir=...)`` is called so that
+        tool calls without an explicit ``workdir=`` argument use this path.
+    extra_modules:
+        Additional Python module objects whose ``@tool``-decorated functions
+        should be registered.  Pass your own modules here to add tools
+        without touching any core file.
+    include_echo:
+        Register the test-only ``echo`` tool.  Enabled automatically in
+        unit-test environments.
+
+    Returns
+    -------
+    ToolRegistry
+        A ready-to-use registry.
+
+    Example
+    -------
+    ::
+
+        from src.tools import build_registry
+
+        # Minimal — uses cwd as working directory
+        registry = build_registry()
+
+        # With explicit workdir
+        registry = build_registry(working_dir="/path/to/project")
+
+        # With custom tools
+        import my_tools
+        registry = build_registry(extra_modules=[my_tools])
+    """
+    if working_dir is not None:
+        from src.tools.tools_config import configure
+
+        configure(default_workdir=Path(working_dir))
+
+    reg = ToolRegistry()
+
+    # Discover all built-in tool modules
+    for mod_name in _BUILTIN_MODULES:
+        reg.discover_module_name(mod_name)
+
+    # Register built-in aliases
+    for alias, canonical in _BUILTIN_ALIASES.items():
+        reg.alias(alias, canonical)
+
+    # TASK-16: Also register all aliases from tools_config.TOOL_ALIASES so
+    # the LLM can use short forms (read, write, edit, etc.) transparently.
+    try:
+        from src.tools.tools_config import TOOL_ALIASES as _ta
+
+        for _alias, _canonical in _ta.items():
+            reg.alias(_alias, _canonical)
+    except Exception as _alias_exc:
+        logger.debug("build_registry: could not load TOOL_ALIASES: %s", _alias_exc)
+
+    if include_echo:
+
+        def _echo(text: str, **kwargs: Any) -> dict:  # type: ignore[misc]
+            return {"status": "ok", "output": text}
+
+        reg.register(
+            "echo", _echo, description="echo(text) -> Return the provided text"
+        )
+
+    # Caller-supplied extension modules
+    for mod in extra_modules or []:
+        try:
+            # TASK-03: caller-supplied modules are treated as plugins
+            reg.discover(mod, origin="plugin")
+        except Exception as exc:
+            logger.warning("build_registry: discover failed for %r: %s", mod, exc)
+
+    # Load plugin tools declared in config (plugin_tools key in providers.json /
+    # .agent/config.json).  Each entry is a dotted module path whose @tool-decorated
+    # functions are discovered at startup.
+    try:
+        from src.core.config_loader import get as _cfg_get
+
+        _plugin_paths: List[Any] = _cfg_get("plugin_tools") or []
+        for _plugin in _plugin_paths:
+            if isinstance(_plugin, str):
+                # TASK-03: mark as plugin so conflicts with builtins are rejected
+                reg.discover_module_name(_plugin, origin="plugin")
+            elif hasattr(_plugin, "__name__"):
+                reg.discover(_plugin, origin="plugin")
+    except Exception as _plugin_exc:
+        logger.debug("build_registry: plugin loading skipped: %s", _plugin_exc)
+
+    logger.debug("build_registry: registered %d tools", len(reg))
+    return reg

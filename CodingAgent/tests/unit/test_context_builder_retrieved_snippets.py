@@ -1,0 +1,68 @@
+from src.core.context.context_builder import ContextBuilder
+
+# ruff: noqa: E501
+import json
+
+
+def test_context_builder_uses_summary_cache(tmp_path):
+    # prepare .codingAgent with file_summaries.json
+    ac = tmp_path / ".codingAgent"
+    ac.mkdir(parents=True, exist_ok=True)
+    summaries = {"src/main.py": "SHORT SUMMARY FROM CACHE"}
+    (ac / "file_summaries.json").write_text(json.dumps(summaries))
+
+    # Pass working_dir so the builder finds the cache without needing to mock cwd (NEW-10 fix)
+    builder = ContextBuilder(working_dir=str(tmp_path))
+    identity = "I am agent"
+    role = "assistant"
+    skills = []
+    task = "Do task"
+    tools = []
+    # retrieved snippet provides a different snippet; builder should prefer cache
+    retrieved = [{"file_path": "src/main.py", "snippet": "RAW LONG FILE CONTENT"}]
+
+    msgs = builder.build_prompt(
+        role_name=role,
+        active_skills=skills,
+        task_description=task,
+        tools=tools,
+        conversation=[],
+        retrieved_snippets=retrieved,
+    )
+    system = msgs[0]["content"]
+    assert "SHORT SUMMARY FROM CACHE" in system
+    assert "RAW LONG FILE CONTENT" not in system
+
+
+def test_context_builder_filters_retrieved_snippets_through_context_controller(
+    tmp_path,
+):
+    ac = tmp_path / ".codingAgent"
+    ac.mkdir(parents=True, exist_ok=True)
+
+    builder = ContextBuilder(working_dir=str(tmp_path))
+    retrieved = [
+        {"file_path": "src/keep.py", "snippet": "keep content"},
+        {"file_path": "src/drop.py", "snippet": "drop content"},
+    ]
+
+    class _FakeController:
+        def enforce_budget(self, file_descs, conversation, system_prompt):
+            assert {d["path"] for d in file_descs} == {"src/keep.py", "src/drop.py"}
+            assert conversation == []
+            assert isinstance(system_prompt, str)
+            return ([{"path": "src/keep.py"}], [{"path": "src/drop.py"}])
+
+    msgs = builder.build_prompt(
+        role_name="assistant",
+        active_skills=[],
+        task_description="Do task",
+        tools=[],
+        conversation=[],
+        retrieved_snippets=retrieved,
+        context_controller=_FakeController(),
+    )
+
+    system = msgs[0]["content"]
+    assert "keep content" in system
+    assert "drop content" not in system
