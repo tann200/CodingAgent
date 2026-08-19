@@ -25,6 +25,7 @@ from src.server.server_config import (
     extract_admin_token_from_headers,
     metrics_basic_auth_valid,
     read_sse_adapter_settings,
+    validate_server_exposure,
 )
 from src.server.scheduler_endpoints import (
     load_scheduler_worker,
@@ -338,6 +339,16 @@ async def update_scheduler_job_interval(name: str, request: Request):
 @app.websocket("/ws/session/{session_id}")
 async def websocket_session_events(session_id: str, websocket: WebSocket):
     """WebSocket endpoint — delegates to websocket_handler for full logic."""
+    admin_token = _getenv("CODINGAGENT_ADMIN_TOKEN", "CODING_AGENT_ADMIN_TOKEN")
+    if admin_token:
+        inc_admin_auth_counter("attempts")
+        token = extract_admin_token_from_headers(websocket.headers)
+        if not token or not hmac.compare_digest(token, admin_token):
+            inc_admin_auth_counter("failures")
+            await websocket.close(code=1008)
+            return
+        inc_admin_auth_counter("successes")
+
     if event_bus is None:
         try:
             await websocket.close(code=1011)
@@ -349,6 +360,8 @@ async def websocket_session_events(session_id: str, websocket: WebSocket):
 
 def run_server(host: str = "127.0.0.1", port: int = 8000):
     """Run the HTTP/SSE server."""
+    admin_token = _getenv("CODINGAGENT_ADMIN_TOKEN", "CODING_AGENT_ADMIN_TOKEN")
+    validate_server_exposure(host, admin_token)
     uvicorn.run(app, host=host, port=port, log_level="info")
 
 

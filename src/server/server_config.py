@@ -3,9 +3,33 @@
 from __future__ import annotations
 
 import base64
+import ipaddress
 import os
 from typing import Mapping, Optional, Tuple
 
+
+
+_LOOPBACK_HOSTNAMES = {"localhost", "ip6-localhost"}
+
+
+def is_loopback_bind(host: str) -> bool:
+    """Return whether *host* restricts the server to the local machine."""
+    normalized = host.strip().lower().strip("[]")
+    if normalized in _LOOPBACK_HOSTNAMES:
+        return True
+    try:
+        return ipaddress.ip_address(normalized).is_loopback
+    except ValueError:
+        return False
+
+
+def validate_server_exposure(host: str, admin_token: Optional[str]) -> None:
+    """Reject unauthenticated binds that expose agent tooling off-machine."""
+    if not is_loopback_bind(host) and not admin_token:
+        raise RuntimeError(
+            "Refusing unauthenticated non-loopback bind. Set "
+            "CODINGAGENT_ADMIN_TOKEN or bind the server to 127.0.0.1/::1."
+        )
 
 
 def read_sse_adapter_settings(environ: Optional[Mapping[str, str]] = None) -> Tuple[int, int, str]:
