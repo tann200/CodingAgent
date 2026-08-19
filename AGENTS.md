@@ -100,7 +100,7 @@ With conditional routing for: fast-path, overflow, debug, replan, delegation, wa
 - **`Any | None` return types** — When a function uses `last_response = None` with `return last_response` after a loop, annotate the return type as `Optional[Response]` (not `Response`).
 - **`isinstance` + index access** — `ch[0]` after `isinstance(ch, (list, tuple))` narrows to `tuple[()]` in pyright; use `# type: ignore[index]` or restructure the check.
 - **Optional return from retry functions** — Always guard `response is None` before accessing `.json()`, `.status_code`, etc. on the return of retry wrappers.
-- **Phase 5d done** (plan_validator re-enabled in fast-path graph). Still frozen: replan, debug, delegation, analyst_delegation, wait_for_user. Protocol Plan A (TUI mixins) is done; **Plan B (pyright errors) is complete — 0 remaining across src/.**
+- **Fast-path active nodes** — perception, analysis, planning, plan_validator, wait_for_user, execution, step_controller, verification, evaluation, and memory_sync. Still frozen: replan, debug, delegation, analyst_delegation. Approval-required routes must never bypass wait_for_user.
 - **Bridge handler key strategy** — Defensive dual-key lookups: `payload.get("snake_case") or payload.get("camelCase", default)`. Typed event field names are preferred when they differ semantically (e.g., `reason` vs `error_type`).
 - **Test event names must match typed events** — After Phase 5 migration, old string event names changed. Verify `subscribe()` names match the `_EVENT_IMPORT_PATHS` keys in `event_bus.py` (e.g., `"provider.model.missing"` not `"provider.config.missing"`).
 

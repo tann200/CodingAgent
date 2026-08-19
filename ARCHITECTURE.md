@@ -595,15 +595,10 @@ flowchart TD
     WAIT --> P
 
     subgraph frozen["Frozen Nodes (Fast-Path Mode)"]
-        A
         AD
-        PL
-        PV
         RP
         DB
-        SC
         DL
-        WAIT
         style frozen stroke-dasharray: 5 5, fill: #f5f5f5
     end
 ```
@@ -611,7 +606,9 @@ flowchart TD
 ### Pipeline Paths
 
 ```
-Fast-path (stabilization): perception → execution → verification → evaluation → memory_sync
+Fast-path (stabilization): perception → analysis/planning → plan_validator
+                           → wait_for_user/execution → step_controller
+                           → verification → evaluation → memory_sync
 Full:     perception → analysis → planning → plan_validator → execution → verification → evaluation → memory_sync
 Frontier: perception → frontier_loop → verification → evaluation → memory_sync
 Overflow: perception → memory_sync → perception (context compaction)
@@ -623,8 +620,10 @@ Overflow: perception → memory_sync → perception (context compaction)
 
 The codebase is in Fast-Path stabilization mode. A compile-time flag `_USE_FULL_GRAPH` in `src/core/orchestration/graph/builder.py` controls which graph is active:
 
-- `_USE_FULL_GRAPH = False` (default) — Only the 6-node Fast-Path compiles: `perception → execution → verification → evaluation → memory_sync`. Complex cognitive nodes (analysis, planning, plan_validator, replan, debug, delegation, analyst_delegation, wait_for_user, step_controller) are frozen and excluded. All routing bypasses from frozen nodes route to the nearest live Fast-Path node.
+- `_USE_FULL_GRAPH = False` (default) — The 10-node Fast-Path compiles: `perception`, `analysis`, `planning`, `plan_validator`, `wait_for_user`, `execution`, `step_controller`, `verification`, `evaluation`, and `memory_sync`. `replan`, `debug`, `delegation`, and `analyst_delegation` remain frozen; their routes use explicit fallbacks.
 - `_USE_FULL_GRAPH = True` — All 16 nodes are active (original full graph).
+
+The approval boundary is present in both graph variants: routes that require user approval must enter `wait_for_user`, never jump directly to `execution`.
 
 To re-enable a frozen node, switch `_USE_FULL_GRAPH = True` and verify against all contract tests in `tests/unit/test_fast_path_locks.py` and `tests/unit/test_fast_path_event_ordering.py`.
 
