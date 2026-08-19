@@ -7,6 +7,7 @@ Implements ACP/MCP compliant state hydration:
 - session.hydrated: AgentSessionManager responds with full state
 """
 
+import copy
 import logging
 import threading
 import time
@@ -148,6 +149,7 @@ class AgentSessionManager:
         files_read: Optional[List[str]] = None,
     ) -> None:
         """Update the current session state (for hydration)."""
+        pending_p2p = self.flush_pending_p2p()
         with self._session_state_lock:
             if self._current_session_state is None:
                 self._current_session_state = SessionState()
@@ -174,25 +176,24 @@ class AgentSessionManager:
             if files_read is not None:
                 state.files_read = files_read
 
-            # Sync pending P2P messages (safe to call here now)
-            state.pending_p2p = self.flush_pending_p2p()
+            state.pending_p2p = pending_p2p
 
     def get_session_state(self) -> SessionState:
-        """Get current session state for hydration."""
+        """Get an isolated snapshot of the current state for hydration."""
+        pending_p2p = self.flush_pending_p2p()
         with self._session_state_lock:
             if self._current_session_state is None:
                 self._current_session_state = SessionState()
                 self._current_session_state.session_id = "default"
-            
+
             # Snapshot active agents under the same lock for consistency
             state = self._current_session_state
             state.active_agents = {
                 k: v for k, v in self._sessions.items() if v.status == "running"
             }
-            
-            # Sync pending P2P messages (safe to call here now)
-            state.pending_p2p = self.flush_pending_p2p()
-            return state
+
+            state.pending_p2p = pending_p2p
+            return copy.deepcopy(state)
 
     @classmethod
     def get_instance(cls) -> "AgentSessionManager":

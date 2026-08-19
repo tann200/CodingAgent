@@ -76,3 +76,27 @@ def test_save_snapshot_uses_fallback_aware_sidecar_writer(tmp_path: Path):
     assert snapshot_payload is not None
     decoded = json.loads(snapshot_payload)
     assert decoded["state_json"] == '{"state": true}'
+
+
+def test_revert_session_refuses_snapshot_target_outside_session_directory(
+    tmp_path: Path,
+):
+    store = JsonlSessionStore(workdir=str(tmp_path))
+    outside = tmp_path / "outside.jsonl"
+    outside.write_text("must remain intact\n", encoding="utf-8")
+    malicious_snapshot = json.dumps({"_file": str(outside), "_offset": 0})
+
+    with patch.object(store, "get_snapshot", return_value=malicious_snapshot):
+        store.revert_session("s1", "snap")
+
+    assert outside.read_text(encoding="utf-8") == "must remain intact\n"
+
+
+def test_revert_session_handles_target_removed_before_open(tmp_path: Path):
+    store = JsonlSessionStore(workdir=str(tmp_path))
+    sessions_dir = store._get_sessions_dir()
+    target = sessions_dir / "s1.jsonl"
+    snapshot = json.dumps({"_file": str(target), "_offset": 0})
+
+    with patch.object(store, "get_snapshot", return_value=snapshot):
+        store.revert_session("s1", "snap")

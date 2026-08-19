@@ -95,6 +95,24 @@ class TestAgentSessionManagerHydration:
         assert state.task == "Initial task"
         assert state.files_modified == ["/file1.py"]
 
+    def test_get_session_state_returns_isolated_snapshot(self):
+        manager = AgentSessionManager()
+        manager.update_session_state(
+            session_id="isolated",
+            message_history=[{"role": "user", "content": "original"}],
+            files_modified=["original.py"],
+        )
+
+        snapshot = manager.get_session_state()
+        snapshot.session_id = "mutated"
+        snapshot.message_history[0]["content"] = "mutated"
+        snapshot.files_modified.append("mutated.py")
+
+        current = manager.get_session_state()
+        assert current.session_id == "isolated"
+        assert current.message_history[0]["content"] == "original"
+        assert current.files_modified == ["original.py"]
+
     def test_hydration_handler_subscribes_to_event(self):
         """Test that hydration handler subscribes to session.request_state."""
         bus = EventBus()

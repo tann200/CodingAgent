@@ -243,12 +243,12 @@ class JsonlSessionStore:
 
     def _read_all_records(self, session_id: str) -> List[Dict[str, Any]]:
         """Read and parse all records across all rotated files for *session_id*.
-        
+
         Limits reading to _MAX_RECORDS to prevent OOM issues.
         """
         records: List[Dict[str, Any]] = []
         records_read = 0
-        
+
         for fpath in self._session_files(session_id):
             if records_read >= self._MAX_RECORDS:
                 logger.warning(
@@ -256,7 +256,7 @@ class JsonlSessionStore:
                     self._MAX_RECORDS, session_id
                 )
                 break
-                
+
             try:
                 # Use a shared/read lock when reading to avoid races with
                 # concurrent writers in other processes.
@@ -296,13 +296,13 @@ class JsonlSessionStore:
                                 )
             except Exception as exc:
                 logger.warning("JsonlSessionStore: could not read %s: %s", fpath, exc)
-        
+
         if records_read >= self._MAX_RECORDS:
             logger.warning(
                 "JsonlSessionStore: session %s truncated to %d records (max: %d)",
                 session_id, records_read, self._MAX_RECORDS
             )
-        
+
         return records
 
     # ------------------------------------------------------------------
@@ -400,23 +400,41 @@ class JsonlSessionStore:
             )
             return
 
-        if not target_file.exists():
-            logger.debug(
-                "JsonlSessionStore.revert_session: target file %s gone, no-op",
-                target_file,
-            )
-            return
-
         with self._session_lock(session_id):
+            sessions_dir = self._get_sessions_dir().resolve()
             try:
-                with target_file.open("r+b") as f:
+                resolved_target = target_file.resolve()
+            except (OSError, RuntimeError, ValueError) as exc:
+                logger.error(
+                    "JsonlSessionStore.revert_session: invalid target path %s: %s",
+                    target_file,
+                    exc,
+                )
+                return
+
+            valid_name = (
+                resolved_target.name == f"{session_id}.jsonl"
+                or (
+                    resolved_target.name.startswith(f"{session_id}.")
+                    and resolved_target.name.endswith(".jsonl")
+                )
+            )
+            if resolved_target.parent != sessions_dir or not valid_name:
+                logger.error(
+                    "JsonlSessionStore.revert_session: refusing unsafe target %s",
+                    resolved_target,
+                )
+                return
+
+            try:
+                with resolved_target.open("r+b") as f:
                     f.truncate(target_offset)
                 # If the active file has been rotated since the snapshot,
                 # truncating the old (rotated) file is not enough — the
                 # current active file also needs to be reset so subsequent
                 # appends don't mix old + new data.
                 active = self._active_file(session_id)
-                if active and active.resolve() != target_file.resolve():
+                if active.resolve() != resolved_target:
                     logger.info(
                         "JsonlSessionStore: file rotated since snapshot; "
                         "clearing active file %s",
@@ -428,7 +446,12 @@ class JsonlSessionStore:
                     "JsonlSessionStore: reverted '%s' to offset %d in %s",
                     session_id,
                     target_offset,
-                    target_file.name,
+                    resolved_target.name,
+                )
+            except FileNotFoundError:
+                logger.debug(
+                    "JsonlSessionStore.revert_session: target file %s gone, no-op",
+                    resolved_target,
                 )
             except Exception as exc:
                 logger.error(
