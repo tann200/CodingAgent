@@ -88,8 +88,7 @@ _MAX_ROUNDS_PLANNING = _planning_routing._MAX_ROUNDS_PLANNING
 _AUTONOMOUS_MAX_TOOL_CALLS = 100  # default budget for autonomous/full graph
 
 # Fast-Path Stabilization: When True, all 16 cognitive nodes are active.
-# When False (default during stabilization), only the Fast-Path nodes are active:
-#   perception → execution → verification → evaluation → memory_sync
+# When False (default during stabilization), only the 10 Fast-Path nodes are active.
 # Set to True to re-enable the full 16-node graph after stabilization is complete.
 _USE_FULL_GRAPH = False
 
@@ -259,7 +258,7 @@ def _compile_fast_path_graph():
                                                                                    │
                                                                                    └──→ END
 
-    Still frozen: replan, debug, delegation, analyst_delegation, wait_for_user.
+    Still frozen: replan, debug, delegation, analyst_delegation.
     """
     workflow = StateGraph(AgentState)
 
@@ -272,6 +271,7 @@ def _compile_fast_path_graph():
     workflow.add_node("verification", verification_node)
     workflow.add_node("evaluation", evaluation_node)
     workflow.add_node("memory_sync", memory_update_node)
+    workflow.add_node("wait_for_user", wait_for_user_node)
 
     workflow.set_entry_point("perception")
 
@@ -301,14 +301,14 @@ def _compile_fast_path_graph():
     # planning → plan_validator
     workflow.add_edge("planning", "plan_validator")
 
-    # plan_validator → execution (plan approved) | planning (re-plan) | execution (bypass wait_for_user)
+    # plan_validator → execution (plan approved) | planning (re-plan) | wait_for_user
     workflow.add_conditional_edges(
         "plan_validator",
         should_after_plan_validator,
         {
             "execute": "execution",
             "planning": "planning",
-            "wait_for_user": "execution",  # bypass: no wait_for_user in fast-path
+            "wait_for_user": "wait_for_user",
         },
     )
 
@@ -319,12 +319,22 @@ def _compile_fast_path_graph():
         "execution",
         route_execution,
         {
-            "wait_for_user": "execution",    # bypass: no user wait in fast-path
+            "wait_for_user": "wait_for_user",
             "step_controller": "step_controller",
             "perception": "perception",
             "memory_sync": "memory_sync",
-            "replan": "verification",         # bypass: replan→verify
-            "analysis": "verification",       # bypass: fail→verify
+            "replan": "verification",  # bypass: replan→verify
+            "analysis": "verification",  # bypass: fail→verify
+        },
+    )
+
+    workflow.add_conditional_edges(
+        "wait_for_user",
+        route_after_wait_for_user,
+        {
+            "execute": "execution",
+            "perception": "perception",
+            "planning": "planning",
         },
     )
 
@@ -352,7 +362,7 @@ def _compile_fast_path_graph():
         {
             "memory_sync": "memory_sync",
             "step_controller": "step_controller",
-            "debug": "memory_sync",             # bypass: route to memory_sync
+            "debug": "memory_sync",  # bypass: route to memory_sync
             "end": END,
         },
     )
@@ -362,7 +372,7 @@ def _compile_fast_path_graph():
         "memory_sync",
         should_after_memory_sync,
         {
-            "delegation": END,      # bypass: no delegation in fast-path → end
+            "delegation": END,  # bypass: no delegation in fast-path → end
             "perception": "perception",
             "end": END,
         },
@@ -377,7 +387,8 @@ def compile_agent_graph():
 
     When ``_USE_FULL_GRAPH`` is True, all 16 cognitive nodes are active.
     When False (default, stabilization mode), only the 10 Fast-Path nodes are active:
-    perception → analysis → planning → plan_validator → execution → step_controller → verification → evaluation → memory_sync.
+    perception → analysis → planning → plan_validator → wait_for_user/execution
+    → step_controller → verification → evaluation → memory_sync.
     """
     if _USE_FULL_GRAPH:
         logger.info("compile_agent_graph: FULL graph (16 nodes)")

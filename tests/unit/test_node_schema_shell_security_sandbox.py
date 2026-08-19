@@ -415,6 +415,7 @@ class TestAgentGraphCompilationAndRouting:
             "verification",
             "evaluation",
             "memory_sync",
+            "wait_for_user",
         }
         actual = set(g for g in graph.nodes)  # type: ignore[union-attr]
         missing = expected - actual
@@ -427,7 +428,13 @@ class TestAgentGraphCompilationAndRouting:
         graph = _compile_fast_path_graph()
         node_names = list(graph.nodes)  # type: ignore[union-attr]
 
-        for node in ("analysis", "planning", "plan_validator", "step_controller"):
+        for node in (
+            "analysis",
+            "planning",
+            "plan_validator",
+            "step_controller",
+            "wait_for_user",
+        ):
             assert node in node_names, f"Phase 5 node {node!r} missing from fast-path graph"
 
     def test_should_after_execution_with_step_controller(self):
