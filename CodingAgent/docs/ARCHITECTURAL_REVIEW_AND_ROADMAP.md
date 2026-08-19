@@ -42,7 +42,7 @@ The default fast-path graph had evolved from the documented six-node pipeline to
 
 The legacy `EventBus` dual-emits into an asynchronous `MessageBus`. The typed bus has a bounded queue and drops on pressure. That is acceptable for replaceable UI telemetry but unsafe if lifecycle or persistence consumers assume delivery.
 
-**Decision needed:** Every event class must be designated as lossy telemetry or durable lifecycle. Critical events should use synchronous acknowledgement or persistence before publication.
+**Decision:** Typed events are centrally classified as lossy telemetry, ordered lifecycle, or reliable. Only explicitly replaceable high-volume events are telemetry; unclassified events default to reliable. Each class has independent bounded admission so telemetry saturation cannot consume reliable capacity. Reliable admission waits for capacity and raises visibly on timeout rather than dropping.
 
 #### 4. Persistence limits are not caller-visible
 
@@ -154,16 +154,16 @@ Tasks are ordered by dependency. Each task should land as its own commit or pull
 
 #### EVENT-01 — Classify event durability
 
-**Status:** Planned  
+**Status:** Completed
 **Risk:** Medium  
 **Depends on:** STAB-01
 
-- Add an event-delivery classification: telemetry, ordered lifecycle, or durable.
-- Keep telemetry lossy under pressure.
-- Require acknowledged delivery or write-ahead persistence for durable events.
-- Expose queue depth, drops, and delivery latency by class.
+- Event-delivery classification now distinguishes telemetry, ordered lifecycle, and reliable events.
+- Telemetry remains lossy and bounded under pressure.
+- Reliable and ordered events use separate bounded lanes with blocking admission and a structured failure if their deadline expires.
+- Full-pipeline queue depth/high-water marks, admissions, failures, drops, delivery counts, and bounded admission-to-completion latency samples are exposed by class.
 
-**Acceptance:** Queue saturation tests prove lifecycle/persistence events are not silently lost; telemetry drop behavior remains bounded and observable.
+**Acceptance:** Queue saturation tests prove reliable events continue through telemetry pressure; reliable exhaustion raises rather than dropping; telemetry drops remain bounded and observable; ordered shutdown drains preserve FIFO delivery.
 
 #### STATE-01 — Define node-owned state schemas
 

@@ -6,13 +6,24 @@ the untyped EventBus. Key features:
 
 - Type-safe event delivery
 - Error isolation (failed handlers don't kill publishers)
-- Delivery guarantees with explicit drop logging
-- Metrics for observability
+- Delivery classes for telemetry, ordered lifecycle, and reliable events
+- Per-class queue depth, drop, admission, and latency metrics
 - Correlation IDs for distributed tracing
 """
 
-from src.core.messaging.events import Event
-from src.core.messaging.bus import MessageBus, EventHandler
+from src.core.messaging.events import (
+    Event,
+    EventDeliveryClass,
+    EventDeliveryPolicy,
+    get_event_delivery_policy,
+)
+from src.core.messaging.bus import (
+    EventDeliveryTimeoutError,
+    EventHandler,
+    MessageBus,
+    MessageBusShutdownError,
+    ReliableEventAdmissionError,
+)
 from src.core.messaging.metrics import MessageBusMetrics
 from src.core.messaging.event_types import (
     # Agent lifecycle
@@ -74,8 +85,14 @@ from src.core.messaging.event_types import (
 
 __all__ = [
     "Event",
+    "EventDeliveryClass",
+    "EventDeliveryPolicy",
+    "get_event_delivery_policy",
     "MessageBus",
     "EventHandler",
+    "EventDeliveryTimeoutError",
+    "MessageBusShutdownError",
+    "ReliableEventAdmissionError",
     "MessageBusMetrics",
     "get_typed_bus",
     "reset_typed_bus",
