@@ -37,7 +37,9 @@ def _make_websocket_handler(
     """Factory: build the per-event handler closure for a WebSocket connection.
 
     The returned handler filters by session_id, then enqueues to the websocket
-    sender queue using the configured drop policy.
+    sender queue using the configured drop policy. Queue capacity limits events
+    pending delivery; it is not a rate limit on events that the sender can
+    immediately drain.
     """
 
     def _record_dropped(event_name: str) -> None:

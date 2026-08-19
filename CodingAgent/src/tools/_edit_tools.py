@@ -13,8 +13,8 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import shutil
-import subprocess
 import tempfile
 from pathlib import Path
 from typing import Dict, Any, Optional
@@ -69,6 +69,97 @@ _logger = logging.getLogger(__name__)
 
 # Net-change warning threshold (authoritative value — re-exported from file_tools)
 _EDIT_NET_CHANGE_WARN = 200  # edit_file warns on large net-line changes
+
+
+class UnifiedDiffError(ValueError):
+    """Raised when a unified diff cannot be safely applied to its source."""
+
+
+_HUNK_HEADER_RE = re.compile(
+    r"^@@ -(?P<old_start>\d+)(?:,(?P<old_count>\d+))? "
+    r"\+(?P<new_start>\d+)(?:,(?P<new_count>\d+))? @@"
+)
+
+
+def _apply_unified_diff(content: str, patch: str) -> str:
+    """Apply a single-file unified diff without relying on an external binary.
+
+    The source line at every context/removal operation must match exactly.  The
+    caller writes the returned value only after this function completes, so a
+    malformed or stale patch cannot partially modify the target file.
+    """
+    source_lines = content.splitlines(keepends=True)
+    patch_lines = patch.splitlines(keepends=True)
+    output: list[str] = []
+    source_index = 0
+    patch_index = 0
+    saw_hunk = False
+
+    while patch_index < len(patch_lines):
+        line = patch_lines[patch_index]
+        if line.startswith(("--- ", "+++ ")):
+            patch_index += 1
+            continue
+
+        match = _HUNK_HEADER_RE.match(line)
+        if not match:
+            raise UnifiedDiffError(f"Expected hunk header, got {line.rstrip()!r}")
+
+        saw_hunk = True
+        old_start = int(match.group("old_start"))
+        old_count = int(match.group("old_count") or "1")
+        new_count = int(match.group("new_count") or "1")
+        hunk_source_index = max(0, old_start - 1)
+        if hunk_source_index < source_index or hunk_source_index > len(source_lines):
+            raise UnifiedDiffError("Hunk position does not match the source file")
+
+        output.extend(source_lines[source_index:hunk_source_index])
+        source_index = hunk_source_index
+        patch_index += 1
+        consumed_old = 0
+        produced_new = 0
+
+        while patch_index < len(patch_lines):
+            hunk_line = patch_lines[patch_index]
+            if _HUNK_HEADER_RE.match(hunk_line):
+                break
+            if hunk_line.startswith("\\ No newline at end of file"):
+                patch_index += 1
+                continue
+            if not hunk_line:
+                raise UnifiedDiffError("Malformed empty line in unified diff")
+
+            operation, expected = hunk_line[0], hunk_line[1:]
+            if operation == " ":
+                if source_index >= len(source_lines) or source_lines[source_index] != expected:
+                    raise UnifiedDiffError("Patch context does not match the source file")
+                output.append(source_lines[source_index])
+                source_index += 1
+                consumed_old += 1
+                produced_new += 1
+            elif operation == "-":
+                if source_index >= len(source_lines) or source_lines[source_index] != expected:
+                    raise UnifiedDiffError("Patch removal does not match the source file")
+                source_index += 1
+                consumed_old += 1
+            elif operation == "+":
+                output.append(expected)
+                produced_new += 1
+            else:
+                raise UnifiedDiffError(f"Unexpected unified diff operation {operation!r}")
+            patch_index += 1
+
+        if consumed_old != old_count or produced_new != new_count:
+            raise UnifiedDiffError(
+                "Hunk line counts do not match its header "
+                f"(expected -{old_count}/+{new_count}, got -{consumed_old}/+{produced_new})"
+            )
+
+    if not saw_hunk:
+        raise UnifiedDiffError("Unified diff does not contain a hunk")
+
+    output.extend(source_lines[source_index:])
+    return "".join(output)
 
 
 def _is_in_workspace(path: Path, workdir: Path) -> bool:
@@ -176,93 +267,61 @@ def edit_file(
     # Read original content BEFORE modification for diff generation
     original_content = p.read_text(encoding="utf-8")
 
-    with tempfile.NamedTemporaryFile("w", suffix=".patch", delete=False) as f:
-        f.write(patch)
-        patch_file = f.name
-
-    tmp_target_path: str | None = None
+    if not patch.strip().startswith("---") and not patch.strip().startswith("@@"):
+        return {
+            "path": str(p),
+            "status": "error",
+            "error": "Invalid patch format. Must be unified diff.",
+        }
 
     try:
-        if not patch.strip().startswith("---") and not patch.strip().startswith("@@"):
-            return {
-                "path": str(p),
-                "status": "error",
-                "error": "Invalid patch format. Must be unified diff.",
-            }
-
-        fd, tmp_target_path = tempfile.mkstemp(
-            dir=str(p.parent),
-            prefix=f".{p.stem}.patch.",
-            suffix=p.suffix or ".tmp",
-        )
-        os.close(fd)
-        Path(tmp_target_path).write_text(original_content, encoding="utf-8")
-
-        # Apply unified diff.
-        proc = subprocess.run(
-            ["patch", "-u", "-f", tmp_target_path, "-i", patch_file],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-
-        if proc.returncode != 0:
-            return {
-                "path": str(p),
-                "status": "error",
-                "error": f"Patch failed code {proc.returncode}:\n{proc.stdout}\n{proc.stderr}",
-            }
-
-        new_content = Path(tmp_target_path).read_text(encoding="utf-8")
-        ver_err = _verify_new_content(p, new_content, workdir)
-        if ver_err:
-            return ver_err
-
-        _atomic_write(p, new_content)
-        _invalidate_context_cache(p)
-
-        # Generate unified diff for TUI display
-        original_lines = original_content.splitlines(keepends=True)
-        new_lines = new_content.splitlines(keepends=True)
-        diff_lines = list(
-            difflib.unified_diff(
-                original_lines, new_lines, fromfile=str(p), tofile=str(p), lineterm="\n"
-            )
-        )
-        diff = "".join(diff_lines)
-
-        lines_added = len([line for line in diff_lines if line.startswith("+")])
-        lines_removed = len([line for line in diff_lines if line.startswith("-")])
-
-        # M4: Publish diff preview (post-apply for edit_file since patch is atomic)
-        _publish_diff_preview(str(p), diff, is_new_file=False)
-
-        result: Dict[str, Any] = {
+        new_content = _apply_unified_diff(original_content, patch)
+    except UnifiedDiffError as exc:
+        return {
             "path": str(p),
-            "status": "ok",
-            "diff": diff,
-            "lines_added": lines_added,
-            "lines_removed": lines_removed,
+            "status": "error",
+            "error": f"Patch failed: {exc}",
         }
-        # F13: Signal when a patch is unreasonably large — agent should split the task.
-        net_changed = lines_added + lines_removed
-        if net_changed > _EDIT_NET_CHANGE_WARN:
-            result["requires_split"] = True
-            result["error"] = (
-                f"edit_file patch changed {net_changed} lines in a single call. "
-                "Split into multiple targeted edits."
-            )
-        return result
-    finally:
-        try:
-            os.remove(patch_file)
-        except OSError:
-            pass
-        if tmp_target_path:
-            try:
-                os.remove(tmp_target_path)
-            except OSError:
-                pass
+
+    ver_err = _verify_new_content(p, new_content, workdir)
+    if ver_err:
+        return ver_err
+
+    _atomic_write(p, new_content)
+    _invalidate_context_cache(p)
+
+    # Generate unified diff for TUI display
+    original_lines = original_content.splitlines(keepends=True)
+    new_lines = new_content.splitlines(keepends=True)
+    diff_lines = list(
+        difflib.unified_diff(
+            original_lines, new_lines, fromfile=str(p), tofile=str(p), lineterm="\n"
+        )
+    )
+    diff = "".join(diff_lines)
+
+    lines_added = len([line for line in diff_lines if line.startswith("+")])
+    lines_removed = len([line for line in diff_lines if line.startswith("-")])
+
+    # M4: Publish diff preview (post-apply for edit_file since patch is atomic)
+    _publish_diff_preview(str(p), diff, is_new_file=False)
+
+    result: Dict[str, Any] = {
+        "path": str(p),
+        "status": "ok",
+        "diff": diff,
+        "lines_added": lines_added,
+        "lines_removed": lines_removed,
+    }
+    # F13: Signal when a patch is unreasonably large — agent should split the task.
+    net_changed = lines_added + lines_removed
+    if net_changed > _EDIT_NET_CHANGE_WARN:
+        result["requires_split"] = True
+        result["error"] = (
+            f"edit_file patch changed {net_changed} lines in a single call. "
+            "Split into multiple targeted edits."
+        )
+    return result
 
 
 @tool(side_effects=["write"], tags=["coding"])

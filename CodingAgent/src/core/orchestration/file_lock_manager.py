@@ -96,9 +96,9 @@ class FileLockManager:
         def _release_all():
             inst = cls._instance
             if inst is not None:
-                logger.warning(
-                    "FileLockManager atexit: releasing all locks for process exit"
-                )
+                # Logging streams can already be closed during interpreter
+                # teardown (including pytest's capture stream), so cleanup
+                # must be silent and best-effort.
                 inst._write_lock = None
                 inst._read_locks.clear()
 
