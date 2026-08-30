@@ -5,6 +5,7 @@ from typing import Any, Dict, Mapping
 from langgraph.graph import StateGraph, END
 from langchain_core.runnables import RunnableConfig
 from src.core.orchestration.graph.state import AgentState, StateLike
+from src.core.orchestration.graph.state_schemas import wrap_node
 from src.core.orchestration.graph.nodes.perception_node import perception_node
 from src.core.orchestration.graph.nodes.analysis_node import analysis_node
 from src.core.orchestration.graph.nodes.planning_node import planning_node
@@ -93,6 +94,19 @@ _AUTONOMOUS_MAX_TOOL_CALLS = 100  # default budget for autonomous/full graph
 _USE_FULL_GRAPH = False
 
 
+# STATE-01: Boundary enforcement.  When False (default), node output schemas are
+# validated at graph boundaries in fail-open mode: violations are logged and
+# emitted as a typed NodeResultValidationFailed event but never abort a run.
+# When True, an invalid node->state transition raises NodeResultViolation
+# (fail-closed).  Scenario tests exercise both modes.
+_STATE_SCHEMAS_STRICT = False
+
+
+def _validated(name: str, fn):
+    """Wrap a node so its returned state update is schema-checked at the boundary."""
+    return wrap_node(name, fn, strict=_STATE_SCHEMAS_STRICT)
+
+
 _READ_ONLY_ROLES = _tier_graph_routing.READ_ONLY_ROLES
 _WRITE_ROLES = _tier_graph_routing.WRITE_ROLES
 
@@ -124,13 +138,13 @@ def _compile_full_graph():
     """
     workflow = StateGraph(AgentState)
 
-    workflow.add_node("perception", perception_node)
+    workflow.add_node("perception", _validated("perception", perception_node))
     workflow.add_node("analysis", analysis_node)
-    workflow.add_node("planning", planning_node)
+    workflow.add_node("planning", _validated("planning", planning_node))
     workflow.add_node("plan_validator", plan_validator_node)
-    workflow.add_node("execution", execution_node)
+    workflow.add_node("execution", _validated("execution", execution_node))
     workflow.add_node("step_controller", step_controller_node)
-    workflow.add_node("verification", verification_node)
+    workflow.add_node("verification", _validated("verification", verification_node))
     workflow.add_node("debug", debug_node)
     workflow.add_node("memory_sync", memory_update_node)
     workflow.add_node("delegation", delegation_node)
@@ -262,13 +276,13 @@ def _compile_fast_path_graph():
     """
     workflow = StateGraph(AgentState)
 
-    workflow.add_node("perception", perception_node)
+    workflow.add_node("perception", _validated("perception", perception_node))
     workflow.add_node("analysis", analysis_node)
-    workflow.add_node("planning", planning_node)
+    workflow.add_node("planning", _validated("planning", planning_node))
     workflow.add_node("plan_validator", plan_validator_node)
-    workflow.add_node("execution", execution_node)
+    workflow.add_node("execution", _validated("execution", execution_node))
     workflow.add_node("step_controller", step_controller_node)
-    workflow.add_node("verification", verification_node)
+    workflow.add_node("verification", _validated("verification", verification_node))
     workflow.add_node("evaluation", evaluation_node)
     workflow.add_node("memory_sync", memory_update_node)
     workflow.add_node("wait_for_user", wait_for_user_node)
@@ -460,7 +474,7 @@ def _compile_frontier_graph():
     workflow = StateGraph(AgentState)
 
     async def _perception(state: StateLike, config: RunnableConfig):
-        return await perception_node(state, config)
+        return await _validated("perception", perception_node)(state, config)
 
     async def _analysis(state: StateLike, config: RunnableConfig):
         return await analysis_node(state, config)
@@ -472,7 +486,7 @@ def _compile_frontier_graph():
         return await frontier_loop_node(state, config)
 
     async def _verification(state: StateLike, config: RunnableConfig):
-        return await verification_node(state, config)
+        return await _validated("verification", verification_node)(state, config)
 
     async def _evaluation(state: StateLike, config: RunnableConfig):
         return await evaluation_node(state, config)
@@ -619,7 +633,7 @@ def _compile_lite_graph():
     workflow = StateGraph(AgentState)
 
     async def _perception(state: StateLike, config: RunnableConfig):
-        return await perception_node(state, config)
+        return await _validated("perception", perception_node)(state, config)
 
     async def _frontier_loop(state: StateLike, config: RunnableConfig):
         return await frontier_loop_node(state, config)

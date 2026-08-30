@@ -1361,6 +1361,29 @@ class OrchestratorModelsCheckFailed(Event):
 
 
 # ---------------------------------------------------------------------------
+# Graph node boundary / state transition validation
+# ---------------------------------------------------------------------------
+
+@dataclass
+class NodeResultValidationFailed(Event):
+    """
+    Published when a cognitive graph node returns a state update that violates
+    its declared output schema (STATE-01 boundary enforcement, fail-open mode).
+
+    Publishers:
+        src/core/orchestration/graph/nodes/node_utils.py
+        (via src.core.orchestration.graph.state_schemas._enforce)
+
+    Use-case: Surface an invalid node->state transition as a structured error
+    instead of silently tolerating a malformed shared-state write.
+    """
+    node_name: str
+    reason: str
+    details: List[str]
+    session_id: Optional[str]
+
+
+# ---------------------------------------------------------------------------
 # UI / notifications
 # ---------------------------------------------------------------------------
 

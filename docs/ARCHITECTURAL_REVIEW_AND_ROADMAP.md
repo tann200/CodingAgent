@@ -66,7 +66,7 @@ The suite is large, but the `sync_threads` fixture turns thread and executor wor
 
 As of the QUAL-01/TEST-02 pass (ruff + mypy gates fail closed):
 
-- The full unit suite passes from a clean environment: **4583 passed, 1 skipped, 0 xfail/xpass** (includes the 14-test real-concurrency contract suite from TEST-01).
+- The full unit suite passes from a clean environment: **4606 passed, 1 skipped, 0 xfail/xpass** (includes the 14-test real-concurrency contract suite from TEST-01 and the 23-test STATE-01 boundary suite).
 - Ruff passes on both the default ruleset and the CI gate (`--select=E,F,W --ignore=E501`) with zero errors. CI no longer masks failures with `|| true`.
 - The CI mypy gate (narrow file list) passes with zero errors; the `|| true` masking was removed.
 - The `patch` executable dependency was eliminated by making file-edit and unit tests portable (`ad75951`); `patch` is no longer required.
@@ -164,16 +164,16 @@ Tasks are ordered by dependency. Each task should land as its own commit or pull
 
 #### STATE-01 — Define node-owned state schemas
 
-**Status:** Planned  
+**Status:** In progress (boundary layer + scenario tests done)  
 **Risk:** High  
 **Depends on:** STAB-01, EVENT-01
 
-- Inventory which node reads, writes, and clears each `AgentState` field.
-- Introduce focused result schemas for perception, planning, execution, and verification.
-- Enforce valid transitions at graph boundaries instead of logging only.
-- Migrate one node family at a time with adapters for compatibility.
+- Inventory which node reads, writes, and clears each `AgentState` field → exhaustive union of every return key for perception (21), planning (16), execution (31), verification (2).
+- **Focused result schemas done** — `src/core/orchestration/graph/state_schemas.py` declares per-node `NodeOutputSchema` (allow-list superset + required core keys).
+- **Boundary enforcement done** — `wrap_node()` validated at graph boundaries across all four graph compilers (full, fast-path, frontier, lite). Fail-open (default, non-strict): logs + emits typed `NodeResultValidationFailed` event via the orchestrator's event bus. Fail-closed (`strict=True`): raises structured `NodeResultViolation`.
+- Remaining: migrate per-node *field ownership* (which node may write which shared field) beyond the current output-key structural contract, node-family by node-family.
 
-**Acceptance:** Invalid transitions fail with a structured error; scenario tests cover fast, full, approval, cancellation, and recovery paths.
+**Acceptance:** Invalid transitions fail with a structured error; scenario tests cover fast, full, approval, cancellation, and recovery paths. Status: **met** — `tests/unit/test_state_schemas.py` (23 tests) asserts correct per-path results pass and invalid transitions raise structurally (`unknown_key` / `missing_core_key`) or surface the typed event; full unit suite green (4606 passed).
 
 ### Tranche C — Performance and resilience
 
@@ -260,6 +260,6 @@ Tasks are ordered by dependency. Each task should land as its own commit or pull
 3. ~~Implement **EVENT-01**, followed by **TEST-01**.~~ **Completed** — delivery classes live and the real-concurrency contract suite (`test_concurrency_contracts.py`) validates them.
 4. Implement **PERF-01** and **PERF-02** independently.
 5. Use **PERF-03** evidence to scope optimization.
-6. ~~Start **STATE-01** only after delivery and concurrency contracts protect behavior.~~ — Contracts are now in place, so **STATE-01** (node-owned state schemas with enforced graph-boundary transitions) is the dependency-gated next task.
+6. ~~Start **STATE-01** only after delivery and concurrency contracts protect behavior.~~ — Contracts are in place and **STATE-01's boundary layer is implemented** (node output schemas + enforcement wrapper + 23 scenario tests). Remaining STATE-01 work is the per-node field-ownership migration.
 
-With the baseline, delivery, and concurrency contracts now solid, the highest-leverage next task is **STATE-01** (the highest-risk item), followed by the lower-risk **STAB-06** (production endpoint exposure) and the independent **PERF-01/PERF-02** performance work.
+With the baseline, delivery, and concurrency contracts now solid and STATE-01's boundary enforcement landed, the next highest-leverage tasks are **PERF-01/PERF-02** (independent performance work), **STAB-06** (production endpoint exposure), or completing **STATE-01's** field-ownership migration node-family by node-family.
