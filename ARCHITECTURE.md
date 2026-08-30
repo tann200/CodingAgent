@@ -663,6 +663,20 @@ Two cooperating buses:
 
 ### Stabilization Hardening
 
+### Event Delivery Classification
+
+Every typed event is centrally classified (in `src/core/messaging/events.py` via `get_event_delivery_policy()`) into one of three delivery classes, each with its own bounded admission lane so one class cannot starve another:
+
+| Class | Semantics | Examples |
+|-------|-----------|----------|
+| `TELEMETRY` | Lossy, bounded by its own lane. Dropped (with metrics) under pressure. Only explicitly replaceable high-volume updates are telemetry. | `AgentStatus`, `PlanProgress`, `ResponseStreamChunk`, `ModelToken`, `LLMToken`, `TokenBudgetUpdate`, `LogEntry` |
+| `ORDERED` | Reliable admission plus category-local FIFO dispatch. Lifecycle events that persist state are delivered in publication order within their category. | `ToolExecuteStart/Invoked/Finish/Error` (tool), `StepStart/Finish` (step), `DelegationStart/Finish` (delegation) |
+| `RELIABLE` | Default for every unclassified event. Admission waits (blocking) for capacity and raises a visible `ReliableEventAdmissionError`/`EventDeliveryTimeoutError` on exhaustion rather than dropping. | All other lifecycle, persistence, config, and session events |
+
+Unclassified events default to `RELIABLE` so a newly-added approval or persistence event can never silently inherit telemetry semantics. Custom event classes may opt in via `delivery_class` / `sequence_category` class attributes on the subclass. Ordered events require a `sequence_category`.
+
+Per-class admission uses independent bounded queues; reliable and ordered admission fails loudly on timeout (rather than dropping), telemetry drops remain bounded and observable, and ordered shutdown drains preserve FIFO delivery.
+
 ### FileLockManager — Zombie Lock Prevention
 
 The `FileLockManager` in `src/core/orchestration/file_lock_manager.py` has three layers of defense against zombie locks:
@@ -689,6 +703,7 @@ Critical lifecycle events (ToolExecuteStart/Finish/Error, StepStart/Finish, Dele
 | 5 | DualPublishBus removed, 103 publish sites migrated | `event_bus.py` natively owns MessageBus ref |
 | 6 | MessageBus async migration | `sync_queue → bridge → async dispatch` pattern |
 | 7 | **Sequenced dispatch (Stabilization Phases 1-4)** | Per-category FIFO queues for tool/step/delegation events. Zombie lock prevention (`reset_instance`, `reset_cancel(owner=)`, auto-release timeout). Per-event-type lazy import (importlib per-symbol). Contract tests (27 new tests). |
+| 8 | **Event delivery classification (EVENT-01)** | Typed events classified as telemetry / ordered / reliable, each with an independent bounded admission lane. Reliable and ordered events fail loudly instead of dropping; telemetry stays bounded and observable. Per-class metrics. |
 
 ### Sequenced Dispatch
 

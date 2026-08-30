@@ -128,7 +128,15 @@ class McpServerManager:
                 },
             }
         try:
-            self._event_bus.publish_typed(McpServerStatus(**payload))
+            self._event_bus.publish_typed(
+                McpServerStatus(
+                    running=bool(payload["running"]),
+                    count=payload["count"],
+                    server_names=list(payload["server_names"]),
+                    has_error=bool(payload["has_error"]),
+                    servers=payload["servers"],
+                )
+            )
         except Exception:
             pass
 
@@ -174,9 +182,9 @@ class McpServerManager:
             if self._started:
                 return
             # Disconnect any existing clients before clearing (prevents connection leak on re-entry).
-            for _name, client in list(self._clients.items()):
+            for _name, _client in list(self._clients.items()):
                 try:
-                    await client.disconnect()
+                    await _client.disconnect()
                 except Exception:
                     pass
             self._states.clear()
@@ -257,11 +265,12 @@ class McpServerManager:
 
                 # Safely attach notification handler if supported
                 try:
-                    client.add_notification_handler(
-                        lambda method, params, _name=name: self._on_server_notification(
-                            _name, method, params
-                        )
-                    )
+                    def _notify(
+                        method: str, params: Dict[str, Any], _name: str = name
+                    ) -> Any:
+                        return self._on_server_notification(_name, method, params)
+
+                    client.add_notification_handler(_notify)
                 except Exception:
                     # Some client implementations may not support notifications;
                     # ignore and continue.

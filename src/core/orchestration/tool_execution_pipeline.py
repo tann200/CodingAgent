@@ -593,7 +593,7 @@ def _dispatch_tool_call(
         if _inspect.isawaitable(rv):
             import asyncio as _asyncio
             from typing import Coroutine
-            
+
             # Check if we're in a thread with an existing event loop
             try:
                 loop = _asyncio.get_running_loop()

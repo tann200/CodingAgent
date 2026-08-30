@@ -18,29 +18,29 @@ from typing import Any, Deque, Dict, Optional
 class MessageBusMetrics:
     """
     Metrics for message bus observability.
-    
+
     Tracks event publishing, delivery, drops, handler failures, and latency.
     All metrics are in-memory and reset on restart.
-    
+
     Attributes:
         published: Count of events published by type
         delivered: Count of events successfully delivered by type
         dropped: Count of events dropped (queue full) by type
         handler_failed: Count of handler failures by event:handler
         delivery_duration_ms: Delivery latency samples by event:handler
-    
+
     Example:
         ```python
         metrics = MessageBusMetrics()
         metrics.increment_published("AgentStarted")
         metrics.record_delivery("AgentStarted", "TUIEventHandler", 12.5)
-        
+
         snapshot = metrics.snapshot()
         print(f"Published: {snapshot['published']}")
         print(f"P99 latency: {snapshot['p99_delivery_ms']}")
         ```
     """
-    
+
     max_latency_samples: int = 1024
     published: Counter = field(default_factory=Counter)
     delivered: Counter = field(default_factory=Counter)
@@ -61,7 +61,7 @@ class MessageBusMetrics:
         init=False,
         repr=False,
     )
-    
+
     def increment_published(
         self,
         event_type: str,
@@ -69,7 +69,7 @@ class MessageBusMetrics:
     ) -> None:
         """
         Increment published count for event type.
-        
+
         Args:
             event_type: Name of event class (e.g., "AgentStarted")
         """
@@ -77,7 +77,7 @@ class MessageBusMetrics:
             self.published[event_type] += 1
             if delivery_class is not None:
                 self.admitted_by_class[delivery_class] += 1
-    
+
     def increment_dropped(
         self,
         event_type: str,
@@ -85,9 +85,9 @@ class MessageBusMetrics:
     ) -> None:
         """
         Increment dropped count for event type.
-        
+
         Called when queue is full and event cannot be queued.
-        
+
         Args:
             event_type: Name of event class
         """
@@ -108,13 +108,13 @@ class MessageBusMetrics:
             previous = self.queue_depth_high_water.get(delivery_class, 0)
             if depth > previous:
                 self.queue_depth_high_water[delivery_class] = depth
-    
+
     def increment_handler_failed(self, event_type: str, handler: str) -> None:
         """
         Increment handler failure count.
-        
+
         Called when handler raises exception during event processing.
-        
+
         Args:
             event_type: Name of event class
             handler: Name of handler class
@@ -122,7 +122,7 @@ class MessageBusMetrics:
         key = f"{event_type}:{handler}"
         with self._lock:
             self.handler_failed[key] += 1
-    
+
     def record_delivery(
         self,
         event_type: str,
@@ -132,7 +132,7 @@ class MessageBusMetrics:
     ) -> None:
         """
         Record successful event delivery with latency.
-        
+
         Args:
             event_type: Name of event class
             handler: Name of handler class
@@ -158,14 +158,14 @@ class MessageBusMetrics:
                 delivery_class,
                 deque(maxlen=self.max_latency_samples),
             ).append(latency_ms)
-    
+
     def snapshot(self) -> Dict[str, Any]:
         """
         Return metrics snapshot for observability.
-        
+
         Returns:
             Dictionary with all metrics including computed percentiles.
-        
+
         Example:
             ```python
             snapshot = metrics.snapshot()
@@ -238,7 +238,7 @@ class MessageBusMetrics:
                     if v
                 },
             }
-    
+
     def reset(self) -> None:
         """Clear all metrics (useful for testing)."""
         with self._lock:

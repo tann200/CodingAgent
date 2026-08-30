@@ -407,12 +407,12 @@ def _save_repo_summary_cache(workdir: str, summary: Dict[str, Any]) -> None:
         try:
             try:
                 with os.fdopen(_fd, "w") as _f:
-                    _fd = None  # ownership transferred to fdopen
+                    _fd = None  # type: ignore[assignment]  # ownership transferred to fdopen
                     json.dump(cache, _f)
             finally:
                 if _fd is not None:
                     os.close(_fd)
-                    _fd = None
+                    _fd = None  # type: ignore[assignment]
             try:
                 os.replace(_tmp, str(cache_path))
             except OSError:

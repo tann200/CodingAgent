@@ -270,6 +270,7 @@ class MessageBus:
                     await self._seq_put(item, policy.sequence_category)
                 else:
                     assert semaphore is not None
+                    assert self._loop is not None
                     task = self._loop.create_task(
                         self._dispatch_with_slot(
                             item,

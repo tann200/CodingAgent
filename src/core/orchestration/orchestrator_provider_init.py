@@ -96,7 +96,9 @@ def _publish_startup_events(orch: Any, pm: Any) -> None:
         payload = {"time": time.time(), "working_dir": str(orch.working_dir)}
         try:
             guilogger.info("Orchestrator: publishing startup to orch.event_bus")
-            orch.event_bus.publish_typed(OrchestratorStartup(**payload))
+            orch.event_bus.publish_typed(
+                OrchestratorStartup(time=payload["time"], working_dir=payload["working_dir"])
+            )
         except Exception:
             pass
 
@@ -104,7 +106,9 @@ def _publish_startup_events(orch: Any, pm: Any) -> None:
             pm_bus = getattr(pm, "_event_bus", None)
             if pm_bus and pm_bus is not orch.event_bus:
                 guilogger.info("Orchestrator: publishing startup to pm_bus")
-                pm_bus.publish_typed(OrchestratorStartup(**payload))
+                pm_bus.publish_typed(
+                    OrchestratorStartup(time=payload["time"], working_dir=payload["working_dir"])
+                )
         except Exception:
             pass
     except Exception:

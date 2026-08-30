@@ -234,11 +234,14 @@ flowchart TD
 ### Pipeline Paths
 
 ```
-Fast-path: perception → execution → verification → evaluation → memory_sync
+Fast-path: perception → analysis → planning → plan_validator → wait_for_user/execution
+           → step_controller → verification → evaluation → memory_sync
 Full:     perception → analysis → planning → plan_validator → execution → verification → evaluation → memory_sync
 Frontier: perception → frontier_loop → verification → evaluation → memory_sync
 Overflow: perception → memory_sync → perception (context compaction)
 ```
+
+The default compiled fast path is a ten-node graph. `replan`, `debug`, `delegation`, and `analyst_delegation` are frozen but selectable; the approval boundary routes through `wait_for_user`, never straight to `execution`.
 
 ## Testing
 
@@ -279,12 +282,14 @@ RUN_INTEGRATION=1 pytest tests/integration -q
 ### Code Quality
 
 ```bash
-# Type checking
-pyright src/
+# Lint
+ruff check src tests
 
-# Format check
-ruff check src/
+# Type checking
+mypy src/server src/core/inference/provider_utils.py src/core/orchestration/tool_contracts.py src/core/orchestration/tool_parser.py --ignore-missing-imports --follow-imports=silent --disable-error-code=import-untyped --no-error-summary
 ```
+
+CI runs these as fail-closed gates: newly introduced Ruff or mypy errors break the build.
 
 ## Documentation
 
@@ -325,7 +330,8 @@ ruff check src/
 
 ## Test Baseline
 
-- **4388** unit tests passing
+- **4583** unit tests passing (1 skipped, 0 xfail/xpass)
 - **7** benchmark tests
 - **0** Critical issues
 - **0** High issues
+- CI runs Ruff + mypy as fail-closed gates; the full `tests/unit` suite must pass from a clean environment

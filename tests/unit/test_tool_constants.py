@@ -17,7 +17,7 @@ from src.core.orchestration.tool_constants import (
 
 class TestWriteToolsRequiringRead:
     # NOTE: Reduced from 6 tests to 2 - individual membership tests removed
-    
+
     def test_contains_critical_write_tools(self):
         """Verify critical write tools are present."""
         critical_tools = {
@@ -32,12 +32,12 @@ class TestWriteToolsRequiringRead:
 
 class TestDryRunBlockedTools:
     # NOTE: Reduced from 4 tests to 2 - individual membership tests consolidated
-    
+
     def test_contains_critical_blocked_tools(self):
         """Verify critical dry-run-blocked tools are present."""
         # Must include all write tools
         assert WRITE_TOOLS_REQUIRING_READ <= DRY_RUN_BLOCKED_TOOLS
-        
+
         # Plus bash and git tools
         critical_tools = {
             "bash", "run_bash", "execute_bash",
@@ -51,7 +51,7 @@ class TestDryRunBlockedTools:
 
 class TestPermissionRequiredTools:
     # NOTE: Reduced from 3 tests to 2 - individual membership tests consolidated
-    
+
     def test_contains_critical_permission_tools(self):
         """Verify critical permission-required tools are present."""
         critical_tools = {"delete_file", "run_bash"}

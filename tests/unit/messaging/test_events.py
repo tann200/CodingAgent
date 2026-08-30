@@ -11,7 +11,7 @@ from src.core.messaging.events import Event
 @dataclass
 class TestEvent(Event):
     """Test event with custom fields."""
-    
+
     message: str
     count: int
 
@@ -28,7 +28,7 @@ def test_event_auto_sets_timestamp():
     before = time.time()
     event = TestEvent(message="hello", count=1)
     after = time.time()
-    
+
     assert before <= event.timestamp <= after
 
 
@@ -36,7 +36,7 @@ def test_event_correlation_ids_are_unique():
     """Verify each event gets unique correlation_id."""
     event1 = TestEvent(message="one", count=1)
     event2 = TestEvent(message="two", count=2)
-    
+
     assert event1.correlation_id != event2.correlation_id
 
 
@@ -48,7 +48,7 @@ def test_event_can_override_correlation_id():
         count=1,
         correlation_id=custom_id
     )
-    
+
     assert event.correlation_id == custom_id
 
 
@@ -60,7 +60,7 @@ def test_event_can_override_timestamp():
         count=1,
         timestamp=custom_timestamp
     )
-    
+
     assert event.timestamp == custom_timestamp
 
 
@@ -68,7 +68,7 @@ def test_event_to_dict():
     """Verify to_dict() returns all fields."""
     event = TestEvent(message="hello", count=42)
     data = event.to_dict()
-    
+
     assert data["message"] == "hello"
     assert data["count"] == 42
     assert "correlation_id" in data
@@ -83,9 +83,9 @@ def test_event_from_dict():
         "correlation_id": "test-id",
         "timestamp": 1234567890.123,
     }
-    
+
     event = TestEvent.from_dict(data)
-    
+
     assert event.message == "hello"
     assert event.count == 42
     assert event.correlation_id == "test-id"
@@ -97,7 +97,7 @@ def test_event_round_trip_serialization():
     original = TestEvent(message="test", count=99)
     data = original.to_dict()
     restored = TestEvent.from_dict(data)
-    
+
     assert restored.message == original.message
     assert restored.count == original.count
     assert restored.correlation_id == original.correlation_id
@@ -107,7 +107,7 @@ def test_event_round_trip_serialization():
 def test_event_from_dict_missing_fields():
     """Verify from_dict() raises error for missing required fields."""
     data = {"message": "hello"}  # Missing 'count'
-    
+
     with pytest.raises(TypeError):
         TestEvent.from_dict(data)
 
@@ -116,7 +116,7 @@ def test_event_str_representation():
     """Verify __str__() returns readable representation."""
     event = TestEvent(message="hello", count=1)
     event_str = str(event)
-    
+
     assert "TestEvent" in event_str
     assert "hello" in event_str
     assert "1" in event_str

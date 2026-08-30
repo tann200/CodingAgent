@@ -64,10 +64,10 @@ jobs:
           pip install -e .[dev]
       - name: Lint (ruff)
         run: |
-          python -m ruff check src tests --select=E,F,W --ignore=E501 || true
+          python -m ruff check src tests --select=E,F,W --ignore=E501
       - name: Type check (mypy)
         run: |
-          python -m mypy src/server src/core/inference/provider_utils.py src/core/orchestration/tool_contracts.py src/core/orchestration/tool_parser.py --ignore-missing-imports --follow-imports=silent --disable-error-code=import-untyped --no-error-summary || true
+          python -m mypy src/server src/core/inference/provider_utils.py src/core/orchestration/tool_contracts.py src/core/orchestration/tool_parser.py --ignore-missing-imports --follow-imports=silent --disable-error-code=import-untyped --no-error-summary
 
   unit-tests:
     runs-on: ubuntu-latest

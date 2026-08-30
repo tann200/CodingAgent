@@ -72,7 +72,15 @@ def _handle_no_tool_or_empty_response(
                 "truncated_yaml": _is_truncated_yaml,
             }
             try:
-                orchestrator.event_bus.publish_typed(PerceptionCorrectivePrompt(**event))
+                orchestrator.event_bus.publish_typed(
+                    PerceptionCorrectivePrompt(
+                        session_id=state.get("session_id", ""),
+                        attempt=int(empty_response_count),
+                        reason="no_tool",
+                        model_tier=_model_tier_str or "",
+                        truncated_yaml=str(_is_truncated_yaml),
+                    )
+                )
             except Exception:
                 publish = getattr(orchestrator.event_bus, "publish", None)
                 if callable(publish):
