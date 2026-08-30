@@ -66,7 +66,7 @@ The suite is large, but the `sync_threads` fixture turns thread and executor wor
 
 As of the QUAL-01/TEST-02 pass (ruff + mypy gates fail closed):
 
-- The full unit suite passes from a clean environment: **4606 passed, 1 skipped, 0 xfail/xpass** (includes the 14-test real-concurrency contract suite from TEST-01 and the 23-test STATE-01 boundary suite).
+- The full unit suite passes from a clean environment: **4636 passed, 1 skipped, 0 xfail/xpass** (includes the 14-test real-concurrency contract suite from TEST-01, the 23-test STATE-01 boundary suite, and the 30-test PERF-02 resilience-policy suite).
 - Ruff passes on both the default ruleset and the CI gate (`--select=E,F,W --ignore=E501`) with zero errors. CI no longer masks failures with `|| true`.
 - The CI mypy gate (narrow file list) passes with zero errors; the `|| true` masking was removed.
 - The `patch` executable dependency was eliminated by making file-edit and unit tests portable (`ad75951`); `patch` is no longer required.
@@ -192,16 +192,14 @@ Tasks are ordered by dependency. Each task should land as its own commit or pull
 
 #### PERF-02 — Unify provider resilience policy
 
-**Status:** Planned  
+**Status:** In progress (centralized policy + classifier adoption + fault-injection tests done)  
 **Risk:** Medium  
 **Depends on:** None
 
-- Define shared connect, model-load, first-token, and stream-idle timeouts.
-- Centralize retryable status/error classification, capped exponential backoff, and jitter.
-- Apply it to Ollama model info/generation and other adapters consistently.
-- Preserve longer local-model warm-up windows without masking permanent errors.
-
-**Acceptance:** Fault-injection tests cover connection refusal, model warm-up, timeout, 429, 5xx, stream interruption, and fallback selection.
+- **Centralized policy done** — `src/core/utils/retry.py` now owns the shared resilience contract: `ResiliencePolicy` dataclass with the shared phase timeouts (connect 10s, model-load 120s, first-token 120s, stream-idle 60s, request 120s), a single `RETRYABLE_STATUS_CODES` set with `is_retryable_status_code()` / `is_retryable_exception()` classifiers, and `async_retry` now uses the capped, jittered `jittered_backoff` (fixing the previous dead, uncapped twin).
+- **Classifier adoption done** — `openai_compat_adapter._execute_with_retry` and `ollama_adapter._request_with_retry` now use the shared `is_retryable_status_code()` instead of their private hardcoded variants; ollama's backoff is now capped+jittered and retries 429.
+- **Fault-injection tests done** — `tests/unit/test_resilience_policy.py` (30 tests) covers connection refusal, model warm-up, timeout, 429, 5xx, stream interruption, retry exhaustion (final error surfaced for fallback), backoff capping, and adapter adoption of the shared classifier. Full unit suite green (4636 passed).
+- Remaining: retire the remaining literal timeout numbers inside adapters to `ResiliencePolicy`, and extend native generation-path retry to the Ollama chat/generate bodies (currently guarded only at the model-listing helper).
 
 #### PERF-03 — Measure before decomposing hot paths
 
@@ -258,8 +256,8 @@ Tasks are ordered by dependency. Each task should land as its own commit or pull
 1. ~~Run **QUAL-01** and **TEST-02** so the baseline is trustworthy.~~ **Completed** — CI gates fail closed; unit suite green.
 2. Define the production surface in **STAB-06**.
 3. ~~Implement **EVENT-01**, followed by **TEST-01**.~~ **Completed** — delivery classes live and the real-concurrency contract suite (`test_concurrency_contracts.py`) validates them.
-4. Implement **PERF-01** and **PERF-02** independently.
+4. ~~Implement **PERF-01** and **PERF-02** independently.~~ — **PERF-02's centralized resilience policy is landed** (shared timeouts/classifier/capped-jittered backoff + 30 fault-injection tests). **PERF-01** (streaming pagination, depends on STAB-03) and **PERF-03** (measurement) remain.
 5. Use **PERF-03** evidence to scope optimization.
 6. ~~Start **STATE-01** only after delivery and concurrency contracts protect behavior.~~ — Contracts are in place and **STATE-01's boundary layer is implemented** (node output schemas + enforcement wrapper + 23 scenario tests). Remaining STATE-01 work is the per-node field-ownership migration.
 
-With the baseline, delivery, and concurrency contracts now solid and STATE-01's boundary enforcement landed, the next highest-leverage tasks are **PERF-01/PERF-02** (independent performance work), **STAB-06** (production endpoint exposure), or completing **STATE-01's** field-ownership migration node-family by node-family.
+With the baseline, delivery, concurrency, STATE-01 boundary, and PERF-02 resilience-policy work landed, the next highest-leverage tasks are **STAB-06** (production endpoint exposure), **PERF-01** (streaming pagination, once STAB-03 exists), or completing **STATE-01's**/PERF-02's remaining migrations (per-node field ownership; literal-timeout retirement and generation-path retry in the Ollama adapter).

@@ -24,6 +24,7 @@ import requests
 
 from src.core.inference.llm_client import LLMClient
 from src.core.inference.telemetry import with_telemetry
+from src.core.utils.retry import is_retryable_status_code
 from src.core.utils.strings import valid_str as _valid_str
 
 _logger = logging.getLogger(__name__)
@@ -387,7 +388,6 @@ class OpenAICompatibleAdapter(LLMClient):
         Raises on unrecoverable errors.
         """
         _MAX_RETRIES = 3
-        _RETRYABLE_STATUS = {429, 500, 502, 503, 504}
         r = None
         last_exc: Optional[Exception] = None
         for _attempt in range(_MAX_RETRIES):
@@ -401,7 +401,7 @@ class OpenAICompatibleAdapter(LLMClient):
                 )
                 if stream:
                     return r
-                if r.status_code not in _RETRYABLE_STATUS:
+                if not is_retryable_status_code(r.status_code):
                     break
                 _logger.warning(
                     "%s.chat attempt %d/%d: status %d, retrying",

@@ -82,6 +82,7 @@ except Exception:
 
 from src.core.inference.llm_client import LLMClient
 from src.core.inference.telemetry import with_telemetry
+from src.core.utils.retry import is_retryable_status_code, jittered_backoff
 from src.core.utils.strings import valid_str as _valid_str
 
 _logger = logging.getLogger(__name__)
@@ -194,21 +195,30 @@ class OllamaAdapter(LLMClient):
         return lm_select_model_name(self.models, model)
 
     def _request_with_retry(self, method: str, url: str, timeout: float = 30.0, **kwargs) -> Optional[requests.Response]:
-        """Make an HTTP request with retry and exponential backoff."""
+        """Make an HTTP request with retry and capped, jittered backoff.
+
+        Uses the shared resilience policy for status classification
+        (``is_retryable_status_code``) and ``jittered_backoff`` for the wait.
+        """
         _MAX_RETRIES = 3
+        _MAX_BACKOFF = 30.0
         last_response = None
         for _attempt in range(_MAX_RETRIES):
             try:
                 request_method = getattr(requests, method.lower())
                 response = request_method(url, timeout=timeout, **kwargs)
-                if response.status_code >= 500 and _attempt < _MAX_RETRIES - 1:
-                    time.sleep(2 ** _attempt)
+                if is_retryable_status_code(response.status_code) and _attempt < _MAX_RETRIES - 1:
+                    time.sleep(
+                        jittered_backoff(_attempt + 1, base_delay=2.0, max_delay=_MAX_BACKOFF)
+                    )
                     last_response = response
                     continue
                 return response
             except requests.exceptions.ConnectionError:
                 if _attempt < _MAX_RETRIES - 1:
-                    time.sleep(2 ** _attempt)
+                    time.sleep(
+                        jittered_backoff(_attempt + 1, base_delay=2.0, max_delay=_MAX_BACKOFF)
+                    )
                     continue
                 raise
         return last_response

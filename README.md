@@ -330,7 +330,7 @@ CI runs these as fail-closed gates: newly introduced Ruff or mypy errors break t
 
 ## Test Baseline
 
-- **4606** unit tests passing (1 skipped, 0 xfail/xpass)
+- **4636** unit tests passing (1 skipped, 0 xfail/xpass)
 - **7** benchmark tests
 - **0** Critical issues
 - **0** High issues
