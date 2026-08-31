@@ -54,7 +54,7 @@ import uuid
 import os
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 from src.core.memory.file_lock import locked_file
 from src.core.memory.jsonl_sidecar_io import atomic_write_json_with_fallback
@@ -113,7 +113,10 @@ class JsonlSessionStore:
         self._decisions_lock = threading.Lock()
         # Schema version for compatibility with older tests/tools
         self._SCHEMA_VERSION = 2
-        # Maximum records to read in _read_all_records to prevent OOM
+        # Retired hard read cap: the previous all-record reader silently truncated
+        # sessions beyond this count. Bounded reads now go through iter_records /
+        # read_page, and _read_all_records returns the full session without
+        # dropping records. Kept only as a legacy attribute for compatibility.
         self._MAX_RECORDS = 10_000
 
     def _get_sessions_dir(self) -> Path:
@@ -241,69 +244,97 @@ class JsonlSessionStore:
                     exc,
                 )
 
-    def _read_all_records(self, session_id: str) -> List[Dict[str, Any]]:
-        """Read and parse all records across all rotated files for *session_id*.
+    @staticmethod
+    def _parse_line(raw_line: str) -> Optional[Dict[str, Any]]:
+        """Parse a single JSONL line; return None for blank/malformed lines."""
+        line = raw_line.strip()
+        if not line:
+            return None
+        try:
+            return json.loads(line)
+        except json.JSONDecodeError:
+            logger.debug("JsonlSessionStore: skipping malformed line")
+            return None
 
-        Limits reading to _MAX_RECORDS to prevent OOM issues.
+    def iter_records(self, session_id: str) -> Iterator[Dict[str, Any]]:
+        """Yield every parsed record for *session_id* across all rotated files.
+
+        Lazy and memory-bounded: only one JSON line is held in memory at a
+        time, so the full history of an arbitrarily large session is traversable
+        without materialising it. There is no silent truncation cap — callers
+        may stop early, but every record is reachable.
+
+        Records are yielded in chronological order (oldest rotation first,
+        active file last), matching ``_read_all_records``. Blank lines and
+        malformed JSON lines are skipped.
         """
-        records: List[Dict[str, Any]] = []
-        records_read = 0
-
         for fpath in self._session_files(session_id):
-            if records_read >= self._MAX_RECORDS:
-                logger.warning(
-                    "JsonlSessionStore: reached max records (%d) for session %s, stopping read",
-                    self._MAX_RECORDS, session_id
-                )
-                break
-
             try:
-                # Use a shared/read lock when reading to avoid races with
-                # concurrent writers in other processes.
                 try:
                     with locked_file(fpath, mode="r") as f:
                         for raw_line in f:
-                            if records_read >= self._MAX_RECORDS:
-                                break
-                            line = raw_line.strip()
-                            if not line:
-                                continue
-                            try:
-                                records.append(json.loads(line))
-                                records_read += 1
-                            except json.JSONDecodeError:
-                                logger.debug(
-                                    "JsonlSessionStore: skipping malformed line in %s",
-                                    fpath.name,
-                                )
+                            record = self._parse_line(raw_line)
+                            if record is not None:
+                                yield record
                 except Exception:
                     # Fallback to best-effort direct read when locking fails or
                     # the platform doesn't support it.
                     with fpath.open("r", encoding="utf-8", errors="replace") as f:
                         for raw_line in f:
-                            if records_read >= self._MAX_RECORDS:
-                                break
-                            line = raw_line.strip()
-                            if not line:
-                                continue
-                            try:
-                                records.append(json.loads(line))
-                                records_read += 1
-                            except json.JSONDecodeError:
-                                logger.debug(
-                                    "JsonlSessionStore: skipping malformed line in %s",
-                                    fpath.name,
-                                )
+                            record = self._parse_line(raw_line)
+                            if record is not None:
+                                yield record
             except Exception as exc:
-                logger.warning("JsonlSessionStore: could not read %s: %s", fpath, exc)
+                logger.warning(
+                    "JsonlSessionStore: could not read %s: %s", fpath, exc
+                )
 
-        if records_read >= self._MAX_RECORDS:
-            logger.warning(
-                "JsonlSessionStore: session %s truncated to %d records (max: %d)",
-                session_id, records_read, self._MAX_RECORDS
-            )
+    def read_page(
+        self, session_id: str, page_size: int, offset: int = 0
+    ) -> Tuple[List[Dict[str, Any]], bool]:
+        """Return a page of records plus whether more records remain.
 
-        return records
+        The cursor/page API backing PERF-01: only the requested page (up to
+        *page_size* records) is materialised, so memory stays bounded by page
+        size regardless of session length. ``has_more`` is True when records
+        beyond this page remain, giving callers an explicit, non-silent signal
+        to continue paginating rather than losing data.
+
+        Args:
+            session_id: Target session.
+            page_size: Maximum records to return (>= 1).
+            offset: Number of leading records to skip (>= 0).
+
+        Returns:
+            ``(records, has_more)`` where ``has_more`` is True if a record
+            exists at index ``offset + len(records)``.
+        """
+        if page_size < 1:
+            raise ValueError("page_size must be >= 1")
+        if offset < 0:
+            raise ValueError("offset must be >= 0")
+
+        page: List[Dict[str, Any]] = []
+        has_more = False
+        for index, record in enumerate(self.iter_records(session_id)):
+            if index < offset:
+                continue
+            if len(page) >= page_size:
+                has_more = True
+                break
+            page.append(record)
+        return page, has_more
+
+    def _read_all_records(self, session_id: str) -> List[Dict[str, Any]]:
+        """Read and parse all records across all rotated files for *session_id*.
+
+        Materialises the full history for backward compatibility with callers
+        that expect a list. Unlike the previous implementation this does **not**
+        silently truncate at ``_MAX_RECORDS`` — the entire (large) session is
+        traversable. For bounded-memory traversal prefer ``iter_records``
+        (streaming) or ``read_page`` (cursor/page API).
+        """
+        return list(self.iter_records(session_id))
 
     # ------------------------------------------------------------------
     # SessionStoreProtocol — core message API
