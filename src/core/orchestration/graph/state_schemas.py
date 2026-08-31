@@ -423,6 +423,21 @@ def _default_publish_violation(
                     session_id=session_id if isinstance(session_id, str) else "",
                 )
             )
+        # Observability (ITEM 2.3 / CF-5): accumulate fail-open violations so
+        # operators/telemetry can observe their rate and distribution.  Guarded
+        # so a metrics failure can never break node execution (graceful).
+        try:
+            from src.core.observability.metrics import metrics
+
+            metrics.increment_counter("graph.node_validation_failed")
+            metrics.increment_counter(
+                f"graph.node_validation_failed.node.{violation.node_name}"
+            )
+            metrics.increment_counter(
+                f"graph.node_validation_failed.reason.{violation.reason}"
+            )
+        except Exception:
+            pass
     except Exception:
         _logger.debug("state_schemas: default publish failed", exc_info=True)
 

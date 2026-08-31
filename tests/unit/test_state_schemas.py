@@ -14,6 +14,7 @@ import asyncio
 import pytest
 
 from src.core.messaging.event_types import NodeResultValidationFailed
+from src.core.observability.metrics import metrics
 from src.core.orchestration.graph.state_schemas import (
     NodeResultViolation,
     validate_node_result,
@@ -232,6 +233,66 @@ class TestFailOpenHeadroom:
         assert event.node_name == "verification"
         assert event.reason == "unknown_key"
         assert event.session_id == "s1"
+
+    def test_fail_open_increments_validation_counter(self, monkeypatch):
+        """Fail-open violations must be observable via the metrics store
+        (audit 2.3 / CF-5): total + per-node + per-reason counters."""
+        import src.core.orchestration.graph.state_schemas as schemas
+        from src.core.orchestration.graph.nodes import node_utils
+
+        monkeypatch.setattr(
+            node_utils, "_resolve_orchestrator", lambda state, config: None
+        )
+
+        def _counters():
+            return metrics.snapshot()["counters"]
+
+        before = _counters()
+        total_b = before.get("graph.node_validation_failed", 0)
+        node_b = before.get("graph.node_validation_failed.node.verification", 0)
+        reason_b = before.get("graph.node_validation_failed.reason.unknown_key", 0)
+
+        async def _node(_s, _c):
+            return {"verification_result": {}, "bogus": 1}
+
+        wrapped = wrap_node("verification", _node, strict=False)
+        asyncio.run(wrapped({"session_id": "s1"}, {}))
+
+        after = _counters()
+        assert (
+            after.get("graph.node_validation_failed", 0) == total_b + 1
+        ), "total violation counter must increment per violation"
+        assert (
+            after.get("graph.node_validation_failed.node.verification", 0)
+            == node_b + 1
+        ), "per-node counter must increment"
+        assert (
+            after.get("graph.node_validation_failed.reason.unknown_key", 0)
+            == reason_b + 1
+        ), "per-reason counter must increment"
+
+    def test_valid_result_does_not_increment_counter(self, monkeypatch):
+        """A conforming node result must NOT touch the violation counter."""
+        import src.core.orchestration.graph.state_schemas as schemas
+        from src.core.orchestration.graph.nodes import node_utils
+
+        monkeypatch.setattr(
+            node_utils, "_resolve_orchestrator", lambda state, config: None
+        )
+
+        counters_before = metrics.snapshot()["counters"]
+        total_before = counters_before.get("graph.node_validation_failed", 0)
+
+        async def _node(_s, _c):
+            return {"verification_result": {}}
+
+        wrapped = wrap_node("verification", _node, strict=False)
+        asyncio.run(wrapped({}, {}))
+
+        after = metrics.snapshot()["counters"]
+        assert (
+            after.get("graph.node_validation_failed", 0) == total_before
+        ), "valid result must not increment the violation counter"
 
     def test_wrapping_unknown_node_is_identity(self):
         def _node(_s, _c):
