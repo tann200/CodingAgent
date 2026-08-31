@@ -352,9 +352,9 @@ def _check_workdir_confinement(orch: Any, name: str, args: dict) -> bool:
         return True
 
     if name == "delete_file":
-        path_arg = args.get("path") or args.get("file_path")
-        if path_arg and _inside(workdir_path / str(path_arg)):
-            return False
+        # HS-5 / SEC-8: deletion is irreversible, so it must NEVER be blindly
+        # auto-approved just because the target is inside the working directory —
+        # it always requires explicit approval regardless of path confinement.
         return True
 
     return needs_gate
@@ -906,6 +906,16 @@ def execute_tool_impl(orch: Any, tool_call: Dict[str, Any]) -> Dict[str, Any]:
     args = tool_call.get("arguments") or {}
     if not isinstance(args, dict):
         return {"ok": False, "error": "Tool arguments must be a mapping."}
+
+    # 0. Alias normalisation — MUST happen before any permission/policy check so
+    # that a deny/approval rule keyed on the canonical name (e.g. "bash") cannot
+    # be evaded via an alias (e.g. "run", "shell", "cmd"). SEC-2 / HS-4.
+    try:
+        from src.tools.tools_config import resolve_tool_alias
+
+        name = resolve_tool_alias(name)
+    except Exception:
+        pass
 
     if getattr(orch, "_dry_run", False) and name in DRY_RUN_BLOCKED_TOOLS:
         # Strip internal flags before returning (same as the live-execution path).

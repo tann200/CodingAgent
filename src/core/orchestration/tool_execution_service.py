@@ -182,9 +182,9 @@ class ToolExecutionService:
 
         # 1. Alias normalisation
         try:
-            from src.tools.tools_config import TOOL_ALIASES
+            from src.tools.tools_config import resolve_tool_alias
 
-            name = TOOL_ALIASES.get(name, name)
+            name = resolve_tool_alias(name)
         except Exception:
             pass
 

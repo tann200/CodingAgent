@@ -198,7 +198,7 @@ def _primary_arg_for_tool(tool_name: str, args: dict) -> str:
 # project working directory.  ask_user is always auto-approved regardless
 # of path because it produces no filesystem side-effects.
 _WORKDIR_SAFE_TOOLS: frozenset[str] = frozenset(
-    {"bash", "run_tests", "delete_file", "run_bash", "ask_user"}
+    {"bash", "run_tests", "run_bash", "ask_user"}
 )
 
 
@@ -230,10 +230,9 @@ def _is_workdir_confined(name: str, args: "Dict[str, Any]", workdir: "Any") -> b
         cmd_workdir = args.get("workdir", wd_str)
         return _path_inside(str(cmd_workdir), workdir)
     if name == "delete_file":
-        path_arg = args.get("path", "")
-        if not path_arg:
-            return False
-        return _path_inside(str(path_arg), workdir)
+        # HS-5 / SEC-8: deletion is irreversible — never auto-confined, always
+        # requires explicit approval.
+        return False
     return False
 
 

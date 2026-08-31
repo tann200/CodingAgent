@@ -403,12 +403,13 @@ def run_sandboxed(
             logger.debug(
                 "sandbox: sandbox-exec not enforcing on this host — skipping"
             )
-            if _REQUIRE_ENFORCEMENT:
+            if _enforcement_required():
                 raise RuntimeError(
                     "sandbox: sandbox-exec is present but NOT enforcing restrictions "
                     "on this host (Apple Silicon / modern macOS deprecation). "
                     "Refusing to run unsandboxed command because "
-                    "SANDBOX_REQUIRE_ENFORCEMENT=1. "
+                    "sandbox enforcement is required (SANDBOX_REQUIRE_ENFORCEMENT "
+                    "or autonomous mode). "
                     "Install bwrap or set CODINGAGENT_SANDBOX_LEVEL=off to opt out."
                 )
         else:
@@ -456,11 +457,12 @@ def run_sandboxed(
             "WARNING: sandbox: bwrap and sandbox-exec are unavailable — "
             "running command WITHOUT sandboxing. Set SANDBOX_LEVEL=off to suppress.\n"
         )
-        if _REQUIRE_ENFORCEMENT:
+        if _enforcement_required():
             raise RuntimeError(
                 "sandbox: no sandbox backend is available or enforcing. "
                 "Refusing to run unsandboxed command because "
-                "SANDBOX_REQUIRE_ENFORCEMENT=1. "
+                "sandbox enforcement is required (SANDBOX_REQUIRE_ENFORCEMENT "
+                "or autonomous mode). "
                 "Install bwrap or set CODINGAGENT_SANDBOX_LEVEL=off to opt out."
             )
         _sys.stderr.write(_warn)
@@ -494,6 +496,32 @@ def sandbox_available() -> bool:
 def get_sandbox_level() -> str:
     """Return the current default sandbox level."""
     return _DEFAULT_LEVEL
+
+
+def _autonomous_mode() -> bool:
+    """Return True when the agent is in autonomous (non-interactive) mode.
+
+    Wrapped in try/except so a tools_config import problem can never disable
+    sandbox enforcement (graceful-degradation, fail-safe direction).
+    """
+    try:
+        from src.tools.tools_config import is_autonomous
+
+        return bool(is_autonomous())
+    except Exception:
+        return False
+
+
+def _enforcement_required() -> bool:
+    """Return True when unsandboxed execution must be refused.
+
+    True when ``SANDBOX_REQUIRE_ENFORCEMENT`` is set OR the agent is in
+    autonomous mode (CF-2: sandbox must not silently fail open to full-user-
+    privilege execution when no operator is watching to approve/gate tools).
+    """
+    if _REQUIRE_ENFORCEMENT:
+        return True
+    return _autonomous_mode()
 
 
 def set_sandbox_level(level: str) -> None:

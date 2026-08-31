@@ -144,6 +144,18 @@ TOOL_ALIASES: Dict[str, str] = {
     "fs.list": "list_files",
 }
 
+
+def resolve_tool_alias(name: str) -> str:
+    """Resolve a tool *name* to its canonical name via ``TOOL_ALIASES``.
+
+    Aliases (e.g. ``run`` → ``bash``, ``ls`` → ``list_files``) are normalized
+    transparently so permission/policy checks always operate on the canonical
+    tool name — preventing deny-rule and approval-gate evasion via aliases.
+    Unknown names are returned unchanged.
+    """
+    return TOOL_ALIASES.get(name, name)
+
+
 # -----------------------------------------------------------------------
 # Module-level state (mutable, not user-facing)
 # -----------------------------------------------------------------------
