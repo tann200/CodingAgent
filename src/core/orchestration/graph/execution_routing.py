@@ -10,17 +10,26 @@ from src.core.orchestration.graph.perception_routing import (
     _is_nano_or_small,
     _is_success,
 )
+from src.core.orchestration.graph.routing_constants import (
+    DEFAULT_MAX_DEBUG_ATTEMPTS,
+    DEFAULT_MAX_TOOL_CALLS,
+    DEFAULT_RECOVERY_CAP,
+    LOOP_GUARD_ROUNDS,
+    MAX_NO_PLAN_FAILS,
+    MAX_STEP_RETRIES,
+    RECOVERY_CAPS,
+    REPLAN_CAP_LARGE_FRONTIER,
+    REPLAN_CAP_OTHER,
+    TOTAL_DEBUG_CAP_LARGE_FRONTIER,
+    TOTAL_DEBUG_CAP_OTHER,
+)
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_MAX_TOOL_CALLS = 30  # default budget for standard agent graph
-_LOOP_GUARD_ROUNDS = 10  # round threshold for stuck-loop detection
-_RECOVERY_CAPS: dict[str, int] = {
-    "small": 4,
-    "medium": 8,
-    "large": 12,
-    "frontier": 12,
-}
+# Backward-compatible re-exports (builder.py + some tests alias these).
+_DEFAULT_MAX_TOOL_CALLS = DEFAULT_MAX_TOOL_CALLS
+_LOOP_GUARD_ROUNDS = LOOP_GUARD_ROUNDS
+_RECOVERY_CAPS = RECOVERY_CAPS
 
 
 def should_after_execution(
@@ -31,7 +40,7 @@ def should_after_execution(
     """Decide routing after execution node."""
     if state.get("replan_required"):
         replan_attempts = int(state.get("replan_attempts") or 0)
-        replan_cap = 3 if _is_large_or_frontier(state) else 5
+        replan_cap = REPLAN_CAP_LARGE_FRONTIER if _is_large_or_frontier(state) else REPLAN_CAP_OTHER
         if replan_attempts >= replan_cap:
             logger.warning(
                 f"should_after_execution: replan_attempts={replan_attempts} >= {replan_cap}, "
@@ -81,7 +90,7 @@ def should_after_execution(
 
         step_retry_counts: dict = state.get("step_retry_counts") or {}
         step_retries = int(step_retry_counts.get(str(current_step), 0))
-        max_exec_step_retries = 3
+        max_exec_step_retries = MAX_STEP_RETRIES
         if step_retries >= max_exec_step_retries:
             logger.warning(
                 f"should_after_execution: step {current_step} failed after "
@@ -179,7 +188,7 @@ def should_after_execution(
         )
         return "perception"
 
-    if no_plan_fail_count >= 3:
+    if no_plan_fail_count >= MAX_NO_PLAN_FAILS:
         logger.warning(
             f"should_after_execution: no-plan fail count {no_plan_fail_count} >= 3, "
             "bailing to memory_sync"
@@ -225,7 +234,7 @@ def should_after_verification(
 ) -> Literal["memory_sync", "debug", "end"]:
     """Decide routing after verification node."""
     debug_attempts = int(state.get("debug_attempts") or 0)
-    max_debug_attempts = int(state.get("max_debug_attempts") or 3)
+    max_debug_attempts = int(state.get("max_debug_attempts") or DEFAULT_MAX_DEBUG_ATTEMPTS)
 
     verification_passed = state.get("verification_passed")
     if verification_passed is not None:
@@ -263,11 +272,11 @@ def should_after_debug(
     """Decide routing after debug node."""
     next_action = state.get("next_action")
     debug_attempts = int(state.get("debug_attempts") or 0)
-    max_debug_attempts = int(state.get("max_debug_attempts") or 3)
+    max_debug_attempts = int(state.get("max_debug_attempts") or DEFAULT_MAX_DEBUG_ATTEMPTS)
 
     total_recovery = int(state.get("total_recovery_attempts") or 0)
     model_tier = (state.get("model_tier") or "medium").lower()
-    recovery_cap = _RECOVERY_CAPS.get(model_tier, 8)
+    recovery_cap = _RECOVERY_CAPS.get(model_tier, DEFAULT_RECOVERY_CAP)
     if total_recovery >= recovery_cap:
         logger.warning(
             f"should_after_debug: global recovery cap ({recovery_cap}) reached "
@@ -293,7 +302,7 @@ def should_after_replan(
     """Decide routing after replan node."""
     total_recovery = int(state.get("total_recovery_attempts") or 0)
     model_tier = (state.get("model_tier") or "medium").lower()
-    recovery_cap = _RECOVERY_CAPS.get(model_tier, 8)
+    recovery_cap = _RECOVERY_CAPS.get(model_tier, DEFAULT_RECOVERY_CAP)
     if total_recovery >= recovery_cap:
         logger.warning(
             f"should_after_replan: global recovery cap ({recovery_cap}) reached "
@@ -322,7 +331,7 @@ def should_after_evaluation(
         return "memory_sync"
 
     if evaluation_result == "replan":
-        max_step_retries = 3
+        max_step_retries = MAX_STEP_RETRIES
         current_step = int(state.get("current_step") or 0)
         step_retry_counts: dict = state.get("step_retry_counts") or {}
         step_retries = int(step_retry_counts.get(str(current_step), 0))
@@ -331,7 +340,9 @@ def should_after_evaluation(
                 f"should_after_evaluation: replan requested but step {current_step} has "
                 f"exhausted retries ({step_retries}/{max_step_retries}) — routing to debug"
             )
-            max_total_debug = 5 if _is_large_or_frontier(state) else 9
+            max_total_debug = (
+                TOTAL_DEBUG_CAP_LARGE_FRONTIER if _is_large_or_frontier(state) else TOTAL_DEBUG_CAP_OTHER
+            )
             total_debug = int(state.get("total_debug_attempts") or 0)
             if total_debug >= max_total_debug:
                 logger.warning(
@@ -345,7 +356,9 @@ def should_after_evaluation(
         return "step_controller"
 
     if evaluation_result == "debug":
-        max_total_debug = 5 if _is_large_or_frontier(state) else 9
+        max_total_debug = (
+            TOTAL_DEBUG_CAP_LARGE_FRONTIER if _is_large_or_frontier(state) else TOTAL_DEBUG_CAP_OTHER
+        )
         total_debug = int(state.get("total_debug_attempts") or 0)
         if total_debug >= max_total_debug:
             logger.warning(
@@ -383,7 +396,7 @@ def _check_replan_required(state: Mapping[str, Any]) -> str | None:
         return None
 
     replan_attempts = int(state.get("replan_attempts") or 0)
-    replan_cap = 3 if _is_large_or_frontier(state) else 5
+    replan_cap = REPLAN_CAP_LARGE_FRONTIER if _is_large_or_frontier(state) else REPLAN_CAP_OTHER
     if replan_attempts >= replan_cap:
         logger.warning(
             f"route_execution: replan_attempts={replan_attempts} >= {replan_cap}, "
@@ -492,7 +505,7 @@ def _check_no_plan_fast_path(state: Mapping[str, Any]) -> str | None:
 
     if execution_failed and state.get("rounds", 0) >= 1:
         no_plan_fail_count = int(state.get("no_plan_fail_count") or 0)
-        if no_plan_fail_count >= 3:
+        if no_plan_fail_count >= MAX_NO_PLAN_FAILS:
             logger.warning(
                 f"route_execution: no_plan_fail_count={no_plan_fail_count} >= 3, "
                 "bailing to memory_sync"

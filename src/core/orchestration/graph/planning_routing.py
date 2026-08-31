@@ -2,10 +2,17 @@ import logging
 from typing import Any, Literal, Mapping
 
 from src.core.orchestration.graph.perception_routing import _is_large_or_frontier
+from src.core.orchestration.graph.routing_constants import (
+    FORCE_EXECUTION_ROUNDS,
+    MAX_PLAN_ATTEMPTS,
+    MAX_ROUNDS_PLANNING,
+    MAX_STEP_RETRIES,
+)
 
 logger = logging.getLogger(__name__)
 
-_MAX_ROUNDS_PLANNING = 15  # force-end after this many planning rounds
+# Backward-compatible re-export (builder.py aliases this).
+_MAX_ROUNDS_PLANNING = MAX_ROUNDS_PLANNING
 
 
 def should_after_plan_validator(
@@ -40,15 +47,15 @@ def should_after_plan_validator(
         )
         return "execute"
 
-    if rounds >= 8:
+    if rounds >= FORCE_EXECUTION_ROUNDS:
         logger.warning(
-            f"should_after_plan_validator: rounds={rounds} >= 8, forcing execution to break loop"
+            f"should_after_plan_validator: rounds={rounds} >= {FORCE_EXECUTION_ROUNDS}, forcing execution to break loop"
         )
         return "execute"
 
-    if plan_attempts >= 3:
+    if plan_attempts >= MAX_PLAN_ATTEMPTS:
         logger.warning(
-            f"should_after_plan_validator: plan_attempts={plan_attempts} >= 3, forcing execution"
+            f"should_after_plan_validator: plan_attempts={plan_attempts} >= {MAX_PLAN_ATTEMPTS}, forcing execution"
         )
         return "execute"
 
@@ -130,7 +137,7 @@ def should_after_step_controller(
             )
             return "execution"
 
-        max_step_retries = 3
+        max_step_retries = MAX_STEP_RETRIES
         step_retry_counts: dict = state.get("step_retry_counts") or {}
         retries = int(step_retry_counts.get(str(current_step), 0))
         if retries >= max_step_retries:

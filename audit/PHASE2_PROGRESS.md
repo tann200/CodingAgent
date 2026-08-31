@@ -1,7 +1,7 @@
 # Phase 2 — Progress & Next-Task Analysis
 
 **Scope:** Track Phase 2 of the audit roadmap (robustness improvements), record completed items, and provide a concrete implementation analysis for the next task.
-**Status:** 2.1/2.2/2.3/2.5/2.6 complete; next task is **2.7**.
+**Status:** 2.1/2.2/2.3/2.5/2.6/2.7 complete; next task is **2.4**.
 
 ---
 
@@ -15,6 +15,7 @@
 | 2.3 | NodeResultValidationFailed counter | (this commit) | Increment `metrics` counters in `_default_publish_violation` (state_schemas.py): `graph.node_validation_failed` total + per-node + per-reason. Makes fail-open violations observable/aggregable (CF-5 prerequisite to tightening `_STATE_SCHEMAS_STRICT`). Tests added in `test_state_schemas.py`. |
 | 2.5 | Guard per-round debug serialization | (this commit) | `perception_node.py` — wrapped both debug `logger.info` blocks in `logger.isEnabledFor(logging.INFO)` so the expensive `repr(resp)` runs only when INFO is enabled. |
 | 2.6 | Remove duplicate `_is_success()` | (this commit) | `execution_routing.py` now imports the shared `_is_success` from `perception_routing.py` (already imported module) instead of redefining it. Regression test `test_success_helper_is_single_source_of_truth`. |
+| 2.7 | Centralize routing magic numbers | (this commit) | New `routing_constants.py` = single source of truth for all routing thresholds. `execution_routing.py`/`planning_routing.py` import them; replaced ~20 inline literals (replan/step-retry/no-plan/debug/recovery caps). Existing private names kept as re-exports so `builder.py` aliases + tests stay valid. Behavior-neutral (tests/mypy/ruff green). |
 
 Tests: `tests/unit/test_phase2_security_hardening.py` (13 tests) + 2 counter tests in `test_state_schemas.py` + dedup regression test. mypy + ruff check clean.
 
@@ -76,6 +77,5 @@ Guarded by try/except (metrics must never raise), consistent with the module's g
 | # | Item | Complexity | Recommendation |
 |---|------|------------|----------------|
 | 2.4 | Consolidate three pruning strategies | High | Dedicated effort — touches core context/pruning pipelines across `perception_node.py`, `tool_output_pruning.py`, `token_truncation.py`. Do as its own task, not mixed in. |
-| 2.7 | Centralize routing magic numbers | Medium | All routing modules. Single source of truth for thresholds. |
 
-**Suggested ordering:** next is **2.7** (medium), then **2.4** as a standalone high-complexity effort.
+**Suggested ordering:** next is **2.4** as a standalone high-complexity effort.
