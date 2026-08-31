@@ -8,6 +8,7 @@ from src.core.orchestration.graph.perception_routing import (
     READ_ONLY_TOOLS,
     _is_large_or_frontier,
     _is_nano_or_small,
+    _is_success,
 )
 
 logger = logging.getLogger(__name__)
@@ -20,14 +21,6 @@ _RECOVERY_CAPS: dict[str, int] = {
     "large": 12,
     "frontier": 12,
 }
-
-
-def _is_success(result: Any) -> bool:
-    """Simple result success check - did execution succeed?"""
-    if not result:
-        return False
-    _ok_flag = result.get("ok")
-    return (_ok_flag is True) or (_ok_flag is None and result.get("status") == "ok")
 
 
 def should_after_execution(

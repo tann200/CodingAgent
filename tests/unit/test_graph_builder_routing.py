@@ -1489,3 +1489,26 @@ class TestP3AShouldAfterAnalysis:
         assert result == "planning", (
             f"MEDIUM + simple should go to planning, got {result!r}"
         )
+
+
+def test_success_helper_is_single_source_of_truth():
+    """Audit 2.6: `_is_success` must be defined once (in perception_routing)
+    and reused by execution_routing via import — no duplicated definition."""
+    import inspect
+
+    exec_src = inspect.getsource(
+        __import__(
+            "src.core.orchestration.graph.execution_routing",
+            fromlist=["*"],
+        )
+    )
+    assert "def _is_success" not in exec_src, (
+        "execution_routing must not redefine _is_success (audit 2.6 dedup)"
+    )
+
+    from src.core.orchestration.graph.execution_routing import _is_success
+    from src.core.orchestration.graph.perception_routing import _is_success as _shared
+
+    assert _is_success is _shared, (
+        "execution_routing must reuse the shared _is_success helper"
+    )

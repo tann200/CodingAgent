@@ -920,25 +920,23 @@ async def _perception_node_impl(
     if early_result is not None:
         return early_result
 
-    # Debug: log raw response for troubleshooting
-    try:
-        _choices = resp.get("choices")
-        if _choices:
-            _msg = (
-                _choices[0].get("message", {}) if isinstance(_choices[0], dict) else {}
-            )
-            _content = _msg.get("content", "") if isinstance(_msg, dict) else ""
-        else:
-            _content = ""
-        logger.info(f"perception_node: raw LLM resp content: {repr(_content)[:100]}")
-    except Exception:
-        pass
-
-    # Debug: log raw response for troubleshooting
-    try:
-        logger.info(f"perception_node: raw LLM resp: {repr(resp)[:1000]}")
-    except Exception:
-        pass
+    # Debug: log raw response for troubleshooting (guarded so the potentially
+    # expensive repr()/content extraction is skipped when INFO logging is off —
+    # audit 2.5).
+    if logger.isEnabledFor(logging.INFO):
+        try:
+            _choices = resp.get("choices")
+            if _choices:
+                _msg = (
+                    _choices[0].get("message", {}) if isinstance(_choices[0], dict) else {}
+                )
+                _content = _msg.get("content", "") if isinstance(_msg, dict) else ""
+            else:
+                _content = ""
+            logger.info(f"perception_node: raw LLM resp content: {repr(_content)[:100]}")
+            logger.info(f"perception_node: raw LLM resp: {repr(resp)[:1000]}")
+        except Exception:
+            pass
 
     # Extract response
     ch = None
