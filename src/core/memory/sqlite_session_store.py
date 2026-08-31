@@ -8,7 +8,7 @@ import uuid
 
 # ruff: noqa: E501
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 from src.core.memory.sqlite_store_session_ops import (
     copy_missing_snapshot_rows,
@@ -217,6 +217,63 @@ class SqliteSessionStore:
             (session_id or "unknown",),
         ).fetchall()
         return [{"role": r["role"], "content": r["content"]} for r in rows]
+
+    def iter_records(self, session_id: str) -> Iterator[Dict[str, Any]]:
+        """Yield every message for *session_id* in chronological order.
+
+        Sqlite-parity counterpart of ``JsonlSessionStore.iter_records``: a lazy
+        generator that yields one message row at a time (bounded memory) rather
+        than materialising the full session. Records are yield as
+        ``{"session_id", "role", "content", "created_at"}`` dicts, matching the
+        message representation the ``messages`` table stores.
+        """
+        conn = self._get_connection()
+        rows = conn.execute(
+            "SELECT session_id, role, content, created_at "
+            "FROM messages WHERE session_id=? ORDER BY created_at",
+            (session_id or "unknown",),
+        )
+        for row in rows:
+            yield {
+                "session_id": row["session_id"],
+                "role": row["role"],
+                "content": row["content"],
+                "created_at": row["created_at"],
+            }
+
+    def read_page(
+        self, session_id: str, page_size: int, offset: int = 0
+    ) -> Tuple[List[Dict[str, Any]], bool]:
+        """Return a page of messages plus whether more records remain.
+
+        Sqlite-parity counterpart of ``JsonlSessionStore.read_page``: a
+        cursor/page API that materialises only the requested page (up to
+        *page_size* messages) and reports an explicit ``has_more`` signal so
+        callers paginate instead of silently dropping data.
+        """
+        if page_size < 1:
+            raise ValueError("page_size must be >= 1")
+        if offset < 0:
+            raise ValueError("offset must be >= 0")
+
+        conn = self._get_connection()
+        rows = conn.execute(
+            "SELECT session_id, role, content, created_at "
+            "FROM messages WHERE session_id=? ORDER BY created_at "
+            "LIMIT ? OFFSET ?",
+            (session_id or "unknown", page_size + 1, offset),
+        ).fetchall()
+        page = [
+            {
+                "session_id": r["session_id"],
+                "role": r["role"],
+                "content": r["content"],
+                "created_at": r["created_at"],
+            }
+            for r in rows[:page_size]
+        ]
+        has_more = len(rows) > page_size
+        return page, has_more
 
     def search(
         self,

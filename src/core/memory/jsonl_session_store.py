@@ -977,7 +977,6 @@ class JsonlSessionStore:
         return _build(session_id)
 
     def get_session_summary(self, session_id: str) -> Dict[str, Any]:
-        records = self._read_all_records(session_id)
         summary: Dict[str, Any] = {
             "session_id": session_id,
             "messages": 0,
@@ -991,7 +990,10 @@ class JsonlSessionStore:
             "plans": 0,
             "decisions": 0,
         }
-        for r in records:
+        # Stream lazily instead of materialising the whole session: counting
+        # by type needs only one record in memory at a time, so summaries of
+        # arbitrarily large sessions stay memory-bounded.
+        for r in self.iter_records(session_id):
             t = r.get("type")
             if t == "message":
                 summary["messages"] += 1

@@ -66,7 +66,7 @@ The suite is large, but the `sync_threads` fixture turns thread and executor wor
 
 As of the QUAL-01/TEST-02 pass (ruff + mypy gates fail closed):
 
-- The full unit suite passes from a clean environment: **4651 passed, 1 skipped, 0 xfail/xpass** (includes the 14-test real-concurrency contract suite from TEST-01, the 23-test STATE-01 boundary suite, the 30-test PERF-02 resilience-policy suite, and the 9-test PERF-01 streaming-pagination suite).
+- The full unit suite passes from a clean environment: **4659 passed, 1 skipped, 0 xfail/xpass** (includes the 14-test real-concurrency contract suite from TEST-01, the 23-test STATE-01 boundary suite, the 30-test PERF-02 resilience-policy suite, and the 9-test PERF-01 JSONL + 8-test PERF-01 Sqlite streaming-pagination suites).
 - Ruff passes on both the default ruleset and the CI gate (`--select=E,F,W --ignore=E501`) with zero errors. CI no longer masks failures with `|| true`.
 - The CI mypy gate (narrow file list) passes with zero errors; the `|| true` masking was removed.
 - The `patch` executable dependency was eliminated by making file-edit and unit tests portable (`ad75951`); `patch` is no longer required.
@@ -179,15 +179,16 @@ Tasks are ordered by dependency. Each task should land as its own commit or pull
 
 #### PERF-01 — Replace partial all-record reads with streaming pagination
 
-**Status:** In progress (JSONL bounded-memory traversal API + removal of silent truncation done)  
+**Status:** In progress (JSONL + Sqlite pagination API, lazy summary, silent-truncation removal done)  
 **Risk:** Medium  
 **Depends on:** STAB-03
 
-- **Lazy iterator API added** — `JsonlSessionStore.iter_records(session_id)` yields records one line at a time across all rotation files, so an arbitrarily large session is traversable with bounded memory.
-- **Cursor/page API added** — `JsonlSessionStore.read_page(session_id, page_size, offset=0)` returns `(records, has_more)`, giving explicit, non-silent pagination metadata.
+- **Lazy iterator API added (both backends)** — `JsonlSessionStore.iter_records(session_id)` yields records one line at a time across all rotation files, and `SqliteSessionStore.iter_records(session_id)` yields messages row-by-row from the messages table — both lazy and memory-bounded.
+- **Cursor/page API added (both backends)** — `read_page(session_id, page_size, offset=0)` on JSONL and Sqlite returns `(records, has_more)`, giving explicit, non-silent pagination metadata.
 - **Silent truncation removed** — `_read_all_records` no longer applies the destructive `_MAX_RECORDS = 10_000` cap; it now materialises the full session from the lazy iterator. A >10k-record session is fully reachable.
-- **Tests** — `tests/unit/test_streaming_pagination.py` (9 tests) proves a 12,000-record session is traversed without truncation, paged pages cover every record exactly once, memory stays bounded by page size, and blank/malformed lines are skipped.
-- Remaining: adopt the page API in the analytics/export callers (`get_session_summary`, `write_decisions_json`, `get_recent_sessions`) and add Sqlite backend parity for `read_page`/`iter_records` on the messages table.
+- **Analytics summary is lazy** — `JsonlSessionStore.get_session_summary` counts records by type from `iter_records` instead of materialising the whole session, so summaries of arbitrarily large sessions stay memory-bounded (output identical to a full read).
+- **Tests** — `tests/unit/test_streaming_pagination.py` (9 tests) proves a 12,000-record JSONL session is traversed without truncation, pages cover every record exactly once, memory stays bounded by page size, and blank/malformed lines are skipped. `tests/unit/test_streaming_pagination_sqlite.py` (8 tests) proves the Sqlite backend exposes the same `iter_records`/`read_page` semantics (ordered messages, bounded pages, exact cover, empty session, argument validation) and that the lazy summary counts match a full read.
+- Remaining: adopt the page API in the remaining export/analytics callers (`write_decisions_json`, `get_recent_sessions`).
 
 **Acceptance:** A session larger than 10,000 records is traversable without silent truncation; peak memory stays bounded by page size.
 
@@ -257,8 +258,8 @@ Tasks are ordered by dependency. Each task should land as its own commit or pull
 1. ~~Run **QUAL-01** and **TEST-02** so the baseline is trustworthy.~~ **Completed** — CI gates fail closed; unit suite green.
 2. ~~Define the production surface in **STAB-06**.~~ **Completed** — `src/server/exposure_policy.py` registry + contract tests + `docs/PRODUCTION_DEPLOYMENT.md`.
 3. ~~Implement **EVENT-01**, followed by **TEST-01**.~~ **Completed** — delivery classes live and the real-concurrency contract suite (`test_concurrency_contracts.py`) validates them.
-4. ~~Implement **PERF-01** and **PERF-02** independently.~~ — **PERF-02's centralized resilience policy is landed** (shared timeouts/classifier/capped-jittered backoff + 30 fault-injection tests). **PERF-01's JSONL bounded-memory traversal API is landed** (`iter_records`/`read_page` + removal of the silent 10k cap + 9 tests); remaining PERF-01 work is caller adoption and Sqlite parity. **PERF-03** (measurement) remains.
+4. ~~Implement **PERF-01** and **PERF-02** independently.~~ — **PERF-02's centralized resilience policy is landed** (shared timeouts/classifier/capped-jittered backoff + 30 fault-injection tests). **PERF-01's JSONL + Sqlite bounded-memory pagination API is landed** (`iter_records`/`read_page` on both backends + lazy `get_session_summary` + removal of the silent 10k cap + 17 tests); remaining PERF-01 work is export/analytics caller adoption. **PERF-03** (measurement) remains.
 5. Use **PERF-03** evidence to scope optimization.
 6. ~~Start **STATE-01** only after delivery and concurrency contracts protect behavior.~~ — Contracts are in place and **STATE-01's boundary layer is implemented** (node output schemas + enforcement wrapper + 23 scenario tests). Remaining STATE-01 work is the per-node field-ownership migration.
 
-With the baseline, delivery, concurrency, STATE-01 boundary, PERF-02 resilience-policy, STAB-06 endpoint-exposure, and PERF-01 JSONL pagination work landed, the next highest-leverage tasks are **PERF-03** (measurement to scope optimization) or completing the remaining **PERF-01**/**PERF-02**/**STATE-01** migrations (caller adoption + Sqlite parity for pagination; literal-timeout retirement and generation-path retry in the Ollama adapter; per-node field ownership).
+With the baseline, delivery, concurrency, STATE-01 boundary, PERF-02 resilience-policy, STAB-06 endpoint-exposure, and PERF-01 JSONL+Sqlite pagination work landed, the next highest-leverage tasks are **PERF-03** (measurement to scope optimization) or completing the remaining **PERF-01**/**PERF-02**/**STATE-01** migrations (export/analytics caller adoption for pagination; literal-timeout retirement and generation-path retry in the Ollama adapter; per-node field ownership).
