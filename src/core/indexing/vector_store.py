@@ -324,7 +324,6 @@ class VectorStore:
         path = self._memories_path()
         if not path.exists():
             return []
-        import time as _time
         try:
             with path.open("r", encoding="utf-8") as fh:
                 recs = []

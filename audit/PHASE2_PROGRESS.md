@@ -18,6 +18,12 @@
 
 Tests: `tests/unit/test_phase2_security_hardening.py` (13 tests) + 2 counter tests in `test_state_schemas.py` + dedup regression test. mypy + ruff check clean.
 
+### CI fixes (alongside Phase 2)
+
+- `quality` job: fixed `F401` unused `import time as _time` in `vector_store.py` (`_load_memories`) — was failing CI lint.
+- `integration-mock` job: command referenced `test_mock_adapter_integration.py` and `test_delegation_mock.py`, which were moved to `tests/unit/orchestration/` in `e8dccb3` (now covered by the `unit-tests` job). Removed the stale references, keeping the 4 valid mock-backed integration tests.
+- **Real bug found & fixed during CI review:** `wrap_node`'s sync/async wrappers annotated `config: RunnableConfig | None` (PEP 604 union). langgraph's `RunnableCallable` only injects `config` when the annotation is `Optional[RunnableConfig]`/`RunnableConfig`, so it called wrapped nodes with `(state,)` only → `TypeError: missing 1 required positional argument: 'config'`. Fixed both wrappers to `Optional[RunnableConfig] = None`. This made the previously-red `integration-mock` job (`test_fast_path_graph_e2e.py`) green.
+
 ---
 
 ## Completed — Item 2.3: NodeResultValidationFailed counter / metric

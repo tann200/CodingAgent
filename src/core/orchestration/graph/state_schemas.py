@@ -24,7 +24,7 @@ from __future__ import annotations
 import inspect
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Optional
 
 from langchain_core.runnables import RunnableConfig
 
@@ -355,7 +355,7 @@ def wrap_node(
 
         async def _async_wrapper(
             state: Mapping[str, Any],
-            config: RunnableConfig | None,
+            config: Optional[RunnableConfig] = None,
             *args: Any,
             **kwargs: Any,
         ):
@@ -374,7 +374,7 @@ def wrap_node(
 
     def _sync_wrapper(
         state: Mapping[str, Any],
-        config: RunnableConfig | None,
+        config: Optional[RunnableConfig] = None,
         *args: Any,
         **kwargs: Any,
     ):

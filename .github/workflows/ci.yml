@@ -156,8 +156,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e .[dev,server]
       - name: Run mock-backed integration tests
+        # test_delegation_mock.py and test_mock_adapter_integration.py were moved
+        # to tests/unit/orchestration/ (they mock the LLM + all tools, i.e. pure
+        # orchestration unit tests) and are covered by the unit-tests job.
         run: |
-          python -m pytest tests/integration/test_mock_adapter_integration.py tests/integration/test_delegation_mock.py tests/integration/test_langgraph_orchestrator.py tests/integration/test_fast_path_graph_e2e.py tests/integration/test_agent_loop_plaintext_tools.py tests/integration/test_loop_prevention.py -q -p no:logging
+          python -m pytest tests/integration/test_langgraph_orchestrator.py tests/integration/test_fast_path_graph_e2e.py tests/integration/test_agent_loop_plaintext_tools.py tests/integration/test_loop_prevention.py -q -p no:logging
 
   e2e-mock:
     runs-on: ubuntu-latest
