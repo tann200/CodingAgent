@@ -10,11 +10,21 @@ from typing import Dict
 
 
 class WorkspaceGuard:
-    """No-op guard when src.core is not available."""
+    """Fail-closed guard when src.core is not available.
+
+    When the real WorkspaceGuard cannot be imported we must NOT allow file
+    operations to proceed unguarded. ``guard_operation`` returns an error so
+    the calling tool blocks the operation (defense-in-depth: a missing guard
+    must not grant write access).
+    """
 
     def guard_operation(self, *args: object, **kwargs: object) -> Dict[str, str]:
-        """No-op operation - always returns ok."""
-        return {"status": "ok"}
+        """Fail-closed operation - always blocks with an error."""
+        return {
+            "status": "error",
+            "error": "WorkspaceGuard unavailable: security checks could not be "
+            "loaded, so this operation was blocked.",
+        }
 
 
 try:

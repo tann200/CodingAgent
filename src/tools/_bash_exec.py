@@ -551,13 +551,14 @@ def bash(
             _raw_stderr = _raw_stderr.decode(errors="replace")
         _raw_stdout, _raw_stderr, _, _ = _truncate_bash_output(_raw_stdout, _raw_stderr)
         return {
-            "status": "ok",
+            "status": "error",
             "command": command,
             "stdout": _raw_stdout,
             "stderr": _raw_stderr,
             "returncode": -1,
             "interrupted": True,
             "return_code_interpretation": "timeout",
+            "error": "Command timed out",
             "no_output_expected": not _raw_stdout.strip() and not _raw_stderr.strip(),
         }
     except FileNotFoundError:
@@ -716,13 +717,14 @@ def bash_readonly(
             _raw_stderr = _raw_stderr.decode(errors="replace")
         _raw_stdout, _raw_stderr, _, _ = _truncate_bash_output(_raw_stdout, _raw_stderr)
         return {
-            "status": "ok",
+            "status": "error",
             "command": command,
             "stdout": _raw_stdout,
             "stderr": _raw_stderr,
             "returncode": -1,
             "interrupted": True,
             "return_code_interpretation": "timeout",
+            "error": "Command timed out",
             "no_output_expected": not _raw_stdout.strip() and not _raw_stderr.strip(),
         }
     except FileNotFoundError:

@@ -200,7 +200,12 @@ class CompactionService:
                 messages=self._history,
                 working_dir=self._working_dir,
             )
-            compacted = output.get("history") or output.get("compacted_history") or []
+            compacted = (
+                output.get("_compacted_history")
+                or output.get("history")
+                or output.get("compacted_history")
+                or []
+            )
             if not compacted:
                 # distill_context may return the summary as a prose string
                 summary = output.get("summary", "")

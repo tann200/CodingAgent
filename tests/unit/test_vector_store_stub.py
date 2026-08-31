@@ -52,7 +52,11 @@ def test_vectorstore_model_and_memories(tmp_path):
     assert vec1 == vec2
     assert len(vec1) == model.get_sentence_embedding_dimension()
 
-    # add_memory and search_memories are no-ops / empty
-    vs.add_memory("some text", {"meta": 1})
-    mems = vs.search_memories("some text")
-    assert mems == []
+    # add_memory persists and search_memories retrieves (Mem-4)
+    vs.add_memory("some text about login", {"meta": 1})
+    mems = vs.search_memories("login")
+    assert len(mems) == 1
+    assert mems[0].get("text") == "some text about login"
+    assert mems[0].get("content") == "some text about login"
+    # vector is stripped from search results
+    assert "vector" not in mems[0]

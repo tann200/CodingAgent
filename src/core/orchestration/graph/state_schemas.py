@@ -140,6 +140,109 @@ _NODE_OUTPUT_SCHEMAS: dict[str, NodeOutputSchema] = {
         frozenset({"verification_result", "verification_passed"}),
         core_keys=("verification_result",),
     ),
+    "analysis": NodeOutputSchema(
+        frozenset(
+            {
+                "analysis_summary",
+                "relevant_files",
+                "key_symbols",
+                "repo_summary_data",
+                "call_graph",
+                "test_map",
+                "analysis_failed",
+            }
+        ),
+        core_keys=("analysis_summary", "relevant_files", "key_symbols"),
+    ),
+    "step_controller": NodeOutputSchema(
+        frozenset(
+            {
+                "next_action",
+                "step_description",
+                "planned_action",
+                "step_retry_counts",
+                "step_lint_warnings",
+            }
+        ),
+        # Path A returns {} (disabled/no plan), so there is no single key in
+        # every return shape.
+        core_keys=(),
+    ),
+    "evaluation": NodeOutputSchema(
+        frozenset(
+            {
+                "evaluation_result",
+                "evaluation_llm_verdict",
+                "evaluation_llm_reason",
+                "next_action",
+                "errors",
+                "replan_required",
+                "action_failed",
+            }
+        ),
+        core_keys=("evaluation_result",),
+    ),
+    "debug": NodeOutputSchema(
+        frozenset(
+            {
+                "next_action",
+                "errors",
+                "debug_attempts",
+                "total_debug_attempts",
+                "total_recovery_attempts",
+                "last_debug_error_type",
+            }
+        ),
+        core_keys=("next_action",),
+    ),
+    "replan": NodeOutputSchema(
+        frozenset(
+            {
+                "replan_required",
+                "action_failed",
+                "replan_attempts",
+                "total_recovery_attempts",
+                "errors",
+                "current_plan",
+                "current_step",
+                "execution_waves",
+                "last_plan_hash",
+                "history",
+            }
+        ),
+        core_keys=("replan_required", "action_failed", "replan_attempts", "total_recovery_attempts"),
+    ),
+    "delegation": NodeOutputSchema(
+        frozenset({"delegation_results", "history", "_file_lock_manager"}),
+        # Path A returns {} (no delegations), so core is empty.
+        core_keys=(),
+    ),
+    "analyst_delegation": NodeOutputSchema(
+        frozenset({"analyst_findings"}),
+        core_keys=("analyst_findings",),
+    ),
+    "wait_for_user": NodeOutputSchema(
+        frozenset(
+            {
+                "awaiting_plan_approval",
+                "awaiting_user_input",
+                "plan_mode_approved",
+                "plan_mode_blocked_tool",
+                "last_result",
+                "preview_confirmed",
+                "pending_preview_id",
+            }
+        ),
+        core_keys=("awaiting_user_input",),
+    ),
+    "memory_sync": NodeOutputSchema(
+        frozenset({"_force_compact", "errors", "analysis_summary", "history"}),
+        core_keys=("_force_compact", "errors"),
+    ),
+    "plan_validator": NodeOutputSchema(
+        frozenset({"plan_validation", "errors", "action_failed"}),
+        core_keys=("plan_validation",),
+    ),
 }
 
 

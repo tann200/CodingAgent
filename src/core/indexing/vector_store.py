@@ -73,6 +73,13 @@ _EMBEDDING_CACHE: OrderedDict[str, List[float]] = OrderedDict()
 _EMBEDDING_CACHE_LIMIT = 10000  # Max embeddings to cache
 _EMBEDDING_CACHE_LOCK = _threading.Lock()
 
+# Episodic memory persistence guard (Mem-4): serializes add_memory so
+# concurrent writes (e.g. parallel executor threads) never interleave the
+# append/rotate read-modify-write sequence.
+_MEMORY_LOCK = _threading.Lock()
+_MEMORY_MAX_RECORDS = 200  # rotation cap: keep newest N records
+_MEMORY_SEARCH_MAX = 500  # search cap: consider at most the newest N records
+
 
 def _get_cached_embedding(text: str, dim: int = 8) -> List[float]:
     """Get cached embedding or compute and cache it.
@@ -299,12 +306,182 @@ class VectorStore:
         logger.debug("VectorStore.search(%r) token -> %d results", query, len(results))
         return results
 
+    # ------------------------------------------------------------------
+    # Episodic memory (Mem-4: cross-session summary persistence)
+    # ------------------------------------------------------------------
+    def _memories_path(self) -> Path:
+        """Resolve the episodic-memory JSONL path for this workspace."""
+        try:
+            from src.tools.tools_config import agent_context_path
+        except Exception:
+            agent_context_path = None  # type: ignore[assignment]
+        if agent_context_path is not None:
+            return agent_context_path(Path(self.workdir)) / "vectorstore" / "memories.jsonl"
+        return Path(self.workdir) / ".codingAgent" / "vectorstore" / "memories.jsonl"
+
+    def _load_memories(self) -> List[Dict[str, Any]]:
+        """Load persisted memory records, newest last. Returns [] on any error."""
+        path = self._memories_path()
+        if not path.exists():
+            return []
+        import time as _time
+        try:
+            with path.open("r", encoding="utf-8") as fh:
+                recs = []
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        recs.append(json.loads(line))
+                    except Exception:
+                        continue
+            # Newest last (append order) so rotation/search can safely tail.
+            recs.sort(key=lambda r: r.get("created_at", ""))
+            return recs[-_MEMORY_SEARCH_MAX:]
+        except Exception as exc:
+            logger.warning("VectorStore: failed to load memories (%s)", exc)
+            return []
+
+    def _append_memory(self, record: Dict[str, Any]) -> None:
+        """Append *record* and rotate to the size cap.
+
+        Caller MUST hold ``_MEMORY_LOCK``. Reads the current file, appends the
+        new line, rotates to ``_MEMORY_MAX_RECORDS``, and atomically replaces the
+        file so concurrent readers never observe a partial write.
+        """
+        path = self._memories_path()
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            line = json.dumps(record, default=str) + "\n"
+            existing: List[str] = []
+            if path.exists():
+                with path.open("r", encoding="utf-8") as fh:
+                    existing = fh.readlines()
+            existing.append(line)
+            # Rotate: keep the newest _MEMORY_MAX_RECORDS lines.
+            if len(existing) > _MEMORY_MAX_RECORDS:
+                existing = existing[-_MEMORY_MAX_RECORDS:]
+            tmp = path.with_suffix(".jsonl.tmp")
+            tmp.write_text("".join(existing), encoding="utf-8")
+            tmp.replace(path)
+        except Exception as exc:
+            logger.warning(
+                "VectorStore: failed to persist memory (non-critical): %s", exc
+            )
+
     def add_memory(self, text: str, metadata: Dict[str, Any]) -> None:
-        logger.debug("VectorStore.add_memory called (no-op in stub)")
+        """Persist an episodic memory (e.g. a distilled session summary).
+
+        Writes a single JSONL record under ``.agent-context/vectorstore/`` and
+        rotates to keep the newest ``_MEMORY_MAX_RECORDS`` entries. Records are
+        de-duplicated on ``id`` (derived from the text) so re-distilling the same
+        summary does not create duplicates.
+
+        The dedup check and append happen atomically under ``_MEMORY_LOCK`` so
+        concurrent writers cannot both append the same record.
+        """
+        if not text:
+            logger.debug("VectorStore.add_memory: empty text, skipping")
+            return
+        import time as _time
+
+        rec_id = hashlib.sha256(
+            (text + "|" + str(metadata.get("created_at", ""))).encode()
+        ).hexdigest()[:16]
+        record: Dict[str, Any] = {
+            "id": rec_id,
+            "text": text,
+            "content": text,
+            "metadata": metadata,
+            "created_at": _time.time(),
+        }
+        # Embed the text for semantic recall (real ST model or SHA-256 stub).
+        try:
+            record["vector"] = list(self._model.encode([text])[0])
+        except Exception:
+            pass
+
+        with _MEMORY_LOCK:
+            for rec in self._load_memories():
+                if rec.get("id") == rec_id:
+                    logger.debug(
+                        "VectorStore.add_memory: duplicate memory id %s, skipping",
+                        rec_id,
+                    )
+                    return
+            self._append_memory(record)
+        logger.info(
+            "VectorStore: persisted memory id=%s (%d chars)", rec_id, len(text)
+        )
 
     def search_memories(self, query: str, limit: int = 5) -> List[Dict[str, Any]]:
-        logger.debug("VectorStore.search_memories called (returns empty list in stub)")
-        return []
+        """Semantic/token search over persisted episodic memories.
+
+        When ``sentence-transformers`` is available the query and stored record
+        vectors are compared via cosine similarity; otherwise a deterministic
+        token-overlap fallback is used. Returned records are dicts (the ``vector``
+        field is stripped), matching the ``search()`` contract.
+        """
+        try:
+            limit = max(1, int(limit))
+        except Exception:
+            limit = 5
+        recs = self._load_memories()
+        if not recs:
+            return []
+
+        st = _get_st_model()
+        if st is not None:
+            try:
+                import math as _math
+
+                q_vec = st.encode([query])[0]
+                q_norm = _math.sqrt(sum(x * x for x in q_vec)) or 1.0
+                scored: List[tuple[float, Dict[str, Any]]] = []
+                for r in recs:
+                    r_vec = r.get("vector") or []
+                    if not r_vec:
+                        # On-demand embedding for records saved without one.
+                        try:
+                            r_vec = st.encode([str(r.get("text", ""))])[0]
+                        except Exception:
+                            continue
+                    s_norm = _math.sqrt(sum(x * x for x in r_vec)) or 1.0
+                    cosine = sum(a * b for a, b in zip(q_vec, r_vec)) / (
+                        q_norm * s_norm
+                    )
+                    scored.append((cosine, r))
+                scored.sort(key=lambda t: t[0], reverse=True)
+                results = []
+                for _, r in scored[:limit]:
+                    out = dict(r)
+                    out.pop("vector", None)
+                    results.append(out)
+                logger.debug(
+                    "VectorStore.search_memories(%r) semantic -> %d", query, len(results)
+                )
+                return results
+            except Exception as exc:
+                logger.debug(
+                    "VectorStore.search_memories: semantic failed (%s), falling back", exc
+                )
+        # --- Token-based fallback ---
+        q = (query or "").lower()
+        tokens = [t for t in re.split(r"[\s_\-/\\]+", q) if t]
+        results = []
+        for r in recs[-limit:]:
+            text = str(r.get("text") or r.get("content") or "")
+            if not tokens or any(tok in text.lower() for tok in tokens):
+                out = dict(r)
+                out.pop("vector", None)
+                results.append(out)
+                if len(results) >= limit:
+                    break
+        logger.debug(
+            "VectorStore.search_memories(%r) token -> %d", query, len(results)
+        )
+        return results
 
 
 __all__ = ["VectorStore"]

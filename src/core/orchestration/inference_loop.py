@@ -163,6 +163,23 @@ def run_agent_once_impl(
         _t_thread.start()
         orch._session_title_thread = _t_thread
 
+        # Gap 3: fire HOOK_SESSION_START once when a new agent session begins.
+        # Guarded by the same "first turn" condition as title generation so a
+        # session start fires only once per fresh session (not on continuations).
+        try:
+            from src.core.plugin.hook_registry import (
+                HOOK_SESSION_START as _HOOK_SESSION_START,
+                registry as _hook_registry,
+            )
+
+            _sid = getattr(orch, "_current_task_id", None) or ""
+            _hook_registry.call(
+                _HOOK_SESSION_START,
+                {"session_id": str(_sid), "task": str(prompt)},
+            )
+        except Exception:
+            pass
+
     from src.core.orchestration.agent_brain import load_system_prompt
     from src.core.orchestration.graph.builder import (
         get_compiled_graph_for_orchestrator,

@@ -401,7 +401,20 @@ class PermissionGateway:
         file never prevents a tool from running.
         """
         if _get_permission_policy is None or _Behavior is None:
-            return PermissionResult(allowed=True)
+            # Fail-closed: if the policy subsystem is unavailable we cannot
+            # authorize the tool, so deny rather than allow.
+            return PermissionResult(
+                allowed=False,
+                gate=2,
+                reason="PermissionPolicy unavailable",
+                rejection={
+                    "ok": False,
+                    "error": (
+                        f"Tool '{name}' could not be checked against the permission "
+                        "policy because the policy subsystem is unavailable."
+                    ),
+                },
+            )
 
         try:
             policy = _get_permission_policy()
@@ -466,12 +479,29 @@ class PermissionGateway:
                     return PermissionResult(allowed=True, gate=5)
                 return result
 
-        except Exception as _e:
-            _logger.warning(
-                "Gate 2c permission policy check failed (fail-open): %s", _e
-            )  # policy failures must never block tool execution
+            # ALLOW (or any other non-blocking behavior): proceed to next gate.
+            return PermissionResult(allowed=True)
 
-        return PermissionResult(allowed=True)
+        except Exception as _e:
+            # Fail-closed: a broken or unavailable permission policy must never
+            # silently grant access. Mirror the DENY result shape above so the
+            # caller can surface a clear rejection to the user.
+            _logger.error(
+                "Gate 2c permission policy check failed (fail-closed): %s", _e
+            )
+            return PermissionResult(
+                allowed=False,
+                gate=2,
+                reason="PermissionPolicy check failed",
+                rejection={
+                    "ok": False,
+                    "error": (
+                        f"Tool '{name}' could not be checked against the permission "
+                        "policy because the policy check failed. "
+                        "Fix the permissions configuration to proceed."
+                    ),
+                },
+            )
 
     def _gate3_permission_level(
         self, name: str, args: "Dict[str, Any] | None" = None
