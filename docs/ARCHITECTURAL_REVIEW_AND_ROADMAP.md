@@ -137,15 +137,15 @@ Tasks are ordered by dependency. Each task should land as its own commit or pull
 
 #### STAB-06 — Define production endpoint exposure
 
-**Status:** Planned  
+**Status:** Completed in this review  
 **Risk:** Low  
 **Depends on:** STAB-02, STAB-05
 
-- Decide whether `/health` and `/metrics` remain public on authenticated non-loopback deployments.
-- Document TLS termination and reverse-proxy expectations.
-- Add a production deployment checklist.
+- **Single source of truth added** — `src/server/exposure_policy.py` now carries the exposure/auth registry (`ENDPOINT_POLICIES`) for every route: `/health` (always public), `/metrics` (optional HTTP Basic via `CODINGAGENT_METRICS_AUTH`), and all session/scheduler/task/SSE/WebSocket endpoints (admin token via header when `CODINGAGENT_ADMIN_TOKEN` is set).
+- **Enforceable acceptance** — `tests/unit/test_exposure_policy.py` asserts key policy decisions and that **every route on the FastAPI app has a documented policy** (`unregistered_routes(app.routes)`), so a new endpoint cannot be added without documenting its exposure and auth.
+- **Production deployment guide added** — `docs/PRODUCTION_DEPLOYMENT.md` documents the bind/exposure security model (loopback default + `validate_server_exposure` fail-closed guard), the per-endpoint policy table, TLS/reverse-proxy expectations (proxy terminates TLS, forwards WS/SSE and auth headers, blocks `/docs*`/`/redoc*`/`/openapi.json`), and a deployment checklist.
 
-**Acceptance:** Every HTTP/SSE/WebSocket endpoint has a documented exposure and authentication policy.
+**Acceptance:** Every HTTP/SSE/WebSocket endpoint has a documented exposure and authentication policy (registry + contract test + deployment guide).
 
 ### Tranche B — Delivery and state contracts
 
@@ -254,10 +254,10 @@ Tasks are ordered by dependency. Each task should land as its own commit or pull
 ## Recommended delivery sequence
 
 1. ~~Run **QUAL-01** and **TEST-02** so the baseline is trustworthy.~~ **Completed** — CI gates fail closed; unit suite green.
-2. Define the production surface in **STAB-06**.
+2. ~~Define the production surface in **STAB-06**.~~ **Completed** — `src/server/exposure_policy.py` registry + contract tests + `docs/PRODUCTION_DEPLOYMENT.md`.
 3. ~~Implement **EVENT-01**, followed by **TEST-01**.~~ **Completed** — delivery classes live and the real-concurrency contract suite (`test_concurrency_contracts.py`) validates them.
 4. ~~Implement **PERF-01** and **PERF-02** independently.~~ — **PERF-02's centralized resilience policy is landed** (shared timeouts/classifier/capped-jittered backoff + 30 fault-injection tests). **PERF-01** (streaming pagination, depends on STAB-03) and **PERF-03** (measurement) remain.
 5. Use **PERF-03** evidence to scope optimization.
 6. ~~Start **STATE-01** only after delivery and concurrency contracts protect behavior.~~ — Contracts are in place and **STATE-01's boundary layer is implemented** (node output schemas + enforcement wrapper + 23 scenario tests). Remaining STATE-01 work is the per-node field-ownership migration.
 
-With the baseline, delivery, concurrency, STATE-01 boundary, and PERF-02 resilience-policy work landed, the next highest-leverage tasks are **STAB-06** (production endpoint exposure), **PERF-01** (streaming pagination, once STAB-03 exists), or completing **STATE-01's**/PERF-02's remaining migrations (per-node field ownership; literal-timeout retirement and generation-path retry in the Ollama adapter).
+With the baseline, delivery, concurrency, STATE-01 boundary, PERF-02 resilience-policy, and STAB-06 endpoint-exposure work landed, the next highest-leverage tasks are **PERF-01** (streaming pagination, once STAB-03 exists), **PERF-03** (measurement to scope optimization), or completing the **STATE-01**/PERF-02 remaining migrations (per-node field ownership; literal-timeout retirement and generation-path retry in the Ollama adapter).
