@@ -69,7 +69,7 @@ def _make_task_state(tmp_path, **overrides):
         "max_debug_attempts": 3,
         "verification_passed": None,
         "current_plan": [],
-        "current_step": -1,
+        "current_step": 0,
         "step_controller_enabled": True,
         "session_id": "test",
         "_should_distill": False,

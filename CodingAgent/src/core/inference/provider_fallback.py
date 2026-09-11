@@ -31,6 +31,18 @@ are required:
     Maximum number of secondary providers to try before giving up.
     Default ``2``.
 
+Timeout
+-------
+Each individual fallback attempt is bounded by
+``InferenceTimeoutPolicy.fallback_attempt`` (default 90 s, env
+``LLM_TIMEOUT_FALLBACK_ATTEMPT``).  A hung provider therefore cannot block
+the entire fallback chain indefinitely.  The timeout fires as
+``InferenceTimeoutError(phase="fallback_attempt")`` which is:
+  * caught inside ``call()``
+  * converted to an error-result dict
+  * logged via ``log_timeout_event``
+  * circuit-breaker failure recorded **once** (avoids double-counting)
+
 Usage
 -----
 ``ProviderFallbackChain`` is designed to be called from ``call_model()``
@@ -63,6 +75,13 @@ import os
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 from .call_postprocess import is_error_result
+from .inference_timeout import (
+    InferenceTimeoutError,
+    InferenceTimeoutPolicy,
+    get_default_policy,
+    log_timeout_event,
+    run_with_timeout,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +100,10 @@ def _env_int(name: str, default: int) -> int:
 
 class ProviderFallbackChain:
     """Try alternative providers when the primary one fails.
+
+    Each attempt is individually bounded by
+    ``InferenceTimeoutPolicy.fallback_attempt`` so a hung provider cannot
+    block the entire fallback chain.
 
     Designed to be a singleton (use ``get_fallback_chain()``), but safe to
     instantiate directly in tests.
@@ -131,8 +154,12 @@ class ProviderFallbackChain:
         get_provider_manager: Callable[[], Any],
         get_circuit_breaker: Callable[[str], Any],
         publish: Optional[Callable[[str, Any], None]] = None,
+        timeout_policy: Optional[InferenceTimeoutPolicy] = None,
     ) -> Tuple[Any, Optional[str]]:
         """Attempt cross-provider fallback.
+
+        Each candidate attempt is bounded by
+        ``timeout_policy.fallback_attempt`` (default 90 s).
 
         Returns ``(result, used_provider)`` where ``used_provider`` is the
         canonical key of the provider that ultimately succeeded (or
@@ -144,6 +171,8 @@ class ProviderFallbackChain:
         - no candidate providers are available / open
         - all candidates also fail
         """
+        policy = timeout_policy or get_default_policy()
+
         if not self._is_enabled():
             return primary_result, primary_provider
 
@@ -187,15 +216,31 @@ class ProviderFallbackChain:
             )
 
             try:
-                result = await call_model_internal(
-                    messages,
-                    candidate_key,
-                    model,
-                    stream,
-                    format_json,
-                    tools,
-                    **kwargs,
+                # Bound each individual fallback attempt so a hung provider
+                # cannot block the rest of the chain.
+                result = await run_with_timeout(
+                    call_model_internal(
+                        messages,
+                        candidate_key,
+                        model,
+                        stream,
+                        format_json,
+                        tools,
+                        **kwargs,
+                    ),
+                    timeout_secs=policy.fallback_attempt,
+                    phase="fallback_attempt",
+                    provider=candidate_key,
                 )
+            except InferenceTimeoutError as exc:
+                # Timeout on a fallback attempt: log, record failure once,
+                # then continue to the next candidate.
+                log_timeout_event(exc, publish=publish)
+                try:
+                    get_circuit_breaker(candidate_key).record_failure()
+                except Exception:
+                    pass
+                continue
             except Exception as exc:
                 logger.warning(
                     "ProviderFallbackChain: provider %r raised %s: %s",

@@ -1,12 +1,24 @@
 from __future__ import annotations
 
+import logging
 from typing import Any, Literal, Mapping
 
 from src.core.orchestration.graph.perception_routing import _task_is_complex
 
+logger = logging.getLogger(__name__)
 
 READ_ONLY_ROLES = {"scout", "researcher", "reviewer"}
 WRITE_ROLES = {"coder", "tester"}
+
+
+def _is_cancelled(state: Mapping[str, Any]) -> bool:
+    """Return True when a cancellation event has been set."""
+    cancel_event = state.get("cancel_event")
+    return bool(
+        cancel_event
+        and hasattr(cancel_event, "is_set")
+        and cancel_event.is_set()
+    )
 
 
 def should_use_prsw(state: Mapping[str, Any]) -> bool:
@@ -57,6 +69,18 @@ def route_perception_frontier(
 def route_frontier_loop_exit(
     state: Mapping[str, Any],
 ) -> Literal["verification", "memory_sync", "wait_for_user"]:
+    """Route after frontier_loop exits.
+
+    Safety (Task #6): Cancellation wins — cancelled run cannot re-enter frontier_loop.
+    Plan approval suspends to wait_for_user (mandatory; not discarded).
+    """
+    # Cancellation check first — must precede approval/verification branches
+    if _is_cancelled(state):
+        logger.info(
+            "route_frontier_loop_exit: cancel_event is set — routing to memory_sync"
+        )
+        return "memory_sync"
+
     if state.get("awaiting_plan_approval"):
         return "wait_for_user"
     if "context_overflow" in (state.get("errors") or []):
@@ -70,7 +94,20 @@ def route_frontier_loop_exit(
 def route_wait_frontier(
     state: Mapping[str, Any],
 ) -> Literal["frontier_loop", "memory_sync"]:
-    if state.get("plan_mode_approved"):
+    """Route after wait_for_user in the frontier graph.
+
+    Safety (Task #6): Cancellation wins — cancelled run must not resume frontier_loop.
+    Approval must be genuinely True; a missing/False approval stays in memory_sync.
+    """
+    # Cancellation takes highest priority
+    if _is_cancelled(state):
+        logger.info(
+            "route_wait_frontier: cancel_event is set — routing to memory_sync"
+        )
+        return "memory_sync"
+
+    # Only resume frontier_loop when the plan has been explicitly approved
+    if state.get("plan_mode_approved") is True:
         return "frontier_loop"
     return "memory_sync"
 
@@ -80,6 +117,17 @@ def route_debug_frontier(
     *,
     should_after_debug_fn: Any,
 ) -> Literal["frontier_loop", "memory_sync", "end"]:
+    """Route after debug in the frontier graph.
+
+    Safety (Task #6): Cancellation wins — cancelled run must not re-enter frontier_loop.
+    """
+    # Cancellation check — must precede any branch that maps to "frontier_loop"
+    if _is_cancelled(state):
+        logger.info(
+            "route_debug_frontier: cancel_event is set — routing to memory_sync"
+        )
+        return "memory_sync"
+
     result = should_after_debug_fn(state)
     if result == "execution":
         return "frontier_loop"
@@ -120,7 +168,49 @@ def route_perception_lite(
 
 def route_frontier_loop_exit_lite(
     state: Mapping[str, Any],
-) -> Literal["memory_sync"]:
+) -> Literal["memory_sync", "wait_for_user"]:
+    """Route after frontier_loop exits in the LITE graph.
+
+    Task #6 correction: the lite graph must NOT discard a pending plan
+    approval.  When ``awaiting_plan_approval`` is set (and the run is not
+    cancelled) we suspend to ``wait_for_user`` instead of falling straight
+    through to ``memory_sync``.  Cancellation still wins and goes to
+    ``memory_sync``.
+    """
+    # Cancellation wins — cancelled run must not suspend for approval.
+    if _is_cancelled(state):
+        logger.info(
+            "route_frontier_loop_exit_lite: cancel_event is set — routing to memory_sync"
+        )
+        return "memory_sync"
+
+    # Preserve mandatory plan approval — suspend rather than discard.
+    if state.get("awaiting_plan_approval"):
+        logger.info(
+            "route_frontier_loop_exit_lite: awaiting_plan_approval — routing to wait_for_user"
+        )
+        return "wait_for_user"
+
+    return "memory_sync"
+
+
+def route_wait_lite(
+    state: Mapping[str, Any],
+) -> Literal["frontier_loop", "memory_sync"]:
+    """Route after wait_for_user in the LITE graph.
+
+    Task #6: only return to frontier_loop on EXPLICIT approval; cancellation
+    or rejection routes safely to memory_sync.  This mirrors
+    :func:`route_wait_frontier` for the capable graph.
+    """
+    # Cancellation takes highest priority.
+    if _is_cancelled(state):
+        logger.info("route_wait_lite: cancel_event is set — routing to memory_sync")
+        return "memory_sync"
+
+    # Only resume the loop when the plan has been explicitly approved.
+    if state.get("plan_mode_approved") is True:
+        return "frontier_loop"
     return "memory_sync"
 
 

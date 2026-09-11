@@ -15,7 +15,11 @@ from src.core.orchestration.event_bus import EventBus
 from src.server.event_delivery import enqueue_with_drop_policy
 from src.server.event_subscriptions import resolve_initial_websocket_events
 from src.server.metrics import record_dropped_session_event
-from src.server.server_config import extract_admin_token_from_headers
+from src.server.server_config import (
+    clamp_keepalive,
+    clamp_queue_size,
+    extract_admin_token_from_headers,
+)
 from src.server.websocket_control import (
     build_control_error_payload,
     build_control_pong_payload,
@@ -79,32 +83,22 @@ async def websocket_session_handler(
     Features:
     - initial subscription via `events` query param (comma-separated)
     - per-connection queue size via `queue_max_size` query param
+      (clamped to [1, 10000]; abusive values are normalized, not rejected)
     - backpressure policy via `drop_policy` query param (drop_oldest|drop_new)
     - dynamic subscribe/unsubscribe via JSON control messages
       * {"type": "subscribe", "event": "event.name"}
       * {"type": "unsubscribe", "event": "event.name"}
     - keepalive messages controlled by `keepalive` query param (seconds)
+      (clamped to [1, 300]; abusive values are normalized, not rejected)
 
-    Authentication mirrors the HTTP admin endpoints: if CODING_AGENT_ADMIN_TOKEN is set,
-    the client must provide either a Bearer token in the Authorization header or
-    X-CodingAgent-Token header. Tokens passed via the query string are not accepted.
+    Authentication: if CODINGAGENT_ADMIN_TOKEN is set, the client must provide
+    either a Bearer token in the Authorization header or X-CodingAgent-Token
+    header.  Tokens passed via the query string are not accepted.
     """
     admin_token = _getenv("CODINGAGENT_ADMIN_TOKEN", "CODING_AGENT_ADMIN_TOKEN")
 
-    qp = websocket.query_params
-    events_param = qp.get("events")
-    queue_max_raw = qp.get("queue_max_size") or _getenv("CODINGAGENT_SSE_QUEUE_MAX", "CODING_AGENT_SSE_QUEUE_MAX")
-    try:
-        qms = int(queue_max_raw) if queue_max_raw is not None else 100
-    except Exception:
-        qms = 100
-    drop_policy = (qp.get("drop_policy") or _getenv("CODINGAGENT_SSE_DROP_POLICY", "CODING_AGENT_SSE_DROP_POLICY") or "drop_oldest").lower()
-    keepalive_raw = qp.get("keepalive") or _getenv("CODINGAGENT_SSE_KEEPALIVE", "CODING_AGENT_SSE_KEEPALIVE")
-    try:
-        keepalive_interval = int(keepalive_raw) if keepalive_raw is not None else 15
-    except Exception:
-        keepalive_interval = 15
-
+    # Auth check — performed before accept() so unauthenticated connections are
+    # rejected with close code 1008 (policy violation) without upgrading.
     if admin_token:
         token = extract_admin_token_from_headers(websocket.headers)
         if not token or not hmac.compare_digest(token, admin_token):
@@ -121,10 +115,29 @@ async def websocket_session_handler(
             pass
         return
 
+    qp = websocket.query_params
+    events_param = qp.get("events")
+
+    # Parse and clamp queue_max_size — reject abusive values deterministically.
+    queue_max_raw = qp.get("queue_max_size") or _getenv("CODINGAGENT_SSE_QUEUE_MAX", "CODING_AGENT_SSE_QUEUE_MAX")
+    try:
+        qms = clamp_queue_size(int(queue_max_raw)) if queue_max_raw is not None else 100
+    except Exception:
+        qms = 100
+
+    drop_policy = (qp.get("drop_policy") or _getenv("CODINGAGENT_SSE_DROP_POLICY", "CODING_AGENT_SSE_DROP_POLICY") or "drop_oldest").lower()
+
+    # Parse and clamp keepalive — reject abusive values deterministically.
+    keepalive_raw = qp.get("keepalive") or _getenv("CODINGAGENT_SSE_KEEPALIVE", "CODING_AGENT_SSE_KEEPALIVE")
+    try:
+        keepalive_interval = clamp_keepalive(int(keepalive_raw)) if keepalive_raw is not None else 15
+    except Exception:
+        keepalive_interval = 15
+
     await websocket.accept()
 
     loop = asyncio.get_running_loop()
-    q: asyncio.Queue[Any] = asyncio.Queue(maxsize=max(1, int(qms)))
+    q: asyncio.Queue[Any] = asyncio.Queue(maxsize=qms)
 
     initial_events = resolve_initial_websocket_events(events_param)
 

@@ -46,6 +46,7 @@ Implements the ``SessionStoreProtocol`` from ``src/core/interfaces.py``:
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import shutil
@@ -241,10 +242,13 @@ class JsonlSessionStore:
                     exc,
                 )
 
-    def _read_all_records(self, session_id: str) -> List[Dict[str, Any]]:
+    def _read_all_records_with_meta(
+        self, session_id: str
+    ) -> Tuple[List[Dict[str, Any]], bool]:
         """Read and parse all records across all rotated files for *session_id*.
 
-        Limits reading to _MAX_RECORDS to prevent OOM issues.
+        Returns a ``(records, truncated)`` tuple where ``truncated`` is
+        ``True`` when the read was stopped at ``_MAX_RECORDS``.
         """
         records: List[Dict[str, Any]] = []
         records_read = 0
@@ -297,13 +301,220 @@ class JsonlSessionStore:
             except Exception as exc:
                 logger.warning("JsonlSessionStore: could not read %s: %s", fpath, exc)
 
-        if records_read >= self._MAX_RECORDS:
+        truncated = records_read >= self._MAX_RECORDS
+        if truncated:
             logger.warning(
                 "JsonlSessionStore: session %s truncated to %d records (max: %d)",
                 session_id, records_read, self._MAX_RECORDS
             )
 
+        return records, truncated
+
+    def _read_all_records(self, session_id: str) -> List[Dict[str, Any]]:
+        """Read and parse all records across all rotated files for *session_id*.
+
+        Limits reading to _MAX_RECORDS to prevent OOM issues.
+
+        .. note::
+            This preserves the original list-returning signature for backward
+            compatibility.  Call ``_read_all_records_with_meta`` if you need
+            the ``truncated`` flag.
+        """
+        records, _truncated = self._read_all_records_with_meta(session_id)
         return records
+
+    # ------------------------------------------------------------------
+    # Paged record access
+    # ------------------------------------------------------------------
+
+    # Maximum records allowed per page call.
+    _MAX_PAGE_LIMIT: int = 1_000
+
+    @staticmethod
+    def _encode_cursor(ordinal: int) -> str:
+        """Encode a zero-based record ordinal as an opaque URL-safe cursor string."""
+        payload = json.dumps({"o": ordinal}).encode("utf-8")
+        return base64.urlsafe_b64encode(payload).decode("ascii")
+
+    @staticmethod
+    def _decode_cursor(cursor: str) -> int:
+        """Decode an opaque cursor string back to the zero-based ordinal.
+
+        Raises ``ValueError`` for malformed or tampered cursors.
+        """
+        try:
+            payload = base64.urlsafe_b64decode(cursor.encode("ascii"))
+            data = json.loads(payload.decode("utf-8"))
+            if not isinstance(data, dict) or "o" not in data:
+                raise ValueError("missing 'o' key in cursor payload")
+            ordinal = int(data["o"])
+            if ordinal < 0:
+                raise ValueError(f"negative ordinal in cursor: {ordinal}")
+            return ordinal
+        except (ValueError, KeyError, json.JSONDecodeError) as exc:
+            raise ValueError(f"invalid cursor: {exc}") from exc
+
+    def get_records_page(
+        self,
+        session_id: str,
+        *,
+        cursor: Optional[str] = None,
+        limit: int = 100,
+        record_type: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Return a page of raw records for *session_id* in chronological order.
+
+        The cursor is a stable raw-record ordinal, so file rotation between
+        page calls does not lose or duplicate records.
+
+        Parameters
+        ----------
+        session_id:
+            Session to read.
+        cursor:
+            Opaque string returned by a previous call's ``next_cursor``.
+            ``None`` starts from the beginning.
+        limit:
+            Maximum records to return per page (1–``_MAX_PAGE_LIMIT``).
+            Values outside that range are clamped.
+        record_type:
+            If given, only records whose ``"type"`` field equals this value
+            are included in ``items`` (but the cursor still advances by total
+            raw-record ordinal, so subsequent pages remain consistent).
+
+        Returns
+        -------
+        dict with keys:
+            ``items``        – list of records in this page
+            ``next_cursor``  – opaque cursor for the next page (``None`` when
+                               no more records exist)
+            ``has_more``     – ``True`` if there are more records after this page
+            ``truncated``    – ``True`` if the underlying read was stopped at
+                               ``_MAX_RECORDS`` before exhausting the files
+            ``total_scanned``– number of raw records scanned to produce this page
+            ``page_limit``   – effective limit applied to this call
+        """
+        # Validate / clamp limit
+        validated_limit = max(1, min(int(limit), self._MAX_PAGE_LIMIT))
+
+        # Decode start ordinal from cursor
+        start_ordinal: int = 0
+        if cursor is not None:
+            start_ordinal = self._decode_cursor(cursor)  # raises ValueError on bad cursor
+
+        # Iterate across rotated files counting raw record ordinals so the
+        # cursor survives file rotation.  Each valid line (whether its JSON
+        # parses or not) consumes one ordinal so ordinals are stable regardless
+        # of how many malformed lines exist.
+        items: List[Dict[str, Any]] = []
+        global_ordinal: int = 0   # monotonically increasing across files
+        stopped_at_max: bool = False
+        page_full: bool = False
+
+        for fpath in self._session_files(session_id):
+            if page_full or stopped_at_max:
+                break
+            try:
+                try:
+                    fctx = locked_file(fpath, mode="r")
+                except Exception:
+                    fctx = fpath.open("r", encoding="utf-8", errors="replace")
+                try:
+                    with fctx as fh:
+                        for raw_line in fh:
+                            if global_ordinal >= self._MAX_RECORDS:
+                                stopped_at_max = True
+                                break
+                            line = raw_line.strip()
+                            if not line:
+                                continue
+                            ordinal = global_ordinal
+                            global_ordinal += 1
+
+                            if ordinal < start_ordinal:
+                                # behind cursor — skip without adding to items
+                                continue
+
+                            if page_full:
+                                break
+
+                            try:
+                                rec = json.loads(line)
+                            except json.JSONDecodeError:
+                                logger.debug(
+                                    "JsonlSessionStore.get_records_page: "
+                                    "skipping malformed line in %s",
+                                    fpath.name,
+                                )
+                                continue
+
+                            if record_type is None or rec.get("type") == record_type:
+                                items.append(rec)
+
+                            if len(items) >= validated_limit:
+                                page_full = True
+                                break
+                except Exception as exc:
+                    logger.warning(
+                        "JsonlSessionStore.get_records_page: could not read %s: %s",
+                        fpath, exc,
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "JsonlSessionStore.get_records_page: error opening %s: %s",
+                    fpath, exc,
+                )
+
+        # has_more: there are more records if we stopped early for any reason.
+        # page_full means we hit the validated_limit — there may be more records.
+        # stopped_at_max means the cap was hit during iteration.
+        #
+        # Special case: if stopped_at_max but global_ordinal did not advance
+        # past start_ordinal (the cap was already reached before we could read
+        # any new records), report has_more=False to avoid infinite loops.
+        cap_but_no_progress: bool = stopped_at_max and (global_ordinal <= start_ordinal)
+        has_more: bool = (page_full or stopped_at_max) and not cap_but_no_progress
+
+        # next_cursor points to the ordinal immediately after the last one we
+        # consumed. global_ordinal is already incremented past the last line we
+        # touched, so use it directly when has_more is True.
+        next_cursor: Optional[str] = None
+        if has_more:
+            # The ordinal to resume from is global_ordinal (already points past
+            # the last record we touched).
+            next_cursor = self._encode_cursor(global_ordinal)
+
+        return {
+            "items": items,
+            "next_cursor": next_cursor,
+            "has_more": has_more,
+            "truncated": stopped_at_max,
+            "total_scanned": max(0, global_ordinal - start_ordinal),
+            "page_limit": validated_limit,
+        }
+
+    def get_messages_page(
+        self,
+        session_id: str,
+        *,
+        cursor: Optional[str] = None,
+        limit: int = 100,
+    ) -> Dict[str, Any]:
+        """Convenience wrapper: page through ``message``-type records only.
+
+        Returns the same structure as ``get_records_page`` but ``items``
+        contains ``{"role": ..., "content": ...}`` dicts (same shape as
+        ``get_messages``).
+        """
+        page = self.get_records_page(
+            session_id, cursor=cursor, limit=limit, record_type="message"
+        )
+        page["items"] = [
+            {"role": r["role"], "content": r["content"]}
+            for r in page["items"]
+            if "role" in r and "content" in r
+        ]
+        return page
 
     # ------------------------------------------------------------------
     # SessionStoreProtocol — core message API
@@ -322,12 +533,37 @@ class JsonlSessionStore:
         )
 
     def get_messages(self, session_id: str) -> List[Dict[str, Any]]:
-        """Return all messages for *session_id* in insertion order."""
+        """Return all messages for *session_id* in insertion order.
+
+        .. note::
+            The returned list is capped at ``_MAX_RECORDS`` total records (all
+            types combined).  When the cap is hit the result is silently
+            incomplete.  Use ``get_messages_page`` for paginated access with
+            explicit ``has_more`` / ``truncated`` metadata, or call
+            ``get_messages_with_meta`` to receive the truncation flag together
+            with the list.
+        """
         return [
             {"role": r["role"], "content": r["content"]}
             for r in self._read_all_records(session_id)
             if r.get("type") == "message"
         ]
+
+    def get_messages_with_meta(
+        self, session_id: str
+    ) -> Tuple[List[Dict[str, Any]], bool]:
+        """Return ``(messages, truncated)`` for *session_id*.
+
+        ``truncated`` is ``True`` when the underlying read was stopped at
+        ``_MAX_RECORDS`` before all files were exhausted.
+        """
+        records, truncated = self._read_all_records_with_meta(session_id)
+        messages = [
+            {"role": r["role"], "content": r["content"]}
+            for r in records
+            if r.get("type") == "message"
+        ]
+        return messages, truncated
 
     # ------------------------------------------------------------------
     # SessionStoreProtocol — fork and revert
@@ -946,7 +1182,14 @@ class JsonlSessionStore:
         return _build(session_id)
 
     def get_session_summary(self, session_id: str) -> Dict[str, Any]:
-        records = self._read_all_records(session_id)
+        """Return aggregate counts for *session_id*.
+
+        The summary now includes a ``truncated`` boolean that is ``True`` when
+        the underlying record scan was stopped at ``_MAX_RECORDS`` before all
+        rotated files were exhausted.  All counts should be treated as lower
+        bounds when ``truncated`` is ``True``.
+        """
+        records, truncated = self._read_all_records_with_meta(session_id)
         summary: Dict[str, Any] = {
             "session_id": session_id,
             "messages": 0,
@@ -959,6 +1202,7 @@ class JsonlSessionStore:
             "error_count": 0,
             "plans": 0,
             "decisions": 0,
+            "truncated": truncated,
         }
         for r in records:
             t = r.get("type")

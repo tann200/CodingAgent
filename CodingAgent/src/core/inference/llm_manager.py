@@ -159,6 +159,9 @@ from src.core.inference.runtime_call import (  # noqa: E402
     prepare_call_extra_args as _prepare_call_extra_args,
     select_runtime_provider_config as _select_runtime_provider_config,
 )
+from src.core.inference.inference_timeout import (  # noqa: E402
+    get_default_policy as _get_inference_timeout_policy,
+)
 from src.core.inference.streaming import (  # noqa: E402
     decode_sse_line as _decode_sse_line,
     extract_stream_deltas as _extract_stream_deltas,
@@ -1152,6 +1155,16 @@ async def _call_model_internal(
             adapter=adapter,
             messages=messages,
         )
+        # Resolve event-bus publish for timeout events (best-effort)
+        _timeout_publish = None
+        try:
+            from src.core.orchestration.event_bus import get_event_bus as _get_eb_internal
+            _eb_internal = _get_eb_internal()
+            if _eb_internal is not None:
+                _timeout_publish = _eb_internal.publish
+        except Exception:
+            pass
+
         return await _call_adapter_with_fallbacks(
             adapter=adapter,
             messages=messages,
@@ -1161,6 +1174,9 @@ async def _call_model_internal(
             call_extra_args=call_extra_args,
             run_with_correlation=run_with_correlation,
             consume_sse_stream=_consume_sse_stream,
+            timeout_policy=_get_inference_timeout_policy(),
+            provider=provider,
+            publish=_timeout_publish,
         )
     except Exception as e:
         # CRED-1: str(e) from adapter exceptions can include URLs with credentials.
