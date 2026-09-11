@@ -611,6 +611,78 @@ class SessionStore:
     def get_session_tree(self, session_id: str) -> Any:
         return getattr(self._store, "get_session_tree")(session_id)
 
+    # ------------------------------------------------------------------
+    # Page API pass-throughs (JSONL-backed store only; other backends may
+    # not implement these — callers should check hasattr when using a
+    # non-JSONL backend).
+    # ------------------------------------------------------------------
+
+    def get_records_page(
+        self,
+        session_id: str,
+        *,
+        cursor: Optional[str] = None,
+        limit: int = 100,
+        record_type: Optional[str] = None,
+    ) -> Any:
+        """Pass-through to the underlying store's ``get_records_page``.
+
+        Returns a page dict with ``items``, ``next_cursor``, ``has_more``,
+        ``truncated``, ``total_scanned``, and ``page_limit`` keys.
+
+        Raises ``AttributeError`` when the underlying store does not support
+        paged access (e.g. legacy SQLite backends).
+        """
+        fn = getattr(self._store, "get_records_page", None)
+        if fn is None:
+            raise AttributeError(
+                f"{type(self._store).__name__!r} does not support get_records_page"
+            )
+        sid = session_id or "unknown"
+        return fn(sid, cursor=cursor, limit=limit, record_type=record_type)
+
+    def get_messages_page(
+        self,
+        session_id: str,
+        *,
+        cursor: Optional[str] = None,
+        limit: int = 100,
+    ) -> Any:
+        """Pass-through to the underlying store's ``get_messages_page``.
+
+        Returns a page dict where ``items`` contains
+        ``{"role": ..., "content": ...}`` dicts.
+
+        Raises ``AttributeError`` when the underlying store does not support
+        paged access.
+        """
+        fn = getattr(self._store, "get_messages_page", None)
+        if fn is None:
+            raise AttributeError(
+                f"{type(self._store).__name__!r} does not support get_messages_page"
+            )
+        sid = session_id or "unknown"
+        return fn(sid, cursor=cursor, limit=limit)
+
+    def get_messages_with_meta(
+        self,
+        session_id: str,
+    ) -> Any:
+        """Pass-through to the underlying store's ``get_messages_with_meta``.
+
+        Returns ``(messages, truncated)`` tuple.
+
+        Raises ``AttributeError`` when the underlying store does not support
+        this API.
+        """
+        fn = getattr(self._store, "get_messages_with_meta", None)
+        if fn is None:
+            raise AttributeError(
+                f"{type(self._store).__name__!r} does not support get_messages_with_meta"
+            )
+        sid = session_id or "unknown"
+        return fn(sid)
+
 
 # For backward compatibility allow: from src.core.memory.session_store import SessionStore
 # and also expose get_session_store factory.

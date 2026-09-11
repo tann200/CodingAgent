@@ -4,18 +4,51 @@ from typing import Any, Literal, Mapping
 logger = logging.getLogger(__name__)
 
 
+def _is_cancelled(state: Mapping[str, Any]) -> bool:
+    """Return True when a cancellation event has been set."""
+    cancel_event = state.get("cancel_event")
+    return bool(
+        cancel_event
+        and hasattr(cancel_event, "is_set")
+        and cancel_event.is_set()
+    )
+
+
 def route_after_wait_for_user(
     state: Mapping[str, Any],
 ) -> Literal["execute", "perception", "planning"]:
-    """Route after user confirms/rejects preview or approves/rejects a plan."""
+    """Route after user confirms/rejects preview or approves/rejects a plan.
+
+    Safety (Task #6): Cancellation wins — a cancelled run must not resume execution.
+    """
+    # Cancellation check — must precede any branch that routes to "execute"
+    if _is_cancelled(state):
+        logger.info(
+            "route_after_wait_for_user: cancel_event is set — routing to perception "
+            "(cancelled run must not resume execution)"
+        )
+        return "perception"
+
+    # Plan-approval branch only applies when plan mode is actually active.
+    # A stale plan_mode_approved=True left over from a previous turn (when
+    # plan_mode_enabled is not true) must NOT be treated as executable.
+    plan_mode_enabled = state.get("plan_mode_enabled")
     plan_mode_approved = state.get("plan_mode_approved")
-    if plan_mode_approved is not None:
+    if plan_mode_enabled and plan_mode_approved is not None:
         if plan_mode_approved:
             logger.info("route_after_wait_for_user: plan approved, resuming execution")
             return "execute"
         logger.info("route_after_wait_for_user: plan rejected, re-planning")
         return "planning"
 
+    if plan_mode_approved and not plan_mode_enabled:
+        logger.info(
+            "route_after_wait_for_user: stale plan_mode_approved=True but "
+            "plan_mode_enabled is not set — ignoring stale approval, "
+            "falling through to preview handling"
+        )
+
+    # Preview confirmation is independent of plan mode and preserved as-is.
     confirmed = state.get("preview_confirmed", False)
     if confirmed:
         logger.info(

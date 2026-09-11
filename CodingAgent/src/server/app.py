@@ -1,4 +1,20 @@
-"""HTTP/SSE server for multi-client architecture (Gap 2 implementation)."""
+"""HTTP/SSE server for multi-client architecture (Gap 2 implementation).
+
+Deployment notes
+----------------
+See ``server_config.py`` for the full deployment guide including TLS,
+reverse-proxy, and accepted auth headers.
+
+Endpoint auth policy (summary):
+  GET /health               — public liveness; returns {"status": "healthy"} only
+  GET /health/details       — admin auth; full capability data
+  GET /metrics              — metrics Basic-auth if configured, else admin auth
+  POST /session             — admin auth
+  GET  /session/{id}/events — admin auth (SSE)
+  WS   /ws/session/{id}     — admin auth (WebSocket; checked in websocket_handler)
+  POST /task, GET /task/…   — admin auth
+  GET|POST /scheduler/…     — admin auth
+"""
 
 from __future__ import annotations
 
@@ -121,14 +137,26 @@ def register_event_bus(bus: EventBus) -> None:
 
 
 def _require_admin_auth(request: Request) -> None:
-    """Require admin token if CODING_AGENT_ADMIN_TOKEN environment variable is set.
+    """Authorize a protected HTTP request.
 
     Accepts Bearer token via Authorization header or X-CodingAgent-Token header.
-    If no admin token is configured, the endpoints are open for local usage.
+
+    Fail-closed policy:
+    - If ``CODINGAGENT_ADMIN_TOKEN`` is configured, a matching token is required.
+    - If NO admin token is configured, the request is only allowed from a
+      loopback client.  Non-loopback clients are rejected (403) even under a
+      direct-uvicorn launch that skipped ``validate_server_exposure``.  This keeps
+      local development friction-free while failing closed for remote exposure.
     """
     admin_token = _getenv("CODINGAGENT_ADMIN_TOKEN", "CODING_AGENT_ADMIN_TOKEN")
     if not admin_token:
-        return
+        # No token configured — permit loopback only.
+        if loopback_only_allowed(request, admin_token):
+            return
+        raise HTTPException(
+            status_code=403,
+            detail="Non-loopback access requires CODINGAGENT_ADMIN_TOKEN",
+        )
     inc_admin_auth_counter("attempts")
     token = extract_admin_token_from_headers(request.headers)
     if token and hmac.compare_digest(token, admin_token):
@@ -181,12 +209,24 @@ async def session_events(session_id: str, request: Request):
 
 @app.get("/health")
 async def health_check():
-    """Health check endpoint.
+    """Public liveness probe.
 
-    Returns the service status plus capability flags so operators can
-    immediately see which optional features are active without reading source.
+    Returns only minimal status so liveness checks work without credentials.
+    Capability details are available at ``GET /health/details`` (admin auth required).
     """
-    # P3-1: Report semantic search mode so operators know if sentence-transformers
+    return {"status": "healthy"}
+
+
+@app.get("/health/details")
+async def health_details(request: Request):
+    """Admin-protected endpoint returning full capability flags.
+
+    Operators can see which optional features are active without reading source.
+    Requires admin auth on protected deployments.
+    """
+    _require_admin_auth(request)
+
+    # Report semantic search mode so operators know if sentence-transformers
     # is installed and real embedding-based search is active.
     _semantic_search_available = False
     try:
@@ -195,7 +235,7 @@ async def health_check():
     except ImportError:
         pass
 
-    # P3-3: Report OTel export status.
+    # Report OTel export status.
     import os as _os
     _otel_enabled = bool(_os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT", ""))
 
@@ -215,16 +255,27 @@ async def health_check():
 
 @app.get("/metrics")
 async def metrics_endpoint(request: Request):
-    """Expose in-process corrective-prompt metrics in Prometheus text format.
+    """Expose in-process metrics in Prometheus text format.
 
-    This is intentionally lightweight and synchronous because the underlying
-    counters are thread-safe via a lock.
+    Auth policy (checked in order):
+    1. If ``CODINGAGENT_METRICS_AUTH`` / ``CODING_AGENT_METRICS_AUTH`` is set,
+       require HTTP Basic auth with those credentials.
+    2. Otherwise, if ``CODINGAGENT_ADMIN_TOKEN`` is set (protected deployment),
+       require the same admin Bearer/X-CodingAgent-Token auth.
+    3. If neither is configured (local-only deployment), the endpoint is open.
+
+    This ensures metrics are never public on a protected deployment.
     """
-    # Allow optional basic auth via environment variable (single username:password)
-    auth = _getenv("CODINGAGENT_METRICS_AUTH", "CODING_AGENT_METRICS_AUTH")
-    if auth:
-        if not metrics_basic_auth_valid(request.headers, auth):
+    metrics_auth = _getenv("CODINGAGENT_METRICS_AUTH", "CODING_AGENT_METRICS_AUTH")
+    if metrics_auth:
+        # Explicit Basic-auth credential configured — use it (constant-time check
+        # is inside metrics_basic_auth_valid).
+        if not metrics_basic_auth_valid(request.headers, metrics_auth):
             return Response(status_code=401, content="Unauthorized")
+    else:
+        # Fall back to admin auth policy so metrics are never public on a
+        # token-protected deployment.
+        _require_admin_auth(request)
 
     text = format_metrics_text()
     return Response(content=text, media_type="text/plain; version=0.0.4")
@@ -338,17 +389,12 @@ async def update_scheduler_job_interval(name: str, request: Request):
 
 @app.websocket("/ws/session/{session_id}")
 async def websocket_session_events(session_id: str, websocket: WebSocket):
-    """WebSocket endpoint — delegates to websocket_handler for full logic."""
-    admin_token = _getenv("CODINGAGENT_ADMIN_TOKEN", "CODING_AGENT_ADMIN_TOKEN")
-    if admin_token:
-        inc_admin_auth_counter("attempts")
-        token = extract_admin_token_from_headers(websocket.headers)
-        if not token or not hmac.compare_digest(token, admin_token):
-            inc_admin_auth_counter("failures")
-            await websocket.close(code=1008)
-            return
-        inc_admin_auth_counter("successes")
+    """WebSocket endpoint — delegates to websocket_handler for full auth + logic.
 
+    Auth is handled entirely inside ``websocket_session_handler`` to keep the
+    check co-located with the connection logic and avoid drift between this
+    thin wrapper and the handler.
+    """
     if event_bus is None:
         try:
             await websocket.close(code=1011)
@@ -359,7 +405,12 @@ async def websocket_session_events(session_id: str, websocket: WebSocket):
 
 
 def run_server(host: str = "127.0.0.1", port: int = 8000):
-    """Run the HTTP/SSE server."""
+    """Run the HTTP/SSE server.
+
+    This is the supported launcher.  Running uvicorn directly bypasses the
+    ``validate_server_exposure`` startup guard — set ``CODINGAGENT_ADMIN_TOKEN``
+    explicitly in that case.
+    """
     admin_token = _getenv("CODINGAGENT_ADMIN_TOKEN", "CODING_AGENT_ADMIN_TOKEN")
     validate_server_exposure(host, admin_token)
     uvicorn.run(app, host=host, port=port, log_level="info")

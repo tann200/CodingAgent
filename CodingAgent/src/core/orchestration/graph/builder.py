@@ -4,7 +4,13 @@ from typing import Any, Dict, Mapping
 
 from langgraph.graph import StateGraph, END
 from langchain_core.runnables import RunnableConfig
-from src.core.orchestration.graph.state import AgentState, StateLike
+from src.core.orchestration.graph.state import (
+    AgentState,
+    StateLike,
+    validate_state_boundaries,
+    enforce_state_boundaries,
+    BoundaryValidationError,
+)
 from src.core.orchestration.graph.nodes.perception_node import perception_node
 from src.core.orchestration.graph.nodes.analysis_node import analysis_node
 from src.core.orchestration.graph.nodes.planning_node import planning_node
@@ -65,6 +71,9 @@ should_after_replan = _execution_routing.should_after_replan
 should_after_verification = _execution_routing.should_after_verification
 route_after_wait_for_user = _session_routing.route_after_wait_for_user
 should_after_memory_sync = _session_routing.should_after_memory_sync
+_check_cancelled = _execution_routing._check_cancelled
+route_wait_lite = _tier_graph_routing.route_wait_lite
+route_frontier_loop_exit_lite = _tier_graph_routing.route_frontier_loop_exit_lite
 
 try:
     from src.core.orchestration.token_budget import (
@@ -115,6 +124,35 @@ def _is_lite_mode(state: Mapping[str, Any]) -> bool:
     )
 
 
+# ---------------------------------------------------------------------------
+# Boundary enforcement wrappers — Task #6 correction.
+# Every planning / execution / verification node is wrapped so that structured
+# boundary validation runs BEFORE the node body executes any tool or provider
+# action.  Invalid state raises BoundaryValidationError (carrying boundary +
+# issue dicts) and the underlying node is never invoked.
+# ---------------------------------------------------------------------------
+
+
+def _with_boundary(node_fn: Any, boundary: str) -> Any:
+    """Wrap *node_fn* so structured boundary validation runs before it.
+
+    The returned coroutine validates the incoming state at *boundary* using
+    :func:`enforce_state_boundaries`.  If validation fails, it raises
+    :class:`BoundaryValidationError` before calling *node_fn* — guaranteeing no
+    tool/provider action runs on malformed state.  Tests can still invoke the
+    validator (``validate_state_boundaries`` / ``enforce_state_boundaries``)
+    directly.
+    """
+
+    async def _wrapped(state: StateLike, config: RunnableConfig):
+        enforce_state_boundaries(state, boundary)
+        return await node_fn(state, config)
+
+    # Preserve a readable name for LangGraph / debugging.
+    _wrapped.__name__ = f"{getattr(node_fn, '__name__', 'node')}__{boundary}_boundary"
+    return _wrapped
+
+
 def _compile_full_graph():
     """Assemble the full 16-node LangGraph cognitive pipeline.
 
@@ -126,11 +164,13 @@ def _compile_full_graph():
 
     workflow.add_node("perception", perception_node)
     workflow.add_node("analysis", analysis_node)
-    workflow.add_node("planning", planning_node)
+    workflow.add_node("planning", _with_boundary(planning_node, "planning"))
     workflow.add_node("plan_validator", plan_validator_node)
-    workflow.add_node("execution", execution_node)
+    workflow.add_node("execution", _with_boundary(execution_node, "execution"))
     workflow.add_node("step_controller", step_controller_node)
-    workflow.add_node("verification", verification_node)
+    workflow.add_node(
+        "verification", _with_boundary(verification_node, "verification")
+    )
     workflow.add_node("debug", debug_node)
     workflow.add_node("memory_sync", memory_update_node)
     workflow.add_node("delegation", delegation_node)
@@ -264,11 +304,13 @@ def _compile_fast_path_graph():
 
     workflow.add_node("perception", perception_node)
     workflow.add_node("analysis", analysis_node)
-    workflow.add_node("planning", planning_node)
+    workflow.add_node("planning", _with_boundary(planning_node, "planning"))
     workflow.add_node("plan_validator", plan_validator_node)
-    workflow.add_node("execution", execution_node)
+    workflow.add_node("execution", _with_boundary(execution_node, "execution"))
     workflow.add_node("step_controller", step_controller_node)
-    workflow.add_node("verification", verification_node)
+    workflow.add_node(
+        "verification", _with_boundary(verification_node, "verification")
+    )
     workflow.add_node("evaluation", evaluation_node)
     workflow.add_node("memory_sync", memory_update_node)
     workflow.add_node("wait_for_user", wait_for_user_node)
@@ -469,9 +511,15 @@ def _compile_frontier_graph():
         return await analyst_delegation_node(state, config)
 
     async def _frontier_loop(state: StateLike, config: RunnableConfig):
+        # frontier_loop handles both planning and execution in one pass, so
+        # enforce the execution boundary before any tool/provider action.
+        # (execution is stricter than planning: it also rejects an exhausted
+        # current_step, which is the safe pre-tool-call invariant here.)
+        enforce_state_boundaries(state, "execution")
         return await frontier_loop_node(state, config)
 
     async def _verification(state: StateLike, config: RunnableConfig):
+        enforce_state_boundaries(state, "verification")
         return await verification_node(state, config)
 
     async def _evaluation(state: StateLike, config: RunnableConfig):
@@ -603,7 +651,8 @@ def _compile_lite_graph():
     Graph topology::
 
         perception → frontier_loop (lite config)
-        frontier_loop → memory_sync | end
+        frontier_loop → wait_for_user | memory_sync | end
+        wait_for_user → frontier_loop (approved) | memory_sync
         memory_sync → end
 
     The lite config disables:
@@ -611,9 +660,16 @@ def _compile_lite_graph():
     - evaluation_node
     - replan_node
     - analyst_delegation_node
+
+    Task #6 correction: the lite graph now includes a ``wait_for_user`` node
+    so a pending plan approval is NOT discarded — it suspends and only resumes
+    the loop on explicit approval.
     """
     from src.core.orchestration.graph.nodes.frontier_loop_node import (
         frontier_loop_node,
+    )
+    from src.core.orchestration.graph.nodes.wait_for_user_node import (
+        wait_for_user_node,
     )
 
     workflow = StateGraph(AgentState)
@@ -622,14 +678,21 @@ def _compile_lite_graph():
         return await perception_node(state, config)
 
     async def _frontier_loop(state: StateLike, config: RunnableConfig):
+        # frontier_loop handles planning + execution; enforce the execution
+        # boundary before any tool/provider action.
+        enforce_state_boundaries(state, "execution")
         return await frontier_loop_node(state, config)
 
     async def _memory_sync(state: StateLike, config: RunnableConfig):
         return await memory_update_node(state, config)
 
+    async def _wait_for_user(state: StateLike, config: RunnableConfig):
+        return await wait_for_user_node(state, config)
+
     workflow.add_node("perception", _perception)
     workflow.add_node("frontier_loop", _frontier_loop)
     workflow.add_node("memory_sync", _memory_sync)
+    workflow.add_node("wait_for_user", _wait_for_user)
 
     workflow.set_entry_point("perception")
 
@@ -639,10 +702,18 @@ def _compile_lite_graph():
         {"frontier_loop": "frontier_loop", "memory_sync": "memory_sync"},
     )
 
+    # frontier_loop → wait_for_user (pending approval) | memory_sync
     workflow.add_conditional_edges(
         "frontier_loop",
         _tier_graph_routing.route_frontier_loop_exit_lite,
-        {"memory_sync": "memory_sync"},
+        {"memory_sync": "memory_sync", "wait_for_user": "wait_for_user"},
+    )
+
+    # wait_for_user → frontier_loop (approved) | memory_sync (cancel/reject)
+    workflow.add_conditional_edges(
+        "wait_for_user",
+        _tier_graph_routing.route_wait_lite,
+        {"frontier_loop": "frontier_loop", "memory_sync": "memory_sync"},
     )
 
     workflow.add_edge("memory_sync", END)

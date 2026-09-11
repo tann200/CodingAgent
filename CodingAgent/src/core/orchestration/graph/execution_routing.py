@@ -267,7 +267,17 @@ def should_after_verification(
 def should_after_debug(
     state: Mapping[str, Any],
 ) -> Literal["execution", "memory_sync", "end"]:
-    """Decide routing after debug node."""
+    """Decide routing after debug node.
+
+    Safety (Task #6): Cancellation wins — cancelled runs must not re-enter execution.
+    """
+    # Cancellation check — must precede any branch that routes to "execution"
+    if _check_cancelled(state):
+        logger.info(
+            "should_after_debug: cancel_event is set — routing to memory_sync"
+        )
+        return "memory_sync"
+
     next_action = state.get("next_action")
     debug_attempts = int(state.get("debug_attempts") or 0)
     max_debug_attempts = int(state.get("max_debug_attempts") or 3)
@@ -525,6 +535,16 @@ def _check_no_plan_fast_path(state: Mapping[str, Any]) -> str | None:
     return None
 
 
+def _check_cancelled(state: Mapping[str, Any]) -> bool:
+    """Return True when a cancellation event has been set."""
+    cancel_event = state.get("cancel_event")
+    return bool(
+        cancel_event
+        and hasattr(cancel_event, "is_set")
+        and cancel_event.is_set()
+    )
+
+
 def route_execution(
     state: Mapping[str, Any],
 ) -> Literal[
@@ -535,7 +555,20 @@ def route_execution(
     "perception",
     "memory_sync",
 ]:
-    """Route after execution node."""
+    """Route after execution node.
+
+    Safety invariants (Task #6):
+    - Cancellation wins: a cancelled run cannot re-enter execution.
+    - Approval gate wins before retry/forced-execute shortcuts.
+    """
+    # ── 1. Cancellation — highest priority ────────────────────────────────
+    if _check_cancelled(state):
+        logger.info(
+            "route_execution: cancel_event is set — routing to memory_sync "
+            "(cancelled run must not re-enter execution)"
+        )
+        return "memory_sync"
+
     if "context_overflow" in (state.get("errors") or []):
         logger.warning(
             "route_execution: context overflow in errors — routing to memory_sync "

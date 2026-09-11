@@ -559,3 +559,277 @@ def validate_state(state: Mapping[str, Any]) -> list[str]:
         _logger.warning("validate_state: %d issue(s) detected: %s", len(issues), issues)
 
     return issues
+
+
+# ---------------------------------------------------------------------------
+# Structured boundary validation — Task #6
+# Returns structured dicts so callers can act on specific issue kinds without
+# parsing log strings.  Does NOT raise; safe to call at any node entry.
+# ---------------------------------------------------------------------------
+
+#: Issue kinds returned by validate_state_boundaries.
+#: "type_error"         — a field has the wrong Python type.
+#: "out_of_bounds"      — current_step is out of range for current_plan.
+#: "turns_exceeded"     — turn_count > max_turns.
+#: "malformed_plan"     — current_plan is not a list of dicts.
+#: "malformed_step"     — current_step is not int | None, or is negative.
+#: "malformed_action"   — planned_action / next_action is not a dict | None.
+#: "invalid_transition" — an invalid planning/execution/verification phase
+#:                        combination was detected.
+_ISSUE_KINDS = frozenset(
+    {
+        "type_error",
+        "out_of_bounds",
+        "turns_exceeded",
+        "malformed_plan",
+        "malformed_step",
+        "malformed_action",
+        "invalid_transition",
+    }
+)
+
+#: Valid boundary labels for :func:`validate_state_boundaries`.
+_BOUNDARY_PLANNING = "planning"
+_BOUNDARY_EXECUTION = "execution"
+_BOUNDARY_VERIFICATION = "verification"
+_VALID_BOUNDARIES = frozenset(
+    {_BOUNDARY_PLANNING, _BOUNDARY_EXECUTION, _BOUNDARY_VERIFICATION}
+)
+
+
+def _is_real_int(val: Any) -> bool:
+    """Return True only for genuine ints — bool is explicitly NOT an int here.
+
+    ``isinstance(True, int)`` is True in Python, but a bool where an integer
+    counter/index is expected is a bug, so we reject it.
+    """
+    return isinstance(val, int) and not isinstance(val, bool)
+
+
+class BoundaryValidationError(Exception):
+    """Raised when structured boundary validation fails at a graph boundary.
+
+    Carries the ``boundary`` label (planning/execution/verification) and the
+    list of structured ``issues`` dicts so callers can inspect and report the
+    problem without parsing the message string.
+    """
+
+    def __init__(self, boundary: str, issues: list[dict[str, Any]]):
+        self.boundary = boundary
+        self.issues = issues
+        summary = "; ".join(i.get("message", "") for i in issues)
+        super().__init__(
+            f"State boundary validation failed at {boundary!r}: {summary}"
+        )
+
+
+def validate_state_boundaries(
+    state: Mapping[str, Any],
+    *,
+    boundary: str | None = None,
+) -> list[dict[str, Any]]:
+    """Focused planning/execution/verification boundary validation.
+
+    Returns a (possibly empty) list of structured issue dicts.  Each dict has:
+
+    ``kind``    (str)   — one of ``_ISSUE_KINDS``
+    ``field``   (str)   — the state field that triggered the issue
+    ``message`` (str)   — human-readable description
+    ``value``           — the offending value (may be None)
+
+    Parameters
+    ----------
+    state:
+        The AgentState mapping to validate.
+    boundary:
+        Optional boundary label — one of ``"planning"``, ``"execution"``,
+        ``"verification"``.  When provided, boundary-specific rules apply:
+
+        - ``execution``: ``current_step == len(current_plan)`` (exhausted plan)
+          is rejected — you must not enter execution with nothing left to run.
+
+        When ``None`` (default), only general rules apply and
+        ``current_step == len(current_plan)`` is *allowed* (it is a valid
+        post-execution "plan exhausted" state).
+
+    This supplements :func:`validate_state` with structured output so callers
+    can programmatically react to specific issues (e.g. reject execution when
+    ``malformed_plan`` is detected) rather than parsing log strings.
+
+    Does NOT raise.  Log and return — never crash a live run.  Use
+    :func:`enforce_state_boundaries` when you want a hard failure.
+    """
+    issues: list[dict[str, Any]] = []
+
+    def _issue(kind: str, field: str, message: str, value: Any = None) -> None:
+        issues.append({"kind": kind, "field": field, "message": message, "value": value})
+
+    at_execution = boundary == _BOUNDARY_EXECUTION
+
+    # ── 1. Malformed current_plan ──────────────────────────────────────────
+    current_plan = state.get("current_plan")  # type: ignore[call-overload]
+    plan_is_list = isinstance(current_plan, list)
+    if current_plan is not None:
+        if not plan_is_list:
+            _issue(
+                "malformed_plan",
+                "current_plan",
+                f"current_plan must be a list or None, got {type(current_plan).__name__!r}",
+                current_plan,
+            )
+        else:
+            for idx, step in enumerate(current_plan):
+                if not isinstance(step, dict):
+                    _issue(
+                        "malformed_plan",
+                        "current_plan",
+                        f"current_plan[{idx}] must be a dict, got {type(step).__name__!r}",
+                        step,
+                    )
+
+    # ── 2. Malformed current_step (bool is not int; negative is invalid) ───
+    current_step = state.get("current_step")  # type: ignore[call-overload]
+    step_is_int = _is_real_int(current_step)
+    if current_step is not None and not step_is_int:
+        _issue(
+            "malformed_step",
+            "current_step",
+            f"current_step must be a non-bool int or None, got {type(current_step).__name__!r}: {current_step!r}",
+            current_step,
+        )
+    elif step_is_int and current_step < 0:
+        _issue(
+            "malformed_step",
+            "current_step",
+            f"current_step must be >= 0, got {current_step}",
+            current_step,
+        )
+
+    # ── 3. current_step bounds vs current_plan ─────────────────────────────
+    # General rule: current_step > len(plan) is always out of bounds.
+    # current_step == len(plan) is the "exhausted" post-execution state and is
+    # ALLOWED in general, but REJECTED at the execution boundary (nothing left
+    # to run).
+    if step_is_int and current_step >= 0 and plan_is_list and len(current_plan) > 0:
+        plan_len = len(current_plan)
+        if current_step > plan_len:
+            _issue(
+                "out_of_bounds",
+                "current_step",
+                f"current_step={current_step} is out of bounds for current_plan of length {plan_len}",
+                current_step,
+            )
+        elif current_step == plan_len and at_execution:
+            _issue(
+                "out_of_bounds",
+                "current_step",
+                f"current_step={current_step} equals plan length {plan_len} at execution entry — no step left to execute",
+                current_step,
+            )
+
+    # ── 4. Malformed planned_action / next_action ─────────────────────────
+    planned_action = state.get("planned_action")  # type: ignore[call-overload]
+    if planned_action is not None and not isinstance(planned_action, dict):
+        _issue(
+            "malformed_action",
+            "planned_action",
+            f"planned_action must be a dict or None, got {type(planned_action).__name__!r}",
+            planned_action,
+        )
+
+    next_action = state.get("next_action")  # type: ignore[call-overload]
+    if next_action is not None and not isinstance(next_action, dict):
+        _issue(
+            "malformed_action",
+            "next_action",
+            f"next_action must be a dict or None, got {type(next_action).__name__!r}",
+            next_action,
+        )
+
+    # ── 5. Invalid phase transitions ───────────────────────────────────────
+    # Detect states that are internally contradictory:
+    # a) plan_mode_approved=True + awaiting_plan_approval=True
+    #    → approval is both granted and still pending (stale flag)
+    plan_mode_enabled = state.get("plan_mode_enabled")  # type: ignore[call-overload]
+    plan_mode_approved = state.get("plan_mode_approved")  # type: ignore[call-overload]
+    awaiting_plan_approval = state.get("awaiting_plan_approval")  # type: ignore[call-overload]
+
+    if plan_mode_approved and awaiting_plan_approval:
+        _issue(
+            "invalid_transition",
+            "awaiting_plan_approval",
+            "plan_mode_approved=True but awaiting_plan_approval is still True — stale approval flag",
+            {"plan_mode_approved": plan_mode_approved, "awaiting_plan_approval": awaiting_plan_approval},
+        )
+
+    # b) plan_mode_enabled=False + plan_mode_approved=True
+    #    → approval granted for a mode that is not active (confusing but not fatal)
+    if plan_mode_enabled is False and plan_mode_approved:
+        _issue(
+            "invalid_transition",
+            "plan_mode_approved",
+            "plan_mode_approved=True but plan_mode_enabled=False — approval flag set without active plan mode",
+            {"plan_mode_enabled": plan_mode_enabled, "plan_mode_approved": plan_mode_approved},
+        )
+
+    # ── 6. turn_count > max_turns ──────────────────────────────────────────
+    turn_count = state.get("turn_count")  # type: ignore[call-overload]
+    max_turns = state.get("max_turns")  # type: ignore[call-overload]
+    if (
+        _is_real_int(turn_count)
+        and _is_real_int(max_turns)
+        and turn_count > max_turns
+    ):
+        _issue(
+            "turns_exceeded",
+            "turn_count",
+            f"turn_count={turn_count} exceeds max_turns={max_turns}",
+            {"turn_count": turn_count, "max_turns": max_turns},
+        )
+
+    if issues:
+        _logger.warning(
+            "validate_state_boundaries(boundary=%r): %d issue(s): %s",
+            boundary,
+            len(issues),
+            [i["message"] for i in issues],
+        )
+
+    return issues
+
+
+def enforce_state_boundaries(
+    state: Mapping[str, Any],
+    boundary: str,
+) -> None:
+    """Validate *state* at a graph *boundary* and raise on any issue.
+
+    This is the production enforcement entry point.  It runs
+    :func:`validate_state_boundaries` and, if any structured issue is found,
+    raises :class:`BoundaryValidationError` carrying the boundary label and the
+    issue dicts.  Call this at the *entry* of planning/execution/verification
+    node wrappers — before any tool or provider action — so malformed state
+    fails explicitly instead of silently corrupting a run.
+
+    Parameters
+    ----------
+    state:
+        The AgentState mapping to validate.
+    boundary:
+        One of ``"planning"``, ``"execution"``, ``"verification"``.
+
+    Raises
+    ------
+    BoundaryValidationError
+        When one or more boundary issues are detected.
+    ValueError
+        When *boundary* is not a recognised label.
+    """
+    if boundary not in _VALID_BOUNDARIES:
+        raise ValueError(
+            f"enforce_state_boundaries: unknown boundary {boundary!r}. "
+            f"Expected one of {sorted(_VALID_BOUNDARIES)}."
+        )
+    issues = validate_state_boundaries(state, boundary=boundary)
+    if issues:
+        raise BoundaryValidationError(boundary, issues)

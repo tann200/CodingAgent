@@ -77,9 +77,18 @@ def test_prepare_call_extra_args_noop_skipped_without_tool_history():
 
 
 def test_call_adapter_with_fallbacks_prefers_chat_and_consumes_stream():
+    """Adapter.chat() returns a streaming response; the streaming consumer
+    should iterate it and return an ok result.  An empty iter_lines() produces
+    an empty-text ok result — the legacy consume_sse_stream callable is no
+    longer invoked directly; first_token/stream_idle timeouts apply instead."""
+    import json as _json
+
     class _Response:
         def iter_lines(self):
-            return iter(())
+            # Emit one real SSE chunk so the result is non-empty.
+            chunk = {"choices": [{"delta": {"content": "stream text"}, "finish_reason": None}]}
+            yield f"data: {_json.dumps(chunk)}"
+            yield "data: [DONE]"
 
     class _Adapter:
         def chat(self, messages, model=None, stream=False, format_json=False, **kwargs):
@@ -89,6 +98,10 @@ def test_call_adapter_with_fallbacks_prefers_chat_and_consumes_stream():
         return fn()
 
     async def _run():
+        from src.core.inference.inference_timeout import InferenceTimeoutPolicy
+        policy = InferenceTimeoutPolicy(
+            connect_total=5.0, first_token=5.0, stream_idle=5.0, fallback_attempt=5.0
+        )
         result = await call_adapter_with_fallbacks(
             adapter=_Adapter(),
             messages=[{"role": "user", "content": "hi"}],
@@ -98,8 +111,11 @@ def test_call_adapter_with_fallbacks_prefers_chat_and_consumes_stream():
             call_extra_args={},
             run_with_correlation=_run_with_correlation,
             consume_sse_stream=lambda _response, _model: "stream text",
+            timeout_policy=policy,
         )
-        assert result == {"ok": True, "text": "stream text", "streamed": True}
+        assert result["ok"] is True
+        assert result.get("streamed") is True
+        assert "stream text" in result.get("text", "")
 
     asyncio.run(_run())
 
