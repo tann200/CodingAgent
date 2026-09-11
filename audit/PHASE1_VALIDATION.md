@@ -155,7 +155,7 @@
 |---|------|-----------|-------------------|
 | 1.1 | Gate 2c fail-closed | ✅ READY | None — pattern already in file |
 | 1.2 | Bash timeout status | ⚠️ READY w/ 1 decision | status flip (A) vs marker (B); consumer check needed |
-| 1.3 | WorkspaceGuard fallback | ✅ READY | Minor: fail-closed affects tests |
+| 1.3 | WorkspaceGuard fallback | ✅ COMPLETED | Fix already implemented in commit 3311704 |
 | 1.4 | VectorStore memory | ❌ NOT READY | Needs storage/embedding/scope design spec |
 | 1.5 | Compaction key mismatch | ✅ COMPLETED | Fix already implemented in commit 3311704 |
 | 1.6 | Node output schemas | ⚠️ READY (large) | None — mechanical, pattern established |
