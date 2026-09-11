@@ -157,7 +157,7 @@
 | 1.2 | Bash timeout status | ⚠️ READY w/ 1 decision | status flip (A) vs marker (B); consumer check needed |
 | 1.3 | WorkspaceGuard fallback | ✅ READY | Minor: fail-closed affects tests |
 | 1.4 | VectorStore memory | ❌ NOT READY | Needs storage/embedding/scope design spec |
-| 1.5 | Compaction key mismatch | ✅ READY | None (correct key is `_compacted_history`) |
+| 1.5 | Compaction key mismatch | ✅ COMPLETED | Fix already implemented in commit 3311704 |
 | 1.6 | Node output schemas | ⚠️ READY (large) | None — mechanical, pattern established |
 | 1.7 | HOOK_SESSION_START | ✅ READY | Task-payload source decision |
 
