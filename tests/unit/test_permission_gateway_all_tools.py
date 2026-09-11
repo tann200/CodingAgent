@@ -218,17 +218,20 @@ def test_gate2c_network_rule_matches_web_search(
     assert result.allowed is True
 
 
-def test_gate2c_exception_returns_none(mock_orch: MagicMock) -> None:
-    """Exceptions in gate2c must never block tool execution — returns None."""
+def test_gate2b_policy_rules_exception_returns_fail_closed(mock_orch: MagicMock) -> None:
+    """Gate 2b must fail-closed on policy exceptions — returns PermissionResult(allowed=False)."""
     gw = PermissionGateway(mock_orch)
 
     with patch(
-        "src.core.orchestration.permission_table.get_permission_table",
-        side_effect=RuntimeError("DB is locked"),
+        "src.core.orchestration.permission_gateway._get_permission_policy",
+        side_effect=RuntimeError("Policy subsystem unavailable"),
     ):
-        result = gw._gate2c_permission_table("write_file", {"path": "foo.py"})
+        result = gw._gate2b_policy_rules("write_file", {"path": "foo.py"})
 
-    assert result is None
+    assert result is not None
+    assert result.allowed is False
+    assert result.gate == 2
+    assert "PermissionPolicy check failed" in result.reason
 
 
 # ---------------------------------------------------------------------------
