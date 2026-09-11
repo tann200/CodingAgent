@@ -49,6 +49,10 @@ from src.core.orchestration.graph.nodes.perception_compaction import (
 from src.core.orchestration.graph.nodes.perception_post_call import (
     _process_post_call_tokens as _process_post_call_tokens_impl,
 )
+from src.core.orchestration.graph.nodes.tool_output_truncation import (
+    _PRUNE_PROTECT_TOKENS,
+    prune_tool_outputs as _prune_tool_outputs,
+)
 from src.core.inference.provider_utils import (
     resolve_provider_capabilities as _resolve_provider_caps,
 )
@@ -207,87 +211,6 @@ except Exception:
 
 logger = logging.getLogger(__name__)
 
-# PRUNE: Placeholder inserted in place of old tool result content.
-_PRUNED_TOOL_PLACEHOLDER = "[Old tool result content cleared to save context]"
-# PRUNE: Token threshold (from the end of history) beyond which tool outputs
-# are zeroed.  OP-3: Raised from 15K → 40K to match OpenCode's PRUNE_PROTECT.
-# The 15K value was calibrated for the old 7600-token LM Studio default context;
-# that override was removed in P1-A.  Modern models (Gemma 4: 128K-256K ctx,
-# LM Studio defaults: 32K-128K) can safely protect 40K tokens of recent history.
-# Raising this reduces spurious "content cleared" entries in mid-session context.
-_PRUNE_PROTECT_TOKENS = 40_000
-# PRUNE: Always keep this many recent messages intact regardless of size.
-_PRUNE_PROTECT_RECENT = 6
-
-
-def _prune_tool_outputs(history: list) -> tuple:
-    """Zero out old tool-result content beyond the _PRUNE_PROTECT_TOKENS boundary.
-
-    Walks the history from newest to oldest, accumulating a token count.
-    Once the running total exceeds _PRUNE_PROTECT_TOKENS, any subsequent
-    messages whose content looks like a tool_execution_result are replaced with
-    the _PRUNED_TOOL_PLACEHOLDER.  The last _PRUNE_PROTECT_RECENT messages are
-    always preserved verbatim.
-
-    OP-10: Messages with ``metadata.preserve = True`` are never pruned.
-    P2-D: Uses tiktoken for accurate token counting when available; falls back
-          to ``len // 4`` rather than the aggressive ``len // 4`` estimate.
-
-    Returns (pruned_history, pruned_count) — pruned_history is a new list
-    (input is not mutated), pruned_count is the number of messages zeroed.
-    """
-    if not history:
-        return history, 0
-
-    # P2-D: prefer tiktoken for accurate counting; fall back to char heuristic.
-    try:
-        from src.core.inference.tokenizer import count_tokens as _count_tokens
-
-        def _est(msg: dict) -> int:
-            c = msg.get("content") or ""
-            s = c if isinstance(c, str) else str(c)
-            try:
-                return max(1, _count_tokens(s))
-            except Exception:
-                return max(1, len(s) // 4)
-
-    except Exception:
-
-        def _est(msg: dict) -> int:  # type: ignore[misc]
-            c = msg.get("content") or ""
-            s = c if isinstance(c, str) else str(c)
-            return max(1, len(s) // 4)
-
-    def _is_tool_result(msg: dict) -> bool:
-        if msg.get("role") == "tool":
-            return True
-        if msg.get("role") == "user":
-            c = msg.get("content") or ""
-            return "tool_execution_result" in (c if isinstance(c, str) else str(c))
-        return False
-
-    result = list(history)
-    total = len(result)
-    running_tokens = 0
-    pruned_count = 0
-
-    for i in range(total - 1, -1, -1):
-        msg = result[i]
-        # Always protect the most recent N messages
-        if (total - 1 - i) < _PRUNE_PROTECT_RECENT:
-            running_tokens += _est(msg)
-            continue
-        # OP-10: Never prune messages tagged with preserve=True metadata.
-        if msg.get("metadata", {}).get("preserve"):
-            running_tokens += _est(msg)
-            continue
-        running_tokens += _est(msg)
-        if running_tokens > _PRUNE_PROTECT_TOKENS and _is_tool_result(msg):
-            if msg.get("content") != _PRUNED_TOOL_PLACEHOLDER:
-                result[i] = {**msg, "content": _PRUNED_TOOL_PLACEHOLDER}
-                pruned_count += 1
-
-    return result, pruned_count
 
 
 # P1-D: Graduated corrective prompts helper.
@@ -710,7 +633,10 @@ async def _perception_node_impl(
     # context.  Runs after CP-6 so the compacted history is pruned, not the
     # raw one.  Does not mutate AgentState — local to this prompt build.
     try:
-        _history_for_prompt, _pruned = _prune_tool_outputs(_history_for_prompt)
+        _pruned_result = _prune_tool_outputs(
+            _history_for_prompt, return_pruned_count=True
+        )
+        _history_for_prompt, _pruned = _pruned_result  # type: ignore[assignment]
         if _pruned:
             logger.info(
                 "perception_node PRUNE: zeroed %d old tool result(s) beyond "

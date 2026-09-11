@@ -1,7 +1,7 @@
 # Phase 2 — Progress & Next-Task Analysis
 
 **Scope:** Track Phase 2 of the audit roadmap (robustness improvements), record completed items, and provide a concrete implementation analysis for the next task.
-**Status:** 2.1/2.2/2.3/2.5/2.6/2.7 complete; next task is **2.4**.
+**Status:** All Phase 2 items (**2.1–2.8**) now complete.
 
 ---
 
@@ -16,6 +16,7 @@
 | 2.5 | Guard per-round debug serialization | (this commit) | `perception_node.py` — wrapped both debug `logger.info` blocks in `logger.isEnabledFor(logging.INFO)` so the expensive `repr(resp)` runs only when INFO is enabled. |
 | 2.6 | Remove duplicate `_is_success()` | (this commit) | `execution_routing.py` now imports the shared `_is_success` from `perception_routing.py` (already imported module) instead of redefining it. Regression test `test_success_helper_is_single_source_of_truth`. |
 | 2.7 | Centralize routing magic numbers | (this commit) | New `routing_constants.py` = single source of truth for all routing thresholds. `execution_routing.py`/`planning_routing.py` import them; replaced ~20 inline literals (replan/step-retry/no-plan/debug/recovery caps). Existing private names kept as re-exports so `builder.py` aliases + tests stay valid. Behavior-neutral (tests/mypy/ruff green). |
+| 2.4 | Consolidate pruning clones + align token estimation | (this commit) | `perception_node._prune_tool_outputs` and `tool_output_truncation.prune_tool_outputs` were near-identical clones. Canonical implementation now lives in `tool_output_truncation.prune_tool_outputs` (tiktoken/HF counting via shared `estimate_text_tokens`, `metadata.preserve` honored, optional `return_pruned_count`). `perception_node` imports it; `frontier_loop_node` contract unchanged (list-only default). Added matching `estimate_text_tokens` default estimator in `token_truncation.py` so truncation and pruning share the same estimator. 8 new tests in `test_tool_output_truncation_prune.py`; full unit suite + fast-path integration green. |
 
 Tests: `tests/unit/test_phase2_security_hardening.py` (13 tests) + 2 counter tests in `test_state_schemas.py` + dedup regression test. mypy + ruff check clean.
 
@@ -74,8 +75,4 @@ Guarded by try/except (metrics must never raise), consistent with the module's g
 
 ## Remaining Phase 2 items
 
-| # | Item | Complexity | Recommendation |
-|---|------|------------|----------------|
-| 2.4 | Consolidate three pruning strategies | High | Dedicated effort — touches core context/pruning pipelines across `perception_node.py`, `tool_output_pruning.py`, `token_truncation.py`. Do as its own task, not mixed in. |
-
-**Suggested ordering:** next is **2.4** as a standalone high-complexity effort.
+None — all Phase 2 items (2.1–2.8) are complete.

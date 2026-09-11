@@ -18,23 +18,56 @@ _PRUNED_TOOL_PLACEHOLDER = "[Old tool result content cleared to save context]"
 _PRUNE_PROTECT_TOKENS = 40_000
 _PRUNE_PROTECT_RECENT = 6
 
+# A2.4: Shared token estimator used across pruning/truncation/token_budget so
+# all context-capping paths agree on token counts.  Prefer the accurate
+# tokenizer.count_tokens (tiktoken/HF first, len//3.5 fallback); degrade to the
+# legacy len//4 heuristic only if the tokenizer module cannot be imported.
+try:
+    from src.core.inference.tokenizer import count_tokens as _count_tokens
+except Exception:  # pragma: no cover - graceful degradation
+    _count_tokens = None  # type: ignore[assignment]
 
-def prune_tool_outputs(history: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+
+def estimate_text_tokens(text: str) -> int:
+    """Return an approximate token count for *text*.
+
+    Single shared helper so pruning and truncation agree on the estimator.
+    Uses the accurate tokenizer (tiktoken/HF with len//3.5 fallback) when
+    available, otherwise the conservative len//4 heuristic.
+    """
+    if not text:
+        return 0
+    if _count_tokens is not None:
+        try:
+            return _count_tokens(text)
+        except Exception:
+            pass
+    return max(1, len(text) // 4)
+
+
+def prune_tool_outputs(
+    history: List[Dict[str, Any]],
+    *,
+    return_pruned_count: bool = False,
+) -> List[Dict[str, Any]] | tuple:
     """Zero out old tool-result content beyond the token-protect boundary.
 
     Walks history newest-to-oldest.  Once the running token count exceeds
     ``_PRUNE_PROTECT_TOKENS``, old tool/user messages containing a
     ``tool_execution_result`` have their content replaced with a short
     placeholder.  The most recent ``_PRUNE_PROTECT_RECENT`` messages are
-    always preserved.
+    always preserved verbatim, as are messages tagged ``metadata.preserve``.
+
+    Args:
+        history:             The message list to prune (not mutated; a new
+                             list is returned).
+        return_pruned_count: When True, return ``(pruned_history,
+                             pruned_count)`` instead of just ``pruned_history``.
     """
     if not history:
-        return history
-
-    def _est(msg: Dict[str, Any]) -> int:
-        c = msg.get("content") or ""
-        s = c if isinstance(c, str) else str(c)
-        return max(1, len(s) // 4)
+        if return_pruned_count:
+            return list(history), 0
+        return list(history)
 
     def _is_tool_result(msg: Dict[str, Any]) -> bool:
         if msg.get("role") == "tool":
@@ -47,17 +80,26 @@ def prune_tool_outputs(history: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     result = list(history)
     total = len(result)
     running_tokens = 0
+    pruned_count = 0
 
     for i in range(total - 1, -1, -1):
+        msg = result[i]
+        # Always protect the most recent N messages.
         if (total - 1 - i) < _PRUNE_PROTECT_RECENT:
-            running_tokens += _est(result[i])
+            running_tokens += estimate_text_tokens(str(msg.get("content") or ""))
             continue
-        running_tokens += _est(result[i])
-        if running_tokens > _PRUNE_PROTECT_TOKENS and _is_tool_result(result[i]):
-            msg = result[i]
+        # A2.4: Never prune messages tagged with preserve=True metadata.
+        if msg.get("metadata", {}).get("preserve"):
+            running_tokens += estimate_text_tokens(str(msg.get("content") or ""))
+            continue
+        running_tokens += estimate_text_tokens(str(msg.get("content") or ""))
+        if running_tokens > _PRUNE_PROTECT_TOKENS and _is_tool_result(msg):
             if msg.get("content") != _PRUNED_TOOL_PLACEHOLDER:
                 result[i] = {**msg, "content": _PRUNED_TOOL_PLACEHOLDER}
+                pruned_count += 1
 
+    if return_pruned_count:
+        return result, pruned_count
     return result
 
 
