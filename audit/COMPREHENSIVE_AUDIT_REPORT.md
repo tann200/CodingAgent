@@ -116,10 +116,11 @@ However, the system has **critical security orientation issues** (fail-open on s
 - **Issue:** Two parallel skill sets with different formats. `explore_codebase` only exists in legacy dir.
 - **Impact:** Unclear which is authoritative. Potential confusion.
 
-### MC-5: Stub Roles Referencing Defunct Architecture
+### ~~MC-5: Stub Roles Referencing Defunct Architecture~~ RESOLVED (Phase 3.6)
 - **Files:** `src/config/agent-brain/roles/researcher.md`, `scout.md`, `tester.md`
 - **Issue:** Reference legacy P2P broadcast topics (`agent.researcher.broadcast`) that don't exist in current architecture.
 - **Impact:** Roles are non-functional if dispatched.
+- **Fix:** Deleted `researcher.md` (the role canonicalizes to `analyst`, so the file was dead content). Rewrote `scout.md`/`tester.md` as functional roles reporting via the returned result instead of a publish topic. Aligned `SCOUT_AGENT`/`TESTER_AGENT` prompt_overrides in `agent_types.py`. Contract tests in `tests/unit/test_role_brain.py`.
 
 ### MC-6: Missing Per-Tool Network Policy in Sandbox
 - **Issue:** `bash` (vs `bash_readonly`) doesn't pass `network=False`. Network-capable commands depend on sandbox level, which is opt-in.
@@ -350,7 +351,7 @@ However, the system has **critical security orientation issues** (fail-open on s
 | 3.3 | Add SWE-bench integration | New evaluation harness | High | Industry-standard benchmarking |
 | 3.4 | Implement graph-state checkpointing | `inference_loop.py` + LangGraph checkpointer | High | Enables automatic crash recovery |
 | 3.5 | Consolidate duplicate skill directories | `src/config/skills/` → `agent-brain/skills/` | Medium | Single authoritative skill set |
-| 3.6 | Remove/update stub roles | `researcher.md`, `scout.md`, `tester.md` | Low | Eliminates defunct code |
+| ~~3.6~~ | **Remove/update stub roles (COMPLETED − scope corrected: `researcher.md` removed, `scout.md`/`tester.md` rewritten as functional roles)** | ~~`researcher.md`, `scout.md`, `tester.md`~~ → see `audit/PHASE3_PROGRESS.md` | Low | Eliminates defunct code |
 | 3.7 | Add CLI feature parity with TUI | `src/main.py` | Medium | Enables headless/scriptable usage |
 | 3.8 | Reconcile documentation test baselines | All docs | Low | Single authoritative count |
 

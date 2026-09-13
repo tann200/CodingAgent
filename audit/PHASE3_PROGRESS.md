@@ -1,7 +1,7 @@
 # Phase 3 — Progress & Next-Task Analysis
 
 **Scope:** Track Phase 3 of the audit roadmap (capability improvements), record completed items, and provide a concrete implementation analysis for the next task.
-**Status:** 3.1 complete; remaining items **3.2–3.8** pending.
+**Status:** 3.1 + 3.6 complete; remaining items **3.2–3.5, 3.7–3.8** pending.
 
 ---
 
@@ -19,6 +19,7 @@ The audit item 3.1 ("Enable full graph `_USE_FULL_GRAPH = True`", `builder.py:94
 | # | Item | Notes |
 |---|------|-------|
 | 3.1 | Add replan to the frontier graph | Frontier loop now triggers replan on `requires_split`; new `replan` node split oversized steps and re-enters the loop. See below. |
+| 3.6 | Remove/update stub roles | Deleted defunct `researcher.md` (alias→analyst, never compiled); rewrote `scout.md`/`tester.md` as functional roles; aligned agent overrides. See below. |
 
 ### Item 3.1 details — Add replan to the frontier graph
 
@@ -38,6 +39,26 @@ The audit item 3.1 ("Enable full graph `_USE_FULL_GRAPH = True`", `builder.py:94
 
 ---
 
+## Scope Correction for 3.6 (important)
+
+The audit item 3.6 ("Remove/update stub roles `researcher.md`, `scout.md`, `tester.md`", rooted in finding **MC-5**) is partially stale in its premise but the direction is correct:
+
+- **`researcher.md` was genuinely defunct.** The `researcher` role name canonicalizes to `analyst` everywhere (`canonicalize_subagent_role` in `subagent_payloads.py`, `ROLE_ALIASES` in `role_config.py`). Subagent prompts are compiled via `compile_system_prompt(canonical_role)`, so `researcher.md` was **never read** — only `analyst.md` is. The file was dead content → **deleted**.
+- **`scout.md` and `tester.md` are real canonical roles** (`CANONICAL_ROLES`, `canonicalize_subagent_role` passes them through, `SCOUT_AGENT`/`TESTER_AGENT` definitions exist) and ARE used at runtime via `compile_system_prompt("scout"/"tester")`. But they were thin 19-line stubs whose final step told the agent to "Publish to `agent.<role>.broadcast`" — a topic that does not exist in the current typed event architecture (the real topics are `agent.scout.files_discovered`, `agent.researcher.doc_summary`, `agent.<role>.result`, etc.). → These were **rewritten** into functional roles that report via their **returned result** (which is what `delegate_task_async`/`delegation_node` actually consumes), not a publish topic.
+
+### Item 3.6 details
+
+**Files changed:**
+- `src/config/agent-brain/roles/researcher.md` — **deleted** (defunct alias; `researcher` → `analyst`).
+- `src/config/agent-brain/roles/scout.md` — rewritten: read-only exploration role with concrete search strategy + `<findings>` output format; front-matter preserved; broadcast step removed.
+- `src/config/agent-brain/roles/tester.md` — rewritten: test creation/execution role with strategy + `<test_report>` output format; front-matter preserved; broadcast step removed.
+- `src/core/orchestration/agent_types.py` — `SCOUT_AGENT`/`TESTER_AGENT` `prompt_override` strings updated to drop the defunct "Publish to agent.<role>.broadcast." sentence (now "report as the final returned text").
+- `tests/unit/test_role_brain.py` — new contract tests: (1) no role brain file references `agent.<role>.broadcast`; (2) `researcher` is not a standalone brain role + `normalize_role("researcher") == "analyst"`; (3) `scout`/`tester` are canonical roles with substantive (non-stub) content.
+
+**Gates:** ruff + mypy clean on changed files. Agent-brain/role/prsw/subagent test suites green.
+
+---
+
 ## Remaining (next-task candidates)
 
 | # | Item | Location | Complexity | Notes |
@@ -46,8 +67,7 @@ The audit item 3.1 ("Enable full graph `_USE_FULL_GRAPH = True`", `builder.py:94
 | 3.3 | Add SWE-bench integration | New evaluation harness | High | Industry-standard benchmarking; depends on 3.2 |
 | 3.4 | Implement graph-state checkpointing | `inference_loop.py` + LangGraph checkpointer | High | Automatic crash recovery |
 | 3.5 | Consolidate duplicate skill directories | `src/config/skills/` → `agent-brain/skills/` | Medium | Single authoritative skill set |
-| 3.6 | Remove/update stub roles | `researcher.md`, `scout.md`, `tester.md` | Low | Eliminates defunct code |
 | 3.7 | Add CLI feature parity with TUI | `src/main.py` | Medium | Headless/scriptable usage |
 | 3.8 | Reconcile documentation test baselines | All docs | Low | Single authoritative count |
 
-Suggested next: **3.6 (stub roles)** — Low complexity, minimal risk, and produces a fast win before the High-complexity evaluation/checkpointing items.
+Suggested next: **3.5 (consolidate duplicate skill directories)** — Medium complexity, self-contained, and removes ambiguity between `src/config/skills/` and `agent-brain/skills/` before the High-complexity evaluation/checkpointing items.

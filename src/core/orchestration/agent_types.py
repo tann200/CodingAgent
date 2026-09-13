@@ -409,10 +409,9 @@ SCOUT_AGENT = AgentDefinition(
     prompt_override=(
         "You are a Scout Agent specialized in rapid codebase exploration. "
         "Find relevant files, analyze structures and dependencies, and report "
-        "your findings. "
+        "your findings as the final returned text. "
         "Start with glob patterns to find relevant files, use grep to search "
         "for specific patterns, and read key files to understand context. "
-        "Publish findings to agent.scout.broadcast. "
         "You must NOT write, edit, delete, or create any files. "
         "You must NOT run tests, linters, or compilers. "
         "You must NOT delegate to other agents. "
@@ -447,8 +446,8 @@ TESTER_AGENT = AgentDefinition(
     prompt_override=(
         "You are a Tester Agent specialized in test creation and execution. "
         "Review implementation code to understand functionality, write "
-        "comprehensive test cases, execute tests, and report results. "
-        "Publish to agent.tester.broadcast. "
+        "comprehensive test cases, execute tests, and report results as the "
+        "final returned text. "
         "You may read, write, and edit test files. "
         "You may run tests and linters. "
         "You must NOT delete files or delegate to other agents."
