@@ -56,11 +56,15 @@ def route_perception_frontier(
 
 def route_frontier_loop_exit(
     state: Mapping[str, Any],
-) -> Literal["verification", "memory_sync", "wait_for_user"]:
+) -> Literal["verification", "memory_sync", "wait_for_user", "replan"]:
     if state.get("awaiting_plan_approval"):
         return "wait_for_user"
     if "context_overflow" in (state.get("errors") or []):
         return "memory_sync"
+    # Phase 3.1: patch-size replan — a tool result flagged requires_split sets
+    # replan_required; route to the replan node so the oversized step is split.
+    if state.get("replan_required"):
+        return "replan"
     last_result = state.get("last_result")
     if last_result is None:
         return "memory_sync"
@@ -84,6 +88,26 @@ def route_debug_frontier(
     if result == "execution":
         return "frontier_loop"
     return result
+
+
+def route_replan_frontier(
+    state: Mapping[str, Any],
+    *,
+    should_after_replan_fn: Any,
+) -> Literal["frontier_loop", "memory_sync"]:
+    """Route after the replan node in the frontier graph.
+
+    ``should_after_replan`` returns ``step_controller`` (replan succeeded →
+    resume work), ``perception`` (replan still needed → reframe), or
+    ``memory_sync`` (recovery cap reached → bail).  The frontier graph has
+    neither step_controller nor perception nodes, so both continuation
+    targets re-enter the frontier loop; the cap-bail path still ends the
+    pipeline the same way the full graph does.
+    """
+    result = should_after_replan_fn(state)
+    if result == "memory_sync":
+        return "memory_sync"
+    return "frontier_loop"
 
 
 def should_after_memory_sync_frontier(

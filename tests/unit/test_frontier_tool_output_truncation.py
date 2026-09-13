@@ -325,3 +325,63 @@ async def test_frontier_loop_injects_write_required_context_after_read_for_modif
     ]
     assert any(payload.get("orchestration_hint") == "write_required" for payload in payloads)
     assert any(payload.get("file_path") == "buggy.py" for payload in payloads)
+
+
+@pytest.mark.asyncio
+async def test_frontier_loop_breaks_to_replan_on_requires_split():
+    """Phase 3.1: a tool result flagged requires_split exits the loop with
+    replan_required set so the frontier graph routes through the replan node."""
+    orch = SimpleNamespace(
+        working_dir=None,
+        llm_client=None,
+        tool_registry=SimpleNamespace(get_openai_functions=lambda: []),
+        event_bus=None,
+        execute_tool=lambda action: {
+            "ok": True,
+            "path": "main.py",
+            "lines_added": 500,
+            "requires_split": True,
+            "error": "write_file wrote 500 lines in a single call. Split the task.",
+        },
+    )
+    state = {
+        "task": "write a huge file",
+        "history": [],
+        "tool_call_count": 0,
+        "max_tool_calls": 5,
+        "model_tier": "frontier",
+    }
+    response = {
+        "choices": [
+            {
+                "message": {"role": "assistant", "content": ""},
+                "tool_calls": [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "write_file",
+                            "arguments": '{"path": "main.py", "content": "x" * 100}',
+                        },
+                    }
+                ],
+            }
+        ]
+    }
+
+    with (
+        patch(
+            "src.core.orchestration.graph.nodes.frontier_loop_node._resolve_orchestrator",
+            return_value=orch,
+        ),
+        patch(
+            "src.core.orchestration.graph.nodes.frontier_loop_node.call_model",
+            new=AsyncMock(return_value=response),
+        ),
+    ):
+        result = await frontier_loop_node(state, config={})
+
+    assert result["replan_required"]
+    assert "Split" in result["replan_required"]
+    assert result["action_failed"] is True
+    assert result["next_action"] is None
+    assert result["tool_call_count"] == 1

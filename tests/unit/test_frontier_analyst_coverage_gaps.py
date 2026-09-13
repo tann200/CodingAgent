@@ -132,6 +132,38 @@ class TestFrontierGraphWiring:
         assert route_frontier_loop_exit({"awaiting_plan_approval": True}) == "wait_for_user"
         assert route_frontier_loop_exit({"errors": ["context_overflow"]}) == "memory_sync"
 
+    def test_frontier_graph_includes_replan_node(self):
+        """Phase 3.1: frontier graph compiles with the replan node active."""
+        from src.core.orchestration.graph.builder import _compile_frontier_graph
+
+        graph = _compile_frontier_graph()
+        node_names = {str(n) for n in graph.get_graph().nodes}
+        assert "replan" in node_names
+
+    def test_frontier_replan_routes_back_to_loop_and_bails_on_cap(self):
+        from src.core.orchestration.graph.tier_graph_routing import (
+            route_frontier_loop_exit,
+            route_replan_frontier,
+        )
+        assert (
+            route_frontier_loop_exit(
+                {"replan_required": "Patch exceeded 200 lines. Split into smaller steps."}
+            )
+            == "replan"
+        )
+        assert (
+            route_replan_frontier(
+                {}, should_after_replan_fn=lambda state: "step_controller"
+            )
+            == "frontier_loop"
+        )
+        assert (
+            route_replan_frontier(
+                {}, should_after_replan_fn=lambda state: "memory_sync"
+            )
+            == "memory_sync"
+        )
+
 
 ###############################################################################
 # 3. analyst_delegation_node parallel path (FRONTIER/LARGE tier)

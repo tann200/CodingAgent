@@ -24,6 +24,7 @@ from src.core.orchestration.graph.nodes.execution_helpers import (
     build_read_then_write_result,
     build_tool_history_messages,
 )
+from src.core.orchestration.graph.nodes.execution_plan import compute_replan_trigger
 from src.core.orchestration.graph.nodes.tool_output_truncation import (
     TOOL_LARGE_TEXT_FIELDS,
     TOOL_OUTPUT_MAX_BYTES,
@@ -819,6 +820,7 @@ async def frontier_loop_node(
 
     last_result: Dict[str, Any] | None = None
     turns_taken: int = 0
+    replan_required: str | None = None
 
     logger.info(
         "frontier_loop_node: starting (task=%r, tool_calls=%d/%d, tier=%s)",
@@ -982,6 +984,19 @@ async def frontier_loop_node(
         if batch_last_result is not None:
             last_result = batch_last_result
 
+        # Phase 2b (frontier): Patch Size Guard — a write tool flagged
+        # ``requires_split`` means the oversized patch should be split into
+        # smaller steps.  Set ``replan_required`` and exit the tight loop so
+        # the graph routes through the replan node (mirrors execution_node).
+        _replan_trigger = compute_replan_trigger(result=batch_last_result or {})
+        if _replan_trigger:
+            logger.warning(
+                "frontier_loop_node: patch too large, triggering replan — %s",
+                _replan_trigger.get("replan_required"),
+            )
+            replan_required = _replan_trigger.get("replan_required")
+            break
+
         if tool_call_count >= max_tool_calls:
             break
 
@@ -1008,6 +1023,10 @@ async def frontier_loop_node(
         "_frontier_loop_turns": turns_taken,
         "awaiting_plan_approval": False,
     }
+    if replan_required:
+        result["replan_required"] = replan_required
+        result["action_failed"] = True
+        result["next_action"] = None
     if "context_overflow" in errors:
         result["_budget_compaction"] = True
         result["_should_distill"] = True

@@ -7,6 +7,7 @@ from src.core.orchestration.graph.tier_graph_routing import (
     route_frontier_loop_exit_lite,
     route_perception_frontier,
     route_perception_lite,
+    route_replan_frontier,
     route_wait_frontier,
     select_tier_graph_cache_key,
     should_after_memory_sync_frontier,
@@ -27,6 +28,33 @@ def test_route_frontier_loop_exit_handles_approval_overflow_and_empty_result():
     assert route_frontier_loop_exit({"errors": ["context_overflow"]}) == "memory_sync"
     assert route_frontier_loop_exit({"last_result": None}) == "memory_sync"
     assert route_frontier_loop_exit({"last_result": {"ok": True}}) == "verification"
+
+
+def test_route_frontier_loop_exit_routes_to_replan_on_patch_size_trigger():
+    assert (
+        route_frontier_loop_exit(
+            {"replan_required": "Patch exceeded 200 lines. Split into smaller steps."}
+        )
+        == "replan"
+    )
+
+
+def test_route_replan_frontier_maps_continuation_to_frontier_loop():
+    assert (
+        route_replan_frontier({}, should_after_replan_fn=lambda state: "step_controller")
+        == "frontier_loop"
+    )
+    assert (
+        route_replan_frontier({}, should_after_replan_fn=lambda state: "perception")
+        == "frontier_loop"
+    )
+
+
+def test_route_replan_frontier_bails_to_memory_sync_on_recovery_cap():
+    assert (
+        route_replan_frontier({}, should_after_replan_fn=lambda state: "memory_sync")
+        == "memory_sync"
+    )
 
 
 def test_should_after_memory_sync_frontier_ends_on_completion_signal_without_plan():

@@ -345,7 +345,7 @@ However, the system has **critical security orientation issues** (fail-open on s
 
 | # | Issue | Location | Complexity | Impact |
 |---|-------|----------|------------|--------|
-| 3.1 | Enable full graph (`_USE_FULL_GRAPH = True`) | `builder.py:94` | High | Restores replan, debug, delegation capabilities |
+| 3.1 | ~Enable full graph (~`_USE_FULL_GRAPH`)~ → Add replan to frontier graph. `COMPLETED` — see `audit/PHASE3_PROGRESS.md`. Premise was stale: production runs tier graphs, not `compile_agent_graph()`; frontier graph already had analyst_delegation/debug/delegation. Replan was the one missing capability; now wired (patch-size guard → replan node → re-enter loop). | `builder.py`, `tier_graph_routing.py`, `frontier_loop_node.py` | High | Restores replan capability in production |
 | 3.2 | Build evaluation framework | New `src/evaluation/` | High | Enables systematic quality measurement |
 | 3.3 | Add SWE-bench integration | New evaluation harness | High | Industry-standard benchmarking |
 | 3.4 | Implement graph-state checkpointing | `inference_loop.py` + LangGraph checkpointer | High | Enables automatic crash recovery |

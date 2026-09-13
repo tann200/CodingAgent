@@ -511,6 +511,7 @@ def _compile_frontier_graph():
     workflow.add_node("analysis", _analysis)
     workflow.add_node("analyst_delegation", _analyst_delegation)
     workflow.add_node("frontier_loop", _frontier_loop)
+    workflow.add_node("replan", _validated("replan", replan_node))
     workflow.add_node("verification", _verification)
     workflow.add_node("evaluation", _evaluation)
     workflow.add_node("debug", _debug)
@@ -549,7 +550,7 @@ def _compile_frontier_graph():
     # analyst_delegation → frontier_loop (always — provides findings for loop context)
     workflow.add_edge("analyst_delegation", "frontier_loop")
 
-    # frontier_loop → verification | memory_sync | wait_for_user
+    # frontier_loop → verification | memory_sync | wait_for_user | replan
     workflow.add_conditional_edges(
         "frontier_loop",
         _tier_graph_routing.route_frontier_loop_exit,
@@ -557,7 +558,18 @@ def _compile_frontier_graph():
             "verification": "verification",
             "memory_sync": "memory_sync",
             "wait_for_user": "wait_for_user",
+            "replan": "replan",
         },
+    )
+
+    # replan → frontier_loop (resume with split steps) | memory_sync (cap bail)
+    workflow.add_conditional_edges(
+        "replan",
+        lambda state: _tier_graph_routing.route_replan_frontier(
+            state,
+            should_after_replan_fn=should_after_replan,
+        ),
+        {"frontier_loop": "frontier_loop", "memory_sync": "memory_sync"},
     )
 
     # wait_for_user → frontier_loop (resume after plan approval)
