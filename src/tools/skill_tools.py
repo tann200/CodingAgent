@@ -2,8 +2,8 @@
 Skill tool — load and return the content of a named skill from the skills directory.
 
 Skills are reusable prompt templates or instruction sets stored as markdown files in
-src/config/skills/.  The LLM can call load_skill("name") to retrieve a skill's
-instructions at runtime without the skill being baked into every system prompt.
+src/config/agent-brain/skills/.  The LLM can call load_skill("name") to retrieve a
+skill's instructions at runtime without the skill being baked into every system prompt.
 
 This mirrors opencode's skills/slash-command loading pattern.
 """
@@ -18,16 +18,16 @@ from src.tools._tool import tool
 
 logger = logging.getLogger(__name__)
 
-_SKILLS_DIR = Path(__file__).parent.parent / "config" / "skills"
+_SKILLS_DIR = Path(__file__).parent.parent / "config" / "agent-brain" / "skills"
 
 
 @tool(tags=["coding", "planning", "debug", "review"])
 def load_skill(name: str) -> Dict[str, Any]:
     """Load a named skill (prompt template) from the skills directory.
 
-    Skills are markdown files in src/config/skills/ that provide reusable
-    instructions, checklists, or workflow descriptions that the agent can
-    inject into its context on demand.
+    Skills are markdown files in src/config/agent-brain/skills/ that provide
+    reusable instructions, checklists, or workflow descriptions that the agent
+    can inject into its context on demand.
 
     Args:
         name: Skill name (filename without .md extension).  Use list_skills

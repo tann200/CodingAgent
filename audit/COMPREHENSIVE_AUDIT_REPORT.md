@@ -111,10 +111,11 @@ However, the system has **critical security orientation issues** (fail-open on s
 - **Issue:** LangGraph state is not checkpointed per-superstep. A crash mid-graph loses all in-flight state. Resume requires manual `/continue` invocation.
 - **Impact:** Partial work from crashed runs is lost unless manually checkpointed via tool.
 
-### MC-4: Duplicate Skill Directories
+### ~~MC-4: Duplicate Skill Directories~~ RESOLVED (Phase 3.5)
 - **Files:** `src/config/agent-brain/skills/` (8 skills) and `src/config/skills/` (5 older skills)
 - **Issue:** Two parallel skill sets with different formats. `explore_codebase` only exists in legacy dir.
 - **Impact:** Unclear which is authoritative. Potential confusion.
+- **Fix:** Removed the legacy `src/config/skills/` directory. `explore_codebase.md` migrated into `agent-brain/skills/` in the canonical format (front-matter + When to Use/Strategy/Execution Steps); the 4 legacy duplicates (`code_review`, `debug_checklist`, `refactor`, `write_tests`) dropped because the `agent-brain/skills/` versions are strictly newer. `skill_tools.load_skill`/`list_skills` now point at `agent-brain/skills/`. Prompt templates updated and goldens regenerated. Contract tests in `tests/unit/test_skill_consolidation.py`.
 
 ### ~~MC-5: Stub Roles Referencing Defunct Architecture~~ RESOLVED (Phase 3.6)
 - **Files:** `src/config/agent-brain/roles/researcher.md`, `scout.md`, `tester.md`
@@ -350,7 +351,7 @@ However, the system has **critical security orientation issues** (fail-open on s
 | 3.2 | Build evaluation framework | New `src/evaluation/` | High | Enables systematic quality measurement |
 | 3.3 | Add SWE-bench integration | New evaluation harness | High | Industry-standard benchmarking |
 | 3.4 | Implement graph-state checkpointing | `inference_loop.py` + LangGraph checkpointer | High | Enables automatic crash recovery |
-| 3.5 | Consolidate duplicate skill directories | `src/config/skills/` → `agent-brain/skills/` | Medium | Single authoritative skill set |
+| ~~3.5~~ | **Consolidate duplicate skill directories (COMPLETED)** | `src/config/skills/` → `agent-brain/skills/` (legacy dir removed) | Medium | Single authoritative skill set |
 | ~~3.6~~ | **Remove/update stub roles (COMPLETED − scope corrected: `researcher.md` removed, `scout.md`/`tester.md` rewritten as functional roles)** | ~~`researcher.md`, `scout.md`, `tester.md`~~ → see `audit/PHASE3_PROGRESS.md` | Low | Eliminates defunct code |
 | 3.7 | Add CLI feature parity with TUI | `src/main.py` | Medium | Enables headless/scriptable usage |
 | 3.8 | Reconcile documentation test baselines | All docs | Low | Single authoritative count |

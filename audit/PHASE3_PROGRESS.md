@@ -1,7 +1,7 @@
 # Phase 3 — Progress & Next-Task Analysis
 
 **Scope:** Track Phase 3 of the audit roadmap (capability improvements), record completed items, and provide a concrete implementation analysis for the next task.
-**Status:** 3.1 + 3.6 complete; remaining items **3.2–3.5, 3.7–3.8** pending.
+**Status:** 3.1 + 3.5 + 3.6 complete; remaining items **3.2–3.4, 3.7–3.8** pending.
 
 ---
 
@@ -19,6 +19,7 @@ The audit item 3.1 ("Enable full graph `_USE_FULL_GRAPH = True`", `builder.py:94
 | # | Item | Notes |
 |---|------|-------|
 | 3.1 | Add replan to the frontier graph | Frontier loop now triggers replan on `requires_split`; new `replan` node split oversized steps and re-enters the loop. See below. |
+| 3.5 | Consolidate duplicate skill directories | Removed legacy `src/config/skills/`; `explore_codebase` migrated into `agent-brain/skills/`; skill tools + prompt templates repointed. See below. |
 | 3.6 | Remove/update stub roles | Deleted defunct `researcher.md` (alias→analyst, never compiled); rewrote `scout.md`/`tester.md` as functional roles; aligned agent overrides. See below. |
 
 ### Item 3.1 details — Add replan to the frontier graph
@@ -59,6 +60,22 @@ The audit item 3.6 ("Remove/update stub roles `researcher.md`, `scout.md`, `test
 
 ---
 
+## Item 3.5 details — Consolidate duplicate skill directories (MC-4)
+
+Two parallel skill sets existed: prompt assembly (`ContextBuilder` at `context_builder.py:309`, `AgentBrainManager` at `agent_brain.py:126`) read the newer front-matter-based set in `src/config/agent-brain/skills/`, while the LLM-facing `load_skill`/`list_skills` tools (`skill_tools.py`) read the older set in `src/config/skills/`.
+
+**Files changed:**
+- `src/config/skills/` — **removed**. The 4 overlapping files (`code_review`, `debug_checklist`, `refactor`, `write_tests`) were older drafts of strictly-more-polished `agent-brain/skills/` versions → dropped. Legacy-only `explore_codebase.md` → migrated.
+- `src/config/agent-brain/skills/explore_codebase.md` — **new**, converted to the canonical format (front-matter + When to Use / Strategy / Execution Steps), preserving the original 5-phase content.
+- `src/tools/skill_tools.py` — `_SKILLS_DIR` now `config/agent-brain/skills/`; docstrings updated.
+- `src/core/prompts/templates/{default,anthropic}.txt` — skill hints updated for the authoritative set (`explore_codebase`, `security_review` added).
+- `tests/fixtures/golden_prompts/*.golden` — 8 fixtures regenerated (`UPDATE_GOLDEN=1`) for the template line changes only (verified diff).
+- `tests/unit/test_skill_consolidation.py` — contract tests: legacy dir absent; tools resolve against `agent-brain/skills/`; `explore_codebase` present; unique names.
+
+**Gates:** ruff + mypy clean. Full unit suite (4717 passed) + fast-path integration green.
+
+---
+
 ## Remaining (next-task candidates)
 
 | # | Item | Location | Complexity | Notes |
@@ -66,8 +83,7 @@ The audit item 3.6 ("Remove/update stub roles `researcher.md`, `scout.md`, `test
 | 3.2 | Build evaluation framework | New `src/evaluation/` | High | Systematic quality measurement |
 | 3.3 | Add SWE-bench integration | New evaluation harness | High | Industry-standard benchmarking; depends on 3.2 |
 | 3.4 | Implement graph-state checkpointing | `inference_loop.py` + LangGraph checkpointer | High | Automatic crash recovery |
-| 3.5 | Consolidate duplicate skill directories | `src/config/skills/` → `agent-brain/skills/` | Medium | Single authoritative skill set |
 | 3.7 | Add CLI feature parity with TUI | `src/main.py` | Medium | Headless/scriptable usage |
 | 3.8 | Reconcile documentation test baselines | All docs | Low | Single authoritative count |
 
-Suggested next: **3.5 (consolidate duplicate skill directories)** — Medium complexity, self-contained, and removes ambiguity between `src/config/skills/` and `agent-brain/skills/` before the High-complexity evaluation/checkpointing items.
+Suggested next: **3.7 (CLI feature parity with TUI)** — Medium complexity, self-contained, and delivers the headless/scriptable usage gap without coupling to the High-complexity evaluation (3.2/3.3) or checkpointing (3.4) items.
