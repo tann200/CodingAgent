@@ -25,7 +25,8 @@ src/
 │   ├── memory/              # Session store, distiller, compaction
 │   ├── context/             # ContextBuilder, prompt assembly
 │   ├── indexing/            # RepoIndexer, symbol graph, LSP
-│   └── mcp/                 # MCP client
+│   ├── mcp/                 # MCP client
+│   └── evaluation/          # scenario evaluator, pass@k, CLI runner, regression baselines
 ├── tools/                   # 60+ @tool-decorated tools
 ├── config/                  # providers.json, agent-brain (SOUL/roles/skills)
 ├── server/                  # HTTP/SSE server
@@ -39,7 +40,7 @@ tui/
     └── ...                  # Screens, components, mixins
 
 tests/
-└── unit/                    # 4,761 tests (pytest; 352 files; +3 fast-path integration)
+└── unit/                    # 4,777 tests (pytest; 352 files; +3 fast-path integration)
     ├── messaging/           # MessageBus + EventBus + adapter tests
     ├── test_event_bus.py
     └── ...
@@ -119,6 +120,7 @@ With conditional routing for: fast-path, overflow, debug, replan, delegation, wa
 - **Single canonical tool-output pruner** — `tool_output_truncation.prune_tool_outputs` is the only token-based history pruner; `perception_node` imports it (use `return_pruned_count=True` for `(history, count)`; default returns list-only for `frontier_loop_node`). Old messages over `_PRUNE_PROTECT_TOKENS` are replaced with `_PRUNED_TOOL_PLACEHOLDER`; the `_PRUNE_PROTECT_RECENT` tail and `metadata.preserve` messages are never pruned. Do not add a second clone. (See audit 2.4.)
 - **Shared token estimator** — `estimate_text_tokens(text)` (in both `tool_output_truncation.py` and `token_truncation.py`) wraps `tokenizer.count_tokens` (tiktoken/HF → len//3.5 fallback) with a `len // 4` last-resort guard. `token_truncation.truncate_*` now default to this estimator when no `token_estimator` is passed, so pruning and truncation agree on token counts. (See audit 2.4.)
 - **Graph-state checkpointing (audit 3.4)** — Production tier graphs (`frontier`/`lite`) compile with `checkpointer=_graph_checkpointer()` (shared `JsonlCheckpointSaver` singleton); the legacy full/fast-path graphs stay saver-less. langgraph 1.1.10 only persists `{channel_values, channel_versions, id, ts, updated_channels, v, versions_seen}` — **there is no stored `next`/`versions`**, and `app.invoke(None, thread_cfg)` does NOT re-run pending nodes from a plain on-disk checkpoint (node resume needs in-memory task bookkeeping the loop never serializes). Crash recovery therefore lives at **round granularity**: `inference_loop` writes a JSON-safe state snapshot after each round (`checkpoint_{thread}.state.jsonl`, sanitizer skips non-JSON values, never `LIVE_CHANNELS`) and rehydrates `initial_state` on same-thread re-entry (`--continue` seeds `orch._current_task_id` = original session id in `src/main.py`, minting a `uuid4()` otherwise). Completed tasks purge the thread's files (snapshot + `.jsonl` + `.writes.jsonl`); cancellation/loop-limit paths keep them. Toggle: `CODINGAGENT_GRAPH_CHECKPOINTING` env 0/1 → config `graph_checkpointing` → OFF under pytest.
+- **Evaluation framework (audit 3.2)** — `python -m src.core.evaluation` is the evaluation CLI (`list`/`run`/`baseline-save`); `--agent module:callable` selects a factory returning a fresh agent per attempt; `--samples n` gives pass@k; `--baseline <json>` exits 1 on golden-regression (CI gate). Baseline units are **best-of-n** scenario status (pass if any attempt passed) to avoid false positives from variance. Report/baseline serialization lives in `src/core/evaluation/regression.py`; do not hand-roll a second baseline format.
 
 ### Available Agents
 

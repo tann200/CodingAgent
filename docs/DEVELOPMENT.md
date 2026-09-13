@@ -1,6 +1,6 @@
 # Development Guide
 
-> **Test Baseline:** 4,764 tests passing (`pytest tests/unit tests/integration/test_fast_path_graph_e2e.py`)  
+> **Test Baseline:** 4,780 tests passing (`pytest tests/unit tests/integration/test_fast_path_graph_e2e.py`)  
 > **Audit Status:** 0 Critical, 0 High issues  
 > **Last Updated:** 2026-09-14
 

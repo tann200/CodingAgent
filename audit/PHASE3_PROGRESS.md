@@ -1,7 +1,7 @@
 # Phase 3 — Progress & Next-Task Analysis
 
 **Scope:** Track Phase 3 of the audit roadmap (capability improvements), record completed items, and provide a concrete implementation analysis for the next task.
-**Status:** 3.1 + 3.4 + 3.5 + 3.6 + 3.7 + 3.8 complete; remaining items **3.2, 3.3** pending.
+**Status:** 3.1 + 3.2 + 3.4 + 3.5 + 3.6 + 3.7 + 3.8 complete; remaining item **3.3** (SWE-bench) pending.
 
 ---
 
@@ -133,11 +133,32 @@ Reconciled every test-count claim in the documentation tree to a single authorit
 
 ---
 
+## Completed — 3.2 Evaluation Framework
+
+Surfaced the scenario-evaluation core (which already ships 23 standardized scenarios + pass@k) as a first-class framework with a CLI runner and a golden-regression gate.
+
+**Files:**
+- `src/core/evaluation/__init__.py` (new) — public API: `Scenario`, `ScenarioResult`, `ScenarioEvaluator`, `get_default_scenarios`, `pass_at_k`, `run_pass_at_k`, `run_benchmark`.
+- `src/core/evaluation/regression.py` (new) — baseline `save_baseline`/`load_baseline`, `compare_baseline` (per-scenario regression/improvement/new/missing + `got_regressions`), `is_regression`; atomic tmp-file write; corrupt/missing baseline → `None`.
+- `src/core/evaluation/cli.py` + `__main__.py` (new) — `python -m src.core.evaluation` with subcommands:
+  - `list` — scenario inventory (filter by `--category`/`--difficulty`).
+  - `run` — execute scenarios against a `module:callable` agent factory (`--agent`), `--samples n` for pass@k, `--output report.json` (JSON report), `--baseline <path>` compares against a golden baseline and **exits 1 on regression** (CI gate).
+  - `baseline-save` — run and persist a golden baseline with `--metadata k=v`.
+- `tests/unit/test_evaluation_framework.py` (new, 16 tests) — package exports, baseline round-trip + corrupt/missing handling, regression detection (pass→fail, pass→error, fail→pass, new/missing), CLI list/run/output/baseline-exit-code, pass@k sampling, bad-factory resolution. Fake agents injected via synthetic `sys.modules` modules (no live-LLM dep).
+
+**Design notes:**
+- Best-of-`n` scenario status (pass if any attempt passed) is the unit compared against a baseline, so run-to-run variance on easy scenarios does not false-positive the CI gate; individual attempt outcomes are still fully recorded in `--output` reports.
+- Agent surface dispatch reused from `scenario_evaluator._run_agent_for_scenario`: supports `run(...)`, `run_agent_once(...)`, or `__call__` agents — the Orchestrator is the intended live target via `default_agent_factory()`.
+- Exit codes: 0 success; 1 regression detected; 2 usage/configuration error.
+
+**Gates:** ruff + mypy clean (`src/core/evaluation/` + `tests/unit/test_evaluation_framework.py`). Full gate suite green — **4,780 tests passing** (4,764 + 16 new; exit 0).
+
+---
+
 ## Remaining (next-task candidates)
 
 | # | Item | Location | Complexity | Notes |
 |---|------|----------|------------|-------|
-| 3.2 | Build evaluation framework | New `src/evaluation/` | High | Systematic quality measurement |
 | 3.3 | Add SWE-bench integration | New evaluation harness | High | Industry-standard benchmarking; depends on 3.2 |
 
-Suggested next: **3.2 (evaluation framework)** which unblocks **3.3** (SWE-bench). Both are High-complexity new subsystems; the checkpointing milestone (3.4) is complete and available to their harnesses.
+Suggested next: **3.3 (SWE-bench)** — the last remaining Phase-3 item. The evaluation framework (3.2, complete) provides the run/regression harness it plugs into.
