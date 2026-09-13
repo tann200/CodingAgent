@@ -613,7 +613,16 @@ def _compile_frontier_graph():
 
     workflow.add_edge("delegation", END)
 
-    return workflow.compile()
+    return workflow.compile(checkpointer=_graph_checkpointer())
+
+
+def _graph_checkpointer():
+    """Durable checkpoint saver for automatic crash recovery (audit 3.4)."""
+    from src.core.orchestration.graph.checkpoint_saver import (
+        default_checkpointer,
+    )
+
+    return default_checkpointer()
 
 
 def _compile_lite_graph():
@@ -673,7 +682,7 @@ def _compile_lite_graph():
 
     workflow.add_edge("memory_sync", END)
 
-    return workflow.compile()
+    return workflow.compile(checkpointer=_graph_checkpointer())
 
 
 def _resolve_graph_tier(

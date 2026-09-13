@@ -46,6 +46,18 @@ def _cfg_get(key: str, default: Any = None) -> Any:
     except Exception:
         return default
 
+
+def _try_save_thread_state(orch: Any, state: Dict[str, Any]) -> None:
+    """Best-effort durable snapshot of the graph state after a completed round."""
+    try:
+        from src.core.orchestration.graph.checkpoint_saver import (
+            save_thread_state,
+        )
+
+        save_thread_state(orch, state)
+    except Exception:
+        pass
+
 # Compatibility note for source-inspection tests: initial_state still includes
 # keys like "agent_mode" and "max_turns"; construction now lives in
 # inference_loop_state.build_initial_state().
@@ -231,6 +243,32 @@ def run_agent_once_impl(
         cancel_event=cancel_event,
     )
 
+    # CP-3.4: automatic crash recovery — if a durable snapshot of the last
+    # completed round survives for this thread (same task id, e.g. via CLI
+    # `--continue` after a crash), rehydrate the initial state from it so
+    # completed rounds are not redone.  Completed tasks purge the snapshot,
+    # so a surviving snapshot only ever implies an interrupted task.
+    try:
+        from src.core.orchestration.graph.checkpoint_saver import (
+            load_thread_state,
+            rehydrate_initial_state,
+        )
+
+        if not (
+            cancel_event
+            and hasattr(cancel_event, "is_set")
+            and cancel_event.is_set()
+        ):
+            _prior = load_thread_state(orch)
+            if _prior:
+                initial_state = rehydrate_initial_state(initial_state, _prior)
+                guilogger.info(
+                    "CP-3.4: recovered %d keys from persisted thread state",
+                    len(_prior),
+                )
+    except Exception:
+        pass
+
     # 2. Compile and Run Graph — P1 fix: use module-level cached graph so compilation
     # happens once per process instead of once per run_agent_once() call.
     graph = get_compiled_graph_for_orchestrator(orchestrator=orch)
@@ -316,6 +354,10 @@ def run_agent_once_impl(
                 # If nothing changed (no new assistant turn) or no next action, stop early
                 final_state = next_state
 
+                # CP-3.4: persist a durable, JSON-safe snapshot of this
+                # completed round so a crash mid-task can be recovered.
+                _try_save_thread_state(orch, final_state)
+
                 round_result = _analyze_round_result(final_state)
                 last_assistant = round_result["last_assistant"]
                 has_tool_block = bool(round_result["has_tool_block"])
@@ -354,6 +396,7 @@ def run_agent_once_impl(
                     _history.append({"role": "assistant", "content": _limit_msg})
                     final_state["history"] = _history
                     final_state["assistant_message"] = _limit_msg
+                    _try_save_thread_state(orch, final_state)
                     break
 
                 # Track last assistant message for no-progress detection
@@ -390,6 +433,17 @@ def run_agent_once_impl(
         if loop_exit_response is not None:
             return loop_exit_response
 
+        # CP-3.4: task completed cleanly — the durable checkpoint is no longer
+        # needed; drop it to avoid unbounded accumulation.
+        try:
+            from src.core.orchestration.graph.checkpoint_saver import (
+                purge_thread_checkpoint,
+            )
+
+            purge_thread_checkpoint(orch)
+        except Exception:
+            pass
+
         return _build_success_response(orch, final_state)
     except StopAsyncIteration:
         # This is expected when the graph finishes successfully.
@@ -404,6 +458,14 @@ def run_agent_once_impl(
         work_summary = _generate_work_summary(final_state, history)
         orch.cost_tracker.flush(task_id=getattr(orch, "_current_task_id", ""))
         orch.flush_execution_trace()
+        try:
+            from src.core.orchestration.graph.checkpoint_saver import (
+                purge_thread_checkpoint,
+            )
+
+            purge_thread_checkpoint(orch)
+        except Exception:
+            pass
         return {
             "assistant_message": "Graph finished.",
             "work_summary": work_summary,

@@ -12,11 +12,13 @@ from src.core.logger import logger as guilogger
 
 def _run_graph_round_sync(graph: Any, orch: Any, state_to_run: Dict[str, Any]) -> Dict[str, Any]:
     """Run one graph round synchronously for the provided state."""
+    from src.core.orchestration.graph.checkpoint_saver import thread_key
+
     return asyncio.run(
         graph.ainvoke(
             state_to_run,
             {
-                "configurable": {"orchestrator": orch},
+                "configurable": {"orchestrator": orch, "thread_id": thread_key(orch)},
                 "recursion_limit": 50,
             },
         )

@@ -652,6 +652,7 @@ def _run_headless(
     import json as _json
 
     _messages = None
+    _stored_session_id: Optional[str] = None
     if resume_session:
         try:
             from pathlib import Path as _Path
@@ -661,6 +662,7 @@ def _run_headless(
             _session_path = _Path(resume_session)
             if _session_path.exists() and _session_path.suffix == ".json":
                 _data = _json.loads(_session_path.read_text(encoding="utf-8"))
+                _stored_session_id = str(_data.get("session_id") or "")
                 _stored: Optional[StoredSession] = StoredSession(
                     version=int(_data.get("version", 1)),
                     session_id=str(_data.get("session_id") or ""),
@@ -682,6 +684,7 @@ def _run_headless(
                 _stored = load_session(resume_session)
                 if _stored:
                     _messages = _stored.messages
+                    _stored_session_id = _stored.session_id
                     print(
                         f"[SESSION] Resumed session {_stored.session_id}",
                         file=sys.stderr,
@@ -698,6 +701,23 @@ def _run_headless(
         from src.core.orchestration.orchestrator import Orchestrator
 
         orch = Orchestrator(working_dir=workdir, dry_run=dry_run)
+
+        # CP-3.4: give this invocation a stable checkpoint thread id.  Resume
+        # paths reuse the *original* session id so crash-recovery resumes the
+        # same thread; fresh tasks mint one so unrelated runs never collide.
+        try:
+            _existing_tid = (
+                orch.get_current_task_id() if hasattr(orch, "get_current_task_id") else None
+            )
+            if not _existing_tid:
+                if _stored_session_id:
+                    orch._current_task_id = _stored_session_id
+                else:
+                    import uuid as _uuid
+
+                    orch._current_task_id = str(_uuid.uuid4())[:8]
+        except Exception:
+            pass
 
         # Phase 3.7: apply --provider/--model overrides via a live model.routing
         # switch (same mechanism the TUI uses for /provider + /model). Publish

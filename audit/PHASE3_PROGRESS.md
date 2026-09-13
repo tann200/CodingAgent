@@ -1,7 +1,7 @@
 # Phase 3 — Progress & Next-Task Analysis
 
 **Scope:** Track Phase 3 of the audit roadmap (capability improvements), record completed items, and provide a concrete implementation analysis for the next task.
-**Status:** 3.1 + 3.5 + 3.6 + 3.7 complete; remaining items **3.2–3.4, 3.8** pending.
+**Status:** 3.1 + 3.4 + 3.5 + 3.6 + 3.7 complete; remaining items **3.2, 3.3, 3.8** pending.
 
 ---
 
@@ -102,13 +102,31 @@ Headless `codingagent` reuse was a hard script: short "task" mode and no session
 
 ---
 
+## Completed — 3.4 Graph-State Checkpointing (automatic crash recovery)
+
+**Files:**
+- `src/core/orchestration/graph/checkpoint_saver.py` (new) — durable checkpointing for the tier graphs.
+- `src/core/orchestration/graph/builder.py` — `_compile_frontier_graph`/`_compile_lite_graph` now `workflow.compile(checkpointer=_graph_checkpointer())` (production tiers only; legacy full/fast-path graphs untouched).
+- `src/core/orchestration/inference_loop_rounds.py` — `_run_graph_round_sync` config now carries `"thread_id": thread_key(orch)`.
+- `src/core/orchestration/inference_loop.py` — crash-recovery rehydration of `initial_state` on re-entry; per-round durable snapshots; purge on clean completion.
+- `src/main.py` — headless seeding of `orch._current_task_id` (resume = original session id; fresh = minted uuid) so `--continue` resumes the same thread.
+- `tests/unit/test_graph_checkpointing.py` (new, 20 tests).
+
+**Design:**
+- **`JsonlCheckpointSaver(BaseCheckpointSaver)`** — per-thread JSONL under `agent_context_path(workdir)/checkpoints` (`checkpoint_{thread}.jsonl` + `.writes.jsonl`); pickle+base64 payloads with `LIVE_CHANNELS` (`cancel_event`, `_file_lock_manager`, `_agent_session_manager`, `_context_controller`, `_write_queue`, `_pending_injections_source`) and unpicklable values dropped (graceful degradation); rotation keeps newest `_MAX_RECORDS_PER_THREAD` (500). Validation confirmed langgraph 1.1.10 only persists `channel_values/channel_versions/id/ts/updated_channels/v/versions_seen` — **no stored `next`/`versions`** — and that a plain on-disk checkpoint cannot re-run pending nodes (`app.invoke(None, …)` no-ops; node resume needs in-memory task bookkeeping the loop does not serialize).
+- **Round-boundary state snapshots** (the actual recovery mechanism) — after each completed graph round the inference loop writes a JSON-safe copy of the graph state to `checkpoint_{thread}.state.jsonl` (atomic tmp-file replace; unserializable keys skipped). On thread re-entry (`--continue` reusing the task id), `load_thread_state` + `rehydrate_initial_state` merge the surviving snapshot over the fresh `build_initial_state` so completed rounds are not redone. Clean completion purges all three per-thread files; cancellation/loop-limit paths intentionally keep them.
+- **Toggle:** `CODINGAGENT_GRAPH_CHECKPOINTING` env 0/1 override → config `graph_checkpointing` → default OFF under pytest. `default_checkpointer()` is a thread-safe process singleton shared by both tier graphs.
+
+**Gates:** ruff + mypy clean (source + tests). Full unit suite + fast-path integration green (4764 tests passing = 4744 + 20 new; exit 0).
+
+---
+
 ## Remaining (next-task candidates)
 
 | # | Item | Location | Complexity | Notes |
 |---|------|----------|------------|-------|
 | 3.2 | Build evaluation framework | New `src/evaluation/` | High | Systematic quality measurement |
 | 3.3 | Add SWE-bench integration | New evaluation harness | High | Industry-standard benchmarking; depends on 3.2 |
-| 3.4 | Implement graph-state checkpointing | `inference_loop.py` + LangGraph checkpointer | High | Automatic crash recovery |
 | 3.8 | Reconcile documentation test baselines | All docs | Low | Single authoritative count |
 
-Suggested next: **3.4 (graph-state checkpointing)** — High value (automatic crash recovery) and self-contained in `inference_loop.py`, unlike 3.2/3.3 which are High-complexity new subsystems and can reuse the checkpoint milestone for their harness. 3.8 (docs test baselines, Low) remains as a quick win at any point.
+Suggested next: **3.8 (docs test baselines)** as a low-risk quick win, then **3.2** (evaluation framework) which unblocks **3.3** (SWE-bench). Both 3.2/3.3 are High-complexity new subsystems; the checkpointing milestone (3.4) is complete and available to their harnesses.
