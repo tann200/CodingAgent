@@ -98,8 +98,8 @@ However, the system has **critical security orientation issues** (fail-open on s
 ## 5. Major Missing Capabilities
 
 ### MC-1: No Formal Evaluation Framework
-- ~~No SWE-bench integration, no scenario evaluation harness, no regression test suite, no model comparison evaluation.~~ **Partially resolved (3.2 COMPLETED):** `src/core/evaluation/` now ships a public API + `python -m src.core.evaluation` CLI (`list`/`run`/`baseline-save`) over 23 scenarios with pass@k and a golden-regression gate; SWE-bench integration still pending (3.3).
-- Testing is unit-test-centric (352 test files, ~4,780 tests collected by `pytest tests/unit tests/integration/test_fast_path_graph_e2e.py`) but lacks systematic agent-quality measurement.
+- ~~No SWE-bench integration, no scenario evaluation harness, no regression test suite, no model comparison evaluation.~~ **Resolved (3.2 + 3.3 COMPLETED):** `src/core/evaluation/` ships a public API + `python -m src.core.evaluation` CLI (`list`/`run`/`baseline-save`/`swebench`) over 23 scenarios with pass@k and a golden-regression gate, plus a SWE-bench style instance loader + grader (patch extraction, test_patch apply, FAIL_TO_PASS/PASS_TO_PASS runs, baseline-compatible).
+- Testing is unit-test-centric (354 test files, ~4,804 tests collected by `pytest tests/unit tests/integration/test_fast_path_graph_e2e.py`) but lacks systematic agent-quality measurement.
 - **Impact:** Cannot quantify agent reliability, edit accuracy, or tool usage correctness.
 
 ### MC-2: HOOK_SESSION_START Defined but Never Invoked
@@ -233,9 +233,9 @@ However, the system has **critical security orientation issues** (fail-open on s
 ## 10. Evaluation and Testing Gaps
 
 ### Current State
-- **352 test files** across `tests/unit/` with ~4,780 tests (collected: `pytest tests/unit tests/integration/test_fast_path_graph_e2e.py`)
+- **354 test files** across `tests/unit/` with ~4,804 tests (collected: `pytest tests/unit tests/integration/test_fast_path_graph_e2e.py`)
 - Strong security-specific tests (bypass vectors, SSRF, injection, concurrency)
-- Scenario evaluation framework with pass@k + golden-regression gate (3.2 COMPLETED)
+- Scenario evaluation framework with pass@k + golden-regression gate + SWE-bench harness (3.2 + 3.3 COMPLETED)
 - SWE-bench-style evaluator with 23 scenarios
 
 ### Missing
@@ -349,7 +349,7 @@ However, the system has **critical security orientation issues** (fail-open on s
 |---|-------|----------|------------|--------|
 | 3.1 | ~Enable full graph (~`_USE_FULL_GRAPH`)~ → Add replan to frontier graph. `COMPLETED` — see `audit/PHASE3_PROGRESS.md`. Premise was stale: production runs tier graphs, not `compile_agent_graph()`; frontier graph already had analyst_delegation/debug/delegation. Replan was the one missing capability; now wired (patch-size guard → replan node → re-enter loop). | `builder.py`, `tier_graph_routing.py`, `frontier_loop_node.py` | High | Restores replan capability in production |
 | ~~3.2~~ | **Build evaluation framework (COMPLETED − public API in `src/core/evaluation/__init__.py`, `python -m src.core.evaluation` CLI runner (`list`/`run`/`baseline-save`) with pass@k sampling, JSON reports, and a golden-regression gate (exit 1 on regression); regression compare helpers in `regression.py`; 16 new tests; full suite 4,780 passing)** | New `src/evaluation/` → `src/core/evaluation/` | High | Enables systematic quality measurement |
-| 3.3 | Add SWE-bench integration | New evaluation harness | High | Industry-standard benchmarking |
+| ~~3.3~~ | **Add SWE-bench integration (COMPLETED − `swebench.py` loader + grader + `SWEBenchRunner`, `swebench` CLI subcommand with regression gate, 24 new tests; full suite 4,804 passing)** | New evaluation harness | High | Industry-standard benchmarking |
 | ~~3.4~~ | **Implement graph-state checkpointing (COMPLETED − `JsonlCheckpointSaver` wired into production tier graphs + round-boundary durable state snapshots in `inference_loop.py`; `--continue` resumes the same thread via task-id seeding in `src/main.py`; toggle OFF under pytest)** | `src/core/orchestration/graph/checkpoint_saver.py` (new), `builder.py`, `inference_loop.py`, `src/main.py` | High | Automatic crash recovery at round granularity; node-level run forensics via per-thread checkpoint JSONL |
 | ~~3.5~~ | **Consolidate duplicate skill directories (COMPLETED)** | `src/config/skills/` → `agent-brain/skills/` (legacy dir removed) | Medium | Single authoritative skill set |
 | ~~3.6~~ | **Remove/update stub roles (COMPLETED − scope corrected: `researcher.md` removed, `scout.md`/`tester.md` rewritten as functional roles)** | ~~`researcher.md`, `scout.md`, `tester.md`~~ → see `audit/PHASE3_PROGRESS.md` | Low | Eliminates defunct code |

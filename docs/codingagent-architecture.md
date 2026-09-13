@@ -59,15 +59,15 @@ CodingAgent/
 │   │   ├── memory/                    # Distiller, SessionStore, AdvancedMemory
 │   │   ├── indexing/                  # RepoIndexer, VectorStore, SymbolGraph, LSP
 │   │   ├── mcp/                       # MCP client
-│   │   └── evaluation/                # scenario evaluator, CLI runner, regression baselines
+│   │   └── evaluation/                # scenario evaluator, CLI runner, regression baselines, SWE-bench harness
 │   ├── tools/                         # 60+ agent tools
 │   ├── config/                        # Provider configs, agent-brain (roles/skills/identity)
 │   ├── server/                        # Minimal HTTP server
 │   └── main.py                        # CLI entrypoint
 ├── tui/                               # Textual TUI application
 │   └── src/ui/                        # Screens, bridge, controller, features
-├── tests/                             # 4,780 tests in current baseline (see §13)
-│   ├── unit/                          # 4,777 unit tests (352 files)
+├── tests/                             # 4,804 tests in current baseline (see §13)
+│   ├── unit/                          # 4,801 unit tests (354 files)
 │   ├── integration/                   # Mock + live-provider tests
 │   ├── e2e/                           # End-to-end scenario tests
 │   └── benchmarks/                    # 7 latency benchmarks
@@ -1242,7 +1242,7 @@ diff for user review before the write is committed (F14).
 
 ```
 tests/
-├── unit/           (illustrative layout from an early suite snapshot — current count: 4,777 tests across 352 files)
+├── unit/           (illustrative layout from an early suite snapshot — current count: 4,801 tests across 354 files)
 │   ├── test_model_tiers.py          (24 tests)
 │   ├── test_s0_items.py             (29 tests)
 │   ├── test_bash_security.py

@@ -194,6 +194,16 @@ def _build_parser() -> argparse.ArgumentParser:
     save_p.add_argument("--workdir", default=None)
     save_p.add_argument("--output", required=True, help="Baseline JSON path")
     save_p.add_argument("--metadata", nargs="*", default=[], help="k=v run metadata")
+
+    sw = sub.add_parser("swebench", help="Run SWE-bench style instances")
+    sw.add_argument("--source", required=True, help="Instances JSON/JSONL/dir")
+    sw.add_argument("--agent", default="default", help="module:callable factory")
+    sw.add_argument("--limit", type=int, default=None, help="Run first N instances")
+    sw.add_argument("--workdir", default=None)
+    sw.add_argument("--output", default=None, help="Write JSON report here")
+    sw.add_argument(
+        "--baseline", default=None, help="Baseline JSON; exit 1 on regression"
+    )
     return parser
 
 
@@ -301,6 +311,62 @@ def _cmd_baseline_save(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_swebench(args: argparse.Namespace) -> int:
+    from src.core.evaluation.swebench import SWEBenchRunner, load_instances
+
+    factory = _resolve_agent_factory(args.agent)
+    instances = load_instances(args.source)
+    if args.limit is not None:
+        instances = instances[: args.limit]
+    if not instances:
+        print("No SWE-bench instances to run.", file=sys.stderr)
+        return 2
+
+    runner = SWEBenchRunner(workdir=args.workdir)
+    results = []
+    for instance in instances:
+        result = runner.run_instance(instance, factory)
+        results.append(result)
+        print(
+            f"  {result['scenario_name']:<40s} {result['status']:<6s}"
+        )
+    summary = SWEBenchRunner.summarize(results)
+    print(
+        f"\nSummary: {summary['passed']}/{summary['total']} passed "
+        f"({summary['pass_rate']:.1%}); {summary['errors']} errors"
+    )
+
+    if args.output:
+        from datetime import datetime
+
+        out = Path(args.output)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        doc = {
+            "created_at": datetime.now().isoformat(),
+            "kind": "swebench",
+            "summary": summary,
+            "results": results,
+        }
+        out.write_text(
+            json.dumps(doc, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+        print(f"Report written to {out}")
+
+    if args.baseline:
+        baseline = regression.load_baseline(args.baseline)
+        if baseline is None:
+            print(f"Baseline not found or corrupt: {args.baseline}", file=sys.stderr)
+            return 2
+        comparison = regression.compare_baseline(baseline, results)
+        print("\nBaseline comparison:")
+        print(f"  regressed: {comparison['regressed'] or 'none'}")
+        print(f"  improved : {comparison['improved'] or 'none'}")
+        if comparison["got_regressions"]:
+            print("  -> REGRESSION DETECTED (exit 1)")
+            return 1
+    return 0
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -310,6 +376,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         return _cmd_run(args)
     if args.command == "baseline-save":
         return _cmd_baseline_save(args)
+    if args.command == "swebench":
+        return _cmd_swebench(args)
     parser.error(f"unknown command {args.command!r}")
     return 2
 

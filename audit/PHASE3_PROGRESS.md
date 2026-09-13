@@ -1,7 +1,7 @@
 # Phase 3 — Progress & Next-Task Analysis
 
 **Scope:** Track Phase 3 of the audit roadmap (capability improvements), record completed items, and provide a concrete implementation analysis for the next task.
-**Status:** 3.1 + 3.2 + 3.4 + 3.5 + 3.6 + 3.7 + 3.8 complete; remaining item **3.3** (SWE-bench) pending.
+**Status:** 3.1 + 3.2 + 3.3 + 3.4 + 3.5 + 3.6 + 3.7 + 3.8 complete — **all Phase-3 items DONE**.
 
 ---
 
@@ -155,10 +155,27 @@ Surfaced the scenario-evaluation core (which already ships 23 standardized scena
 
 ---
 
+## Completed — 3.3 SWE-bench Integration
+
+Added a SWE-bench style grading harness that plugs into the 3.2 evaluation framework.
+
+**Files:**
+- `src/core/evaluation/swebench.py` (new) — `SWEBenchInstance` data model (+`from_dict`/`to_dict` with `FAIL_TO_PASS`/`PASS_TO_PASS` aliases and required-field validation); `load_instances(source)` for JSON (list/dict-keyed/single) / JSONL / directory; `checkout_repo` (clones a local path, `file://`, or `org/repo` GitHub spec at `base_commit`); `grade_runnable` (extract agent patch via `git add -N .` + `git diff --binary HEAD` so new files are captured, apply `test_patch`, run FAIL_TO_PASS/PASS_TO_PASS with pytest `-x` — or an explicit `test_command` — and classify pass/fail/error); `SWEBenchRunner` (isolated per-instance run dirs, `_ensure_working_dir` alignment, agent surface dispatch via `run`/`run_agent_once`/`__call__`, `summarize`).
+- `src/core/evaluation/cli.py` — new `swebench` subcommand: `--source`, `--agent`, `--limit`, `--workdir`, `--output <report.json>`, `--baseline <json>` (exit 1 on regression).
+- `src/core/evaluation/__init__.py` — exports `SWEBenchInstance`/`SWEBenchRunner`/`load_instances`.
+- `tests/unit/test_swebench_integration.py` (new, 24 tests) — data model + loader variants + validation errors, grading (pass/fail/error, new-file capture, test_command override, test_patch apply failure), runner end-to-end pass/fail/checkout-error, CLI run/report/regression-exit-code. Offline fixtures are git repos built at test time via `git init`/`commit`; no network.
+
+**Design notes:**
+- Grading is round-trip safe: the agent works in a clean checkout at `base_commit`; no commit is made by the agent; the grader diffs the working tree so a regression baseline can compare patches if needed.
+- Real test runs use the local `python -m pytest` runner; actual SWE-bench datasets (which need conda/docker environments per instance) are a documented extension — the harness expects pre-installed dependencies in the invocation environment.
+- Regression baselines from other subcommands are compatible (compare uses `scenario_name`/`status`).
+
+**Gates:** ruff + mypy clean (`src/core/evaluation/` + both new test files). Full gate suite green — **4,804 tests passing** (4,780 + 24 new; exit 0).
+
+---
+
 ## Remaining (next-task candidates)
 
 | # | Item | Location | Complexity | Notes |
 |---|------|----------|------------|-------|
-| 3.3 | Add SWE-bench integration | New evaluation harness | High | Industry-standard benchmarking; depends on 3.2 |
-
-Suggested next: **3.3 (SWE-bench)** — the last remaining Phase-3 item. The evaluation framework (3.2, complete) provides the run/regression harness it plugs into.
+| — | Phase 3 COMPLETE | — | — | All eight Phase-3 items (3.1–3.8) are done and committed. Suggested next: Phase 4 advanced features (multi-agent orchestration, adaptive tool selection, semantic search improvements, distributed training). |

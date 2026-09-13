@@ -1,5 +1,11 @@
-"""Public API for the CodingAgent evaluation framework (audit PHASE-3 item 3.2)."""
+"""Public API for the CodingAgent evaluation framework (audit PHASE-3 items 3.2, 3.3)."""
 
+from src.core.evaluation.regression import (
+    compare_baseline,
+    is_regression,
+    load_baseline,
+    save_baseline,
+)
 from src.core.evaluation.scenario_evaluator import (
     Scenario,
     ScenarioEvaluator,
@@ -8,6 +14,11 @@ from src.core.evaluation.scenario_evaluator import (
     pass_at_k,
     run_benchmark,
     run_pass_at_k,
+)
+from src.core.evaluation.swebench import (
+    SWEBenchInstance,
+    SWEBenchRunner,
+    load_instances,
 )
 
 __all__ = [
@@ -18,4 +29,11 @@ __all__ = [
     "pass_at_k",
     "run_benchmark",
     "run_pass_at_k",
+    "compare_baseline",
+    "is_regression",
+    "load_baseline",
+    "save_baseline",
+    "SWEBenchInstance",
+    "SWEBenchRunner",
+    "load_instances",
 ]
