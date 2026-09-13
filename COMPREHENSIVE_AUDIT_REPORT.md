@@ -99,7 +99,7 @@ However, the system has **critical security orientation issues** (fail-open on s
 
 ### MC-1: No Formal Evaluation Framework
 - No SWE-bench integration, no scenario evaluation harness, no regression test suite, no model comparison evaluation.
-- Testing is unit-test-centric (373+ test files, ~4,660 tests) but lacks systematic agent-quality measurement.
+- Testing is unit-test-centric (352 test files, ~4,764 tests collected by `pytest tests/unit tests/integration/test_fast_path_graph_e2e.py`) but lacks systematic agent-quality measurement.
 - **Impact:** Cannot quantify agent reliability, edit accuracy, or tool usage correctness.
 
 ### MC-2: HOOK_SESSION_START Defined but Never Invoked
@@ -231,7 +231,7 @@ However, the system has **critical security orientation issues** (fail-open on s
 ## 10. Evaluation and Testing Gaps
 
 ### Current State
-- **373+ test files** across `tests/unit/` with ~4,660 tests
+- **352 test files** across `tests/unit/` with ~4,764 tests (collected: `pytest tests/unit tests/integration/test_fast_path_graph_e2e.py`)
 - Strong security-specific tests (bypass vectors, SSRF, injection, concurrency)
 - Golden regression suite with pass@k metric
 - SWE-bench-style evaluator with 23 scenarios

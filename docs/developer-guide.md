@@ -1,8 +1,8 @@
 # CodingAgent — Developer Guide
 
-> **Test baseline:** 3537 unit tests passing  
+> **Test baseline:** 4,764 tests passing (`pytest tests/unit tests/integration/test_fast_path_graph_e2e.py`)  
 > **Audit status:** 0 Critical, 0 High issues  
-> **Last updated:** 2026-05-13
+> **Last updated:** 2026-09-14
 
 This guide is the authoritative technical reference for contributors and
 integrators. For a quick-start setup see [`LOCAL_SETUP.md`](LOCAL_SETUP.md);
@@ -91,7 +91,7 @@ src/
 ├── server/                        FastAPI HTTP server
 └── tui/                           Textual TUI components
 tests/
-├── unit/                          ~3537 tests, no LLM required
+├── unit/                          4,761 tests, no LLM required (352 files)
 ├── integration/                   Mock + live-provider tests
 ├── e2e/                           End-to-end scenario tests
 ├── benchmarks/                    7 benchmark tests

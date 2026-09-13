@@ -2,7 +2,8 @@
 
 **Date**: 2026-06-08  
 **Commit**: `e8dccb3`  
-**Duration**: ~2 hours
+**Duration**: ~2 hours  
+**Note**: Before/after counts reflect the cleanup on the commit date. The authoritative current baseline (see README "Test Baseline") is produced by `pytest tests/unit tests/integration/test_fast_path_graph_e2e.py`.
 
 ---
 

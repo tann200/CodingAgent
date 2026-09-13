@@ -2,7 +2,8 @@
 
 **Date**: 2026-06-08  
 **Total Tests Analyzed**: 4,399 tests across 372 test files  
-**Analysis Scope**: Complete test suite (unit, integration, e2e, acceptance, benchmarks)
+**Analysis Scope**: Complete test suite (unit, integration, e2e, acceptance, benchmarks)  
+**Note**: Counts reflect the suite as of the analysis date. The authoritative current baseline (see README "Test Baseline") is produced by `pytest tests/unit tests/integration/test_fast_path_graph_e2e.py`.
 
 ---
 

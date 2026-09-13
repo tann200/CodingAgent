@@ -1,7 +1,7 @@
 # Phase 3 — Progress & Next-Task Analysis
 
 **Scope:** Track Phase 3 of the audit roadmap (capability improvements), record completed items, and provide a concrete implementation analysis for the next task.
-**Status:** 3.1 + 3.4 + 3.5 + 3.6 + 3.7 complete; remaining items **3.2, 3.3, 3.8** pending.
+**Status:** 3.1 + 3.4 + 3.5 + 3.6 + 3.7 + 3.8 complete; remaining items **3.2, 3.3** pending.
 
 ---
 
@@ -121,12 +121,23 @@ Headless `codingagent` reuse was a hard script: short "task" mode and no session
 
 ---
 
+## Completed — 3.8 Documentation Test Baselines (single authoritative count)
+
+Reconciled every test-count claim in the documentation tree to a single authoritative number.
+
+- **Single source of truth:** README "Test Baseline" now defines the baseline as whatever `pytest tests/unit tests/integration/test_fast_path_graph_e2e.py` collects — currently **4,764 tests** (4,761 unit across 352 files + 3 fast-path integration).
+- **Current-state claims updated to 4,764/4,761:** `README.md` (was 4,659), `docs/developer-guide.md` (was 3,537, header + tree), `docs/DEVELOPMENT.md` (was 3,844), `AGENTS.md` (was ~4,660), `COMPREHENSIVE_AUDIT_REPORT.md` + `audit/COMPREHENSIVE_AUDIT_REPORT.md` (was ~4,660, both count claims), `docs/codingagent-architecture.md` structure block (was 240/206/25/3) and §13 tree opener (was ~330).
+- **Historical reports annotated, not rewritten:** `docs/TEST_QUALITY_ANALYSIS.md` (4,399) and `docs/TEST_CLEANUP_SUMMARY.md` (4,399→4,388) keep their point-in-time numbers but now carry a note pointing at the authoritative baseline.
+- **Verified by collection:** `tests/unit` = 4,761, fast-path integration = 3; remaining dirs (integration/e2e/benchmarks/acceptance) collect 175 more but are not part of the gate suite.
+- **Known leftover (Phase 2):** root-level `COMPREHENSIVE_AUDIT_REPORT.md` is a stale duplicate of `audit/COMPREHENSIVE_AUDIT_REPORT.md`; counts in both were aligned but deleting the duplicate remains open cleanup.
+
+---
+
 ## Remaining (next-task candidates)
 
 | # | Item | Location | Complexity | Notes |
 |---|------|----------|------------|-------|
 | 3.2 | Build evaluation framework | New `src/evaluation/` | High | Systematic quality measurement |
 | 3.3 | Add SWE-bench integration | New evaluation harness | High | Industry-standard benchmarking; depends on 3.2 |
-| 3.8 | Reconcile documentation test baselines | All docs | Low | Single authoritative count |
 
-Suggested next: **3.8 (docs test baselines)** as a low-risk quick win, then **3.2** (evaluation framework) which unblocks **3.3** (SWE-bench). Both 3.2/3.3 are High-complexity new subsystems; the checkpointing milestone (3.4) is complete and available to their harnesses.
+Suggested next: **3.2 (evaluation framework)** which unblocks **3.3** (SWE-bench). Both are High-complexity new subsystems; the checkpointing milestone (3.4) is complete and available to their harnesses.

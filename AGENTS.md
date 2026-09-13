@@ -39,7 +39,7 @@ tui/
     └── ...                  # Screens, components, mixins
 
 tests/
-└── unit/                    # ~4660 tests (pytest)
+└── unit/                    # 4,761 tests (pytest; 352 files; +3 fast-path integration)
     ├── messaging/           # MessageBus + EventBus + adapter tests
     ├── test_event_bus.py
     └── ...
