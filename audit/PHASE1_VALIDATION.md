@@ -159,7 +159,7 @@
 | 1.4 | VectorStore memory | ❌ NOT READY | Needs storage/embedding/scope design spec |
 | 1.5 | Compaction key mismatch | ✅ COMPLETED | Fix already implemented in commit 3311704 |
 | 1.6 | Node output schemas | ⚠️ READY (large) | None — mechanical, pattern established |
-| 1.7 | HOOK_SESSION_START | ✅ READY | Task-payload source decision |
+| 1.7 | HOOK_SESSION_START | ✅ COMPLETED | Wiring implemented (commit 3311704); test added `TestCallSiteSessionStart` |
 
 ## Recommendation
 

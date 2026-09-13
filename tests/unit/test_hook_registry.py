@@ -319,5 +319,77 @@ class TestCallSiteLLMManager(unittest.TestCase):
         self.assertEqual(called_with[0]["model"], "test-model")
 
 
+class TestCallSiteSessionStart(unittest.TestCase):
+    """Item 1.7: HOOK_SESSION_START fires once at the start of a new session.
+
+    Verifies run_agent_once_impl fires HOOK_SESSION_START on the first turn with
+    the documented payload {"session_id": str, "task": str}.
+    """
+
+    def tearDown(self):
+        from src.core.plugin.hook_registry import registry
+
+        registry.clear()
+
+    def test_hook_fires_with_session_id_and_task(self):
+        """First turn of run_agent_once fires HOOK_SESSION_START with session_id+task."""
+        from unittest.mock import MagicMock, patch
+
+        from src.core.plugin.hook_registry import registry, HOOK_SESSION_START
+        from src.core.orchestration.inference_loop import run_agent_once_impl
+
+        called_with = []
+        registry.register(HOOK_SESSION_START, lambda p: called_with.append(p))
+
+        orch = MagicMock()
+        orch._current_task_id = "abc12345"
+        orch._session_read_files = set()
+        orch._session_modified_files = set()
+        orch._usage_buffer = {}
+        orch._dry_run_log = []
+        orch._session_title = None
+        orch._session_title_thread = None
+        orch.working_dir = "/tmp/test_dir"
+        orch.cost_tracker = MagicMock()
+        orch.tool_execution_service = MagicMock()
+        orch.msg_mgr = MagicMock()
+        orch.msg_mgr.messages = []
+        orch.session_store = MagicMock()
+        orch.event_bus = MagicMock()
+        orch._adapter = None
+
+        with (
+            patch(
+                "src.core.orchestration.inference_loop.load_system_prompt",
+                return_value="system",
+                create=True,
+            ),
+            patch(
+                "src.core.orchestration.graph.builder.get_compiled_graph_for_orchestrator",
+                return_value=MagicMock(),
+                create=True,
+            ),
+            patch("src.core.config_loader.get", return_value=0),
+            patch(
+                "src.core.memory.distiller.generate_session_title",
+                return_value="T",
+            ),
+        ):
+            run_agent_once_impl(
+                orch,
+                system_prompt_name=None,
+                messages=[{"role": "user", "content": "implement hello world"}],
+                tools={},
+                cancel_event=None,
+            )
+
+        self.assertTrue(
+            len(called_with) > 0, "HOOK_SESSION_START was not called on first turn"
+        )
+        payload = called_with[0]
+        self.assertEqual(payload["session_id"], "abc12345")
+        self.assertEqual(payload["task"], "implement hello world")
+
+
 if __name__ == "__main__":
     unittest.main()
