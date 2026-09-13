@@ -1,7 +1,7 @@
 # Phase 3 — Progress & Next-Task Analysis
 
 **Scope:** Track Phase 3 of the audit roadmap (capability improvements), record completed items, and provide a concrete implementation analysis for the next task.
-**Status:** 3.1 + 3.5 + 3.6 complete; remaining items **3.2–3.4, 3.7–3.8** pending.
+**Status:** 3.1 + 3.5 + 3.6 + 3.7 complete; remaining items **3.2–3.4, 3.8** pending.
 
 ---
 
@@ -21,6 +21,7 @@ The audit item 3.1 ("Enable full graph `_USE_FULL_GRAPH = True`", `builder.py:94
 | 3.1 | Add replan to the frontier graph | Frontier loop now triggers replan on `requires_split`; new `replan` node split oversized steps and re-enters the loop. See below. |
 | 3.5 | Consolidate duplicate skill directories | Removed legacy `src/config/skills/`; `explore_codebase` migrated into `agent-brain/skills/`; skill tools + prompt templates repointed. See below. |
 | 3.6 | Remove/update stub roles | Deleted defunct `researcher.md` (alias→analyst, never compiled); rewrote `scout.md`/`tester.md` as functional roles; aligned agent overrides. See below. |
+| 3.7 | Add CLI feature parity with TUI | New `src/cli/` package + `src/main.py` subparsers: `session`, `status`, `mcp`, `diff` subcommands plus `--provider`/`--model`/`--continue` flags. See below. |
 
 ### Item 3.1 details — Add replan to the frontier graph
 
@@ -76,6 +77,31 @@ Two parallel skill sets existed: prompt assembly (`ContextBuilder` at `context_b
 
 ---
 
+## Item 3.7 details — Add CLI feature parity with TUI
+
+Headless `codingagent` reuse was a hard script: short "task" mode and no session/status/mcp/diff visibility. This item reuses the existing in-process plumbing (session store, provider config, MCP config, git) with zero new runtime dependencies.
+
+**New `src/cli/` package:**
+- `_helpers.py` — working-directory/config-path resolution helpers + MCP config JSON read/write.
+- `session_cmd.py` — `session list` (tabs, recent sessions first), `session show <id|n>` (metadata + flattened transcript), `session export <id>` (markdown with `created_at`), all via `session_store` (`list_sessions`/`load_session`; monkeypatchable `_SESSIONS_DIR`). Export writes atomically with `mkstemp`+`fsync`+`os.replace` to a temp dir when outside the repo.
+- `status_cmd.py` — prints active provider/model by resolving the providers config path through the real config API (`_pc.resolve_providers_config_path(None, _pc.__file__)`), plus session count.
+- `mcp_cmd.py` — `mcp list` / `mcp status` (reads `.agent/config.json`, no live handshake headlessly) / `mcp add <name> <cmd...>`. Add validates name (`[a-zA-Z0-9_-]+`) and **rejects shell metacharacters** (`[;&$`|<>]`) in the command; writes atomically and warns to restart the session. `cmd` uses `nargs=argparse.REMAINDER` so flags like `-y` survive; a misplaced `--workdir` after the command is swallowed by REMAINDER, so `--workdir` lives on the parent `mcp` parser (`mcp --workdir DIR add name cmd...`).
+- `diff_cmd.py` — `diff --path <glob>` runs `git diff --stat --patch HEAD` through the real repo (GitSnapshotManager's shadow repo has no HEAD → dropped that route). Shows a lock-hint line when files are locked.
+
+**`src/main.py` wiring:**
+- Subparsers for `session|status|mcp|diff` dispatched to the new package with graceful fallback to the legacy task-mode parser if `argparse` rejects the invocation.
+- Global flags `--provider`/`--model` (moved off the task parser) and `--continue`. `--provider`/`--model` are applied headlessly by publishing `ModelRouting(provider=…, selected=…, available_models=[])` **after** `Orchestrator` construction (ProviderManager is wired to the bus → `llm_manager._on_model_routing` performs the live switch). `available_models` is a required positional on `ModelRouting` (`event_types.py:826`) — a missing kwarg raised `TypeError`, silently swallowed by the try/except guard (did not break routing, but the override was a no-op).
+- `--continue` resumes the last session: loads `.codingAgent/last_plan.json` for the `task` (via `get_last_plan_path(workdir)`), falling back to scanning the newest 10 sessions for the final user/human message; on resume, the target session id is passed through to `_run_headless` and the task prompt is skipped.
+- Headless streaming (`--output stream`) now emits tokens incrementally via a `response.stream_chunk` subscription (pre-existing hook moved before `run_agent_once`).
+
+**Tests added:** `tests/unit/test_cli_subcommands.py` — 25 tests across `TestParser` (arg parsing incl. `--provider/--model/--continue` placement), `TestMcpSubcommand` (unsafe-cmd rejection, config write/placement), `TestSessionSubcommand` (list/show/export against a temp session dir + atomic export into the repo), `TestHeadlessRouting` (a `model.routing` event is published on `_run_headless(provider=…)`); patched `Orchestrator` via `orch_mod.Orchestrator` to a FakeOrch/FakeBus.
+
+**Smoke-tested manually:** `status`, `mcp list/add/status`, `session list/show/export`, `diff --path`.
+
+**Gates:** ruff + mypy clean (8 source files: `src/cli/`, `src/main.py`, tests). Full unit suite + fast-path integration green (4744 tests passing, exit 0; two earlier full-suite runs hit transient environment hangs — collection and runs are otherwise fast and consistent).
+
+---
+
 ## Remaining (next-task candidates)
 
 | # | Item | Location | Complexity | Notes |
@@ -83,7 +109,6 @@ Two parallel skill sets existed: prompt assembly (`ContextBuilder` at `context_b
 | 3.2 | Build evaluation framework | New `src/evaluation/` | High | Systematic quality measurement |
 | 3.3 | Add SWE-bench integration | New evaluation harness | High | Industry-standard benchmarking; depends on 3.2 |
 | 3.4 | Implement graph-state checkpointing | `inference_loop.py` + LangGraph checkpointer | High | Automatic crash recovery |
-| 3.7 | Add CLI feature parity with TUI | `src/main.py` | Medium | Headless/scriptable usage |
 | 3.8 | Reconcile documentation test baselines | All docs | Low | Single authoritative count |
 
-Suggested next: **3.7 (CLI feature parity with TUI)** — Medium complexity, self-contained, and delivers the headless/scriptable usage gap without coupling to the High-complexity evaluation (3.2/3.3) or checkpointing (3.4) items.
+Suggested next: **3.4 (graph-state checkpointing)** — High value (automatic crash recovery) and self-contained in `inference_loop.py`, unlike 3.2/3.3 which are High-complexity new subsystems and can reuse the checkpoint milestone for their harness. 3.8 (docs test baselines, Low) remains as a quick win at any point.

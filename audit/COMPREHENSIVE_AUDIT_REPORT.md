@@ -353,7 +353,7 @@ However, the system has **critical security orientation issues** (fail-open on s
 | 3.4 | Implement graph-state checkpointing | `inference_loop.py` + LangGraph checkpointer | High | Enables automatic crash recovery |
 | ~~3.5~~ | **Consolidate duplicate skill directories (COMPLETED)** | `src/config/skills/` → `agent-brain/skills/` (legacy dir removed) | Medium | Single authoritative skill set |
 | ~~3.6~~ | **Remove/update stub roles (COMPLETED − scope corrected: `researcher.md` removed, `scout.md`/`tester.md` rewritten as functional roles)** | ~~`researcher.md`, `scout.md`, `tester.md`~~ → see `audit/PHASE3_PROGRESS.md` | Low | Eliminates defunct code |
-| 3.7 | Add CLI feature parity with TUI | `src/main.py` | Medium | Enables headless/scriptable usage |
+| ~~3.7~~ | **Add CLI feature parity with TUI (COMPLETED − new `src/cli/` package: `session`/`status`/`mcp`/`diff` subcommands + `--provider`/`--model`/`--continue` flags, live `ModelRouting` override, `--continue` resume via last_plan task)** | `src/main.py`, new `src/cli/` | Medium | Enables headless/scriptable usage |
 | 3.8 | Reconcile documentation test baselines | All docs | Low | Single authoritative count |
 
 ### Phase 4 — Advanced Features (Weeks 9-12)

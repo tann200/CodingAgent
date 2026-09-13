@@ -10,7 +10,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-from typing import Optional
+from typing import Any, Optional
 
 
 # tiny debug helper — only active when CODINGAGENT_DEBUG env var is set
@@ -119,6 +119,57 @@ def _parse_args(argv: list) -> argparse.Namespace:
         default="operational",
         help="Role name to resolve (default: operational).",
     )
+
+    # Phase 3.7: `session` subcommand — list / show / export session snapshots
+    session_parser = subparsers.add_parser(
+        "session",
+        help="List, show, or export persisted session snapshots (headless /sessions, /timeline, /share).",
+    )
+    session_sub = session_parser.add_subparsers(dest="session_action")
+    session_list = session_sub.add_parser("list", help="List saved sessions (most recent first).")
+    session_list.add_argument("--limit", type=int, default=50)
+    session_list.add_argument("--json", action="store_true")
+    session_show = session_sub.add_parser("show", help="Show a session's message timeline.")
+    session_show.add_argument("session_id")
+    session_show.add_argument("--json", action="store_true")
+    session_export = session_sub.add_parser("export", help="Export a session to markdown.")
+    session_export.add_argument("session_id")
+    session_export.add_argument("--out", metavar="FILE", default=None)
+    session_export.add_argument("--json", action="store_true")
+
+    # Phase 3.7: `status` subcommand — agent/provider/model runtime info
+    status_parser = subparsers.add_parser(
+        "status",
+        help="Print agent/provider/model/runtime status (headless /status).",
+    )
+    status_parser.add_argument("--workdir", metavar="DIR", default=None)
+    status_parser.add_argument("--json", action="store_true")
+
+    # Phase 3.7: `mcp` subcommand — list / status / add MCP servers
+    mcp_parser = subparsers.add_parser(
+        "mcp",
+        help="List, status-check, or add MCP servers (headless /mcp).",
+    )
+    mcp_parser.add_argument("--workdir", metavar="DIR", default=None,
+                            help="Working directory for mcp operations.")
+    mcp_sub = mcp_parser.add_subparsers(dest="mcp_action")
+    mcp_list = mcp_sub.add_parser("list", help="List configured MCP servers.")
+    mcp_list.add_argument("--json", action="store_true")
+    mcp_status = mcp_sub.add_parser("status", help="Show configured MCP servers (no live connections headlessly).")
+    mcp_status.add_argument("--json", action="store_true")
+    mcp_add = mcp_sub.add_parser("add", help="Add an MCP server to .agent/config.json.")
+    mcp_add.add_argument("name")
+    mcp_add.add_argument("cmd", nargs=argparse.REMAINDER)
+
+    # Phase 3.7: `diff` subcommand — working-directory diff since HEAD/snapshot
+    diff_parser = subparsers.add_parser(
+        "diff",
+        help="Show the working-directory diff (headless /diff).",
+    )
+    diff_parser.add_argument("--workdir", metavar="DIR", default=None)
+    diff_parser.add_argument("--json", action="store_true")
+    diff_parser.add_argument("--path", metavar="PATH", default=None,
+                             help="Restrict the diff to a specific path.")
 
     # Global (non-subcommand) flags
     parser.add_argument(
@@ -229,7 +280,31 @@ def _parse_args(argv: list) -> argparse.Namespace:
         help=(
             "Control thinking/reasoning mode: auto (default, on for reasoning models), "
             "on (always enable), off (disable for small models). "
-            "For models like Qwen3 that emit <think> blocks."
+            "For models like Qwen3 that emit  thinking blocks."
+        ),
+    )
+    # Phase 3.7: --provider / --model headless overrides (mirror TUI /provider + /model)
+    parser.add_argument(
+        "--provider",
+        metavar="NAME",
+        default=None,
+        help="Provider to use for --task runs (live model.routing switch before run).",
+    )
+    parser.add_argument(
+        "--model",
+        metavar="MODEL_ID",
+        default=None,
+        help="Model id to use for --task runs (live model.routing switch before run).",
+    )
+    # Phase 3.7: --continue — re-run the most recent task (mirror TUI /continue)
+    parser.add_argument(
+        "--continue",
+        dest="continue_task",
+        action="store_true",
+        default=False,
+        help=(
+            "Re-run the most recent user task from the latest saved session. "
+            "Overrides --task."
         ),
     )
     parser.add_argument(
@@ -484,12 +559,72 @@ def _run_system_prompt(workdir: Optional[str], role: str) -> int:
         return 1
 
 
+def _load_last_user_task(workdir: Optional[str]) -> str:
+    """Return the most recent user task for --continue.
+
+    Checks the persisted ``last_plan.json`` ``task`` field first (written by
+    planning_node during real agent runs), then falls back to scanning the
+    newest saved sessions for a user message.
+    """
+    import json as _json
+
+    _wd = workdir or os.getcwd()
+    # 1. Persisted last-plan task record (planning_node writes this per run).
+    try:
+        from src.core.orchestration.graph.nodes.planning_helpers import (
+            get_last_plan_path,
+        )
+
+        _plan_path = get_last_plan_path(workdir=_wd)
+        if _plan_path.exists():
+            _data = _json.loads(_plan_path.read_text(encoding="utf-8"))
+            _task = str((_data or {}).get("task") or "").strip()
+            if _task:
+                return _task
+    except Exception as _p_err:
+        _dbg(f"[src.main] --continue: last_plan read failed: {_p_err}")
+
+    # 2. Fallback: newest sessions with a real user message.
+    try:
+        from src.core.orchestration.session_store import list_sessions, load_session
+
+        for s in list_sessions(limit=10):
+            loaded = load_session(s.session_id)
+            if loaded is None:
+                continue
+            for msg in reversed(loaded.messages):
+                if not isinstance(msg, dict):
+                    continue
+                if str(msg.get("role", "")).lower() in ("user", "human"):
+                    return _flatten_content(msg.get("content", ""))
+    except Exception as _le:
+        _dbg(f"[src.main] --continue: failed to load last task: {_le}")
+    return ""
+
+
+def _flatten_content(content: Any) -> str:
+    """Flatten a message content field (str or list of parts) to text."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for p in content:
+            if isinstance(p, dict):
+                parts.append(p.get("text") or p.get("content") or "")
+            elif isinstance(p, str):
+                parts.append(p)
+        return "\n".join(parts)
+    return str(content)
+
+
 def _run_headless(
     task: str,
     output_format: str,
     workdir: Optional[str],
     dry_run: bool = False,
     resume_session: Optional[str] = None,
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
 ) -> int:
     """Run a single task without the TUI and print the result.
 
@@ -507,6 +642,12 @@ def _run_headless(
         of being executed.
     resume_session:
         Optional session_id or path to session file to resume from.
+    provider:
+        Optional provider override applied via a live ``model.routing`` switch
+        (mirrors the TUI ``/provider`` command).
+    model:
+        Optional model override applied via a live ``model.routing`` switch
+        (mirrors the TUI ``/model`` command).
     """
     import json as _json
 
@@ -557,6 +698,27 @@ def _run_headless(
         from src.core.orchestration.orchestrator import Orchestrator
 
         orch = Orchestrator(working_dir=workdir, dry_run=dry_run)
+
+        # Phase 3.7: apply --provider/--model overrides via a live model.routing
+        # switch (same mechanism the TUI uses for /provider + /model). Publish
+        # after Orchestrator construction so ProviderManager is wired to the bus.
+        if provider or model:
+            try:
+                from src.core.messaging.event_types import ModelRouting
+
+                orch.event_bus.publish_typed(
+                    ModelRouting(
+                        provider=provider or "",
+                        selected=model or "",
+                        available_models=[],
+                    )
+                )
+                _dbg(
+                    f"[src.main] model.routing applied: "
+                    f"provider={provider or ''} model={model or ''}"
+                )
+            except Exception as _mr_err:
+                _dbg(f"[src.main] model.routing apply failed: {_mr_err}")
 
         # P3-1: Headless streaming — subscribe to response.stream_chunk events
         # before run_agent_once() so tokens are printed incrementally.
@@ -655,6 +817,30 @@ def main(argv: Optional[list] = None) -> int:
             role=getattr(args, "role", "operational"),
         )
 
+    # Phase 3.7: Dispatch `session` subcommand
+    if getattr(args, "subcommand", None) == "session":
+        from src.cli.session_cmd import run_session
+
+        return run_session(args)
+
+    # Phase 3.7: Dispatch `status` subcommand
+    if getattr(args, "subcommand", None) == "status":
+        from src.cli.status_cmd import run_status
+
+        return run_status(args)
+
+    # Phase 3.7: Dispatch `mcp` subcommand
+    if getattr(args, "subcommand", None) == "mcp":
+        from src.cli.mcp_cmd import run_mcp
+
+        return run_mcp(args)
+
+    # Phase 3.7: Dispatch `diff` subcommand
+    if getattr(args, "subcommand", None) == "diff":
+        from src.cli.diff_cmd import run_diff
+
+        return run_diff(args)
+
     # UX-2: Dispatch --validate-config flag
     if getattr(args, "validate_config", False):
         return _run_validate_config(getattr(args, "workdir", None))
@@ -749,9 +935,17 @@ def main(argv: Optional[list] = None) -> int:
     except Exception as _pctx_err:
         _dbg(f"[src.main] Could not apply permission context: {_pctx_err}")
 
-    # Non-interactive (headless) mode when --task is supplied or output format is not pretty
-    if args.task or args.output_format in ("json", "raw", "stream"):
-        task = args.task or ""
+    # Non-interactive (headless) mode when --task is supplied, --continue
+    # requests a re-run of the last task, or output format is not pretty
+    if args.task or getattr(args, "continue_task", False) or args.output_format in ("json", "raw", "stream"):
+        task = ""
+        if getattr(args, "continue_task", False):
+            task = _load_last_user_task(getattr(args, "workdir", None))
+            if not task:
+                _err("--continue: no saved session found to re-run (run a --task first).")
+                return 1
+        elif args.task:
+            task = args.task
         if not task:
             task = sys.stdin.read().strip()
         return _run_headless(
@@ -760,6 +954,8 @@ def main(argv: Optional[list] = None) -> int:
             args.workdir,
             dry_run=getattr(args, "dry_run", False),
             resume_session=getattr(args, "resume_session", None),
+            provider=getattr(args, "provider", None),
+            model=getattr(args, "model", None),
         )
 
     try:
