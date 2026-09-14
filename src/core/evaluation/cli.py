@@ -204,6 +204,21 @@ def _build_parser() -> argparse.ArgumentParser:
     sw.add_argument(
         "--baseline", default=None, help="Baseline JSON; exit 1 on regression"
     )
+
+    cp = sub.add_parser("compare", help="Compare multiple models on the same suite")
+    cp.add_argument(
+        "--model",
+        action="append",
+        required=True,
+        metavar="LABEL=FACTORY",
+        help="label=module:callable factory (repeatable)",
+    )
+    cp.add_argument("--scenarios", nargs="*", default=None)
+    cp.add_argument("--category", default=None)
+    cp.add_argument("--difficulty", default=None)
+    cp.add_argument("--samples", type=int, default=1)
+    cp.add_argument("--workdir", default=None)
+    cp.add_argument("--output", default=None, help="Write JSON comparison report here")
     return parser
 
 
@@ -367,6 +382,35 @@ def _cmd_swebench(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_compare(args: argparse.Namespace) -> int:
+    from src.core.evaluation.compare import (
+        _print_comparison,
+        compare_models,
+        run_models,
+        save_comparison,
+    )
+
+    factories: Dict[str, Any] = {}
+    for entry in args.model:
+        label, sep, spec = entry.partition("=")
+        if not sep or not label:
+            label, spec = spec or entry, entry
+        factories[label] = _resolve_agent_factory(spec)
+
+    scenarios = _select_scenarios(
+        names=args.scenarios, category=args.category, difficulty=args.difficulty
+    )
+    runs = run_models(
+        factories, scenarios, samples=args.samples, workdir=args.workdir
+    )
+    comparison = compare_models(runs)
+    _print_comparison(comparison, runs)
+    if args.output:
+        path = save_comparison(args.output, runs, comparison)
+        print(f"Comparison report written to {path}")
+    return 0
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -378,6 +422,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         return _cmd_baseline_save(args)
     if args.command == "swebench":
         return _cmd_swebench(args)
+    if args.command == "compare":
+        return _cmd_compare(args)
     parser.error(f"unknown command {args.command!r}")
     return 2
 

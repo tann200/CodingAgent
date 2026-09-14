@@ -26,7 +26,7 @@ src/
 │   ├── context/             # ContextBuilder, prompt assembly
 │   ├── indexing/            # RepoIndexer, symbol graph, LSP
 │   ├── mcp/                 # MCP client
-│   └── evaluation/          # scenario evaluator, pass@k, CLI runner, regression baselines, SWE-bench harness
+│   └── evaluation/          # scenario evaluator, pass@k, CLI runner, regression baselines, SWE-bench, model comparison
 ├── tools/                   # 60+ @tool-decorated tools
 ├── config/                  # providers.json, agent-brain (SOUL/roles/skills)
 ├── server/                  # HTTP/SSE server
@@ -40,7 +40,7 @@ tui/
     └── ...                  # Screens, components, mixins
 
 tests/
-└── unit/                    # 4,801 tests (pytest; 354 files; +3 fast-path integration)
+└── unit/                    # 4,811 tests (pytest; 355 files; +3 fast-path integration)
     ├── messaging/           # MessageBus + EventBus + adapter tests
     ├── test_event_bus.py
     └── ...
@@ -122,6 +122,7 @@ With conditional routing for: fast-path, overflow, debug, replan, delegation, wa
 - **Graph-state checkpointing (audit 3.4)** — Production tier graphs (`frontier`/`lite`) compile with `checkpointer=_graph_checkpointer()` (shared `JsonlCheckpointSaver` singleton); the legacy full/fast-path graphs stay saver-less. langgraph 1.1.10 only persists `{channel_values, channel_versions, id, ts, updated_channels, v, versions_seen}` — **there is no stored `next`/`versions`**, and `app.invoke(None, thread_cfg)` does NOT re-run pending nodes from a plain on-disk checkpoint (node resume needs in-memory task bookkeeping the loop never serializes). Crash recovery therefore lives at **round granularity**: `inference_loop` writes a JSON-safe state snapshot after each round (`checkpoint_{thread}.state.jsonl`, sanitizer skips non-JSON values, never `LIVE_CHANNELS`) and rehydrates `initial_state` on same-thread re-entry (`--continue` seeds `orch._current_task_id` = original session id in `src/main.py`, minting a `uuid4()` otherwise). Completed tasks purge the thread's files (snapshot + `.jsonl` + `.writes.jsonl`); cancellation/loop-limit paths keep them. Toggle: `CODINGAGENT_GRAPH_CHECKPOINTING` env 0/1 → config `graph_checkpointing` → OFF under pytest.
 - **Evaluation framework (audit 3.2)** — `python -m src.core.evaluation` is the evaluation CLI (`list`/`run`/`baseline-save`); `--agent module:callable` selects a factory returning a fresh agent per attempt; `--samples n` gives pass@k; `--baseline <json>` exits 1 on golden-regression (CI gate). Baseline units are **best-of-n** scenario status (pass if any attempt passed) to avoid false positives from variance. Report/baseline serialization lives in `src/core/evaluation/regression.py`; do not hand-roll a second baseline format.
 - **SWE-bench harness (audit 3.3)** — `src/core/evaluation/swebench.py` loads SWE-bench style instances (JSON/JSONL/dir) and grades a run by extracting the agent patch (`git add -N` + `git diff` so new files are captured), applying `test_patch`, then running FAIL_TO_PASS/PASS_TO_PASS (or an explicit `test_command`) with `-x`. `repo` may be a local path (offline fixtures/tests), `file://`, or `org/repo` GitHub spec (network at grade time). `python -m src.core.evaluation swebench --source … --agent … [--baseline …]` reuses the same regression gate; live runs use the local `python -m pytest` runner, so real-world installs may need `pip install` env shims per instance.
+- **Model comparison (audit 4.5)** — `python -m src.core.evaluation compare --model name=module:callable …` runs the same suite across multiple agent factories (one per provider/model) and emits pass rates, per-scenario winners, ranking, and tie counts. `run_models` gives **each model its own isolated run dir** (`workdir/model_runs/<label>`) so one model's files can't leak into another's grading. `compare_models` accepts both `ScenarioResult`s and SWE-bench style dicts. Reports via `save_comparison`; do not hand-roll a second comparison format.
 
 ### Available Agents
 

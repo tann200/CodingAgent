@@ -241,10 +241,10 @@ However, the system has **critical security orientation issues** (fail-open on s
 ### Missing
 | Gap | Impact |
 |-----|--------|
-| No SWE-bench integration | Cannot compare against industry standard |
-| No formal evaluation framework beyond E2E tests | No systematic quality measurement |
+| SWE-bench integration (3.3, now harness present; live dataset env shims still manual) | Cannot compare against industry standard |
+| Formal evaluation framework (resolved in 3.2) | No systematic quality measurement |
 | No performance benchmarks (1 file only) | Cannot track performance regressions |
-| No model comparison evaluation | Cannot compare provider quality |
+| ~~No model comparison evaluation~~ (resolved in 4.5) | Cannot compare provider quality |
 | No fuzz testing or property-based testing | Edge cases unexplored |
 | No automated CI benchmark tracking | Quality drift undetected |
 
@@ -364,7 +364,7 @@ However, the system has **critical security orientation issues** (fail-open on s
 | 4.2 | Remove duplicate defensive fallbacks | Multiple files | Medium | Eliminates second source of truth |
 | 4.3 | Add fuzz testing / property-based tests | `tests/` | High | Explores edge cases systematically |
 | 4.4 | Add performance benchmark suite | `tests/benchmarks/` | Medium | Tracks performance regressions |
-| 4.5 | Add model comparison evaluation | `src/evaluation/` | Medium | Enables provider quality comparison |
+| ~~4.5~~ | **Add model comparison evaluation (COMPLETED − `compare.py`: `run_models` with per-model isolated run dirs, `compare_models` (per-scenario winners / ranking / ties, accepts ScenarioResult or SWE-bench dicts), `save_comparison` JSON report; `compare` CLI subcommand `--model label=factory …`; 10 new tests; full suite 4,814 passing)** | `src/evaluation/` | Medium | Enables provider quality comparison |
 | 4.6 | Centralize tool constant sets | `src/tools/constants.py` | Low | Single source of truth |
 | 4.7 | Make permission_kind explicit on all tools | All 55 tools in `src/tools/` | Medium | Improves permission precision |
 | 4.8 | Add async VectorStore model loading | `vector_store.py` | Low | Prevents thread blocking |
