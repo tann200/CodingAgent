@@ -330,12 +330,12 @@ CI runs these as fail-closed gates: newly introduced Ruff or mypy errors break t
 
 ## Test Baseline
 
-- **4,814** tests passing (4,811 unit + 3 fast-path integration; see note below)
+- **4,820** tests collecting (4,816 unit pass + 1 unit skip + 3 fast-path integration; see note below)
 - **7** benchmark tests
 - **0** Critical issues
 - **0** High issues
 - CI runs Ruff + mypy as fail-closed gates; the full `tests/unit` suite must pass from a clean environment
 
 > **Authoritative count:** run `pytest tests/unit tests/integration/test_fast_path_graph_e2e.py` — the
-> baseline is the number of tests it collects (currently 4,814). This is the single source of truth for
+> baseline is the number of tests it collects (currently 4,820). This is the single source of truth for
 > all documentation baselines (see PHASE3 item 3.8) and is refreshed whenever the suite gains or loses tests.

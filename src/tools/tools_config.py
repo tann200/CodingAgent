@@ -113,36 +113,12 @@ def get_all_tool_permissions() -> Dict[str, PermissionLevel]:
 # Tool name aliases — normalised transparently in execute_tool()
 # ---------------------------------------------------------------------------
 
-TOOL_ALIASES: Dict[str, str] = {
-    # short read aliases
-    "read": "read_file",
-    "cat": "read_file",
-    "open": "read_file",
-    # short write aliases
-    "write": "write_file",
-    "save": "write_file",
-    # short edit aliases
-    "edit": "edit_file_atomic",
-    "patch": "edit_file_atomic",
-    # list / glob
-    "ls": "list_files",
-    "dir": "list_files",
-    "find": "glob",
-    # search
-    "search": "grep",
-    "rg": "grep",
-    # shell
-    "shell": "bash",
-    "run": "bash",
-    "cmd": "bash",
-    # web
-    "fetch": "read_web_page",
-    "browse": "read_web_page",
-    # fs aliases already registered in registry
-    "fs.read": "read_file",
-    "fs.write": "write_file",
-    "fs.list": "list_files",
-}
+# Tool name aliases — normalised transparently in execute_tool().
+# Canonical definition lives in ``src.tools.constants`` (PHASE-4 item 4.6);
+# re-exported here so existing ``tools_config.TOOL_ALIASES`` callers keep working.
+from src.tools.constants import TOOL_ALIASES as _CANONICAL_TOOL_ALIASES  # noqa: E402
+
+TOOL_ALIASES: Dict[str, str] = dict(_CANONICAL_TOOL_ALIASES)
 
 
 def resolve_tool_alias(name: str) -> str:

@@ -51,6 +51,7 @@ from __future__ import annotations
 
 
 from src.core.messaging.event_types import ToolDoomLoopDetected
+from src.tools.constants import MODIFYING_TOOLS
 import json
 import logging
 from pathlib import Path
@@ -64,18 +65,8 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 #: Tools that require a prior successful read_file call on the target path.
-MODIFYING_TOOLS: Set[str] = {
-    "edit_file",
-    "edit_file_atomic",  # SEC-2: sync with WRITE_TOOLS_REQUIRING_READ in orchestrator
-    "edit_by_line_range",
-    "apply_patch",
-    "multiedit",         # F-88: was missing; also modifies files
-    "write_file",
-    "delete_file",
-    "rename_file",  # SEC-2: sync with WRITE_TOOLS_REQUIRING_READ in orchestrator
-    "ast_rename",  # SEC-2: sync with WRITE_TOOLS_REQUIRING_READ in orchestrator
-    "manage_todo",  # writes TODO.md; enforce read-before-write (TS-5)
-}
+#: Canonical definition lives in ``src.tools.constants`` (PHASE-4 item 4.6);
+#: the name is re-exported here so ``loop_guards.MODIFYING_TOOLS`` still works.
 
 #: Read-only tools subject to the cooldown gate.
 COOLDOWN_READ_TOOLS: Set[str] = {

@@ -66,8 +66,8 @@ CodingAgent/
 │   └── main.py                        # CLI entrypoint
 ├── tui/                               # Textual TUI application
 │   └── src/ui/                        # Screens, bridge, controller, features
-├── tests/                             # 4,814 tests in current baseline (see §13)
-│   ├── unit/                          # 4,811 unit tests (355 files)
+├── tests/                             # 4,820 tests in current baseline (see §13)
+│   ├── unit/                          # 4,816 unit tests (355 files)
 │   ├── integration/                   # Mock + live-provider tests
 │   ├── e2e/                           # End-to-end scenario tests
 │   └── benchmarks/                    # 7 latency benchmarks
@@ -1242,7 +1242,7 @@ diff for user review before the write is committed (F14).
 
 ```
 tests/
-├── unit/           (illustrative layout from an early suite snapshot — current count: 4,811 tests across 355 files)
+├── unit/           (illustrative layout from an early suite snapshot — current count: 4,816 tests across 355 files)
 │   ├── test_model_tiers.py          (24 tests)
 │   ├── test_s0_items.py             (29 tests)
 │   ├── test_bash_security.py

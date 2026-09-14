@@ -5,6 +5,11 @@ These constants are used by ``orchestrator.py``, ``permission_gateway.py``, and
 the circular dependency where ``permission_gateway`` previously had to import back
 from ``orchestrator``.
 
+The canonical tool-classification sets live in ``src.tools.constants`` (see
+PHASE-4 item 4.6); this module re-exports them so existing importers keep
+working, and retains the audit-log helper that lives at the orchestration
+layer.
+
 Phase A of the orchestrator refactoring plan.
 """
 
@@ -16,57 +21,15 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from src.tools.constants import (  # noqa: F401
+    DRY_RUN_BLOCKED_TOOLS,
+    MODIFYING_TOOLS,
+    PERMISSION_REQUIRED_TOOLS,
+    PERM_ORDER,
+    WRITE_TOOLS_REQUIRING_READ,
+)
+
 logger = logging.getLogger(__name__)
-
-# Tools that require the target file to have been read in the current session before writing
-WRITE_TOOLS_REQUIRING_READ: frozenset = frozenset(
-    {
-        "edit_file",
-        "edit_file_atomic",
-        "write_file",
-        "edit_by_line_range",
-        "apply_patch",
-        # Destructive tools — also subject to the _affected_files scope guard
-        "delete_file",
-        "rename_file",
-        "ast_rename",
-        "manage_todo",  # SEC-2: sync with MODIFYING_TOOLS in loop_guards
-    }
-)
-
-# UX-3: Additional tools blocked in dry-run mode beyond WRITE_TOOLS_REQUIRING_READ.
-# These are tools that execute side-effects (bash, network ops) that cannot be
-# trivially previewed.
-DRY_RUN_BLOCKED_TOOLS: frozenset = frozenset(
-    WRITE_TOOLS_REQUIRING_READ
-    | {
-        "bash",
-        "run_bash",
-        "execute_bash",
-        "run_command",
-        "execute_command",
-        "git_commit",
-        "git_push",
-    }
-)
-
-# Ordering of permission levels from least to most permissive.
-# Shared by permission_gateway.py and tool_execution_service.py.
-PERM_ORDER: dict[str, int] = {
-    "read_only": 0,
-    "workspace_write": 1,
-    "danger": 2,
-    "prompt": 3,
-    "allow": 4,
-}
-
-# Tools that always require explicit user approval before execution
-PERMISSION_REQUIRED_TOOLS: frozenset = frozenset(
-    {
-        "delete_file",
-        "run_bash",
-    }
-)
 
 
 MAX_AUDIT_FILE_SIZE: int = 1_048_576  # 1 MiB — rotate when exceeded

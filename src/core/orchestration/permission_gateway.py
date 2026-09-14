@@ -64,6 +64,15 @@ except Exception:
     _PERMISSION_REQUIRED_TOOLS = set()  # type: ignore[assignment]
     _PERM_ORDER = {"read_only": 0, "workspace_write": 1, "danger": 2, "prompt": 3, "allow": 4}  # type: ignore[assignment]
 
+try:
+    from src.tools.constants import (
+        WORKDIR_SAFE_TOOLS as _WORKDIR_SAFE_TOOLS_CANONICAL,
+        FILE_TOOLS as _FILE_TOOLS_CANONICAL,
+    )
+except Exception:
+    _WORKDIR_SAFE_TOOLS_CANONICAL = frozenset()  # type: ignore[assignment]
+    _FILE_TOOLS_CANONICAL = frozenset()  # type: ignore[assignment]
+
 _PermissionLevel: Any = None
 try:
     from src.tools.tools_config import (
@@ -197,9 +206,8 @@ def _primary_arg_for_tool(tool_name: str, args: dict) -> str:
 # Tools that are auto-approved when every path/workdir arg is inside the
 # project working directory.  ask_user is always auto-approved regardless
 # of path because it produces no filesystem side-effects.
-_WORKDIR_SAFE_TOOLS: frozenset[str] = frozenset(
-    {"bash", "run_tests", "run_bash", "ask_user"}
-)
+# Canonical definition: src.tools.constants (PHASE-4 item 4.6).
+_WORKDIR_SAFE_TOOLS: frozenset[str] = _WORKDIR_SAFE_TOOLS_CANONICAL  # type: ignore[assignment]
 
 
 def _path_inside(path_str: str, workdir: "Path") -> bool:  # type: ignore[name-defined]
@@ -613,21 +621,8 @@ class PermissionGateway:
         return None  # no matching rule — proceed to gate5
 
     # File-touching tool names whose path args should be checked for external-directory access.
-    _FILE_TOOLS: frozenset = frozenset(
-        {
-            "read_file",
-            "read_file_chunk",
-            "read_file_bytes",
-            "write_file",
-            "edit_file",
-            "edit_file_atomic",
-            "multiedit",
-            "delete_file",
-            "rename_file",
-            "list_dir",
-            "glob_files",
-        }
-    )
+    # Canonical definition: src.tools.constants (PHASE-4 item 4.6).
+    _FILE_TOOLS: frozenset = _FILE_TOOLS_CANONICAL
 
     def _gate2d_external_directory(
         self, name: str, args: Dict[str, Any]

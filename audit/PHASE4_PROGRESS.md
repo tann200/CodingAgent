@@ -1,7 +1,38 @@
 # Phase 4 — Progress & Next-Task Analysis
 
 **Scope:** Track Phase 4 of the audit roadmap (advanced features, Weeks 9-12), record completed items, and provide a concrete implementation analysis for the next task.
-**Status:** 4.5 complete; pending **4.1, 4.2, 4.3, 4.4, 4.6, 4.7, 4.8**.
+**Status:** 4.5 + 4.6 complete; pending **4.1, 4.2, 4.3, 4.4, 4.7, 4.8**.
+
+---
+
+## Completed — 4.6 Centralize Tool Constant Sets
+
+Removed the second-source-of-truth tool-classification sets scattered across
+`permission_gateway.py`, `loop_guards.py`, `tools_config.py`, and
+`tool_constants.py`.  Audit location was `src/tools/constants.py`.
+
+**Files:**
+- `src/tools/constants.py` (new, canonical) — `WRITE_TOOLS_REQUIRING_READ`,
+  `MODIFYING_TOOLS` (derived: base | `multiedit`), `DRY_RUN_BLOCKED_TOOLS`
+  (write set | exec/git side-effects), `PERMISSION_REQUIRED_TOOLS`,
+  `PERM_ORDER`, `WORKDIR_SAFE_TOOLS`, `FILE_TOOLS`, and the canonical
+  `TOOL_ALIASES` map.  Pure-data leaf: no logging/IO/mutable state.
+- `src/core/orchestration/tool_constants.py` — re-exports `WRITE_TOOLS_REQUIRING_READ`/`MODIFYING_TOOLS`/`DRY_RUN_BLOCKED_TOOLS`/`PERMISSION_REQUIRED_TOOLS`/`PERM_ORDER` from `src.tools.constants`; keeps the `_write_permission_audit` helper (audit layer) local.
+- `src/core/orchestration/loop_guards.py` — `MODIFYING_TOOLS` now imports from
+  `src.tools.constants` (was a private literal with SEC-2 sync comments).
+- `src/core/orchestration/permission_gateway.py` — `_WORKDIR_SAFE_TOOLS`
+  and `PermissionGateway._FILE_TOOLS` now bind the canonical sets.
+- `src/tools/tools_config.py` — `TOOL_ALIASES` re-exported from canonical
+  (shallow-copied dict so runtime mutation stays local to tools_config).
+
+**Verification:** all identity-based tests still pass (`test_compat_reexports`,
+`test_tool_constants`, `test_jsts_support_tool_registry_preretrieval` identity
+assertion, `test_phase2_security_hardening` `delete_file`-not-autoconfirmed).
+Added `TestCanonicalCentralization` (6 tests) pinning the canonical→re-export
+object identity and derivation invariants.
+
+**Gates:** ruff + mypy clean. Full gate suite green — **4,820 tests collecting**
+(4,816 unit pass + 1 unit skip + 3 fast-path integration; exit 0).
 
 ---
 
@@ -32,7 +63,6 @@ Added provider/model comparison to the evaluation framework delivered in Phase 3
 | 4.2 | Remove duplicate defensive fallbacks | Multiple files | Medium | Eliminates second source of truth |
 | 4.3 | Add fuzz testing / property-based tests | `tests/` | High | Explores edge cases systematically |
 | 4.4 | Add performance benchmark suite | `tests/benchmarks/` | Medium | Tracks performance regressions |
-| 4.6 | Centralize tool constant sets | `src/tools/constants.py` | Low | Single source of truth |
 | 4.7 | Make permission_kind explicit on all tools | All 55 tools in `src/tools/` | Medium | Improves permission precision |
 | 4.8 | Add async VectorStore model loading | `vector_store.py` | Low | Prevents thread blocking |
 

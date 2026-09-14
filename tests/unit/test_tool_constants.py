@@ -110,3 +110,58 @@ class TestBackwardCompatReexport:
         assert orch.WRITE_TOOLS_REQUIRING_READ is WRITE_TOOLS_REQUIRING_READ
         assert orch.DRY_RUN_BLOCKED_TOOLS is DRY_RUN_BLOCKED_TOOLS
         assert orch.PERMISSION_REQUIRED_TOOLS is PERMISSION_REQUIRED_TOOLS
+
+
+class TestCanonicalCentralization:
+    """PHASE-4 item 4.6: tool-classification sets are centralized in
+    ``src.tools.constants`` and re-exported (same objects) everywhere.
+    """
+
+    def test_tool_constants_reexports_canonical_src(self):
+        import src.core.orchestration.tool_constants as tkc
+        from src.tools.constants import (
+            DRY_RUN_BLOCKED_TOOLS as C_DRY,
+            MODIFYING_TOOLS as C_MOD,
+            PERMISSION_REQUIRED_TOOLS as C_PERM,
+            WRITE_TOOLS_REQUIRING_READ as C_WRITE,
+        )
+
+        assert tkc.WRITE_TOOLS_REQUIRING_READ is C_WRITE
+        assert tkc.DRY_RUN_BLOCKED_TOOLS is C_DRY
+        assert tkc.PERMISSION_REQUIRED_TOOLS is C_PERM
+        assert tkc.MODIFYING_TOOLS is C_MOD
+
+    def test_workdir_safe_tools_centralized(self):
+        from src.core.orchestration.permission_gateway import (
+            _WORKDIR_SAFE_TOOLS as GATEWAY_WORKDIR_SAFE,
+        )
+        from src.tools.constants import WORKDIR_SAFE_TOOLS as C_SAFE
+
+        assert GATEWAY_WORKDIR_SAFE is C_SAFE
+        assert C_SAFE == {"bash", "run_tests", "run_bash", "ask_user"}
+
+    def test_file_tools_centralized(self):
+        from src.core.orchestration.permission_gateway import PermissionGateway
+        from src.tools.constants import FILE_TOOLS as C_FILE
+
+        assert PermissionGateway._FILE_TOOLS is C_FILE
+        assert "delete_file" in C_FILE
+        assert "write_file" in C_FILE
+
+    def test_tool_aliases_centralized(self):
+        from src.tools.constants import TOOL_ALIASES as C_ALIASES
+        from src.tools.tools_config import TOOL_ALIASES
+
+        assert TOOL_ALIASES == C_ALIASES
+        assert TOOL_ALIASES["run"] == "bash"
+        assert TOOL_ALIASES["ls"] == "list_files"
+
+    def test_modifying_tools_derived_from_write_tools(self):
+        from src.tools.constants import MODIFYING_TOOLS, WRITE_TOOLS_REQUIRING_READ
+
+        assert MODIFYING_TOOLS == WRITE_TOOLS_REQUIRING_READ | {"multiedit"}
+
+    def test_dry_run_superset_of_write_tools(self):
+        from src.tools.constants import DRY_RUN_BLOCKED_TOOLS, WRITE_TOOLS_REQUIRING_READ
+
+        assert WRITE_TOOLS_REQUIRING_READ <= DRY_RUN_BLOCKED_TOOLS
