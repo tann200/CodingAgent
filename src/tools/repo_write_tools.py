@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
-from src.tools._tool import tool
+from src.tools._tool import tool, PermissionKind
 
 # Lazy imports — degrade gracefully when src.core is not available
 _index_repository: Any = None
@@ -29,7 +29,7 @@ except ImportError:
     pass
 
 
-@tool(side_effects=["write"], tags=["coding"])
+@tool(side_effects=["write"], tags=["coding"], permission_kind=PermissionKind.WRITE_FILE)
 def initialize_repo_intelligence(workdir: str) -> Dict[str, Any]:
     """
     Initializes or updates the repository index and vector store.

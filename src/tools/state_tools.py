@@ -10,13 +10,13 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from src.tools._path_utils import safe_resolve as _safe_resolve
-from src.tools._tool import tool
+from src.tools._tool import tool, PermissionKind
 from src.tools.tools_config import agent_context_path
 
 logger = logging.getLogger(__name__)
 
 
-@tool(side_effects=["write"], tags=["planning"])
+@tool(side_effects=["write"], tags=["planning"], permission_kind=PermissionKind.WRITE_FILE)
 def create_state_checkpoint(
     current_task: str,
     tool_call_history: List[Dict[str, Any]],
@@ -140,7 +140,7 @@ def create_state_checkpoint(
         return {"status": "error", "error": str(e)}
 
 
-@tool(tags=["planning"])
+@tool(tags=["planning"], permission_kind=PermissionKind.READ_FILE)
 def list_checkpoints(workdir: Optional[str] = None) -> Dict[str, Any]:
     """List all available state checkpoints."""
     wd = Path(workdir) if workdir else Path.cwd()
@@ -166,7 +166,7 @@ def list_checkpoints(workdir: Optional[str] = None) -> Dict[str, Any]:
     return {"status": "ok", "checkpoints": checkpoints}
 
 
-@tool(tags=["planning"])
+@tool(tags=["planning"], permission_kind=PermissionKind.WRITE_FILE)
 def restore_state_checkpoint(
     checkpoint_id: str,
     workdir: Optional[str] = None,
@@ -209,7 +209,7 @@ def restore_state_checkpoint(
         return {"status": "error", "error": str(e)}
 
 
-@tool(tags=["review"])
+@tool(tags=["review"], permission_kind=PermissionKind.READ_FILE)
 def diff_state(
     checkpoint_id1: str,
     checkpoint_id2: str,
@@ -257,7 +257,7 @@ def diff_state(
         return {"status": "error", "error": str(e)}
 
 
-@tool(tags=["coding"])
+@tool(tags=["coding"], permission_kind=PermissionKind.READ_FILE)
 def batched_file_read(
     paths: List[str],
     workdir: Optional[str] = None,
@@ -300,7 +300,7 @@ def batched_file_read(
     return {"status": "ok", "files": results, "count": len(paths)}
 
 
-@tool(tags=["coding"])
+@tool(tags=["coding"], permission_kind=PermissionKind.READ_FILE)
 def multi_file_summary(
     paths: List[str],
     workdir: Optional[str] = None,

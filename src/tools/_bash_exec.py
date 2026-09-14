@@ -30,7 +30,7 @@ from src.tools._security import (
     TAR_EXTRACT_FLAGS,
     TEST_COMPILE_COMMANDS,
 )
-from src.tools._tool import tool
+from src.tools._tool import tool, PermissionKind
 from src.tools.bash_security import analyze_bash_command, BashRiskLevel
 from src.tools import sandbox as _sandbox
 from src.tools._approval import is_tier3 as _is_tier3
@@ -334,7 +334,7 @@ def _matches_restricted_command(cmd_parts: list[str], command: str) -> bool:
     return any(prefix in RESTRICTED_COMMANDS for prefix in prefixes)
 
 
-@tool(side_effects=["execute"], tags=["coding"])
+@tool(side_effects=["execute"], tags=["coding"], permission_kind=PermissionKind.EXECUTE_BASH)
 def bash(
     command: str,
     workdir: object = _WORKDIR_DEFAULT,
@@ -569,7 +569,11 @@ def bash(
         return {"status": "error", "error": f"OS error: {e}"}
 
 
-@tool(side_effects=["execute"], tags=["coding", "debug", "review", "planning"])
+@tool(
+    side_effects=["execute"],
+    tags=["coding", "debug", "review", "planning"],
+    permission_kind=PermissionKind.EXECUTE_BASH,
+)
 def bash_readonly(
     command: str,
     workdir: object = _WORKDIR_DEFAULT,
@@ -735,7 +739,7 @@ def bash_readonly(
         return {"status": "error", "error": f"OS error: {e}"}
 
 
-@tool(tags=["coding"])
+@tool(tags=["coding"], permission_kind=PermissionKind.NONE)
 def check_background_task(
     task_id: str, workdir: object = _WORKDIR_DEFAULT
 ) -> Dict[str, Any]:  # type: ignore[assignment]

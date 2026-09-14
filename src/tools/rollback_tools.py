@@ -24,7 +24,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional
 
-from src.tools._tool import tool
+from src.tools._tool import tool, PermissionKind
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +51,7 @@ def _get_orchestrator() -> Optional[Any]:
         return None
 
 
-@tool(tags=["filesystem", "safety"])
+@tool(tags=["filesystem", "safety"], permission_kind=PermissionKind.WRITE_FILE)
 def revert_last_tool() -> Dict[str, Any]:
     """Revert the filesystem changes made by the last write tool call.
 
@@ -107,7 +107,7 @@ def revert_last_tool() -> Dict[str, Any]:
     return result
 
 
-@tool(tags=["filesystem", "safety"])
+@tool(tags=["filesystem", "safety"], permission_kind=PermissionKind.READ_FILE)
 def list_snapshots() -> Dict[str, Any]:
     """List all available filesystem snapshots that can be reverted.
 

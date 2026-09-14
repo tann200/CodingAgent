@@ -502,7 +502,7 @@ def summarize_repo(workdir: str = ".") -> Dict[str, Any]:
 # ---- repo_tools: read-only tools ----
 
 
-@tool(tags=["coding"])
+@tool(tags=["coding"], permission_kind=PermissionKind.READ_FILE)
 def find_files(pattern: str, workdir: str) -> Dict[str, Any]:
     """Find files in the repository matching a glob pattern.
 
@@ -553,7 +553,7 @@ def find_files(pattern: str, workdir: str) -> Dict[str, Any]:
         return {"status": "error", "error": str(e)}
 
 
-@tool(tags=["coding"])
+@tool(tags=["coding"], permission_kind=PermissionKind.READ_FILE)
 def search_code(query: str, workdir: str) -> Dict[str, Any]:
     """
     Performs a semantic search over the codebase.
@@ -572,7 +572,7 @@ def search_code(query: str, workdir: str) -> Dict[str, Any]:
         return {"status": "error", "error": str(e)}
 
 
-@tool(tags=["coding"])
+@tool(tags=["coding"], permission_kind=PermissionKind.LSP_READ)
 def find_symbol(name: str, workdir: str) -> Dict[str, Any]:
     """
     Finds a symbol (class or function) by its exact name.
@@ -593,7 +593,7 @@ def find_symbol(name: str, workdir: str) -> Dict[str, Any]:
     return {"status": "ok", "results": results}
 
 
-@tool(tags=["coding"])
+@tool(tags=["coding"], permission_kind=PermissionKind.LSP_READ)
 def find_references(name: str, workdir: str) -> Dict[str, Any]:
     """
     Find references to a symbol by scanning indexed files for occurrences of the symbol name.
@@ -642,7 +642,7 @@ def find_references(name: str, workdir: str) -> Dict[str, Any]:
 # ---- repo_analysis_tools ----
 
 
-@tool(tags=["review"])
+@tool(tags=["review"], permission_kind=PermissionKind.READ_FILE)
 def analyze_repository(workdir: str) -> Dict[str, Any]:
     """
     Analyzes the repository across multiple languages (Python, JS/TS, Go, Rust)

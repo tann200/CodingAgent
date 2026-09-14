@@ -28,7 +28,7 @@ import logging
 import threading
 from typing import Any, Dict, List, Optional
 
-from src.tools._tool import tool
+from src.tools._tool import tool, PermissionKind
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +45,7 @@ def _get_orchestrator() -> Optional[Any]:
     return getattr(_batch_context, "orchestrator", None)
 
 
-@tool(tags=["coding", "planning", "debug", "review"])
+@tool(tags=["coding", "planning", "debug", "review"], permission_kind=PermissionKind.NONE)
 def batch(calls: List[Dict[str, Any]]) -> Dict[str, Any]:
     """Execute multiple tool calls in parallel and return all results.
 

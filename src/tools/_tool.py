@@ -106,6 +106,10 @@ class ToolDefinition:
     # TASK-3: explicit semantic permission category (supercedes side_effects
     # for permission-policy evaluation).
     permission_kind: PermissionKind = PermissionKind.NONE
+    # PHASE-4 item 4.7: True when permission_kind was passed explicitly to the
+    # @tool decorator (as opposed to the side_effects-implied default).  All
+    # built-in tools declare it explicitly; contract tests enforce that.
+    permission_kind_explicit: bool = False
 
     def to_openai_schema(self) -> dict:
         """Return an OpenAI function-calling schema dict for this tool."""
@@ -324,6 +328,7 @@ def tool(
             side_effects=list(side_effects or []),
             tags=list(tags or []),
             permission_kind=_perm,
+            permission_kind_explicit=permission_kind is not None,
         )
         setattr(fn, TOOL_ATTR, defn)
         return fn

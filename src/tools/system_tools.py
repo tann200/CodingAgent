@@ -6,7 +6,7 @@ import re
 
 from src.tools._path_utils import safe_resolve as _safe_resolve
 from src.tools._result import ToolResult, ErrorCode
-from src.tools._tool import tool
+from src.tools._tool import tool, PermissionKind
 
 
 def _parse_grep_output(raw: str) -> list:
@@ -32,7 +32,7 @@ def _parse_grep_output(raw: str) -> list:
     return results
 
 
-@tool(tags=["coding"])
+@tool(tags=["coding"], permission_kind=PermissionKind.READ_FILE)
 def grep(
     pattern: str,
     path: str = ".",
@@ -146,7 +146,7 @@ def grep(
         return ToolResult.failure(str(e)).to_dict()
 
 
-@tool(tags=["coding"])
+@tool(tags=["coding"], permission_kind=PermissionKind.GIT_READ)
 def get_git_diff() -> Dict[str, Any]:
     """
     DEPRECATED: Use git_diff instead. Gets the git diff of the current repository.
@@ -179,7 +179,7 @@ def get_git_diff() -> Dict[str, Any]:
         return {"status": "error", "error": str(e)}
 
 
-@tool(tags=["coding"])
+@tool(tags=["coding"], permission_kind=PermissionKind.READ_FILE)
 def summarize_structure(
     path: str = ".", workdir: Optional[Path] = None, max_entries: int = 50
 ) -> Dict[str, Any]:
@@ -233,7 +233,7 @@ def summarize_structure(
         return {"status": "error", "error": str(e)}
 
 
-@tool(tags=["coding"])
+@tool(tags=["coding"], permission_kind=PermissionKind.READ_FILE)
 def summarize_structure_detailed(workdir: Any = None) -> Dict[str, Any]:
     """Provide a high-level summary of the workspace structure."""
     if workdir is None:

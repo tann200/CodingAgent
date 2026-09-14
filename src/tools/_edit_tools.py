@@ -57,7 +57,7 @@ def _invalidate_context_cache(path: Path) -> None:
         pass
 
 from src.tools._path_utils import safe_resolve as _safe_resolve  # noqa: E402
-from src.tools._tool import tool  # noqa: E402
+from src.tools._tool import tool, PermissionKind  # noqa: E402
 from src.tools._diff_gate import (  # noqa: E402
     _publish_diff_preview,
     register_preview_gate,
@@ -232,7 +232,7 @@ def _fuzzy_find(content: str, target: str) -> Optional[str]:
     return None
 
 
-@tool(side_effects=["write"], tags=["coding"])
+@tool(side_effects=["write"], tags=["coding"], permission_kind=PermissionKind.WRITE_FILE)
 def edit_file(
     path: str,
     patch: str,
@@ -324,7 +324,7 @@ def edit_file(
     return result
 
 
-@tool(side_effects=["write"], tags=["coding"])
+@tool(side_effects=["write"], tags=["coding"], permission_kind=PermissionKind.WRITE_FILE)
 def edit_by_line_range(
     path: str,
     start_line: int,
@@ -437,6 +437,7 @@ def edit_by_line_range(
 @tool(
     side_effects=["write"],
     tags=["coding"],
+    permission_kind=PermissionKind.WRITE_FILE,
     description=(
         "edit_file_atomic(path, old_string, new_string) -> "
         "Replace old_string (must appear exactly once) with new_string. "
@@ -603,6 +604,7 @@ def edit_file_atomic(
 @tool(
     side_effects=["write"],
     tags=["coding"],
+    permission_kind=PermissionKind.WRITE_FILE,
     description=(
         "multiedit(path, edits) -> Apply multiple old_string→new_string edits to a single "
         "file atomically.  All replacements are validated in memory first; the file is "

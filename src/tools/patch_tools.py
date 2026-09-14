@@ -4,7 +4,7 @@ import difflib
 
 from src.tools import file_tools
 from src.tools._path_utils import safe_resolve as _safe_resolve
-from src.tools._tool import tool
+from src.tools._tool import tool, PermissionKind
 
 
 def generate_unified_diff(
@@ -42,7 +42,7 @@ def generate_unified_diff(
     return "".join(diff_lines)
 
 
-@tool(tags=["coding"])
+@tool(tags=["coding"], permission_kind=PermissionKind.READ_FILE)
 def generate_patch(
     path: str, new_content: str, workdir: Optional[Path] = None
 ) -> Dict[str, Any]:
@@ -70,7 +70,7 @@ def generate_patch(
         return {"status": "error", "error": str(e)}
 
 
-@tool(side_effects=["write"], tags=["coding"])
+@tool(side_effects=["write"], tags=["coding"], permission_kind=PermissionKind.WRITE_FILE)
 def apply_patch(
     path: str, patch: str, workdir: Optional[Path] = None
 ) -> Dict[str, Any]:
@@ -86,7 +86,7 @@ def apply_patch(
         return {"status": "error", "error": str(e)}
 
 
-@tool(side_effects=["write"], tags=["coding"])
+@tool(side_effects=["write"], tags=["coding"], permission_kind=PermissionKind.WRITE_FILE)
 def edit_code_block(
     path: str, block_to_find: str, new_block: str, workdir: str
 ) -> Dict[str, Any]:

@@ -14,14 +14,14 @@ import logging
 from pathlib import Path
 from typing import Any, Dict
 
-from src.tools._tool import tool
+from src.tools._tool import tool, PermissionKind
 
 logger = logging.getLogger(__name__)
 
 _SKILLS_DIR = Path(__file__).parent.parent / "config" / "agent-brain" / "skills"
 
 
-@tool(tags=["coding", "planning", "debug", "review"])
+@tool(tags=["coding", "planning", "debug", "review"], permission_kind=PermissionKind.READ_FILE)
 def load_skill(name: str) -> Dict[str, Any]:
     """Load a named skill (prompt template) from the skills directory.
 
@@ -74,7 +74,7 @@ def load_skill(name: str) -> Dict[str, Any]:
         return {"status": "error", "error": f"Failed to read skill '{name}': {exc}"}
 
 
-@tool(tags=["coding", "planning", "debug", "review"])
+@tool(tags=["coding", "planning", "debug", "review"], permission_kind=PermissionKind.NONE)
 def list_skills() -> Dict[str, Any]:
     """List all available skills in the skills directory.
 

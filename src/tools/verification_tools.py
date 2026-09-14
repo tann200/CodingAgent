@@ -698,7 +698,7 @@ def syntax_check(workdir: str, timeout_secs: float = 30.0) -> Dict[str, Any]:
         return {"status": "error", "error": str(e)}
 
 
-@tool(side_effects=["execute"], tags=["coding"])
+@tool(side_effects=["execute"], tags=["coding"], permission_kind=PermissionKind.EXECUTE_BASH)
 def run_js_tests(
     workdir: str, test_files: Optional[List[str]] = None
 ) -> Dict[str, Any]:
@@ -772,7 +772,7 @@ def run_js_tests(
         return {"status": "error", "error": str(e)}
 
 
-@tool(side_effects=["execute"], tags=["coding"])
+@tool(side_effects=["execute"], tags=["coding"], permission_kind=PermissionKind.EXECUTE_BASH)
 def run_ts_check(workdir: str) -> Dict[str, Any]:
     """Run TypeScript type-checking via tsc --noEmit.
 
@@ -832,7 +832,7 @@ def _parse_tsc_output(output: str) -> List[Dict[str, Any]]:
     return errors
 
 
-@tool(side_effects=["execute"], tags=["coding"])
+@tool(side_effects=["execute"], tags=["coding"], permission_kind=PermissionKind.EXECUTE_BASH)
 def run_eslint(workdir: str, paths: Optional[List[str]] = None) -> Dict[str, Any]:
     """Run ESLint on JS/TypeScript files.
 
@@ -977,7 +977,7 @@ def format_file(path: str) -> Dict[str, Any]:
 
 
 # Alias for backwards compatibility
-@tool(side_effects=["execute"], tags=["coding"])
+@tool(side_effects=["execute"], tags=["coding"], permission_kind=PermissionKind.EXECUTE_BASH)
 def run_tests_legacy(workdir: str) -> Dict[str, Any]:
     """Legacy wrapper that returns simple output (for backwards compatibility)."""
     result = run_tests(workdir)

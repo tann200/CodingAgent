@@ -15,7 +15,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from src.tools._tool import tool
+from src.tools._tool import tool, PermissionKind
 from src.tools.file_lock import FileLock as _FileLock
 from src.tools.tools_config import agent_context_path
 
@@ -377,7 +377,7 @@ def notify_rbw(workdir: str, orchestrator: Optional[Any] = None) -> None:
         logger.exception("notify_rbw failed")
 
 
-@tool(side_effects=["write"], tags=["planning"])
+@tool(side_effects=["write"], tags=["planning"], permission_kind=PermissionKind.WRITE_FILE)
 def manage_todo(
     action: str,
     workdir: str,

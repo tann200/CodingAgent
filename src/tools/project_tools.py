@@ -11,7 +11,7 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from src.tools._tool import tool
+from src.tools._tool import tool, PermissionKind
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +24,7 @@ def _safe_read(path: Path, max_chars: int = 50_000) -> str:
         return ""
 
 
-@tool(tags=["planning", "coding"])
+@tool(tags=["planning", "coding"], permission_kind=PermissionKind.READ_FILE)
 def fingerprint_tech_stack(workdir: Optional[str] = None) -> Dict[str, Any]:
     """Detect languages, frameworks, and tools present in the workspace.
 

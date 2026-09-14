@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from src.tools._path_utils import safe_resolve as _safe_resolve
-from src.tools._tool import tool
+from src.tools._tool import tool, PermissionKind
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +23,7 @@ def _is_python_file(path: Path) -> bool:
     return path.suffix.lower() == ".py"
 
 
-@tool(side_effects=["write"], tags=["coding"])
+@tool(side_effects=["write"], tags=["coding"], permission_kind=PermissionKind.LSP_WRITE)
 def ast_rename(
     path: str,
     old_name: str,
@@ -147,7 +147,7 @@ def ast_rename(
     }
 
 
-@tool(tags=["coding"])
+@tool(tags=["coding"], permission_kind=PermissionKind.LSP_READ)
 def ast_list_symbols(
     path: str,
     symbol_type: str = "any",

@@ -13,14 +13,14 @@ import threading
 from typing import Any, Dict, List, Literal, Optional
 
 from src.core.orchestration import event_bus as _event_bus_module
-from src.tools._tool import tool
+from src.tools._tool import tool, PermissionKind
 
 logger = logging.getLogger(__name__)
 
 _USER_RESPONSE_TIMEOUT = 300  # 5 minutes
 
 
-@tool(tags=["coding", "planning", "debug", "review"])
+@tool(tags=["coding", "planning", "debug", "review"], permission_kind=PermissionKind.NONE)
 def ask_user(question: str, choices: Optional[List[str]] = None) -> Dict[str, Any]:
     """Pause and ask the user a clarifying question.
 
@@ -115,7 +115,7 @@ def ask_user(question: str, choices: Optional[List[str]] = None) -> Dict[str, An
                 pass
 
 
-@tool(tags=["planning"])
+@tool(tags=["planning"], permission_kind=PermissionKind.PLAN)
 def submit_plan_for_review(
     plan_summary: str,
     plan_steps: list,
@@ -189,7 +189,7 @@ def submit_plan_for_review(
 # ---------------------------------------------------------------------------
 
 
-@tool(tags=["communication"])
+@tool(tags=["communication"], permission_kind=PermissionKind.NONE)
 def send_user_message(
     message: str,
     attachments: Optional[List[str]] = None,

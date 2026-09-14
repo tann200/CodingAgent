@@ -1,7 +1,51 @@
 # Phase 4 — Progress & Next-Task Analysis
 
 **Scope:** Track Phase 4 of the audit roadmap (advanced features, Weeks 9-12), record completed items, and provide a concrete implementation analysis for the next task.
-**Status:** 4.5 + 4.6 + 4.8 complete; pending **4.1, 4.2, 4.3, 4.4, 4.7**.
+**Status:** 4.5 + 4.6 + 4.7 + 4.8 complete; pending **4.1, 4.2, 4.3, 4.4**.
+
+---
+
+## Completed — 4.7 Explicit permission_kind on All Tools
+
+Every built-in `@tool` now declares its semantic permission category at
+definition time instead of relying on the `side_effects`-implied default, so
+`ToolRegistry.get_permission_kind()` and the permission gateway resolve precise
+permission-table kinds.
+
+**Files:**
+- 15 tool modules updated (33 decorators): `_bash_exec` (`bash`,
+  `bash_readonly` → EXECUTE_BASH, `check_background_task` → NONE),
+  `_edit_tools` (write tools → WRITE_FILE), `ast_tools` (`ast_rename` →
+  LSP_WRITE, `ast_list_symbols` → LSP_READ), `batch_tools` (batch →
+  NONE), `interaction_tools` (`ask_user`/`send_user_message` → NONE,
+  `submit_plan_for_review` → PLAN), `patch_tools` (`apply_patch`/
+  `edit_code_block` → WRITE_FILE, `generate_patch` → READ_FILE),
+  `project_tools` (README_FINGERPRINT → READ_FILE), `repo_read_tools`
+  (`find_files`/`search_code`/`analyze_repository` → READ_FILE,
+  `find_symbol`/`find_references` → LSP_READ), `repo_write_tools` →
+  WRITE_FILE, `rollback_tools` (`revert_last_tool` → WRITE_FILE,
+  `list_snapshots` → READ_FILE), `skill_tools` (`load_skill` → READ_FILE,
+  `list_skills` → NONE), `state_tools` (write → WRITE_FILE, reads →
+  READ_FILE), `system_tools` (`get_git_diff` → GIT_READ, others →
+  READ_FILE), `todo_tools` → WRITE_FILE, `verification_tools`
+  (`run_js_tests`/`run_ts_check`/`run_eslint`/`run_tests_legacy` →
+  EXECUTE_BASH).  LSP dict-schema tools already carried plain-string
+  `permission_kind`.
+- `src/tools/_tool.py` — new `ToolDefinition.permission_kind_explicit: bool`
+  (True when `permission_kind=` was passed to `@tool`), set in the decorator.
+- `tests/unit/test_tool_permission_kind_explicit.py` (new, 4 tests) —
+  exhaustive registry scan asserting every decorated builtin is explicit
+  (aliases excluded) and contract spot-checks; decends the `side_effects`
+  inference path (implicit stays False).
+
+**Design notes:**
+- `permission_kind` is the semantic category (its orthogonal to the runtime
+  `PermissionLevel` granularity in `tools_config.TOOL_PERMISSIONS`).
+- The exhaustive test fails if a future `@tool` is added without explicit
+  `permission_kind` — the audit invariant is enforced, not just documented.
+
+**Gates:** ruff + mypy clean. Full gate suite green — **4,830 tests collecting**
+(4,826 unit pass + 1 unit skip + 3 fast-path integration; exit 0).
 
 ---
 
@@ -102,6 +146,5 @@ Added provider/model comparison to the evaluation framework delivered in Phase 3
 | 4.2 | Remove duplicate defensive fallbacks | Multiple files | Medium | Eliminates second source of truth |
 | 4.3 | Add fuzz testing / property-based tests | `tests/` | High | Explores edge cases systematically |
 | 4.4 | Add performance benchmark suite | `tests/benchmarks/` | Medium | Tracks performance regressions |
-| 4.7 | Make permission_kind explicit on all tools | All 55 tools in `src/tools/` | Medium | Improves permission precision |
 
-Suggested next: **4.7** permission_kind on all tools (medium, self-contained, improves permission precision), then **4.2** remove duplicate defensive fallbacks (the 4.6 centralization aligned several second sources of truth already), leaving the High-complexity items (4.3 fuzzing, 4.4 performance benchmarks, 4.1 perception refactor) for focused sessions. The evaluation framework (3.2/3.3/4.5) is available to benchmark any of these changes.
+Suggested next: **4.2** remove duplicate defensive fallbacks (medium; the 4.6 centralization already aligned several second sources of truth, and any permission/toollist duplication now has a canonical home to collapse into), then a High-complexity item or the remaining **4.1/4.3/4.4**. The evaluation framework (3.2/3.3/4.5) is available to benchmark any of these changes.
