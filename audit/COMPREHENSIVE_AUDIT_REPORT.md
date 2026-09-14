@@ -367,7 +367,7 @@ However, the system has **critical security orientation issues** (fail-open on s
 | ~~4.5~~ | **Add model comparison evaluation (COMPLETED − `compare.py`: `run_models` with per-model isolated run dirs, `compare_models` (per-scenario winners / ranking / ties, accepts ScenarioResult or SWE-bench dicts), `save_comparison` JSON report; `compare` CLI subcommand `--model label=factory …`; 10 new tests)** | `src/evaluation/` | Medium | Enables provider quality comparison |
 | ~~4.6~~ | **Centralize tool constant sets (COMPLETED − canonical `src/tools/constants.py`: `WRITE_TOOLS_REQUIRING_READ`/`MODIFYING_TOOLS`/`DRY_RUN_BLOCKED_TOOLS`/`PERMISSION_REQUIRED_TOOLS`/`PERM_ORDER`/`WORKDIR_SAFE_TOOLS`/`FILE_TOOLS`/`TOOL_ALIASES`; `tool_constants.py`, `loop_guards.py`, `permission_gateway.py`, `tools_config.py` re-export; object-identity tests + `TestCanonicalCentralization` (6 tests); suite now 4,820 collecting)** | `src/tools/constants.py` | Low | Single source of truth |
 | 4.7 | Make permission_kind explicit on all tools | All 55 tools in `src/tools/` | Medium | Improves permission precision |
-| 4.8 | Add async VectorStore model loading | `vector_store.py` | Low | Prevents thread blocking |
+| ~~4.8~~ | **Add async VectorStore model loading (COMPLETED − single-flight model loader (`_ST_MODEL_LOCK`); non-blocking `_get_st_model_ready()`; daemon-thread background preload on `VectorStore.__init__`; event-loop-safe `get_st_model_async()` via `asyncio.to_thread`; VectorStore `asearch`/`aadd_memory`/`asearch_memories`/`aindex_code` async wrappers; search/encode hot paths degrade to stub instead of blocking; 6 new tests; suite now 4,826 collecting)** | `vector_store.py` | Low | Prevents thread blocking |
 
 ---
 

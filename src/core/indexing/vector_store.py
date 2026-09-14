@@ -9,10 +9,20 @@ used automatically for real semantic search; otherwise a fast SHA-256 stub is
 used as a graceful fallback.
 
 v2 Phase 3: RAM-optimized embedding cache for 64GB systems.
+
+v3 (PHASE-4 item 4.8): async / background model loading.  The
+sentence-transformers model is now loaded single-flight (concurrent callers
+share one load) and prefetched in a daemon thread the moment a VectorStore is
+constructed, so the first encode/search usually finds the model already warm
+instead of blocking the calling thread.  ``get_st_model_async()`` and the
+``a*`` VectorStore methods (``asearch``/``aadd_memory``/…) expose an event-loop
+safe path via ``asyncio.to_thread``.
 """
 
 from __future__ import annotations
 
+import asyncio
+import threading
 from typing import Any, Dict, List
 import hashlib
 import logging
@@ -31,32 +41,84 @@ logger = logging.getLogger(__name__)
 
 _ST_MODEL: Any = None  # cached SentenceTransformer instance or None
 _ST_AVAILABLE: bool | None = None  # None = not yet probed
+_ST_MODEL_LOCK = threading.Lock()
+_PRELOAD_STARTED = False
+
+
+def _load_st_model() -> Any:
+    """Load (or reuse) the SentenceTransformer model single-flight.
+
+    Concurrent callers share one load via ``_ST_MODEL_LOCK``; the expensive
+    model instantiation happens at most once per process.  This call may block
+    the calling thread (network/disk + CPU init), so hot paths should prefer
+    :func:`_get_st_model_ready` and async callers should use
+    :func:`get_st_model_async`.
+
+    Uses 'all-MiniLM-L6-v2' — a small (80 MB), fast, OS/stack agnostic model
+    that runs on CPU without a GPU.
+    """
+    global _ST_MODEL, _ST_AVAILABLE
+    with _ST_MODEL_LOCK:
+        if _ST_AVAILABLE is not None:
+            return _ST_MODEL
+        try:
+            from sentence_transformers import SentenceTransformer  # type: ignore[import]
+            _ST_MODEL = SentenceTransformer("all-MiniLM-L6-v2")
+            _ST_AVAILABLE = True
+            logger.info("VectorStore: sentence-transformers loaded (all-MiniLM-L6-v2)")
+        except Exception as exc:
+            _ST_AVAILABLE = False
+            logger.warning(
+                "VectorStore: sentence-transformers unavailable (%s) — "
+                "falling back to SHA-256 stub. Semantic search is DISABLED. "
+                "Install sentence-transformers for meaningful retrieval.",
+                exc,
+            )
+        return _ST_MODEL
 
 
 def _get_st_model() -> Any:
-    """Return a SentenceTransformer model on first call; None if unavailable.
+    """Return a SentenceTransformer model (blocking load); None if unavailable."""
+    return _load_st_model()
 
-    Uses 'all-MiniLM-L6-v2' — a small (80 MB), fast, OS/stack agnostic model
-    that runs on CPU without a GPU.  The result is module-level cached so the
-    expensive load happens at most once per process.
+
+def _get_st_model_ready() -> Any:
+    """Non-blocking: return the already-loaded model or None.
+
+    Never triggers a load, so callers can degrade gracefully instead of
+    blocking a thread on the (potentially slow) first model download/init.
     """
-    global _ST_MODEL, _ST_AVAILABLE
     if _ST_AVAILABLE is not None:
         return _ST_MODEL
-    try:
-        from sentence_transformers import SentenceTransformer  # type: ignore[import]
-        _ST_MODEL = SentenceTransformer("all-MiniLM-L6-v2")
-        _ST_AVAILABLE = True
-        logger.info("VectorStore: sentence-transformers loaded (all-MiniLM-L6-v2)")
-    except Exception as exc:
-        _ST_AVAILABLE = False
-        logger.warning(
-            "VectorStore: sentence-transformers unavailable (%s) — "
-            "falling back to SHA-256 stub. Semantic search is DISABLED. "
-            "Install sentence-transformers for meaningful retrieval.",
-            exc,
-        )
-    return _ST_MODEL
+    return None
+
+
+def _preload_st_model() -> None:
+    """Start loading the model in a daemon thread once.
+
+    Idempotent; safe to call from every ``VectorStore`` instantiation.  By the
+    time the first encode/search runs, the model is usually already warm, so
+    the calling thread never blocks on the load.
+    """
+    global _PRELOAD_STARTED
+    with _ST_MODEL_LOCK:
+        if _PRELOAD_STARTED:
+            return
+        _PRELOAD_STARTED = True
+    threading.Thread(
+        target=_load_st_model, name="vector-store-st-model", daemon=True
+    ).start()
+
+
+async def get_st_model_async() -> Any:
+    """Asynchronously load the SentenceTransformer model without blocking the
+    event loop (PHASE-4 item 4.8).
+
+    Runs the blocking instantiation in a worker thread via
+    ``asyncio.to_thread``; the underlying load is single-flight, so concurrent
+    awaits share one model.
+    """
+    return await asyncio.to_thread(_load_st_model)
 
 try:
     from src.core.io_utils import atomic_write_json as _atomic_write_json
@@ -68,15 +130,14 @@ except Exception:
 # A2 FIX: protect with a threading.Lock so concurrent executor threads (which
 # call _get_cached_embedding via _DummyModel.encode) don't race on the
 # OrderedDict's move_to_end + __setitem__ sequence.
-import threading as _threading  # noqa: E402
 _EMBEDDING_CACHE: OrderedDict[str, List[float]] = OrderedDict()
 _EMBEDDING_CACHE_LIMIT = 10000  # Max embeddings to cache
-_EMBEDDING_CACHE_LOCK = _threading.Lock()
+_EMBEDDING_CACHE_LOCK = threading.Lock()
 
 # Episodic memory persistence guard (Mem-4): serializes add_memory so
 # concurrent writes (e.g. parallel executor threads) never interleave the
 # append/rotate read-modify-write sequence.
-_MEMORY_LOCK = _threading.Lock()
+_MEMORY_LOCK = threading.Lock()
 _MEMORY_MAX_RECORDS = 200  # rotation cap: keep newest N records
 _MEMORY_SEARCH_MAX = 500  # search cap: consider at most the newest N records
 
@@ -143,8 +204,10 @@ class _DummyModel:
     def encode(self, texts: Any) -> List[List[float]]:
         if isinstance(texts, str):
             texts = [texts]
-        # Prefer real sentence-transformers model when available
-        st = _get_st_model()
+        # Prefer real sentence-transformers model when available. Non-blocking:
+        # if the background preload hasn't finished yet, degrade to the stub
+        # rather than blocking the calling thread on the model init.
+        st = _get_st_model_ready()
         if st is not None:
             try:
                 embeddings = st.encode(list(texts), convert_to_numpy=False)
@@ -168,10 +231,37 @@ class VectorStore:
     def __init__(self, workdir: str) -> None:
         self.workdir = workdir
         self._model = _DummyModel()
+        # PHASE-4 item 4.8: kick off the sentence-transformers load in a daemon
+        # thread so the first encode/search doesn't block the calling thread.
+        _preload_st_model()
 
     @property
     def model(self) -> _DummyModel:
         return self._model
+
+    # ------------------------------------------------------------------
+    # Async variants (PHASE-4 item 4.8) — never block the event loop; run
+    # the blocking bodies in worker threads via asyncio.to_thread.
+    # ------------------------------------------------------------------
+    async def asearch(self, query: str, limit: int = 5) -> List[Dict[str, Any]]:
+        """Async variant of :meth:`search`."""
+        return await asyncio.to_thread(self.search, query, limit)
+
+    async def aindex_code(self, repo_index: Dict[str, Any]) -> None:
+        """Async variant of :meth:`index_code`."""
+        await asyncio.to_thread(self.index_code, repo_index)
+
+    async def aadd_memory(
+        self, text: str, metadata: Dict[str, Any]
+    ) -> None:
+        """Async variant of :meth:`add_memory`."""
+        await asyncio.to_thread(self.add_memory, text, metadata)
+
+    async def asearch_memories(
+        self, query: str, limit: int = 5
+    ) -> List[Dict[str, Any]]:
+        """Async variant of :meth:`search_memories`."""
+        return await asyncio.to_thread(self.search_memories, query, limit)
 
     def index_code(self, repo_index: Dict[str, Any]) -> None:
         """Persist a minimal on-disk index of symbols so searches work in the
@@ -236,11 +326,10 @@ class VectorStore:
             return []
 
         # --- Semantic search path (sentence-transformers available) ---
-        # P1-1 FIX: use the returned `st` model directly — NOT self._model which
-        # is always the _DummyModel stub regardless of whether sentence-transformers
-        # is installed.  self._model.encode() was silently defeating semantic search
-        # even when the real ST model was successfully loaded.
-        st = _get_st_model()
+        # Use the returned `st` model directly — NOT self._model which is the
+        # _DummyModel stub.  Non-blocking: falls back to token search when the
+        # background preload hasn't completed (PHASE-4 item 4.8).
+        st = _get_st_model_ready()
         if st is not None:
             try:
                 import math
@@ -430,7 +519,7 @@ class VectorStore:
         if not recs:
             return []
 
-        st = _get_st_model()
+        st = _get_st_model_ready()
         if st is not None:
             try:
                 import math as _math
@@ -483,4 +572,4 @@ class VectorStore:
         return results
 
 
-__all__ = ["VectorStore"]
+__all__ = ["VectorStore", "get_st_model_async"]

@@ -1,7 +1,46 @@
 # Phase 4 — Progress & Next-Task Analysis
 
 **Scope:** Track Phase 4 of the audit roadmap (advanced features, Weeks 9-12), record completed items, and provide a concrete implementation analysis for the next task.
-**Status:** 4.5 + 4.6 complete; pending **4.1, 4.2, 4.3, 4.4, 4.7, 4.8**.
+**Status:** 4.5 + 4.6 + 4.8 complete; pending **4.1, 4.2, 4.3, 4.4, 4.7**.
+
+---
+
+## Completed — 4.8 Async VectorStore Model Loading
+
+The sentence-transformers model load (network/disk + CPU init, ~80 MB) used to
+block whatever thread called the first `search`/`encode`.  This item makes
+model loading async/background so no caller thread blocks on it.
+
+**Files:**
+- `src/core/indexing/vector_store.py`
+  - `_load_st_model()` — extracted single-flight loader guarded by
+    `_ST_MODEL_LOCK`; concurrent callers share one load (at most one
+    `SentenceTransformer(...)` per process).
+  - `_get_st_model_ready()` — non-blocking readiness probe (never triggers a
+    load); the encode/search/search_memories hot paths now use it instead of
+    the blocking `_get_st_model()`, degrading to the SHA-256 stub / token
+    search during warm-up instead of blocking the calling thread.
+  - `_preload_st_model()` — idempotent daemon-thread prefetch kicked off from
+    `VectorStore.__init__`, so the first real use usually finds the model warm.
+  - `get_st_model_async()` — event-loop-safe model load via
+    `asyncio.to_thread`.
+  - `VectorStore` async wrappers: `asearch`, `aindex_code`, `aadd_memory`,
+    `asearch_memories` (each `asyncio.to_thread` over the sync body — the
+    ``vector``-stripping and dedup/rotation contracts are unchanged).
+- `tests/unit/test_vector_store_async.py` (new, 6 tests) — non-blocking
+  readiness, off-event-loop load, real single-flight under 8 concurrent
+  callers (fake `sentence_transformers` module injected via `sys.modules`),
+  daemon preload idempotency, async/sync wrapper parity.
+
+**Design notes:**
+- Backward compatible: the blocking `_get_st_model()` is retained for callers
+  that want guaranteed semantic vectors; module `__all__` now also exports
+  `get_st_model_async`.
+- Deterministic in CI (no `sentence_transformers` installed): every ST path
+  degrades gracefully on error, so stub/token behavior is unchanged.
+
+**Gates:** ruff + mypy clean. Full gate suite green — **4,826 tests collecting**
+(4,822 unit pass + 1 unit skip + 3 fast-path integration; exit 0).
 
 ---
 
@@ -31,8 +70,8 @@ assertion, `test_phase2_security_hardening` `delete_file`-not-autoconfirmed).
 Added `TestCanonicalCentralization` (6 tests) pinning the canonical→re-export
 object identity and derivation invariants.
 
-**Gates:** ruff + mypy clean. Full gate suite green — **4,820 tests collecting**
-(4,816 unit pass + 1 unit skip + 3 fast-path integration; exit 0).
+**Gates:** ruff + mypy clean. Full gate suite green — **4,826 tests collecting**
+(4,822 unit pass + 1 unit skip + 3 fast-path integration; exit 0).
 
 ---
 
@@ -64,6 +103,5 @@ Added provider/model comparison to the evaluation framework delivered in Phase 3
 | 4.3 | Add fuzz testing / property-based tests | `tests/` | High | Explores edge cases systematically |
 | 4.4 | Add performance benchmark suite | `tests/benchmarks/` | Medium | Tracks performance regressions |
 | 4.7 | Make permission_kind explicit on all tools | All 55 tools in `src/tools/` | Medium | Improves permission precision |
-| 4.8 | Add async VectorStore model loading | `vector_store.py` | Low | Prevents thread blocking |
 
-Suggested next: small, self-contained items first (**4.6** centralize tool constants, then **4.8** async VectorStore loading) to build momentum, then the two medium refactors (4.7, 4.2), leaving the High-complexity items (4.3 fuzzing, 4.4 performance benchmarks, 4.1 perception refactor) for focused sessions. The evaluation framework (3.2/3.3/4.5) is available to benchmark any of these changes.
+Suggested next: **4.7** permission_kind on all tools (medium, self-contained, improves permission precision), then **4.2** remove duplicate defensive fallbacks (the 4.6 centralization aligned several second sources of truth already), leaving the High-complexity items (4.3 fuzzing, 4.4 performance benchmarks, 4.1 perception refactor) for focused sessions. The evaluation framework (3.2/3.3/4.5) is available to benchmark any of these changes.
