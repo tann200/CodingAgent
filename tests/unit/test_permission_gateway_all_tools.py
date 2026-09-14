@@ -21,15 +21,23 @@ import pytest
 
 from src.core.orchestration.permission_gateway import (
     PermissionGateway,
+    _TOOL_KIND_MAP,
     _primary_arg_for_tool,
     _tool_kind_for_name,
 )
 from src.core.orchestration.permission_table import PermissionTable
+from src.tools import build_registry
+from src.tools.tools_config import resolve_tool_alias
 
 
 # ---------------------------------------------------------------------------
 # _tool_kind_for_name
 # ---------------------------------------------------------------------------
+
+# Keys of the pure no-registry fallback table are canonical tool names; any
+# alias key would be resolved away before lookup.  The list should reflect
+# live registry tools only (PHASE-4 item 4.2 pruned stale legacy names).
+_LIVE_MAP_KEYS = frozenset(_TOOL_KIND_MAP)
 
 
 @pytest.mark.parametrize(
@@ -42,12 +50,9 @@ from src.core.orchestration.permission_table import PermissionTable
         ("delete_file", "write"),
         ("rename_file", "write"),
         ("read_file", "read"),
-        ("list_dir", "read"),
-        ("glob_tool", "glob"),
-        ("grep_tool", "grep"),
+        ("list_files", "read"),
         ("bash", "bash"),
         ("run_tests", "bash"),
-        ("run_bash", "bash"),
         ("read_web_page", "webfetch"),
         ("web_search", "websearch"),
         ("delegate_task", "delegate_task"),
@@ -59,6 +64,31 @@ def test_tool_kind_mapping(tool_name: str, expected_kind: str) -> None:
 
 def test_tool_kind_fallback_to_name() -> None:
     assert _tool_kind_for_name("custom_unknown_tool") == "custom_unknown_tool"
+
+
+def test_tool_kind_map_keys_resolve_to_live_registry_tools() -> None:
+    """PHASE-4 item 4.2: the fallback table must not carry dead tool names.
+
+    Every key (after alias resolution) must be a tool the built-in registry
+    actually registers, so the private second source cannot silently drift
+    from the canonical registry metadata.
+    """
+    reg = build_registry()
+    registered = set(reg.list())
+    stale = [
+        name
+        for name in _LIVE_MAP_KEYS
+        if resolve_tool_alias(name) not in registered
+    ]
+    assert not stale, f"stale _TOOL_KIND_MAP entries: {stale}"
+
+
+def test_tool_kind_for_name_resolves_aliases() -> None:
+    """Aliases resolve to their canonical form before the table lookup."""
+    assert _tool_kind_for_name("run") == "bash"
+    assert _tool_kind_for_name("write") == "write"
+    assert _tool_kind_for_name("read") == "read"
+    assert _tool_kind_for_name("ls") == "read"
 
 
 # ---------------------------------------------------------------------------

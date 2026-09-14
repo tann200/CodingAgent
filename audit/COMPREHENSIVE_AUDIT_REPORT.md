@@ -361,7 +361,7 @@ However, the system has **critical security orientation issues** (fail-open on s
 | # | Issue | Location | Complexity | Impact |
 |---|-------|----------|------------|--------|
 | 4.1 | Refactor perception node (reduce fragmentation) | `perception_node.py` + helpers | High | Reduces maintenance burden |
-| 4.2 | Remove duplicate defensive fallbacks | Multiple files | Medium | Eliminates second source of truth |
+| ~~4.2~~ | **Remove duplicate defensive fallbacks (COMPLETED − collapsed the duplicated `estimate_text_tokens` (2 identical copies → 1 canonical in `token_truncation.py`, imported by `tool_output_truncation.py`); pruned 4 stale legacy names (`glob_tool`/`grep_tool`/`list_dir`/`run_bash`) from `permission_gateway._TOOL_KIND_MAP`, added alias resolution in `_tool_kind_for_name`, and drift-locked the fallback with `test_tool_kind_map_keys_resolve_to_live_registry_tools`; suite now 4,829 collecting)** | Multiple files | Medium | Eliminates second source of truth |
 | 4.3 | Add fuzz testing / property-based tests | `tests/` | High | Explores edge cases systematically |
 | 4.4 | Add performance benchmark suite | `tests/benchmarks/` | Medium | Tracks performance regressions |
 | ~~4.5~~ | **Add model comparison evaluation (COMPLETED − `compare.py`: `run_models` with per-model isolated run dirs, `compare_models` (per-scenario winners / ranking / ties, accepts ScenarioResult or SWE-bench dicts), `save_comparison` JSON report; `compare` CLI subcommand `--model label=factory …`; 10 new tests)** | `src/evaluation/` | Medium | Enables provider quality comparison |

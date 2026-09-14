@@ -5,6 +5,12 @@ import logging
 import re
 from typing import Any, Dict, List, Mapping, Sequence
 
+# PHASE-4 item 4.2: single canonical token estimator.  This module used to
+# carry an identical private copy of `estimate_text_tokens` (and its own
+# tokenizer import); it now imports the one canonical implementation so
+# pruning and truncation cannot drift apart.
+from src.core.context.token_truncation import estimate_text_tokens  # noqa: E402
+
 _pi_logger = logging.getLogger(__name__)
 
 
@@ -17,32 +23,6 @@ TOOL_LARGE_TEXT_FIELDS = ("output", "content", "diff", "text", "stdout", "stderr
 _PRUNED_TOOL_PLACEHOLDER = "[Old tool result content cleared to save context]"
 _PRUNE_PROTECT_TOKENS = 40_000
 _PRUNE_PROTECT_RECENT = 6
-
-# A2.4: Shared token estimator used across pruning/truncation/token_budget so
-# all context-capping paths agree on token counts.  Prefer the accurate
-# tokenizer.count_tokens (tiktoken/HF first, len//3.5 fallback); degrade to the
-# legacy len//4 heuristic only if the tokenizer module cannot be imported.
-try:
-    from src.core.inference.tokenizer import count_tokens as _count_tokens
-except Exception:  # pragma: no cover - graceful degradation
-    _count_tokens = None  # type: ignore[assignment]
-
-
-def estimate_text_tokens(text: str) -> int:
-    """Return an approximate token count for *text*.
-
-    Single shared helper so pruning and truncation agree on the estimator.
-    Uses the accurate tokenizer (tiktoken/HF with len//3.5 fallback) when
-    available, otherwise the conservative len//4 heuristic.
-    """
-    if not text:
-        return 0
-    if _count_tokens is not None:
-        try:
-            return _count_tokens(text)
-        except Exception:
-            pass
-    return max(1, len(text) // 4)
 
 
 def prune_tool_outputs(

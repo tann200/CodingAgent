@@ -80,11 +80,15 @@ try:
         PermissionLevel as _PermissionLevel,  # type: ignore[assignment]
         is_autonomous as _is_autonomous,
         get_active_permission_mode as _get_active_permission_mode,
+        resolve_tool_alias as _resolve_tool_alias,
     )
 except Exception:
     _get_tool_permission = None  # type: ignore[assignment]
     _is_autonomous = None  # type: ignore[assignment]
     _get_active_permission_mode = None  # type: ignore[assignment]
+
+    def _resolve_tool_alias(name: str) -> str:  # type: ignore[misc]
+        return name
 
 try:
     from src.core.orchestration.approval_gate import (
@@ -126,7 +130,13 @@ except Exception:
 # Tool-kind and primary-argument helpers (used by _gate2c_permission_table)
 # ---------------------------------------------------------------------------
 
-#: Maps tool name → PermissionKind string for PermissionTable lookups.
+#: Maps tool name → permission-table kind string by canonical tool names.
+#: PHASE-4 item 4.2: the production path resolves kinds via the registry's
+#: authoritative ``get_permission_kind`` metadata; this table is a *pure*
+#: no-registry fallback only.  Keys are canonical tool names (aliases are
+#: resolved via ``resolve_tool_alias`` before lookup) and stale legacy names
+#: have been pruned — ``test_tool_kind_map_keys_resolve_to_registry_tools``
+#: enforces that every key still resolves to a live tool.
 _TOOL_KIND_MAP: dict[str, str] = {
     # Writes
     "write_file": "write",
@@ -137,13 +147,10 @@ _TOOL_KIND_MAP: dict[str, str] = {
     "rename_file": "write",
     # Reads
     "read_file": "read",
-    "list_dir": "read",
-    "glob_tool": "glob",
-    "grep_tool": "grep",
+    "list_files": "read",
     # Shell
     "bash": "bash",
     "run_tests": "bash",
-    "run_bash": "bash",
     # Network
     "read_web_page": "webfetch",
     "web_search": "websearch",
@@ -153,8 +160,14 @@ _TOOL_KIND_MAP: dict[str, str] = {
 
 
 def _tool_kind_for_name(tool_name: str) -> str:
-    """Return the PermissionKind string for *tool_name* (fallback: tool_name)."""
-    return _TOOL_KIND_MAP.get(tool_name, tool_name)
+    """Return the permission-table kind string for *tool_name*.
+
+    Aliases are resolved to their canonical form first (the map is keyed by
+    canonical names), then the private fallback table is consulted.  Unknown
+    tools fall back to their (resolved) name.
+    """
+    resolved = _resolve_tool_alias(tool_name)
+    return _TOOL_KIND_MAP.get(resolved, resolved)
 
 
 def _tool_kind_for_name_with_registry(orch: Any, tool_name: str) -> str:

@@ -1,7 +1,39 @@
 # Phase 4 — Progress & Next-Task Analysis
 
 **Scope:** Track Phase 4 of the audit roadmap (advanced features, Weeks 9-12), record completed items, and provide a concrete implementation analysis for the next task.
-**Status:** 4.5 + 4.6 + 4.7 + 4.8 complete; pending **4.1, 4.2, 4.3, 4.4**.
+**Status:** 4.2 + 4.5 + 4.6 + 4.7 + 4.8 complete; pending **4.1, 4.3, 4.4**.
+
+---
+
+## Completed — 4.2 Remove Duplicate Defensive Fallbacks
+
+Two remaining second sources of truth were eliminated, and a stale
+gateway fallback was pruned + drift-locked.
+
+**Single canonical token estimator:**
+- `src/core/orchestration/graph/nodes/tool_output_truncation.py` used to
+  carry an *identical* private copy of `estimate_text_tokens` (plus its own
+  `tokenizer.count_tokens` import).  It now imports the one canonical
+  implementation from `src/core/context/token_truncation.py`, so pruning and
+  truncation cannot drift apart.  `test_tool_output_truncation_prune.py`
+  already asserted the two were equal; it now exercises the canonical one.
+
+**Permission-gateway kind fallback:**
+- `_TOOL_KIND_MAP` in `permission_gateway.py` contained 4 dead legacy tool
+  names (`glob_tool`, `grep_tool`, `list_dir`, `run_bash`) that no longer
+  exist in the registry — removed.
+- `_tool_kind_for_name` now resolves aliases via `resolve_tool_alias` first
+  (the map is keyed by canonical names only), so `run`→bash, `write`→write,
+  `read`→read resolve correctly in the pure no-registry fallback.
+- New contract test `test_tool_kind_map_keys_resolve_to_live_registry_tools`
+  fails if any fallback key stops resolving to a live built-in tool — the
+  private second source can no longer silently drift from the canonical
+  registry metadata (4.7 made that metadata explicit on every tool).
+
+**Gates:** ruff + mypy clean (full and CI-scoped). Full gate suite green —
+**4,829 tests collecting** (4,825 unit pass + 1 unit skip + 3 fast-path
+integration; exit 0).  Plus a standalone CI fix for the failing ruff lint job
+(W292 trailing newlines in 22 files).
 
 ---
 
@@ -143,8 +175,7 @@ Added provider/model comparison to the evaluation framework delivered in Phase 3
 | # | Item | Location | Complexity | Notes |
 |---|------|----------|------------|-------|
 | 4.1 | Refactor perception node (reduce fragmentation) | `perception_node.py` + helpers | High | Reduces maintenance burden |
-| 4.2 | Remove duplicate defensive fallbacks | Multiple files | Medium | Eliminates second source of truth |
 | 4.3 | Add fuzz testing / property-based tests | `tests/` | High | Explores edge cases systematically |
 | 4.4 | Add performance benchmark suite | `tests/benchmarks/` | Medium | Tracks performance regressions |
 
-Suggested next: **4.2** remove duplicate defensive fallbacks (medium; the 4.6 centralization already aligned several second sources of truth, and any permission/toollist duplication now has a canonical home to collapse into), then a High-complexity item or the remaining **4.1/4.3/4.4**. The evaluation framework (3.2/3.3/4.5) is available to benchmark any of these changes.
+Suggested next: a High-complexity item — **4.3** fuzz/property-based testing, which layers on the existing test infrastructure with the least cross-cutting risk, or **4.4** performance benchmarks (the evaluation framework 3.2/3.3/4.5 can drive the harness), leaving **4.1** perception refactor for a dedicated session.
