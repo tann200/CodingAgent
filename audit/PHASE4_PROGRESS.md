@@ -1,7 +1,35 @@
 # Phase 4 — Progress & Next-Task Analysis
 
 **Scope:** Track Phase 4 of the audit roadmap (advanced features, Weeks 9-12), record completed items, and provide a concrete implementation analysis for the next task.
-**Status:** 4.2 + 4.3 + 4.5 + 4.6 + 4.7 + 4.8 complete; pending **4.1, 4.4**.
+**Status:** 4.2 + 4.3 + 4.4 + 4.5 + 4.6 + 4.7 + 4.8 complete; pending **4.1**.
+
+---
+
+## Completed — 4.4 Performance Benchmark Suite
+
+Extended the benchmark suite with pure hot-path regression guards in
+`tests/benchmarks/test_pure_hotpath_benchmarks.py` (11 new tests).  All
+targets are deterministic, LLM-free, and run in the dedicated CI `benchmarks`
+job (schedule / workflow_dispatch / main) — never in `tests/unit`, so the
+unit baseline is unaffected (18 benchmark tests total).
+
+**Coverage:**
+- Token estimation + `truncate_to_token_budget` / `truncate_text_to_max_tokens`
+  on large inputs (≈320 KB–1 MB).
+- `prune_tool_outputs` (1000-message history, repeated small histories) + byte-cap
+  `truncate_tool_output`.
+- Registry-backed permission resolution: `get_permission_kind` (20k lookups) and
+  the gateway kind fallback (20k lookups).
+- Prompt-injection guard: `sanitize_tool_output` (2k texts) +
+  `detect_prompt_injection` (1k results).
+- Typed MessageBus publish + async dispatch of 3,000 telemetry events (end-to-end
+  delivery verified with a counting handler).
+
+Timing thresholds are deliberately generous (≥10x local margin, verified locally)
+— regression guards against order-of-magnitude slowdowns, not SLAs — and all
+failures are deterministic-side-effect-free.
+
+**Gates:** ruff + mypy clean (incl. CI-scoped ruff). Benchmark suite: 18 passed.
 
 ---
 
@@ -207,6 +235,8 @@ Added provider/model comparison to the evaluation framework delivered in Phase 3
 | # | Item | Location | Complexity | Notes |
 |---|------|----------|------------|-------|
 | 4.1 | Refactor perception node (reduce fragmentation) | `perception_node.py` + helpers | High | Reduces maintenance burden |
-| 4.4 | Add performance benchmark suite | `tests/benchmarks/` | Medium | Tracks performance regressions |
 
-Suggested next: **4.4** performance benchmarks (medium; extends the existing `tests/benchmarks/test_pipeline_benchmarks.py` that the CI `benchmarks` job already runs, and the evaluation framework 3.2/3.3/4.5 can drive regressions), then finish with **4.1** perception refactor in a dedicated session.
+Suggested next: **4.1** — the final Phase-4 item. It is a High-complexity
+structural refactor (perception node + its helpers), best done in a dedicated
+session, now that the permission/alias/tool-constant state (4.6/4.7/4.2) and
+regression tooling (4.3/4.4/4.5) are in place to validate it.

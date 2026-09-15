@@ -331,7 +331,7 @@ CI runs these as fail-closed gates: newly introduced Ruff or mypy errors break t
 ## Test Baseline
 
 - **4,850** tests collecting (4,846 unit pass + 1 unit skip + 3 fast-path integration; see note below)
-- **7** benchmark tests
+- **18** benchmark tests
 - **0** Critical issues
 - **0** High issues
 - CI runs Ruff + mypy as fail-closed gates; the full `tests/unit` suite must pass from a clean environment
