@@ -139,6 +139,12 @@ def resolve_tool_alias(name: str) -> str:
 _CONTEXT_DIR: str = ".codingAgent"  # PREFERRED: project-specific context directory
 _DEFAULT_WORKDIR: Optional[Path] = None
 _AUTONOMOUS_MODE: bool = False  # AUTO-01: global autonomous-mode flag
+# HS-1: Explicit operator allowlist controlling which DANGER/PROMPT tools
+# autonomous mode may auto-approve without a prompt.  When empty (default),
+# autonomous mode NEVER silently suppresses approval — gated tools are denied
+# instead.  An empty-string value inside the set means "all tools" (a single
+# ``"*"`` entry).  Overridable at runtime via set_autonomous_approve().
+_AUTONOMOUS_APPROVE: frozenset[str] = frozenset()
 _ACTIVE_PERMISSION_MODE: Optional[
     PermissionLevel
 ] = None  # TASK-20: active mode override
@@ -164,6 +170,7 @@ def configure(
     default_workdir: Optional[Path] = None,
     autonomous_mode: bool = False,
     require_preview_confirmation: bool = False,
+    autonomous_approve: Optional[set] = None,
 ) -> None:
     """Override default tool configuration.
 
@@ -187,13 +194,20 @@ def configure(
         block and display a diff with Accept / Reject buttons before
         committing the change.  When *False* (default), writes proceed
         immediately and the diff is shown as informational output only.
+    autonomous_approve:
+        HS-1: explicit operator override controlling which DANGER/PROMPT
+        tools autonomous mode may auto-approve.  Canonical tool names, or
+        ``{"*"}`` to allow every gated tool.  When *None* the current
+        allowlist is left unchanged (defaults to empty, i.e. fail-closed).
     """
-    global _CONTEXT_DIR, _DEFAULT_WORKDIR, _AUTONOMOUS_MODE, _REQUIRE_PREVIEW_CONFIRMATION
+    global _CONTEXT_DIR, _DEFAULT_WORKDIR, _AUTONOMOUS_MODE, _REQUIRE_PREVIEW_CONFIRMATION, _AUTONOMOUS_APPROVE
     with _config_lock:
         _CONTEXT_DIR = context_dir
         _DEFAULT_WORKDIR = default_workdir
         _AUTONOMOUS_MODE = autonomous_mode
         _REQUIRE_PREVIEW_CONFIRMATION = require_preview_confirmation
+        if autonomous_approve is not None:
+            _AUTONOMOUS_APPROVE = frozenset(autonomous_approve)
 
 
 def agent_context_path(workdir: Path) -> Path:
@@ -238,8 +252,10 @@ def get_audit_dir(workdir: Path) -> Path:
 def is_autonomous() -> bool:
     """Return *True* when the agent is running in autonomous (non-interactive) mode.
 
-    In autonomous mode, DANGER-level tools are executed without waiting for
-    user approval and PROMPT-level tools are auto-allowed.
+    Autonomous mode suppresses interactive approval prompts, but only for tools
+    the operator explicitly listed in the autonomous-approval allowlist (see
+    :func:`autonomous_approval_allowed`); any other gated tool is denied rather
+    than auto-approved (HS-1).
     """
     # Also honour the CODINGAGENT_AUTONOMOUS env var for script-level overrides.
     if os.getenv("CODINGAGENT_AUTONOMOUS", "").lower() in ("1", "true", "yes"):
@@ -258,6 +274,54 @@ def set_autonomous(enabled: bool = True) -> None:
     global _AUTONOMOUS_MODE
     with _config_lock:
         _AUTONOMOUS_MODE = enabled
+
+
+# HS-1: Autonomous approval suppression requires an explicit operator override.
+def set_autonomous_approve(tools: set) -> None:
+    """Set the autonomous-approval allowlist at runtime.
+
+    *tools* is a set of canonical tool names that autonomous mode may
+    auto-approve without an interactive prompt.  Pass ``{"*"}`` to allow all
+    gated (DANGER/PROMPT) tools.  Configures no allowlist by default:
+    autonomous mode is fail-closed and DENIES gated tools the operator has
+    not explicitly opted into.
+    """
+    global _AUTONOMOUS_APPROVE
+    with _config_lock:
+        _AUTONOMOUS_APPROVE = frozenset(tools)
+
+
+def get_autonomous_approve() -> frozenset:
+    """Return a copy of the current autonomous-approval allowlist."""
+    with _config_lock:
+        return _AUTONOMOUS_APPROVE
+
+
+def autonomous_approval_allowed(name: str) -> bool:
+    """Return *True* when autonomous mode may auto-approve tool *name*.
+
+    HS-1: autonomous mode only suppresses approval prompts for tools the
+    operator explicitly opted into — either at runtime via
+    ``set_autonomous_approve()``/``configure(autonomous_approve=...)`` or via
+    the ``CODINGAGENT_AUTONOMOUS_APPROVE`` env var (comma-separated canonical
+    names, or ``*`` for all gated tools).  Aliases are resolved to the
+    canonical name first so a rule keyed on ``bash`` cannot be evaded via
+    ``run``/``shell``/``cmd``.  When nothing is configured this returns
+    *False* for every tool (fail-closed — the approval prompt is never
+    suppressed without an explicit override).
+    """
+    canonical = resolve_tool_alias(name)
+    with _config_lock:
+        approved = _AUTONOMOUS_APPROVE
+    if "*" in approved or canonical in approved:
+        return True
+
+    env_override = os.getenv("CODINGAGENT_AUTONOMOUS_APPROVE", "")
+    for token in env_override.split(","):
+        token = token.strip()
+        if token == "*" or token == canonical:
+            return True
+    return False
 
 
 # PREV-1: Preview confirmation helpers
@@ -312,10 +376,11 @@ def reset_to_defaults() -> None:
     This is primarily intended for test code to restore deterministic
     module state between tests and avoid order-dependent failures.
     """
-    global _CONTEXT_DIR, _DEFAULT_WORKDIR, _AUTONOMOUS_MODE, _ACTIVE_PERMISSION_MODE, _REQUIRE_PREVIEW_CONFIRMATION
+    global _CONTEXT_DIR, _DEFAULT_WORKDIR, _AUTONOMOUS_MODE, _ACTIVE_PERMISSION_MODE, _REQUIRE_PREVIEW_CONFIRMATION, _AUTONOMOUS_APPROVE
     with _config_lock:
         _CONTEXT_DIR = ".codingAgent"
         _DEFAULT_WORKDIR = None
         _AUTONOMOUS_MODE = False
         _ACTIVE_PERMISSION_MODE = None
         _REQUIRE_PREVIEW_CONFIRMATION = False
+        _AUTONOMOUS_APPROVE = frozenset()

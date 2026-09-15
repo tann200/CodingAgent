@@ -1094,7 +1094,25 @@ def _run_permission_gate(
         pass
 
     if autonomous:
-        return None
+        # HS-1: autonomous mode must NOT silently approve every gated tool —
+        # it only skips the prompt for tools the operator explicitly allowed
+        # (set_autonomous_approve / CODINGAGENT_AUTONOMOUS_APPROVE).  Anything
+        # else is denied loudly instead of auto-approved.
+        try:
+            from src.tools.tools_config import autonomous_approval_allowed
+
+            if autonomous_approval_allowed(name):
+                return None
+        except Exception:
+            pass
+        return {
+            "ok": False,
+            "error": (
+                f"Tool '{name}' requires approval and is not in the autonomous "
+                "approval allowlist. Add it via set_autonomous_approve() or the "
+                "CODINGAGENT_AUTONOMOUS_APPROVE env var to auto-approve it."
+            ),
+        }
 
     gate_event = None
     try:

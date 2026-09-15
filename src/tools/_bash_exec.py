@@ -782,7 +782,17 @@ def _check_tier3_approval(command: str) -> Optional[Dict[str, Any]]:
 
     Returns approval result dict if command should be blocked, None if approved.
     """
-    if _is_tier3(command) and not _is_autonomous():
+    # HS-1: autonomous mode only suppresses the tier-3 prompt when the
+    # operator explicitly allowlisted "bash" (or opted into "*").
+    _bash_auto_approved = False
+    try:
+        from src.tools.tools_config import autonomous_approval_allowed
+
+        _bash_auto_approved = autonomous_approval_allowed("bash")
+    except Exception:
+        _bash_auto_approved = False
+
+    if _is_tier3(command) and not (_is_autonomous() and _bash_auto_approved):
         _tool_id = str(uuid.uuid4())[:8]
         _gate_ev = register_bash_gate(_tool_id)
         try:

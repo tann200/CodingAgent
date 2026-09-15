@@ -327,7 +327,22 @@ class ToolExecutionService:
                 return ExecutionVerdict(blocked=False)
 
             if is_autonomous():
-                return ExecutionVerdict(blocked=False)
+                # HS-1: mirror the production pipeline — autonomous mode only
+                # auto-approves tools the operator explicitly allowlisted.
+                from src.tools.tools_config import autonomous_approval_allowed
+
+                if autonomous_approval_allowed(name):
+                    return ExecutionVerdict(blocked=False)
+                return ExecutionVerdict(
+                    blocked=True,
+                    result={
+                        "ok": False,
+                        "error": (
+                            f"Tool '{name}' requires approval and is not in the "
+                            "autonomous approval allowlist."
+                        ),
+                    },
+                )
 
             _t4_id = uuid.uuid4().hex[:8]
             _t4_ev = register_tool_gate(_t4_id)

@@ -202,7 +202,21 @@ def _parse_args(argv: list) -> argparse.Namespace:
         default=False,
         help=(
             "Run in autonomous mode: DANGER and PROMPT-level tools execute without "
-            "interactive user approval."
+            "interactive user approval — but ONLY for tools listed via "
+            "--autonomous-approve (or the CODINGAGENT_AUTONOMOUS_APPROVE env var). "
+            "Unlisted gated tools are denied, never silently approved."
+        ),
+    )
+    # HS-1: operator override for autonomous approval suppression
+    parser.add_argument(
+        "--autonomous-approve",
+        metavar="TOOL",
+        nargs="+",
+        default=None,
+        help=(
+            "Explicit operator override listing canonical tool names that "
+            "autonomous mode may auto-approve without prompting; pass '*' to allow "
+            "every gated tool. Equivalent to CODINGAGENT_AUTONOMOUS_APPROVE."
         ),
     )
     # TASK-20: permission-mode flag
@@ -880,6 +894,12 @@ def main(argv: Optional[list] = None) -> int:
             from src.tools.tools_config import set_autonomous
 
             set_autonomous(True)
+            # HS-1: autonomous approval requires an explicit operator allowlist.
+            approve = getattr(args, "autonomous_approve", None)
+            if approve:
+                from src.tools.tools_config import set_autonomous_approve
+
+                set_autonomous_approve(set(approve))
         except Exception:
             pass
 

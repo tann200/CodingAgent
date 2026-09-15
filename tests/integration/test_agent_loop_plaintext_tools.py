@@ -48,8 +48,12 @@ SCENARIOS = {
 def test_agent_loop_plaintext_tools(
     tmp_path, monkeypatch, scenario_name, expected_sequence
 ):
-    # bash is DANGER-level; enable autonomous mode so the permission gate is skipped
+    # bash is DANGER-level; enable autonomous mode so the permission gate is skipped.
+    # HS-1: autonomous approval requires an explicit operator allowlist opt-in.
     monkeypatch.setattr("src.tools.tools_config._AUTONOMOUS_MODE", True)
+    monkeypatch.setattr(
+        "src.tools.tools_config._AUTONOMOUS_APPROVE", frozenset({"bash"})
+    )
 
     # Prevent the ORCH-W5 background title-generation thread from consuming
     # adapter responses before perception_node gets them.

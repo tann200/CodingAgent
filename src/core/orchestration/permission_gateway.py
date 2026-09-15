@@ -712,7 +712,27 @@ class PermissionGateway:
             pass
 
         if _autonomous:
-            return PermissionResult(allowed=True)
+            # HS-1: autonomous mode must NOT silently approve every tool — it
+            # only skips the prompt for tools the operator explicitly allowed.
+            try:
+                from src.tools.tools_config import autonomous_approval_allowed
+
+                if autonomous_approval_allowed(name):
+                    return PermissionResult(allowed=True)
+            except Exception:
+                pass
+            return PermissionResult(
+                allowed=False,
+                gate=5,
+                reason="autonomous mode without approval allowlist override",
+                rejection={
+                    "ok": False,
+                    "error": (
+                        f"Tool '{name}' requires approval and is not in the "
+                        "autonomous approval allowlist."
+                    ),
+                },
+            )
 
         try:
             if _register_tool_gate is not None and _is_tool_denied is not None and _discard_tool_denied is not None:

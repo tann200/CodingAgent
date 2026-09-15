@@ -63,10 +63,11 @@ However, the system has **critical security orientation issues** (fail-open on s
 
 ## 4. High-Risk Safety Issues
 
-### HS-1: Autonomous Mode Suppresses All Approval Prompts
+### ~~HS-1: Autonomous Mode Suppresses All Approval Prompts~~ RESOLVED (Phase 5)
 - **Files:** `src/tools/tools_config.py:250-260`, `src/core/orchestration/permission_gateway.py:677-678`
 - **Issue:** `is_autonomous()` auto-allows DANGER/PROMPT tools with no operator override. The env var `CODINGAGENT_AUTONOMOUS` is checked at each call, so any process with env control disables all safety prompts.
 - **Severity:** HIGH
+- **Fix:** Autonomous approval now requires an explicit operator allowlist. `autonomous_approval_allowed(name)` is the single decision point (alias-resolved; honors `set_autonomous_approve()`/`configure(autonomous_approve=...)` + the `CODINGAGENT_AUTONOMOUS_APPROVE` env var, or `*`). Unlisted gated tools are denied loudly (fail-closed) in all four suppression sites: production `tool_execution_pipeline._run_permission_gate`, `tool_execution_service._check_permission_gate`, `permission_gateway._gate5_user_approval`, and `_bash_exec._check_tier3_approval`. CLI: `--autonomous-approve <TOOL>…`. 20 contract tests in `tests/unit/test_phase5_security_hardening.py`. See `audit/PHASE5_PROGRESS.md`.
 
 ### HS-2: WorkspaceGuard No-Op Fallback
 - **File:** `src/tools/_workspace_guard.py:12-26`

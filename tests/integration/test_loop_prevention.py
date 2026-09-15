@@ -33,8 +33,12 @@ def test_loop_prevention(tmp_path, monkeypatch):
         ]
     }
 
-    # bash is DANGER-level; enable autonomous mode so the permission gate is skipped
+    # bash is DANGER-level; enable autonomous mode so the permission gate is skipped.
+    # HS-1: autonomous approval requires an explicit operator allowlist opt-in.
     monkeypatch.setattr("src.tools.tools_config._AUTONOMOUS_MODE", True)
+    monkeypatch.setattr(
+        "src.tools.tools_config._AUTONOMOUS_APPROVE", frozenset({"bash"})
+    )
 
     adapter = DeterministicAdapter(scenarios=scenarios)
     adapter.set_scenario("loop_scenario")
