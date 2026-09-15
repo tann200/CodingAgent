@@ -1,7 +1,39 @@
 # Phase 4 — Progress & Next-Task Analysis
 
 **Scope:** Track Phase 4 of the audit roadmap (advanced features, Weeks 9-12), record completed items, and provide a concrete implementation analysis for the next task.
-**Status:** 4.2 + 4.5 + 4.6 + 4.7 + 4.8 complete; pending **4.1, 4.3, 4.4**.
+**Status:** 4.2 + 4.3 + 4.5 + 4.6 + 4.7 + 4.8 complete; pending **4.1, 4.4**.
+
+---
+
+## Completed — 4.3 Fuzz / Property-Based Tests
+
+Deterministic, dependency-free property suite in
+`tests/unit/test_property_based_fuzzing.py` (21 tests).  Every case is driven
+by a fixed-seed PRNG (`random.Random(0xC0FFEE)`, 150 iterations each), so any
+failure is exactly reproducible without hypothesis or an external fuzz engine.
+
+**Coverage (pure, high-leverage pipeline pieces):**
+- Token estimator + `truncate_to_token_budget` / `truncate_text_to_max_tokens`:
+  prefix, budget respected, fit pass-through, monotonicity in budget.
+- `prune_tool_outputs` (token pruner): length preservation, newest-N +
+  `metadata.preserve` protection, placeholder shape, idempotence, crash-freedom
+  on arbitrary message dicts.
+- `prune_stale_tool_outputs` (turn pruner): crash-freedom, length, recent
+  tool-result preservation.
+- Prompt-injection guard: `sanitize_tool_output` fencing, `detect_prompt_injection`
+  annotation + crash-freedom.
+- `truncate_tool_output`: byte-cap consistency + crash-freedom.
+- `PermissionKind` → table kind (total), `resolve_tool_alias` (total,
+  idempotent, registry-consistent), `_path_inside` (total, containment).
+
+**Bug found + fixed:** `prune_tool_outputs` crashed with
+`AttributeError: 'str' object has no attribute 'get'` when a history message's
+`metadata` was a non-dict (string/list).  Hardened to
+`isinstance(meta, dict) and meta.get("preserve")`; non-dict metadata is now
+treated as not-preserve.
+
+**Gates:** ruff + mypy clean. Full gate suite green — **4,850 tests collecting**
+(4,846 unit pass + 1 unit skip + 3 fast-path integration; exit 0).
 
 ---
 
@@ -175,7 +207,6 @@ Added provider/model comparison to the evaluation framework delivered in Phase 3
 | # | Item | Location | Complexity | Notes |
 |---|------|----------|------------|-------|
 | 4.1 | Refactor perception node (reduce fragmentation) | `perception_node.py` + helpers | High | Reduces maintenance burden |
-| 4.3 | Add fuzz testing / property-based tests | `tests/` | High | Explores edge cases systematically |
 | 4.4 | Add performance benchmark suite | `tests/benchmarks/` | Medium | Tracks performance regressions |
 
-Suggested next: a High-complexity item — **4.3** fuzz/property-based testing, which layers on the existing test infrastructure with the least cross-cutting risk, or **4.4** performance benchmarks (the evaluation framework 3.2/3.3/4.5 can drive the harness), leaving **4.1** perception refactor for a dedicated session.
+Suggested next: **4.4** performance benchmarks (medium; extends the existing `tests/benchmarks/test_pipeline_benchmarks.py` that the CI `benchmarks` job already runs, and the evaluation framework 3.2/3.3/4.5 can drive regressions), then finish with **4.1** perception refactor in a dedicated session.

@@ -69,7 +69,8 @@ def prune_tool_outputs(
             running_tokens += estimate_text_tokens(str(msg.get("content") or ""))
             continue
         # A2.4: Never prune messages tagged with preserve=True metadata.
-        if msg.get("metadata", {}).get("preserve"):
+        meta = msg.get("metadata")
+        if isinstance(meta, dict) and meta.get("preserve"):
             running_tokens += estimate_text_tokens(str(msg.get("content") or ""))
             continue
         running_tokens += estimate_text_tokens(str(msg.get("content") or ""))
