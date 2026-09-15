@@ -1,63 +1,65 @@
 from src.core.messaging.event_types import ContextOverflow
 from langchain_core.runnables import RunnableConfig
 import logging
-import re
-from typing import Mapping, Dict, Any, Optional
-
-import yaml
+from typing import Mapping, Dict, Any
 
 from src.core.orchestration.graph.state import StateLike, validate_state
 from src.core.context.context_builder import ContextBuilder
 from src.core.inference.llm_manager import call_model
 from src.core.inference.llm_helpers import call_model_with_timeout
-from src.core.orchestration.tool_parser import parse_tool_block
-from src.core.orchestration.graph.nodes.node_utils import (
-    _resolve_orchestrator,
-)
-from src.core.orchestration.graph.nodes.perception_parsing import (
-    _parse_tool_call_and_flags,
-)
-from src.core.orchestration.graph.nodes.perception_no_tool import (
-    _handle_no_tool_or_empty_response as _handle_no_tool_or_empty_response_impl,
-    _maybe_return_content_after_no_tool_retry as _maybe_return_content_after_no_tool_retry_impl,
-)
-from src.core.orchestration.graph.nodes.perception_retrieval import (
-    _retrieve_context as _retrieve_context_impl,
-)
-from src.core.orchestration.graph.nodes.perception_result import (
-    _build_perception_result as _build_perception_result_impl,
-)
-from src.core.orchestration.graph.nodes.perception_runtime import (
-    _build_llm_kwargs as _build_llm_kwargs_impl,
-    _compute_active_skills_for_task as _compute_active_skills_for_task_impl,
-    _filter_tools_near_turn_limit as _filter_tools_near_turn_limit_impl,
-    _maybe_handle_turn_limit as _maybe_handle_turn_limit_impl,
-    _maybe_warn_small_context_window as _maybe_warn_small_context_window_impl,
-    _resolve_orchestrator_and_cancellation as _resolve_orchestrator_and_cancellation_impl,
-    _resolve_perception_provider_context as _resolve_perception_provider_context_impl,
-    _resolve_active_model_name as _resolve_active_model_name_impl,
-    _select_perception_role as _select_perception_role_impl,
-    _validate_call_model_and_adapter as _validate_call_model_and_adapter_impl,
-)
-from src.core.orchestration.graph.nodes.perception_messages import (
-    _build_perception_messages as _build_perception_messages_impl,
-)
-from src.core.orchestration.graph.nodes.perception_compaction import (
-    _bootstrap_history_for_prompt as _bootstrap_history_for_prompt_impl,
-    _run_auto_compaction as _run_auto_compaction_impl,
-)
-from src.core.orchestration.graph.nodes.perception_post_call import (
-    _process_post_call_tokens as _process_post_call_tokens_impl,
-)
+from src.core.orchestration.graph.nodes.node_utils import span_node as _span_node
 from src.core.orchestration.graph.nodes.tool_output_truncation import (
     _PRUNE_PROTECT_TOKENS,
     prune_tool_outputs as _prune_tool_outputs,
 )
-from src.core.inference.provider_utils import (
-    resolve_provider_capabilities as _resolve_provider_caps,
+
+# Subject-matter helpers. Each helper module is self-contained (its runtime
+# dependencies and logger are resolved internally), so perception_node imports
+# them directly — there is no pass-through wrapper layer.  A few names are
+# re-exported purely for the legacy test surface and carry a noqa on import.
+from src.core.orchestration.graph.nodes.perception_parsing import (
+    _parse_tool_call_and_flags,
+    _parse_yaml_tool_call_from_content,  # noqa: F401
 )
-from src.core.utils.strings import extract_str as _extract_str
-from src.core.orchestration.graph.nodes.node_utils import span_node as _span_node
+from src.core.orchestration.graph.nodes.perception_no_tool import (
+    _handle_no_tool_or_empty_response,
+    _maybe_return_content_after_no_tool_retry,
+    _select_corrective_prompt,  # noqa: F401
+)
+from src.core.orchestration.graph.nodes.perception_retrieval import (
+    _retrieve_context,
+)
+from src.core.orchestration.graph.nodes.perception_post_call import (
+    _process_post_call_tokens,
+)
+from src.core.orchestration.graph.nodes.perception_compaction import (
+    _bootstrap_history_for_prompt,
+    _run_auto_compaction,
+)
+from src.core.orchestration.graph.nodes.perception_messages import (
+    _build_perception_messages,
+)
+from src.core.orchestration.graph.nodes.perception_result import (
+    _build_perception_result,
+)
+from src.core.orchestration.graph.nodes.perception_runtime import (
+    _build_llm_kwargs,
+    _check_small_model_clarification,
+    _compute_active_skills_for_task,
+    _filter_tools_near_turn_limit,
+    _maybe_handle_turn_limit,
+    _maybe_warn_small_context_window,
+    _resolve_active_model_name,  # noqa: F401
+    _resolve_orchestrator_and_cancellation,
+    _resolve_perception_provider_context,
+    _select_perception_role,
+    _validate_call_model_and_adapter,
+)
+
+try:
+    from src.core.orchestration.project_settings import get_active_settings as _gas
+except Exception:
+    _gas = None  # type: ignore[assignment]
 
 
 # Gap 3: Plugin hooks — lazy import so the registry is not required at import time.
@@ -73,440 +75,7 @@ except Exception:
     _HOOK_ROUND_END = "round.end"
     _HAS_HOOKS = False
 
-_ACTION_VERBS_SMALL_MODEL = {
-    "add", "fix", "update", "change", "create", "delete", "remove",
-    "refactor", "write", "read", "run", "test", "debug", "find", "search",
-    "show", "list", "explain", "implement", "build", "install", "deploy",
-    "check", "verify", "move", "rename", "summarize", "summary",
-    "describe", "review", "analyse", "analyze", "generate", "print",
-    "display", "get", "fetch", "make", "set",
-}
-
-
-def _check_small_model_clarification(
-    state: Mapping[str, Any],
-    rounds: int,
-    model_tier_str: Optional[str],
-    turn_count: int,
-    logger: logging.Logger,
-) -> Optional[Dict[str, Any]]:
-    """GAP-SMALL-4: return a clarification prompt for ambiguous small-model tasks.
-
-    When the task is very short (< 8 words) and contains no file references,
-    code identifiers, or action verbs, small models are likely to hallucinate
-    a plan. Returns a dict with the clarification response, or None to continue.
-    """
-    if rounds != 0 or model_tier_str != "small":
-        return None
-
-    raw_task = (state.get("task") or "").strip()
-    task_words = raw_task.split()
-    has_action = any(w.lower() in _ACTION_VERBS_SMALL_MODEL for w in task_words)
-    has_file_ref = bool(re.search(r"\w+\.\w+|/\w+|\w+\.py\b", raw_task))
-    has_code_id = bool(re.search(r"`[^`]+`|\"[A-Za-z_]\w+\"", raw_task))
-
-    if len(task_words) >= 8 or has_action or has_file_ref or has_code_id:
-        return None
-
-    logger.info(
-        "perception_node: GAP-SMALL-4 ambiguous task detected for small model, "
-        "returning clarification prompt (task=%r, words=%d)",
-        raw_task[:80],
-        len(task_words),
-    )
-    clarify_msg = (
-        "I need a bit more detail to help you effectively. Could you tell me:\n"
-        "- What file or component should I work on?\n"
-        "- What should change or be created?\n"
-        "- What is the expected outcome?"
-    )
-    return {
-        "history": [{"role": "assistant", "content": clarify_msg}],
-        "next_action": None,
-        "needs_clarification": True,
-        "rounds": rounds + 1,
-        "turn_count": turn_count,
-        "empty_response_count": 0,
-        **({"model_tier": model_tier_str} if model_tier_str else {}),
-    }
-
-
-def _classify_model_tier(
-    model: str,
-    adapter: Any,
-    logger: logging.Logger,
-) -> Optional[str]:
-    """Classify model into a tier string (small, frontier, nano, etc.).
-
-    Returns the tier .value string, or None on failure.
-    """
-    try:
-        if _classify_model is None:
-            raise RuntimeError("model_tiers unavailable")
-        ctx_window = 0
-        if adapter and hasattr(adapter, "context_window"):
-            ctx_window = int(adapter.context_window or 0)
-        return _classify_model(model, ctx_window).value
-    except Exception:
-        logger.debug("perception_node: model tier classification failed")
-        return None
-
-
-# Deferred intra-function imports (CODE_QUALITY_AUDIT #7)
-# CODE_QUALITY_AUDIT #7 fix: promote deferred intra-function imports to module
-# level.  perception_node() is called on every agent round; re-importing 11
-# symbols on each invocation was unnecessary overhead.
-# Each block is wrapped in try/except so the node degrades gracefully when an
-# optional dependency is absent (e.g. in minimal test environments).
-try:
-    from src.core.orchestration.project_settings import get_active_settings as _gas
-except Exception:
-    _gas = None  # type: ignore[assignment]
-
-_SymbolGraph: Any = None
-try:
-    from src.core.indexing.symbol_graph import SymbolGraph as _SymbolGraph  # type: ignore[assignment]
-except Exception:
-    pass
-
-try:
-    from src.core.orchestration.loop_guards import MODIFYING_TOOLS as _MODIFYING_TOOLS
-except Exception:
-    _MODIFYING_TOOLS = set()  # type: ignore[assignment]
-
-_AutoCompactConfig: Any = None
-try:
-    from src.core.memory.auto_compactor import (
-        AutoCompactConfig as _AutoCompactConfig,  # type: ignore[assignment]
-        should_compact as _should_compact,
-        compact_messages as _compact_messages,
-    )
-except Exception:
-    _should_compact = None  # type: ignore[assignment]
-    _compact_messages = None  # type: ignore[assignment]
-
-try:
-    from src.core.config_loader import get as _cfg_get
-except Exception:
-    _cfg_get = None  # type: ignore[assignment]
-
-try:
-    from src.core.inference.model_tiers import classify_model as _classify_model
-except Exception:
-    _classify_model = None  # type: ignore[assignment]
-
-try:
-    from src.core.inference.provider_context import (
-        get_context_budget as _get_context_budget,
-        estimate_cost_usd as _estimate_cost_usd,
-    )
-except Exception:
-    _get_context_budget = None  # type: ignore[assignment]
-    _estimate_cost_usd = None  # type: ignore[assignment]
-
-try:
-    from src.core.orchestration.graph.builder import _task_is_complex as _tic
-except Exception:
-    _tic = None  # type: ignore[assignment]
-
 logger = logging.getLogger(__name__)
-
-
-
-# P1-D: Graduated corrective prompts helper.
-# Selects a corrective prompt variant based on the number of consecutive empty/no-tool
-# responses (attempt) and model tier.
-def _select_corrective_prompt(
-    attempt: int = 1,
-    model_tier: str | None = None,
-    truncated_yaml: bool = False,
-) -> str:
-    try:
-        att = int(attempt or 1)
-    except Exception:
-        att = 1
-    # Graduated prompts: gentle -> specific -> critical
-    prompts = [
-        (
-            "\n\n<system_reminder>\n"
-            "Please provide a valid YAML tool call for your next action.\n"
-            "Use this format:\n"
-            "```yaml\n"
-            "name: tool_name\n"
-            "arguments:\n"
-            "  arg: value\n"
-            "```\n"
-            "Avoid empty responses or thinking-only blocks.\n"
-            "If you cannot determine the next action, you may use the 'respond' tool.\n"
-            "</system_reminder>\n"
-        ),
-        (
-            "\n\n<system_reminder>\n"
-            "Please output a valid YAML tool call block now. No analysis or preamble.\n"
-            "```yaml\n"
-            "name: tool_name\n"
-            "arguments:\n"
-            "  key: value\n"
-            "```\n"
-            "</system_reminder>\n"
-        ),
-        (
-            "\n\n<system_reminder>\n"
-            "Important: Please provide a valid YAML tool call block.\n"
-            "Format:\n"
-            "```yaml\n"
-            "name: tool_name\n"
-            "arguments:\n"
-            "  key: value\n"
-            "```\n"
-            "Avoid thinking-only responses or empty outputs.\n"
-            "</system_reminder>\n"
-        ),
-    ]
-    idx = max(0, min(att - 1, len(prompts) - 1))
-    tier = (model_tier or "").lower()
-    if truncated_yaml:
-        return (
-            "\n\n<system_reminder>\n"
-            "Your previous YAML tool block may have been cut off or malformed. "
-            "Please resend a complete YAML tool call.\n"
-            "```yaml\n"
-            "name: tool_name\n"
-            "arguments:\n"
-            "  key: value\n"
-            "```\n"
-            "</system_reminder>\n"
-        )
-    if tier == "small" and att >= 2:
-        return prompts[1]
-    return prompts[idx]
-
-
-def _parse_yaml_tool_call_from_content(content: str) -> dict | None:
-    """Backward-compatible YAML tool-call parser used by legacy tests."""
-    try:
-        stripped = (content or "").strip()
-        if "```yaml" in stripped:
-            start = stripped.find("```yaml") + len("```yaml")
-            end = stripped.find("```", start)
-            yaml_block = stripped[start:end].strip() if end != -1 else stripped[start:].strip()
-        else:
-            yaml_block = stripped
-
-        if not yaml_block:
-            return None
-
-        data = yaml.safe_load(yaml_block)
-        if not data:
-            return None
-        if isinstance(data, dict) and "name" in data:
-            return {
-                "name": data.get("name"),
-                "arguments": data.get("arguments") or {},
-            }
-        if isinstance(data, dict) and len(data) == 1:
-            name, arguments = next(iter(data.items()))
-            return {
-                "name": name,
-                "arguments": arguments or {},
-            }
-    except Exception:
-        pass
-
-    try:
-        return parse_tool_block(content)
-    except Exception:
-        return None
-
-
-# Delegate LLM waiting/call helpers to shared implementation in llm_helpers.
-# The original implementations below are preserved for fallback if llm_helpers
-# is unavailable. This avoids code divergence while maintaining test compatibility.
-_llm_helpers: Any = None
-try:
-    from src.core.inference import llm_helpers as _llm_helpers  # type: ignore[assignment]
-except Exception:
-    pass
-
-
-if _llm_helpers is not None:
-    _await_llm_task = _llm_helpers._await_llm_task  # type: ignore[assignment]
-else:
-    async def _await_llm_task(task, timeout=None, cancel_event=None):  # type: ignore[misc]
-        """No-op fallback when llm_helpers is unavailable."""
-        return await task
-
-
-def _handle_no_tool_or_empty_response(
-    content: str,
-    content_stripped: str,
-    thinking_only: bool,
-    state: Mapping[str, Any],
-    orchestrator: Any,
-    _model_tier_str: str | None,
-    *,
-    _is_truncated_yaml: bool = False,
-) -> dict | None:
-    """Compatibility wrapper around the extracted no-tool helper."""
-    return _handle_no_tool_or_empty_response_impl(
-        content=content,
-        content_stripped=content_stripped,
-        thinking_only=thinking_only,
-        state=state,
-        orchestrator=orchestrator,
-        _model_tier_str=_model_tier_str,
-        _is_truncated_yaml=_is_truncated_yaml,
-        select_corrective_prompt=_select_corrective_prompt,
-    )
-
-
-def _maybe_return_content_after_no_tool_retry(
-    content_no_thinking: str,
-    state: Mapping[str, Any],
-    rounds_now: int,
-    turn_count: int,
-    model_tier_str: str | None,
-) -> dict | None:
-    """Compatibility wrapper around the extracted no-tool content fallback."""
-    return _maybe_return_content_after_no_tool_retry_impl(
-        content_no_thinking,
-        state,
-        rounds_now,
-        turn_count,
-        model_tier_str,
-    )
-
-
-async def _retrieve_context(state: Mapping[str, Any], orchestrator: Any) -> list:
-    """Compatibility wrapper around the extracted retrieval helper."""
-    return await _retrieve_context_impl(
-        state,
-        orchestrator,
-        symbol_graph_cls=_SymbolGraph,
-    )
-
-
-def _process_post_call_tokens(
-    resp: Any, state: Mapping[str, Any], orchestrator: Any, adapter: Any
-) -> tuple[dict | None, dict, float]:
-    """Compatibility wrapper around the extracted post-call token helper."""
-    return _process_post_call_tokens_impl(
-        resp,
-        state,
-        orchestrator,
-        adapter,
-        estimate_cost_usd=_estimate_cost_usd,
-    )
-
-
-def _run_auto_compaction(
-    history_for_prompt: list, adapter: Any, orchestrator: Any, state: Mapping[str, Any]
-) -> tuple[list, list | None]:
-    """Compatibility wrapper around the extracted auto-compaction helper."""
-    return _run_auto_compaction_impl(
-        history_for_prompt,
-        adapter,
-        orchestrator,
-        state,
-        auto_compact_config_cls=_AutoCompactConfig,
-        should_compact_fn=_should_compact,
-        compact_messages_fn=_compact_messages,
-        cfg_get_fn=_cfg_get,
-        get_context_budget_fn=_get_context_budget,
-    )
-
-
-def _build_perception_messages(
-    builder: Any,
-    state: Mapping[str, Any],
-    orchestrator: Any,
-    adapter: Any,
-    retrieved_snippets: list,
-    active_skills: list,
-    tools_list: list,
-    history_for_prompt: list,
-    perception_role: str,
-    active_model_name: str | None,
-) -> list:
-    """Compatibility wrapper around the extracted perception message builder."""
-    return _build_perception_messages_impl(
-        builder,
-        state,
-        orchestrator,
-        adapter,
-        retrieved_snippets,
-        active_skills,
-        tools_list,
-        history_for_prompt,
-        perception_role,
-        active_model_name,
-        get_context_budget=_get_context_budget,
-        get_agent_settings=_gas,
-    )
-
-
-def _resolve_active_model_name(
-    provider_capabilities: Mapping[str, Any] | None,
-    orchestrator: Any,
-) -> str:
-    """Compatibility wrapper around active-model resolution."""
-    return _resolve_active_model_name_impl(
-        provider_capabilities,
-        orchestrator,
-        extract_str=_extract_str,
-    )
-
-
-def _build_llm_kwargs(orchestrator: Any) -> dict:
-    """Compatibility wrapper around LLM runtime kwarg preparation."""
-    return _build_llm_kwargs_impl(orchestrator, logger)
-
-
-def _maybe_warn_small_context_window(
-    *,
-    state: Mapping[str, Any],
-    orchestrator: Any,
-    adapter: Any,
-    model: str | None,
-    model_tier_str: str | None,
-) -> None:
-    """Compatibility wrapper around the GAP-10 context window warning helper."""
-    _maybe_warn_small_context_window_impl(
-        state=state,
-        orchestrator=orchestrator,
-        adapter=adapter,
-        model=model,
-        model_tier_str=model_tier_str,
-        logger=logger,
-    )
-
-
-async def _build_perception_result(
-    *,
-    state: Mapping[str, Any],
-    orchestrator: Any,
-    content: str,
-    tool_call: dict | None,
-    turn_count: int,
-    overflow_compaction: dict,
-    model_tier_str: str | None,
-    session_cost_delta: float,
-    new_compacted_history: list | None,
-) -> dict:
-    """Compatibility wrapper around final perception result assembly."""
-    return await _build_perception_result_impl(
-        state=state,
-        orchestrator=orchestrator,
-        content=content,
-        tool_call=tool_call,
-        turn_count=turn_count,
-        overflow_compaction=overflow_compaction,
-        model_tier_str=model_tier_str,
-        session_cost_delta=session_cost_delta,
-        new_compacted_history=new_compacted_history,
-        task_is_complex_fn=_tic,
-        logger=logger,
-    )
 
 
 async def perception_node(state: StateLike, config: RunnableConfig) -> Dict[str, Any]:
@@ -540,11 +109,9 @@ async def _perception_node_impl(
     validate_state(state)
 
     # Resolve orchestrator first (needed for dynamic cancel_event lookup)
-    orchestrator, early_result = _resolve_orchestrator_and_cancellation_impl(
+    orchestrator, early_result = _resolve_orchestrator_and_cancellation(
         state=state,
         config=config,
-        resolve_orchestrator_fn=_resolve_orchestrator,
-        logger=logger,
     )
     if early_result is not None:
         return early_result
@@ -561,21 +128,19 @@ async def _perception_node_impl(
     except Exception:
         pass
     max_turns = int(state.get("max_turns") or _project_max_turns or 50)
-    turn_limit_result = _maybe_handle_turn_limit_impl(
+    turn_limit_result = _maybe_handle_turn_limit(
         state=state,
         orchestrator=orchestrator,
         turn_count=turn_count,
         max_turns=max_turns,
-        logger=logger,
     )
     if turn_limit_result is not None:
         return turn_limit_result
 
-    adapter, validation_error = _validate_call_model_and_adapter_impl(
+    adapter, validation_error = _validate_call_model_and_adapter(
         state=state,
         orchestrator=orchestrator,
         call_model_fn=call_model,
-        logger=logger,
     )
     if validation_error is not None:
         return {**validation_error, "turn_count": turn_count}
@@ -602,9 +167,8 @@ async def _perception_node_impl(
     _max_turns_now = int(max_turns)
 
     # Dynamic skill injection: if task involves debugging or deep searching, inject by name
-    active_skills = _compute_active_skills_for_task_impl(
+    active_skills = _compute_active_skills_for_task(
         task=str(state.get("task", "")),
-        logger=logger,
     )
 
     # CP-6: Pre-turn deterministic auto-compaction.
@@ -615,7 +179,7 @@ async def _perception_node_impl(
     # CP6-PERSIST: If a prior turn already produced a compacted snapshot,
     # start from that instead of the ever-growing raw history.  This prevents
     # the compactor from re-firing on every turn once the threshold is crossed.
-    _history_for_prompt = _bootstrap_history_for_prompt_impl(state)
+    _history_for_prompt = _bootstrap_history_for_prompt(state)
 
     # Run the extracted auto-compaction helper to keep _perception_node_impl
     # focused and easily testable.
@@ -649,29 +213,23 @@ async def _perception_node_impl(
 
 
     # ORCH-W4: Select role; build tool list filtered to the role's YAML toolset.
-    _perception_role = _select_perception_role_impl(state, orchestrator)
+    _perception_role = _select_perception_role(state, orchestrator)
     try:
         tools_list = orchestrator.get_tools_for_role(_perception_role)
     except Exception as _tl_err:
         logger.debug("perception_node: get_tools_for_role failed (%s); using full registry", _tl_err)
         tools_list = [{"name": n, "description": m.get("description", "")} for n, m in orchestrator.tool_registry.tools.items()]
 
-    tools_list = _filter_tools_near_turn_limit_impl(
+    tools_list = _filter_tools_near_turn_limit(
         tools_list=tools_list,
         turn_count=_turn_count_now,
         max_turns=_max_turns_now,
-        modifying_tools=_MODIFYING_TOOLS,
-        logger=logger,
     )
 
     # Assemble the tiered context / provider metadata used by prompt assembly and warnings.
-    _provider_context = _resolve_perception_provider_context_impl(
+    _provider_context = _resolve_perception_provider_context(
         orchestrator=orchestrator,
         adapter=adapter,
-        resolve_provider_caps_fn=_resolve_provider_caps,
-        resolve_active_model_name_fn=_resolve_active_model_name,
-        classify_model_tier_fn=_classify_model_tier,
-        logger=logger,
     )
     _active_model_name = _provider_context["active_model_name"]
 
@@ -707,7 +265,6 @@ async def _perception_node_impl(
         rounds=_rounds_now,
         model_tier_str=_model_tier_str,
         turn_count=turn_count,
-        logger=logger,
     )
     if _clarify_result is not None:
         return _clarify_result

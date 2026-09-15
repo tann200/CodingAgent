@@ -48,7 +48,7 @@ def test_reactive_overflow_early_exit_emits_event_and_truncates_history():
 
 
 def test_postcall_overflow_records_usage_and_estimates_cost():
-    from src.core.orchestration.graph.nodes import perception_node as pn
+    from src.core.orchestration.graph.nodes import perception_post_call as ppc
     from src.core.orchestration.graph.nodes.perception_node import (
         _process_post_call_tokens,
     )
@@ -88,7 +88,7 @@ def test_postcall_overflow_records_usage_and_estimates_cost():
             "src.core.inference.provider_context.get_actual_context_window",
             return_value=8000,
         ),
-        patch.object(pn, "_estimate_cost_usd", return_value=0.42),
+        patch.object(ppc, "_estimate_cost_usd", return_value=0.42),
     ):
         early, overflow_compaction, session_cost = _process_post_call_tokens(
             resp, state, orc, adapter
@@ -166,7 +166,7 @@ def test_missing_estimator_and_token_monitor_is_tolerated():
 def test_event_bus_publish_absent_and_estimator_raises_does_not_crash():
     """If event_bus.publish is missing (or not callable) and estimator raises,
     the helper should handle gracefully."""
-    from src.core.orchestration.graph.nodes import perception_node as pn
+    from src.core.orchestration.graph.nodes import perception_post_call as ppc
     from src.core.orchestration.graph.nodes.perception_node import (
         _process_post_call_tokens,
     )
@@ -195,7 +195,7 @@ def test_event_bus_publish_absent_and_estimator_raises_does_not_crash():
             "src.core.inference.provider_context.get_actual_context_window",
             return_value=80000,
         ),
-        patch.object(pn, "_estimate_cost_usd", side_effect=RuntimeError("bad price")),
+        patch.object(ppc, "_estimate_cost_usd", side_effect=RuntimeError("bad price")),
     ):
         early, overflow_compaction, session_cost = _process_post_call_tokens(
             resp, state, orc, adapter

@@ -3,6 +3,16 @@ import logging
 from pathlib import Path
 from typing import Any, Mapping
 
+try:
+    from src.core.inference.provider_context import get_context_budget
+except Exception:  # pragma: no cover - optional dependency
+    get_context_budget = None  # type: ignore[assignment]
+
+try:
+    from src.core.config_loader import get as _cfg_get
+except Exception:  # pragma: no cover - optional dependency
+    _cfg_get = None  # type: ignore[assignment]
+
 logger = logging.getLogger(__name__)
 
 
@@ -30,20 +40,8 @@ def _run_auto_compaction(
     adapter: Any,
     orchestrator: Any,
     state: Mapping[str, Any],
-    *,
-    auto_compact_config_cls: Any,
-    should_compact_fn: Any,
-    compact_messages_fn: Any,
-    cfg_get_fn: Any,
-    get_context_budget_fn: Any,
 ) -> tuple[list, list | None]:
-    """Run context compaction via :class:`CompactionService`.
-
-    The ``auto_compact_config_cls``, ``should_compact_fn``, ``compact_messages_fn``,
-    ``cfg_get_fn``, and ``get_context_budget_fn`` parameters are retained for
-    backward-compatibility with the ``perception_node.py`` wrapper — they are no
-    longer used directly; ``CompactionService`` resolves the algorithm internally.
-    """
+    """Run context compaction via :class:`CompactionService`."""
     new_compacted_history = None
     try:
         # --- Cooldown guard (unchanged from previous implementation) ----------
@@ -71,16 +69,16 @@ def _run_auto_compaction(
         try:
             if adapter and hasattr(adapter, "context_window"):
                 context_window = int(adapter.context_window or 0)
-            if not context_window and get_context_budget_fn is not None:
-                context_window = get_context_budget_fn()
+            if not context_window and get_context_budget is not None:
+                context_window = get_context_budget()
         except Exception:
             pass
 
         config_default_max = 10_000
-        if cfg_get_fn is not None:
+        if _cfg_get is not None:
             try:
                 config_default_max = int(
-                    cfg_get_fn("auto_compact_max_tokens", 10_000) or 10_000
+                    _cfg_get("auto_compact_max_tokens", 10_000) or 10_000
                 )
             except Exception:
                 pass

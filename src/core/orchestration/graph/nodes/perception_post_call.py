@@ -2,6 +2,13 @@ from src.core.messaging.event_types import ContextOverflow
 import logging
 from typing import Any, Mapping
 
+try:
+    from src.core.inference.provider_context import (
+        estimate_cost_usd as _estimate_cost_usd,
+    )
+except Exception:  # pragma: no cover - optional dependency
+    _estimate_cost_usd = None  # type: ignore[assignment]
+
 logger = logging.getLogger(__name__)
 
 
@@ -10,8 +17,6 @@ def _process_post_call_tokens(
     state: Mapping[str, Any],
     orchestrator: Any,
     adapter: Any,
-    *,
-    estimate_cost_usd: Any,
 ) -> tuple[dict | None, dict, float]:
     """Process post-LLM token usage and context-overflow handling."""
     overflow_compaction: dict = {}
@@ -78,13 +83,13 @@ def _process_post_call_tokens(
                         total_tokens=resp_total_tokens,
                     )
                     try:
-                        if estimate_cost_usd is not None:
+                        if _estimate_cost_usd is not None:
                             active_model = resp.get("model") or (
                                 adapter.default_model
                                 if adapter and hasattr(adapter, "default_model")
                                 else ""
                             )
-                            session_cost_delta = estimate_cost_usd(
+                            session_cost_delta = _estimate_cost_usd(
                                 resp_prompt_tokens,
                                 resp_completion_tokens,
                                 active_model or "",

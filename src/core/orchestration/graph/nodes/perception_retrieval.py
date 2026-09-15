@@ -5,14 +5,17 @@ from typing import Any, Mapping
 
 from src.core.orchestration.event_bus import run_with_correlation
 
+try:
+    from src.core.indexing.symbol_graph import SymbolGraph
+except Exception:  # pragma: no cover - optional dependency
+    SymbolGraph = None  # type: ignore[assignment, misc]
+
 logger = logging.getLogger(__name__)
 
 
 async def _retrieve_context(
     state: Mapping[str, Any],
     orchestrator: Any,
-    *,
-    symbol_graph_cls: Any,
 ) -> list:
     """Retrieve repository context snippets for round-0 perception."""
     retrieved_snippets: list = []
@@ -97,9 +100,9 @@ async def _retrieve_context(
             async def _fetch_test_files():
                 results = []
                 try:
-                    if symbol_graph_cls is None:
+                    if SymbolGraph is None:
                         return results
-                    symbol_graph = symbol_graph_cls(workdir)
+                    symbol_graph = SymbolGraph(workdir)
                     for symbol_query in symbol_queries[:2]:
                         tests = await run_with_correlation(
                             loop,

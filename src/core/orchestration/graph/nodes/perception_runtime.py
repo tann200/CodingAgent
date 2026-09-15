@@ -1,17 +1,114 @@
 from src.core.messaging.event_types import TaskTurnLimit, UiNotification
 import logging
+import re
 from typing import Any, Mapping, Optional
+
+# Self-contained optional dependencies (graceful degradation per project
+# convention).  Each import is guarded so the module loads even when an
+# optional feature is absent or a circular import would otherwise occur.
+from src.core.orchestration.graph.nodes.node_utils import _resolve_orchestrator
+from src.core.utils.strings import extract_str
+
+try:
+    from src.core.inference.model_tiers import classify_model as _classify_model
+except Exception:  # pragma: no cover - optional dependency
+    _classify_model = None  # type: ignore[assignment]
+
+try:
+    from src.core.inference.provider_utils import (
+        resolve_provider_capabilities as _resolve_provider_caps,
+    )
+except Exception:  # pragma: no cover - optional dependency
+    _resolve_provider_caps = None  # type: ignore[assignment]
+
+try:
+    from src.core.orchestration.loop_guards import MODIFYING_TOOLS as _MODIFYING_TOOLS
+except Exception:  # pragma: no cover - optional dependency
+    _MODIFYING_TOOLS = set()  # type: ignore[assignment]
+
+logger = logging.getLogger(__name__)
+
+_ACTION_VERBS_SMALL_MODEL = {
+    "add", "fix", "update", "change", "create", "delete", "remove",
+    "refactor", "write", "read", "run", "test", "debug", "find", "search",
+    "show", "list", "explain", "implement", "build", "install", "deploy",
+    "check", "verify", "move", "rename", "summarize", "summary",
+    "describe", "review", "analyse", "analyze", "generate", "print",
+    "display", "get", "fetch", "make", "set",
+}
+
+
+def _classify_model_tier(model: str | None, adapter: Any) -> Optional[str]:
+    """Classify model into a tier string (small, frontier, nano, etc.).
+
+    Returns the tier .value string, or None on failure.
+    """
+    try:
+        if _classify_model is None:
+            raise RuntimeError("model_tiers unavailable")
+        ctx_window = 0
+        if adapter and hasattr(adapter, "context_window"):
+            ctx_window = int(adapter.context_window or 0)
+        return _classify_model(model or "", ctx_window).value
+    except Exception:
+        logger.debug("perception_node: model tier classification failed")
+        return None
+
+
+def _check_small_model_clarification(
+    state: Mapping[str, Any],
+    rounds: int,
+    model_tier_str: Optional[str],
+    turn_count: int,
+) -> Optional[dict[str, Any]]:
+    """GAP-SMALL-4: return a clarification prompt for ambiguous small-model tasks.
+
+    When the task is very short (< 8 words) and contains no file references,
+    code identifiers, or action verbs, small models are likely to hallucinate
+    a plan. Returns a dict with the clarification response, or None to continue.
+    """
+    if rounds != 0 or model_tier_str != "small":
+        return None
+
+    raw_task = (state.get("task") or "").strip()
+    task_words = raw_task.split()
+    has_action = any(w.lower() in _ACTION_VERBS_SMALL_MODEL for w in task_words)
+    has_file_ref = bool(re.search(r"\w+\.\w+|/\w+|\w+\.py\b", raw_task))
+    has_code_id = bool(re.search(r"`[^`]+`|\"[A-Za-z_]\w+\"", raw_task))
+
+    if len(task_words) >= 8 or has_action or has_file_ref or has_code_id:
+        return None
+
+    logger.info(
+        "perception_node: GAP-SMALL-4 ambiguous task detected for small model, "
+        "returning clarification prompt (task=%r, words=%d)",
+        raw_task[:80],
+        len(task_words),
+    )
+    clarify_msg = (
+        "I need a bit more detail to help you effectively. Could you tell me:\n"
+        "- What file or component should I work on?\n"
+        "- What should change or be created?\n"
+        "- What is the expected outcome?"
+    )
+    return {
+        "history": [{"role": "assistant", "content": clarify_msg}],
+        "next_action": None,
+        "needs_clarification": True,
+        "rounds": rounds + 1,
+        "turn_count": turn_count,
+        "empty_response_count": 0,
+        **({"model_tier": model_tier_str} if model_tier_str else {}),
+    }
 
 
 def _resolve_orchestrator_and_cancellation(
     *,
     state: Mapping[str, Any],
     config: Any,
-    resolve_orchestrator_fn: Any,
-    logger: logging.Logger,
 ) -> tuple[Any, Optional[dict[str, Any]]]:
     """Resolve perception orchestrator and return standard early errors/cancel payloads."""
-    orchestrator = resolve_orchestrator_fn(state, config)
+    orchestrator = _resolve_orchestrator(state, config)
     if orchestrator is None:
         logger.error("perception_node: orchestrator is None in config")
         return None, {
@@ -44,7 +141,6 @@ def _maybe_handle_turn_limit(
     orchestrator: Any,
     turn_count: int,
     max_turns: int,
-    logger: logging.Logger,
 ) -> Optional[dict[str, Any]]:
     """Return the standard turn-limit payload when perception exceeds max_turns."""
     if turn_count <= max_turns:
@@ -77,7 +173,6 @@ def _validate_call_model_and_adapter(
     state: Mapping[str, Any],
     orchestrator: Any,
     call_model_fn: Any,
-    logger: logging.Logger,
 ) -> tuple[Any, Optional[dict[str, Any]]]:
     """Validate perception runtime dependencies before prompt construction."""
     base_payload: dict[str, Any] = {
@@ -108,8 +203,6 @@ def _filter_tools_near_turn_limit(
     tools_list: list[dict[str, Any]],
     turn_count: int,
     max_turns: int,
-    modifying_tools: set[str] | list[str] | tuple[str, ...],
-    logger: logging.Logger,
 ) -> list[dict[str, Any]]:
     """Remove modifying tools from the prompt when nearing the turn limit."""
     near_limit = int(turn_count) >= (int(max_turns) - 2)
@@ -117,9 +210,9 @@ def _filter_tools_near_turn_limit(
         return tools_list
 
     try:
-        if modifying_tools:
+        if _MODIFYING_TOOLS:
             tools_list = [
-                tool for tool in tools_list if tool.get("name") not in modifying_tools
+                tool for tool in tools_list if tool.get("name") not in _MODIFYING_TOOLS
             ]
         logger.info(
             "perception_node: near turn limit (%d/%d) — write tools removed from prompt",
@@ -134,7 +227,6 @@ def _filter_tools_near_turn_limit(
 def _compute_active_skills_for_task(
     *,
     task: str,
-    logger: logging.Logger,
     debug_keywords: tuple[str, ...] = (
         "debug",
         "fix",
@@ -188,27 +280,23 @@ def _resolve_perception_provider_context(
     *,
     orchestrator: Any,
     adapter: Any,
-    resolve_provider_caps_fn: Any,
-    resolve_active_model_name_fn: Any,
-    classify_model_tier_fn: Any,
-    logger: logging.Logger,
 ) -> dict[str, Any]:
     """Resolve provider/model metadata used by perception prompt and warnings."""
     try:
-        provider_capabilities = resolve_provider_caps_fn(orchestrator, adapter)
+        provider_capabilities = _resolve_provider_caps(orchestrator, adapter)
     except Exception:
         provider_capabilities = {}
 
-    active_model_name = resolve_active_model_name_fn(provider_capabilities, orchestrator)
+    active_model_name = _resolve_active_model_name(provider_capabilities, orchestrator)
 
     try:
-        caps = resolve_provider_caps_fn(orchestrator, adapter)
+        caps = _resolve_provider_caps(orchestrator, adapter)
     except Exception:
         caps = {}
 
     provider = caps.get("provider_name")
     model = caps.get("model")
-    model_tier_str = classify_model_tier_fn(model, adapter, logger)
+    model_tier_str = _classify_model_tier(model, adapter)
 
     return {
         "provider_capabilities": provider_capabilities,
@@ -222,8 +310,6 @@ def _resolve_perception_provider_context(
 def _resolve_active_model_name(
     provider_capabilities: Mapping[str, Any] | None,
     orchestrator: Any,
-    *,
-    extract_str: Any,
 ) -> str:
     """Resolve the active model name used for perception prompt selection."""
     active_model_name = ""
@@ -255,7 +341,7 @@ def _resolve_active_model_name(
     return active_model_name
 
 
-def _build_llm_kwargs(orchestrator: Any, logger: logging.Logger) -> dict:
+def _build_llm_kwargs(orchestrator: Any) -> dict:
     """Build call-model kwargs, including deterministic and thinking-mode settings."""
     llm_kwargs: dict[str, Any] = {}
     try:
@@ -318,7 +404,6 @@ def _maybe_warn_small_context_window(
     adapter: Any,
     model: str | None,
     model_tier_str: str | None,
-    logger: logging.Logger,
 ) -> None:
     """Emit the GAP-10 warning when a small/frontier model has a tiny context window."""
     rounds_now = state.get("rounds") or 0

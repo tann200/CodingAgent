@@ -8,9 +8,11 @@ async def test_build_perception_result_preserves_state_and_snapshot(monkeypatch)
     from src.core.orchestration.graph.nodes.perception_node import (
         _build_perception_result,
     )
-    from src.core.orchestration.graph.nodes import perception_node as perception_node_module
+    from src.core.orchestration.graph.nodes import (
+        perception_result as perception_result_module,
+    )
 
-    monkeypatch.setattr(perception_node_module, "_tic", lambda state: True)
+    monkeypatch.setattr(perception_result_module, "_task_is_complex", lambda state: True)
 
     class SnapshotManager:
         async def track(self):
@@ -69,9 +71,11 @@ async def test_build_perception_result_omits_optional_fields_when_absent(monkeyp
     from src.core.orchestration.graph.nodes.perception_node import (
         _build_perception_result,
     )
-    from src.core.orchestration.graph.nodes import perception_node as perception_node_module
+    from src.core.orchestration.graph.nodes import (
+        perception_result as perception_result_module,
+    )
 
-    monkeypatch.setattr(perception_node_module, "_tic", lambda state: False)
+    monkeypatch.setattr(perception_result_module, "_task_is_complex", lambda state: False)
 
     orchestrator = SimpleNamespace(snapshot_manager=None)
     state = {

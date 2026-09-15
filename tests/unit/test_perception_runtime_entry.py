@@ -1,3 +1,6 @@
+import pytest
+
+from src.core.orchestration.graph.nodes import perception_runtime
 from src.core.orchestration.graph.nodes.perception_runtime import (
     _compute_active_skills_for_task,
     _filter_tools_near_turn_limit,
@@ -9,19 +12,40 @@ from src.core.orchestration.graph.nodes.perception_runtime import (
 )
 
 
-def test_resolve_orchestrator_and_cancellation_returns_missing_orchestrator_error():
+def _capture_logger():
+    """Return a fake runtime logger recording (level, first-arg message) calls."""
     logged = []
-    logger = type(
-        "L",
-        (),
-        {"error": lambda *a, **k: logged.append(a[1] if len(a) > 1 else a[0]), "info": lambda *a, **k: None},
-    )()
+
+    class _L:
+        @staticmethod
+        def _record(*a):
+            logged.append(("_", a))
+
+        def debug(self, *a):
+            logged.append(("debug", a[0]))
+
+        def info(self, *a):
+            logged.append(("info", a[0]))
+
+        def warning(self, *a):
+            logged.append(("warning", a[0]))
+
+        def error(self, *a):
+            logged.append(("error", a[0]))
+
+    logger = _L()
+    return logger, logged
+
+
+def test_resolve_orchestrator_and_cancellation_returns_missing_orchestrator_error(
+    monkeypatch,
+):
+    logger, logged = _capture_logger()
+    monkeypatch.setattr(perception_runtime, "logger", logger)
 
     orchestrator, result = _resolve_orchestrator_and_cancellation(
         state={"rounds": 2},
         config={},
-        resolve_orchestrator_fn=lambda state, config: None,
-        logger=logger,
     )
 
     assert orchestrator is None
@@ -31,28 +55,27 @@ def test_resolve_orchestrator_and_cancellation_returns_missing_orchestrator_erro
         "rounds": 3,
         "errors": ["orchestrator not found in config"],
     }
-    assert logged == ["perception_node: orchestrator is None in config"]
+    assert logged == [("error", "perception_node: orchestrator is None in config")]
 
 
-def test_resolve_orchestrator_and_cancellation_returns_cancel_payload_from_state_event():
-    logged = []
+def test_resolve_orchestrator_and_cancellation_returns_cancel_payload_from_state_event(
+    monkeypatch,
+):
+    logger, logged = _capture_logger()
+    monkeypatch.setattr(perception_runtime, "logger", logger)
 
     class _Event:
         def is_set(self):
             return True
 
-    logger = type(
-        "L",
-        (),
-        {"error": lambda *a, **k: None, "info": lambda *a, **k: logged.append(a[1] if len(a) > 1 else a[0])},
-    )()
     orch = type("Orch", (), {"cancel_event": None})()
-
     orchestrator, result = _resolve_orchestrator_and_cancellation(
-        state={"rounds": 1, "history": [{"role": "user", "content": "x"}], "cancel_event": _Event()},
-        config={},
-        resolve_orchestrator_fn=lambda state, config: orch,
-        logger=logger,
+        state={
+            "rounds": 1,
+            "history": [{"role": "user", "content": "x"}],
+            "cancel_event": _Event(),
+        },
+        config={"orchestrator": orch},
     )
 
     assert orchestrator is orch
@@ -64,31 +87,33 @@ def test_resolve_orchestrator_and_cancellation_returns_cancel_payload_from_state
         "errors": ["canceled"],
         "empty_response_count": 0,
     }
-    assert logged == ["perception_node: Task canceled by user"]
+    assert logged == [("info", "perception_node: Task canceled by user")]
 
 
-def test_resolve_orchestrator_and_cancellation_returns_orchestrator_when_clear():
+def test_resolve_orchestrator_and_cancellation_returns_orchestrator_when_clear(
+    monkeypatch,
+):
+    _, logged = _capture_logger()
+    monkeypatch.setattr(perception_runtime, "logger", type("L", (), {})())
+
     class _Event:
         def is_set(self):
             return False
 
-    logger = type("L", (), {"error": lambda *a, **k: None, "info": lambda *a, **k: None})()
     orch = type("Orch", (), {"cancel_event": _Event()})()
-
     orchestrator, result = _resolve_orchestrator_and_cancellation(
         state={"rounds": 0, "history": []},
-        config={},
-        resolve_orchestrator_fn=lambda state, config: orch,
-        logger=logger,
+        config={"orchestrator": orch},
     )
 
     assert orchestrator is orch
     assert result is None
 
 
-def test_maybe_handle_turn_limit_publishes_event_and_returns_payload():
+def test_maybe_handle_turn_limit_publishes_event_and_returns_payload(monkeypatch):
     events = []
-    logged = []
+    logger, logged = _capture_logger()
+    monkeypatch.setattr(perception_runtime, "logger", logger)
 
     class _EventBus:
         def publish(self, name, payload):
@@ -102,11 +127,6 @@ def test_maybe_handle_turn_limit_publishes_event_and_returns_payload():
             d.pop("timestamp", None)
             events.append((name, d))
 
-    logger = type(
-        "L",
-        (),
-        {"warning": lambda *a, **k: logged.append(a[1] if len(a) > 1 else a[0])},
-    )()
     orchestrator = type("Orch", (), {"event_bus": _EventBus()})()
 
     result = _maybe_handle_turn_limit(
@@ -114,7 +134,6 @@ def test_maybe_handle_turn_limit_publishes_event_and_returns_payload():
         orchestrator=orchestrator,
         turn_count=6,
         max_turns=5,
-        logger=logger,
     )
 
     assert result == {
@@ -129,39 +148,34 @@ def test_maybe_handle_turn_limit_publishes_event_and_returns_payload():
         "errors": ["turn_limit_reached"],
     }
     assert events == [("task.turn_limit", {"turn_count": 6, "max_turns": 5})]
-    assert logged == ["perception_node: turn_count=%d >= max_turns=%d — routing to END"]
+    assert logged == [
+        ("warning", "perception_node: turn_count=%d >= max_turns=%d — routing to END")
+    ]
 
 
-def test_maybe_handle_turn_limit_returns_none_when_under_limit():
-    logger = type("L", (), {"warning": lambda *a, **k: None})()
+def test_maybe_handle_turn_limit_returns_none_when_under_limit(monkeypatch):
+    monkeypatch.setattr(perception_runtime, "logger", type("L", (), {})())
 
     result = _maybe_handle_turn_limit(
         state={"history": [], "rounds": 0},
         orchestrator=None,
         turn_count=5,
         max_turns=5,
-        logger=logger,
     )
 
     assert result is None
 
 
-def test_validate_call_model_and_adapter_returns_error_when_call_model_missing():
-    logged = []
-    logger = type(
-        "L",
-        (),
-        {
-            "error": lambda *a, **k: logged.append(("error", a[1] if len(a) > 1 else a[0])),
-            "warning": lambda *a, **k: logged.append(("warning", a[1] if len(a) > 1 else a[0])),
-        },
-    )()
+def test_validate_call_model_and_adapter_returns_error_when_call_model_missing(
+    monkeypatch,
+):
+    logger, logged = _capture_logger()
+    monkeypatch.setattr(perception_runtime, "logger", logger)
 
     adapter, result = _validate_call_model_and_adapter(
         state={"rounds": 1},
         orchestrator=object(),
         call_model_fn=None,
-        logger=logger,
     )
 
     assert adapter is None
@@ -174,28 +188,21 @@ def test_validate_call_model_and_adapter_returns_error_when_call_model_missing()
     assert logged == [("error", "perception_node: call_model is not callable: %s")]
 
 
-def test_validate_call_model_and_adapter_returns_error_when_adapter_access_fails():
-    logged = []
+def test_validate_call_model_and_adapter_returns_error_when_adapter_access_fails(
+    monkeypatch,
+):
+    logger, logged = _capture_logger()
+    monkeypatch.setattr(perception_runtime, "logger", logger)
 
     class _Orch:
         @property
         def adapter(self):
             raise RuntimeError("boom")
 
-    logger = type(
-        "L",
-        (),
-        {
-            "error": lambda *a, **k: logged.append(("error", a[1] if len(a) > 1 else a[0])),
-            "warning": lambda *a, **k: logged.append(("warning", a[1] if len(a) > 1 else a[0])),
-        },
-    )()
-
     adapter, result = _validate_call_model_and_adapter(
         state={"rounds": 0},
         orchestrator=_Orch(),
         call_model_fn=lambda *a, **k: None,
-        logger=logger,
     )
 
     assert adapter is None
@@ -208,22 +215,14 @@ def test_validate_call_model_and_adapter_returns_error_when_adapter_access_fails
     assert logged == [("error", "perception_node: failed to get adapter: %s")]
 
 
-def test_validate_call_model_and_adapter_returns_error_when_adapter_none():
-    logged = []
-    logger = type(
-        "L",
-        (),
-        {
-            "error": lambda *a, **k: logged.append(("error", a[1] if len(a) > 1 else a[0])),
-            "warning": lambda *a, **k: logged.append(("warning", a[1] if len(a) > 1 else a[0])),
-        },
-    )()
+def test_validate_call_model_and_adapter_returns_error_when_adapter_none(monkeypatch):
+    logger, logged = _capture_logger()
+    monkeypatch.setattr(perception_runtime, "logger", logger)
 
     adapter, result = _validate_call_model_and_adapter(
         state={"rounds": 2},
         orchestrator=type("Orch", (), {"adapter": None})(),
         call_model_fn=lambda *a, **k: None,
-        logger=logger,
     )
 
     assert adapter is None
@@ -236,28 +235,23 @@ def test_validate_call_model_and_adapter_returns_error_when_adapter_none():
     assert logged == [("warning", "perception_node: orchestrator.adapter is None")]
 
 
-def test_validate_call_model_and_adapter_returns_adapter_when_valid():
-    logger = type("L", (), {"error": lambda *a, **k: None, "warning": lambda *a, **k: None})()
+def test_validate_call_model_and_adapter_returns_adapter_when_valid(monkeypatch):
+    monkeypatch.setattr(perception_runtime, "logger", type("L", (), {})())
     orch = type("Orch", (), {"adapter": object()})()
 
     adapter, result = _validate_call_model_and_adapter(
         state={"rounds": 0},
         orchestrator=orch,
         call_model_fn=lambda *a, **k: None,
-        logger=logger,
     )
 
     assert adapter is orch.adapter
     assert result is None
 
 
-def test_filter_tools_near_turn_limit_removes_modifying_tools():
-    logged = []
-    logger = type(
-        "L",
-        (),
-        {"info": lambda *a, **k: logged.append(a[1] if len(a) > 1 else a[0])},
-    )()
+def test_filter_tools_near_turn_limit_removes_modifying_tools(monkeypatch):
+    logger, logged = _capture_logger()
+    monkeypatch.setattr(perception_runtime, "logger", logger)
 
     result = _filter_tools_near_turn_limit(
         tools_list=[
@@ -267,56 +261,54 @@ def test_filter_tools_near_turn_limit_removes_modifying_tools():
         ],
         turn_count=8,
         max_turns=10,
-        modifying_tools={"write_file", "edit_file"},
-        logger=logger,
     )
 
     assert result == [{"name": "read_file"}]
     assert logged == [
-        "perception_node: near turn limit (%d/%d) — write tools removed from prompt"
+        (
+            "info",
+            "perception_node: near turn limit (%d/%d) — write tools removed from prompt",
+        )
     ]
 
 
-def test_filter_tools_near_turn_limit_leaves_tools_when_not_near_limit():
-    logger = type("L", (), {"info": lambda *a, **k: None})()
+def test_filter_tools_near_turn_limit_leaves_tools_when_not_near_limit(monkeypatch):
+    monkeypatch.setattr(perception_runtime, "logger", type("L", (), {})())
     tools = [{"name": "read_file"}, {"name": "write_file"}]
 
     result = _filter_tools_near_turn_limit(
         tools_list=tools,
         turn_count=3,
         max_turns=10,
-        modifying_tools={"write_file"},
-        logger=logger,
     )
 
     assert result == tools
 
 
-def test_compute_active_skills_for_task_injects_context_hygiene_for_debug_tasks():
-    logged = []
-    logger = type(
-        "L",
-        (),
-        {"info": lambda *a, **k: logged.append(a[1] if len(a) > 1 else a[0])},
-    )()
+def test_compute_active_skills_for_task_injects_context_hygiene_for_debug_tasks(
+    monkeypatch,
+):
+    logger, logged = _capture_logger()
+    monkeypatch.setattr(perception_runtime, "logger", logger)
 
     result = _compute_active_skills_for_task(
         task="debug why search is failing",
-        logger=logger,
     )
 
     assert result == ["context_hygiene"]
     assert logged == [
-        "perception_node: injected context_hygiene skill for debugging/searching task"
+        (
+            "info",
+            "perception_node: injected context_hygiene skill for debugging/searching task",
+        )
     ]
 
 
-def test_compute_active_skills_for_task_returns_empty_for_non_debug_tasks():
-    logger = type("L", (), {"info": lambda *a, **k: None})()
+def test_compute_active_skills_for_task_returns_empty_for_non_debug_tasks(monkeypatch):
+    monkeypatch.setattr(perception_runtime, "logger", type("L", (), {})())
 
     result = _compute_active_skills_for_task(
         task="summarize project status",
-        logger=logger,
     )
 
     assert result == []
@@ -339,21 +331,25 @@ def test_select_perception_role_falls_back_to_orchestrator_and_default():
     assert _select_perception_role({}, object()) == "operational"
 
 
-def test_resolve_perception_provider_context_returns_combined_metadata():
+def test_resolve_perception_provider_context_returns_combined_metadata(monkeypatch):
     calls = []
-    logger = type("L", (), {"debug": lambda *a, **k: None})()
+    monkeypatch.setattr(perception_runtime, "logger", type("L", (), {"debug": lambda *a, **k: None})())
 
     def _resolve_caps(orchestrator, adapter):
         calls.append("caps")
         return {"provider_name": "openai", "model": "gpt-test"}
 
+    monkeypatch.setattr(perception_runtime, "_resolve_provider_caps", _resolve_caps)
+    monkeypatch.setattr(
+        perception_runtime,
+        "_resolve_active_model_name",
+        lambda caps, orchestrator: caps.get("model", ""),
+    )
+    monkeypatch.setattr(perception_runtime, "_classify_model_tier", lambda model, adapter: "small")
+
     result = _resolve_perception_provider_context(
         orchestrator=object(),
         adapter=object(),
-        resolve_provider_caps_fn=_resolve_caps,
-        resolve_active_model_name_fn=lambda caps, orchestrator: caps.get("model", ""),
-        classify_model_tier_fn=lambda model, adapter, logger: "small",
-        logger=logger,
     )
 
     assert result == {
@@ -366,16 +362,25 @@ def test_resolve_perception_provider_context_returns_combined_metadata():
     assert calls == ["caps", "caps"]
 
 
-def test_resolve_perception_provider_context_handles_provider_resolution_failure():
-    logger = type("L", (), {"debug": lambda *a, **k: None})()
+def test_resolve_perception_provider_context_handles_provider_resolution_failure(
+    monkeypatch,
+):
+    monkeypatch.setattr(perception_runtime, "logger", type("L", (), {"debug": lambda *a, **k: None})())
+
+    def _boom(orchestrator, adapter):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(perception_runtime, "_resolve_provider_caps", _boom)
+    monkeypatch.setattr(
+        perception_runtime,
+        "_resolve_active_model_name",
+        lambda caps, orchestrator: "",
+    )
+    monkeypatch.setattr(perception_runtime, "_classify_model_tier", lambda model, adapter: None)
 
     result = _resolve_perception_provider_context(
         orchestrator=object(),
         adapter=object(),
-        resolve_provider_caps_fn=lambda orchestrator, adapter: (_ for _ in ()).throw(RuntimeError("boom")),
-        resolve_active_model_name_fn=lambda caps, orchestrator: "",
-        classify_model_tier_fn=lambda model, adapter, logger: None,
-        logger=logger,
     )
 
     assert result == {

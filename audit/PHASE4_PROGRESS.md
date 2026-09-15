@@ -1,7 +1,47 @@
 # Phase 4 — Progress & Next-Task Analysis
 
 **Scope:** Track Phase 4 of the audit roadmap (advanced features, Weeks 9-12), record completed items, and provide a concrete implementation analysis for the next task.
-**Status:** 4.2 + 4.3 + 4.4 + 4.5 + 4.6 + 4.7 + 4.8 complete; pending **4.1**.
+**Status:** 4.1 – 4.8 all complete — Phase 4 done.
+
+---
+
+## Completed — 4.1 Perception Node Refactor
+
+De-fragmented the perception node: `perception_node.py` is now a thin
+orchestrator, and each helper module is self-contained (owns its module
+`logger` and resolves its dependencies in-module via graceful try/except
+imports).
+
+**Structure changes:**
+- Removed the 12 dependency-injection wrapper functions + the dead
+  `_await_llm_task` shim + the dep-import block from `perception_node.py`.
+- Moved genuinely-local functions to their subject modules:
+  `_parse_yaml_tool_call_from_content` → `perception_parsing`;
+  `_select_corrective_prompt` → `perception_no_tool`;
+  `_classify_model_tier` / `_check_small_model_clarification` →
+  `perception_runtime`.
+- Dropped 20+ DI params across helper signatures (e.g. `logger`,
+  `resolve_orchestrator_fn`, `modifying_tools`, `symbol_graph_cls`,
+  `estimate_cost_usd`, `get_context_budget`, `task_is_complex_fn`, and 5
+  unused compaction deps).
+- Kept the two patch seams the test suite depends on: the `call_model_fn`
+  param of `_validate_call_model_and_adapter` and the `call_model` module
+  attribute of `perception_node` (patched by integration/e2e tests). Legacy
+  test surface is preserved via `# noqa: F401` re-exports
+  (`_parse_yaml_tool_call_from_content`, `_select_corrective_prompt`,
+  `_resolve_active_model_name`).
+- Rewrote `test_perception_runtime_entry.py` (17 contract tests) against the
+  self-contained runtime API (monkeypatched module attrs
+  `_resolve_orchestrator` / `logger` / `_resolve_provider_caps` /
+  `_classify_model_tier` instead of injected params).
+
+**Gates:** ruff (default + CI-scoped `E,F,W`) clean; mypy clean on all 9
+changed node files; `compile_agent_graph` / `_compile_frontier_graph` /
+`_compile_lite_graph` all build; full baseline **4,850 tests collecting, all
+green** (incl. integration tests that patch `perception_node.call_model`);
+unit baseline unchanged — no test-count drift.
+
+---
 
 ---
 
@@ -230,13 +270,10 @@ Added provider/model comparison to the evaluation framework delivered in Phase 3
 
 ---
 
-## Pending (next-task candidates)
+## Phase 4 Complete
 
-| # | Item | Location | Complexity | Notes |
-|---|------|----------|------------|-------|
-| 4.1 | Refactor perception node (reduce fragmentation) | `perception_node.py` + helpers | High | Reduces maintenance burden |
-
-Suggested next: **4.1** — the final Phase-4 item. It is a High-complexity
-structural refactor (perception node + its helpers), best done in a dedicated
-session, now that the permission/alias/tool-constant state (4.6/4.7/4.2) and
-regression tooling (4.3/4.4/4.5) are in place to validate it.
+All eight Phase-4 roadmap items (4.1 – 4.8) are completed and committed.
+Suggested next steps for future sessions (post-Phase-4 candidates tracked in
+`audit/COMPREHENSIVE_AUDIT_REPORT.md`): verify the Phase-3/4 feature surface
+end-to-end via the live-provider checks, then address the remaining open
+audit items listed in the overview report's Open Severity appendices.

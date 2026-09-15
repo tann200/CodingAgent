@@ -5,6 +5,75 @@ from typing import Any, Mapping
 logger = logging.getLogger(__name__)
 
 
+# P1-D: Graduated corrective prompts helper.
+# Selects a corrective prompt variant based on the number of consecutive
+# empty/no-tool responses (attempt) and model tier.
+def _select_corrective_prompt(
+    attempt: int = 1,
+    model_tier: str | None = None,
+    truncated_yaml: bool = False,
+) -> str:
+    try:
+        att = int(attempt or 1)
+    except Exception:
+        att = 1
+    # Graduated prompts: gentle -> specific -> critical
+    prompts = [
+        (
+            "\n\n<system_reminder>\n"
+            "Please provide a valid YAML tool call for your next action.\n"
+            "Use this format:\n"
+            "```yaml\n"
+            "name: tool_name\n"
+            "arguments:\n"
+            "  arg: value\n"
+            "```\n"
+            "Avoid empty responses or thinking-only blocks.\n"
+            "If you cannot determine the next action, you may use the 'respond' tool.\n"
+            "</system_reminder>\n"
+        ),
+        (
+            "\n\n<system_reminder>\n"
+            "Please output a valid YAML tool call block now. No analysis or preamble.\n"
+            "```yaml\n"
+            "name: tool_name\n"
+            "arguments:\n"
+            "  key: value\n"
+            "```\n"
+            "</system_reminder>\n"
+        ),
+        (
+            "\n\n<system_reminder>\n"
+            "Important: Please provide a valid YAML tool call block.\n"
+            "Format:\n"
+            "```yaml\n"
+            "name: tool_name\n"
+            "arguments:\n"
+            "  key: value\n"
+            "```\n"
+            "Avoid thinking-only responses or empty outputs.\n"
+            "</system_reminder>\n"
+        ),
+    ]
+    idx = max(0, min(att - 1, len(prompts) - 1))
+    tier = (model_tier or "").lower()
+    if truncated_yaml:
+        return (
+            "\n\n<system_reminder>\n"
+            "Your previous YAML tool block may have been cut off or malformed. "
+            "Please resend a complete YAML tool call.\n"
+            "```yaml\n"
+            "name: tool_name\n"
+            "arguments:\n"
+            "  key: value\n"
+            "```\n"
+            "</system_reminder>\n"
+        )
+    if tier == "small" and att >= 2:
+        return prompts[1]
+    return prompts[idx]
+
+
 def _handle_no_tool_or_empty_response(
     content: str,
     content_stripped: str,
@@ -14,7 +83,6 @@ def _handle_no_tool_or_empty_response(
     _model_tier_str: str | None,
     *,
     _is_truncated_yaml: bool = False,
-    select_corrective_prompt: Any,
 ) -> dict | None:
     """Encapsulate corrective-prompt retry logic when no tool was parsed."""
     if not (content_stripped or thinking_only):
@@ -49,7 +117,7 @@ def _handle_no_tool_or_empty_response(
             "empty_response_count": 0,
         }
 
-    corrective_prompt = select_corrective_prompt(
+    corrective_prompt = _select_corrective_prompt(
         attempt=empty_response_count,
         model_tier=_model_tier_str,
         truncated_yaml=_is_truncated_yaml,

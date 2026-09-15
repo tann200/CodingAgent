@@ -2,9 +2,52 @@ import json
 import logging
 from typing import Any, Mapping
 
+import yaml
+
 from src.core.orchestration.tool_parser import parse_tool_block
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_yaml_tool_call_from_content(content: str) -> dict | None:
+    """Backward-compatible YAML tool-call parser used by legacy tests."""
+    try:
+        stripped = (content or "").strip()
+        if "```yaml" in stripped:
+            start = stripped.find("```yaml") + len("```yaml")
+            end = stripped.find("```", start)
+            yaml_block = (
+                stripped[start:end].strip()
+                if end != -1
+                else stripped[start:].strip()
+            )
+        else:
+            yaml_block = stripped
+
+        if not yaml_block:
+            return None
+
+        data = yaml.safe_load(yaml_block)
+        if not data:
+            return None
+        if isinstance(data, dict) and "name" in data:
+            return {
+                "name": data.get("name"),
+                "arguments": data.get("arguments") or {},
+            }
+        if isinstance(data, dict) and len(data) == 1:
+            name, arguments = next(iter(data.items()))
+            return {
+                "name": name,
+                "arguments": arguments or {},
+            }
+    except Exception:
+        pass
+
+    try:
+        return parse_tool_block(content)
+    except Exception:
+        return None
 
 
 def _extract_message_obj(resp: Any) -> dict:

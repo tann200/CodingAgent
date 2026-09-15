@@ -1,6 +1,13 @@
 import logging
 from typing import Any, Mapping
 
+try:
+    from src.core.orchestration.graph.builder import _task_is_complex
+except Exception:  # pragma: no cover - circular-import-safe optional dependency
+    _task_is_complex = None  # type: ignore[assignment]
+
+logger = logging.getLogger(__name__)
+
 
 async def _build_perception_result(
     *,
@@ -13,8 +20,6 @@ async def _build_perception_result(
     model_tier_str: str | None,
     session_cost_delta: float,
     new_compacted_history: list | None,
-    task_is_complex_fn: Any,
-    logger: logging.Logger,
 ) -> dict:
     """Assemble the final perception-node state update payload."""
     current_plan = state.get("current_plan")
@@ -72,9 +77,9 @@ async def _build_perception_result(
         result["agent_mode"] = current_agent_mode
 
     try:
-        if task_is_complex_fn is None:
+        if _task_is_complex is None:
             raise RuntimeError("builder unavailable")
-        task_complexity = "complex" if task_is_complex_fn(state) else "simple"
+        task_complexity = "complex" if _task_is_complex(state) else "simple"
         result["task_complexity"] = task_complexity
         logger.info("perception_node WF-1: task_complexity=%s", task_complexity)
     except Exception:

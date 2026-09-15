@@ -1,6 +1,18 @@
 from pathlib import Path
 from typing import Any, Mapping
 
+try:
+    from src.core.inference.provider_context import get_context_budget
+except Exception:  # pragma: no cover - optional dependency
+    get_context_budget = None  # type: ignore[assignment]
+
+try:
+    from src.core.orchestration.project_settings import (
+        get_active_settings as _get_active_settings,
+    )
+except Exception:  # pragma: no cover - optional dependency
+    _get_active_settings = None  # type: ignore[assignment]
+
 
 def _build_perception_messages(
     builder: Any,
@@ -13,9 +25,6 @@ def _build_perception_messages(
     history_for_prompt: list,
     perception_role: str,
     active_model_name: str | None,
-    *,
-    get_context_budget: Any,
-    get_agent_settings: Any,
 ) -> list:
     """Build prompt messages and apply the perception-specific injections."""
     try:
@@ -91,8 +100,8 @@ def _build_perception_messages(
         turn_count_now = int((state.get("turn_count") or 0))
         project_max_turns: int | None = None
         try:
-            if get_agent_settings is not None:
-                project_settings = get_agent_settings()
+            if _get_active_settings is not None:
+                project_settings = _get_active_settings()
                 if (
                     project_settings is not None
                     and project_settings.max_turns is not None
