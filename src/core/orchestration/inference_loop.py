@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional
 from src.core.logger import logger as guilogger
 from src.core.orchestration.event_bus import new_correlation_id
 from src.core.messaging.event_types import SessionTitleGenerated
+from src.core.orchestration.graph.routing_constants import MAX_GRAPH_ROUNDS
 
 from src.core.orchestration.inference_loop_responses import (
     _build_graph_failure_response,
@@ -309,12 +310,12 @@ def run_agent_once_impl(
             # Allow multiple graph rounds to consume multi-turn tool sequences (bounded)
             # F-71: single named constant; guard below uses >= so it fires at exactly
             # MAX_TOOL_LOOP_ITERATIONS, not one beyond it.
-            # P1-T3: read from config key "max_graph_rounds" (default 20) so operators
-            # can tune the limit without touching source code.
+            # P1-T3: read from config key "max_graph_rounds" (default MAX_GRAPH_ROUNDS)
+            # so operators can tune the limit without touching source code.
             _configured_rounds = (
-                int(_cfg_get("max_graph_rounds", 20))
+                int(_cfg_get("max_graph_rounds", MAX_GRAPH_ROUNDS))
                 if _cfg_get is not None
-                else 20
+                else MAX_GRAPH_ROUNDS
             )
             MAX_TOOL_LOOP_ITERATIONS: int = _configured_rounds
             max_rounds = MAX_TOOL_LOOP_ITERATIONS

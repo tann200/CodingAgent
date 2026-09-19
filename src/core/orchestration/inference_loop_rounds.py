@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from src.core.logger import logger as guilogger
+from src.core.orchestration.graph.routing_constants import MAX_GRAPH_ROUNDS
 
 
 def _run_graph_round_sync(graph: Any, orch: Any, state_to_run: Dict[str, Any]) -> Dict[str, Any]:
@@ -187,7 +188,7 @@ def _build_loop_exit_response(
             guilogger.error(f"inference_loop: terminated due to {error_type}")
 
             if error_type == "infinite_loop_tool_limit":
-                _actual_limit = 20
+                _actual_limit = MAX_GRAPH_ROUNDS
                 try:
                     from src.core.config_loader import get as _cg
                     _v = _cg("max_graph_rounds")

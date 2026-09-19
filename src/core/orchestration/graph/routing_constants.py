@@ -37,3 +37,6 @@ TOTAL_DEBUG_CAP_OTHER = 9  # total-debug cap for other tiers
 MAX_ROUNDS_PLANNING = 15  # force-end after this many planning rounds
 MAX_PLAN_ATTEMPTS = 3  # force execution after this many plan attempts
 FORCE_EXECUTION_ROUNDS = 8  # force execution past this many rounds
+
+# ── outer graph-loop budget (WR-2) ──
+MAX_GRAPH_ROUNDS = 20  # default bound on consecutive graph rounds per turn (max_graph_rounds config)
