@@ -124,9 +124,10 @@ However, the system has **critical security orientation issues** (fail-open on s
 - **Impact:** Roles are non-functional if dispatched.
 - **Fix:** Deleted `researcher.md` (the role canonicalizes to `analyst`, so the file was dead content). Rewrote `scout.md`/`tester.md` as functional roles reporting via the returned result instead of a publish topic. Aligned `SCOUT_AGENT`/`TESTER_AGENT` prompt_overrides in `agent_types.py`. Contract tests in `tests/unit/test_role_brain.py`.
 
-### MC-6: Missing Per-Tool Network Policy in Sandbox
+### ~~MC-6: Missing Per-Tool Network Policy in Sandbox~~ RESOLVED (Phase 5)
 - **Issue:** `bash` (vs `bash_readonly`) doesn't pass `network=False`. Network-capable commands depend on sandbox level, which is opt-in.
 - **Impact:** Without sandbox enforcement, `curl`, `wget` etc. run with full network access.
+- **Fix:** `bash()` now declares an explicit `network=False`; new `_check_network_policy` guard (`_bash_exec.py`) refuses network-capable commands (classified via `is_network_capable` in `_approval.py`) when the deny cannot be enforced and enforcement is required (autonomous / `SANDBOX_REQUIRE_ENFORCEMENT`); warns otherwise. Defense-in-depth beyond the existing gate-2 DANGEROUS block + git subcommand allowlist.
 
 ---
 

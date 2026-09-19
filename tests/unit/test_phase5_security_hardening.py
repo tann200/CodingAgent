@@ -338,3 +338,159 @@ def test_service_auto_approves_allowlisted_gated_tool():
         verdict = asyncio.run(svc.pre_execute("bash", {"command": "ls"}))
 
     assert verdict.blocked is False
+
+
+# ---------------------------------------------------------------------------
+# MC-6 — explicit per-tool network policy in the sandbox
+# ---------------------------------------------------------------------------
+
+
+class TestMC6NetworkPolicy:
+    """MC-6: bash() must declare an explicit network-deny policy and refuse
+    network-capable commands when that deny cannot be enforced while
+    enforcement is required (autonomous / SANDBOX_REQUIRE_ENFORCEMENT)."""
+
+    def test_is_network_capable_true_for_network_first_tokens(self):
+        from src.tools._approval import is_network_capable
+
+        for cmd in [
+            "curl -s http://example.com",
+            "wget http://example.com",
+            "pip install requests",
+            "pip3 install requests",
+            "brew install jq",
+            "ssh user@host ls",
+            "rsync a b",
+            "scp a user@host:b",
+        ]:
+            assert is_network_capable(cmd) is True, cmd
+
+    def test_is_network_capable_true_for_remote_git_ops(self):
+        from src.tools._approval import is_network_capable
+
+        for cmd in [
+            "git clone https://github.com/x/y.git",
+            "git fetch origin",
+            "git pull origin main",
+            "git push origin main",
+            "git ls-remote origin",
+        ]:
+            assert is_network_capable(cmd) is True, cmd
+
+    def test_is_network_capable_true_for_package_manager_subcommands(self):
+        from src.tools._approval import is_network_capable
+
+        for cmd in [
+            "npm install",
+            "npm i lodash",
+            "cargo install ripgrep",
+            "go mod download",
+        ]:
+            assert is_network_capable(cmd) is True, cmd
+
+    def test_is_network_capable_false_for_local_commands(self):
+        from src.tools._approval import is_network_capable
+
+        for cmd in [
+            "ls -la",
+            "git status",
+            "git diff",
+            "npm test",
+            "npm run build",
+            "grep foo.txt",
+        ]:
+            assert is_network_capable(cmd) is False, cmd
+
+    def test_network_policy_guard_none_when_sandbox_enforces(self):
+        from src.tools import _bash_exec
+
+        with (
+            patch.object(
+                _bash_exec._sandbox, "get_sandbox_level", return_value="workspace"
+            ),
+            patch.object(_bash_exec._sandbox, "sandbox_available", return_value=True),
+        ):
+            assert (
+                _bash_exec._check_network_policy(["git", "push"], "git", "git push")
+                is None
+            )
+
+    def test_network_policy_guard_refuses_when_unsandboxed_and_enforcement_required(
+        self,
+    ):
+        from src.tools import _bash_exec
+
+        with (
+            patch.object(_bash_exec._sandbox, "get_sandbox_level", return_value="off"),
+            patch.object(
+                _bash_exec._sandbox, "_enforcement_required", return_value=True
+            ),
+        ):
+            err = _bash_exec._check_network_policy(
+                ["git", "push"], "git", "git push"
+            )
+
+        assert err is not None
+        assert err["status"] == "error"
+        assert "outbound network" in err["error"]
+
+    def test_network_policy_guard_warns_and_allows_when_interactive(self):
+        from src.tools import _bash_exec
+
+        with (
+            patch.object(_bash_exec._sandbox, "get_sandbox_level", return_value="off"),
+            patch.object(
+                _bash_exec._sandbox, "_enforcement_required", return_value=False
+            ),
+            patch.object(_bash_exec, "_get_event_bus") as mock_bus,
+        ):
+            assert (
+                _bash_exec._check_network_policy(["git", "fetch"], "git", "git fetch")
+                is None
+            )
+
+        mock_bus.return_value.publish.assert_called_once()
+        (name, _payload), _ = mock_bus.return_value.publish.call_args
+        assert name == "system.warning"
+
+    def test_network_policy_guard_none_for_local_command(self):
+        from src.tools import _bash_exec
+
+        assert (
+            _bash_exec._check_network_policy(["ls", "-la"], "ls", "ls -la") is None
+        )
+
+    def test_bash_declares_explicit_network_false(self):
+        from src.tools import _bash_exec as be
+
+        with patch.object(be._sandbox, "run_sandboxed") as mock_sandbox:
+            mock_sandbox.return_value = MagicMock(
+                returncode=0, stdout="ok", stderr=""
+            )
+            result = be.bash("ls -la", workdir="/tmp")
+
+        assert result["status"] == "ok"
+        mock_sandbox.assert_called_once()
+        call_kwargs = mock_sandbox.call_args[1] or {}
+        assert call_kwargs.get("network") is False
+
+    def test_bash_consults_network_policy_before_execution(self):
+        """bash() must honour the guard even for an allowlisted command when
+        enforcement is required and the sandbox cannot enforce the deny."""
+        from src.tools import _bash_exec as be
+
+        with (
+            patch.object(be, "_is_network_capable", return_value=True),
+            patch.object(be, "_check_tier3_approval", return_value=None),
+            patch.object(be._sandbox, "get_sandbox_level", return_value="off"),
+            patch.object(be._sandbox, "sandbox_available", return_value=False),
+            patch.object(
+                be._sandbox, "_enforcement_required", return_value=True
+            ),
+            patch.object(be._sandbox, "run_sandboxed") as mock_run,
+        ):
+            result = be.bash("ls -la", workdir="/tmp")
+
+        assert result["status"] == "error"
+        assert "outbound network" in result["error"]
+        mock_run.assert_not_called()

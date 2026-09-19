@@ -4,7 +4,7 @@
 (`audit/COMPREHENSIVE_AUDIT_REPORT.md`) that were NOT covered by Phases 1–4,
 plus leftover doc/lint cleanups.  Prioritized by severity, security-critical
 items first.
-**Status:** HS-1 complete; open backlog below.
+**Status:** HS-1 + MC-6 complete; open backlog below.
 
 ---
 
@@ -59,6 +59,54 @@ patching `_AUTONOMOUS_MODE` updated and passing.
 
 ---
 
+## Completed — MC-6: Missing per-tool network policy in sandbox
+
+`bash()` ran inside the sandbox without declaring a network policy — it relied
+on `run_sandboxed`'s *default* `network=False` instead of passing it
+explicitly (as `bash_readonly()` already did), so the deny-remote-network
+intent was default-dependent and invisible.  Worse, `network=False` is only
+meaningful when a backend is actually enforcing it: with sandbox level `"off"`
+or the unsandboxed fallback (no bwrap / non-enforcing sandbox-exec),
+`run_sandboxed` silently ignores the flag and a network-capable command (e.g.
+`curl`, `git push`) would run with **full host network**.
+
+**Fix: explicit, enforceable per-tool network policy.**
+
+- **`src/tools/_approval.py`** — new `NETWORK_CAPABLE_COMMANDS` /
+  `NETWORK_CAPABLE_SUBCOMMANDS` sets + `is_network_capable(command)` (same
+  exact-token / prefix matching style as `is_tier3`).  Covers curl/wget/pip/
+  apt/brew/ssh/rsync/scp + multi-token `git clone|fetch|pull|push|ls-remote`,
+  `npm install|add|publish`, `cargo install`, `go mod download`, etc.  Local
+  commands (`git status`, `npm test`, `ls`) are NOT network-capable.
+- **`src/tools/_bash_exec.py`**:
+  - `bash()` now declares its policy explicitly — `run_sandboxed(..., network=False)`.
+  - New `_check_network_policy(cmd_parts, first_cmd, command)` guard, wired
+    into `bash()` right after the tier-3 approval gate (so it covers the
+    foreground AND `run_in_background` paths).  When a network-capable command
+    would run with the deny unenforceable (level `"off"` or no enforcing
+    backend): **refuse** if enforcement is required (autonomous mode or
+    `SANDBOX_REQUIRE_ENFORCEMENT`) — fail-closed; otherwise **warn + proceed**
+    with a `system.warning` event (mirrors the documented unsandboxed-fallback
+    behaviour).
+- One reachable-vector note: the analyzer currently rates `curl`/`wget`/`pip`
+  as DANGEROUS (hard-blocked at gate 2) and remote `git` subcommands are
+  excluded by `GIT_SAFE_SUBCOMMANDS`; the guard is the defense-in-depth that
+  keeps network capable commands gated if an allowlist/analyzer changes or
+  `bash_security` import fails.
+
+**New contract tests:** 10 added to `tests/unit/test_phase5_security_hardening.py`
+(`TestMC6NetworkPolicy`): network-capable classification True/False, guard
+no-op under an enforcing sandbox, fail-closed refusal when unsandboxed +
+enforcement required, warn-and-run when interactive, explicit `network=False`
+in `bash()`'s `run_sandboxed` call, and the wired `bash()` refusal (mock
+backend) that never reaches `run_sandboxed`.
+
+**Gates:** ruff (default + CI-scoped) clean, mypy clean.  Full baseline:
+**4,880 tests collected (4,870 + 10 new), all green** (4,879 passed,
+1 skipped).
+
+---
+
 ## Open backlog (remaining audit findings)
 
 | # | Item | Location | Severity | Notes |
@@ -67,7 +115,6 @@ patching `_AUTONOMOUS_MODE` updated and passing.
 | TW-2 | `run_in_background` bypasses sandboxing/output capping | `src/tools/_bash_exec.py:496` | MEDIUM | `Popen(stdout=DEVNULL)` unsupervised |
 | TW-3 | Contract `model_validate` fail-open | `src/core/orchestration/tool_execution_pipeline.py` | MEDIUM | Broken contracts silently pass |
 | MC-2 / 1.7 | `HOOK_SESSION_START` exported but no call-site | `src/core/plugin/hook_registry.py:79` | LOW | Fulfill documented API |
-| MC-6 | No per-tool network policy in sandbox | `src/tools/_bash_exec.py` / `sandbox.py` | MEDIUM | `bash` vs `bash_readonly` network flag |
 | WR-1 | Routing default-to-perception loop risk | `session_routing.py:74` | MEDIUM-HIGH | Verify interlocking guards hold |
 | WR-2 | Two independent round-limiting mechanisms (20 vs 15) | `inference_loop.py:259`, `planning_routing.py:8` | LOW | Reconcile via `routing_constants.py` |
 | WR-3 | Inter-round compaction drops role alternation | `inference_loop_rounds.py:126-143` | LOW | `[Context summary]` single message |
@@ -79,7 +126,6 @@ patching `_AUTONOMOUS_MODE` updated and passing.
 | 3.8 leftover | Root-level duplicate test-report cleanup | repo root | LOW | Annotated as point-in-time in Phase 3.8 |
 | — | Live-provider checks (Phase-3/4 feature surface) | CI `live-provider-checks` job | — | Requires provider credentials; currently skipped |
 
-Suggested next: **HS-6 or MC-6 / TW-2** — the remaining security-oriented
-findings after HS-1.  HS-6 is the largest (broad `except` triage across the
-codebase) but low-risk per-block; MC-6/TW-2 are focused sandbox/background
-escape fixes.
+Suggested next: **TW-2** — the remaining focused sandbox/background escape fix
+(`run_in_background` bypasses sandboxing and output capping).  After that,
+TW-3 / HS-6 (largest block, lowest risk per item).

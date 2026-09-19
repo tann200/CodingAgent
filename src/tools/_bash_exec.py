@@ -14,7 +14,7 @@ import subprocess
 import unicodedata
 import uuid
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, List, Optional
 
 from src.tools._security import (
     BASH_STRICT_ALLOWLIST,
@@ -33,7 +33,10 @@ from src.tools._security import (
 from src.tools._tool import tool, PermissionKind
 from src.tools.bash_security import analyze_bash_command, BashRiskLevel
 from src.tools import sandbox as _sandbox
-from src.tools._approval import is_tier3 as _is_tier3
+from src.tools._approval import (
+    is_tier3 as _is_tier3,
+    is_network_capable as _is_network_capable,
+)
 from src.tools.tools_config import is_autonomous as _is_autonomous
 from src.core.orchestration.approval_gate import (
     register_bash_gate,
@@ -492,6 +495,13 @@ def bash(
     if _approval_result is not None:
         return _approval_result
 
+    # MC-6: per-tool network policy — bash() denies outbound network.  Refuse
+    # network-capable commands when the sandbox cannot enforce the deny and
+    # enforcement is required; warn (and proceed) otherwise.
+    _net_policy_err = _check_network_policy(cmd_parts, first_cmd, command)
+    if _net_policy_err is not None:
+        return _net_policy_err
+
     # Background execution: spawn without waiting, return PID as task ID.
     if run_in_background:
         try:
@@ -519,6 +529,7 @@ def bash(
             cmd_parts,
             cwd=Path(workdir),
             timeout=timeout_secs,
+            network=False,
             capture_output=True,
             text=True,
         )
@@ -817,4 +828,69 @@ def _check_tier3_approval(command: str) -> Optional[Dict[str, Any]]:
                 "error": "Bash command was denied by approval gate",
                 "tool_id": _tool_id,
             }
+    return None
+
+
+def _check_network_policy(
+    cmd_parts: List[str], first_cmd: str, command: str
+) -> Optional[Dict[str, Any]]:
+    """MC-6: enforce the per-tool network-deny policy.
+
+    ``bash()`` denies outbound network (``network=False``).  For commands that
+    are inherently network-capable (curl, wget, pip, git remote ops, …) that
+    deny is only meaningful when the sandbox backend actually enforces it —
+    bwrap via ``--unshare-net``, sandbox-exec via the generated profile.  With
+    sandbox level ``"off"`` (or no enforcing backend → unsandboxed fallback)
+    ``run_sandboxed`` silently ignores ``network=False`` and the command would
+    run with full host network.
+
+    When the deny cannot be enforced:
+      * enforcement required (autonomous mode or SANDBOX_REQUIRE_ENFORCEMENT)
+        → the command is refused (fail-closed);
+      * interactive mode → the command proceeds with a ``system.warning``
+        event (mirrors the documented unsandboxed-fallback behaviour).
+
+    Returns an error dict when the command must be refused, ``None`` otherwise.
+    """
+    if not _is_network_capable(command):
+        return None
+    try:
+        _enforcing = (
+            _sandbox.get_sandbox_level() != "off" and _sandbox.sandbox_available()
+        )
+    except Exception:
+        _enforcing = False
+    if _enforcing:
+        return None
+    try:
+        _refuse = bool(_sandbox._enforcement_required())
+    except Exception:
+        _refuse = True
+    if _refuse:
+        return {
+            "status": "error",
+            "error": (
+                f"Command '{first_cmd}' performs outbound network access, which the "
+                "bash tool denies by default. The sandbox cannot enforce the network "
+                "deny in the current configuration (sandbox level 'off' or no "
+                "enforcing backend), and sandbox/network enforcement is required "
+                "(SANDBOX_REQUIRE_ENFORCEMENT or autonomous mode). Refusing."
+            ),
+        }
+    _logger.warning(
+        "bash: network-capable command %r running unsandboxed — network-deny "
+        "policy cannot be enforced on this host",
+        command,
+    )
+    try:
+        _get_event_bus().publish(
+            "system.warning",
+            {
+                "message": (
+                    "bash: network-deny policy not enforced for command: " + command
+                )
+            },
+        )
+    except Exception:
+        pass
     return None
