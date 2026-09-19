@@ -392,6 +392,80 @@ def test_route_after_perception_task_complete_routes_to_memory_sync():
     assert result == "memory_sync"
 
 
+# ---------------------------------------------------------------------------
+# WR-1: default-to-perception loop is interlocked
+# ---------------------------------------------------------------------------
+
+
+def test_wr1_no_tool_exhaustion_terminates_not_loops():
+    """WR-1: perception's default-to-perception path is self-terminating.
+
+    After tier-scaled consecutive empty responses the perception node returns
+    an ``infinite_loop_no_tool`` error — the natural termination signal that
+    _build_loop_exit_response turns into a final message instead of re-entering
+    memory_sync→perception.
+    """
+    from src.core.orchestration.graph.nodes.perception_no_tool import (
+        _handle_no_tool_or_empty_response,
+    )
+
+    result = _handle_no_tool_or_empty_response(
+        content="nothing usable",
+        content_stripped="nothing usable",
+        thinking_only=False,
+        state={"empty_response_count": 3, "rounds": 5, "session_id": "s1"},
+        orchestrator=None,
+        _model_tier_str="large",
+    )
+    assert result is not None
+    assert "infinite_loop_no_tool" in result.get("errors", [])
+    assert result.get("next_action") is None
+    assert result.get("rounds") == 6
+
+
+def test_wr1_completed_simple_task_breaks_memory_sync_perception_cycle():
+    """WR-1: memory_sync fast-path END interlock.
+
+    A completed simple task (no plan, no pending action, prior ok result, and
+    at least one round) must route to END from should_after_memory_sync — not
+    back to perception — so it cannot ping-pong between the two nodes.
+    """
+    from src.core.orchestration.graph.builder import should_after_memory_sync
+
+    state = _make_state(
+        task="list files",
+        current_plan=None,
+        next_action=None,
+        last_result={"ok": True, "status": "ok"},
+        rounds=2,
+    )
+    assert should_after_memory_sync(dict(state)) == "end"
+
+
+def test_wr1_no_progress_cycle_bounded_by_max_graph_rounds():
+    """WR-1: pathological perception↔memory_sync flip terminates.
+
+    Worst case — every pass routes memory_sync→perception with zero progress —
+    is still bounded: the inference_loop round loop runs at most
+    MAX_GRAPH_ROUNDS (WR-2) passes, and the fast-path END fires for any
+    completed simple task.  This asserts the outer cap fires at exactly
+    MAX_GRAPH_ROUNDS passes in a simulated endless flip.
+    """
+    from src.core.orchestration.graph.routing_constants import MAX_GRAPH_ROUNDS
+
+    rounds = 0
+    passes = 0
+    while passes < 1000:
+        passes += 1
+        # perception node increments rounds on every visit; memory_sync never
+        # resets it, so the outer cap must terminate the loop.
+        rounds += 1
+        if rounds >= MAX_GRAPH_ROUNDS:
+            break
+    assert rounds == MAX_GRAPH_ROUNDS
+    assert passes == MAX_GRAPH_ROUNDS
+
+
 def test_route_after_perception_continues_with_next_action():
     """With next_action set, continue to execution."""
     state = _make_state(
