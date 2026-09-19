@@ -85,3 +85,17 @@ class TestSymbolGraphHashBug:
 
         for key in sg.file_hashes:
             assert isinstance(key, str), f"Expected str key, got {type(key)}: {key!r}"
+
+    def test_file_hash_uses_sha256(self, tmp_path):
+        """RA-4: change detection must use SHA-256, not the deprecated MD5."""
+        import hashlib
+
+        py_file = tmp_path / "module.py"
+        py_file.write_text("def baz(): pass\n")
+
+        sg = SymbolGraph(workdir=str(tmp_path))
+        sg.update_file(str(py_file))
+
+        expected = hashlib.sha256(py_file.read_bytes()).hexdigest()
+        assert sg.file_hashes[str(py_file)] == expected
+        assert len(sg.file_hashes[str(py_file)]) == 64

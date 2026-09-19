@@ -161,7 +161,7 @@ class SymbolGraph:
         """Get hash of file content."""
         if not path.exists():
             return ""
-        return hashlib.md5(path.read_bytes()).hexdigest()
+        return hashlib.sha256(path.read_bytes()).hexdigest()
 
     @staticmethod
     def _strip_comments(source: str, suffix: str) -> str:
