@@ -100,3 +100,42 @@ class TestRegistryBuilder:
         tools = set(reg.list())
         for expected in ("read_file", "write_file", "edit_file", "bash", "glob"):
             assert expected in tools, f"{expected!r} missing from example_registry()"
+
+
+class TestBuiltinModuleAutoDiscovery:
+    """TW-5: built-in tool modules are auto-discovered, not hard-coded."""
+
+    def test_names_exclude_private_and_init(self):
+        from src.tools._registry import _builtin_module_names
+
+        names = _builtin_module_names()
+        assert names == sorted(names)
+        for n in names:
+            assert n.startswith("src.tools."), n
+            mod = n.rsplit(".", 1)[1]
+            assert not mod.startswith("_"), f"private module leaked: {n}"
+            assert mod != "__init__", n
+
+    def test_discovery_covers_historic_builtin_surface(self):
+        from src.tools._registry import _builtin_module_names
+
+        names = set(_builtin_module_names())
+        for expected in (
+            "src.tools.file_tools",
+            "src.tools.guardrails",
+            "src.tools.git_tools",
+            "src.tools.repo_read_tools",
+            "src.tools._file_io",  # private helper must NOT be auto-discovered
+        ):
+            if expected.endswith("_file_io"):
+                assert expected not in names
+            else:
+                assert expected in names
+
+    def test_build_registry_registers_core_tools(self):
+        from src.tools._registry import build_registry
+
+        reg = build_registry()
+        tools = set(reg.list())
+        for expected in ("read_file", "write_file", "edit_file", "bash", "glob", "list_files"):
+            assert expected in tools, f"{expected!r} missing from auto-discovered registry"

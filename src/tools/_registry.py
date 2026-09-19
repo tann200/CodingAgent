@@ -22,10 +22,12 @@ Adding a custom tool without modifying any core file::
 
 from __future__ import annotations
 
+import functools
 import importlib
 import inspect
 import logging
 import os
+import pkgutil
 import threading
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
@@ -39,39 +41,33 @@ logger = logging.getLogger(__name__)
 # cap.  Override via the TOOL_POOL_MAX_PLUGINS environment variable.
 _DEFAULT_MAX_PLUGIN_TOOLS: int = 50
 
-# Modules that make up the built-in tool set.  Order is irrelevant.
-_BUILTIN_MODULES = [
-    "src.tools.file_tools",
-    "src.tools.git_tools",
-    "src.tools.verification_tools",
-    "src.tools.todo_tools",
-    "src.tools.subagent_tools",
-    # Consolidated repo tools (replaces repo_tools, repo_analysis_tools,
-    # repo_overview_tool, repo_summary — those files are now consolidated
-    # into repo_read_tools / repo_write_tools)
-    "src.tools.repo_read_tools",
-    "src.tools.repo_write_tools",
-    "src.tools.patch_tools",
-    "src.tools.state_tools",
-    "src.tools.system_tools",
-    "src.tools.memory_tools",
-    "src.tools.interaction_tools",
-    "src.tools.guardrails",
-    "src.tools.web_tools",
-    "src.tools.ast_tools",
-    "src.tools.project_tools",
-    "src.tools.batch_tools",
-    "src.tools.skill_tools",
-    "src.tools.plan_mode_tools",
-    "src.tools.rollback_tools",
-]
-
 # Modules that require optional dependencies (e.g. pygls for LSP).
 # ImportError on these is logged at DEBUG level rather than WARNING
 # to avoid alarming users who have not installed the optional extra.
 _OPTIONAL_MODULES: frozenset[str] = frozenset({
     "src.tools.lsp_tools",
 })
+
+
+@functools.lru_cache(maxsize=1)
+def _builtin_module_names() -> List[str]:
+    """Auto-discover built-in ``@tool`` modules under the ``src.tools`` package.
+
+    Returns every public module (no ``_`` prefix, not ``__init__``) in the
+    package, sorted for determinism (TW-5).  Adding a new ``@tool`` module
+    under ``src/tools`` therefore registers automatically instead of requiring
+    an edit to a hand-maintained list.  Private ``_*`` helper modules and the
+    ``toolsets`` subpackage are excluded — tool definitions register once
+    through their stable public surface (e.g. ``file_tools`` re-exports
+    ``_file_io``); degradation is per-module in ``discover_module_name``.
+    """
+    pkg_path = Path(__file__).parent
+    names = []
+    for _mi in pkgutil.iter_modules([str(pkg_path)]):
+        if _mi.ispkg or _mi.name.startswith("_") or _mi.name == "__init__":
+            continue
+        names.append(f"src.tools.{_mi.name}")
+    return sorted(names)
 
 # Built-in aliases: alias_name -> canonical_name
 _BUILTIN_ALIASES: Dict[str, str] = {
@@ -492,8 +488,8 @@ def build_registry(
 
     reg = ToolRegistry()
 
-    # Discover all built-in tool modules
-    for mod_name in _BUILTIN_MODULES:
+    # Discover all built-in tool modules (auto-discovered, TW-5)
+    for mod_name in _builtin_module_names():
         reg.discover_module_name(mod_name)
 
     # Register built-in aliases
