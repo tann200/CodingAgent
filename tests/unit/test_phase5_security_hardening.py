@@ -12,6 +12,7 @@ auto-approved.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -629,3 +630,148 @@ class TestTW2BackgroundSandbox:
         call_args, call_kwargs = mock_popen.call_args
         assert call_args[0] == ["bwrap", "--unshare-net", "--", "ls", "-la"]
         assert call_kwargs.get("cwd") == "/tmp"
+
+
+# ---------------------------------------------------------------------------
+# TW-3 — contract model_validate must fail CLOSED
+# ---------------------------------------------------------------------------
+
+
+class TestTW3ContractValidation:
+    """TW-3: a broken tool contract (one whose ``model_validate`` raises
+    anything other than ``ValidationError``) used to be swallowed by
+    ``except Exception: pass`` in ``execute_tool_impl``, silently letting the
+    tool run unvalidated.  It must now fail closed with an observable error."""
+
+    @staticmethod
+    def _make_orch():
+        from src.core.orchestration.orchestrator import Orchestrator
+
+        orch = Orchestrator.__new__(Orchestrator)
+        orch.working_dir = "/tmp/proj"
+        orch._session_read_files = set()
+        orch._session_modified_files = set()
+        orch._usage_buffer = {}
+        orch.rollback_manager = MagicMock()
+        orch.event_bus = MagicMock()
+        orch.plan_mode = None
+        orch._plan_mode_approved = None
+        orch.explore_mode = False
+        orch.cost_tracker = MagicMock()
+        orch.session_store = MagicMock()
+        orch._dry_run = False
+        orch.tool_registry = MagicMock()
+        orch.tool_registry.get = MagicMock(
+            return_value={
+                "fn": MagicMock(return_value={"ok": True}),
+                "side_effects": [],
+                "description": "test",
+            }
+        )
+        orch._normalize_tool_result = (
+            lambda r: r if isinstance(r, dict) else {"result": r}
+        )
+        orch._get_tool_timeout = MagicMock(return_value=0)
+        orch._normalize_args = MagicMock(return_value={})
+        orch._append_execution_trace = MagicMock()
+        orch._sync_session_state = MagicMock()
+        orch._tool_hook_runner = MagicMock()
+        orch._tool_hook_runner.run_pre = MagicMock(
+            return_value=SimpleNamespace(allowed=True)
+        )
+        return orch
+
+    @staticmethod
+    def _args(name, **kwargs):
+        return {"name": name, "arguments": kwargs}
+
+    def test_broken_contract_model_validate_denies_tool(self):
+        from src.core.orchestration.tool_execution_pipeline import execute_tool_impl
+
+        orch = self._make_orch()
+        contract = MagicMock()
+        contract.model_validate.side_effect = RuntimeError("contract broken")
+
+        with (
+            patch("src.core.orchestration.tool_execution_pipeline.get_tool_contract", return_value=contract),
+            patch("src.core.orchestration.tool_execution_pipeline.PERMISSION_REQUIRED_TOOLS", set()),
+            patch("src.core.orchestration.tool_execution_pipeline.WRITE_TOOLS_REQUIRING_READ", set()),
+        ):
+            res = execute_tool_impl(orch, self._args("my_tool"))
+
+        assert res["ok"] is False
+        assert "contract validation" in res["error"]
+        orch.tool_registry.get.return_value["fn"].assert_not_called()
+
+    def test_broken_get_tool_contract_denies_tool(self):
+        from src.core.orchestration.tool_execution_pipeline import execute_tool_impl
+
+        orch = self._make_orch()
+
+        with (
+            patch(
+                "src.core.orchestration.tool_execution_pipeline.get_tool_contract",
+                side_effect=RuntimeError("contract registry broken"),
+            ),
+            patch("src.core.orchestration.tool_execution_pipeline.PERMISSION_REQUIRED_TOOLS", set()),
+            patch("src.core.orchestration.tool_execution_pipeline.WRITE_TOOLS_REQUIRING_READ", set()),
+        ):
+            res = execute_tool_impl(orch, self._args("my_tool"))
+
+        assert res["ok"] is False
+        assert "contract validation" in res["error"]
+        orch.tool_registry.get.return_value["fn"].assert_not_called()
+
+    def test_pydantic_validation_error_denies_tool_with_message(self):
+        """The genuine pydantic ValidationError path still returns the schema
+        message (regression guard for the inner except)."""
+        from pydantic import BaseModel as _PydanticBaseModel
+
+        from src.core.orchestration.tool_execution_pipeline import execute_tool_impl
+
+        class _ArgsContract(_PydanticBaseModel):
+            path: str
+
+        orch = self._make_orch()
+
+        with (
+            patch(
+                "src.core.orchestration.tool_execution_pipeline.get_tool_contract",
+                return_value=_ArgsContract,
+            ),
+            patch("src.core.orchestration.tool_execution_pipeline.PERMISSION_REQUIRED_TOOLS", set()),
+            patch("src.core.orchestration.tool_execution_pipeline.WRITE_TOOLS_REQUIRING_READ", set()),
+        ):
+            res = execute_tool_impl(orch, self._args("my_tool"))
+
+        assert res["ok"] is False
+        assert "contract validation" in res["error"]
+        assert "path" in res["error"]
+        orch.tool_registry.get.return_value["fn"].assert_not_called()
+
+    def test_valid_contract_permits_execution(self):
+        from src.core.orchestration.tool_execution_pipeline import execute_tool_impl
+
+        calls = []
+
+        def _validate(obj):
+            calls.append(dict(obj))
+
+        contract = MagicMock()
+        contract.model_validate.side_effect = _validate
+
+        orch = self._make_orch()
+        with (
+            patch("src.core.orchestration.tool_execution_pipeline.get_tool_contract", return_value=contract),
+            patch("src.core.orchestration.tool_execution_pipeline.PERMISSION_REQUIRED_TOOLS", set()),
+            patch("src.core.orchestration.tool_execution_pipeline.WRITE_TOOLS_REQUIRING_READ", set()),
+        ):
+            res = execute_tool_impl(orch, self._args("my_tool", path="x.py"))
+
+        assert res["ok"] is True
+        # First validation covers the args (pre-execution); the second covers
+        # the normalized result (post-execution).
+        assert calls and calls[0] == {"path": "x.py"}
+        orch.tool_registry.get.return_value["fn"].assert_called_once_with(
+            **{"path": "x.py"}
+        )

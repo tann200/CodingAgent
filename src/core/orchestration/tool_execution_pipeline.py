@@ -986,8 +986,19 @@ def execute_tool_impl(orch: Any, tool_call: Dict[str, Any]) -> Dict[str, Any]:
                     "ok": False,
                     "error": f"Tool call failed contract validation: {ve}",
                 }
-    except Exception:
-        pass
+    except Exception as exc:
+        # TW-3: contract validation must fail CLOSED. A broken/missing contract
+        # that raises anything other than ValidationError used to be swallowed
+        # here, silently letting the tool run unvalidated.
+        guilogger.error(
+            "tool_execution_pipeline: contract validation failed for tool %r (fail-closed): %s",
+            name,
+            exc,
+        )
+        return {
+            "ok": False,
+            "error": f"Tool call failed contract validation: {exc}",
+        }
 
     # Strip LLM-injected user_approved (prevents WorkspaceGuard bypass)
     args.pop("user_approved", None)
