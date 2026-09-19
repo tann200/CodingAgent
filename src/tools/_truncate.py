@@ -39,6 +39,13 @@ MAX_LINES: int = 2_000
 #: Maximum number of bytes before truncation (100 KB).
 MAX_BYTES: int = 100 * 1024
 
+#: Per-result char cap for tool-result *string fields* surfaced to the agent.
+#: This is the tightest tier (TW-4): the pipeline truncates every string value
+#: in a tool result at this length because the text is fed directly back into
+#: the LLM context.  Deliberately far below MAX_BYTES, which only guards the
+#: byte/line encoder for raw blobs.
+RESULT_MAX_CHARS: int = 8_000
+
 # ---------------------------------------------------------------------------
 # Hint messages
 # ---------------------------------------------------------------------------

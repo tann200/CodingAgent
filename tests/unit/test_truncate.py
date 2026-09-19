@@ -19,6 +19,7 @@ from __future__ import annotations
 from src.tools._truncate import (
     MAX_BYTES,
     MAX_LINES,
+    RESULT_MAX_CHARS,
     Truncate,
     _HINT_DELEGATE,
     _HINT_SEARCH,
@@ -57,6 +58,19 @@ class TestConstants:
 
     def test_max_bytes(self):
         assert MAX_BYTES == 100 * 1024
+
+    def test_result_max_chars_tier(self):
+        # TW-4: the per-result cap is far tighter than the byte encoder cap.
+        assert RESULT_MAX_CHARS == 8_000
+        assert RESULT_MAX_CHARS < MAX_BYTES
+
+    def test_pipeline_uses_canonical_result_cap(self):
+        # TW-4: the pipeline must not carry its own divergent limit.
+        import src.core.orchestration.tool_execution_pipeline as tep
+        from src.tools import _truncate
+
+        assert tep.TOOL_OUTPUT_MAX_CHARS == RESULT_MAX_CHARS
+        assert tep.TOOL_OUTPUT_MAX_CHARS == _truncate.RESULT_MAX_CHARS
 
 
 # ---------------------------------------------------------------------------
