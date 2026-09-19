@@ -537,6 +537,7 @@ class TestTW2BackgroundSandbox:
             patch.object(
                 be._sandbox, "_write_sandbox_exc_profile", return_value="/tmp/p.sb"
             ),
+            patch.object(be._sandbox, "_SANDBOX_EXEC_PATH", "/usr/bin/sandbox-exec"),
         ):
             wrapped = be._build_background_sandbox(
                 ["python3", "x.py"], Path("/tmp/proj")
