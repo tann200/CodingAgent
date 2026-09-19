@@ -494,3 +494,137 @@ class TestMC6NetworkPolicy:
         assert result["status"] == "error"
         assert "outbound network" in result["error"]
         mock_run.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# TW-2 — run_in_background must not escape sandbox enforcement
+# ---------------------------------------------------------------------------
+
+
+class TestTW2BackgroundSandbox:
+    """TW-2: background execution (bare ``Popen``) previously bypassed the
+    sandbox entirely — no filesystem confinement, no network deny, no output
+    capping.  Now the spawn is wrapped in a sandbox when a backend exists,
+    refused when enforcement is required but no backend is available, and
+    warned about in interactive mode when it falls back unsandboxed."""
+
+    def test_background_wrapper_builds_bwrap_prefix(self):
+        from pathlib import Path
+
+        from src.tools import _bash_exec as be
+
+        with (
+            patch.object(be._sandbox, "_bwrap_available", return_value=True),
+            patch.object(
+                be._sandbox, "_build_bwrap_args", return_value=["bwrap", "args"]
+            ),
+        ):
+            wrapped = be._build_background_sandbox(
+                ["python3", "x.py"], Path("/tmp/proj")
+            )
+
+        assert wrapped == ["bwrap", "args", "--", "python3", "x.py"]
+
+    def test_background_wrapper_uses_enforcing_sandbox_exec(self):
+        from pathlib import Path
+
+        from src.tools import _bash_exec as be
+
+        with (
+            patch.object(be._sandbox, "_bwrap_available", return_value=False),
+            patch.object(be._sandbox, "_sandbox_exec_available", return_value=True),
+            patch.object(be._sandbox, "sandbox_exec_enforced", return_value=True),
+            patch.object(
+                be._sandbox, "_write_sandbox_exc_profile", return_value="/tmp/p.sb"
+            ),
+        ):
+            wrapped = be._build_background_sandbox(
+                ["python3", "x.py"], Path("/tmp/proj")
+            )
+
+        assert wrapped == ["/usr/bin/sandbox-exec", "-f", "/tmp/p.sb", "python3", "x.py"]
+
+    def test_background_wrapper_none_without_backend(self):
+        from pathlib import Path
+
+        from src.tools import _bash_exec as be
+
+        with (
+            patch.object(be._sandbox, "_bwrap_available", return_value=False),
+            patch.object(be._sandbox, "_sandbox_exec_available", return_value=False),
+        ):
+            assert (
+                be._build_background_sandbox(["ls"], Path("/tmp")) is None
+            )
+
+    def test_background_wrapper_none_when_level_off(self):
+        from pathlib import Path
+
+        from src.tools import _bash_exec as be
+
+        with (
+            patch.object(be._sandbox, "get_sandbox_level", return_value="off"),
+            patch.object(be._sandbox, "_bwrap_available", return_value=True),
+        ):
+            assert (
+                be._build_background_sandbox(["ls"], Path("/tmp")) is None
+            )
+
+    def test_background_refused_when_enforcement_required_and_no_backend(self):
+        from src.tools import _bash_exec as be
+
+        with (
+            patch.object(be, "_build_background_sandbox", return_value=None),
+            patch.object(
+                be._sandbox, "_enforcement_required", return_value=True
+            ),
+            patch.object(be.subprocess, "Popen") as mock_popen,
+        ):
+            result = be.bash("ls -la", workdir="/tmp", run_in_background=True)
+
+        assert result["status"] == "error"
+        assert "Background execution refused" in result["error"]
+        mock_popen.assert_not_called()
+
+    def test_background_unsandboxed_interactive_warns_and_runs(self):
+        from src.tools import _bash_exec as be
+
+        mock_proc = MagicMock()
+        mock_proc.pid = 424242
+        with (
+            patch.object(be, "_build_background_sandbox", return_value=None),
+            patch.object(
+                be._sandbox, "_enforcement_required", return_value=False
+            ),
+            patch.object(be, "_get_event_bus") as mock_bus,
+            patch.object(be.subprocess, "Popen", return_value=mock_proc) as mock_popen,
+        ):
+            result = be.bash("ls -la", workdir="/tmp", run_in_background=True)
+
+        assert result["status"] == "ok"
+        assert result["background_task_id"] == "424242"
+        mock_popen.assert_called_once()
+        mock_bus.return_value.publish.assert_called_once()
+        (name, _payload), _ = mock_bus.return_value.publish.call_args
+        assert name == "system.warning"
+
+    def test_background_runs_sandboxed_when_backend_available(self):
+        from src.tools import _bash_exec as be
+
+        mock_proc = MagicMock()
+        mock_proc.pid = 777
+        with (
+            patch.object(
+                be,
+                "_build_background_sandbox",
+                return_value=["bwrap", "--unshare-net", "--"],
+            ),
+            patch.object(be.subprocess, "Popen", return_value=mock_proc) as mock_popen,
+        ):
+            result = be.bash("ls -la", workdir="/tmp", run_in_background=True)
+
+        assert result["status"] == "ok"
+        assert result["background_task_id"] == "777"
+        call_args, call_kwargs = mock_popen.call_args
+        assert call_args[0] == ["bwrap", "--unshare-net", "--", "ls", "-la"]
+        assert call_kwargs.get("cwd") == "/tmp"

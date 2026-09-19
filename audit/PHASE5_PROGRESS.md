@@ -4,7 +4,7 @@
 (`audit/COMPREHENSIVE_AUDIT_REPORT.md`) that were NOT covered by Phases 1–4,
 plus leftover doc/lint cleanups.  Prioritized by severity, security-critical
 items first.
-**Status:** HS-1 + MC-6 complete; open backlog below.
+**Status:** HS-1 + MC-6 + TW-2 complete; open backlog below.
 
 ---
 
@@ -107,12 +107,50 @@ backend) that never reaches `run_sandboxed`.
 
 ---
 
+## Completed — TW-2: `run_in_background` bypasses sandboxing/output capping
+
+`bash(run_in_background=True)` spawned the background process via a bare
+`subprocess.Popen(stdout=DEVNULL)` — no filesystem confinement, no network
+deny, no timeout, unsupervised.  In autonomous mode with a no-sandbox host a
+background server/child would run with **full host privileges and network**.
+
+**Fix: sandbox the background path, fail-closed when unenforceable.**
+
+- **`src/tools/_bash_exec.py`:**
+  - New `_build_background_sandbox(cmd_parts, workdir)` returns a sandboxed
+    argv for the spawn: bwrap prefix (`_build_bwrap_args(...) + ["--"] +
+    cmd`, which is `--unshare-net` + ro system binds + `--die-with-parent`)
+    when bwrap is available, else the enforcing sandbox-exec profile
+    (`sandbox-exec -f <profile> cmd`) when available+enforcing.  Returns
+    `None` when the level is `"off"` or no enforcing backend exists.
+  - The `run_in_background` branch now: wraps the Popen argv when a backend
+    exists; otherwise **refuses** if `_enforcement_required()` (autonomous /
+    `SANDBOX_REQUIRE_ENFORCEMENT` — same fail-closed condition as
+    `run_sandboxed`), or **runs unsandboxed with a `system.warning`** event
+    in interactive mode.
+- The MC-6 network guard (runs just before this branch) already refuses
+  network-capable background commands when the deny is unenforceable +
+  enforcement required; TW-2 additionally covers non-network commands.
+- Background output remains `stream=DEVNULL` (intentionally discarded — an
+  inherent output cap), unchanged.
+
+**New contract tests:** 7 added to `tests/unit/test_phase5_security_hardening.py`
+(`TestTW2BackgroundSandbox`): bwrap prefix build, enforcing sandbox-exec
+profile build, `None` without backend / when level `off`, fail-closed refusal
+(spawn never fires), interactive warn-and-run, and sandboxed-vs-raw argv
+passed to `Popen`.
+
+**Gates:** ruff (default + CI-scoped) clean, mypy clean.  Full baseline:
+**4,887 tests collected (4,880 + 7 new), all green** (4,886 passed,
+1 skipped).
+
+---
+
 ## Open backlog (remaining audit findings)
 
 | # | Item | Location | Severity | Notes |
 |---|------|----------|----------|-------|
 | HS-6 | 1,868 silent `except Exception: pass` blocks | across `src/` | MEDIUM | Systematic triage; convert blind swallows into logged/observable failures |
-| TW-2 | `run_in_background` bypasses sandboxing/output capping | `src/tools/_bash_exec.py:496` | MEDIUM | `Popen(stdout=DEVNULL)` unsupervised |
 | TW-3 | Contract `model_validate` fail-open | `src/core/orchestration/tool_execution_pipeline.py` | MEDIUM | Broken contracts silently pass |
 | MC-2 / 1.7 | `HOOK_SESSION_START` exported but no call-site | `src/core/plugin/hook_registry.py:79` | LOW | Fulfill documented API |
 | WR-1 | Routing default-to-perception loop risk | `session_routing.py:74` | MEDIUM-HIGH | Verify interlocking guards hold |
@@ -126,6 +164,6 @@ backend) that never reaches `run_sandboxed`.
 | 3.8 leftover | Root-level duplicate test-report cleanup | repo root | LOW | Annotated as point-in-time in Phase 3.8 |
 | — | Live-provider checks (Phase-3/4 feature surface) | CI `live-provider-checks` job | — | Requires provider credentials; currently skipped |
 
-Suggested next: **TW-2** — the remaining focused sandbox/background escape fix
-(`run_in_background` bypasses sandboxing and output capping).  After that,
-TW-3 / HS-6 (largest block, lowest risk per item).
+Suggested next: **TW-3** (contract `model_validate` fail-open — focused,
+MEDIUM) or **HS-6** (largest block — broad `except` triage — lowest risk per
+item).

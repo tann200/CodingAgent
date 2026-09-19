@@ -503,10 +503,43 @@ def bash(
         return _net_policy_err
 
     # Background execution: spawn without waiting, return PID as task ID.
+    # TW-2: the background path must not silently escape sandbox enforcement —
+    # wrap the spawn when a backend is available, refuse when the sandbox is
+    # required but cannot be applied, and warn (interactive) when unsandboxed.
     if run_in_background:
+        _bg_sandbox_prefix = _build_background_sandbox(cmd_parts, Path(workdir))
+        _bg_cmd = _bg_sandbox_prefix + cmd_parts if _bg_sandbox_prefix else cmd_parts
+        if _bg_sandbox_prefix is None:
+            try:
+                _enforce = bool(_sandbox._enforcement_required())
+            except Exception:
+                _enforce = True
+            if _enforce:
+                return {
+                    "status": "error",
+                    "error": (
+                        "Background execution refused: sandbox enforcement is "
+                        "required (autonomous mode or SANDBOX_REQUIRE_ENFORCEMENT) "
+                        "but no enforcing sandbox backend is available to run the "
+                        "background process inside. Run the command in the "
+                        "foreground instead (run_in_background=False)."
+                    ),
+                }
+            try:
+                _get_event_bus().publish(
+                    "system.warning",
+                    {
+                        "message": (
+                            "bash: background process running unsandboxed — no "
+                            "enforcing sandbox backend available"
+                        ),
+                    },
+                )
+            except Exception:
+                pass
         try:
             proc = subprocess.Popen(
-                cmd_parts,
+                _bg_cmd,
                 cwd=str(Path(workdir)),
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
@@ -893,4 +926,36 @@ def _check_network_policy(
         )
     except Exception:
         pass
+    return None
+
+
+def _build_background_sandbox(
+    cmd_parts: List[str], workdir: Path
+) -> Optional[List[str]]:
+    """TW-2: build a sandboxed command prefix for a background spawn.
+
+    ``run_in_background`` spawns via ``subprocess.Popen`` and would otherwise
+    bypass the sandbox entirely (no filesystem confinement, no network deny,
+    no output capping).  When bwrap (or an enforcing sandbox-exec) is present
+    the background command is wrapped so the same isolation applies as in the
+    foreground path.
+
+    Returns the full sandboxed argv (prefix + ``cmd_parts``) when a backend is
+    available, or ``None`` when no enforcing backend exists — the caller may
+    only fall back to an unsandboxed background spawn when enforcement is NOT
+    required.
+    """
+    try:
+        level = _sandbox.get_sandbox_level()
+        if level == "off":
+            return None
+        if _sandbox._bwrap_available():
+            return _sandbox._build_bwrap_args(workdir, level) + ["--"] + cmd_parts
+        if _sandbox._sandbox_exec_available() and _sandbox.sandbox_exec_enforced():
+            profile = _sandbox._write_sandbox_exc_profile(workdir, level)
+            return [str(_sandbox._SANDBOX_EXEC_PATH), "-f", profile] + cmd_parts
+    except Exception:
+        _logger.warning(
+            "sandbox: failed to build background sandbox wrapper", exc_info=True
+        )
     return None

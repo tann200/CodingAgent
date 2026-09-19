@@ -167,10 +167,11 @@ However, the system has **critical security orientation issues** (fail-open on s
 - **Issue:** Only 20/75 tools explicitly declare `permission_kind`. 55 tools use inferred defaults from `side_effects` alone. Tools that mutate state but don't declare it are classified read-only.
 - **Severity:** MEDIUM
 
-### TW-2: run_in_background Bypasses Sandboxing
+### ~~TW-2: run_in_background Bypasses Sandboxing~~ RESOLVED (Phase 5)
 - **File:** `src/tools/_bash_exec.py:496-515`
 - **Issue:** `Popen` with `stdout=DEVNULL` — no sandbox, no output capping, unsupervised process.
 - **Severity:** MEDIUM
+- **Fix:** Background spawns are now wrapped in a sandbox when a backend exists (`_build_background_sandbox`: bwrap prefix / enforcing sandbox-exec profile → filesystem confinement + network deny present); refused fail-closed when enforcement is required (autonomous / `SANDBOX_REQUIRE_ENFORCEMENT`) but no backend is available; interactive mode falls back unsandboxed with a `system.warning`. Output stays `DEVNULL` (inherently capped).
 
 ### TW-3: Contract Validation Fail-Open
 - **File:** `src/core/orchestration/graph/nodes/tool_execution_pipeline.py:969-980`
