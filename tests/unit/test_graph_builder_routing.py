@@ -262,6 +262,38 @@ def test_task_is_not_complex_simple():
     assert _task_is_complex(state) is False
 
 
+# ---------------------------------------------------------------------------
+# WR-5: language-agnostic structural fallback
+# ---------------------------------------------------------------------------
+
+
+def test_task_is_complex_long_non_english():
+    """WR-5: a long German description without English keywords is complex."""
+    task = (
+        "Bitte überarbeite die Authentifizierungslogik der Anwendung vollständig, "
+        "ersetze die alte Sitzungsverwaltung durch tokenbasierte Autorisierung, "
+        "aktualisiere alle betroffenen Controller und füge umfassende Tests für "
+        "die neuen Endpunkte hinzu, damit die Migration abgeschlossen ist."
+    )
+    assert _task_is_complex(_make_state(task=task)) is True
+
+
+def test_task_is_complex_cjk_description():
+    """WR-5: a dense Chinese task description without English keywords is complex."""
+    task = (
+        "重构整个用户认证模块，把旧的会话存储迁移到基于令牌的授权方案，"
+        "更新所有依赖它的控制器和中间件，并补充针对新接口的单元测试与集成测试，"
+        "确保迁移完成不留遗留问题。"
+    )
+    assert _task_is_complex(_make_state(task=task)) is True
+
+
+def test_task_is_not_complex_short_non_english():
+    """WR-5: a short localized request must still take the fast-path."""
+    state = _make_state(task="Lies die Datei main.py")
+    assert _task_is_complex(state) is False
+
+
 def test_route_after_perception_complex_task_overrides_fast_path():
     """W3: complex task overrides fast-path even when next_action is set."""
     state = _make_state(

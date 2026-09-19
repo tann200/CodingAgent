@@ -102,6 +102,29 @@ _COMPLEXITY_KEYWORDS = _COMPLEXITY_KEYWORDS_EXACT + tuple(
     kw + " " for kw in _COMPLEXITY_KEYWORDS_WORD
 )
 
+# WR-5: the keyword heuristic above is English-only, so a non-English task
+# description (German "refaktorieren", French "migrer", Chinese task
+# descriptions, ...) would never be classified as complex and would skip
+# analysis.  Add a language-agnostic structural fallback:
+#   - space-delimited scripts (CJK/roman): >= 20 words implies multiple steps.
+#   - character-dense scripts (CJK): a long run of CJK letters (~60+) packs
+#     several clauses into few whitespace runs, so it is complex by density.
+_CJK_RE = _re.compile(r"[\u2E80-\u9FFF\u3400-\u4DBF\uF900-\uFAFF\uFF00-\uFFEF\u3040-\u30FF\uAC00-\uD7AF]")
+_MIN_WORDS_COMPLEX = 20
+_MIN_CJK_CHARS_COMPLEX = 60
+
+
+def _language_agnostic_length_complex(task: str) -> bool:
+    """Structural complexity fallback for non-English / long descriptions.
+
+    English keyword matching cannot classify non-English tasks; long,
+    multi-clause descriptions in ANY script are a reliable proxy because a
+    short localized request (one edit, one read) needs no analysis pass.
+    """
+    if len(task.split()) >= _MIN_WORDS_COMPLEX:
+        return True
+    return len(_CJK_RE.findall(task)) >= _MIN_CJK_CHARS_COMPLEX
+
 
 def _task_is_complex(state: Mapping[str, Any]) -> bool:
     """
@@ -109,6 +132,7 @@ def _task_is_complex(state: Mapping[str, Any]) -> bool:
 
     Returns True when ANY of the following are true:
     - task description contains a complexity keyword (exact phrase or word match)
+    - task description is structurally long (WR-5: language-agnostic fallback)
     - relevant_files list has more than 3 entries (analysis already ran and found scope)
     - current_plan is already set with 2+ steps (planning already ran)
 
@@ -125,6 +149,11 @@ def _task_is_complex(state: Mapping[str, Any]) -> bool:
     if _COMPLEXITY_WORD_RE.search(task):
         logger.info(
             "route_after_perception: task classified as complex (word-boundary keyword match)"
+        )
+        return True
+    if _language_agnostic_length_complex(task):
+        logger.info(
+            "route_after_perception: task classified as complex (structural length, language-agnostic)"
         )
         return True
 
