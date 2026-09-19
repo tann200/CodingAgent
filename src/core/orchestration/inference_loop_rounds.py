@@ -129,6 +129,7 @@ def _prepare_next_round_state(
     _HISTORY_TOKEN_THRESHOLD = 6000
     try:
         from src.core.memory.distiller import (  # noqa: PLC0415
+            _KEEP_RECENT as _KEEP_RECENT_MSGS,
             compact_messages_to_prose as _compact,
             _estimate_tokens as _est,
         )
@@ -138,9 +139,40 @@ def _prepare_next_round_state(
             _wdir = _prev_working_dir or final_state.get("working_dir") or ""
             _prose = _compact(_next_history, Path(_wdir) if _wdir else None)
             if _prose:
-                # Replace history with a single summary message, keeping the
-                # most recent messages intact (distiller handles _KEEP_RECENT internally).
-                _next_history = [{"role": "user", "content": f"[Context summary]\n{_prose}"}]
+                # WR-3: preserve role alternation — a single `user` blob with a
+                # "[Context summary]" prefix flattens every prior role and can
+                # produce back-to-back user turns.  Mirror the convention used by
+                # distill_context (TASK-08/OP-8): keep the most recent messages
+                # verbatim after an injected `[COMPACTED]` system summary, and end
+                # with one user continuation turn.
+                _recent = (
+                    _next_history[-_KEEP_RECENT_MSGS:]
+                    if len(_next_history) >= _KEEP_RECENT_MSGS
+                    else list(_next_history)
+                )
+                _tail_user = (
+                    _recent[-1] if _recent and _recent[-1].get("role") == "user" else None
+                )
+                if _tail_user is not None:
+                    _recent = _recent[:-1] if len(_recent) > 1 else []
+                _next_history = (
+                    [
+                        {
+                            "role": "system",
+                            "content": "[COMPACTED] <summary>\n" + _prose + "\n</summary>",
+                        }
+                    ]
+                    + _recent
+                    + [
+                        {
+                            "role": "user",
+                            "content": (
+                                "Continue. If the task is already complete, "
+                                "output STATUS: complete with no tool call."
+                            ),
+                        }
+                    ]
+                )
     except Exception as _compact_exc:
         guilogger.debug(
             "_prepare_next_round_state: compaction failed (non-fatal): %s", _compact_exc
