@@ -21,12 +21,13 @@ v2 Phase 3: CPU-aware concurrency limits (max 2 concurrent LSPs for 6-core CPUs)
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import shutil
 import threading
 from pathlib import Path
-from typing import Dict, Optional
+from typing import AsyncIterator, Dict, Optional
 
 from src.core.indexing.lsp_client import LSPClient, _DummyLSPClient
 
@@ -170,6 +171,16 @@ class LSPManager:
         if self._semaphore is None:
             self._semaphore = asyncio.Semaphore(self._max_concurrent)
         return self._semaphore
+
+    @contextlib.asynccontextmanager
+    async def limit_concurrency(self) -> AsyncIterator[None]:
+        """Acquire the shared LSP semaphore for the duration of a request.
+
+        Enforces the RA-3 concurrency limit (default: CPU-aware, 2–4) across
+        all LSP client request/response round-trips managed by this workspace.
+        """
+        async with self.get_semaphore():
+            yield
 
     async def get_client_for_file(self, path: str) -> LSPClient | _DummyLSPClient:
         """Return a client inferred from the file extension of *path*."""

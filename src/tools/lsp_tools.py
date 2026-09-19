@@ -89,7 +89,8 @@ async def lsp_diagnostics(
         if not client.available:
             return ok(_UNAVAILABLE_MSG)
         uri = _path_to_uri(path)
-        diags = await client.get_diagnostics(uri)
+        async with mgr.limit_concurrency():
+            diags = await client.get_diagnostics(uri)
         if not diags:
             return ok("No diagnostics — file looks clean.")
         lines = []
@@ -132,7 +133,8 @@ async def lsp_references(
         if not client.available:
             return ok(_UNAVAILABLE_MSG)
         uri = _path_to_uri(path)
-        refs = await client.get_references(uri, line, col)
+        async with mgr.limit_concurrency():
+            refs = await client.get_references(uri, line, col)
         if not refs:
             return ok("No references found.")
         lines = [f"  {r.uri}:{r.start_line + 1}:{r.start_col + 1}" for r in refs]
@@ -170,7 +172,8 @@ async def lsp_definition(
         if not client.available:
             return ok(_UNAVAILABLE_MSG)
         uri = _path_to_uri(path)
-        locs = await client.get_definition(uri, line, col)
+        async with mgr.limit_concurrency():
+            locs = await client.get_definition(uri, line, col)
         if not locs:
             return ok("No definition found.")
         lines = [
@@ -204,7 +207,8 @@ async def lsp_symbols(
         if not client.available:
             return ok(_UNAVAILABLE_MSG)
         uri = _path_to_uri(path)
-        syms = await client.get_symbols(uri)
+        async with mgr.limit_concurrency():
+            syms = await client.get_symbols(uri)
         if not syms:
             return ok("No symbols found.")
         lines = [
@@ -246,7 +250,8 @@ async def lsp_hover(
         if not client.available:
             return ok(_UNAVAILABLE_MSG)
         uri = _path_to_uri(path)
-        text = await client.get_hover(uri, line, col)
+        async with mgr.limit_concurrency():
+            text = await client.get_hover(uri, line, col)
         if not text:
             return ok("No hover information available.")
         return ok(f"Hover at {path}:{line + 1}:{col + 1}:\n{text}")
@@ -286,7 +291,8 @@ async def lsp_rename(
         if not client.available:
             return ok(_UNAVAILABLE_MSG)
         uri = _path_to_uri(path)
-        edit = await client.rename(uri, line, col, new_name)
+        async with mgr.limit_concurrency():
+            edit = await client.rename(uri, line, col, new_name)
         if not edit.changes:
             return ok("No rename edits produced — symbol may not support renaming.")
 

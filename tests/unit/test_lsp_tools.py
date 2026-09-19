@@ -8,6 +8,7 @@ All tests use ``_DummyLSPClient`` — no live language server required.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import pytest
 from unittest.mock import patch
 
@@ -231,6 +232,37 @@ class TestLSPManager:
         await mgr.shutdown_all()
         assert len(mgr._clients) == 0
 
+    @pytest.mark.asyncio
+    async def test_limit_concurrency_caps_concurrent_ops(self, tmp_path):
+        """RA-3: the manager semaphore must actually gate LSP operations."""
+        from src.core.indexing.lsp_manager import LSPManager
+
+        mgr = LSPManager(workspace=tmp_path, max_concurrent=2)
+        active = 0
+        peak = 0
+
+        async def _op():
+            nonlocal active, peak
+            async with mgr.limit_concurrency():
+                active += 1
+                peak = max(peak, active)
+                await asyncio.sleep(0.02)
+                active -= 1
+
+        await asyncio.gather(*[_op() for _ in range(6)])
+        assert peak == 2
+
+    @pytest.mark.asyncio
+    async def test_limit_concurrency_reuses_single_semaphore(self, tmp_path):
+        from src.core.indexing.lsp_manager import LSPManager
+
+        mgr = LSPManager(workspace=tmp_path, max_concurrent=3)
+        for _ in range(3):
+            async with mgr.limit_concurrency():
+                pass
+        assert mgr._semaphore is not None
+        assert mgr._semaphore._value == 3
+
 
 # ── S2-B: LSP tools with DummyLSPClient ──────────────────────────────────────
 
@@ -244,6 +276,35 @@ class TestLSPToolsWithDummy:
         result = await lsp_diagnostics("main.py", working_dir=str(tmp_path))
         assert result["ok"] is True
         assert "unavailable" in result["output"].lower() or "clean" in result["output"].lower()
+
+    @pytest.mark.asyncio
+    async def test_lsp_diagnostics_routed_through_limiter(self, tmp_path):
+        """RA-3: LSP tool requests must be gated by limit_concurrency()."""
+
+        class _DummyAvailable:
+            available = True
+
+            async def get_diagnostics(self, uri):
+                return []
+
+        entered = []
+
+        class _Mgr:
+            @contextlib.asynccontextmanager
+            async def limit_concurrency(self):
+                entered.append(1)
+                yield
+
+            async def get_client_for_file(self, path):
+                return _DummyAvailable()
+
+        from src.tools.lsp_tools import lsp_diagnostics
+
+        with patch("src.tools.lsp_tools._get_manager", return_value=_Mgr()):
+            result = await lsp_diagnostics("main.py", working_dir=str(tmp_path))
+
+        assert result["ok"] is True
+        assert entered == [1]
 
     @pytest.mark.asyncio
     async def test_lsp_references_unavailable(self, tmp_path):
