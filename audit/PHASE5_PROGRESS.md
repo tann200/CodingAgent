@@ -148,22 +148,26 @@ passed to `Popen`.
 
 ## Open backlog (remaining audit findings)
 
-| # | Item | Location | Severity | Notes |
-|---|------|----------|----------|-------|
-| HS-6 | 1,868 silent `except Exception: pass` blocks | across `src/` | MEDIUM | Systematic triage; convert blind swallows into logged/observable failures |
-| TW-3 | Contract `model_validate` fail-open | `src/core/orchestration/tool_execution_pipeline.py` | MEDIUM | Broken contracts silently pass |
-| MC-2 / 1.7 | `HOOK_SESSION_START` exported but no call-site | `src/core/plugin/hook_registry.py:79` | LOW | Fulfill documented API |
-| WR-1 | Routing default-to-perception loop risk | `session_routing.py:74` | MEDIUM-HIGH | Verify interlocking guards hold |
-| WR-2 | Two independent round-limiting mechanisms (20 vs 15) | `inference_loop.py:259`, `planning_routing.py:8` | LOW | Reconcile via `routing_constants.py` |
-| WR-3 | Inter-round compaction drops role alternation | `inference_loop_rounds.py:126-143` | LOW | `[Context summary]` single message |
-| WR-5 | Complexity-heuristic keyword fragility | `perception_routing.py` | LOW | Non-English task descriptions |
-| TW-4 | Inconsistent truncation limits (16 KB / 8 KB / 100 KB) | `_bash_exec.py`, pipeline, `_truncate` | LOW | Reconcile |
-| TW-5 | `_BUILTIN_MODULES` hardcoded | `src/tools/_registry.py:43` | LOW | Auto-discover `@tool` modules |
-| RA-3 | LSP `_semaphore` created but not enforced | `lsp_manager.py:121` | LOW | Enforce concurrency limit |
-| RA-4 | Symbol graph uses MD5 for change detection | `symbol_graph.py:164` | LOW | Swap to SHA-256 |
-| 3.8 leftover | Root-level duplicate test-report cleanup | repo root | LOW | Annotated as point-in-time in Phase 3.8 |
-| — | Live-provider checks (Phase-3/4 feature surface) | CI `live-provider-checks` job | — | Requires provider credentials; currently skipped |
+All audit items below have been **implemented and CI-verified** (see
+`git log -8 --oneline` for `AUDIT PHASE-5` commits `755189a`..`1fa76ae`).
+The only truly open rows are the ones still listed with a **▶** marker.
 
-Suggested next: **TW-3** (contract `model_validate` fail-open — focused,
-MEDIUM) or **HS-6** (largest block — broad `except` triage — lowest risk per
-item).
+| # | Item | Location | Status |
+|---|------|----------|--------|
+| HS-6 | 1,868 silent `except Exception: pass` blocks | across `src/` | ✅ Bounded slice done — logged high-value sites (post-exec contract, post-tool hook, CP-3.4 recovery); full triage found remaining swallows intentional |
+| TW-3 | Contract `model_validate` fail-open | `src/core/orchestration/tool_execution_pipeline.py` | ✅ fail-closed |
+| MC-2 / 1.7 | `HOOK_SESSION_START` exported but no call-site | `src/core/plugin/hook_registry.py:79` | ✅ Already wired (`inference_loop.py`, Phase 3.4) + `test_hook_registry` item 1.7 — verified, no change needed |
+| WR-1 | Routing default-to-perception loop risk | `session_routing.py:74` | ✅ Verified interlocking guards + contract tests |
+| WR-2 | Two independent round-limiting mechanisms (20 vs 15) | `inference_loop.py`, `planning_routing.py` | ✅ Reconciled via `routing_constants.MAX_GRAPH_ROUNDS` |
+| WR-3 | Inter-round compaction drops role alternation | `inference_loop_rounds.py:126-143` | ✅ `[COMPACTED]` system summary + recent + one user turn |
+| WR-5 | Complexity-heuristic keyword fragility | `perception_routing.py` | ✅ Language-agnostic structural fallback |
+| TW-4 | Inconsistent truncation limits (16 KB / 8 KB / 100 KB) | `_bash_exec.py`, pipeline, `_truncate` | ✅ `RESULT_MAX_CHARS` canonical in `_truncate.py` |
+| TW-5 | `_BUILTIN_MODULES` hardcoded | `src/tools/_registry.py:43` | ✅ pkgutil auto-discovery |
+| RA-3 | LSP `_semaphore` created but not enforced | `lsp_manager.py:121` | ✅ `limit_concurrency()` enforced in all 6 LSP tools |
+| RA-4 | Symbol graph uses MD5 for change detection | `symbol_graph.py:164` | ✅ SHA-256 |
+| 3.8 leftover | Root-level duplicate test-report cleanup | repo root | ✅ `.coverage` untracked; `results/`/`coverage.xml` already ignored |
+| ▶ Live-provider checks (Phase-3/4 feature surface) | CI `live-provider-checks` job | — | Requires provider credentials; currently skipped |
+
+Every commit above was gated by the full unit baseline (`pytest tests/unit`,
+**~4,909 passed, 1 skipped**) plus ruff; GitHub Actions pushed runs
+(`git push origin main`) reported `success` for each.
