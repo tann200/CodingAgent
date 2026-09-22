@@ -754,8 +754,16 @@ def _run_post_execution(
         hook_runner = getattr(orch, "_tool_hook_runner", None)
         if hook_runner is not None:
             hook_runner.run_post(name, args, res)
-    except Exception:
-        pass
+    except Exception as _hook_exc:
+        # HS-6: plugin post-tool hooks failing must be observable — the tool
+        # result itself is unaffected, but a silent hook failure hides broken
+        # extensions and defeats the plugin surface's whole purpose.
+        logger.warning(
+            "tool_execution_pipeline: post-tool hook for %r failed: %s",
+            name,
+            _hook_exc,
+            exc_info=True,
+        )
 
     try:
         schema = get_tool_contract(name)
@@ -778,8 +786,16 @@ def _run_post_execution(
                     "ok": False,
                     "error": f"Tool result failed contract validation: {ve}",
                 }
-    except Exception:
-        pass
+    except Exception as exc:
+        # HS-6: contract-framework failures must be observable, not silently
+        # passed out of the validation block. The tool DID execute successfully,
+        # so fail-open for an infrastructure hiccup — but log it at WARNING.
+        logger.warning(
+            "tool_execution_pipeline: post-exec contract validation skipped for %r (framework error: %s)",
+            name,
+            exc,
+            exc_info=True,
+        )
 
     try:
         import time as _time

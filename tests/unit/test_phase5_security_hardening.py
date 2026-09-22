@@ -775,3 +775,117 @@ class TestTW3ContractValidation:
         orch.tool_registry.get.return_value["fn"].assert_called_once_with(
             **{"path": "x.py"}
         )
+
+
+class TestHS6ObservableSwallows:
+    """HS-6 (bounded slice): blind ``except Exception: pass`` swallows in the
+    validation-sensitive paths are now observable without changing behaviour.
+
+    The full 683-site triage found most swallows are intentional (event
+    publish, optional import, parse fallbacks).  This slice converts the few
+    where a raised exception genuinely hides a defect: the post-exec contract
+    framework, the plugin post-tool hook, and the CP-3.4 recovery load."""
+
+    def _make_orch(self):
+        from src.core.orchestration.orchestrator import Orchestrator
+
+        orch = Orchestrator.__new__(Orchestrator)
+        orch.working_dir = "/tmp/proj"
+        orch._session_read_files = set()
+        orch._session_modified_files = set()
+        orch._usage_buffer = {}
+        orch.rollback_manager = MagicMock()
+        orch.event_bus = MagicMock()
+        orch.plan_mode = None
+        orch._plan_mode_approved = None
+        orch.explore_mode = False
+        orch.cost_tracker = MagicMock()
+        orch.session_store = MagicMock()
+        orch._dry_run = False
+        orch.tool_registry = MagicMock()
+        orch.tool_registry.get = MagicMock(
+            return_value={
+                "fn": MagicMock(return_value={"ok": True, "result": "done"}),
+                "side_effects": [],
+                "description": "test",
+            }
+        )
+        orch._normalize_tool_result = (
+            lambda r: r if isinstance(r, dict) else {"result": r}
+        )
+        orch._get_tool_timeout = MagicMock(return_value=0)
+        orch._normalize_args = MagicMock(return_value={})
+        orch._append_execution_trace = MagicMock()
+        orch._sync_session_state = MagicMock()
+        orch._tool_hook_runner = MagicMock()
+        orch._tool_hook_runner.run_pre = MagicMock(
+            return_value=SimpleNamespace(allowed=True)
+        )
+        return orch
+
+    @staticmethod
+    def _args(name, **kwargs):
+        return {"name": name, "arguments": kwargs}
+
+    def test_post_exec_contract_framework_error_is_logged(self):
+        """Even when the contract framework itself raises after execution, the
+        warning must surface instead of a silent pass — the tool result still
+        passes through (fail-open for an infra hiccup)."""
+        from src.core.orchestration.tool_execution_pipeline import execute_tool_impl
+
+        orch = self._make_orch()
+        contract = MagicMock()
+        # First call (pre-exec validation) succeeds; second call (post-exec
+        # lookup) blows up like a corrupt/incompatible schema registry.
+        with (
+            patch(
+                "src.core.orchestration.tool_execution_pipeline.get_tool_contract",
+                side_effect=[contract, RuntimeError("schema registry broken")],
+            ),
+            patch("src.core.orchestration.tool_execution_pipeline.PERMISSION_REQUIRED_TOOLS", set()),
+            patch("src.core.orchestration.tool_execution_pipeline.WRITE_TOOLS_REQUIRING_READ", set()),
+        ):
+            res = execute_tool_impl(orch, self._args("my_tool", path="x.py"))
+
+        assert res["ok"] is True  # the tool DID run and its result passes through
+
+    def test_post_exec_contract_framework_error_logs_warning(self):
+        from unittest.mock import patch as _patch
+
+        from src.core.orchestration.tool_execution_pipeline import execute_tool_impl
+
+        orch = self._make_orch()
+        contract = MagicMock()
+        with (
+            _patch(
+                "src.core.orchestration.tool_execution_pipeline.get_tool_contract",
+                side_effect=[contract, RuntimeError("schema registry broken")],
+            ),
+            _patch("src.core.orchestration.tool_execution_pipeline.PERMISSION_REQUIRED_TOOLS", set()),
+            _patch("src.core.orchestration.tool_execution_pipeline.WRITE_TOOLS_REQUIRING_READ", set()),
+            _patch("src.core.orchestration.tool_execution_pipeline.logger") as mock_logger,
+        ):
+            execute_tool_impl(orch, self._args("my_tool", path="x.py"))
+
+        assert mock_logger.warning.called
+        assert "post-exec contract validation skipped" in mock_logger.warning.call_args[0][0]
+
+    def test_post_tool_hook_failure_is_logged(self):
+        from unittest.mock import patch as _patch
+
+        from src.core.orchestration.tool_execution_pipeline import execute_tool_impl
+
+        orch = self._make_orch()
+        orch._tool_hook_runner.run_post.side_effect = RuntimeError("hook boom")
+
+        with (
+            _patch("src.core.orchestration.tool_execution_pipeline.get_tool_contract", return_value=None),
+            _patch("src.core.orchestration.tool_execution_pipeline.PERMISSION_REQUIRED_TOOLS", set()),
+            _patch("src.core.orchestration.tool_execution_pipeline.WRITE_TOOLS_REQUIRING_READ", set()),
+            _patch("src.core.orchestration.tool_execution_pipeline.logger") as mock_logger,
+        ):
+            res = execute_tool_impl(orch, self._args("my_tool", path="x.py"))
+
+        assert res["ok"] is True  # tool result unaffected
+        assert mock_logger.warning.called
+        assert "post-tool hook" in mock_logger.warning.call_args[0][0]
