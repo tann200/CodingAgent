@@ -241,7 +241,9 @@ async def _perception_node_impl(
         retrieved_snippets=retrieved_snippets,
         active_skills=active_skills,
         tools_list=tools_list,
-        history_for_prompt=_history_for_prompt,
+        history_for_prompt=(
+            _history_for_prompt if isinstance(_history_for_prompt, list) else []
+        ),
         perception_role=_perception_role,
         active_model_name=_active_model_name,
     )

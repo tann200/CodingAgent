@@ -283,16 +283,17 @@ def _resolve_perception_provider_context(
 ) -> dict[str, Any]:
     """Resolve provider/model metadata used by perception prompt and warnings."""
     try:
-        provider_capabilities = _resolve_provider_caps(orchestrator, adapter)
+        provider_capabilities = (
+            _resolve_provider_caps(orchestrator, adapter)
+            if callable(_resolve_provider_caps)
+            else {}
+        )
     except Exception:
         provider_capabilities = {}
 
     active_model_name = _resolve_active_model_name(provider_capabilities, orchestrator)
 
-    try:
-        caps = _resolve_provider_caps(orchestrator, adapter)
-    except Exception:
-        caps = {}
+    caps = provider_capabilities
 
     provider = caps.get("provider_name")
     model = caps.get("model")

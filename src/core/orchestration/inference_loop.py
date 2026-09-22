@@ -267,14 +267,12 @@ def run_agent_once_impl(
                     "CP-3.4: recovered %d keys from persisted thread state",
                     len(_prior),
                 )
-    except Exception as _recovery_exc:
+    except Exception:
         # HS-6: a crashed-then-interrupted task should NOT silently lose its
         # recovered state without a trace — log the failure (recovery stays
         # best-effort: the task simply restarts fresh).
-        guilogger.warning(
-            "CP-3.4: thread-state recovery skipped (non-fatal): %s",
-            _recovery_exc,
-            exc_info=True,
+        guilogger.exception(
+            "CP-3.4: thread-state recovery skipped (non-fatal)"
         )
 
     # 2. Compile and Run Graph — P1 fix: use module-level cached graph so compilation

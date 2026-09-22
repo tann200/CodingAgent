@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from typing import Any, Dict, List, Mapping, Sequence
+from typing import Any, Dict, List, Literal, Mapping, Sequence, overload
 
 # PHASE-4 item 4.2: single canonical token estimator.  This module used to
 # carry an identical private copy of `estimate_text_tokens` (and its own
@@ -25,11 +25,27 @@ _PRUNE_PROTECT_TOKENS = 40_000
 _PRUNE_PROTECT_RECENT = 6
 
 
+@overload
+def prune_tool_outputs(
+    history: List[Dict[str, Any]],
+    *,
+    return_pruned_count: Literal[False] = False,
+) -> List[Dict[str, Any]]: ...
+
+
+@overload
+def prune_tool_outputs(
+    history: List[Dict[str, Any]],
+    *,
+    return_pruned_count: Literal[True],
+) -> tuple[List[Dict[str, Any]], int]: ...
+
+
 def prune_tool_outputs(
     history: List[Dict[str, Any]],
     *,
     return_pruned_count: bool = False,
-) -> List[Dict[str, Any]] | tuple:
+) -> List[Dict[str, Any]] | tuple[List[Dict[str, Any]], int]:
     """Zero out old tool-result content beyond the token-protect boundary.
 
     Walks history newest-to-oldest.  Once the running token count exceeds

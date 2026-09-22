@@ -359,7 +359,9 @@ def test_resolve_perception_provider_context_returns_combined_metadata(monkeypat
         "model": "gpt-test",
         "model_tier_str": "small",
     }
-    assert calls == ["caps", "caps"]
+    # The candidate provider capabilities are resolved exactly once; the same
+    # mapping also populates the per-turn `provider`/`model` metadata.
+    assert calls == ["caps"]
 
 
 def test_resolve_perception_provider_context_handles_provider_resolution_failure(
