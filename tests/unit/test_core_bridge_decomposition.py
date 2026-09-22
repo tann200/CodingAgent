@@ -208,6 +208,38 @@ class TestMirrorSync:
         mixin = getattr(src_mod, mixin_name)
         assert inspect.isclass(mixin)
 
+    def test_src_and_tui_src_trees_byte_identical(self) -> None:
+        """tui/src and tui/tui_src must be byte-identical mirrors.
+
+        Runtime imports ``tui.tui_src`` (src/main.py, bridge, tests) while
+        ``scripts/run_tui.py`` and a few tests import ``tui.src``. Both trees
+        must stay in lockstep, so any drift fails here — after editing one
+        tree, mirror the change to the other (see AGENTS.md).
+        """
+        from pathlib import Path
+
+        tui_root = Path(__file__).resolve().parents[2] / "tui"
+        excluded = {"__pycache__"}
+
+        def walk(base: Path):
+            out: dict[str, bytes] = {}
+            for p in sorted(base.rglob("*")):
+                if (
+                    p.is_file()
+                    and not any(part in excluded for part in p.parts)
+                    and not p.name.endswith(".pyc")
+                ):
+                    out[str(p.relative_to(base))] = p.read_bytes()
+            return out
+
+        src = walk(tui_root / "src")
+        dst = walk(tui_root / "tui_src")
+        assert list(src) == list(dst), (
+            f"mirror file sets diverged: {sorted(set(src) ^ set(dst))}"
+        )
+        diffs = [k for k in src if src[k] != dst[k]]
+        assert diffs == [], f"tui/src and tui/tui_src out of sync: {diffs}"
+
 
 # ---------------------------------------------------------------------------
 # 6. core_bridge.py is significantly smaller than 1840 lines
