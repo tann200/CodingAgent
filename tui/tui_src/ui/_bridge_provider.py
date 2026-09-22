@@ -11,10 +11,12 @@ from __future__ import annotations
 
 import importlib
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
-if TYPE_CHECKING:
-    from src.core.messaging.event_types import OrchestratorStartup, SystemSettings
+from ._bridge_protocol import AgentBridgeProtocol
+from .logging import get_logger
+
+logger = get_logger("bridge")
 
 
 def _import_event(name: str) -> Any:
@@ -22,11 +24,6 @@ def _import_event(name: str) -> Any:
         return getattr(importlib.import_module("src.core.messaging.event_types"), name)
     except Exception:
         return None
-
-from ._bridge_protocol import AgentBridgeProtocol
-from .logging import get_logger
-
-logger = get_logger("bridge")
 
 
 class BridgeProviderMixin(AgentBridgeProtocol):

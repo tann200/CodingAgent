@@ -18,6 +18,7 @@ from typing import Any, Callable, Literal, Optional
 
 
 class AgentAppProtocol:
+    """Structural interface shared by all AgentApp mixin classes."""
 
     # ── Textual App methods (provided by textual.app.App) ─────────────────
 
