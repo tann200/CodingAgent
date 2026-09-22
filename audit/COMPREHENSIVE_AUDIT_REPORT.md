@@ -29,35 +29,40 @@ However, the system has **critical security orientation issues** (fail-open on s
 
 ## 3. Critical Architectural Flaws
 
-### CF-1: Permission Policy Fail-Open [CRITICAL]
+### ~~CF-1: Permission Policy Fail-Open~~ RESOLVED (Phase 1.1)
 - **File:** `src/core/orchestration/permission_gateway.py:469-474`
 - **Issue:** Gate 2c (PermissionPolicy check) returns `PermissionResult(allowed=True)` on any exception. A broken/absent policy file silently grants full permission to all tools.
 - **Impact:** Any ImportError, malformed JSON, or runtime exception in the policy layer disables permission enforcement.
 - **Fix:** Flip to fail-closed — return `PermissionResult(allowed=False)` on policy failure, mirroring the correct pattern already in `tool_execution_service._check_permission_gate`.
+- **Status:** DONE — `_gate2b_policy_rules`/gate 2c now return `PermissionResult(allowed=False)` with a `"Gate 2c permission policy check failed (fail-closed)"` log on any policy exception; the trailing ALLOW return was made explicit so the fail-closed `except` never yields an implicit allow.
 
-### CF-2: Sandbox Fail-Open to Unsandboxed Execution [HIGH]
+### ~~CF-2: Sandbox Fail-Open to Unsandboxed Execution~~ RESOLVED (Phase 2)
 - **File:** `src/tools/sandbox.py:451-478`
 - **Issue:** When bubblewrap/sandbox-exec is unavailable or fails, the command runs with full user privileges unsandboxed. `SANDBOX_REQUIRE_ENFORCEMENT=1` is opt-in, not default.
 - **Impact:** On macOS (sandbox-exec deprecated) or systems without bubblewrap, all bash commands run unsandboxed by default.
 - **Fix:** Make sandbox enforcement default-strict for autonomous mode.
+- **Status:** DONE — `sandbox.py` refuses the unsandboxed-`subprocess` fallback when `_enforcement_required()` is true (autonomous mode or `SANDBOX_REQUIRE_ENFORCEMENT`); interactive mode keeps a warned fallback. Network-policy denies are enforced via `_check_network_policy` when the deny cannot be enforced (MC-6).
 
-### CF-3: Graph Running in Stabilization Mode [HIGH]
+### ~~CF-3: Graph Running in Stabilization Mode~~ RESOLVED (Phase 3.1)
 - **File:** `src/core/orchestration/graph/builder.py:94`
 - **Issue:** `_USE_FULL_GRAPH = False` freezes 4 nodes (replan, debug, delegation, analyst_delegation). The agent cannot self-delegate, replan from failure, or enter debug loops.
 - **Impact:** Recovery and delegation capabilities are disabled. Agent cannot handle complex multi-step failures.
 - **Fix:** Complete stabilization and enable full graph, or remove dead code if fast-path is permanent.
+- **Status:** DONE — premise was stale; production runs tier graphs (`_compile_frontier_graph` capable tier, `_compile_lite_graph` lite/small) which already had analyst_delegation/debug/delegation. The one missing capability (replan) is wired: patch-size guard → replan node → re-enter `frontier_loop`. `compile_agent_graph()`/`_USE_FULL_GRAPH` are legacy test-only paths.
 
-### CF-4: Cross-Session Memory Persistence Broken [HIGH]
+### ~~CF-4: Cross-Session Memory Persistence Broken~~ RESOLVED (Phase 1.4 / Mem-4)
 - **File:** `src/core/indexing/vector_store.py:302-307`
 - **Issue:** `add_memory()` and `search_memories()` are no-op stubs. The distiller calls `add_memory()` thinking it persists summaries, but nothing is stored.
 - **Impact:** Cross-session memory recall via VectorStore is non-functional. Semantic memory retrieval across sessions does not work.
 - **Fix:** Implement actual storage/retrieval or remove the dead code path.
+- **Status:** DONE — `add_memory()` persists to `agent_context_path(workdir)/vectorstore/memories.jsonl` (atomic tmp-file `replace()`, `_MEMORY_LOCK` dedup-read + append, rotation keeps newest 200); `search_memories()` returns deduped records with the `vector` field stripped. Async wrappers (`asearch`/`aadd_memory`/`asearch_memories`/`aindex_code`) run sync bodies via `asyncio.to_thread`.
 
-### CF-5: Node Output Validation Covers Only 4/16 Nodes [HIGH]
+### ~~CF-5: Node Output Validation Covers Only 4/16 Nodes~~ RESOLVED (Phase 1.6 / 2.3)
 - **File:** `src/core/orchestration/graph/state_schemas.py`
 - **Issue:** Only perception, planning, execution, verification have output schemas. 12 nodes have zero boundary validation, and the strict flag (`_STATE_SCHEMAS_STRICT`) is hardcoded `False`.
 - **Impact:** Node output pollution is possible and undetected. Violations are logged but never enforced or counted.
 - **Fix:** Add schemas for all 16 nodes. Wire a `NodeResultValidationFailed` counter for observability.
+- **Status:** DONE — all 16 nodes wrapped via `_validated(...)`, and `_default_publish_violation` publishes `NodeResultValidationFailed` and increments the thread-safe `metrics` singleton (`graph.node_validation_failed` total + per-node + per-reason), guarded so metrics can never break node execution.
 
 ---
 
@@ -371,6 +376,29 @@ However, the system has **critical security orientation issues** (fail-open on s
 | ~~4.6~~ | **Centralize tool constant sets (COMPLETED − canonical `src/tools/constants.py`: `WRITE_TOOLS_REQUIRING_READ`/`MODIFYING_TOOLS`/`DRY_RUN_BLOCKED_TOOLS`/`PERMISSION_REQUIRED_TOOLS`/`PERM_ORDER`/`WORKDIR_SAFE_TOOLS`/`FILE_TOOLS`/`TOOL_ALIASES`; `tool_constants.py`, `loop_guards.py`, `permission_gateway.py`, `tools_config.py` re-export; object-identity tests + `TestCanonicalCentralization` (6 tests); suite now 4,820 collecting)** | `src/tools/constants.py` | Low | Single source of truth |
 | ~~4.7~~ | **Make permission_kind explicit on all tools (COMPLETED − every built-in `@tool` now declares `permission_kind=` at definition time (33 decorators updated across 15 modules); `ToolDefinition.permission_kind_explicit` records explicitness; registry `get_permission_kind` now returns precise kinds (WRITE_FILE/EXECUTE_BASH/GIT_READ/GIT_WRITE/LSP_*/PLAN); contract test `test_tool_permission_kind_explicit` (4 tests) enforces no regressions; suite now 4,830 collecting)** | All 55 tools in `src/tools/` | Medium | Improves permission precision |
 | ~~4.8~~ | **Add async VectorStore model loading (COMPLETED − single-flight model loader (`_ST_MODEL_LOCK`); non-blocking `_get_st_model_ready()`; daemon-thread background preload on `VectorStore.__init__`; event-loop-safe `get_st_model_async()` via `asyncio.to_thread`; VectorStore `asearch`/`aadd_memory`/`asearch_memories`/`aindex_code` async wrappers; search/encode hot paths degrade to stub instead of blocking; 6 new tests; suite now 4,826 collecting)** | `vector_store.py` | Low | Prevents thread blocking |
+
+### Phase 5 — Security-Policy & Audit-Backlog Closeout (Weeks 13-16)
+
+| # | Item | Location | Complexity | Impact |
+|---|------|----------|------------|--------|
+| ~~HS-1~~ | **Autonomous-mode approval suppression (COMPLETED − `autonomous_approval_allowed(name)` is the single decision point, alias-resolved, honoring `set_autonomous_approve()`/`configure(autonomous_approve=...)`/`CODINGAGENT_AUTONOMOUS_APPROVE` (`*` or comma-separated); empty allowlist fails closed — every DANGER/PROMPT tool is DENIED; wired into all four suppression sites (`tool_execution_pipeline._run_permission_gate`, `tool_execution_service._check_permission_gate`, `permission_gateway._gate5_user_approval`, `_bash_exec._check_tier3_approval`); 20 contract tests in `test_phase5_security_hardening.py`)** | `tools_config.py`, `permission_gateway.py`, `_bash_exec.py`, pipeline | High | Prevents autonomous mode from disabling all safety prompts |
+| ~~MC-6~~ | **Missing per-tool network policy in sandbox (COMPLETED − every `run_sandboxed()` call passes `network=` explicitly (`bash()`/`bash_readonly()` pass `network=False`); `is_network_capable` classifies curl/wget/pip/apt/brew/ssh/rsync/scp + multi-token git remote ops + npm/cargo/go install; `_check_network_policy` refuses when the deny can't be enforced (sandbox level `off`/no enforcing backend) under enforcement-required; interactive mode warns instead)** | `_bash_exec.py`, `_approval.py`, `sandbox.py` | High | Network-capable commands no longer escape explicit deny |
+| ~~TW-2~~ | **run_in_background sandbox escape (COMPLETED − background spawns route through `_build_background_sandbox` (bwrap `--unshare-net`, ro binds, `--die-with-parent`, or enforcing sandbox-exec profile); `None` fallback only when not enforcement-required + `system.warning`; output stays `DEVNULL`; 7 contract tests `TestTW2BackgroundSandbox`)** | `_bash_exec.py` | Medium | Background commands cannot silently escape the sandbox |
+| ~~TW-3~~ | **Contract `model_validate` fail-open (COMPLETED − broken/failing `get_tool_contract` or `model_validate` now fail closed with observable `contract validation` error; pydantic `ValidationError` still returns the schema message; valid contract permits execution; 4 tests `TestTW3ContractValidation`)** | `tool_execution_pipeline.py` | Medium | Broken contracts no longer silently pass |
+| ~~MC-2 / 1.7~~ | **HOOK_SESSION_START call-site (VERIFIED no-op − already wired at `inference_loop.py` (Phase 3.4) and covered by `test_hook_registry` item 1.7; backward item, no code change)** | `hook_registry.py`, `inference_loop.py` | Low | Documented API already fulfilled |
+| ~~HS-6~~ | **1,868 silent exception swallows (COMPLETED − full triage confirmed the majority are intentional (event publish / optional import / parse fallback); converted the high-value defect-hiding sites to logged failures: post-exec contract framework, plugin post-tool hook, and CP-3.4 thread-state recovery — log + `exc_info=True`, behavior-neutral (fail-open infra retained); 3 tests `TestHS6ObservableSwallows`)** | across `src/` | Medium | High-value blind swallows are now observable |
+| ~~WR-1~~ | **Routing default-to-perception loop risk (COMPLETED − verified interlocking guards hold: no-tool exhaustion emits `infinite_loop_no_tool` → terminal message; fast-path END for completed simple tasks; rounds monotonic + outer `MAX_GRAPH_ROUNDS`; 3 contract tests)** | `session_routing.py`, `perception_no_tool.py` | Medium-High | Default loop has no unbounded-exit hole |
+| ~~WR-2~~ | **Two independent round-limiting mechanisms (COMPLETED − `routing_constants.MAX_GRAPH_ROUNDS = 20` is the single outer graph-loop budget; `inference_loop` default + `_actual_limit` fallback both bind to it; identity-binding test `test_routing_constants.py`)** | `routing_constants.py`, `inference_loop.py`, `inference_loop_rounds.py` | Low | No drift between round caps |
+| ~~WR-3~~ | **Inter-round compaction role alternation (COMPLETED − compaction now emits `[COMPACTED]` system summary + recent messages verbatim (`_KEEP_RECENT_MSGS`) + single user continuation turn; trailing already-appended user turn dropped; tests in `test_distillation_wiring.py`)** | `inference_loop_rounds.py` | Low | No back-to-back user turns after compaction |
+| ~~WR-5~~ | **Complexity-heuristic keyword fragility (COMPLETED − language-agnostic fallback: ≥20 words (multi-script) or ≥60 CJK chars → complex; English keywords still run first; tests in `test_graph_builder_routing.py`)** | `perception_routing.py` | Low | Non-English tasks no longer bypass complexity routing |
+| ~~TW-4~~ | **Inconsistent truncation limits (COMPLETED − `RESULT_MAX_CHARS = 8_000` added to `_truncate.py` as the third tier; pipeline `TOOL_OUTPUT_MAX_CHARS` binds to the canonical value; audit's 16 KB no longer present in code (stale); tests in `test_truncate.py`)** | `_truncate.py`, `tool_execution_pipeline.py` | Low | Single set of tiered caps |
+| ~~TW-5~~ | **`_BUILTIN_MODULES` hardcoded (COMPLETED − `pkgutil.iter_modules` auto-discovery of `@tool` modules (`_builtin_module_names()`, lru_cache, sorted, skips private/init/packages); `_OPTIONAL_MODULES` (lsp_tools) retained; tests `TestBuiltinModuleAutoDiscovery`)** | `src/tools/_registry.py` | Low | New tool modules register automatically |
+| ~~RA-3~~ | **LSP semaphore unenforced (COMPLETED − `LSPManager.limit_concurrency()` asynccontextmanager over the existing semaphore; all 6 LSP tools wrapped; tests verify peak concurrency == `max_concurrent` + shared-semaphore reuse)** | `lsp_manager.py`, `lsp_tools.py` | Low | Enforced concurrency limit |
+| ~~RA-4~~ | **Symbol graph MD5 (COMPLETED − SHA-256 swap; new tests `TestSymbolGraphHashPrimitives`)** | `symbol_graph.py` | Low | No MD5 in change detection |
+| ~~3.8 leftover~~ | **Root-level test-report cleanup (COMPLETED − `.coverage` untracked via `git rm --cached`; `coverage.xml`/`results/` already ignored)** | repo root | Low | Clean tree root |
+| ▶ Live-provider checks | **Phase-3/4 feature-surface verification end-to-end — still skipped in CI (`live-provider-checks` job); requires provider credentials** | CI | — | Manual/credential-gated |
+
+All Phase-5 items above were each gated by the full unit baseline (`pytest tests/unit` → **~4,909 passed, 1 skipped**) + ruff, committed as single `AUDIT PHASE-5 (…): …` commits, and their GitHub Actions pushes report `success`. Detailed narrative: `audit/PHASE5_PROGRESS.md`.
 
 ---
 
