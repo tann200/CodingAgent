@@ -1,116 +1,66 @@
 """
 Real integration tests for delegation (subagent spawning and execution).
 
-Tests verify that delegation infrastructure works correctly with minimal mocking.
+Per the integration_real README, "real" delegation means delegate_task_async
+is NOT mocked: a sub-orchestrator must actually spawn, execute, and merge its
+results into the parent session state.
+
+Status: SKIPPED. Real delegation spawns a sub-orchestrator whose LLM calls
+must be replayed too; the scripted DeterministicAdapter used by the tool-chain
+suite is not yet wired through the sub-agent path, so these tests cannot assert
+real subagent behavior deterministically. Un-skip once the sub-orchestrator
+shares the parent's scripted adapter and its task/result merging is verified.
 """
 
 import pytest
-from pathlib import Path
 
 
-@pytest.mark.integration_real
-@pytest.mark.skip(reason="Requires delegation infrastructure refactoring - implement after tool chain tests pass")
+pytestmark = pytest.mark.integration_real
+
+
+@pytest.mark.skip(reason="Requires sub-orchestrator to share the scripted LLM adapter")
 class TestDelegationIntegration:
     """Tests for real delegation integration (not mocked)."""
 
-    def test_subagent_spawns_and_executes(self, tmp_path: Path):
+    def test_subagent_spawns_and_executes(self, tmp_path):
+        """Parent delegates to a real sub-agent that completes an analysis task.
+
+        Implementation sketch (mirror the tool-chain loop wiring):
+        - Build the parent Orchestrator with a DeterministicAdapter scripted to
+          emit ``delegate_task`` with role/subtask_description/working_dir.
+        - Patch the ``_CALL_MODEL_TARGETS`` call_model modules (same set as
+          tests/integration_real/test_tool_chain_integration.py) so the child's
+          LLM calls are replayed by the same adapter.
+        - Authenticate delegation: verify task result is merged into parent
+          session state, and subagent files/temp dirs are isolated.
         """
-        Integration test: Verify subagent actually spawns and executes.
+        pytest.skip("Requires sub-orchestrator adapter wiring")
 
-        This test verifies:
-        1. Parent agent calls delegate_task_async
-        2. Subagent actually spawns (not mocked)
-        3. Subagent executes task
-        4. Results are returned to parent
-        5. Parent agent state is updated with subagent results
+    def test_delegation_result_merging(self, tmp_path):
+        """Subagent results merge into the parent agent's session state.
 
-        NOTE: This test should NOT mock delegate_task_async.
+        Requires the sub-agent completion to flow back through the delegation
+        node into ``AgentState`` and the parent's message history. Cannot be
+        asserted until the sub-orchestrator runs against the scripted adapter.
         """
-        from src.core.orchestration.orchestrator import Orchestrator
-        from src.core.inference.adapters.mock_adapter import MockAdapter
+        pytest.skip("Requires sub-orchestrator adapter wiring")
 
-        # Setup parent orchestrator
-        parent_orch = Orchestrator(working_dir=str(tmp_path))
+    def test_nested_delegation(self, tmp_path):
+        """Subagent delegates to a sub-subagent without infinite loops.
 
-        # Create test file for subagent to analyze
-        test_file = tmp_path / "buggy_code.py"
-        test_file.write_text("""
-def calculate(x, y):
-    return x / y  # BUG: No zero check
-
-def process(items):
-    for item in items:
-        print(item)  # BUG: Should return processed items
-""")
-
-        # Parent agent responses that trigger delegation
-        parent_responses = [
-            """I'll delegate code analysis to a specialist.
-<tool_calls>
-[{"name": "delegate_task", "arguments": {
-    "role": "analyst",
-    "subtask_description": "Analyze buggy_code.py for potential bugs and return findings",
-    "working_dir": "%s"
-}}]
-</tool_calls>""" % str(tmp_path),
-
-            "Analysis complete. The subagent found 2 bugs in the code."
-        ]
-
-        parent_adapter = MockAdapter(responses=parent_responses)
-        parent_orch._llm_manager._default_adapter = parent_adapter
-
-        # Execute parent agent
-        result = parent_orch.run_agent_once(
-            messages=[{
-                "role": "user",
-                "content": "Analyze buggy_code.py for potential issues"
-            }]
-        )
-
-        # Verify delegation occurred
-        # TODO: Add assertions based on delegation infrastructure API
-        # - Check that delegate_task_async was actually called
-        # - Verify subagent spawned and executed
-        # - Verify results were returned
-        assert result.get("ok") or result.get("assistant_message")
-
-    def test_delegation_result_merging(self, tmp_path: Path):
+        Requires per-level task isolation plus depth-limit enforcement. Deferred
+        until single-level delegation is un-skipped and stable.
         """
-        Integration test: Verify subagent results merge into parent state.
-
-        This test verifies:
-        1. Subagent executes and returns structured results
-        2. Results are properly formatted
-        3. Parent agent receives and can use results
-        4. Session state reflects delegation occurred
-        """
-        # TODO: Implement after delegation infrastructure is available
-        pytest.skip("Delegation infrastructure requires refactoring")
-
-    def test_nested_delegation(self, tmp_path: Path):
-        """
-        Integration test: Verify nested delegation (subagent spawns sub-subagent).
-
-        This test verifies:
-        1. Subagent can delegate to another subagent
-        2. Results propagate up the chain correctly
-        3. No infinite delegation loops
-        4. Depth limits are enforced
-        """
-        # TODO: Implement after delegation infrastructure is available
-        pytest.skip("Delegation infrastructure requires refactoring")
+        pytest.skip("Requires sub-orchestrator adapter wiring")
 
 
-# NOTE: These tests are currently skipped because the delegation infrastructure
-# needs refactoring to support real (non-mocked) delegation testing.
-#
-# Current delegation tests that mock delegate_task_async have been moved to:
+# NOTE: These tests are skipped because real (non-mocked) delegation requires
+# the sub-orchestrator to consume the parent's scripted adapter; until then the
+# only delegation coverage lives in mocked unit tests:
 # tests/unit/orchestration/test_delegation_node_unit.py
 #
-# Once delegation infrastructure is refactored, implement these tests to verify:
-# - Real subagent spawning
-# - Task isolation
-# - Result merging
-# - Error propagation
-# - Depth limits
+# When re-enabling, verify:
+# - Real subagent spawning (delegate_task_async not mocked)
+# - Task isolation (subagent workdir/temp files)
+# - Result merging into parent state/messages
+# - Error propagation and depth limits
