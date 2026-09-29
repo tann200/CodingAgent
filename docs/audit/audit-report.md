@@ -480,14 +480,14 @@ contamination guards were not independently exercised. **[PARTIAL]**
 | 1 | Call `detect_prompt_injection` on every tool result in the frontier loop | Critical | `frontier_loop_node.py` (~L705, next to `_truncate_tool_output`) | **Low** (~5 LOC) | Closes the untrusted-content→model boundary |
 | 2 | Add production-path repo retrieval: index in `perception`/on loop entry, `refresh_file_in_index` after edits | Critical | `frontier_loop_node.py`; promote from `planning_node.py:89` | Medium | Restores repo-aware execution |
 | 3 | Add `git clean/reset --hard/push --force`, `find -delete`, `truncate`, `mv`-out-of-workspace to `_DANGEROUS_PATTERNS` | High | `bash_security.py:84-123` | **Low** (patterns + tests) | Prevents silent loss of uncommitted work |
-| 4 | Wire `exposure_policy` into the server, or delete it | High | `src/server/app.py`, `server_config.py` | Low | Removes a false security guarantee |
-| 5 | Decide the `PermissionGateway` question: wire or delete 1,151 lines | High | `permission_gateway.py`, `permission_table.py` | Medium | Removes dead authz surface |
+| 4 | Wire `exposure_policy` into the server, or delete it — **deleted (P2.1)** | High | `src/server/app.py`, `server_config.py` | Low | Removes a false security guarantee |
+| 5 | Decide the `PermissionGateway` question: wire or delete 1,151 lines — **deleted (P2.1)** | High | `permission_gateway.py`, `permission_table.py` | Medium | Removes dead authz surface |
 | 6 | Fail closed on unknown tier instead of defaulting to `capable` | Medium | `tier_graph_routing.py:151-155` | **Low** | Restores intended fail-loud design |
 | 7 | Warn when the selected tier has no verification stage | Medium | `builder.py:759+`, model-tier selection | Low | Removes silent reliability downgrade |
 | 8 | Add reachability test: every `src/` module is imported by an entrypoint | High | new `tests/unit/test_dead_code.py` | Low | Prevents CRITICAL-1/2-class rot recurring |
 | 9 | Add production-path assertion tests (frontier loop sanitizes; graph keeps repo awareness) | High | new `tests/unit/test_production_path.py` | Medium | Converts audit findings into CI gates |
 | 10 | Repair or delete `tests/_deprecated/` | Medium | `tests/_deprecated/` | Low | Stops misleading green |
-| 11 | Delete remaining dead modules (session_watcher, event_log, event_persistence, agent_hooks, context_manager, env_registry, adapter_wrappers, wave_coordinator, graph_factory, skills island) | High | 14 modules | Low–Medium | −8,222 lines |
+| 11 | Delete remaining dead modules (session_watcher, event_log, event_persistence, agent_hooks, context_manager, env_registry, adapter_wrappers, wave_coordinator, graph_factory, skills island) — **DONE (P2.5); true count 25 modules total including P2.1, not 28** | High | 22 modules (P2.5) | Low–Medium | P2.5: −5,005 lines; P2.1: −1,307 lines |
 | 12 | Measure `index_repository` cost on the analysis path | Medium | `analysis_node.py:319` | Low | Confirms/denies latency risk |
 | 13 | Consolidate the 6 launch scripts to one | Low | root | Low | Less surface |
 
@@ -574,6 +574,19 @@ contamination guards were not independently exercised. **[PARTIAL]**
   `permission_gateway.py` + `permission_table.py` (wire or delete);
   `server/exposure_policy.py` (wire or delete). *Complexity:* Medium.
   *Impact:* High. Removes a misleading security posture.
+  **DONE (delete).** The reconsideration pass ended in removal, not wiring:
+  `permission_gateway.py` (793), `permission_table.py` (358), and
+  `server/exposure_policy.py` (156) — 1,307 lines of security-shaped code — had
+  zero production importers. The production path is
+  `tool_execution_pipeline._run_permission_gate` (approval) and
+  `tools_config.autonomous_approval_allowed` (HS-1 allowlist); the gateway was
+  a parallel, never-executed copy. Every invariant the gateway tests asserted
+  was re-expressed against the live path before deletion: the `delete_file`
+  never-auto-approve rule now checks `tools.constants.WORKDIR_SAFE_TOOLS` +
+  `_check_workdir_confinement`, and the HS-1 autonomous-allowlist tests now
+  drive `_run_permission_gate` directly. Guardrails `test_gate2b_policy_rules`
+  and `test_tool_kind_map_keys_resolve_to_live_registry_tools` were dropped
+  with the code they pinned.
 - **P2.2 — Tier routing correctness.** *Location:*
   `tier_graph_routing.py:151-155`; unknown tier must raise, not default to
   `capable`. Reconcile the `nano` contradiction with `_is_nano_or_small`.
@@ -617,17 +630,33 @@ contamination guards were not independently exercised. **[PARTIAL]**
   and nothing outside the directory references it. Also dropped the now-meaningless
   `tests/_deprecated_candidates.txt` manifest and the `--ignore` flag itself.
 
-- **P2.5 — Remove the remaining 12 dead modules.** *Location:* see §14 item 11.
-  *Complexity:* Low–Medium. *Impact:* High (−8,222 lines, of which 1,307 are
-  security-shaped).
+- **P2.5 — Remove the remaining dead modules.** *Location:* see §14 item 11.
+  *Complexity:* Low–Medium. *Impact:* High.
+  **DONE.** After P2.1, 22 modules / 5,005 lines were removed. The pre-existing
+  `_KNOWN_DEAD` baseline for this ratchet was **unsound** and had to be fixed
+  first: `_build_import_edges` ignored `ImportFrom.module` whenever `level > 0`,
+  so every `from .submodule import X` edge inside a package was dropped. That
+  made three modules re-exported by `src/core/inference/__init__.py`
+  (`model_capability_profile`, `hardware_capability_profile`, `runtime_profile`)
+  look dead; deleting them broke 85 test modules at collection time. The
+  resolver now anchors on `base + node.module` and the cleanup list was
+  recomputed honestly (25 modules, 6,312 lines total including P2.1, not 28).
+  `TestImportResolverSoundness` pins the resolver on a synthetic package so the
+  class of bug, not just the instance, is caught. Result: `_KNOWN_DEAD` is now
+  empty and the walk reports **zero** unreachable modules.
+  Live at-risk invariants were carried over rather than deleted: the atomic
+  `providers.json` write guard moved to its surviving location
+  (`tui/src/ui/app.py`), and `test_tool_constants.py`'s centralization checks
+  dropped only the dead `permission_gateway` re-export.
 
 ## Phase 3 — Capability improvements
 
 - **P3.1 — Per-step verification in the frontier loop.** *Location:*
   `frontier_loop_node.py`. *Complexity:* Medium–High. *Impact:* High. Closes the
   "plan-step verification" gap named in the audit spec.
-- **P3.2 — Live repo-change audit trail.** *Location:* activate
-  `event_log.py` / `event_persistence.py`, or build a lean equivalent.
+- **P3.2 — Live repo-change audit trail.** *Location:* build a lean equivalent
+  (the unreachable `event_log.py` / `event_persistence.py` were deleted in P2.5,
+  so this is now greenfield).
   *Complexity:* Medium. *Impact:* High — "which files did the agent change, and
   why" is currently unanswerable in production.
 - **P3.3 — Persisted plan memory across turns.** *Location:*
@@ -642,9 +671,9 @@ contamination guards were not independently exercised. **[PARTIAL]**
   `analysis_node.py:319`, `src/core/indexing/`. *Complexity:* High.
   *Impact:* High. Makes P1.2 affordable enough to run on every task.
 - **P4.2 — Multi-agent / hub-and-spoke, or formal removal.** *Location:*
-  `graph_factory.py`, `delegation_node.py`. *Complexity:* High.
-  *Impact:* Medium. `graph_factory` is currently inert; either activate it or
-  remove it so the multi-agent story is honest.
+  `delegation_node.py`. *Complexity:* High.
+  *Impact:* Medium. The inert `graph_factory.py` was removed in P2.5, so the
+  lingering multi-agent question is now only about `delegation_node.py`.
 - **P4.3 — Prompt-injection defense in depth.** *Location:*
   `prompt_injection_guard.py`, `memory/security.py`. *Complexity:* High.
   *Impact:* Medium–High. Content-provenance labelling, not only pattern

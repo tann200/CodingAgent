@@ -224,40 +224,6 @@ class TestListSubagentRoles:
             "plan" in roles["strategic"]["description"].lower()
             or "decompos" in roles["strategic"]["description"].lower()
         )
-
-
-class TestGraphFactoryIntegration:
-    """Tests for GraphFactory integration with subagent tools."""
-
-    def test_graph_factory_get_researcher_graph(self):
-        """Test GraphFactory can create researcher graph."""
-        from src.core.orchestration.graph_factory import GraphFactory
-
-        graph = GraphFactory.get_graph("researcher")
-        assert graph is not None
-
-    def test_graph_factory_get_coder_graph(self):
-        """Test GraphFactory can create coder graph."""
-        from src.core.orchestration.graph_factory import GraphFactory
-
-        graph = GraphFactory.get_graph("coder")
-        assert graph is not None
-
-    def test_graph_factory_get_reviewer_graph(self):
-        """Test GraphFactory can create reviewer graph."""
-        from src.core.orchestration.graph_factory import GraphFactory
-
-        graph = GraphFactory.get_graph("reviewer")
-        assert graph is not None
-
-    def test_graph_factory_get_planner_graph(self):
-        """Test GraphFactory can create planner graph."""
-        from src.core.orchestration.graph_factory import GraphFactory
-
-        graph = GraphFactory.get_graph("planner")
-        assert graph is not None
-
-
 class TestSubagentToolsImport:
     """Tests for module import."""
 

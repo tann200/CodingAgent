@@ -35,7 +35,6 @@ from src.core.orchestration.graph.nodes.tool_output_truncation import (
     prune_tool_outputs,
     truncate_tool_output,
 )
-from src.core.orchestration.permission_gateway import _path_inside
 from src.core.orchestration.prompt_injection_guard import (
     _FENCE_OPEN,
     sanitize_tool_output,
@@ -391,15 +390,3 @@ def test_resolve_tool_alias_canonical_and_registry_consistent():
 # ---------------------------------------------------------------------------
 # Path containment (pure helper)
 # ---------------------------------------------------------------------------
-
-
-def test_path_inside_total(tmp_path):
-    rng = random.Random(_SEED)
-    inside = str(tmp_path / "sub" / "file.py")
-    assert _path_inside(inside, tmp_path) is True
-    assert _path_inside(str(tmp_path), tmp_path) is True
-    assert _path_inside(str(tmp_path.parent / "outside.txt"), tmp_path) is False
-    for _ in range(_ITER):
-        garbage = _rand_text(rng, 120)
-        result = _path_inside(garbage, tmp_path)
-        assert result in (True, False)

@@ -132,19 +132,15 @@ class TestCanonicalCentralization:
         assert tkc.MODIFYING_TOOLS is C_MOD
 
     def test_workdir_safe_tools_centralized(self):
-        from src.core.orchestration.permission_gateway import (
-            _WORKDIR_SAFE_TOOLS as GATEWAY_WORKDIR_SAFE,
-        )
         from src.tools.constants import WORKDIR_SAFE_TOOLS as C_SAFE
 
-        assert GATEWAY_WORKDIR_SAFE is C_SAFE
+        # delete_file is deliberately absent: deletion is irreversible and must
+        # always require approval (see test_phase2_security_hardening).
         assert C_SAFE == {"bash", "run_tests", "run_bash", "ask_user"}
 
     def test_file_tools_centralized(self):
-        from src.core.orchestration.permission_gateway import PermissionGateway
         from src.tools.constants import FILE_TOOLS as C_FILE
 
-        assert PermissionGateway._FILE_TOOLS is C_FILE
         assert "delete_file" in C_FILE
         assert "write_file" in C_FILE
 

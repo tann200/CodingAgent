@@ -33,7 +33,6 @@ from src.core.orchestration.graph.nodes.tool_output_truncation import (
     prune_tool_outputs,
     truncate_tool_output,
 )
-from src.core.orchestration.permission_gateway import _tool_kind_for_name
 from src.core.orchestration.prompt_injection_guard import sanitize_tool_output
 from src.tools import build_registry
 
@@ -149,14 +148,6 @@ class TestPermissionResolutionThroughput:
             _BUILTIN_REGISTRY.get_permission_kind(names[i % len(names)])
         elapsed_ms = (time.perf_counter() - start) * 1000
         assert elapsed_ms < 2000, f"get_permission_kind 20k lookups too slow: {elapsed_ms:.1f} ms"
-
-    def test_gateway_kind_fallback_lookup(self):
-        names = ["write_file", "bash", "read_file", "run_tests", "delegate_task"]
-        start = time.perf_counter()
-        for i in range(20_000):
-            _tool_kind_for_name(names[i % len(names)])
-        elapsed_ms = (time.perf_counter() - start) * 1000
-        assert elapsed_ms < 2000, f"_tool_kind_for_name 20k lookups too slow: {elapsed_ms:.1f} ms"
 
 
 # ---------------------------------------------------------------------------

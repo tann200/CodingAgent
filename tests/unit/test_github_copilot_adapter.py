@@ -546,39 +546,6 @@ class TestProviderManagerIntegration:
         adapter = pm.get_provider("github_copilot")
         assert isinstance(adapter, GithubCopilotAdapter)
 
-    def test_inactive_copilot_skipped_at_startup(self, tmp_path, monkeypatch):
-        prefs_file = tmp_path / "prefs.json"
-        monkeypatch.setenv("CODINGAGENT_PREFS", str(prefs_file))
-        providers_json = tmp_path / "providers.json"
-        providers_json.write_text(
-            json.dumps(
-                [
-                    {
-                        "name": "GitHub Copilot",
-                        "type": "github_copilot",
-                        "models": ["gpt-4o"],
-                        "active": False,
-                    }
-                ]
-            )
-        )
-        from src.core.startup import provider_health_check
-        import asyncio
-        from src.core.inference.llm_manager import ProviderManager
-
-        pm = ProviderManager(providers_config_path=str(providers_json))
-        asyncio.run(pm.initialize())
-        # health check should not probe an inactive provider
-        results = asyncio.run(
-            provider_health_check.__wrapped__(pm)  # type: ignore[attr-defined]
-            if hasattr(provider_health_check, "__wrapped__")
-            else provider_health_check()
-        )
-        # github_copilot should either be absent or skipped (not probed)
-        if "github_copilot" in results:
-            # if present it should not have errored on a network call
-            assert results["github_copilot"].get("error") != "no_adapter"
-
 
 class TestCanonicalProviderAliases:
     def test_copilot_variants_map_to_github_copilot(self):

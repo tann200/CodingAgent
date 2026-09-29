@@ -115,9 +115,15 @@ def test_execute_tool_impl_normalizes_alias_before_guards():
 
 
 def test_delete_file_not_in_workdir_safe_tools():
-    import src.core.orchestration.permission_gateway as pg
+    """delete_file must never appear in any workdir-safe auto-approve set.
 
-    assert "delete_file" not in pg._WORKDIR_SAFE_TOOLS
+    Checked against the canonical constants that drive the live pipeline.
+    The former ``permission_gateway._WORKDIR_SAFE_TOOLS`` copy of this check
+    only exercised deleted code.
+    """
+    from src.tools.constants import WORKDIR_SAFE_TOOLS as C_SAFE
+
+    assert "delete_file" not in C_SAFE
 
 
 def test_pipeline_requires_approval_for_delete_file_inside_workdir():
@@ -133,17 +139,6 @@ def test_pipeline_requires_approval_for_delete_file_inside_workdir():
             orch, "delete_file", {"path": "/tmp/proj/file.py"}
         )
         is True
-    )
-
-
-def test_permission_gateway_never_confines_delete_file():
-    import src.core.orchestration.permission_gateway as pg
-
-    assert (
-        pg._is_workdir_confined(
-            "delete_file", {"path": "/tmp/proj/file.py"}, "/tmp/proj"
-        )
-        is False
     )
 
 

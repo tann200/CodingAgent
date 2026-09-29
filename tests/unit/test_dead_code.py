@@ -84,33 +84,10 @@ _SKIP_DIRS = {
 # Reviewed baseline of known-dead modules (audit §HIGH-1, Phase 2 removal).
 # Each entry is "why it is dead" so the baseline is auditable rather than a
 # silent allowlist.  A module may be removed from this set once it is deleted.
-_KNOWN_DEAD: dict[str, str] = {
-    "src.core.credentials": "no production importer; only server_config docstring refs",
-    "src.core.env_registry": "no production consumer; self-reference only",
-    "src.core.inference.adapter_wrappers": "no production consumer; self-reference only",
-    "src.core.interfaces": "only referenced by abstract_session_store and docstrings",
-    "src.core.memory.abstract_session_store": "only referenced by jsonl_session_store and docstrings",
-    "src.core.orchestration.agent_hooks": "no production consumer; self-reference only",
-    "src.core.orchestration.commands": "matches are the word 'commands' in slash-command code, not this module",
-    "src.core.orchestration.context_manager": "no production consumer; only its own tests",
-    "src.core.orchestration.event_log": "no production consumer; self-reference only",
-    "src.core.orchestration.event_persistence": "no production consumer; only its own tests",
-    "src.core.orchestration.graph_factory": "role graphs reachable only from tests",
-    "src.core.orchestration.permission_gateway": "authorization layer never imported (docstring refs only)",
-    "src.core.orchestration.permission_table": "imported only by permission_gateway",
-    "src.core.orchestration.session_watcher": "no production consumer; self-reference only",
-    "src.core.orchestration.shell_hooks": "only docstring cross-references in event_types/tool_execution_service",
-    "src.core.orchestration.wave_coordinator": "no production consumer; self-reference only",
-    "src.core.prompts": "package only re-exports system_prompt_builder; nothing imports either",
-    "src.core.prompts.system_prompt_builder": "no production importer; only its own tests",
-    "src.core.settings": "the TUI ships its own tui/src/ui/settings.py; this package is unused",
-    "src.core.settings.controller": "imported only by its own package __init__",
-    "src.core.startup": "no production consumer; self-reference only",
-    "src.core.telemetry.consumer": "matches are EventBus 'consumer' bookkeeping, not this module",
-    "src.core.telemetry.metrics": "matches are the word 'metrics' across server/messaging, not this module",
-    "src.server.exposure_policy": "server never imports it; only its own test references it",
-    "tui.main": "placeholder stub printing a greeting; superseded by tui/src/ui/main.py",
-}
+#
+# Phase 2 removed all 25 modules that were listed here; the reachability walk
+# must now report zero unreachable modules.  Any new entry is a regression.
+_KNOWN_DEAD: dict[str, str] = {}
 
 
 def _module_name(path: Path) -> str | None:

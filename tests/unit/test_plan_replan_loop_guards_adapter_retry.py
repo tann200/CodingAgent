@@ -323,22 +323,21 @@ class TestOrchestratorPlanEnforceWarningsInitialState:
 
 class TestSettingsPanelAtomicProvidersJsonWrite:
     def test_no_direct_write_text_on_cfg_path(self):
-        """Verify that settings_panel uses os.replace (not cfg_path.write_text) for safety."""
+        """Active-provider persistence must write atomically via os.replace.
 
-        # The atomic write logic lives in src/core/settings/controller.py
-        # (src/ui/ was retired; the settings controller was extracted there).
-        src_path = Path("src/core/settings/controller.py")
-        if not src_path.exists():
-            src_path = Path(__file__).parent.parent.parent / "src/core/settings/controller.py"
+        The settings controller was removed; the live implementation is the
+        TUI `_activate_provider` writer, which must still avoid an in-place
+        ``cfg_path.write_text`` (a crash mid-write would corrupt the user's
+        provider config).
+        """
+        src_path = Path(__file__).parent.parent.parent / "tui/src/ui/app.py"
         source = src_path.read_text()
-        # The new code should use os.replace; old cfg_path.write_text should be gone from the write path
-        # (it may still appear in read path or elsewhere — check it's not in the write block)
         assert (
-            "os.replace" in source
-        ), "Atomic write via os.replace not found in settings_panel.py"
+            "_os.replace" in source
+        ), "Atomic write via os.replace not found in tui/src/ui/app.py"
         assert (
-            "tempfile.mkstemp" in source
-        ), "tempfile.mkstemp not found in settings_panel.py"
+            "mkstemp" in source
+        ), "tempfile.mkstemp not found in tui/src/ui/app.py"
 
 
 # ---------------------------------------------------------------------------

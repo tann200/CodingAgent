@@ -208,34 +208,21 @@ def test_pipeline_proceeds_through_approval_in_interactive_mode():
 
 
 # ---------------------------------------------------------------------------
-# HS-1 — PermissionGateway._gate5_user_approval (kept consistent)
+# HS-1 — allowlist cannot be evaded via tool aliases
 # ---------------------------------------------------------------------------
 
 
-def test_gateway_denies_gated_tool_in_autonomous_mode_without_allowlist():
-    import src.core.orchestration.permission_gateway as pg
+def test_alias_cannot_evade_the_autonomous_allowlist():
+    """HS-1 hardening: the allowlist is keyed on canonical tool names.
 
-    with patch.object(pg, "_is_autonomous", return_value=True):
-        result = pg.PermissionGateway(_make_orch())._gate5_user_approval(
-            "bash", {"command": "ls"}
-        )
+    A tool reachable under an alias must not slip past an allowlist that only
+    names the canonical form, or the operator's deny-by-omission is bypassable.
+    """
+    from src.tools.tools_config import autonomous_approval_allowed, set_autonomous_approve
 
-    assert result.allowed is False
-    assert result.gate == 5
-    assert "allowlist" in result.rejection["error"]
-
-
-def test_gateway_auto_approves_allowlisted_tool_in_autonomous_mode():
-    import src.core.orchestration.permission_gateway as pg
-    from src.tools.tools_config import set_autonomous_approve
-
-    set_autonomous_approve({"bash"})
-    with patch.object(pg, "_is_autonomous", return_value=True):
-        result = pg.PermissionGateway(_make_orch())._gate5_user_approval(
-            "bash", {"command": "ls"}
-        )
-
-    assert result.allowed is True
+    set_autonomous_approve({"write_file"})
+    assert autonomous_approval_allowed("write") is True  # alias resolves
+    assert autonomous_approval_allowed("delete_file") is False  # not allowlisted
 
 
 # ---------------------------------------------------------------------------
