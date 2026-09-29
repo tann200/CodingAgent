@@ -48,7 +48,14 @@ with self._session_lock(session_id):
 
 ### FRAG-2: Snapshot save silently succeeds even if transaction fails
 
-**File:** `src/core/memory/sqlite_store_collaborators.py:440-453`
+**File:** `src/core/memory/sqlite_store_collaborators.py:400`
+
+> **Status: Fixed (Wave 1, commit `94a0e81`).** The blanket `except Exception`
+> around the commit was split into `sqlite3.IntegrityError` (logic bug — duplicate
+> snap_id), `sqlite3.OperationalError` (transient — disk full / permission / locked),
+> and a generic fallback. Each logs at error level with the session and snapshot id
+> before returning `None`, so callers can now distinguish the failure classes.
+> The inner per-table insert loop already logged its own exceptions.
 
 ```python
 wconn.execute("INSERT INTO session_snapshot_rows ...")
@@ -108,7 +115,12 @@ except sqlite3.OperationalError as _oe:
 
 ### FRUG-3: `publish_files_changed` — silently drops ALL event bus failures
 
-**File:** `src/core/orchestration/session_manager.py:292-301`
+**File:** `src/core/orchestration/session_manager.py:274-299`
+
+> **Status: Already fixed in current code** (verified Wave 1). `publish_files_changed()`
+> now publishes a typed `SessionFilesChanged` event and wraps the whole body in
+> `except Exception as exc: logger.warning("session.files_changed event dropped
+> (non-fatal): %s", exc)` — the silent `pass` is gone.
 
 ```python
 self.event_bus.publish(
@@ -219,7 +231,14 @@ def iter_records(self, session_id: str):
 
 ### FRAG-5: `_session_lock` dict accumulates unbounded — memory leak
 
-**File:** `src/core/memory/jsonl_session_store.py:110`
+**File:** `src/core/memory/jsonl_session_store.py:110, 146-151, 580-612`
+
+> **Status: No longer a leak (verified Wave 1).** The lock registry is now
+> **per-instance** (`self._locks`, guarded by `self._locks_lock`) rather than the
+> module-level `_SESSION_LOCKS` shown below, so it cannot outlive the store, and
+> `delete_session()` clears it under the guard. The residual growth is bounded by
+> the number of sessions touched by a single store instance, which is acceptable.
+> The original module-global pattern is retained below for reference only.
 
 ```python
 # Module-level
@@ -403,7 +422,12 @@ def update_session_state(...):
 
 ### FRAG-8: `self.app._save_session_snapshot()` in background finally
 
-**File:** `tui/src/ui/_bridge_agent.py:150-158`
+**File:** `tui/src/ui/_bridge_agent.py:154`
+
+> **Status: Fixed (Wave 1, commit `94a0e81`).** The direct `self.app._save_session_snapshot()`
+> call from the background worker thread now goes through the bridge's existing
+> `_schedule_callback(...)`, so the write is owned by the Textual event loop and
+> degrades gracefully if the app is shutting down. Mirrored to `tui/tui_src`.
 
 ```python
 finally:
@@ -448,7 +472,12 @@ This ensures:
 
 ### FRAG-9: `call_from_thread` silent failure
 
-**File:** `tui/src/ui/core_bridge.py` (check tui path)
+**File:** `tui/src/ui/core_bridge.py:273-287`
+
+> **Status: Already fixed in current code** (verified Wave 1). `_schedule_callback`
+> now logs at WARNING when both the `asyncio` and `call_from_thread` paths fail:
+> `logger.warning("UI callback %s dropped: %s — UI may be desynced", fn.__name__, e)`.
+> The `logger.debug` version below is retained for reference only.
 
 ```python
 def _schedule_callback(self, fn, *args):
@@ -659,7 +688,12 @@ if r is not None and r.status_code == 429:
 
 ### FRAG-13: URI path traversal in LSP tools
 
-**File:** `src/tools/lsp_tools.py:301-304`
+**File:** `src/tools/lsp_tools.py:301-322`
+
+> **Status: Already fixed in current code** (verified Wave 1). `lsp_rename` decodes
+> the URI with `urllib.parse.unquote`, then calls `file_path.resolve()` and checks
+> `resolved_path.is_relative_to(workdir_path)`, logging and skipping anything outside
+> the workspace.
 
 ```python
 if file_uri.startswith("file://"):
@@ -790,17 +824,17 @@ Audit all lock usages in async contexts:
 
 | Priority | Issue | Files | Effort | Risk of Fix |
 |----------|-------|-------|--------|-------------|
-| P1 | FRAG-3 silent event bus failure | `session_manager.py:300-301` | Low | Very safe |
-| P1 | FRAG-8 self.app in background finally | `_bridge_agent.py:157` | Low | Safe |
-| P1 | FRAG-9 call_from_thread silent failure | `core_bridge.py:263-274` | Low | Safe |
+| ~~P1~~ ✅ | FRAG-3 silent event bus failure | `session_manager.py:274-299` | — | **Fixed in current code** |
+| ~~P1~~ ✅ | FRAG-8 self.app in background finally | `_bridge_agent.py:154` | — | **Fixed `94a0e81`** |
+| ~~P1~~ ✅ | FRAG-9 call_from_thread silent failure | `core_bridge.py:273-287` | — | **Fixed in current code** |
 | P1 | FRAG-10 Bare except patterns | 1,200+ files | High | Moderate — need careful per-case analysis |
-| P2 | FRAG-4 Unbounded file reads | `jsonl_session_store.py:242` | Medium | Safe — add pagination |
-| P2 | FRAG-11 Ollama no retry | `ollama_adapter.py` | Medium | Safe — add retry wrapper |
-| P2 | FRAG-12 OpenAI retry no jitter | `openai_compat_adapter.py:420` | Low | Safe |
-| P2 | FRAG-13 LSP URI path traversal | `lsp_tools.py:301` | Low | Safe |
-| P2 | FRAG-5 Lock dict memory leak | `jsonl_session_store.py:110` | Low | Safe — use WeakValueDictionary |
-| P3 | FRAG-1 revert_session TOCTOU | `jsonl_session_store.py:376` | Medium | Safe — wrap in try/except |
-| P3 | FRAG-2 Snapshot transaction silent | `sqlite_store_collaborators.py:440` | Low | Safe — add logging |
+| ~~P2~~ ✅ | FRAG-4 Unbounded file reads | `jsonl_session_store.py:242` | — | **Landed as PERF-01** (`iter_records`/`read_page`, 10k cap removed) |
+| P2 | FRAG-11 Ollama no retry | `ollama_adapter.py` | Medium | Safe — partially landed via PERF-02 policy; generation-path retry remains |
+| P2 | FRAG-12 OpenAI retry no jitter | `openai_compat_adapter.py:420` | Low | Safe — **fixed in current code** (capped jittered `jittered_backoff`) |
+| ~~P2~~ ✅ | FRAG-13 LSP URI path traversal | `lsp_tools.py:301-322` | — | **Fixed in current code** (resolve + `is_relative_to`) |
+| ~~P2~~ ✅ | FRAG-5 Lock dict memory leak | `jsonl_session_store.py:110` | — | **Not a leak** — per-instance + cleared on delete |
+| ~~P3~~ ✅ | FRAG-1 revert_session TOCTOU | `jsonl_session_store.py:376` | — | **Landed as STAB-03** (verify in Wave 0) |
+| ~~P3~~ ✅ | FRAG-2 Snapshot transaction silent | `sqlite_store_collaborators.py:400` | — | **Fixed `94a0e81`** |
 | P3 | FRAG-6 asyncio.run nested loop | `inference_loop_rounds.py:15` | Medium | Moderate — needs design review |
 | P3 | FRAG-7 Lock ordering | `agent_session_manager.py:158` | High | Moderate — refactoring |
 | P3 | FRAG-14-16 (already fixed) | Various | Done | — |
