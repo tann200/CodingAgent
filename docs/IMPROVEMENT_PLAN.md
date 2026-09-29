@@ -1,12 +1,113 @@
-# CodingAgent — Detailed Architecture Improvement Plan
+# CodingAgent — Architecture Improvement Plan
 
 > **Scope:** Section-by-section analysis of the CodingAgent codebase
 > benchmarked against Claw Code architectural patterns.
 > **Reference:** `docs/CLAW_CODE_ARCHITECTURE_REFERENCE.md`
-> **Claw Code source:** `/Users/tann200/PycharmProjects/claw-code` (read directly)
-> **Goal:** Local-first coding agent that also supports frontier cloud models.
-> **Date:** 2026-05-24
-> **Status:** Source-verified. All file paths and line counts confirmed from live codebase.
+> **Original date:** 2026-05-24
+> **Status:** ⚠️ **VERIFIED AGAINST LIVE CODE 2026-09-29.** This plan was written
+> from a 2026-05-24 snapshot. A full drift audit re-checked every P0–P3 item
+> against the current tree: **22 of 24 items are now implemented** and their
+> bodies below are retained as historical record only. The authoritative
+> remaining backlog is the **§7 Open Items** table. Do not schedule work from the
+> old sections without re-verifying it first.
+>
+> **Audit method:** each item was confirmed by direct code inspection (symbol
+> search + file/line evidence recorded in the table). The original per-item
+> "Weakness" analysis (W1–W28, C1–C5) is preserved below unchanged; where an item
+> is now implemented, the corresponding W-number is marked ✅ in the audit table.
+>
+> **How to read this document now:** read §Audit Summary and §Open Items first.
+> Sections 1–6 and the P0–P3 detail blocks are a **historical record of a
+> May 2026 analysis** and are retained for provenance, not as a work queue. Where
+> a number in those sections no longer matches the tree, the Open Items table
+> carries the current value.
+
+---
+
+## Audit Summary (2026-09-29)
+
+### Implemented — no further work (22)
+
+| ID | Was | Now implemented as | Proof |
+|---|---|---|---|
+| P0-1 | langgraph `>=0.2.0` open range | `langgraph>=1.1.0,<2.0.0` | `pyproject.toml:16-17` |
+| P0-2 | stale openai/PyYAML/requests/httpx pins | all four pinned | `pyproject.toml:9-15` |
+| P0-3 | repo-root artifacts committed | none tracked | `git ls-files` returns no matches |
+| P0-4 | debug log written to repo root | `CODINGAGENT_DEBUG` + `_dbg()` only | `src/main.py:16-19` |
+| P0-5 | 38 ruff errors / 22 auto-fixable | CI gate clean at zero | `ruff check src tests --select=E,F,W --ignore=E501` → "All checks passed!" |
+| P1-1 | no graceful provider fallback | `_provider_degraded` + `ProviderUnavailable` + TUI banner | `orchestrator_provider_init.py:41,44,121`; `event_types.py:679` |
+| P1-2 | 4 start scripts, no entrypoint | `[project.scripts] codingagent` + `scripts/run.sh` | `pyproject.toml:60-61`; `scripts/run.sh` tracked |
+| P1-4 | no tool-arg schema validation | `ToolDefinition.validate_args()` | `src/tools/_tool.py:180` |
+| P1-5 | no slash command registry | `CommandRegistry` | `tui/src/ui/commands/registry.py` |
+| P1-6 | `app.py` 3662 lines | **753 lines** + `screens/` modules | `wc -l tui/src/ui/app.py`; `tui/src/ui/screens/{session_screen,session_list,timeline,subagent_detail}.py` |
+| P1-7 | `AgentState` lifecycle undocumented | 11 `LIFECYCLE` blocks | `src/core/orchestration/graph/state.py` (561 lines) |
+| P2-1 | compaction coupled to perception node | `CompactionService` | `src/core/memory/compaction_service.py` |
+| P2-3 | lancedb optionality unresolved | lancedb **removed**; repo tools consolidated | no `lancedb` in `pyproject.toml`; `src/tools/{repo_read_tools,repo_write_tools}.py` |
+| P2-5 | 4 overlapping repo tool files | 2 files (read/write split) | `src/tools/repo_read_tools.py`, `repo_write_tools.py` |
+| P2-7 | tool discovery fails on missing dep | `_OPTIONAL_MODULES` degrade | `src/tools/_registry.py:47,256` |
+| P2-8 | sync subagent delegation | `asyncio.gather()` over subagents | `delegation_node.py:214,333` |
+| P3-3 | no live model switching | `_slash_model` handler | `tui/src/ui/_app_slash_commands_mixin.py:364` |
+| P3-5 | no OpenTelemetry export | `OtelExporter` + otel deps | `src/core/observability/otel_exporter.py`; `pyproject.toml:54-56` |
+| P1-3 | merge TUI into main package | **Dropped by decision** — `tui/src` ↔ `tui/tui_src` kept as byte-identical mirrors | `tests/unit/test_core_bridge_decomposition.py::TestMirrorSync` |
+| FRAG-1 | `revert_session` TOCTOU | STAB-03 landed (resolve + per-session lock + safe no-op) | `jsonl_session_store.py:404-444` |
+| FRAG-7 | lock ordering AB-BA risk | single consolidated `_session_state_lock` | `agent_session_manager.py:110` |
+| FRAG-12 | OpenAI deterministic jitter | capped jittered `jittered_backoff` | `src/core/utils/retry.py` |
+
+### Still open — the real backlog (12)
+
+| ID | Area | Issue (verified open) | Evidence |
+|---|---|---|---|
+| PERF-01 | Memory | `read_page`/`iter_records` exist in 2 stores but **no caller uses them**; `write_decisions_json` + `get_recent_sessions` still full-scan | `jsonl_session_store.py:259,292`; `sqlite_session_store.py:221,244`; callers at `jsonl_session_store.py:814,1013`, `sqlite_session_store.py:639,857` |
+| PERF-02 | Inference | 17 literal `timeout=N` calls, no config indirection | `ollama_adapter.py:270,375,521,527,641,647`; `github_copilot_auth.py:247,312,466`; `groq_adapter.py:140,193`; `litellm_adapter.py:224,278`; `openrouter_adapter.py:110,165`; `anthropic_adapter.py:229,292` |
+| PERF-02b | Inference | Ollama **generation** paths bypass retry: `_request_with_retry` wraps only model-listing | `ollama_adapter.py:197,270` (retried) vs `375,526,646` (raw `_call_requests`) |
+| PERF-03 | Orch | No per-stage latency budgets (p50/p95); benchmarks exist but are threshold-only | `tests/benchmarks/{test_pipeline_benchmarks,test_pure_hotpath_benchmarks}.py` |
+| STATE-01 | Orch | No field-ownership layer; output-key contract only | no `FieldOwner`/`field_owner` symbol in `src/core/orchestration/graph/state_schemas.py` |
+| FRAG-6 | Orch | `asyncio.run()` per graph round; guarded by loop-detect + executor fallback but still allocates a fresh loop each round | `inference_loop_rounds.py:18` (mitigated: `:37-49` detects a running loop and dispatches to `graph_executor` with `copy_context()`) |
+| FRAG-10 | Codebase | 1,943 `except Exception` in `src/` (doc estimated 1,200) | `rg -o 'except\s+Exception' src \| wc -l` → 1943 |
+| FRAG-17 | Orch | No `VALID_TRANSITIONS` / transition validator | no match for `VALID_TRANSITIONS\|validate_transition` under `src/core/orchestration/` |
+| FRAG-18 | Orch | `threading.Lock` for p2p + session state; blocks event loop if contention | `agent_session_manager.py:109-110` |
+| P2-2 | Memory/UI | `fork_session`/`revert_session` implemented but **not surfaced in the TUI** | `jsonl_session_store.py:367,404`; no `fork`/`revert` in `tui/src/ui/commands/registry.py` |
+| P2-6 | Tools | No `ToolPool`; no tool-count cap (only a tool-*call* budget) | no `class .*Pool` in `src/core/orchestration/`; `routing_constants.py:9` `DEFAULT_MAX_TOOL_CALLS = 30` |
+| P3-1 | UX | Headless streaming **is** wired | `src/main.py:177,181,757-764` (`--output-format stream`) — *verify it works end-to-end before closing* |
+
+**Stale claims corrected during the audit** (original doc → actual):
+`app.py` 3662 → **753** · `core_bridge.py` 1840 → **342** (+7 `_bridge_*.py`
+mixins, 2240 total) · `orchestrator.py` 487 → **503** · `builder.py` 655 → **801**
+· `perception_node.py` 1016 → **504** (9 `perception_*.py` collaborators, not 10) ·
+`execution_helpers.py` 1344 → **80** · `sqlite_session_store.py` 848 → **899**
+(split into 6 `sqlite_store_*.py` collaborators) · `state.py` 561 · 71 `@tool`
+decorators.
+
+---
+
+## Open Items — Verified Backlog
+
+Twelve items, conflict-free, ordered by cost-of-delay. Every row was verified
+against the tree on 2026-09-29; none is a documentation artifact.
+
+**Tier A — small, mechanical, low risk**
+1. **PERF-02** — introduce a shared timeout policy module; replace the 17 literal
+   `timeout=N` call sites. Pure substitution + one new config constant table.
+2. **PERF-02b** — route Ollama `chat`/`generate`/`stream` through
+   `_request_with_retry` (already implemented and proven for the listing path).
+3. **PERF-01** — adopt `read_page`/`iter_records` in the 6 call sites
+   (`write_decisions_json`, `get_recent_sessions` ×3 stores).
+4. **P2-2** — surface `fork_session`/`revert_session` in the slash-command registry.
+
+**Tier B — design work, needs a written design first**
+5. **PERF-03** — add p50/p95 stage latency budgets to the benchmark job.
+6. **STATE-01** — introduce explicit field ownership for `AgentState` so parallel
+   node writes are statically checked.
+7. **FRAG-18** — replace `threading.Lock` with a non-blocking/asyncio-aware
+   mechanism, or document the lock as thread-only with an invariant.
+8. **FRAG-6** — reuse a single long-lived loop instead of `asyncio.run` per round.
+
+**Tier C — large, should be scoped as projects**
+9. **FRAG-17** — enforce the state machine (`VALID_TRANSITIONS` + validator).
+10. **P2-6** — `ToolPool` with a per-turn tool-count cap.
+11. **FRAG-10** — triage 1,943 `except Exception`; the 1,200+ estimate in the
+    original doc was low. Requires per-case review, not a sweep.
+12. **P3-1** — validate the headless streaming path end-to-end before closing.
 
 ---
 
@@ -18,13 +119,24 @@
 4. [Orchestration](#4-orchestration)
 5. [User Interface & Usability](#5-user-interface--usability)
 6. [Cross-Cutting Issues](#6-cross-cutting-issues)
-7. [Improvement Plan — Prioritised](#7-improvement-plan--prioritised)
-8. [What CodingAgent Does Better Than Claw Code](#8-what-codingagent-does-better-than-claw-code)
+7. [Improvement Plan — Prioritised](#7-improvement-plan--prioritised) *(historical)*
+8. [Summary Table](#8-summary-table) *(with verified status)*
 9. [Source-Verified Corrections vs Claw Code Docs](#9-source-verified-corrections-vs-claw-code-docs)
+
+> Sections 1–7 are the original 2026-05-24 analysis. **File/line counts in those
+> sections are historical** — see the *Stale claims corrected* list in the audit
+> summary for current values.
 
 ---
 
 ## 1. Overall Architecture
+
+> **⚠️ Verified 2026-09-29.** The diagram below is accurate in structure but the
+> line counts are historical. Current: `orchestrator.py` **503** (not 487),
+> `graph/builder.py` **801** (not 655), `core_bridge.py` **342** (not 1840) —
+> the bridge was decomposed into 7 `_bridge_*.py` mixins
+> (`_bridge_agent`, `_bridge_context`, `_bridge_protocol`, `_bridge_provider`,
+> `_bridge_session`, `_bridge_subscriptions`, `_bridge_tools`; 2240 lines total).
 
 ### Current State
 
@@ -152,6 +264,15 @@ isolation; subagents share parent process memory.
 
 ---
 
+> **⚠️ Verified 2026-09-29.** The "49 files" and tier counts above are
+> historical. Current: **71 `@tool` decorators** across `src/tools/`, and repo
+> tools are consolidated into `repo_read_tools.py` + `repo_write_tools.py`.
+> Tier caps live in `src/tools/constants.py` alongside `TOOL_ALIASES` (object
+> identity is asserted by `TestCanonicalCentralization`), so the alias/kind
+> classification has a single source of truth. The tool pipeline itself
+> (decorator → `ToolDefinition` → registry → permission gate → sandbox) is
+> unchanged and accurate.
+
 ## 3. Memory Management
 
 ### Current State
@@ -210,6 +331,19 @@ and `rollback_manager.py` are implemented but there is no CLI or TUI affordance
 to trigger them. The feature exists only at the code level.
 
 ---
+
+> **⚠️ Verified 2026-09-29.** File counts are historical. Current:
+> `sqlite_session_store.py` **899** lines (not 848), decomposed into 6
+> collaborators — `sqlite_store_collaborators.py` (659),
+> `sqlite_store_queries.py`, `sqlite_store_schema.py`,
+> `sqlite_store_session_ops.py`, `sqlite_store_sidecar.py`.
+> `auto_compactor.py` **621** lines (unchanged). Compaction is now a standalone
+> `src/core/memory/compaction_service.py` (P2-1 ✅).
+> `JsonlSessionStore` locks are **per-instance** and cleared by
+> `delete_session()` (FRAG-5 — not a leak).
+> **Still open:** `write_decisions_json` and `get_recent_sessions` in all three
+> stores still full-scan instead of using the existing `read_page`/`iter_records`
+> (PERF-01).
 
 ## 4. Orchestration
 
@@ -283,6 +417,23 @@ For local models with slow inference, delegation effectively serialises what
 could run in parallel.
 
 ---
+
+> **⚠️ Verified 2026-09-29.** `builder.py` is now **801** lines (not 655).
+> Current state differs from the three-variant description: production uses
+> **tier graphs** — `_compile_frontier_graph` (capable) and `_compile_lite_graph`
+> (lite/small). The legacy full graph (`_USE_FULL_GRAPH` + `compile_agent_graph()`)
+> and the 10-node fast-path graph are **test/legacy only**. The frontier graph has
+> `analyst_delegation`, `debug`, `delegation`, **and** `replan` active;
+> `replan` fires when a tool result sets `requires_split`. Both tier graphs
+> compile with `checkpointer=_graph_checkpointer()`, and recovery is at **round
+> granularity** via a per-round JSON state snapshot in `inference_loop`.
+> `perception_node.py` is **504** lines (not 1016) with **9**
+> `perception_*.py` collaborators; `execution_helpers.py` is **80** lines
+> (not 1344). `state.py` is 561 lines with 11 `LIFECYCLE` blocks (P1-7 ✅).
+> **Still open:** no `VALID_TRANSITIONS` state-machine enforcement (FRAG-17), no
+> field-ownership layer (STATE-01), `threading.Lock` for p2p/session state
+> (FRAG-18), fresh `asyncio.run()` per graph round (FRAG-6, mitigated by a
+> loop-detect + executor fallback).
 
 ## 5. User Interface & Usability
 
@@ -977,57 +1128,60 @@ set, multi-turn agent sessions appear as traces with per-tool spans.
 
 ## 8. Summary Table
 
-| ID | Area | Issue | Priority | Effort |
-|----|------|-------|----------|--------|
-| P0-1 | Deps | LangGraph open range | P0 | S |
-| P0-2 | Deps | openai pre-release + stale pins | P0 | S |
-| P0-3 | Repo | Committed artifacts | P0 | S |
-| P0-4 | Repo | Debug log to repo root | P0 | S |
-| P0-5 | Quality | 22 auto-fixable ruff errors | P0 | S |
-| P1-1 | Orch | No graceful provider fallback | P1 | M |
-| P1-2 | UX | Four start scripts, no uv entrypoint | P1 | S |
-| P1-3 | Arch | Split TUI package | P1 | L |
-| P1-4 | Tools | No argument schema validation | P1 | M |
-| P1-5 | UI | No slash command registry | P1 | M |
-| P1-6 | UI | app.py 3662 lines | P1 | L |
-| P1-7 | Orch | AgentState undocumented lifecycle | P1 | M |
-| P2-1 | Memory | Compaction coupled to perception node | P2 | M |
-| P2-2 | Memory | Fork/revert not surfaced | P2 | M |
-| P2-3 | Memory | lancedb optionality unclear | P2 | S |
-| P2-4 | Deps | Loose pydantic/textual bounds | P2 | S |
-| P2-5 | Tools | 4 overlapping repo tool files | P2 | S |
-| P2-6 | Tools | No ToolPool cap enforcement | P2 | M |
-| P2-7 | Tools | Tool discovery fails on missing optional dep | P2 | S |
-| P2-8 | Orch | Sync subagent delegation | P2 | L |
-| P3-1 | UX | No headless streaming | P3 | M |
-| P3-2 | UX | No TUI session resume | P3 | M |
-| P3-3 | UX | No live model switching | P3 | M |
-| P3-4 | Orch | execution_helpers.py 1344 lines | P3 | M |
-| P3-5 | Obs | No OTel export | P3 | M |
+> **Status verified 2026-09-29.** ✅ = implemented, no work remaining.
+> ⚠️ = stale claim corrected in place. The "Effort" column is the *original*
+> estimate; it is retained for the ✅ rows only as a record of what was spent.
+
+| ID | Area | Issue | Priority | Effort | Status |
+|----|------|-------|----------|--------|--------|
+| P0-1 | Deps | LangGraph open range | P0 | S | ✅ `pyproject.toml:16-17` |
+| P0-2 | Deps | openai pre-release + stale pins | P0 | S | ✅ `pyproject.toml:9-15` |
+| P0-3 | Repo | Committed artifacts | P0 | S | ✅ none tracked |
+| P0-4 | Repo | Debug log to repo root | P0 | S | ✅ `src/main.py:16-19` |
+| P0-5 | Quality | 22 auto-fixable ruff errors | P0 | S | ✅ gate clean at zero |
+| P1-1 | Orch | No graceful provider fallback | P1 | M | ✅ `orchestrator_provider_init.py:41,44,121` |
+| P1-2 | UX | Four start scripts, no uv entrypoint | P1 | S | ✅ `pyproject.toml:60-61` |
+| P1-3 | Arch | Split TUI package | P1 | L | 🚫 **Dropped by decision** — `tui/src` ↔ `tui/tui_src` are byte-identical mirrors, parity enforced by `TestMirrorSync` |
+| P1-4 | Tools | No argument schema validation | P1 | M | ✅ `src/tools/_tool.py:180` |
+| P1-5 | UI | No slash command registry | P1 | M | ✅ `tui/src/ui/commands/registry.py` |
+| P1-6 | UI | app.py 3662 lines | P1 | L | ✅ **753 lines** + `screens/` (⚠️ count corrected) |
+| P1-7 | Orch | AgentState undocumented lifecycle | P1 | M | ✅ 11 `LIFECYCLE` blocks in `state.py` |
+| P2-1 | Memory | Compaction coupled to perception node | P2 | M | ✅ `src/core/memory/compaction_service.py` |
+| P2-2 | Memory | Fork/revert not surfaced | P2 | M | ⚠️ **Partially open** — store methods exist (`jsonl_session_store.py:367,404`); no TUI entry point |
+| P2-3 | Memory | lancedb optionality unclear | P2 | S | ✅ lancedb removed; `repo_{read,write}_tools.py` |
+| P2-4 | Deps | Loose pydantic/textual bounds | P2 | S | ✅ `pyproject.toml:11,18` both bounded |
+| P2-5 | Tools | 4 overlapping repo tool files | P2 | S | ✅ 2 files |
+| P2-6 | Tools | No ToolPool cap enforcement | P2 | M | ❌ **Still open** |
+| P2-7 | Tools | Tool discovery fails on missing optional dep | P2 | S | ✅ `_registry.py:47,256` |
+| P2-8 | Orch | Sync subagent delegation | P2 | L | ✅ `delegation_node.py:214,333` |
+| P3-1 | UX | No headless streaming | P3 | M | ⚠️ **Appears wired** — `src/main.py:177,757-764`; needs e2e verification |
+| P3-2 | UX | No TUI session resume | P3 | M | ✅ `screens/session_list.py:245` `_resume_selected()` |
+| P3-3 | UX | No live model switching | P3 | M | ✅ `_app_slash_commands_mixin.py:364` |
+| P3-4 | Orch | execution_helpers.py 1344 lines | P3 | M | ✅ **80 lines** (⚠️ count corrected) |
+| P3-5 | Obs | No OTel export | P3 | M | ✅ `observability/otel_exporter.py` |
+
+**Totals: 22 ✅ · 2 ⚠️ partial · 1 🚫 dropped by decision · 1 ❌ open** (plus the
+FRAG-* and PERF-* items tracked in *Open Items — Verified Backlog*).
 
 ---
 
 ## 9. Recommended Sequencing
 
-Execute in this order to minimise breakage risk:
+> **Historical.** All six sprints below are complete except the items marked
+> ❌/⚠️ in §8. Do not re-run these sprints. Remaining work is sequenced in
+> *Open Items — Verified Backlog* (Tier A → B → C).
 
-**Sprint 1 — Foundation (all P0):**
-P0-1 → P0-2 → P0-3 → P0-4 → P0-5
+**Sprint 1 — Foundation (all P0):** P0-1 → P0-2 → P0-3 → P0-4 → P0-5 ✅ *done*
 
-**Sprint 2 — Quick wins (small P1/P2):**
-P1-2 → P1-4 → P2-3 → P2-4 → P2-5 → P2-7
+**Sprint 2 — Quick wins (small P1/P2):** P1-2 → P1-4 → P2-3 → P2-4 → P2-5 → P2-7 ✅ *done*
 
-**Sprint 3 — Slash commands (enables later work):**
-P1-5 → P1-7 → P2-1 → P3-3
+**Sprint 3 — Slash commands (enables later work):** P1-5 → P1-7 → P2-1 → P3-3 ✅ *done*
 
-**Sprint 4 — TUI restructure:**
-P1-6 → P2-2 → P3-2
+**Sprint 4 — TUI restructure:** P1-6 ✅ → P2-2 ⚠️ → P3-2 ✅
 
-**Sprint 5 — Architecture (high effort):**
-P1-1 → P1-3 → P2-6 → P2-8
+**Sprint 5 — Architecture (high effort):** P1-1 ✅ → P1-3 🚫 → P2-6 ❌ → P2-8 ✅
 
-**Sprint 6 — Polish:**
-P3-1 → P3-4 → P3-5
+**Sprint 6 — Polish:** P3-1 ⚠️ → P3-4 ✅ → P3-5 ✅
 
 ---
 
