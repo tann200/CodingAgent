@@ -769,7 +769,11 @@ class JsonlSessionStore:
         ]
 
     def add_decision(
-        self, session_id: str, decision: Any, rationale: Optional[str] = None
+        self,
+        session_id: str,
+        decision: Any,
+        rationale: Optional[str] = None,
+        timestamp: Optional[str] = None,
     ) -> None:
         self._append(
             session_id,
@@ -777,7 +781,7 @@ class JsonlSessionStore:
                 "type": "decision",
                 "decision": decision,
                 "rationale": rationale,
-                "ts": _utc_now(),
+                "ts": timestamp or _utc_now(),
             },
         )
         # Auto-flush recent decisions to a cross-session sidecar for the
@@ -797,9 +801,19 @@ class JsonlSessionStore:
             )
 
     def get_decisions(self, session_id: str) -> List[Dict[str, Any]]:
-        return [
-            r for r in self._read_all_records(session_id) if r.get("type") == "decision"
-        ]
+        return [r for r in self.iter_records(session_id) if r.get("type") == "decision"]
+
+    def iter_decisions(self, session_id: str) -> Iterator[Dict[str, Any]]:
+        """Yield *session_id*'s decision records without materialising history.
+
+        Same records as :meth:`get_decisions`, but streaming: callers that only
+        need a bounded prefix (e.g. the ``decisions.json`` sidecar, which keeps
+        the ``limit`` most recent) should use this so cost is independent of
+        session length.
+        """
+        for r in self.iter_records(session_id):
+            if r.get("type") == "decision":
+                yield r
 
     # ------------------------------------------------------------------
     # Cross-session decision memory (decisions.json sidecar)
@@ -817,23 +831,40 @@ class JsonlSessionStore:
 
         The most recent decisions are selected by timestamp and the result is a
         list of decision objects with keys: session_id, decision, rationale, ts.
-        """
-        # Gather all decisions from all sessions
-        all_decisions: List[Dict[str, Any]] = []
-        for sid in self.list_sessions():
-            for d in self.get_decisions(sid):
-                item = {
-                    "session_id": sid,
-                    "decision": d.get("decision"),
-                    "rationale": d.get("rationale"),
-                    "ts": d.get("ts"),
-                }
-                all_decisions.append(item)
 
-        # Sort by timestamp descending (most recent first). Timestamps are
-        # ISO-8601 strings so they sort lexicographically.
-        all_decisions.sort(key=lambda x: x.get("ts") or "", reverse=True)
-        trimmed = all_decisions[: max(0, int(limit))]
+        Streams via :meth:`iter_decisions` and keeps only a bounded per-session
+        candidate set. This runs on *every* ``add_decision`` call, so the
+        previous ``get_decisions``-per-session (which materialised each session's
+        entire history) made every single decision write O(total stored history).
+        """
+        keep = max(0, int(limit))
+        if keep == 0:
+            trimmed: List[Dict[str, Any]] = []
+        else:
+            # Bounded candidate buffer: retain at most `keep` decisions per
+            # session (by timestamp desc), then merge and trim globally. The
+            # global top-`keep` set can only contain records that are top-`keep`
+            # within their own session, so this is exact, not an approximation.
+            per_session: List[Dict[str, Any]] = []
+            for sid in self.list_sessions():
+                candidates = [
+                    {
+                        "session_id": sid,
+                        "decision": d.get("decision"),
+                        "rationale": d.get("rationale"),
+                        "ts": d.get("ts"),
+                    }
+                    for d in self.iter_decisions(sid)
+                ]
+                if len(candidates) > keep:
+                    candidates.sort(key=lambda x: x.get("ts") or "", reverse=True)
+                    candidates = candidates[:keep]
+                per_session.extend(candidates)
+
+            # Sort by timestamp descending (most recent first). Timestamps are
+            # ISO-8601 strings so they sort lexicographically.
+            per_session.sort(key=lambda x: x.get("ts") or "", reverse=True)
+            trimmed = per_session[:keep]
 
         # For writes prefer the canonical agent-context resolver (may create dirs)
         try:
