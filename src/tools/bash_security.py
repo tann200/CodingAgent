@@ -28,7 +28,8 @@ import re
 import shlex
 from enum import Enum
 from functools import lru_cache
-from typing import List, Tuple
+from pathlib import Path
+from typing import List, Optional, Tuple
 
 
 # SEC-2: Internal cache type uses immutable tuple for reasons so lru_cache
@@ -120,7 +121,74 @@ _DANGEROUS_PATTERNS: List[Tuple[re.Pattern, str]] = [
     (re.compile(r"\bpkill\b"), "pkill (process termination)"),
     (re.compile(r"\bservice\b"), "service (system service)"),
     (re.compile(r"\bcrontab\b"), "crontab (scheduled tasks)"),
+    # P1.3: irreversible work destruction that is NOT recursive rm.  These were
+    # previously classified SAFE, so a single command could destroy the user's
+    # uncommitted work with no approval prompt.  Dry-run variants are excluded
+    # so read-only invocations keep their current behavior.
+    (re.compile(r"\bgit\s+clean\b(?![^\n|;&]*(-n\b|--dry-run))"), "git clean (removes untracked files)"),
+    (re.compile(r"\bgit\s+reset\b[^\n|;&]*--hard\b"), "git reset --hard (discards uncommitted changes)"),
+    (re.compile(r"\bgit\s+checkout\b[^\n|;&]*\s-f\b(?!--force-with-lease)"), "git checkout -f (overwrites local changes)"),
+    (re.compile(r"\bgit\s+push\b[^\n|;&]*(--force\b|--force-with-lease\b|\s-f(?:\s|$))"), "git push --force (rewrites remote history)"),
+    (re.compile(r"\bgit\s+branch\b[^\n|;&]*\s-D\b"), "git branch -D (force-deletes branch)"),
+    (re.compile(r"\bfind\b[^\n|;&]*\s-delete\b"), "find -delete (bulk file deletion)"),
+    (re.compile(r"\btruncate\s+-[a-zA-Z]*s"), "truncate -s (file truncation)"),
+    (re.compile(r"\bgit\s+gc\b[^\n|;&]*--prune"), "git gc --prune (drops unreachable objects)"),
+    # Leading truncation redirect (``> file``) empties a file with no prompt.
+    # ``>>`` is an append and is deliberately excluded.
+    (re.compile(r"(?m)^\s*>\s*[^\s>|;&]"), "truncation redirect (empties target file)"),
 ]
+
+
+# ---------------------------------------------------------------------------
+# P1.3: path-escape detection for move/copy commands
+# ---------------------------------------------------------------------------
+#
+# ``mv`` and ``cp`` cannot be gated by a static pattern: ``mv a b`` inside the
+# workspace is routine, while ``mv a ../elsewhere`` exfiltrates or destroys work
+# and ``mv a b`` silently overwrites an existing ``b``.  Because DANGEROUS is
+# hard-blocked by the Gate 2 defence-in-depth check in ``_bash_exec``, a blanket
+# ``\bmv\b`` pattern would break ordinary file moves outright, so the decision is
+# deferred to a path-aware pass that only runs when the caller supplies a
+# working directory.
+_PATH_ESCAPE_COMMANDS = frozenset({"mv", "cp", "install", "rsync"})
+
+
+def _path_escape_reasons(tokens: List[str], working_dir: Optional[str]) -> List[str]:
+    """Flag move/copy commands whose destination escapes *working_dir*.
+
+    Args:
+        tokens:      Whitespace/quote-normalized command tokens.
+        working_dir: Workspace root, or ``None`` when the caller has no
+                     workspace context (in which case this check is skipped
+                     rather than blanket-escalating every ``mv``).
+
+    Returns:
+        Human-readable reasons; empty when the command stays inside the
+        workspace.
+    """
+    if not working_dir:
+        return []
+    argv = [t for t in tokens if not t.startswith("-")]
+    if not argv:
+        return []
+    head = Path(argv[0]).name
+    if head not in _PATH_ESCAPE_COMMANDS:
+        return []
+    # mv/cp take sources then a final destination; a missing destination is a
+    # malformed command, not an escape.
+    operands = [t for t in argv[1:] if t]
+    if len(operands) < 2:
+        return []
+    dest = operands[-1]
+    try:
+        root = Path(working_dir).resolve()
+        target = Path(dest)
+        resolved = (target if target.is_absolute() else root / target).resolve()
+    except Exception:
+        return ["mv/cp path could not be resolved"]
+    if resolved != root and root not in resolved.parents:
+        return [f"{head} target escapes workspace ({dest})"]
+    return []
 
 
 @lru_cache(maxsize=256)
@@ -157,7 +225,9 @@ def _analyze_bash_command_cached(cmd: str) -> _CacheResult:
     return BashRiskLevel.SAFE, ()
 
 
-def analyze_bash_command(cmd: str) -> Tuple[BashRiskLevel, List[str]]:
+def analyze_bash_command(
+    cmd: str, working_dir: Optional[str] = None
+) -> Tuple[BashRiskLevel, List[str]]:
     """Analyse *cmd* and return ``(risk_level, reasons)``.
 
     The function works in three passes:
@@ -169,12 +239,28 @@ def analyze_bash_command(cmd: str) -> Tuple[BashRiskLevel, List[str]]:
 
     Returns ``(SAFE, [])`` when no patterns match.
 
+    Args:
+        cmd:         Raw command string.
+        working_dir: Optional workspace root.  When supplied, move/copy
+                     commands whose destination escapes it are escalated to
+                     DANGEROUS (see ``_path_escape_reasons``).  Omitting it
+                     skips only that check; all pattern passes still run.
+
     SEC-2: Internally delegates to ``_analyze_bash_command_cached`` which stores
     immutable tuples; this public wrapper converts reasons back to a fresh list
     so callers receive an independent mutable copy they can safely modify.
     """
     level, reasons_tuple = _analyze_bash_command_cached(cmd)
-    return level, list(reasons_tuple)
+    reasons = list(reasons_tuple)
+    if working_dir and level is not BashRiskLevel.BLOCKED:
+        try:
+            tokens = shlex.split(cmd)
+        except ValueError:
+            tokens = cmd.split()
+        reasons.extend(_path_escape_reasons(tokens, working_dir))
+        if reasons:
+            level = BashRiskLevel.DANGEROUS
+    return level, reasons
 
 
 def is_blocked(cmd: str) -> bool:

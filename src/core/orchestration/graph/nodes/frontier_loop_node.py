@@ -35,6 +35,25 @@ from src.core.orchestration.graph.nodes.node_utils import (
     _resolve_orchestrator,
     _notify_provider_limit,
 )
+from src.core.orchestration.graph.nodes.repo_context import (
+    build_repo_context_block,
+    refresh_index_after_write,
+)
+from src.core.orchestration.graph.nodes.frontier_toolcalls import (
+    _append_tool_call_history,
+    _normalize_tool_call,
+    _render_tool_calls_text,
+)
+from src.core.orchestration.graph.nodes.tool_result_safety import sanitize_tool_result
+
+# Re-exported for backwards compatibility with the legacy test surface that
+# imports these helpers from this module.
+__all__ = [
+    "frontier_loop_node",
+    "_append_tool_call_history",
+    "_normalize_tool_call",
+    "_render_tool_calls_text",
+]
 from src.core.orchestration.tool_parser import parse_tool_block
 from src.core.inference.kv_cache_governor import (
     CompactionAction,
@@ -109,6 +128,16 @@ def _truncate_tool_output(res: dict) -> dict:
     """Cap any large text fields in a tool result before it enters history."""
     return truncate_tool_output(res, marker_label="frontier_loop")
 
+def _sanitize_tool_output(res: dict) -> dict:
+    """Injection-scan then truncate a tool result before it enters history.
+
+    P1.1: this node is the only production path that executes tools, so it is
+    the only place untrusted content can enter the model context.  The policy
+    lives in ``tool_result_safety.sanitize_tool_result``; see that module for
+    why detection must precede truncation.
+    """
+    return sanitize_tool_result(res, marker_label="frontier_loop", log=logger)
+
 def _extract_content_text(response: Any) -> str:
     """Extract text content from an LLM response object."""
     try:
@@ -153,74 +182,6 @@ def _is_context_overflow(error_msg: str) -> bool:
     )
     low = error_msg.lower()
     return sum(1 for p in patterns if p in low) >= 2
-
-def _normalize_tool_call(tc: Any) -> tuple[str, dict]:
-    """Return a normalized (tool_name, tool_args) tuple."""
-    if isinstance(tc, dict):
-        tool_name = (
-            tc.get("name")
-            or tc.get("tool")
-            or (tc.get("function", {}) or {}).get("name", "")
-        )
-        raw_args = (
-            tc.get("args")
-            or tc.get("arguments")
-            or tc.get("input")
-            or (tc.get("function", {}) or {}).get("arguments", {})
-            or {}
-        )
-        if isinstance(raw_args, str):
-            try:
-                raw_args = json.loads(raw_args)
-            except Exception:
-                raw_args = {}
-        return tool_name, raw_args if isinstance(raw_args, dict) else {}
-
-    try:
-        tool_name = tc.function.name
-        raw_args = tc.function.arguments
-        tool_args = json.loads(raw_args) if isinstance(raw_args, str) else (raw_args or {})
-        return tool_name, tool_args if isinstance(tool_args, dict) else {}
-    except Exception:
-        return "", {}
-
-def _render_tool_calls_text(tool_calls: list[Any]) -> str:
-    """Serialize tool calls into parseable assistant history content."""
-    blocks: list[str] = []
-    for tc in tool_calls:
-        tool_name, tool_args = _normalize_tool_call(tc)
-        if not tool_name:
-            continue
-        try:
-            blocks.append(
-                json.dumps(
-                    {"name": tool_name, "arguments": tool_args},
-                    ensure_ascii=True,
-                    default=str,
-                )
-            )
-        except Exception:
-            continue
-    return "\n".join(blocks)
-
-def _append_tool_call_history(history: list[dict], tool_calls: list[Any]) -> list[dict]:
-    """Ensure history contains a parseable assistant tool-call record."""
-    rendered = _render_tool_calls_text(tool_calls)
-    if not rendered:
-        return history
-
-    updated = list(history)
-    if updated and updated[-1].get("role") == "assistant":
-        prior_content = updated[-1].get("content") or ""
-        if not parse_tool_block(prior_content):
-            merged = (
-                f"{prior_content.rstrip()}\n\n{rendered}" if str(prior_content).strip() else rendered
-            )
-            updated[-1] = {**updated[-1], "content": merged}
-            return updated
-
-    updated.append({"role": "assistant", "content": rendered})
-    return updated
 
 
 def _extract_tool_call_from_text(content: str) -> tuple[dict | None, str]:
@@ -702,7 +663,7 @@ async def _dispatch_tool_calls(
                 {} if tool_result is None else {"ok": False, "error": str(tool_result)}
             )
         tool_result = cast(Dict[str, Any], tool_result)
-        tool_result = _truncate_tool_output(tool_result)
+        tool_result = _sanitize_tool_output(tool_result)
         tool_call_count += 1
         last_result = tool_result
 
@@ -730,6 +691,12 @@ async def _dispatch_tool_calls(
                 tool_last_used[f"{tool_name}:{path_arg}"] = tool_call_count
             except Exception:
                 pass
+
+        # P1.2: keep the on-disk symbol index consistent after a modifying tool.
+        # Unconditional — the helper self-gates and selects its own path keys.
+        refresh_index_after_write(
+            tool_name, tool_args, str(state.get("working_dir") or "")
+        )
 
         legacy_history = build_tool_history_messages(
             result=tool_result,
@@ -798,6 +765,21 @@ async def frontier_loop_node(
     if analyst_findings:
         task = f"{task}\n\n<analyst_findings>\n{analyst_findings}\n</analyst_findings>"
         logger.info("frontier_loop_node: injecting analyst_findings (%d chars)", len(analyst_findings))
+
+    # P1.2: ground the production loop in repository intelligence.  Previously
+    # only the legacy planning/execution nodes consulted the repo index, so the
+    # production frontier path ran with no symbol or file awareness at all.
+    try:
+        repo_context: str = build_repo_context_block(state, task)
+    except Exception as exc:
+        logger.debug("frontier_loop_node: repo context unavailable (non-critical): %s", exc)
+        repo_context = ""
+    if repo_context:
+        task = f"{task}\n\n{repo_context}"
+        logger.info(
+            "frontier_loop_node: injected repo_context (%d chars)", len(repo_context)
+        )
+
     provider_name: str | None = None
     model_name: str | None = None
 

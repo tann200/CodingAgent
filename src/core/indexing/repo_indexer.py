@@ -333,40 +333,10 @@ def index_repository(workdir: str, incremental: bool = True) -> Dict[str, Any]:
 
             repo_index["files"].append(file_entry)
 
-            # Add symbols
-            if "classes" in file_data:
-                for class_data in file_data["classes"]:
-                    repo_index["symbols"].append(
-                        {
-                            "symbol_name": class_data["name"],
-                            "symbol_type": "class",
-                            "file_path": rel_path,
-                            "language": language,
-                        }
-                    )
-
-            if "functions" in file_data:
-                for func_data in file_data["functions"]:
-                    repo_index["symbols"].append(
-                        {
-                            "symbol_name": func_data["name"],
-                            "symbol_type": "function",
-                            "file_path": rel_path,
-                            "language": language,
-                        }
-                    )
-
-            # For regex-parsed files
-            if "symbols" in file_data:
-                for sym in file_data["symbols"]:
-                    repo_index["symbols"].append(
-                        {
-                            "symbol_name": sym["name"],
-                            "symbol_type": sym["type"],
-                            "file_path": rel_path,
-                            "language": language,
-                        }
-                    )
+            # Add symbols (shared shape with refresh_file_in_index).
+            repo_index["symbols"].extend(
+                _flat_symbols_for_file(file_data, rel_path, language)
+            )
 
             new_hashes[rel_path] = compute_file_hash(path)
 
@@ -538,12 +508,61 @@ def get_symbols_for_task(
         return []
 
 
+def _flat_symbols_for_file(
+    file_data: Dict[str, Any], rel_path: str, language: Optional[str]
+) -> List[Dict[str, Any]]:
+    """Build the flat ``symbols`` records for one parsed file.
+
+    Single source of truth for the symbol shape so ``index_repository`` and
+    ``refresh_file_in_index`` cannot drift.  Covers the three shapes a parsed
+    file can have: AST (``classes``/``functions``) and regex (``symbols``).
+    """
+    out: List[Dict[str, Any]] = []
+    for class_data in file_data.get("classes") or []:
+        if isinstance(class_data, dict) and class_data.get("name"):
+            out.append(
+                {
+                    "symbol_name": class_data["name"],
+                    "symbol_type": "class",
+                    "file_path": rel_path,
+                    "language": language,
+                }
+            )
+    for func_data in file_data.get("functions") or []:
+        if isinstance(func_data, dict) and func_data.get("name"):
+            out.append(
+                {
+                    "symbol_name": func_data["name"],
+                    "symbol_type": "function",
+                    "file_path": rel_path,
+                    "language": language,
+                }
+            )
+    for sym in file_data.get("symbols") or []:
+        if isinstance(sym, dict) and sym.get("name"):
+            out.append(
+                {
+                    "symbol_name": sym["name"],
+                    "symbol_type": sym.get("type", "symbol"),
+                    "file_path": rel_path,
+                    "language": language,
+                }
+            )
+    return out
+
+
 def refresh_file_in_index(file_path: str, working_dir: str) -> bool:
     """Re-parse a single file and update its entry in the on-disk index.
 
     P3-T3: Call this after any write_file / edit_file tool completes successfully
     so the in-process symbol index stays consistent with the filesystem.
     Returns True if the index was updated, False on any error (non-fatal).
+
+    P1.2 fix: this used to refresh only the ``files`` entry, leaving the flat
+    top-level ``symbols`` list untouched.  ``get_symbols_for_task`` — the sole
+    consumer — reads *only* ``symbols``, so every post-write refresh was a
+    silent no-op for symbol lookups and the index drifted further out of sync
+    with each edit.  Both lists are now updated together.
     """
     try:
         p = Path(file_path)
@@ -576,6 +595,23 @@ def refresh_file_in_index(file_path: str, working_dir: str) -> bool:
         else:
             files_list.append(parsed)
         data["files"] = files_list
+
+        # Replace this file's symbols: drop the stale ones, re-add from the
+        # freshly parsed source.  Without this the symbol list keeps pointing
+        # at pre-edit definitions and symbol search silently returns deleted
+        # names while missing newly added ones.
+        symbols_list = data.get("symbols", [])
+        if not isinstance(symbols_list, list):
+            symbols_list = []
+        retained = [
+            s
+            for s in symbols_list
+            if not (isinstance(s, dict) and s.get("file_path") == rel)
+        ]
+        language = parsed.get("language") or get_language(p) or ""
+        retained.extend(_flat_symbols_for_file(parsed, rel, language))
+        data["symbols"] = retained
+
         if _atomic_write_json is not None:
             return bool(_atomic_write_json(index_path, data))
         # Fallback: plain write (no atomicity guarantee)

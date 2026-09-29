@@ -387,7 +387,9 @@ def bash(
     # DANGEROUS commands, but treating DANGEROUS as blocked provides defence-in-depth
     # and eliminates the risk of silent pass-through if a later gate has a gap.
     try:
-        _risk_level, _risk_reasons = analyze_bash_command(command)
+        _risk_level, _risk_reasons = analyze_bash_command(
+            command, working_dir=str(workdir)
+        )
         if _risk_level in (BashRiskLevel.BLOCKED, BashRiskLevel.DANGEROUS):
             return {
                 "status": "error",
@@ -651,7 +653,9 @@ def bash_readonly(
 
     # Gate 2: AST-level bash security analysis.
     try:
-        _risk_level, _risk_reasons = analyze_bash_command(command)
+        _risk_level, _risk_reasons = analyze_bash_command(
+            command, working_dir=str(workdir)
+        )
         if _risk_level in (BashRiskLevel.BLOCKED, BashRiskLevel.DANGEROUS):
             return {
                 "status": "error",
