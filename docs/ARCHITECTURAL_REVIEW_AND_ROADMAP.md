@@ -64,6 +64,13 @@ The suite is large, but the `sync_threads` fixture turns thread and executor wor
 
 ## Baseline quality snapshot
 
+> **⚠️ Re-verified 2026-09-29.** The snapshot below is from the QUAL-01/TEST-02
+> pass. Current measurements: **`tests/unit` collects 4,911 tests across 360
+> files** (was "4659 passed, 1 skipped" across 356 files). Ruff gate still clean,
+> mypy narrow gate still clean, CI still fails closed. Directory-level
+> collection: unit 4,911 · integration 145 · e2e 26 · acceptance 4 ·
+> benchmarks 18 · integration_real 8 · _deprecated 251.
+
 As of the QUAL-01/TEST-02 pass (ruff + mypy gates fail closed):
 
 - The full unit suite passes from a clean environment: **4659 passed, 1 skipped, 0 xfail/xpass** (includes the 14-test real-concurrency contract suite from TEST-01, the 23-test STATE-01 boundary suite, the 30-test PERF-02 resilience-policy suite, and the 9-test PERF-01 JSONL + 8-test PERF-01 Sqlite streaming-pagination suites).

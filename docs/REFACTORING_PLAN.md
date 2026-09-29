@@ -1,6 +1,9 @@
 # Refactoring Implementation Plan
 
 Generated: 2026-05-12
+**Re-verified against live code: 2026-09-29** — see *Progress Tracking* at the
+end for corrected statuses (the original "all complete" table was wrong on 5 of
+8 items).
 
 This document tracks all identified code quality issues and the plan/status for addressing each.
 
@@ -221,13 +224,33 @@ Step 16: Tests
 
 ## Progress Tracking
 
-| Step | Item | Status |
-|---|---|---|
-| 1 | P1.1 except:pass → logger.debug | ✅ Complete |
-| 2 | P3.1 __import__() cleanup | ✅ Complete |
-| 3 | P2.1 __all__ in __init__.py | ✅ Complete |
-| 4 | P1.3 Split _chat_internal() | ✅ Complete |
-| 5 | P1.5 Split _handle_request() | ✅ Complete |
-| 6 | P1.4 Split frontier_loop_node() | ✅ Complete |
-| 7 | P2.2 AbstractSessionStore | ✅ Complete |
-| 8 | P1.2 Split SqliteSessionStore | ✅ Complete |
+> **⚠️ Re-verified 2026-09-29.** The original table marked all 8 items
+> "✅ Complete". A code-level audit contradicts **4 of those 8**. Corrected
+> statuses below, each with the evidence used to reach it. The item bodies above
+> are unchanged historical record.
+
+| Step | Item | Claimed | **Actual** | Evidence |
+|---|---|---|---|---|
+| 1 | P1.1 `except: pass` → `logger.debug` | ✅ Complete | ⚠️ **Partial (~4%)** | **740** bare `except…: pass` remain across **163** files (was 772). Confirmed in `src/main.py`, `src/tools/lint_dispatch.py`, `src/tools/patch_tools.py`, `src/cli/session_cmd.py`, `src/tools/interaction_tools.py`. The reduction came from unrelated work — e.g. FRAG-3/FRAG-9 replaced `pass` with `logger.warning`. |
+| 2 | P3.1 `__import__()` anti-pattern | ✅ Complete | ⚠️ **Partial (22%)** | **7** occurrences remain: `src/cli/session_cmd.py` (4), `src/core/config_loader.py` (1), `src/tools/file_tools.py` (1), `src/core/orchestration/graph/nodes/planning_node.py` (1). Was 9. |
+| 3 | P2.1 `__all__` in `__init__.py` | ✅ Complete | ⚠️ **Partial** | Present: `src/core/messaging`, `src/core/inference`, `src/tools`. **Missing:** `src/core/memory/__init__.py` (20 modules), `src/core/orchestration/__init__.py` (70 modules). |
+| 4 | P1.3 Split `_chat_internal()` | ✅ Complete | ❌ **Not done as specified** | `_chat_internal` is still **263 lines** (`openai_compat_adapter.py:535`). **None** of the four planned methods exist: `_build_request_payload`, `_parse_streaming_response`, `_parse_nonstreaming_response`, `_detect_context_overflow`. Only `_parse_tool_calls_list` (`:777`) was extracted. |
+| 5 | P1.5 Split `_handle_request()` | ✅ Complete | ✅ **Genuinely complete** | `src/core/orchestration/mcp_stdio_server.py` (700 lines) has extracted handlers: `_handle_initialize:164`, `_handle_tools_list:187`, `_handle_tools_call:202`, `_handle_ping:234`, `_handle_resources_read:289`, plus `_parse_json_rpc:101` / `_build_response:131` / `_build_error_response:140`. |
+| 6 | P1.4 Split `frontier_loop_node()` | ✅ Complete | ❌ **Not done; file grew** | `frontier_loop_node.py` is **1035 lines** (plan targeted a 548-line function). Only 2 of 4 planned helpers exist: `_prepare_turn_messages:433`, `_dispatch_tool_calls:656`. `_assemble_turn_result` and `_should_terminate_loop` do **not** exist. |
+| 7 | P2.2 `AbstractSessionStore` + factory | ✅ Complete | ✅ **Complete** | `src/core/memory/session_store.py:44` `_resolve_backend(explicit)` (arg > `CODING_AGENT_STORAGE_BACKEND` env > config > `jsonl` default) and `:71` `_create_backend(workdir, backend)`. |
+| 8 | P1.2 Split `SqliteSessionStore` | ✅ Complete | ✅ **Complete** | 6 collaborators extracted: `sqlite_store_collaborators.py` (659 lines), `sqlite_store_queries.py`, `sqlite_store_schema.py`, `sqlite_store_session_ops.py`, `sqlite_store_sidecar.py`; `sqlite_session_store.py` slimmed to **899** lines (from 1138). |
+
+**Corrected tally: 3 complete · 3 partial · 2 not done.**
+
+### Real remaining work (refactoring)
+
+1. **P1.1** — 740 bare `except: pass`. Needs triage, not a sweep: many are
+   legitimately best-effort (e.g. `src/main.py` import checks) and should be
+   annotated rather than logged. Related to FRAG-10 (1,943 `except Exception`
+   total) — treat as one project.
+2. **P1.3** — extract the 4 `_chat_internal` helpers (263 lines today).
+3. **P1.4** — `frontier_loop_node.py` at 1035 lines is now the largest
+   node-adjacent file; the 2 missing helpers are the natural seam.
+4. **P3.1** — 7 remaining `__import__()` sites.
+5. **P2.1** — add `__all__` to `src/core/memory/__init__.py` and
+   `src/core/orchestration/__init__.py`.

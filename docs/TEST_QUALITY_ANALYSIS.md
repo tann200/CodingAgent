@@ -1,9 +1,50 @@
 # Test Quality Analysis Report
 
-**Date**: 2026-06-08  
-**Total Tests Analyzed**: 4,399 tests across 372 test files  
-**Analysis Scope**: Complete test suite (unit, integration, e2e, acceptance, benchmarks)  
+**Date**: 2026-06-08
+**Re-verified against live code**: 2026-09-29
+**Total Tests Analyzed (original)**: 4,399 tests across 372 test files
+**Analysis Scope**: Complete test suite (unit, integration, e2e, acceptance, benchmarks)
 **Note**: Counts reflect the suite as of the analysis date. The authoritative current baseline (see README "Test Baseline") is produced by `pytest tests/unit tests/integration/test_fast_path_graph_e2e.py`.
+
+---
+
+## ⚠️ Re-verification Notice (2026-09-29)
+
+The findings below are retained as a historical record. A collection-level
+audit (`pytest --collect-only` per directory) found the following drift:
+
+| Metric | As analysed (2026-06-08) | **Actual (2026-09-29)** |
+|---|---|---|
+| Unit tests | 3,953 | **4,911** |
+| Integration tests | 168 | **145** |
+| E2E tests | 26 | 26 (unchanged) |
+| Acceptance tests | ~4 | 4 |
+| Benchmarks | — | 18 (new suite) |
+| Deprecated | 251 | 251 (unchanged) |
+| `integration_real` | **did not exist** | **8** (new suite) |
+| **Total collected** | 4,399 | **5,363** |
+
+**New real-integration suite.** `tests/integration_real/` (8 tests, with its
+own `README.md` stating the "integrate real components, not orchestrate mocks"
+philosophy) closes two of the five "Critical Missing Workflows" the original
+report listed as ❌. The two cited mock-heavy files
+`test_pipeline_mock.py` and `test_delegation_mock.py` **have been deleted**;
+`test_ollama_adapter_integration.py` moved from `tests/unit/` to
+`tests/integration/`. All other files named in the "Low-Value Tests Breakdown"
+table still exist and still need the recommended triage.
+
+### Critical Missing Workflows — corrected status
+
+| Workflow | Original | **Actual (2026-09-29)** |
+|---|---|---|
+| Real delegation workflow | ❌ missing | ✅ **Closed** — `tests/integration_real/test_delegation_integration.py`: `test_subagent_spawns_and_executes:25`, `test_delegation_result_merging:39`, `test_nested_delegation:48` |
+| Complete bug-fix workflow | ❌ missing | ✅ **Closed** — `tests/integration_real/test_tool_chain_integration.py`: `test_search_read_edit_full_loop_real:84`, `test_read_before_write_enforcement_integration:120`, plus `test_file_write_invalidates_context_cache:198` |
+| Planning → Execution → Verification cycle | ❌ missing | ⚠️ **Partial** — planning + perception nodes covered in `tests/e2e/test_agent_scenarios.py:123,210`; no full-cycle assertion |
+| Multi-turn conversation with context | ❌ missing | ❌ **Still missing** — no multi-turn test outside `tests/unit/test_auto_compactor.py` |
+| Error recovery scenario | ❌ missing | ⚠️ **Partial** — `test_tool_chain_integration.py` covers recovery-shaped paths; no dedicated replan/recovery scenario test |
+
+**Net: 2 closed, 2 partial, 1 still open.** The "Critical workflow gaps"
+bullet in the Executive Summary below is no longer accurate in full.
 
 ---
 
