@@ -148,11 +148,56 @@ def route_frontier_loop_exit_lite(
     return "memory_sync"
 
 
+def _known_tiers() -> frozenset[str]:
+    """Tiers accepted by ``select_tier_graph_cache_key``.
+
+    Derived from the canonical ``ModelTier`` enum so adding a tier there cannot
+    silently leave this router behind, plus the two legacy aliases the builder
+    and CLI still pass.  ``nano`` is deliberately absent: it is not a
+    ``ModelTier`` member, and ``_is_nano_or_small`` already treats it as
+    non-small.
+    """
+    try:
+        from src.core.inference.model_tiers import ModelTier
+
+        names = {t.value for t in ModelTier}
+    except Exception:
+        names = {"small", "medium", "large", "frontier"}
+    return frozenset(names | {"lite"})
+
+
 def select_tier_graph_cache_key(tier: str) -> str:
+    """Map a model tier to its compiled-graph cache key.
+
+    Args:
+        tier: Model tier string, case-insensitive.
+
+    Returns:
+        ``"lite"`` for the single-loop tier, otherwise ``"capable"``.
+
+    Raises:
+        ValueError: If *tier* is a non-empty string that is not a known tier.
+            A typo such as ``"capabel"`` or ``"lites"`` used to be silently
+            compiled as the capable graph, which also made the F-14 guard in
+            ``compile_tier_graph_for_key`` unreachable.
+
+    An empty/``None`` tier still falls back to ``"capable"``: it means tier
+    classification failed, and degrading to the most capable graph is safer
+    than crashing the run.
+    """
     normalized_tier = (tier or "").lower()
+    if not normalized_tier:
+        return "capable"
     if normalized_tier in ("lite", "small"):
         return "lite"
-    return "capable"
+    if normalized_tier in _known_tiers():
+        return "capable"
+    raise ValueError(
+        f"select_tier_graph_cache_key: unknown model tier {tier!r}. "
+        f"Known tiers: {sorted(_known_tiers())}. Add a mapping branch or fix "
+        "the tier string."
+    )
+
 
 
 def compile_tier_graph_for_key(
