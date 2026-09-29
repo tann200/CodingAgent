@@ -153,10 +153,11 @@ class BridgeAgentMixin(AgentBridgeProtocol):
             self._post(AgentRunningEvent(running=False))
             # TASK-05: persist session snapshot after each agent run so headless /
             # autonomous runs are captured even without a UI quit event.
-            try:
-                self.app._save_session_snapshot()
-            except Exception as _snap_err:
-                _logger.debug(f"_run_agent: session snapshot failed: {_snap_err}")
+            # FRAG-8: this runs on the background worker thread, so marshal the
+            # write onto the Textual event loop via _schedule_callback rather
+            # than touching self.app state directly (avoids use-after-shutdown
+            # and races with the UI thread).
+            self._schedule_callback(self.app._save_session_snapshot)
 
     def interrupt(self) -> None:
         """Single Escape — set cancel event (§9.4)."""

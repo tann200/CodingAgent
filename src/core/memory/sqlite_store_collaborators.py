@@ -445,11 +445,46 @@ class SnapshotManager:
                         logger.warning("SnapshotManager.save_snapshot: %s", _exc)
 
                 wconn.commit()
-            except Exception:
+            except sqlite3.IntegrityError as _iexc:
+                # Duplicate snapshot id / constraint violation is a logic bug, not
+                # a transient error — log it distinctly so operators can tell the
+                # two failure classes apart.
                 try:
                     wconn.rollback()
                 except Exception:
                     pass
+                logger.error(
+                    "SnapshotManager.save_snapshot: integrity error for %s/%s: %s",
+                    sid,
+                    snap_id,
+                    _iexc,
+                )
+                return None
+            except sqlite3.OperationalError as _oexc:
+                # Disk full, permission denied, locked DB, etc. The snapshot is
+                # not durable; surface it instead of failing anonymously.
+                try:
+                    wconn.rollback()
+                except Exception:
+                    pass
+                logger.error(
+                    "SnapshotManager.save_snapshot: transient failure for %s/%s: %s",
+                    sid,
+                    snap_id,
+                    _oexc,
+                )
+                return None
+            except Exception as _exc:
+                try:
+                    wconn.rollback()
+                except Exception:
+                    pass
+                logger.error(
+                    "SnapshotManager.save_snapshot: %s/%s failed: %s",
+                    sid,
+                    snap_id,
+                    _exc,
+                )
                 return None
 
         return snap_id
