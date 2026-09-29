@@ -82,10 +82,38 @@ except Exception:
 
 from src.core.inference.llm_client import LLMClient
 from src.core.inference.telemetry import with_telemetry
-from src.core.utils.retry import is_retryable_status_code, jittered_backoff
+from src.core.utils.retry import (
+    DEFAULT_RESILIENCE_POLICY,
+    is_retryable_exception,
+    is_retryable_status_code,
+    jittered_backoff,
+)
 from src.core.utils.strings import valid_str as _valid_str
 
 _logger = logging.getLogger(__name__)
+
+# Total attempts (not extra retries) for a transient-failed generation request.
+# Mirrors openai_compat_adapter._execute_with_retry so both providers behave alike.
+_MAX_GENERATION_ATTEMPTS = 3
+# Ceiling for the jittered wait between generation attempts.
+_MAX_GENERATION_BACKOFF = 30.0
+
+# Malformed-request / configuration errors from `requests`. These are permanent:
+# replaying the identical request cannot succeed, so retrying only burns backoff
+# before surfacing the real misconfiguration. `is_retryable_exception` classifies
+# any status-less exception as transient (its documented catch-all), which is the
+# right default but too permissive for the generation path.
+# Note `SSLError` is deliberately excluded: it subclasses `ConnectionError` and a
+# TLS handshake failure is frequently transient (e.g. a server restart).
+_PERMANENT_REQUEST_ERRORS = (
+    requests.exceptions.InvalidURL,
+    requests.exceptions.MissingSchema,
+    requests.exceptions.InvalidSchema,
+    requests.exceptions.InvalidHeader,
+    requests.exceptions.InvalidProxyURL,
+    requests.exceptions.URLRequired,
+    requests.exceptions.TooManyRedirects,
+)
 
 # Standard Ollama Generation Options
 OLLAMA_OPTIONS = {
@@ -221,6 +249,85 @@ class OllamaAdapter(LLMClient):
                     )
                     continue
                 raise
+        return last_response
+
+    def _post_generation_with_retry(
+        self,
+        url: str,
+        payload: Dict[str, Any],
+        *,
+        timeout: float = DEFAULT_RESILIENCE_POLICY.request_timeout,
+        max_attempts: int = _MAX_GENERATION_ATTEMPTS,
+    ) -> Any:
+        """POST a non-streaming generation request, retrying transient failures.
+
+        Ollama returns 5xx while a model is being paged into VRAM and drops the
+        connection when the host is under memory pressure.  Both are transient,
+        so a single failure should not cost the user the whole turn.  Mirrors
+        ``openai_compat_adapter._execute_with_retry`` so the two providers have
+        matching behaviour.
+
+        Retries on a retryable HTTP status and on a transient exception
+        (``is_retryable_exception``), waiting ``jittered_backoff`` between
+        attempts.  Non-retryable responses are returned immediately and never
+        retried — the caller still owns status handling via ``raise_for_status``.
+        Permanent malformed-request errors
+        (``_PERMANENT_REQUEST_ERRORS``) are re-raised on the first attempt.
+
+        Only the non-streaming path may use this.  A streaming response has
+        already emitted tokens by the time a mid-stream failure surfaces, so
+        replaying it would duplicate output; streaming callers must handle
+        mid-stream failure themselves.
+
+        Returns the raw response (``requests.Response`` or, for a mocked
+        transport, whatever ``_call_requests`` produced).  Re-raises the last
+        transient exception only when no response was ever obtained.
+        """
+        last_response: Any = None
+        last_exc: Optional[Exception] = None
+        for attempt in range(max_attempts):
+            try:
+                response = self._call_requests(
+                    "post", url, json=payload, stream=False, timeout=timeout
+                )
+            except Exception as exc:
+                if isinstance(exc, _PERMANENT_REQUEST_ERRORS) or not is_retryable_exception(
+                    exc
+                ):
+                    raise
+                last_exc = exc
+                if attempt < max_attempts - 1:
+                    _logger.warning(
+                        "ollama_adapter generation attempt %d/%d: transient error %s, retrying",
+                        attempt + 1,
+                        max_attempts,
+                        exc,
+                    )
+                    time.sleep(
+                        jittered_backoff(
+                            attempt + 1, base_delay=2.0, max_delay=_MAX_GENERATION_BACKOFF
+                        )
+                    )
+                    continue
+                raise
+            status = getattr(response, "status_code", None)
+            if not is_retryable_status_code(status):
+                return response
+            last_response = response
+            if attempt < max_attempts - 1:
+                _logger.warning(
+                    "ollama_adapter generation attempt %d/%d: status %s, retrying",
+                    attempt + 1,
+                    max_attempts,
+                    status,
+                )
+                time.sleep(
+                    jittered_backoff(
+                        attempt + 1, base_delay=2.0, max_delay=_MAX_GENERATION_BACKOFF
+                    )
+                )
+        if last_exc is not None:
+            raise last_exc
         return last_response
 
     def _base_variants(self) -> List[str]:
@@ -518,13 +625,18 @@ class OllamaAdapter(LLMClient):
             if stream:
                 try:
                     response = requests.post(
-                        url, json=payload, stream=True, timeout=120
+                        url,
+                        json=payload,
+                        stream=True,
+                        timeout=DEFAULT_RESILIENCE_POLICY.first_token_timeout,
                     )
                 except Exception:
                     response = self._post_stream_compatible(url, payload)
             else:
-                response = self._call_requests(
-                    "post", url, json=payload, stream=stream, timeout=120
+                # Retryable: a 5xx here means the model is still loading into
+                # VRAM, which is transient for a local provider.
+                response = self._post_generation_with_retry(
+                    url, payload, timeout=DEFAULT_RESILIENCE_POLICY.request_timeout
                 )
             if isinstance(response, dict) and response.get("meta"):
                 return response
@@ -638,13 +750,17 @@ class OllamaAdapter(LLMClient):
                 try:
                     # Extended timeout for VRAM loading
                     response = requests.post(
-                        url, json=payload, stream=True, timeout=120
+                        url,
+                        json=payload,
+                        stream=True,
+                        timeout=DEFAULT_RESILIENCE_POLICY.first_token_timeout,
                     )
                 except Exception:
                     response = self._post_stream_compatible(url, payload)
             else:
-                response = self._call_requests(
-                    "post", url, json=payload, stream=stream, timeout=120
+                # Retryable: matches _generate so both entry points behave alike.
+                response = self._post_generation_with_retry(
+                    url, payload, timeout=DEFAULT_RESILIENCE_POLICY.request_timeout
                 )
             if isinstance(response, dict) and response.get("meta"):
                 return response
