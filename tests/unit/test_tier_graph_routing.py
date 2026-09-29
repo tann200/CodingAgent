@@ -247,3 +247,79 @@ def test_f14_guard_is_reachable_through_the_public_router():
             compile_frontier_graph_fn=lambda: "frontier-graph",
             compile_lite_graph_fn=lambda: "lite-graph",
         )
+
+
+# ------------------------------------------------- P2.3: lite verification parity
+
+
+class TestLiteVerificationParity:
+    """P2.3: the lite graph must verify writes without verifying read-only work.
+
+    Previously route_frontier_loop_exit_lite returned "memory_sync"
+    unconditionally, so the lite graph had no verification node at all and the
+    P3-B policy inside verification_node ("SMALL tier: verify writes only") was
+    unreachable on the very path it was written for.
+    """
+
+    @pytest.mark.parametrize(
+        "tool", ["write_file", "edit_file", "edit_file_atomic", "apply_patch", "delete_file"]
+    )
+    def test_write_tools_route_to_verification(self, tool):
+        assert route_frontier_loop_exit_lite({"last_tool_name": tool}) == "verification"
+
+    def test_write_alias_cannot_dodge_verification(self):
+        # `write` is an alias of write_file; it must not skip the write check.
+        assert route_frontier_loop_exit_lite({"last_tool_name": "write"}) == "verification"
+
+    @pytest.mark.parametrize("tool", ["read_file", "list_files", "grep", "web_fetch", "bash"])
+    def test_non_modifying_tools_skip_verification(self, tool):
+        assert route_frontier_loop_exit_lite({"last_tool_name": tool}) == "memory_sync"
+
+    def test_no_tool_ran_skips_verification(self):
+        assert route_frontier_loop_exit_lite({}) == "memory_sync"
+        assert route_frontier_loop_exit_lite({"last_tool_name": ""}) == "memory_sync"
+
+    def test_context_overflow_skips_verification(self):
+        state = {"last_tool_name": "write_file", "errors": ["context_overflow"]}
+        assert route_frontier_loop_exit_lite(state) == "memory_sync"
+
+    def test_clarification_skips_verification(self):
+        state = {"last_tool_name": "write_file", "needs_clarification": True}
+        assert route_frontier_loop_exit_lite(state) == "memory_sync"
+
+
+def test_lite_graph_contains_verification_node():
+    """P2.3: the node must be wired, not merely routable."""
+    from src.core.orchestration.graph.builder import _compile_lite_graph
+
+    nodes = set(_compile_lite_graph().nodes)
+    assert "verification" in nodes
+    assert {"perception", "frontier_loop", "verification", "memory_sync"} <= nodes
+
+
+def test_frontier_loop_publishes_last_tool_name():
+    """P2.3: the lite gate depends on the loop reporting what it ran."""
+    import ast
+    import inspect
+    from pathlib import Path
+
+    from src.core.orchestration.graph.nodes import frontier_loop_node as fln
+
+    src = Path(inspect.getfile(fln)).read_text()
+    tree = ast.parse(src)
+    fn = next(
+        n
+        for n in tree.body
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == "frontier_loop_node"
+    )
+    # The node builds a `result` dict then returns it, so scan every dict
+    # literal in the body rather than only inline `return {...}`.
+    keys = {
+        k.value
+        for d in ast.walk(fn)
+        if isinstance(d, ast.Dict)
+        for k in d.keys
+        if isinstance(k, ast.Constant) and isinstance(k.value, str)
+    }
+    assert "last_tool_name" in keys
+    assert "last_result" in keys

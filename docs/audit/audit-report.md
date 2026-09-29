@@ -578,13 +578,45 @@ contamination guards were not independently exercised. **[PARTIAL]**
   `tier_graph_routing.py:151-155`; unknown tier must raise, not default to
   `capable`. Reconcile the `nano` contradiction with `_is_nano_or_small`.
   *Complexity:* Low. *Impact:* Medium.
+  **DONE.** `select_tier_graph_cache_key` collapsed every unrecognized tier to
+  `"capable"`, so a typo like `"capabel"` was silently compiled as the frontier
+  graph — which also made the pre-existing F-14 guard in
+  `compile_tier_graph_for_key` unreachable, since it only ever received
+  `"capable"` or `"lite"`. It now derives the valid set from the canonical
+  `ModelTier` enum (plus the `"lite"` alias) so the enum cannot drift ahead of
+  the router, and raises on an unknown non-empty tier. An empty/`None` tier
+  still degrades to `"capable"` because it means classification failed and
+  crashing the run would be worse. `nano` is deliberately not a valid tier: it
+  is not a `ModelTier` member and `_is_nano_or_small` already treats it as
+  non-small. Verified no caller relied on the old silent fallback.
 - **P2.3 — Verification parity for small/lite tiers.** *Location:*
   `builder.py:628-685`. Add a minimal verification node to the lite graph, or
   make the downgrade explicit and warned at configuration time.
   *Complexity:* Medium. *Impact:* Medium–High.
+  **DONE.** The lite graph routed unconditionally to `memory_sync` and had no
+  verification node, which made the P3-B policy inside `verification_node`
+  ("SMALL tier: verify writes only") dead code on the very path it was written
+  for. Worse, `verification_node` keys off `state["last_tool_name"]`, which only
+  the legacy `execution_node` ever set — `frontier_loop_node` never populated
+  it, so simply adding the node would have made verification either always skip
+  or run blind. Fixed end to end: `_dispatch_tool_calls` now returns the last
+  tool it ran, `frontier_loop_node` publishes `last_tool_name`, the lite graph
+  has a `verification` node, and `route_frontier_loop_exit_lite` requests
+  verification only when that tool resolves (via `resolve_tool_alias`) to a
+  member of `MODIFYING_TOOLS`. Read-only work still skips the hop, so the tier's
+  context/latency budget is preserved.
 - **P2.4 — Purge `tests/_deprecated/`.** *Location:* `tests/_deprecated/`
   (251 tests, includes patches to targets that no longer exist).
   *Complexity:* Low. *Impact:* Medium.
+  **DONE.** Removed all 16 files / ~5.1k lines, which were excluded from every
+  run by `--ignore=tests/_deprecated`. Verified stale rather than merely parked:
+  29 fail on execution (`test_tui_fixes.py` asserts against `tui/app.py`, which
+  no longer exists — the TUI moved to `tui/tui_src/ui/` and was decomposed into
+  mixins), 10 of 16 files require a live lmstudio/ollama server so they can never
+  run in CI, last touched 2026-05-24 while `tests/unit` was updated 2026-09-29,
+  and nothing outside the directory references it. Also dropped the now-meaningless
+  `tests/_deprecated_candidates.txt` manifest and the `--ignore` flag itself.
+
 - **P2.5 — Remove the remaining 12 dead modules.** *Location:* see §14 item 11.
   *Complexity:* Low–Medium. *Impact:* High (−8,222 lines, of which 1,307 are
   security-shaped).

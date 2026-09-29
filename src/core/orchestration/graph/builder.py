@@ -632,17 +632,23 @@ def _compile_lite_graph():
     reduced overhead:
     - No analysis node (context pressure)
     - No analyst_delegation (extra LLM call)
-    - No verification node (tool result heuristics instead)
+    - No evaluation node (kept in the capable graph)
     - No replan node (retry + hint instead)
 
     Graph topology::
 
         perception → frontier_loop (lite config)
-        frontier_loop → memory_sync | end
+        frontier_loop → verification | memory_sync
+        verification → memory_sync
         memory_sync → end
 
+    P2.3: the lite graph now runs a minimal verification pass.  It routes to
+    ``verification`` only when ``last_tool_name`` is a modifying tool, which is
+    the P3-B SMALL-tier policy ("verify writes only") that was previously
+    unreachable because this graph had no verification node at all.  Read-only
+    work still skips it, preserving the tier's context/latency budget.
+
     The lite config disables:
-    - verification_node
     - evaluation_node
     - replan_node
     - analyst_delegation_node
@@ -662,8 +668,12 @@ def _compile_lite_graph():
     async def _memory_sync(state: StateLike, config: RunnableConfig):
         return await memory_update_node(state, config)
 
+    async def _verification(state: StateLike, config: RunnableConfig):
+        return await _validated("verification", verification_node)(state, config)
+
     workflow.add_node("perception", _perception)
     workflow.add_node("frontier_loop", _frontier_loop)
+    workflow.add_node("verification", _verification)
     workflow.add_node("memory_sync", _memory_sync)
 
     workflow.set_entry_point("perception")
@@ -674,12 +684,16 @@ def _compile_lite_graph():
         {"frontier_loop": "frontier_loop", "memory_sync": "memory_sync"},
     )
 
+    # P2.3: verification parity. The loop publishes last_tool_name, so the lite
+    # graph can verify writes (the P3-B SMALL-tier policy) while read-only work
+    # still goes straight to memory_sync.
     workflow.add_conditional_edges(
         "frontier_loop",
         _tier_graph_routing.route_frontier_loop_exit_lite,
-        {"memory_sync": "memory_sync"},
+        {"verification": "verification", "memory_sync": "memory_sync"},
     )
 
+    workflow.add_edge("verification", "memory_sync")
     workflow.add_edge("memory_sync", END)
 
     return workflow.compile(checkpointer=_graph_checkpointer())

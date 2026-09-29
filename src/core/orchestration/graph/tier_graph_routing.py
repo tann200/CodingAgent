@@ -144,8 +144,41 @@ def route_perception_lite(
 
 def route_frontier_loop_exit_lite(
     state: Mapping[str, Any],
-) -> Literal["memory_sync"]:
+) -> Literal["verification", "memory_sync"]:
+    """Route after frontier_loop in the lite graph (P2.3).
+
+    The lite graph previously routed unconditionally to ``memory_sync``, so its
+    writes were never verified.  That made the P3-B policy inside
+    ``verification_node`` ("SMALL tier: verify writes only") dead code on the
+    lite path — the very path it was written for.
+
+    Verification is now requested when, and only when, the loop's last tool was
+    a write.  Read-only work skips the hop entirely, which keeps the lite tier's
+    context/latency budget intact while still checking the edits that can
+    actually break something.  ``last_tool_name`` is published by
+    ``frontier_loop_node``; aliases are resolved so an alias cannot dodge the
+    write check.
+    """
+    if state.get("needs_clarification"):
+        return "memory_sync"
+    if "context_overflow" in (state.get("errors") or []):
+        return "memory_sync"
+
+    last_tool = str(state.get("last_tool_name") or "").strip()
+    if not last_tool:
+        return "memory_sync"
+
+    try:
+        from src.tools.constants import MODIFYING_TOOLS
+        from src.tools.tools_config import resolve_tool_alias
+
+        canonical = resolve_tool_alias(last_tool)
+    except Exception:
+        return "memory_sync"
+    if canonical in MODIFYING_TOOLS or last_tool in MODIFYING_TOOLS:
+        return "verification"
     return "memory_sync"
+
 
 
 def _known_tiers() -> frozenset[str]:

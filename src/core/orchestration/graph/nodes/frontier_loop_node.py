@@ -1,14 +1,9 @@
-"""frontier_loop_node.py — Tight LLM+tool loop for LARGE/FRONTIER models (TASK-5).
+"""frontier_loop_node.py — Tight LLM+tool loop for LARGE/FRONTIER models.
 
-Keeps LLM+tool calls within a single node instead of round-tripping
-through the LangGraph state machine for every tool call.
-
-Exit conditions: no tool calls in response, tool budget exhausted,
-plan-mode write gate, context overflow, max turns reached.
-
-On exit sets: last_result, tool_call_count, _frontier_loop_turns,
-awaiting_plan_approval, errors.
-
+Keeps LLM+tool calls in one node instead of round-tripping the LangGraph state
+machine per tool call.  Exits on: no tool calls, budget exhausted, plan-mode
+write gate, context overflow, or max turns.  Sets last_result, last_tool_name,
+tool_call_count, _frontier_loop_turns, awaiting_plan_approval, and errors.
 Used by the tier-aware ``build_tier_graph()``."""
 
 from __future__ import annotations
@@ -129,14 +124,13 @@ def _truncate_tool_output(res: dict) -> dict:
     return truncate_tool_output(res, marker_label="frontier_loop")
 
 def _sanitize_tool_output(res: dict) -> dict:
-    """Injection-scan then truncate a tool result before it enters history.
+    """P1.1: the only production path where untrusted content enters context.
 
-    P1.1: this node is the only production path that executes tools, so it is
-    the only place untrusted content can enter the model context.  The policy
-    lives in ``tool_result_safety.sanitize_tool_result``; see that module for
-    why detection must precede truncation.
+    Policy (and why detection precedes truncation) lives in
+    ``tool_result_safety.sanitize_tool_result``.
     """
     return sanitize_tool_result(res, marker_label="frontier_loop", log=logger)
+
 
 def _extract_content_text(response: Any) -> str:
     """Extract text content from an LLM response object."""
@@ -624,13 +618,14 @@ async def _dispatch_tool_calls(
     turns_taken: int,
     tool_call_count: int,
     max_tool_calls: int,
-) -> "tuple[list, int, Dict[str, Any] | None]":
-    """Execute a batch of tool calls and return ``(history, tool_call_count, last_result)``.
+) -> "tuple[list, int, Dict[str, Any] | None, str | None]":
+    """Execute tool calls; return ``(history, count, last_result, last_tool)``.
 
-    Stops executing once the budget is reached.  Callers should check
-    ``tool_call_count >= max_tool_calls`` after this returns.
+    Stops at the budget; callers should re-check ``count >= max_tool_calls``.
+    ``last_tool`` is what the graph uses to gate verification (P2.3).
     """
     last_result: "Dict[str, Any] | None" = None
+    last_tool: str | None = None
 
     for tc in tool_calls:
         tool_name, tool_args = _normalize_tool_call(tc)
@@ -666,6 +661,7 @@ async def _dispatch_tool_calls(
         tool_result = _sanitize_tool_output(tool_result)
         tool_call_count += 1
         last_result = tool_result
+        last_tool = tool_name
 
         try:
             if bus:
@@ -727,7 +723,7 @@ async def _dispatch_tool_calls(
             )
             break
 
-    return history, tool_call_count, last_result
+    return history, tool_call_count, last_result, last_tool
 
 
 # ---------------------------------------------------------------------------
@@ -801,6 +797,8 @@ async def frontier_loop_node(
         pass
 
     last_result: Dict[str, Any] | None = None
+    # P2.3: publish the last tool so the lite graph can gate verification.
+    last_tool_name: str | None = None
     turns_taken: int = 0
     replan_required: str | None = None
 
@@ -952,7 +950,7 @@ async def frontier_loop_node(
                 }
 
         # ---- Execute tool calls ------------------------------------------
-        history, tool_call_count, batch_last_result = await _dispatch_tool_calls(
+        history, tool_call_count, batch_result, batch_tool = await _dispatch_tool_calls(
             tool_calls=tool_calls,
             history=history,
             state=state,
@@ -963,14 +961,14 @@ async def frontier_loop_node(
             tool_call_count=tool_call_count,
             max_tool_calls=max_tool_calls,
         )
-        if batch_last_result is not None:
-            last_result = batch_last_result
+        if batch_result is not None:
+            last_result = batch_result
+        if batch_tool:
+            last_tool_name = batch_tool
 
-        # Phase 2b (frontier): Patch Size Guard — a write tool flagged
-        # ``requires_split`` means the oversized patch should be split into
-        # smaller steps.  Set ``replan_required`` and exit the tight loop so
-        # the graph routes through the replan node (mirrors execution_node).
-        _replan_trigger = compute_replan_trigger(result=batch_last_result or {})
+        # Patch Size Guard: a write flagged ``requires_split`` exits the tight
+        # loop so the graph routes through replan (mirrors execution_node).
+        _replan_trigger = compute_replan_trigger(result=batch_result or {})
         if _replan_trigger:
             logger.warning(
                 "frontier_loop_node: patch too large, triggering replan — %s",
@@ -1001,6 +999,7 @@ async def frontier_loop_node(
         "history": history,
         "tool_call_count": tool_call_count,
         "last_result": last_result,
+        "last_tool_name": last_tool_name,
         "errors": errors,
         "_frontier_loop_turns": turns_taken,
         "awaiting_plan_approval": False,
