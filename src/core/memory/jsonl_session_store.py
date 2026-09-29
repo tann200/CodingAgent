@@ -1011,6 +1011,20 @@ class JsonlSessionStore:
         return summary
 
     def get_recent_sessions(self, limit: int = 10) -> List[Dict[str, Any]]:
+        """Return the most recently active sessions, newest first.
+
+        Ordering is by the mtime of each session's newest file (the active
+        ``<sid>.jsonl`` or its highest rotation), matching the
+        ``MAX(created_at)`` ordering the SQLite store uses. This must not
+        degrade to alphabetical order: ``distiller.retrieve_relevant_prior_sessions``
+        consumes this to pick which prior sessions are worth putting in front of
+        the model, so alphabetical order surfaces the *oldest* sessions and
+        silently defeats the recency retrieval the distiller is built on.
+
+        Session summaries are computed only for the sessions that survive the
+        limit, so a large session store costs one stat per session plus
+        ``limit`` streaming scans.
+        """
         session_ids = set()
         sessions_dir = self._get_sessions_dir()
         if not sessions_dir.exists():
@@ -1019,10 +1033,27 @@ class JsonlSessionStore:
             if f.suffix == ".jsonl":
                 sid = f.stem.split(".")[0]
                 session_ids.add(sid)
-        recent = []
-        for sid in sorted(session_ids)[:limit]:
-            recent.append({"session_id": sid, "summary": self.get_session_summary(sid)})
-        return recent
+        if not session_ids:
+            return []
+
+        def _last_active(sid: str) -> float:
+            newest = 0.0
+            for fpath in self._session_files(sid):
+                try:
+                    newest = max(newest, fpath.stat().st_mtime)
+                except OSError:
+                    continue
+            return newest
+
+        # Sort by recency descending; session_id breaks ties so the result is
+        # deterministic when two sessions share an mtime.
+        ordered = sorted(session_ids, key=lambda s: (-_last_active(s), s))[
+            : max(0, int(limit))
+        ]
+        return [
+            {"session_id": sid, "summary": self.get_session_summary(sid)}
+            for sid in ordered
+        ]
 
     def get_session_text_summary(self, session_id: str, max_chars: int = 500) -> str:
         summary = self.get_session_summary(session_id)
