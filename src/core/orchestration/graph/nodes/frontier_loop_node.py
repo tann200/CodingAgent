@@ -9,7 +9,6 @@ Used by the tier-aware ``build_tier_graph()``."""
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from pathlib import Path
 from typing import Any, Dict, cast
@@ -39,6 +38,15 @@ from src.core.orchestration.graph.nodes.frontier_toolcalls import (
     _normalize_tool_call,
     _render_tool_calls_text,
 )
+from src.core.orchestration.graph.nodes.frontier_messages import (
+    _extract_tool_call_from_text,
+    _normalize_messages_for_native_tools,
+)
+from src.core.orchestration.graph.nodes.in_loop_verification import (
+    build_inline_verification_message,
+    capture_lint_baseline,
+    run_inline_check,
+)
 from src.core.orchestration.graph.nodes.tool_result_safety import sanitize_tool_result
 
 # Re-exported for backwards compatibility with the legacy test surface that
@@ -46,6 +54,8 @@ from src.core.orchestration.graph.nodes.tool_result_safety import sanitize_tool_
 __all__ = [
     "frontier_loop_node",
     "_append_tool_call_history",
+    "_extract_tool_call_from_text",
+    "_normalize_messages_for_native_tools",
     "_normalize_tool_call",
     "_render_tool_calls_text",
 ]
@@ -100,6 +110,12 @@ def _filter_tools_for_tier(tools_schema: list, model_tier: str) -> list:
 # This bounds the node's wall-clock time and prevents runaway infinite loops.
 # Individual tool-call budget is still governed by state["max_tool_calls"].
 _MAX_FRONTIER_TURNS = 20
+
+# P3.1: how many in-loop verification failures the model may accumulate in one
+# invocation before the loop gives up and exits.  Each failure is fed back as a
+# message, so the cap is what stops "write broken file -> be told -> write it
+# again" from burning the whole turn budget.
+_MAX_INLINE_VERIFICATION_FAILURES = 3
 
 # OP-9: Cap per-tool output that enters conversation history.
 _TOOL_OUTPUT_MAX_BYTES = TOOL_OUTPUT_MAX_BYTES
@@ -176,193 +192,6 @@ def _is_context_overflow(error_msg: str) -> bool:
     )
     low = error_msg.lower()
     return sum(1 for p in patterns if p in low) >= 2
-
-
-def _extract_tool_call_from_text(content: str) -> tuple[dict | None, str]:
-    """Scan *content* for an embedded JSON tool-call block and return (tool_call_dict, remaining_text).
-
-    Handles:
-    1. Pure JSON: ``{"name": "read_file", "arguments": {...}}``
-    2. JSON embedded at the end of a thinking block (e.g. Gemma returns reasoning text
-       followed by a newline-separated JSON object).
-
-    Returns ``(None, content)`` when no tool call JSON is found.
-    """
-    # Fast-path: entire content is a JSON tool call
-    _stripped = content.strip()
-    try:
-        _obj = json.loads(_stripped)
-        if isinstance(_obj, dict) and ("name" in _obj or "tool" in _obj):
-            _tc_name = _obj.get("name") or _obj.get("tool", "")
-            _tc_args = _obj.get("arguments") or _obj.get("args") or {}
-            if isinstance(_tc_args, str):
-                try:
-                    _tc_args = json.loads(_tc_args)
-                except Exception:
-                    _tc_args = {}
-            if _tc_name:
-                return {"name": _tc_name, "arguments": _tc_args}, ""
-    except Exception:
-        pass
-
-    # Slow-path: scan for a balanced JSON object containing "name" or "tool" key.
-    # Walk through content right-to-left looking for '{' that starts a balanced JSON
-    # object at or near the end of the string.
-    def _try_parse_balanced_json_at(text: str, start: int) -> tuple[dict | None, int]:
-        """Try to parse a balanced JSON object starting at text[start]. Returns (obj, end_idx) or (None, -1)."""
-        if text[start] != '{':
-            return None, -1
-        depth = 0
-        in_str = False
-        escape = False
-        i = start
-        while i < len(text):
-            ch = text[i]
-            if escape:
-                escape = False
-            elif ch == '\\' and in_str:
-                escape = True
-            elif ch == '"':
-                in_str = not in_str
-            elif not in_str:
-                if ch == '{':
-                    depth += 1
-                elif ch == '}':
-                    depth -= 1
-                    if depth == 0:
-                        candidate = text[start:i + 1]
-                        try:
-                            obj = json.loads(candidate)
-                            return obj, i + 1
-                        except Exception:
-                            return None, -1
-            i += 1
-        return None, -1
-
-    # Find all '{' positions in reverse order (prefer last occurrence)
-    positions = [i for i, ch in enumerate(content) if ch == '{']
-    for pos in reversed(positions):
-        obj, end = _try_parse_balanced_json_at(content, pos)
-        if obj is not None and isinstance(obj, dict) and ("name" in obj or "tool" in obj):
-            _tc_name = obj.get("name") or obj.get("tool", "")
-            _tc_args = obj.get("arguments") or obj.get("args") or {}
-            if isinstance(_tc_args, str):
-                try:
-                    _tc_args = json.loads(_tc_args)
-                except Exception:
-                    _tc_args = {}
-            if _tc_name:
-                _remaining = content[:pos].strip()
-                return {"name": _tc_name, "arguments": _tc_args}, _remaining
-
-    return None, content
-
-
-def _normalize_messages_for_native_tools(messages: list[dict]) -> list[dict]:
-    """Reformat message history for native tool-calling API (OpenAI format).
-
-    When using native tool calling, the conversation history must follow the
-    OpenAI protocol:
-      - assistant messages that called a tool must have a ``tool_calls`` array
-        (not just text content)
-      - tool results must use ``role="tool"`` with ``tool_call_id``
-
-    This function post-processes a message list that was built using the legacy
-    text-based format (tool calls as JSON text in assistant content, tool results
-    as ``role="user"`` with ``{"tool_execution_result": ...}`` JSON) and converts
-    it into the correct native format.
-
-    Messages that are not tool-related (plain user/assistant text) are left as-is.
-    """
-    normalized: list[dict] = []
-    _id_counter = 0
-
-    for msg in messages:
-        role = msg.get("role", "")
-        content = msg.get("content", "") or ""
-
-        # ---- Detect assistant messages that contain a tool call as JSON text ----
-        if role == "assistant" and content and not msg.get("tool_calls"):
-            _tc_dict, _remaining = _extract_tool_call_from_text(content)
-            if _tc_dict:
-                _id_counter += 1
-                _call_id = f"call_{_id_counter}"
-                _native_tc = {
-                    "id": _call_id,
-                    "type": "function",
-                    "function": {
-                        "name": _tc_dict["name"],
-                        "arguments": json.dumps(_tc_dict.get("arguments") or {}),
-                    },
-                }
-                # Emit the assistant message with tool_calls (and optional thinking text)
-                _asst_msg: dict = {
-                    "role": "assistant",
-                    "content": _remaining or "",  # use empty string, not None
-                    "tool_calls": [_native_tc],
-                    "_call_id": _call_id,
-                }
-                normalized.append(_asst_msg)
-                continue
-
-        # ---- Detect assistant messages that already have tool_calls ----
-        if role == "assistant" and msg.get("tool_calls"):
-            # Carry the last tool_call id for pairing with tool results
-            _tc_list = msg["tool_calls"]
-            _last_id = None
-            if _tc_list and isinstance(_tc_list[-1], dict):
-                _last_id = _tc_list[-1].get("id")
-            _new_msg = dict(msg)
-            if _last_id:
-                _new_msg["_call_id"] = _last_id
-            normalized.append(_new_msg)
-            continue
-
-        # ---- Detect user messages that are tool execution results ----
-        if role == "user" and content:
-            _stripped = content.strip()
-            # Strip off any appended task block before trying to parse JSON
-            # (append_task_message wraps the last user msg with <task> tags)
-            _json_part = _stripped
-            if "<task>" in _json_part:
-                _json_part = _json_part[: _json_part.index("<task>")].strip()
-            try:
-                _obj = json.loads(_json_part)
-                if isinstance(_obj, dict) and "tool_execution_result" in _obj:
-                    # Find the most recent assistant message's call_id
-                    _call_id = "call_0"
-                    for _prev in reversed(normalized):
-                        if _prev.get("_call_id"):
-                            _call_id = _prev["_call_id"]
-                            break
-                    _result = _obj["tool_execution_result"]
-                    if isinstance(_result, dict):
-                        _result_text = (
-                            _result.get("content")
-                            or _result.get("output")
-                            or json.dumps(_result)
-                        )
-                    else:
-                        _result_text = str(_result)
-                    normalized.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": _call_id,
-                            "content": _result_text,
-                        }
-                    )
-                    continue
-            except Exception:
-                pass
-
-        # ---- Pass through all other messages ----
-        normalized.append(dict(msg))
-
-    # Remove internal carry fields before returning
-    for _m in normalized:
-        _m.pop("_call_id", None)
-
-    return normalized
 
 
 def _plan_mode_blocks(orchestrator: Any, tool_name: str) -> bool:
@@ -618,14 +447,19 @@ async def _dispatch_tool_calls(
     turns_taken: int,
     tool_call_count: int,
     max_tool_calls: int,
-) -> "tuple[list, int, Dict[str, Any] | None, str | None]":
-    """Execute tool calls; return ``(history, count, last_result, last_tool)``.
+    iv_baselines: dict,
+) -> "tuple[list, int, Dict[str, Any] | None, str | None, list]":
+    """Execute tool calls; return ``(history, count, last_result, last_tool, iv)``.
 
     Stops at the budget; callers should re-check ``count >= max_tool_calls``.
     ``last_tool`` is what the graph uses to gate verification (P2.3).
+    ``iv`` is the P3.1 in-loop verification record list; failed records have
+    already been appended to ``history`` as model-facing feedback.
+    ``iv_baselines`` is the caller's per-invocation lint baseline cache.
     """
     last_result: "Dict[str, Any] | None" = None
     last_tool: str | None = None
+    inline_verifications: list = []
 
     for tc in tool_calls:
         tool_name, tool_args = _normalize_tool_call(tc)
@@ -633,6 +467,11 @@ async def _dispatch_tool_calls(
             continue
 
         logger.info("frontier_loop_node: executing tool %r (turn %d)", tool_name, turns_taken)
+
+        # P3.1: snapshot the target's lint state *before* the write so the
+        # post-tool checkpoint only reports newly introduced problems.
+        workdir = str(state.get("working_dir") or "")
+        iv_baseline = capture_lint_baseline(tool_name, tool_args, workdir, iv_baselines)
 
         # Execute
         action = {"name": tool_name, "arguments": tool_args}
@@ -714,6 +553,21 @@ async def _dispatch_tool_calls(
         history = list(history)
         history.extend(legacy_history)
 
+        # P3.1 in-loop verification checkpoint: hand a deterministic failure
+        # back to the model inside the same loop so it can self-correct before
+        # building on top of a broken file.
+        iv_record = run_inline_check(tool_name, tool_args, tool_result, workdir, iv_baseline)
+        if iv_record is not None:
+            inline_verifications.append(iv_record)
+            iv_message = build_inline_verification_message(iv_record)
+            if iv_message:
+                history.append(iv_message)
+                logger.warning(
+                    "frontier_loop_node: inline verification failed for %r (%d finding(s))",
+                    tool_name,
+                    len(iv_record.get("failures") or []),
+                )
+
         if tool_call_count >= max_tool_calls:
             logger.warning(
                 "frontier_loop_node: tool budget exhausted after '%s' (%d/%d)",
@@ -723,7 +577,7 @@ async def _dispatch_tool_calls(
             )
             break
 
-    return history, tool_call_count, last_result, last_tool
+    return history, tool_call_count, last_result, last_tool, inline_verifications
 
 
 # ---------------------------------------------------------------------------
@@ -799,6 +653,11 @@ async def frontier_loop_node(
     last_result: Dict[str, Any] | None = None
     # P2.3: publish the last tool so the lite graph can gate verification.
     last_tool_name: str | None = None
+    # P3.1: in-loop verification records for this invocation.
+    inline_verifications: list = []
+    # Per-invocation lint baselines, captured on first touch of a path so a file
+    # the agent breaks keeps being re-reported until it is repaired.
+    iv_baselines: dict = {}
     turns_taken: int = 0
     replan_required: str | None = None
 
@@ -950,7 +809,7 @@ async def frontier_loop_node(
                 }
 
         # ---- Execute tool calls ------------------------------------------
-        history, tool_call_count, batch_result, batch_tool = await _dispatch_tool_calls(
+        history, tool_call_count, batch_result, batch_tool, batch_iv = await _dispatch_tool_calls(
             tool_calls=tool_calls,
             history=history,
             state=state,
@@ -960,11 +819,32 @@ async def frontier_loop_node(
             turns_taken=turns_taken,
             tool_call_count=tool_call_count,
             max_tool_calls=max_tool_calls,
+            iv_baselines=iv_baselines,
         )
         if batch_result is not None:
             last_result = batch_result
         if batch_tool:
             last_tool_name = batch_tool
+        inline_verifications.extend(batch_iv)
+
+        # P3.1: bounded self-correction.  The model gets the failure inline every
+        # turn, but repeated unfixed writes must not spin — after the cap the
+        # loop exits so verification/evaluation/replan can take over.
+        _iv_failures = [r for r in inline_verifications if r.get("status") == "failed"]
+        if len(_iv_failures) >= _MAX_INLINE_VERIFICATION_FAILURES:
+            logger.error(
+                "frontier_loop_node: %d inline verification failures — exiting loop",
+                len(_iv_failures),
+            )
+            last_result = {
+                "ok": False,
+                "error": (
+                    f"Inline verification failed {len(_iv_failures)}x — the edits are "
+                    "not producing valid files"
+                ),
+            }
+            errors = list(errors) + ["inline_verification_failed"]
+            break
 
         # Patch Size Guard: a write flagged ``requires_split`` exits the tight
         # loop so the graph routes through replan (mirrors execution_node).
@@ -1004,6 +884,10 @@ async def frontier_loop_node(
         "_frontier_loop_turns": turns_taken,
         "awaiting_plan_approval": False,
     }
+    if inline_verifications:
+        failures = [r for r in inline_verifications if r.get("status") == "failed"]
+        if failures:
+            result["inline_verification_failures"] = failures
     if replan_required:
         result["replan_required"] = replan_required
         result["action_failed"] = True

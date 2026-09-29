@@ -400,8 +400,12 @@ class _AgentStateSpec(TypedDict, total=False):
     #   verification_passed, verification_result — linter/check verification
     #   evaluation_result — overall pass/fail from LLM evaluator
     #   evaluation_llm_verdict, evaluation_llm_reason — LLM rationale
+    #   inline_verification_failures — P3.1 per-step checkpoint failures from
+    #     frontier_loop_node; the failures are also injected into history so the
+    #     model can self-correct within the loop.
     verification_passed: bool | None
     verification_result: Dict[str, Any] | None
+    inline_verification_failures: List[Dict[str, Any]] | None
     evaluation_result: str | None
     evaluation_llm_verdict: str | None
     evaluation_llm_reason: str | None

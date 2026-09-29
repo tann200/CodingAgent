@@ -651,9 +651,27 @@ contamination guards were not independently exercised. **[PARTIAL]**
 
 ## Phase 3 — Capability improvements
 
-- **P3.1 — Per-step verification in the frontier loop.** *Location:*
-  `frontier_loop_node.py`. *Complexity:* Medium–High. *Impact:* High. Closes the
-  "plan-step verification" gap named in the audit spec.
+- **P3.1 — Per-step verification in the frontier loop.** **DONE.** *Location:*
+  `in_loop_verification.py` + `frontier_loop_node.py`. *Complexity:* Medium–High.
+  *Impact:* High. Closes the "plan-step verification" gap named in the audit
+  spec. `frontier_loop_node` is the only node in the tier graphs that executes
+  tools, and `verification_node` only runs *after* the loop exits, so a broken
+  write used to surface a turn late — or never, if the loop exited on
+  `no tool calls`. `capture_lint_baseline` (pre-write) + `run_inline_check`
+  (post-write) now diff a fast parse-only `quick_lint` against a per-invocation
+  baseline and inject the failure into `history` as a `role="user"` message the
+  model can act on within the same loop. `delete_file` gets an absence
+  assertion. The baseline is captured once per path per invocation, so a file
+  the agent broke is re-reported until repaired (per-call re-capture would go
+  quiet on a repeat of the same bad write) while pre-existing breakage is never
+  blamed. `.ts`/`.tsx`/`.rs` are excluded because `quick_lint` shells out to a
+  full type-checker/compiler there. `_MAX_INLINE_VERIFICATION_FAILURES = 3`
+  bounds self-correction: after that the loop exits with
+  `errors += ["inline_verification_failed"]` and `inline_verification_failures`
+  in state, so verification/evaluation/replan take over. No new graph nodes.
+  `frontier_messages.py` absorbed `_extract_tool_call_from_text` /
+  `_normalize_messages_for_native_tools` (re-exported) to keep
+  `frontier_loop_node.py` inside its size guard: 1016 → 900 lines.
 - **P3.2 — Live repo-change audit trail.** *Location:* build a lean equivalent
   (the unreachable `event_log.py` / `event_persistence.py` were deleted in P2.5,
   so this is now greenfield).
