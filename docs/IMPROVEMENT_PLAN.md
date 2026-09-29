@@ -58,6 +58,7 @@
 | ID | Area | Issue (verified open) | Evidence |
 |---|---|---|---|
 | PERF-01 | Memory | `read_page`/`iter_records` exist in 2 stores but **no caller uses them**; `write_decisions_json` + `get_recent_sessions` still full-scan | `jsonl_session_store.py:259,292`; `sqlite_session_store.py:221,244`; callers at `jsonl_session_store.py:814,1013`, `sqlite_session_store.py:639,857` |
+| PERF-01b | Memory | ⚠️ **My earlier framing was wrong** — on re-inspection neither call site is an unbounded read: `get_session_summary` already streams via `iter_records` (`jsonl_session_store.py:996`) and sqlite `get_recent_sessions` is an indexed `MAX(created_at)` query. The real defect was a **correctness bug**, fixed in `b062fb5`: jsonl `get_recent_sessions` sorted ids **alphabetically**, not by recency, so `distiller.retrieve_relevant_prior_sessions` (`distiller.py:744`) got the wrong sessions on the JSONL backend. |
 | PERF-02 | Inference | 15 literal `timeout=N` calls, no config indirection | `github_copilot_auth.py:247,312,466`; `groq_adapter.py:140,193`; `litellm_adapter.py:224,278`; `openrouter_adapter.py:110,165`; `anthropic_adapter.py:229,292` (ollama's 6 retired in `3aeca31`) |
 | PERF-02b | Inference | Ollama **generation** paths bypass retry | ✅ **Fixed `3aeca31`** — `_post_generation_with_retry` at `ollama_adapter.py:254`, wired at `:638` (generate) and `:762` (chat) |
 | PERF-03 | Orch | No per-stage latency budgets (p50/p95); benchmarks exist but are threshold-only | `tests/benchmarks/{test_pipeline_benchmarks,test_pure_hotpath_benchmarks}.py` |
@@ -97,8 +98,13 @@ against the tree on 2026-09-29; none is a documentation artifact.
 2. **PERF-02** — retire the remaining 15 literal `timeout=N` call sites
    (`ResiliencePolicy` already exists and now covers Ollama; the others still
    hardcode). Pure substitution, no behaviour change.
-3. **PERF-01** — adopt `read_page`/`iter_records` in the 6 call sites
-   (`write_decisions_json`, `get_recent_sessions` ×3 stores).
+3. **PERF-01** — ⚠️ **Re-scoped by `b062fb5`.** The two call sites I originally
+   cited are *not* unbounded reads; the real bug there was the recency-ordering
+   defect, now fixed. What genuinely remains: `get_decisions` still materialises
+   a whole session via `_read_all_records` (`jsonl_session_store.py:801`), which
+   `write_decisions_json` calls for **every** session; same pattern at
+   `:359` (get_messages), `:728`, `:745` (get_plans), `:768` (get_errors).
+   These need `iter_records`-based generators.
 4. **P2-2** — surface `fork_session`/`revert_session` in the slash-command registry.
 
 **Tier B — design work, needs a written design first**
