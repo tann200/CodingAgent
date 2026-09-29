@@ -57,9 +57,10 @@
 
 | ID | Area | Issue (verified open) | Evidence |
 |---|---|---|---|
-| PERF-01 | Memory | `read_page`/`iter_records` exist in 2 stores but **no caller uses them**; `write_decisions_json` + `get_recent_sessions` still full-scan | `jsonl_session_store.py:259,292`; `sqlite_session_store.py:221,244`; callers at `jsonl_session_store.py:814,1013`, `sqlite_session_store.py:639,857` |
+| PERF-01 | Memory | `read_page`/`iter_records` exist but callers didn't use them | ✅ **Fixed `b062fb5`, `af1f0b9`** — recency-ordering bug in `get_recent_sessions`; unbounded sidecar gather in `write_decisions_json` |
+| PERF-02 | Inference | 15 literal `timeout=N` calls outside Ollama | ⚠️ **Re-scoped by reread** — the 15 split into 3 distinct phases, and only ~8 are in scope. See below. |
 | PERF-01b | Memory | ⚠️ **My earlier framing was wrong** — on re-inspection neither call site is an unbounded read: `get_session_summary` already streams via `iter_records` (`jsonl_session_store.py:996`) and sqlite `get_recent_sessions` is an indexed `MAX(created_at)` query. The real defect was a **correctness bug**, fixed in `b062fb5`: jsonl `get_recent_sessions` sorted ids **alphabetically**, not by recency, so `distiller.retrieve_relevant_prior_sessions` (`distiller.py:744`) got the wrong sessions on the JSONL backend. |
-| PERF-02 | Inference | 15 literal `timeout=N` calls, no config indirection | `github_copilot_auth.py:247,312,466`; `groq_adapter.py:140,193`; `litellm_adapter.py:224,278`; `openrouter_adapter.py:110,165`; `anthropic_adapter.py:229,292` (ollama's 6 retired in `3aeca31`) |
+| PERF-02 | Inference | 15 literal `timeout=N` calls, no config indirection | superseded by the re-scoped row above |
 | PERF-02b | Inference | Ollama **generation** paths bypass retry | ✅ **Fixed `3aeca31`** — `_post_generation_with_retry` at `ollama_adapter.py:254`, wired at `:638` (generate) and `:762` (chat) |
 | PERF-03 | Orch | No per-stage latency budgets (p50/p95); benchmarks exist but are threshold-only | `tests/benchmarks/{test_pipeline_benchmarks,test_pure_hotpath_benchmarks}.py` |
 | STATE-01 | Orch | No field-ownership layer; output-key contract only | no `FieldOwner`/`field_owner` symbol in `src/core/orchestration/graph/state_schemas.py` |
@@ -95,16 +96,37 @@ against the tree on 2026-09-29; none is a documentation artifact.
    **Lesson for the rest of the backlog:** `is_retryable_exception` classifies
    *every* status-less exception as transient, so retry wrappers need an explicit
    permanent-error list (`_PERMANENT_REQUEST_ERRORS`).
-2. **PERF-02** — retire the remaining 15 literal `timeout=N` call sites
-   (`ResiliencePolicy` already exists and now covers Ollama; the others still
-   hardcode). Pure substitution, no behaviour change.
-3. **PERF-01** — ⚠️ **Re-scoped by `b062fb5`.** The two call sites I originally
-   cited are *not* unbounded reads; the real bug there was the recency-ordering
-   defect, now fixed. What genuinely remains: `get_decisions` still materialises
-   a whole session via `_read_all_records` (`jsonl_session_store.py:801`), which
-   `write_decisions_json` calls for **every** session; same pattern at
-   `:359` (get_messages), `:728`, `:745` (get_plans), `:768` (get_errors).
-   These need `iter_records`-based generators.
+2. **PERF-02** — ⚠️ **Re-scoped by reread (2026-09-29).** The "15 literal
+   timeouts, pure substitution" framing was wrong on two counts. Only **8** are
+   provider-probe timeouts that belong on `ResiliencePolicy`:
+   `openrouter_adapter.py:110,165`, `anthropic_adapter.py:229,292`,
+   `groq_adapter.py:140,193`, `litellm_adapter.py:224,278` — all
+   `get_models_from_api` / `validate_connection` probes, all currently 10–15s.
+   The other **7** are *different subsystems* and should be left alone:
+   - `github_copilot_auth.py:247,312,466` (3) — OAuth device-flow polling.
+     These are **not** inference timeouts; tying them to `ResiliencePolicy`
+     would be a category error.
+   - `hardware_capability_profile.py` (8 in a separate module) — `subprocess`
+     probes for `nvidia-smi`/PowerShell VRAM detection. A subprocess deadline
+     is a different failure mode from an HTTP deadline.
+   Also **not** in scope: `llm_helpers.py:51` `asyncio.wait(timeout=0.2)` — a
+   cooperative yield tick, not a request deadline; and `ollama_adapter.py:377,482`
+   (model listing / show probes) are already behind `_request_with_retry`.
+   The honest version of this task is: *add a `metadata_probe_timeout` to
+   `ResiliencePolicy` and use it at the 8 provider-probe sites* — a genuine but
+   small consistency win, not 15 sites of risk reduction.
+3. ✅ **PERF-01** — **Done in `b062fb5` + `af1f0b9`.** Two real defects, both
+   found by re-reading rather than by trusting the original write-up:
+   (a) jsonl `get_recent_sessions` ordered ids **alphabetically**, so the
+   distiller retrieved the wrong sessions on the JSONL backend;
+   (b) `add_decision` → `write_decisions_json` → `get_decisions` per session
+   materialised every session's whole history on **every decision write**
+   (`:788`). Now bounded by `limit`; peak gather memory 357 KiB → 26 KiB, and
+   the bounded result is provably identical to the old global sort
+   (differential fuzz, 0 mismatches in 3000 stores).
+   *Not fixed (low value, mostly dead):* `get_plans` (`:745`) and `get_errors`
+   (`:768`) have **0 callers**; `get_messages` has 2. Leave them unless a caller
+   appears.
 4. **P2-2** — surface `fork_session`/`revert_session` in the slash-command registry.
 
 **Tier B — design work, needs a written design first**
