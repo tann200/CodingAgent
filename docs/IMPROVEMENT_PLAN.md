@@ -58,8 +58,8 @@
 | ID | Area | Issue (verified open) | Evidence |
 |---|---|---|---|
 | PERF-01 | Memory | `read_page`/`iter_records` exist in 2 stores but **no caller uses them**; `write_decisions_json` + `get_recent_sessions` still full-scan | `jsonl_session_store.py:259,292`; `sqlite_session_store.py:221,244`; callers at `jsonl_session_store.py:814,1013`, `sqlite_session_store.py:639,857` |
-| PERF-02 | Inference | 17 literal `timeout=N` calls, no config indirection | `ollama_adapter.py:270,375,521,527,641,647`; `github_copilot_auth.py:247,312,466`; `groq_adapter.py:140,193`; `litellm_adapter.py:224,278`; `openrouter_adapter.py:110,165`; `anthropic_adapter.py:229,292` |
-| PERF-02b | Inference | Ollama **generation** paths bypass retry: `_request_with_retry` wraps only model-listing | `ollama_adapter.py:197,270` (retried) vs `375,526,646` (raw `_call_requests`) |
+| PERF-02 | Inference | 15 literal `timeout=N` calls, no config indirection | `github_copilot_auth.py:247,312,466`; `groq_adapter.py:140,193`; `litellm_adapter.py:224,278`; `openrouter_adapter.py:110,165`; `anthropic_adapter.py:229,292` (ollama's 6 retired in `3aeca31`) |
+| PERF-02b | Inference | Ollama **generation** paths bypass retry | ✅ **Fixed `3aeca31`** — `_post_generation_with_retry` at `ollama_adapter.py:254`, wired at `:638` (generate) and `:762` (chat) |
 | PERF-03 | Orch | No per-stage latency budgets (p50/p95); benchmarks exist but are threshold-only | `tests/benchmarks/{test_pipeline_benchmarks,test_pure_hotpath_benchmarks}.py` |
 | STATE-01 | Orch | No field-ownership layer; output-key contract only | no `FieldOwner`/`field_owner` symbol in `src/core/orchestration/graph/state_schemas.py` |
 | FRAG-6 | Orch | `asyncio.run()` per graph round; guarded by loop-detect + executor fallback but still allocates a fresh loop each round | `inference_loop_rounds.py:18` (mitigated: `:37-49` detects a running loop and dispatches to `graph_executor` with `copy_context()`) |
@@ -86,10 +86,17 @@ Twelve items, conflict-free, ordered by cost-of-delay. Every row was verified
 against the tree on 2026-09-29; none is a documentation artifact.
 
 **Tier A — small, mechanical, low risk**
-1. **PERF-02** — introduce a shared timeout policy module; replace the 17 literal
-   `timeout=N` call sites. Pure substitution + one new config constant table.
-2. **PERF-02b** — route Ollama `chat`/`generate`/`stream` through
-   `_request_with_retry` (already implemented and proven for the listing path).
+1. ✅ **PERF-02b** — Ollama generation retry. **Done in `3aeca31`:** Ollama was
+   the only major adapter without generation retry, so a 5xx while a model paged
+   into VRAM cost the user the whole turn. Fixed via `_post_generation_with_retry`
+   (`ollama_adapter.py:254`), wired into both non-streaming generation sites.
+   Streaming is deliberately not retried (would duplicate emitted tokens).
+   **Lesson for the rest of the backlog:** `is_retryable_exception` classifies
+   *every* status-less exception as transient, so retry wrappers need an explicit
+   permanent-error list (`_PERMANENT_REQUEST_ERRORS`).
+2. **PERF-02** — retire the remaining 15 literal `timeout=N` call sites
+   (`ResiliencePolicy` already exists and now covers Ollama; the others still
+   hardcode). Pure substitution, no behaviour change.
 3. **PERF-01** — adopt `read_page`/`iter_records` in the 6 call sites
    (`write_decisions_json`, `get_recent_sessions` ×3 stores).
 4. **P2-2** — surface `fork_session`/`revert_session` in the slash-command registry.
