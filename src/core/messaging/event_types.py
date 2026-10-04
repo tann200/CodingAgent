@@ -24,7 +24,8 @@ Events are grouped by domain:
                           MessageTruncation, MessageCompactionApplied)
   - Token budget / usage (TokenBudget, TokenBudgetUpdate, TokenBudgetWarning,
                           UsageTurnSummary, UsageBudgetExceeded, UsageSubagentCost)
-  - File system          (FileModified, FileDeleted, FileDiffPreview)
+  - File system          (FileModified, FileDeleted, FileDiffPreview,
+                          RepoChangeRecorded)
   - Role                 (RoleTransition)
   - Retry                (RetryAttempt, RetrySucceeded, RetryFailed)
   - Task                 (TaskQueueUpdated, TaskTurnLimit)
@@ -1113,6 +1114,31 @@ class FileDiffPreview(Event):
     path: str
     diff: str
     is_new_file: bool = False
+
+
+@dataclass
+class RepoChangeRecorded(Event):
+    """
+    Published for every file a modifying tool actually changed (audit P3.2).
+
+    Complements ``FileModified`` / ``FileDeleted``: those are emitted whenever a
+    tool *reports* a write, this one only when the on-disk fingerprint moved,
+    and it carries the attribution ("why") that the file events lack.  It is
+    also the live half of the durable ``change_log.jsonl`` journal written by
+    ``src/core/orchestration/change_log.py``.
+
+    Publishers:
+        src/core/orchestration/change_log.py:record_change
+
+    Use-case: Live "what did you just change, and why" stream; back the audit
+    trail for the current session.
+    """
+    path: str
+    tool: str
+    change: str
+    reason: str
+    workdir: str
+    bytes_after: int = 0
 
 
 # ---------------------------------------------------------------------------

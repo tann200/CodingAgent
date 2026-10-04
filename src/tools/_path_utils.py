@@ -48,3 +48,43 @@ def safe_resolve(path: str, workdir: Path | None) -> Path:
         )
 
     return p
+
+
+def changed_paths(tool_name: str, tool_args: object) -> list[str]:
+    """Return the file paths a modifying tool call may have changed.
+
+    Single source of truth for "which paths did this tool touch" — the repo
+    index refresh (``repo_context.refresh_index_after_write``) and the P3.2
+    change-log journal both consume this, so the two can never disagree about
+    what a tool touched.
+
+    Aliases are resolved first (``write`` -> ``write_file``) so a rename cannot
+    hide behind one.  ``rename_file`` yields *both* ends, because refreshing
+    only the source leaves the destination's symbols stale.
+
+    Args:
+        tool_name: Tool name as invoked (alias form accepted).
+        tool_args: The tool's arguments mapping; non-mappings yield ``[]``.
+
+    Returns:
+        De-duplicated path strings in preference order (empty if none).
+    """
+    if not isinstance(tool_args, dict):
+        return []
+    try:
+        from src.tools.tools_config import resolve_tool_alias
+
+        canonical = resolve_tool_alias(str(tool_name))
+    except Exception:
+        canonical = str(tool_name)
+
+    keys: tuple[str, ...] = ("path", "file_path", "file")
+    if canonical == "rename_file" or str(tool_name) == "rename_file":
+        keys = ("path", "file_path", "file", "src_path", "old_path", "new_path")
+
+    out: list[str] = []
+    for key in keys:
+        value = tool_args.get(key)
+        if isinstance(value, str) and value.strip() and value not in out:
+            out.append(value)
+    return out

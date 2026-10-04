@@ -178,6 +178,16 @@ def _prepare_next_round_state(
             "_prepare_next_round_state: compaction failed (non-fatal): %s", _compact_exc
         )
 
+    try:
+        # P3.2: attribute this round's file changes to the plan step in force.
+        # The plan can only change between graph invocations, never between tool
+        # calls inside one loop, so once per round is the right granularity.
+        from src.core.orchestration.change_log import set_change_context
+
+        set_change_context(orch, final_state)
+    except Exception as _ctx_exc:
+        guilogger.debug("inference_loop: change context not published: %s", _ctx_exc)
+
     return {
         **final_state,
         "history": _next_history,

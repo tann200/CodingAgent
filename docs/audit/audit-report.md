@@ -672,11 +672,31 @@ contamination guards were not independently exercised. **[PARTIAL]**
   `frontier_messages.py` absorbed `_extract_tool_call_from_text` /
   `_normalize_messages_for_native_tools` (re-exported) to keep
   `frontier_loop_node.py` inside its size guard: 1016 → 900 lines.
-- **P3.2 — Live repo-change audit trail.** *Location:* build a lean equivalent
-  (the unreachable `event_log.py` / `event_persistence.py` were deleted in P2.5,
-  so this is now greenfield).
+- **P3.2 — Live repo-change audit trail.** **DONE.** *Location:*
+  `src/core/orchestration/change_log.py` + `tool_execution_pipeline.py`.
   *Complexity:* Medium. *Impact:* High — "which files did the agent change, and
-  why" is currently unanswerable in production.
+  why" is now answerable in production. `change_log` records one durable entry
+  per file a modifying tool actually changed, with before/after fingerprints,
+  the plan step in force, and whether the path was in the plan's
+  `affected_files`; entries append to `<agent context>/change_log.jsonl` and a
+  typed `RepoChangeRecorded` event is published for live subscribers. Hooked
+  into `tool_execution_pipeline` — the single choke point every tool call
+  passes through on both the tier and legacy graphs — at step 7
+  (`begin_change`, fingerprint before dispatch) and step 10
+  (`record_change`, after dispatch). Deliberately fingerprint-based rather than
+  git-based: it must work in a non-git workspace and attribute *individual*
+  writes instead of one end-of-task diff (`work_summary`'s git view stays as the
+  complementary end-of-task rendering). Attribution context is pushed onto the
+  orchestrator once per round by `inference_loop_rounds` — the plan can only
+  change between graph invocations, never between tool calls inside one loop,
+  so the tool-call sites stay a pure lookup. Path extraction moved to
+  `_path_utils.changed_paths`, shared with `repo_context.refresh_index_after_write`,
+  so the index and the trail can never disagree about what a tool touched.
+  A path is only recorded when a captured "before" fingerprint exists: without
+  it the trail cannot distinguish "the agent created this" from "it was already
+  there", and a phantom creation in an audit record is worse than silence.
+  Known limitation: `bash`-mediated writes are not attributable to a path and
+  are therefore not recorded.
 - **P3.3 — Persisted plan memory across turns.** *Location:*
   `src/core/memory/`. *Complexity:* Medium. *Impact:* Medium.
 - **P3.4 — Idempotency guarantees for non-idempotent tools.** *Location:*

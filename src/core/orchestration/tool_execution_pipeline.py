@@ -560,6 +560,15 @@ def _run_sandbox_and_snapshot(
         except Exception as snap_err:
             guilogger.warning(f"Snapshot failed (non-blocking): {snap_err}")
 
+    # P3.2: fingerprint the "before" state so the change log can prove what
+    # this call actually altered (and attribute it).  Non-fatal.
+    try:
+        from src.core.orchestration.change_log import begin_change
+
+        begin_change(orch, name, args, orch.working_dir)
+    except Exception as exc:
+        guilogger.debug(f"change_log: begin_change skipped (non-blocking): {exc}")
+
     return None
 
 
@@ -842,6 +851,16 @@ def _run_post_execution(
                     pass
             except Exception:
                 pass
+
+    # P3.2: durable, attributed repo-change audit trail.  Runs for every tool
+    # call (not only the ones above) because a tool that reported failure but
+    # still touched disk is exactly what the trail must surface.  Non-fatal.
+    try:
+        from src.core.orchestration.change_log import record_change
+
+        record_change(orch, name, args, orch.working_dir)
+    except Exception as exc:
+        guilogger.debug(f"change_log: record_change skipped (non-blocking): {exc}")
 
     try:
         orch._append_execution_trace(

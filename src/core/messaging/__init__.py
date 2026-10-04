@@ -56,7 +56,7 @@ from src.core.messaging.event_types import (
     TokenBudget, TokenBudgetUpdate, TokenBudgetWarning,
     UsageTurnSummary, UsageBudgetExceeded, UsageSubagentCost,
     # File system
-    FileModified, FileDeleted, FileDiffPreview,
+    FileModified, FileDeleted, FileDiffPreview, RepoChangeRecorded,
     # Delegation
     DelegationStart, DelegationFinish, DelegationComplete,
     AgentScoutFilesDiscovered, AgentResearcherDocSummary, AgentReviewerBugFound,
@@ -126,7 +126,7 @@ __all__ = [
     "TokenBudget", "TokenBudgetUpdate", "TokenBudgetWarning",
     "UsageTurnSummary", "UsageBudgetExceeded", "UsageSubagentCost",
     # File system
-    "FileModified", "FileDeleted", "FileDiffPreview",
+    "FileModified", "FileDeleted", "FileDiffPreview", "RepoChangeRecorded",
     # Delegation
     "DelegationStart", "DelegationFinish", "DelegationComplete",
     "AgentScoutFilesDiscovered", "AgentResearcherDocSummary", "AgentReviewerBugFound",

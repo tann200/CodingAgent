@@ -21,6 +21,7 @@ import threading
 from pathlib import Path
 from typing import Any, Mapping
 
+from src.tools._path_utils import changed_paths
 from src.tools.constants import MODIFYING_TOOLS
 from src.tools.tools_config import resolve_tool_alias
 
@@ -111,20 +112,14 @@ def build_repo_context_block(state: Mapping[str, Any], task: str) -> str:
 
 
 def _candidate_paths(tool_name: str, tool_args: Mapping[str, Any]) -> list[str]:
-    """Return the on-disk paths a modifying tool may have touched."""
-    canonical = resolve_tool_alias(str(tool_name))
-    # rename_file carries a second path under its own key; without refreshing
-    # both ends the index keeps a symbol entry for the old filename.
-    keys: tuple[str, ...] = ("path", "file_path", "file")
+    """Return the on-disk paths a modifying tool may have touched.
 
-    if canonical == "rename_file" or str(tool_name) == "rename_file":
-        keys = ("path", "file_path", "file", "src_path", "old_path", "new_path")
-    out: list[str] = []
-    for key in keys:
-        value = tool_args.get(key)
-        if isinstance(value, str) and value.strip() and value not in out:
-            out.append(value)
-    return out
+    Delegates to ``_path_utils.changed_paths``, the single source of truth
+    shared with the P3.2 change-log journal.  Two copies of this key list
+    would let the index and the audit trail disagree about a rename (the
+    index would keep a stale entry for the old filename).
+    """
+    return changed_paths(tool_name, tool_args)
 
 
 def refresh_index_after_write(tool_name: str, tool_args: Any, working_dir: str) -> None:

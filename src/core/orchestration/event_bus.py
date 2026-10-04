@@ -255,6 +255,7 @@ _EVENT_IMPORT_PATHS: Dict[str, Tuple[str, str, Optional[Dict[str, str]]]] = {
     "file.modified": ("src.core.messaging.event_types", "FileModified", None),
     "file.deleted": ("src.core.messaging.event_types", "FileDeleted", None),
     "file.diff.preview": ("src.core.messaging.event_types", "FileDiffPreview", None),
+    "repo.change.recorded": ("src.core.messaging.event_types", "RepoChangeRecorded", None),
     "delegation.start": ("src.core.messaging.event_types", "DelegationStart", None),
     "delegation.finish": ("src.core.messaging.event_types", "DelegationFinish", None),
     "delegation.complete": ("src.core.messaging.event_types", "DelegationComplete", None),
