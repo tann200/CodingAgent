@@ -730,9 +730,46 @@ contamination guards were not independently exercised. **[PARTIAL]**
   `current_plan` and would crash the first `step.get(...)` on it).
   `build_exit_result` moved into the new module verbatim to keep
   `frontier_loop_node.py` inside its size guard (900 → 899).
-- **P3.4 — Idempotency guarantees for non-idempotent tools.** *Location:*
-  `src/tools/`. *Complexity:* High. *Impact:* Medium–High. Currently unverified;
-  a retried write after a transport failure may double-apply.
+- **P3.4 — Idempotency guarantees for non-idempotent tools.** **DONE.**
+  *Location:* `src/tools/constants.py` (`IDEMPOTENT_TOOLS`),
+  `tools_config.is_idempotent_tool`, `tool_execution_pipeline._timeout_result`,
+  `tool_execution_service.execute_with_retry`. *Complexity:* High.
+  *Impact:* Medium–High — closes the §7 "NOT AUDITED" idempotency gap, and it
+  was worse than an unverified risk: the double-apply is reachable on the
+  production path. `_dispatch_tool_call` runs tools on a `ThreadPoolExecutor` and
+  calls `future.cancel()` on timeout, which returns `False` for an
+  already-running future. The tool keeps executing and lands its side effect
+  *after* the pipeline has already reported failure — verified by execution, and
+  pinned by `test_a_timed_out_tool_keeps_running_and_lands_its_effect`. So a
+  plain "failed" result was an invitation to re-run, i.e. to apply a write
+  twice. A timeout on a non-idempotent tool now reports
+  `error_code="tool.outcome_unknown"` with `outcome_unknown: True` and wording
+  that tells the model to verify before re-running rather than re-run on faith
+  (P3.2's change journal is what makes that verification possible).
+  Classification is a **fail-closed allowlist**: only pure reads and
+  overwrite-shaped writes (`write_file`, `edit_file*`, `apply_patch`,
+  `multiedit`, `delete_file`, `rename_file`) are retryable, so a newly added or
+  unclassified tool is treated as non-idempotent rather than requiring someone to
+  remember to classify it. `bash`, `git_commit`/`git_stash`, the append-style
+  tools (`manage_todo`, `record_mistake`, `memory_save`), `delegate_task`,
+  `create_state_checkpoint`, the *popping* `revert_last_tool`, and the
+  human-facing `send_user_message`/`ask_user` are all deliberately excluded.
+  Membership is resolved through `resolve_tool_alias` first, so `run`/`shell`
+  cannot read as safe merely because no allowlist mentions them.
+  `execute_with_retry` (TS-4) — which retried blindly on any
+  transient-looking error string — now runs a tool **once** unless its name is on
+  that allowlist, and annotates the result with
+  `error_code="tool.retry_suppressed"` plus the reason, so a suppressed retry is
+  visible in the transcript instead of silently missing. It is fail-closed with
+  no `tool_name` too; the four TS-4 backoff tests now pass an idempotent
+  `tool_name`, since the old ones encoded blind retry of an unknown tool as the
+  expected behaviour. Note this helper still has no production caller — the
+  timeout fix is what closes the reachable path.
+  Adapter-level retries were audited and are *not* part of this defect:
+  `openai_compat_adapter._execute_with_retry` returns immediately for
+  `stream=True`, so a dropped stream is never replayed, and a retried
+  non-streaming completion cannot double-execute a tool because tool calls only
+  run on the agent side, from a response that was actually received.
 
 ## Phase 4 — Advanced features
 

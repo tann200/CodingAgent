@@ -103,6 +103,90 @@ FILE_TOOLS: frozenset[str] = frozenset(
 )
 
 # ---------------------------------------------------------------------------
+# Idempotency classification (audit P3.4)
+# ---------------------------------------------------------------------------
+
+#: Tools that are safe to re-execute automatically after a *transport* failure
+#: (timeout, dropped connection, 5xx): re-running them converges on the same
+#: state.  Deliberately an **allowlist** — every tool absent from this set is
+#: treated as non-idempotent, so a newly added tool is safe by default instead
+#: of requiring someone to remember to classify it.
+#:
+#: Two families qualify: pure reads, and writes that *overwrite* a target with a
+#: fully-specified value (write_file / edit_file* / apply_patch / multiedit /
+#: delete_file / rename_file).  A second `write_file` with the same content is a
+#: no-op, and a second `delete_file` reports an already-absent file rather than
+#: destroying something else.
+#:
+#: What is deliberately excluded, and why:
+#:   * ``bash`` — arbitrary side effects (`x >> f`, ``git commit``, a POST).
+#:   * ``git_commit`` / ``git_stash`` — each invocation creates new history.
+#:   * ``manage_todo`` / ``record_mistake`` / ``memory_save`` — append.
+#:   * ``delegate_task`` / ``delegate_tasks_parallel`` — spawns a subagent.
+#:   * ``create_state_checkpoint`` — mints a new checkpoint per call.
+#:   * ``revert_last_tool`` — *pops*, so a second call reverts a second change.
+#:   * ``send_user_message`` / ``ask_user`` / ``submit_plan_for_review`` — the
+#:     duplicate would be delivered to a human.
+IDEMPOTENT_TOOLS: frozenset[str] = frozenset(
+    {
+        # ---- pure reads -------------------------------------------------
+        "read_file",
+        "read_file_chunk",
+        "read_file_bytes",
+        "batched_file_read",
+        "list_files",
+        "list_dir",
+        "list_skills",
+        "list_snapshots",
+        "list_checkpoints",
+        "glob",
+        "glob_files",
+        "grep",
+        "search_code",
+        "find_files",
+        "find_symbol",
+        "find_references",
+        "ast_list_symbols",
+        "repo_overview",
+        "multi_file_summary",
+        "summarize_structure",
+        "summarize_structure_detailed",
+        "fingerprint_tech_stack",
+        "analyze_repository",
+        "initialize_repo_intelligence",
+        "memory_search",
+        "git_status",
+        "git_diff",
+        "git_log",
+        "get_git_diff",
+        "web_search",
+        "read_web_page",
+        "check_background_task",
+        "diff_state",
+        # ---- overwrite-shaped writes ------------------------------------
+        "write_file",
+        "edit_file",
+        "edit_file_atomic",
+        "edit_by_line_range",
+        "edit_code_block",
+        "apply_patch",
+        "generate_patch",
+        "multiedit",
+        "delete_file",
+        "rename_file",
+        # ---- idempotent verification / test runners ---------------------
+        "syntax_check",
+        "run_eslint",
+        "run_ts_check",
+        "run_linter",
+        "run_tests",
+        "run_tests_legacy",
+        "run_js_tests",
+    }
+)
+
+
+# ---------------------------------------------------------------------------
 # Canonical tool-name aliases
 # ---------------------------------------------------------------------------
 

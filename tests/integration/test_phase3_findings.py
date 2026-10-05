@@ -388,7 +388,7 @@ class TestExecuteWithRetry:
 
         with patch("asyncio.sleep", new=AsyncMock()):
             result = await execute_with_retry(
-                tool_fn, {}, max_attempts=3, base_delay=0.0
+                tool_fn, {}, tool_name="read_file", max_attempts=3, base_delay=0.0
             )
 
         assert result == {"ok": True}
@@ -405,7 +405,9 @@ class TestExecuteWithRetry:
             call_count += 1
             return {"ok": False, "error": "permission denied"}
 
-        result = await execute_with_retry(tool_fn, {}, max_attempts=3, base_delay=0.0)
+        result = await execute_with_retry(
+            tool_fn, {}, tool_name="read_file", max_attempts=3, base_delay=0.0
+        )
         assert result == {"ok": False, "error": "permission denied"}
         assert call_count == 1, "Should stop immediately on non-transient error"
 
@@ -422,7 +424,7 @@ class TestExecuteWithRetry:
 
         with patch("asyncio.sleep", new=AsyncMock()):
             result = await execute_with_retry(
-                tool_fn, {}, max_attempts=3, base_delay=0.0
+                tool_fn, {}, tool_name="read_file", max_attempts=3, base_delay=0.0
             )
 
         assert result == {"ok": False, "error": "temporarily unavailable"}
@@ -443,7 +445,7 @@ class TestExecuteWithRetry:
 
         with patch("asyncio.sleep", new=AsyncMock()):
             result = await execute_with_retry(
-                tool_fn, {}, max_attempts=3, base_delay=0.0
+                tool_fn, {}, tool_name="read_file", max_attempts=3, base_delay=0.0
             )
 
         assert result == {"ok": True}
@@ -463,7 +465,7 @@ class TestExecuteWithRetry:
 
         with patch("asyncio.sleep", new=AsyncMock()):
             result = await execute_with_retry(
-                tool_fn, {}, max_attempts=3, base_delay=0.0
+                tool_fn, {}, tool_name="read_file", max_attempts=3, base_delay=0.0
             )
 
         assert result["ok"] is True

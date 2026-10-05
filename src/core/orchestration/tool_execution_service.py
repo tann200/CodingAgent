@@ -62,6 +62,7 @@ async def execute_with_retry(
     tool_fn: Callable[..., Dict[str, Any]],
     args: Dict[str, Any],
     *,
+    tool_name: Optional[str] = None,
     max_attempts: int = 3,
     base_delay: float = 0.5,
 ) -> Dict[str, Any]:
@@ -72,17 +73,30 @@ async def execute_with_retry(
     seconds (0.5 s, 1 s, 2 s by default).  Always returns the last result even if
     all retries were exhausted.
 
+    **Idempotency (P3.4).**  A transient error means the *response* was lost, not
+    that the operation did not happen — so retrying a non-idempotent tool applies
+    its side effect twice (``bash`` appending, ``git_commit``, ``manage_todo``).
+    Retries are therefore only performed for tools that are provably safe to
+    re-execute, per the canonical ``IDEMPOTENT_TOOLS`` allowlist.  This is
+    fail-closed: with no ``tool_name`` (or an unclassified one) the call runs
+    **once** and the result is annotated with ``error_code="tool.retry_suppressed"``
+    so the reason is visible in the transcript rather than silently lost.
+    ``tool_name`` may be an alias (``run`` → ``bash``) and is resolved first.
+
     Parameters
     ----------
     tool_fn:
         Synchronous callable that accepts ``**args`` and returns a dict.
     args:
         Arguments forwarded to *tool_fn*.
+    tool_name:
+        Name of the tool being executed, used for the idempotency check.
     max_attempts:
         Maximum number of attempts (default 3).
     base_delay:
         Base sleep time in seconds; doubled per retry (default 0.5 s).
     """
+    retry_permitted, suppressed_reason = _retry_permitted(tool_name, max_attempts)
     result: Dict[str, Any] = {}
     for attempt in range(max_attempts):
         try:
@@ -95,18 +109,66 @@ async def execute_with_retry(
         is_transient = any(kw in err_str for kw in _TRANSIENT_ERROR_KEYWORDS)
         if not is_transient:
             return result
-        if attempt < max_attempts - 1:
-            delay = base_delay * (2**attempt)
-            logger.debug(
-                "execute_with_retry: transient error on attempt %d/%d, "
-                "retrying in %.1fs — error=%r",
-                attempt + 1,
-                max_attempts,
-                delay,
-                err_str[:120],
+        if attempt >= max_attempts - 1:
+            break
+        if not retry_permitted:
+            logger.warning(
+                "execute_with_retry: not retrying %r after a transient error — %s. "
+                "The tool may have already applied its side effect.",
+                tool_name or "<unknown tool>",
+                suppressed_reason,
             )
-            await asyncio.sleep(delay)
+            break
+        delay = base_delay * (2**attempt)
+        logger.debug(
+            "execute_with_retry: transient error on attempt %d/%d, "
+            "retrying in %.1fs — error=%r",
+            attempt + 1,
+            max_attempts,
+            delay,
+            err_str[:120],
+        )
+        await asyncio.sleep(delay)
+    if not retry_permitted:
+        return _annotate_retry_suppressed(result, tool_name, suppressed_reason)
     return result
+
+
+def _retry_permitted(
+    tool_name: Optional[str], max_attempts: int
+) -> tuple[bool, str]:
+    """Return ``(may_retry, reason_if_not)`` for a tool (P3.4, fail-closed)."""
+    if max_attempts <= 1:
+        return False, "max_attempts is 1"
+    if not tool_name:
+        return False, (
+            "no tool_name was supplied, so the tool's idempotency cannot be "
+            "established; pass an idempotent tool_name to enable retries"
+        )
+    try:
+        from src.tools.tools_config import is_idempotent_tool
+
+        if is_idempotent_tool(tool_name):
+            return True, ""
+        return False, (
+            f"{tool_name!r} is not on the canonical IDEMPOTENT_TOOLS allowlist, so "
+            "re-running it could apply its side effect twice"
+        )
+    except Exception as exc:
+        return False, f"idempotency check unavailable ({exc})"
+
+
+def _annotate_retry_suppressed(
+    result: Dict[str, Any], tool_name: Optional[str], reason: str
+) -> Dict[str, Any]:
+    """Return *result* annotated so a suppressed retry is visible downstream."""
+    if not isinstance(result, dict):
+        result = {"ok": False, "error": str(result)}
+    annotated = dict(result)
+    annotated["error_code"] = "tool.retry_suppressed"
+    annotated["retry_suppressed"] = True
+    annotated["retry_suppressed_reason"] = reason
+    return annotated
 
 
 @dataclass

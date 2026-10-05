@@ -572,6 +572,52 @@ def _run_sandbox_and_snapshot(
     return None
 
 
+def _timeout_result(name: str, timeout_seconds: float) -> Dict[str, Any]:
+    """Build the result for a tool that exceeded its timeout (P3.4).
+
+    A timeout does **not** mean the tool failed.  ``_dispatch_tool_call`` runs
+    tools on a ``ThreadPoolExecutor`` and calls ``future.cancel()``, which
+    returns ``False`` for an already-running future — the tool keeps executing
+    and may well complete its side effect moments later (verified by execution).
+    So for a non-idempotent tool the honest answer is "outcome unknown", not
+    "failed": a "failed" result invites the model to simply re-run the call,
+    which is precisely how a write gets applied twice.
+
+    The wording is chosen for the model reading it in ``history``: verify before
+    re-running rather than re-run on faith.  P3.2's ``change_log`` journal is
+    what makes that verification possible.
+    """
+    base = {
+        "ok": False,
+        "error": (
+            f"Tool execution timed out after {timeout_seconds} seconds. "
+            "Consider breaking down the task into smaller steps."
+        ),
+        "error_code": "tool.timeout",
+    }
+    try:
+        from src.tools.tools_config import is_idempotent_tool
+
+        repeatable = is_idempotent_tool(name)
+    except Exception:
+        # Fail closed: if idempotency cannot be established, treat the tool as
+        # unsafe to re-run.
+        repeatable = False
+
+    if not repeatable:
+        base["outcome_unknown"] = True
+        base["error"] = (
+            f"Tool execution timed out after {timeout_seconds} seconds. The tool "
+            "was NOT cancelled and may still have completed its side effect, so "
+            "its effect on disk/state is UNKNOWN. Do NOT re-run this call blindly "
+            "— verify the current state first (e.g. read the file or check the "
+            "change log), then re-run only if the effect is genuinely missing. "
+            "Re-running without checking risks applying the change twice."
+        )
+        base["error_code"] = "tool.outcome_unknown"
+    return base
+
+
 def _dispatch_tool_call(
     orch: Any,
     name: str,
@@ -1077,13 +1123,7 @@ def execute_tool_impl(orch: Any, tool_call: Dict[str, Any]) -> Dict[str, Any]:
         res = _dispatch_tool_call(orch, name, args, tool, tool_call_id, timeout_seconds)
     except TimeoutError:
         guilogger.warning(f"Tool '{name}' timed out after {timeout_seconds}s")
-        return {
-            "ok": False,
-            "error": (
-                f"Tool execution timed out after {timeout_seconds} seconds. "
-                "Consider breaking down the task into smaller steps."
-            ),
-        }
+        return _timeout_result(name, timeout_seconds)
     except Exception as e:
         return _handle_tool_execution_error(orch, name, args, tool_call_id, e)
 

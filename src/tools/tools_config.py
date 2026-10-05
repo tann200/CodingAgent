@@ -17,7 +17,7 @@ import os
 import threading
 from enum import Enum
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, FrozenSet, Optional
 
 
 # ---------------------------------------------------------------------------
@@ -130,6 +130,31 @@ def resolve_tool_alias(name: str) -> str:
     Unknown names are returned unchanged.
     """
     return TOOL_ALIASES.get(name, name)
+
+
+# -----------------------------------------------------------------------
+# Idempotency classification (P3.4)
+# -----------------------------------------------------------------------
+
+# Canonical definition lives in ``src.tools.constants``; re-exported here so
+# callers reach it alongside the alias resolver it depends on.
+from src.tools.constants import (  # noqa: E402
+    IDEMPOTENT_TOOLS as _CANONICAL_IDEMPOTENT_TOOLS,
+)
+
+IDEMPOTENT_TOOLS: FrozenSet[str] = _CANONICAL_IDEMPOTENT_TOOLS
+
+
+def is_idempotent_tool(name: str) -> bool:
+    """Return True when *name* is safe to re-execute automatically (P3.4).
+
+    Fail-closed: only tools on the canonical allowlist qualify, so an
+    unclassified or newly added tool is assumed non-idempotent.  Aliases are
+    resolved first — otherwise ``run``/``shell`` would read as idempotent
+    simply because no allowlist mentions them, while the tool they dispatch to
+    is ``bash``.
+    """
+    return resolve_tool_alias(name) in IDEMPOTENT_TOOLS
 
 
 # -----------------------------------------------------------------------
