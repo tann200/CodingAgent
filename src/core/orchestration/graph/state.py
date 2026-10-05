@@ -303,6 +303,9 @@ class _AgentStateSpec(TypedDict, total=False):
     # LIFECYCLE: Written by planning_node, plan_validator; read by execution_node.
     #   current_plan, plan_dag — set by planning_node
     #   current_step — incremented by execution_node step completion
+    #   plan_completed — set by frontier_loop_node when the loop covered the
+    #     whole plan and the model declared done; read by evaluation_node and
+    #     persisted so a finished plan is not regenerated next turn (P3.3)
     #   planned_action — set during plan breakdown
     #   plan_progress — updated by execution_node
     #   execution_waves, current_wave — set by planner, read by execution
@@ -316,6 +319,7 @@ class _AgentStateSpec(TypedDict, total=False):
     #   affected_files — aggregated by execution_node
     current_plan: List[Dict[str, Any]] | None
     current_step: int | None
+    plan_completed: bool | None
     step_description: str | None
     planned_action: Dict[str, Any] | None
     plan_progress: Dict[str, Any] | None

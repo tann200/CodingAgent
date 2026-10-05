@@ -697,8 +697,39 @@ contamination guards were not independently exercised. **[PARTIAL]**
   there", and a phantom creation in an audit record is worse than silence.
   Known limitation: `bash`-mediated writes are not attributable to a path and
   are therefore not recorded.
-- **P3.3 — Persisted plan memory across turns.** *Location:*
-  `src/core/memory/`. *Complexity:* Medium. *Impact:* Medium.
+- **P3.3 — Persisted plan memory across turns.** **DONE.** *Location:*
+  `graph/nodes/frontier_completion.py`, `planning_helpers.py`,
+  `evaluation_node.py`. *Complexity:* Medium. *Impact:* High — this was not
+  merely a missing feature; it was corrupting the outcome of *every* successful
+  run. The tier graphs run a plan as one LLM+tool loop, so unlike the legacy
+  `execution_node` they never advanced `current_step` and never set a per-step
+  `completed` flag. That made `evaluation_node`'s `plan_completed` check
+  unsatisfiable on the production path: `current_step` stayed 0 and no step was
+  flagged, so a fully successful run with an N-step plan was reported as
+  "PARTIAL COMPLETION" with `evaluation_result="replan"` — state, TUI, and
+  distillation all recorded the wrong outcome. Routing survived only by luck
+  (the frontier graph remaps `step_controller` → `memory_sync`, the same
+  destination as the real "complete" branch). Verified before the fix by
+  executing `evaluation_node` on frontier-shaped state.
+  The loop already emits an authoritative completion signal —
+  `_completion_detected`, set when a turn returns no tool calls — so
+  `frontier_completion.plan_completion_patch` records `plan_completed` from that
+  and nothing else. It deliberately makes **no** per-step claim: the loop has no
+  per-step checkpoint, and inventing one would put a falsehood in the persisted
+  plan. `evaluation_node` now trusts that flag the same way it already trusted
+  `verification_passed` over recomputation. Persistence reuses the existing
+  `save_last_plan` / `append_plan_audit_log` helpers, so there is still exactly
+  one writer for `last_plan.json`; `save_last_plan` gained an `extra` kwarg for
+  the flag (merged *before* the canonical identity keys, so a caller cannot
+  corrupt a record's plan/task/step identity) and now **returns whether the
+  record landed**, because a silently-lost progress record would leave the next
+  turn re-running finished work — the exact failure P3.3 exists to prevent.
+  `plan_is_resumable` refuses a plan marked `plan_completed`, so a finished plan
+  is re-planned rather than silently re-run, and it now validates that `plan` is
+  a non-empty list (a corrupt string/dict record previously reached
+  `current_plan` and would crash the first `step.get(...)` on it).
+  `build_exit_result` moved into the new module verbatim to keep
+  `frontier_loop_node.py` inside its size guard (900 → 899).
 - **P3.4 — Idempotency guarantees for non-idempotent tools.** *Location:*
   `src/tools/`. *Complexity:* High. *Impact:* Medium–High. Currently unverified;
   a retried write after a transport failure may double-apply.

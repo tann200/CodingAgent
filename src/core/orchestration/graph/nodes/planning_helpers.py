@@ -101,18 +101,33 @@ def save_last_plan(
     logger: Any,
     atomic_write_json_fn: Optional[Callable[..., bool]] = None,
     now_fn: Callable[[], datetime] = datetime.now,
-) -> None:
-    """Persist the latest plan with atomic-write and mkstemp fallbacks."""
+    extra: Optional[Mapping[str, Any]] = None,
+) -> bool:
+    """Persist the latest plan with atomic-write and mkstemp fallbacks.
+
+    Returns whether the record actually landed on disk. Failures are logged and
+    swallowed (planning must never be blocked by its own bookkeeping), so the
+    caller cannot otherwise distinguish "persisted" from "silently lost" — and a
+    lost plan-progress record is exactly what P3.3 exists to prevent.
+
+    ``extra`` adds supplementary keys to the record (P3.3 uses it for the
+    ``plan_completed`` flag).  The canonical identity keys are always written
+    last, so a caller cannot corrupt the record's plan/task/step identity through
+    ``extra``.
+    """
     plan_path = get_last_plan_path_fn(workdir)
     try:
         plan_path.parent.mkdir(parents=True, exist_ok=True)
-        data = {
-            "plan": plan,
-            "task": task,
-            "current_step": step,
-            "working_dir": str(workdir),
-            "saved_at": now_fn().isoformat(),
-        }
+        data: Dict[str, Any] = dict(extra or {})
+        data.update(
+            {
+                "plan": plan,
+                "task": task,
+                "current_step": step,
+                "working_dir": str(workdir),
+                "saved_at": now_fn().isoformat(),
+            }
+        )
         try:
             if atomic_write_json_fn is None:
                 from src.core.io_utils import atomic_write_json as _atomic_write_json
@@ -123,7 +138,7 @@ def save_last_plan(
             ok = atomic_write_json_fn(plan_path, data, logger=logger)
             if ok:
                 logger.info("planning_node: saved plan to %s", plan_path)
-                return
+                return True
             logger.warning(
                 "planning_node: atomic_write_json returned False for %s; falling back",
                 plan_path,
@@ -162,8 +177,10 @@ def save_last_plan(
             except Exception:
                 pass
             raise
+        return plan_path.exists()
     except Exception as exc:
         logger.warning("planning_node: failed to save last plan: %s", exc)
+        return False
 
 
 def append_plan_audit_log(
@@ -175,11 +192,15 @@ def append_plan_audit_log(
     get_last_plan_path_fn: Callable[[str], Path],
     logger: Any,
     now_fn: Callable[[], datetime] = datetime.now,
+    reason: str = "plan_saved",
 ) -> None:
     """Append a plan snapshot to the append-only plan_history.jsonl audit log.
 
     The log lives at ``<agent_context_dir>/plan_history.jsonl`` and is never
     truncated — every planning decision is preserved for post-hoc analysis.
+    ``reason`` records *why* the snapshot was taken (P3.3 adds
+    ``plan_completed``), so an append-only reader can tell a fresh plan from a
+    completion record without diffing consecutive entries.
     Failures are logged at DEBUG level and swallowed so they never block execution.
     """
     try:
@@ -189,6 +210,7 @@ def append_plan_audit_log(
             "ts": now_fn().isoformat(),
             "task": task,
             "step": step,
+            "reason": reason,
             "plan_len": len(plan),
             "plan": plan,
         }
@@ -210,9 +232,24 @@ def plan_is_resumable(
     datetime_fromisoformat_fn: Callable[[str], datetime] = datetime.fromisoformat,
     resume_session: bool = False,
 ) -> bool:
-    """Return True when a saved plan should be resumed instead of regenerated."""
+    """Return True when a saved plan should be resumed instead of regenerated.
+
+    A plan recorded as ``plan_completed`` (P3.3) is never resumed: the work is
+    already done, so resuming it would silently re-run completed steps.  The
+    ``plan`` shape is also validated here, because a corrupt record would
+    otherwise reach ``current_plan`` as a non-list and crash the first
+    ``step.get(...)`` on it.
+    """
+    plan = data.get("plan")
+    if not isinstance(plan, list) or not plan:
+        return False
+
+    if data.get("plan_completed") is True:
+        logger.info("planning_node: saved plan is already complete — not resuming")
+        return False
+
     if resume_session:
-        return bool(data.get("plan"))
+        return True
     if data.get("task", "") != current_task:
         return False
     saved_at_str = data.get("saved_at", "")

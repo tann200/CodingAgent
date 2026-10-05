@@ -47,6 +47,7 @@ def build_initial_state(
         "files_read": {},
         "analyst_findings": None,
         "plan_resumed": False,
+        "plan_completed": False,
         "plan_mode_enabled": getattr(getattr(orch, "plan_mode", None), "enabled", False),
         "awaiting_plan_approval": False,
         "plan_mode_approved": None,

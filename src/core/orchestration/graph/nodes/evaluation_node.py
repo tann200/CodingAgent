@@ -99,8 +99,15 @@ async def _evaluation_node_impl(state: StateLike, config: RunnableConfig) -> Dic
                 )
 
     # Check plan completion
+    # P3.3: prefer the loop's own declaration when it is present. The frontier
+    # graphs run a whole plan as one loop and never advance ``current_step`` or
+    # set a per-step ``completed`` flag, so the index-based checks below are
+    # unsatisfiable there — an N-step plan that finished successfully would
+    # otherwise be reported as "PARTIAL COMPLETION" with evaluation_result
+    # "replan". Mirrors how ``verification_passed`` is trusted over recompute.
     plan_completed = (
-        not current_plan
+        bool(state.get("plan_completed"))
+        or not current_plan
         or current_step >= len(current_plan)
         or all(step.get("completed", False) for step in current_plan)
     )

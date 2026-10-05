@@ -303,23 +303,24 @@ def test_frontier_loop_publishes_last_tool_name():
     import inspect
     from pathlib import Path
 
+    from src.core.orchestration.graph.nodes import frontier_completion
     from src.core.orchestration.graph.nodes import frontier_loop_node as fln
 
-    src = Path(inspect.getfile(fln)).read_text()
-    tree = ast.parse(src)
-    fn = next(
-        n
-        for n in tree.body
-        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == "frontier_loop_node"
-    )
+    def _dict_keys(module) -> set:
+        src = Path(inspect.getfile(module)).read_text()
+        return {
+            k.value
+            for d in ast.walk(ast.parse(src))
+            if isinstance(d, ast.Dict)
+            for k in d.keys
+            if isinstance(k, ast.Constant) and isinstance(k.value, str)
+        }
+
     # The node builds a `result` dict then returns it, so scan every dict
-    # literal in the body rather than only inline `return {...}`.
-    keys = {
-        k.value
-        for d in ast.walk(fn)
-        if isinstance(d, ast.Dict)
-        for k in d.keys
-        if isinstance(k, ast.Constant) and isinstance(k.value, str)
-    }
+    # literal rather than only inline `return {...}`. P3.3 moved the exit
+    # result into frontier_completion.build_exit_result, so the published keys
+    # now live there; the contract is "the loop publishes them", not "the
+    # literal is in this file".
+    keys = _dict_keys(fln) | _dict_keys(frontier_completion)
     assert "last_tool_name" in keys
     assert "last_result" in keys

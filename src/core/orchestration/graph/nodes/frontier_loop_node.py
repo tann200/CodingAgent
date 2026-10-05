@@ -42,6 +42,11 @@ from src.core.orchestration.graph.nodes.frontier_messages import (
     _extract_tool_call_from_text,
     _normalize_messages_for_native_tools,
 )
+from src.core.orchestration.graph.nodes.frontier_completion import (
+    build_exit_result,
+    persist_plan_progress,
+    plan_completion_patch,
+)
 from src.core.orchestration.graph.nodes.in_loop_verification import (
     build_inline_verification_message,
     capture_lint_baseline,
@@ -875,26 +880,20 @@ async def frontier_loop_node(
     except Exception:
         pass
 
-    result: Dict[str, Any] = {
-        "history": history,
-        "tool_call_count": tool_call_count,
-        "last_result": last_result,
-        "last_tool_name": last_tool_name,
-        "errors": errors,
-        "_frontier_loop_turns": turns_taken,
-        "awaiting_plan_approval": False,
-    }
-    if inline_verifications:
-        failures = [r for r in inline_verifications if r.get("status") == "failed"]
-        if failures:
-            result["inline_verification_failures"] = failures
-    if replan_required:
-        result["replan_required"] = replan_required
-        result["action_failed"] = True
-        result["next_action"] = None
-    if "context_overflow" in errors:
-        result["_budget_compaction"] = True
-        result["_should_distill"] = True
-        if last_result is None or last_result.get("ok") is not False:
-            result["last_result"] = {"ok": False, "error": "Context window overflow — compaction triggered"}
+    result = build_exit_result(
+        history=history,
+        tool_call_count=tool_call_count,
+        last_result=last_result,
+        last_tool_name=last_tool_name,
+        errors=errors,
+        turns_taken=turns_taken,
+        inline_verifications=inline_verifications,
+        replan_required=replan_required,
+    )
+    # P3.3: record that the loop covered its plan, and persist the record so the
+    # next turn re-plans instead of re-running work that is already done.
+    _progress = plan_completion_patch(state, result)
+    if _progress:
+        result.update(_progress)
+        persist_plan_progress(orchestrator, state)
     return result
