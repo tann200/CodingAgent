@@ -15,7 +15,9 @@ inference from names.
 > reasoning stays auditable — **for current state read the Status boxes, not the
 > finding text.** Verification behind these claims: `tests/unit` **4,831 passed,
 > 1 skipped**; integration/acceptance/e2e/benchmarks **168 passed, 8 skipped**;
-> `ruff` and targeted `mypy` clean; TUI mirror trees byte-identical.
+> all six CI jobs re-run with the workflow's exact commands and green (two
+> broken CI gates repaired, §10); `ruff` and targeted `mypy` clean; TUI mirror
+> trees byte-identical.
 
 ## Evidence grading
 
@@ -568,6 +570,29 @@ Cross-task contamination guards remain **[PARTIAL]**.
   P1.1–P1.3 behaviors.
 - **251 deprecated tests excluded from CI contain stale patches** (HIGH-3). —
   **closed by P2.4:** directory deleted.
+- **Two CI gates were themselves broken — found while re-running the workflow
+  for P4.1, and both were self-inflicted.** **[EXEC]**
+  - `platform-smoke` still referenced `tests/unit/test_shell_hooks.py`, which
+    P2.5 (`62e9480`) deleted along with the dead
+    `src/core/orchestration/shell_hooks.py` — the workflow was never updated,
+    so that job failed with *file or directory not found* on **every run since
+    Phase 2**. Fixed in `1856262`; all 10 other CI-referenced test paths were
+    verified to exist.
+  - The `IMPL-Q2` xfail-count gate invoked pytest with an explicit `-q` on top
+    of `pytest.ini`'s `addopts = -q`, i.e. `-qq`, which suppresses the final
+    summary line its regex parses — verified against the full suite: old flags
+    yield **zero** matches for `N passed`/`N xfailed` in captured output, so
+    the threshold of 10 could never be exceeded and stale xfails could
+    accumulate silently. Dropped the extra `-q`; the summary line
+    (`4831 passed, 1 skipped, … 3 subtests passed`) is now present and the
+    gate can actually fire (proved with a synthetic xfail probe).
+  - Also fixed: two `W292` (no newline at EOF) left by P3.2, which broke
+    CI's `ruff --select=E,F,W` gate even though the project-local ruff config
+    (default `E4,E7,E9,F` select) passed — CI and local lint do not select the
+    same rules.
+  - Re-run after the fixes, each with the workflow's exact command: quality
+    (ruff + mypy), unit-tests, platform-smoke, integration-mock, e2e-mock,
+    benchmarks — **all green**, workflow YAML parses with 7 jobs.
 - **No production-path assertion suite.** There is no test asserting that
   `frontier_loop` sanitizes tool results, or that the production graph retains
   repo-awareness — because neither is true. — **closed by P1.4**; those two
