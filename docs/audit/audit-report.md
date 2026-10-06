@@ -63,8 +63,10 @@ never invoked on tool results in production.**
 
 **Four findings are Critical or High.** Two of them (injection scanning, repo
 awareness) are single-call-site wiring fixes that immediately close large gaps.
-Separately, **8,222 lines across 14 modules are unreachable from any entrypoint**,
+Separately, **4,111 lines across 14 modules are unreachable from any entrypoint**,
 including a 156-line server exposure policy and a 1,151-line permission layer.
+*(Corrected 2026-10-06: the audit originally said 8,222 — exactly 2× the table's
+own sum; every row re-verified against `wc -l` at `4665b98`.)*
 
 The system is **not production-ready as an unattended autonomous agent** — chiefly
 because destructive git operations (`git clean -fdx`, `git reset --hard`,
@@ -230,9 +232,15 @@ having performed no repository intelligence gathering. The capability exists, is
 substantial (2,866 lines in `src/core/indexing/`), and is unused in the most
 common production path.
 
-## HIGH-1 — 8,222 lines across 14 modules are unreachable from any entrypoint
+## HIGH-1 — 4,111 lines across 14 modules are unreachable from any entrypoint
 
 **Severity: High** · **Category: 1 (Core Architecture), 14 (Over-engineering)**
+
+> **Correction (2026-10-06).** The original heading and Total read **8,222**.
+> That figure is exactly 2 × the table's own row sum — a double-count. Each row
+> was re-verified against `wc -l` at the audited commit `4665b98` (all 14 rows
+> match the table exactly) and sums to **4,111**. The wider Phase 2 removal is
+> the separate, correctly measured 25 modules / 6,312 lines (P2.1 + P2.5).
 
 > **Status: FIXED (P1.4 + P2.1 + P2.5).** Every module in the table below was
 > deleted, not re-wired: `permission_gateway.py`, `permission_table.py`,
@@ -266,7 +274,7 @@ cross-checked with exhaustive reference search (**[EXEC] + [STATIC]**):
 | **`server/exposure_policy.py`** | **156** | **only referenced by its own test** |
 | `orchestration/wave_coordinator.py` | 139 | |
 | `orchestration/graph_factory.py` | 91 | 4 role graphs, tests only |
-| **Total** | **8,222** | |
+| **Total** | **4,111** | |
 
 Two of these are security-relevant and deserve individual attention:
 
@@ -640,7 +648,8 @@ Cross-task contamination guards remain **[PARTIAL]**.
 
 # 13. Over-Engineered Components
 
-- **8,222 lines of unreachable code** (§HIGH-1) is the headline. The most
+- **4,111 lines of unreachable code** (§HIGH-1; originally reported as 8,222, a
+  double-count corrected 2026-10-06) is the headline. The most
   expensive over-engineering is *security* over-engineering: two full
   authorization subsystems (`permission_gateway` + `permission_table`, 1,151
   lines; `exposure_policy`, 156 lines) that are complete, tested, and inert.
