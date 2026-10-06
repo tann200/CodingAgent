@@ -139,8 +139,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e .[dev,server]
       - name: Run platform-sensitive unit smoke tests
+        # test_shell_hooks.py removed with src/core/orchestration/shell_hooks.py
+        # in P2.5 (dead module); the stale path made this job fail with
+        # "file or directory not found" since 62e9480.
         run: |
-          python -m pytest tests/unit/test_sandbox.py tests/unit/test_shell_hooks.py tests/unit/test_task_lifecycle.py -q -p no:logging
+          python -m pytest tests/unit/test_sandbox.py tests/unit/test_task_lifecycle.py -q -p no:logging
 
   integration-mock:
     runs-on: ubuntu-latest

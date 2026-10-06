@@ -2,6 +2,7 @@ import ast
 import hashlib
 import json
 import logging
+import os
 import re
 from pathlib import Path
 from typing import Dict, Any, List, Optional
@@ -246,6 +247,74 @@ def _save_index_metadata(base_path: Path, metadata: Dict[str, Any]) -> None:
 
 
 
+#: Directories never descended into during discovery (P4.1).  Pruned *before*
+#: descending, not filtered after the walk — otherwise a repository containing
+#: ``.venv``/``.git``/``node_modules`` pays to walk them once per extension.
+DEFAULT_IGNORE_DIRS: frozenset = frozenset(
+    {
+        ".git",
+        "__pycache__",
+        "node_modules",
+        "build",
+        "dist",
+        ".venv",
+        ".codingAgent",
+        ".agent-context",
+    }
+)
+
+
+def walk_language_files(
+    base_path: Path,
+    ignore_dirs: frozenset | set = DEFAULT_IGNORE_DIRS,
+) -> Dict[str, Path]:
+    """Discover indexable source files in one pruned traversal (P4.1).
+
+    Returns ``{relative_path: Path}`` for files whose suffix is in
+    ``LANGUAGE_EXTENSIONS``.
+
+    This replaces one ``rglob("*" + ext)`` per extension — 17 full-tree walks on
+    this repository, each descending into ``.venv`` (23k entries), ``.git`` (2.6k)
+    and ``.codingAgent`` because the old code filtered on ``path.parts`` *after*
+    ``rglob`` had already enumerated everything.  Measured on this repo: 3.87 s →
+    44 ms for an identical file set (P4.1).
+
+    Two deliberate behaviour differences:
+
+    * Ignored directories are pruned below ``base_path`` only.  The old
+      ``any(part in ignore_dirs for part in path.parts)`` test also inspected
+      ancestors of the base, so a repository living under e.g.
+      ``~/projects/build/myrepo`` indexed *nothing at all*.  Symlinked
+      directories are not followed, matching ``rglob``.
+    * Results are sorted, so the index is deterministic regardless of filesystem
+      enumeration order.
+    """
+    suffixes = tuple(LANGUAGE_EXTENSIONS.keys())
+    base_str = str(base_path)
+    found: Dict[str, Path] = {}
+    stack: list = [base_path]
+    while stack:
+        current = stack.pop()
+        try:
+            entries = list(os.scandir(current))
+        except OSError as exc:
+            logger.debug("repo_indexer: cannot scan %s: %s", current, exc)
+            continue
+        for entry in entries:
+            try:
+                if entry.is_dir(follow_symlinks=False):
+                    if entry.name in ignore_dirs:
+                        continue
+                    stack.append(Path(entry.path))
+                elif entry.name.endswith(suffixes):
+                    rel_path = os.path.relpath(entry.path, base_str)
+                    found[rel_path] = Path(entry.path)
+            except OSError as exc:
+                logger.debug("repo_indexer: skipping %s: %s", entry.path, exc)
+                continue
+    return {k: found[k] for k in sorted(found)}
+
+
 def index_repository(workdir: str, incremental: bool = True) -> Dict[str, Any]:
     """
     Walks through the repository, parses files, and builds an index.
@@ -275,26 +344,9 @@ def index_repository(workdir: str, incremental: bool = True) -> Dict[str, Any]:
     metadata = _load_index_metadata(base_path) if incremental else {}
     existing_hashes = metadata.get("file_hashes", {})
 
-    # Track changes
-    ignore_dirs = {
-        ".git",
-        "__pycache__",
-        "node_modules",
-        "build",
-        "dist",
-        ".venv",
-        ".codingAgent",
-        ".agent-context",
-    }
-
-    # Build set of current files for all supported languages
-    current_files: Dict[str, Path] = {}
-    for ext in LANGUAGE_EXTENSIONS.keys():
-        for path in base_path.rglob(f"*{ext}"):
-            if any(part in ignore_dirs for part in path.parts):
-                continue
-            rel_path = str(path.relative_to(base_path))
-            current_files[rel_path] = path
+    # Build set of current files for all supported languages (P4.1: one pruned
+    # walk instead of one full-tree rglob per extension).
+    current_files: Dict[str, Path] = walk_language_files(base_path)
 
     # Determine files to index (new or changed)
     files_to_index: Dict[str, Path] = {}

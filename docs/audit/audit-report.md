@@ -7,6 +7,16 @@ real modules (graph compilation, bash classification, tier routing) rather than
 inference from names.
 **Code state audited:** `4665b98` + staged documentation deletions.
 
+> **Remediation status (updated 2026-10-06).** Roadmap **Phases 1–3 are
+> implemented and verified, plus P4.1 of Phase 4.** Every finding in §3–§4 now
+> carries a **Status** box with file references and re-executed proof; all
+> Critical/High/Medium findings are fixed (§14 items 1–12 done, item 13 open as
+> P4.4). The prose below is retained as written on 2026-09-29 so the original
+> reasoning stays auditable — **for current state read the Status boxes, not the
+> finding text.** Verification behind these claims: `tests/unit` **4,831 passed,
+> 1 skipped**; integration/acceptance/e2e/benchmarks **168 passed, 8 skipped**;
+> `ruff` and targeted `mypy` clean; TUI mirror trees byte-identical.
+
 ## Evidence grading
 
 Every finding below is tagged with how it was established:
@@ -60,7 +70,9 @@ because destructive git operations (`git clean -fdx`, `git reset --hard`,
 because untrusted content enters the model context unscanned. For an
 attended developer tool with a human in the approval loop, it is close to
 defensible; the safeguards that matter most are missing precisely where
-automation removes the human.
+automation removes the human. *(Both blockers are since closed: P1.3 gates the
+destructive git forms as DANGEROUS, P1.1 scans every production tool result —
+re-executed proof in §3.)*
 
 ---
 
@@ -134,6 +146,21 @@ These are real, verified, and worth preserving through any refactor.
 
 **Severity: Critical** · **Category: 8 (Safeguards/Security), 14 (Not integrated)**
 
+> **Status: FIXED (P1.1).** `graph/nodes/tool_result_safety.py` now owns the
+> policy as `sanitize_tool_result` (single choke point), called from
+> `_sanitize_tool_output` at `frontier_loop_node.py:55,153` — re-verified by `rg`
+> over `src/`, where the production loop now imports the safety module directly.
+> Detection runs **before** truncation (a tail-held injection would otherwise be
+> scanned out of existence), and the `_prompt_injection_detected` dict key
+> survives the byte cap so the model always sees the flag. Proof:
+> `tests/unit/test_production_path.py` asserts the frontier graph wires the call;
+> `test_context_builder_sanitization.py`, `test_perception_parsers.py` and the
+> P1.1 cases in `test_property_based_fuzzing.py` cover annotation, a 120k-char
+> tail injection, and flag persistence. Full suite after P4.1: 4,831 unit tests
+> passed, 1 skipped (exit 0).
+
+The finding below is retained in its original form for the record.
+
 `detect_prompt_injection()` exists at
 `src/core/orchestration/graph/nodes/tool_output_truncation.py:187` and is
 thoroughly unit-tested. The complete inventory of its call sites in `src/` is
@@ -167,6 +194,17 @@ matters.
 
 **Severity: Critical** · **Category: 4 (Repository Awareness), 15 (Missing capabilities)**
 
+> **Status: FIXED (P1.2), with the indexing cost closed by P4.1.**
+> `graph/nodes/repo_context.py` provides `build_repo_context_block` (called on
+> loop entry; fails closed on a missing `working_dir`, never defaults to `.`)
+> and `refresh_index_after_write` (self-gates on `MODIFYING_TOOLS` after
+> `resolve_tool_alias`), both consuming `_path_utils.changed_paths` shared with
+> P3.2's change trail so the index and the audit log cannot disagree. The
+> pre-existing `refresh_file_in_index` bug (updated `files` but not the
+> top-level `symbols`) is fixed; both it and `index_repository` share
+> `_flat_symbols_for_file`. Proof: `tests/unit/test_production_path.py` pins the
+> graph wiring, and P4.1 measured the previously-blocking cost — see below.
+
 The instruction asks directly: *"whether it is actually used during planning"* and
 *"whether planning is repo-aware."* The answer is no.
 
@@ -193,6 +231,19 @@ common production path.
 ## HIGH-1 — 8,222 lines across 14 modules are unreachable from any entrypoint
 
 **Severity: High** · **Category: 1 (Core Architecture), 14 (Over-engineering)**
+
+> **Status: FIXED (P1.4 + P2.1 + P2.5).** Every module in the table below was
+> deleted, not re-wired: `permission_gateway.py`, `permission_table.py`,
+> `server/exposure_policy.py`, `session_watcher`, `event_log`,
+> `event_persistence`, `agent_hooks`, `context_manager`, `env_registry`,
+> `adapter_wrappers`, `wave_coordinator`, `graph_factory`, and the skills island
+> (25 modules / 6,312 lines total across P2.1 + P2.5). `tests/unit/test_dead_code.py`
+> is the ratchet: it walks the import graph from real entrypoints (modeling
+> dynamic tool imports, `pkgutil` loading, the evaluation CLI, both TUI mirrors)
+> and fails on any newly-unreachable module — its `_KNOWN_DEAD` baseline is now
+> **empty and the walk reports zero unreachable modules** (not merely "not
+> regressed"), and `test_baseline_entries_are_still_dead` prevents the baseline
+> from rotting into a false pass.
 
 Measured by AST import-graph traversal from all real entrypoints, then
 cross-checked with exhaustive reference search (**[EXEC] + [STATIC]**):
@@ -233,6 +284,31 @@ Two of these are security-relevant and deserve individual attention:
 
 **Severity: High** · **Category: 8 (Safeguards), 3 (Tool safety)**
 
+> **Status: FIXED (P1.3).** Re-executed against the real
+> `analyze_bash_command(cmd, working_dir=...)` after the fix **[EXEC, 2026-10-06]**:
+>
+> | Command | Level (before → after) | Gated? |
+> |---|---|---|
+> | `git clean -fdx` | SAFE → **DANGEROUS** (`git clean (removes untracked files)`) | ✅ |
+> | `git reset --hard` | SAFE → **DANGEROUS** (`discards uncommitted changes`) | ✅ |
+> | `git push --force` | SAFE → **DANGEROUS** (`rewrites remote history`) | ✅ |
+> | `find . -name '*.py' -delete` | SAFE → **DANGEROUS** (`bulk file deletion`) | ✅ |
+> | `truncate -s 0 file` | SAFE → **DANGEROUS** (`file truncation`) | ✅ |
+> | `mv src /tmp` | SAFE → **DANGEROUS** (`mv target escapes workspace (/tmp)`) | ✅ |
+> | `> file.txt` | SAFE → **DANGEROUS** (`truncation redirect`) | ✅ |
+> | `git clean -n` (dry run) | safe → safe | correctly ungated |
+>
+> Patterns live in `src/tools/bash_security.py:_DANGEROUS_PATTERNS` (L85ff:
+> `git clean`/`reset --hard`/`checkout -f`/`push --force`/`branch -D`/`gc --prune`,
+> each excluding its dry-run form); the out-of-workspace `mv` is the path-aware
+> `_path_escape_reasons` pass reached through `analyze_bash_command(...,
+> working_dir=...)`, supplied by both `_bash_exec` call sites. Gate 2 hard-blocks
+> DANGEROUS as defence-in-depth, and DANGEROUS/BLOCKED stay refused in autonomous
+> mode (`autonomous_approval_allowed` is fail-closed). Proof:
+> `tests/unit/test_production_path.py` asserts `analyze_bash_command("git
+> push --force")[0] is DANGEROUS`; `tests/unit/test_bash_security_file_tools_caching.py`
+> covers the classification.
+
 Executed against the real `analyze_bash_command()` **[EXEC]**:
 
 | Command | Level | Gated? |
@@ -240,7 +316,7 @@ Executed against the real `analyze_bash_command()` **[EXEC]**:
 | `rm -rf /` | DANGEROUS | ✅ approval required |
 | `rm -rf .` | DANGEROUS | ✅ |
 | `sudo` / `curl` / `chmod -R 777 /` | DANGEROUS | ✅ |
-| `:(){ :|:& };:` (fork bomb) | BLOCKED | ✅ |
+| `:(){ :\|:& };:` (fork bomb) | BLOCKED | ✅ |
 | **`git clean -fdx`** | **SAFE** | ❌ **no gate** |
 | **`git reset --hard`** | **SAFE** | ❌ **no gate** |
 | **`git push --force`** | **SAFE** | ❌ **no gate** |
@@ -262,6 +338,14 @@ still carries no approval gate.
 
 **Severity: High** · **Category: 9 (Evaluation)**
 
+> **Status: FIXED (P2.4).** `tests/_deprecated/` was deleted outright — 16 files
+> / ~5.1k lines — after verifying it was stale rather than parked: 29 of the 251
+> tests fail on execution (they patch `tui/app.py`, which no longer exists), 10 of
+> 16 files need a live lmstudio/ollama server and can never run in CI, and
+> nothing outside the directory referenced it. The
+> `tests/_deprecated_candidates.txt` manifest and the `--ignore` flag were
+> dropped with it. Verified: `ls tests/_deprecated` → *No such file or directory*.
+
 `tests/_deprecated/` (251 tests) is excluded from CI.
 `tests/_deprecated/test_subagent_spawn.py:149` patches
 `src.tools.subagent_tools.GraphFactory` — a target that no longer exists, since
@@ -274,6 +358,15 @@ silently stopped existing.
 ## MEDIUM-1 — Tier routing fails open to the heaviest graph
 
 **Severity: Medium** · **Category: 1 (Architecture)**
+
+> **Status: FIXED (P2.2).** `select_tier_graph_cache_key` now derives its valid
+> set from the canonical `ModelTier` enum plus the `"lite"` alias (so the enum
+> cannot drift ahead of the router) and **raises** on an unknown non-empty tier
+> instead of silently compiling the frontier graph. Only an empty/`None` tier —
+> meaning classification itself failed — still degrades to `"capable"`, because
+> crashing the run would be worse. `nano` is deliberately not a valid tier,
+> resolving the contradiction with `_is_nano_or_small`. Proof:
+> `tests/unit/test_tier_graph_routing.py`; no caller relied on the old fallback.
 
 `select_tier_graph_cache_key()` maps any unrecognized tier to `"capable"` —
 the 12-node graph. **[EXEC]**
@@ -294,6 +387,17 @@ fail-open defaulting.
 
 **Severity: Medium** · **Category: 2 (Reasoning Workflow)**
 
+> **Status: FIXED (P2.3).** The lite graph now has a `verification` node and
+> `route_frontier_loop_exit_lite` requests it only when the last tool resolves
+> (via `resolve_tool_alias`) to a member of `MODIFYING_TOOLS` — read-only work
+> keeps the tier's context/latency budget. Two pre-existing gaps had to be
+> closed for this to mean anything: `verification_node` keys off
+> `state["last_tool_name"]`, which only the legacy `execution_node` ever set, so
+> `_dispatch_tool_calls` now returns the last tool it ran and
+> `frontier_loop_node` publishes it. Without that the node would have run blind
+> or always skipped. Proof: `tests/unit/test_tier_graph_routing.py` (lite route
+> gate) and `tests/unit/test_production_path.py`.
+
 Verified by compiling each tier **[EXEC]**:
 
 ```
@@ -313,36 +417,57 @@ local small model silently opts out of verification entirely.
 
 Consolidated for action; detail in §3.
 
-| ID | Issue | Severity | Location |
-|---|---|---|---|
-| CRITICAL-1 | No prompt-injection scan of tool results in production | Critical | `frontier_loop_node.py` |
-| CRITICAL-2 | No repo awareness on simple tasks / production loop | Critical | `graph/builder.py`, `planning_node.py` |
-| HIGH-2 | `git clean`/`reset --hard`/`push --force` ungated | High | `bash_security.py:84-123` |
-| HIGH-1a | Server exposure policy never wired | High | `server/exposure_policy.py` |
-| HIGH-1b | 1,151-line permission layer unreachable | High | `permission_gateway.py` |
+| ID | Issue | Severity | Location | Status |
+|---|---|---|---|---|
+| CRITICAL-1 | No prompt-injection scan of tool results in production | Critical | `frontier_loop_node.py` | **FIXED (P1.1)** — `tool_result_safety.sanitize_tool_result` on every production tool result |
+| CRITICAL-2 | No repo awareness on simple tasks / production loop | Critical | `graph/builder.py`, `planning_node.py` | **FIXED (P1.2)** — `repo_context.py` on loop entry + after writes; cost closed by P4.1 |
+| HIGH-2 | `git clean`/`reset --hard`/`push --force` ungated | High | `bash_security.py:84-123` | **FIXED (P1.3)** — all 7 rows re-executed as DANGEROUS (§3) |
+| HIGH-1a | Server exposure policy never wired | High | `server/exposure_policy.py` | **FIXED (P2.1)** — deleted |
+| HIGH-1b | 1,151-line permission layer unreachable | High | `permission_gateway.py` | **FIXED (P2.1)** — deleted |
+| HIGH-3 | 251 excluded tests hiding bit-rot | High | `tests/_deprecated/` | **FIXED (P2.4)** — directory deleted |
+| MEDIUM-1 | Tier routing fails open to `capable` | Medium | `tier_graph_routing.py` | **FIXED (P2.2)** — raises on unknown tier |
+| MEDIUM-2 | Lite tier has no verification stage | Medium | `builder.py` | **FIXED (P2.3)** — lite graph verifies writes |
 
 **Mitigating factors, stated fairly.** The approval gate itself is sound
 (§2.3), sandbox non-fail-open is correct (§2.4), `delete_file` is never
-auto-approved, and `rm -rf` is properly gated. The failure is one of *coverage*
-in the classifier, not in the gate mechanism. That makes HIGH-2 a
-pattern-list fix rather than a redesign.
+auto-approved, and `rm -rf` is properly gated. The failure was one of *coverage*
+in the classifier, not in the gate mechanism — which is why HIGH-2 turned out to
+be the pattern-list fix it looked like (P1.3).
 
 ---
 
 # 5. Major Missing Capabilities
 
+> **Status: all five closed.** Each entry now carries the item that closed it.
+
 - **Retrieval-before-planning is absent in production.** No `RepoIndexer` call on
   the frontier path. Modern agents (Claude Code, Aider, Cursor) ground the plan
-  in indexed symbols before the first edit. *(CRITICAL-2)*
+  in indexed symbols before the first edit. *(CRITICAL-2)* —
+  **closed by P1.2**: `repo_context.build_repo_context_block` indexes once per
+  workdir per process and injects a bounded `<repo_context>` symbol/file block on
+  loop entry; P4.1 made the index cheap enough to afford (measurements in the
+  Phase 4 roadmap below).
 - **No injection boundary between untrusted tool output and the model.** *(CRITICAL-1)*
-- **No verification tier for small/local models.** *(MEDIUM-2)*
+  — **closed by P1.1**: `tool_result_safety.sanitize_tool_result` runs
+  `detect_prompt_injection` before truncation on every production tool result.
+- **No verification tier for small/local models.** *(MEDIUM-2)* —
+  **closed by P2.3**: the lite graph has a `verification` node gated on
+  `MODIFYING_TOOLS` via `last_tool_name`.
 - **Structured plan-step verification does not exist in the production loop.** The
   instructions name "plan-step verification" as a component to look for; the
   production frontier loop has no per-step verification callback, only a terminal
-  `verification` node that the simple-task path skips.
+  `verification` node that the simple-task path skips. — **closed by P3.1**:
+  `in_loop_verification.py` captures a lint baseline before each write and diffs
+  it after, feeding failures back into `history` inside the same loop; capped at
+  `_MAX_INLINE_VERIFICATION_FAILURES = 3` before exiting to terminal
+  verification.
 - **No repo-change audit trail.** Despite `event_log.py` (366 lines) and
   `event_persistence.py` (325 lines) existing, neither is reachable, so there is
-  no live record of which files the agent changed and why.
+  no live record of which files the agent changed and why. — **closed by P3.2**:
+  `change_log.py` fingerprints each path before/after dispatch at
+  `tool_execution_pipeline` steps 7/10, appends to `change_log.jsonl`, and
+  publishes typed `RepoChangeRecorded` (the two dead modules were deleted in
+  P2.5 rather than revived).
 
 ---
 
@@ -368,7 +493,13 @@ pattern-list fix rather than a redesign.
   gap in HIGH-2.
 - **Argument validation and idempotency were not audited to the standard applied
   above.** Idempotency in particular (e.g. retry of a non-idempotent write after
-  a transport failure) is unverified. **[NOT AUDITED]**
+  a transport failure) is unverified. **[NOT AUDITED]** — idempotency **now
+  audited and hardened (P3.4)**: `IDEMPOTENT_TOOLS` is a fail-closed allowlist
+  resolved through `resolve_tool_alias`, a timed-out non-idempotent tool reports
+  `tool.outcome_unknown` instead of a re-run-inviting "failed", and
+  `execute_with_retry` runs once unless the allowlist says otherwise (annotated
+  `tool.retry_suppressed`). Argument validation remains not audited to this
+  standard.
 - **Approval-gate coverage is the demonstrated weakness**, not the gate itself.
 - `delete_file` correctly never auto-approves; `MODIFYING_TOOLS` and
   `PERM_ORDER` are centrally derived. **[READ]**
@@ -378,6 +509,10 @@ pattern-list fix rather than a redesign.
 # 8. Repository Awareness Gaps
 
 Fully covered by CRITICAL-2. Summarized:
+
+> **Status: closed by P1.2 (and priced by P4.1).** `repo_context.py` indexes on
+> loop entry and refreshes after every modifying tool; answers to the four
+> questions below are the *pre-fix* state, retained for the record.
 
 - Capability present (2,866 lines) but bound to legacy nodes.
 - Production loop (`frontier_loop_node`) has **zero** repo/symbol/LSP references.
@@ -408,22 +543,35 @@ The memory subsystem is one of the better-engineered areas.
 
 **Gaps:** no plan persistence verified in production (the `plan_mode_tools.py`
 reference count was 1 — self only, see HIGH-1 methodology); cross-task
-contamination guards were not independently exercised. **[PARTIAL]**
+contamination guards were not independently exercised. **[PARTIAL]** — plan
+persistence **since built and verified (P3.3)**: `frontier_completion.py`
+records `plan_completed` from the loop's own `_completion_detected` signal,
+persists through `save_last_plan` (which now reports whether the record landed)
+and `append_plan_audit_log`, and `plan_is_resumable` refuses a completed plan.
+Cross-task contamination guards remain **[PARTIAL]**.
 
 ---
 
 # 10. Evaluation and Testing Gaps
 
 - **4,936 unit tests pass; ruff is enforced fail-closed.** Genuine strength.
+  *(Now 4,831 passed / 1 skipped after P2.4 removed 251 excluded tests and
+  suites were consolidated — a smaller number covering production, not legacy.)*
 - **The core weakness is that the test suite validates legacy code paths that
   production does not execute** — which is precisely how CRITICAL-1, CRITICAL-2,
   and HIGH-1 stayed invisible through a green CI. A 100%-covered
   `exposure_policy` and a fully tested `permission_gateway` produced no signal
-  because nothing asserted *reachability from an entrypoint*.
-- **251 deprecated tests excluded from CI contain stale patches** (HIGH-3).
+  because nothing asserted *reachability from an entrypoint*. —
+  **closed by P1.4:** `test_dead_code.py` asserts reachability from real
+  entrypoints (baseline now empty, zero unreachable modules) and
+  `test_production_path.py` (68 tests) pins the production graph shape and the
+  P1.1–P1.3 behaviors.
+- **251 deprecated tests excluded from CI contain stale patches** (HIGH-3). —
+  **closed by P2.4:** directory deleted.
 - **No production-path assertion suite.** There is no test asserting that
   `frontier_loop` sanitizes tool results, or that the production graph retains
-  repo-awareness — because neither is true.
+  repo-awareness — because neither is true. — **closed by P1.4**; those two
+  assertions are now exactly what `test_production_path.py` checks.
 - The evaluation framework (scenario runner, pass@k, SWE-bench, model
   comparison) is a genuine asset. **[READ]**
 
@@ -435,7 +583,9 @@ contamination guards were not independently exercised. **[PARTIAL]**
   enforcement, autonomous allowlist, checkpointing, preview confirmation, MCP,
   telemetry — each with several interacting resolution layers.
 - **Silent capability downgrade.** Selecting a small/local model silently
-  disables verification (§MEDIUM-2) with no warning. **[PARTIAL]**
+  disables verification (§MEDIUM-2) with no warning. **[PARTIAL]** —
+  **closed by P2.3:** the lite graph verifies writes (and the downgrade is now
+  the documented tier policy rather than a silent hole).
 - Six launch scripts (`start.sh`, `start_tui.sh`, `start.ps1`, `starth.sh`,
   `scripts/run.sh`, …) for one binary is redundant surface. **[READ]**
 - The TUI is the most polished surface; headless debugging is comparatively thin. **[READ]**
@@ -446,9 +596,16 @@ contamination guards were not independently exercised. **[PARTIAL]**
 
 - `analysis_node.py:319` calls `index_repository` on the complex-task path.
   Whether this is incremental/cached was not verified and is the most likely
-  latency spike in the pipeline. **[PARTIAL — verify]**
+  latency spike in the pipeline. **[PARTIAL — verify]** —
+  **now measured and fixed (P4.1):** the index *was* hash-incremental, but file
+  discovery ran 17 full-tree `rglob` walks with the ignore filter applied after
+  enumeration, so a warm unchanged call cost ~4.0 s (98 % of it in `rglob`, not
+  parsing). One pruned `os.scandir` walk replaced it: **3,943 ms → 69 ms**, same
+  1,016-file set.
 - `frontier_loop_node.py` at 1,035 lines is both the largest and hottest module;
-  it is a maintainability and a profiling risk.
+  it is a maintainability and a profiling risk. — reduced to **899 lines** by
+  the P1.1/P1.2/P3.1/P3.3 extractions, with `test_module_sizes.py` ratcheting the
+  limit **down only** (1035 → 1017 → 900 → 899).
 - Token efficiency is well-served by the single canonical estimator and the
   prune/recent-tail policy. **[READ]**
 - Rediscovered LLM calls were not measured; no caching layer was found in the
@@ -475,21 +632,21 @@ contamination guards were not independently exercised. **[PARTIAL]**
 
 # 14. Prioritized Fix List
 
-| # | Fix | Severity | Location | Complexity | Impact |
-|---|---|---|---|---|---|
-| 1 | Call `detect_prompt_injection` on every tool result in the frontier loop | Critical | `frontier_loop_node.py` (~L705, next to `_truncate_tool_output`) | **Low** (~5 LOC) | Closes the untrusted-content→model boundary |
-| 2 | Add production-path repo retrieval: index in `perception`/on loop entry, `refresh_file_in_index` after edits | Critical | `frontier_loop_node.py`; promote from `planning_node.py:89` | Medium | Restores repo-aware execution |
-| 3 | Add `git clean/reset --hard/push --force`, `find -delete`, `truncate`, `mv`-out-of-workspace to `_DANGEROUS_PATTERNS` | High | `bash_security.py:84-123` | **Low** (patterns + tests) | Prevents silent loss of uncommitted work |
-| 4 | Wire `exposure_policy` into the server, or delete it — **deleted (P2.1)** | High | `src/server/app.py`, `server_config.py` | Low | Removes a false security guarantee |
-| 5 | Decide the `PermissionGateway` question: wire or delete 1,151 lines — **deleted (P2.1)** | High | `permission_gateway.py`, `permission_table.py` | Medium | Removes dead authz surface |
-| 6 | Fail closed on unknown tier instead of defaulting to `capable` | Medium | `tier_graph_routing.py:151-155` | **Low** | Restores intended fail-loud design |
-| 7 | Warn when the selected tier has no verification stage | Medium | `builder.py:759+`, model-tier selection | Low | Removes silent reliability downgrade |
-| 8 | Add reachability test: every `src/` module is imported by an entrypoint | High | new `tests/unit/test_dead_code.py` | Low | Prevents CRITICAL-1/2-class rot recurring |
-| 9 | Add production-path assertion tests (frontier loop sanitizes; graph keeps repo awareness) | High | new `tests/unit/test_production_path.py` | Medium | Converts audit findings into CI gates |
-| 10 | Repair or delete `tests/_deprecated/` | Medium | `tests/_deprecated/` | Low | Stops misleading green |
-| 11 | Delete remaining dead modules (session_watcher, event_log, event_persistence, agent_hooks, context_manager, env_registry, adapter_wrappers, wave_coordinator, graph_factory, skills island) — **DONE (P2.5); true count 25 modules total including P2.1, not 28** | High | 22 modules (P2.5) | Low–Medium | P2.5: −5,005 lines; P2.1: −1,307 lines |
-| 12 | Measure `index_repository` cost on the analysis path | Medium | `analysis_node.py:319` | Low | Confirms/denies latency risk |
-| 13 | Consolidate the 6 launch scripts to one | Low | root | Low | Less surface |
+| # | Fix | Severity | Location | Complexity | Impact | Status |
+|---|---|---|---|---|---|---|
+| 1 | Call `detect_prompt_injection` on every tool result in the frontier loop | Critical | `frontier_loop_node.py` (~L705, next to `_truncate_tool_output`) | **Low** (~5 LOC) | Closes the untrusted-content→model boundary | **DONE (P1.1)** — `tool_result_safety.sanitize_tool_result` |
+| 2 | Add production-path repo retrieval: index in `perception`/on loop entry, `refresh_file_in_index` after edits | Critical | `frontier_loop_node.py`; promote from `planning_node.py:89` | Medium | Restores repo-aware execution | **DONE (P1.2)** — `repo_context.py`; cost closed by P4.1 |
+| 3 | Add `git clean/reset --hard/push --force`, `find -delete`, `truncate`, `mv`-out-of-workspace to `_DANGEROUS_PATTERNS` | High | `bash_security.py:84-123` | **Low** (patterns + tests) | Prevents silent loss of uncommitted work | **DONE (P1.3)** — re-executed, all DANGEROUS |
+| 4 | Wire `exposure_policy` into the server, or delete it | High | `src/server/app.py`, `server_config.py` | Low | Removes a false security guarantee | **DONE (P2.1)** — deleted |
+| 5 | Decide the `PermissionGateway` question: wire or delete 1,151 lines | High | `permission_gateway.py`, `permission_table.py` | Medium | Removes dead authz surface | **DONE (P2.1)** — deleted |
+| 6 | Fail closed on unknown tier instead of defaulting to `capable` | Medium | `tier_graph_routing.py:151-155` | **Low** | Restores intended fail-loud design | **DONE (P2.2)** |
+| 7 | Warn when the selected tier has no verification stage | Medium | `builder.py:759+`, model-tier selection | Low | Removes silent reliability downgrade | **DONE (P2.3)** — lite graph verifies writes |
+| 8 | Add reachability test: every `src/` module is imported by an entrypoint | High | new `tests/unit/test_dead_code.py` | Low | Prevents CRITICAL-1/2-class rot recurring | **DONE (P1.4)** — `_KNOWN_DEAD` now empty, zero unreachable |
+| 9 | Add production-path assertion tests (frontier loop sanitizes; graph keeps repo awareness) | High | new `tests/unit/test_production_path.py` | Medium | Converts audit findings into CI gates | **DONE (P1.4)** — 68 tests |
+| 10 | Repair or delete `tests/_deprecated/` | Medium | `tests/_deprecated/` | Low | Stops misleading green | **DONE (P2.4)** — deleted |
+| 11 | Delete remaining dead modules (session_watcher, event_log, event_persistence, agent_hooks, context_manager, env_registry, adapter_wrappers, wave_coordinator, graph_factory, skills island) | High | 22 modules (P2.5) | Low–Medium | P2.5: −5,005 lines; P2.1: −1,307 lines | **DONE (P2.5)** — true count 25 modules total including P2.1, not 28 |
+| 12 | Measure `index_repository` cost on the analysis path | Medium | `analysis_node.py:319` | Low | Confirms/denies latency risk | **DONE (P4.1)** — 3,943 ms → 69 ms warm; see Phase 4 |
+| 13 | Consolidate the 6 launch scripts to one | Low | root | Low | Less surface | **open (P4.4)** |
 
 ---
 
@@ -651,6 +808,14 @@ contamination guards were not independently exercised. **[PARTIAL]**
 
 ## Phase 3 — Capability improvements
 
+> **Status: implemented and verified.** All four items are complete
+> (`d7e36b1` P3.1, `2aaf393` P3.2, `9e5a754` P3.3, `9bb4bd1` P3.4).
+> Verification: `tests/unit` **4,831 passed, 1 skipped**; `tests/integration`,
+> `tests/acceptance`, `tests/e2e`, `tests/benchmarks`, `tests/integration_real`
+> and `tests/test_session_store_close.py` **168 passed, 8 skipped**; `ruff`
+> (`E,F,W`) clean; `mypy` clean on every changed module; TUI mirrors
+> byte-identical (`diff -rq tui/src tui/tui_src`).
+
 - **P3.1 — Per-step verification in the frontier loop.** **DONE.** *Location:*
   `in_loop_verification.py` + `frontier_loop_node.py`. *Complexity:* Medium–High.
   *Impact:* High. Closes the "plan-step verification" gap named in the audit
@@ -773,9 +938,35 @@ contamination guards were not independently exercised. **[PARTIAL]**
 
 ## Phase 4 — Advanced features
 
-- **P4.1 — Incremental/cached repository indexing.** *Location:*
-  `analysis_node.py:319`, `src/core/indexing/`. *Complexity:* High.
-  *Impact:* High. Makes P1.2 affordable enough to run on every task.
+> **Status: 1 of 4 complete** — P4.1 done (measurements and file references in
+> the entry below); P4.2–P4.4 open.
+
+- **P4.1 — Incremental/cached repository indexing.** **DONE.** *Location:*
+  `src/core/indexing/repo_indexer.py` (`walk_language_files`,
+  `DEFAULT_IGNORE_DIRS`), consumed by `index_repository` (and thereby by
+  `analysis_node.py:319` and `repo_context.refresh_index_after_write`).
+  *Complexity:* Medium. *Impact:* High — makes P1.2 affordable enough to run on
+  every task. The audit's "incremental" index was already hash-incremental
+  (`repo_index_meta.json`, `incremental=True`), but a warm call on an unchanged
+  tree still cost **~4.0 s**, and profiling showed why: **98 % of the time was
+  the file-discovery walk, not parsing** — 4.52 s of 4.595 s in `pathlib.rglob`,
+  versus 0.06 s for `compute_file_hash` + `parse_file` over all 1,016 files.
+  The cause was one `rglob("*" + ext)` per extension (17 full-tree walks, since
+  `LANGUAGE_EXTENSIONS` has 17 keys) with the ignore filter applied on
+  `path.parts` *after* enumeration — so `.venv` (23,131 entries), `.git` (2,649)
+  and `.codingAgent` (651) were walked 17 times each, every call. Replaced with
+  a single `os.scandir` traversal that prunes `DEFAULT_IGNORE_DIRS` *before*
+  descending and does not follow symlinked directories. **Proof [EXEC]:**
+  discovery **4,239.7 ms → 44.4 ms** on an **identical file set** (1,016 files,
+  set equality verified both directions), and a warm `index_repository` call
+  **3,943 ms → 69 ms** (57×); output is now sorted, so the index no longer
+  depends on filesystem enumeration order. Deliberate behavior change: ignore
+  dirs are pruned *below* `base_path` only, so a repository living under e.g.
+  `~/projects/build/myrepo` now indexes instead of silently returning nothing
+  (the old ancestor-wide `parts` check matched the base path too).
+  `analysis_node`'s process-local `(path, mtime)` cache remains as the second
+  layer on top. Verified: full `tests/unit` suite 4,831 passed / 1 skipped
+  (exit 0), `ruff` clean, `mypy` clean on `repo_indexer.py`.
 - **P4.2 — Multi-agent / hub-and-spoke, or formal removal.** *Location:*
   `delegation_node.py`. *Complexity:* High.
   *Impact:* Medium. The inert `graph_factory.py` was removed in P2.5, so the
