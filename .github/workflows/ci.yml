@@ -91,8 +91,12 @@ jobs:
         run: |
           python - <<'PY'
           import subprocess, sys, re
+          # NB: no explicit -q here. pytest.ini already sets addopts=-q, and a
+          # second -q (-qq) suppresses the final summary line that this step's
+          # regex parses ("N xfailed"/"N xpassed") — the gate would silently
+          # read 0 forever and could never fire.
           result = subprocess.run(
-              [sys.executable, "-m", "pytest", "tests/unit", "-q", "--no-header", "-p", "no:logging"],
+              [sys.executable, "-m", "pytest", "tests/unit", "--no-header", "-p", "no:logging"],
               capture_output=True, text=True
           )
           output = result.stdout + result.stderr
