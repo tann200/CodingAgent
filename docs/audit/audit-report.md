@@ -242,12 +242,20 @@ common production path.
 > match the table exactly) and sums to **4,111**. The wider Phase 2 removal is
 > the separate, correctly measured 25 modules / 6,312 lines (P2.1 + P2.5).
 
-> **Status: FIXED (P1.4 + P2.1 + P2.5).** Every module in the table below was
-> deleted, not re-wired: `permission_gateway.py`, `permission_table.py`,
-> `server/exposure_policy.py`, `session_watcher`, `event_log`,
-> `event_persistence`, `agent_hooks`, `context_manager`, `env_registry`,
-> `adapter_wrappers`, `wave_coordinator`, `graph_factory`, and the skills island
-> (25 modules / 6,312 lines total across P2.1 + P2.5). `tests/unit/test_dead_code.py`
+> **Status: FIXED (P1.4 + P2.1 + P2.5; skills island closed post-audit).**
+> Twelve modules below were deleted in P2.1/P2.5: `permission_gateway.py`,
+> `permission_table.py`, `server/exposure_policy.py`, `session_watcher`,
+> `event_log`, `event_persistence`, `agent_hooks`, `context_manager`,
+> `env_registry`, `adapter_wrappers`, `wave_coordinator`, `graph_factory`
+> (25 modules / 6,312 lines total across P2.1 + P2.5). The two skills rows were
+> **not** actually deleted then, despite the original status note claiming it:
+> `src.core.skills` sat in `test_dead_code.py`'s `_DYNAMIC_IMPORT_ROOTS` as a
+> "dynamic" root with **no dynamic importer behind the exemption**, so the
+> ratchet could not see the two files (435 lines) and P2.5's cleanup list
+> skipped them. The false exemption and both files were removed in the
+> post-audit defect batch (see the "Post-audit defect batch" entry under
+> Phase 4), restoring the
+> ratchet. `tests/unit/test_dead_code.py`
 > is the ratchet: it walks the import graph from real entrypoints (modeling
 > dynamic tool imports, `pkgutil` loading, the evaluation CLI, both TUI mirrors)
 > and fails on any newly-unreachable module — its `_KNOWN_DEAD` baseline is now
@@ -268,8 +276,8 @@ cross-checked with exhaustive reference search (**[EXEC] + [STATIC]**):
 | `orchestration/event_persistence.py` | 325 | |
 | `orchestration/agent_hooks.py` | 311 | |
 | `orchestration/context_manager.py` | 250 | |
-| `skills/skill_loader.py` | 234 | island with `skill_registry` |
-| `skills/skill_registry.py` | 201 | |
+| `skills/skill_loader.py` | 234 | island with `skill_registry`; missed by P2.5 (false dynamic-root exemption), deleted post-audit |
+| `skills/skill_registry.py` | 201 | same — exemption removed from `test_dead_code.py` |
 | `inference/adapter_wrappers.py` | 172 | |
 | **`server/exposure_policy.py`** | **156** | **only referenced by its own test** |
 | `orchestration/wave_coordinator.py` | 139 | |
@@ -678,7 +686,7 @@ Cross-task contamination guards remain **[PARTIAL]**.
 | 8 | Add reachability test: every `src/` module is imported by an entrypoint | High | new `tests/unit/test_dead_code.py` | Low | Prevents CRITICAL-1/2-class rot recurring | **DONE (P1.4)** — `_KNOWN_DEAD` now empty, zero unreachable |
 | 9 | Add production-path assertion tests (frontier loop sanitizes; graph keeps repo awareness) | High | new `tests/unit/test_production_path.py` | Medium | Converts audit findings into CI gates | **DONE (P1.4)** — 68 tests |
 | 10 | Repair or delete `tests/_deprecated/` | Medium | `tests/_deprecated/` | Low | Stops misleading green | **DONE (P2.4)** — deleted |
-| 11 | Delete remaining dead modules (session_watcher, event_log, event_persistence, agent_hooks, context_manager, env_registry, adapter_wrappers, wave_coordinator, graph_factory, skills island) | High | 22 modules (P2.5) | Low–Medium | P2.5: −5,005 lines; P2.1: −1,307 lines | **DONE (P2.5)** — true count 25 modules total including P2.1, not 28 |
+| 11 | Delete remaining dead modules (session_watcher, event_log, event_persistence, agent_hooks, context_manager, env_registry, adapter_wrappers, wave_coordinator, graph_factory) | High | 22 modules (P2.5) | Low–Medium | P2.5: −5,005 lines; P2.1: −1,307 lines | **DONE (P2.5)** — true count 25 modules total including P2.1, not 28; skills island (2 modules / 435 lines) was wrongly listed here — its false dynamic-root exemption hid it from P2.5; closed post-audit |
 | 12 | Measure `index_repository` cost on the analysis path | Medium | `analysis_node.py:319` | Low | Confirms/denies latency risk | **DONE (P4.1)** — 3,943 ms → 69 ms warm; see Phase 4 |
 | 13 | Consolidate the 6 launch scripts to one | Low | root | Low | Less surface | **open (P4.4)** |
 
@@ -973,8 +981,52 @@ Cross-task contamination guards remain **[PARTIAL]**.
 ## Phase 4 — Advanced features
 
 > **Status: 1 of 4 complete** — P4.1 done (measurements and file references in
-> the entry below); P4.2–P4.4 open.
+> the entry below); P4.2–P4.4 open. A **post-audit defect batch** (test-suite
+> correctness + report accuracy) runs alongside; items land as bullets below.
 
+- **Post-audit defect batch — test/report correctness.** **DONE (3 of 5).**
+  From a three-way review of the finished Phase 1–3 work (was any deletion a
+  mistake, what else can be simplified, do the tests test the right thing?):
+  - **The suite corrupted committed state — fixed.** `test_model_routing.py`
+    (5 tests) and `test_provider_manager_methods.py` (1 test) exercised the
+    `model.routing` cross-provider persist path unpatched and rewrote the
+    committed `src/config/providers.json` (lmstudio `active` true→false,
+    ollama false→true; an unknown-provider case left *every* flag false) while
+    the run stayed green. Both modules now have an autouse fixture resolving
+    `providers.json` to a temp copy through `llm_manager.resolve_config_path`,
+    so the real persist path still runs — just not against repo state.
+    Separately, the 6 tracked `.codingAgent/` runtime artifacts
+    (`repo_index.json`, `last_plan.json`, …) were committed *before*
+    `.gitignore` covered the directory; suite runs with the default workdir
+    rewrote them — now untracked (files stay on disk). Proof: targeted
+    161-test run exit 0 with `git status src/config/providers.json` clean
+    afterwards. (`0a693e9`)
+  - **The P3-3 persist writer was non-atomic and untested — fixed.**
+    `ProviderManager._persist_active_provider` (the second live
+    `providers.json` writer, added after P1-7 pinned only the TUI writer)
+    used in-place `cfg_path.write_text`; now `tempfile.mkstemp` +
+    `os.replace` (temp cleaned up on failure, still returns False), with two
+    behaviour tests (path confinement, no temp residue) and a second P1-7
+    source-ratchet case. (`0a693e9`, `85b5b04`)
+  - **A structurally-impossible-to-fail test — deleted.**
+    `test_plan_replan_loop_guards_adapter_retry.py` re-implemented the
+    wave-advance loop *inline in the test body* with an always-true assertion
+    and a class named after the deleted `wave_coordinator`; the real P2-8
+    invariant is already tested against production `compute_plan_step_updates`
+    in `test_execution_helpers.py:616`. (`85b5b04`)
+  - **The skills island was never actually deleted — now it is.** HIGH-1's
+    status note above claimed P2.5 removed it, but `src.core.skills` sat in
+    `test_dead_code.py`'s `_DYNAMIC_IMPORT_ROOTS` as a "dynamic" root with no
+    dynamic importer behind it, so the ratchet was blind to the two files
+    (435 lines) and P2.5's list skipped them. Files deleted, false exemption
+    dropped; HIGH-1 status/table and §14 item 11 corrected. `test_dead_code`
+    still reports 7 passed, `_KNOWN_DEAD` empty, zero unreachable.
+  - *Open in this batch:* global `permissions.json` deny/allow rules are
+    write-only at the main tool gate (`orch.permission_policy` is never
+    assigned, so `tool_execution_pipeline.py:1142` always reads `None`);
+    ~880 dead functions inside live modules (incl. the whole
+    `src/tools/symbol_reader.py`, hidden by the blanket `src.tools`
+    dynamic-root exemption).
 - **P4.1 — Incremental/cached repository indexing.** **DONE.** *Location:*
   `src/core/indexing/repo_indexer.py` (`walk_language_files`,
   `DEFAULT_IGNORE_DIRS`), consumed by `index_repository` (and thereby by

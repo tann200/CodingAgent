@@ -40,7 +40,6 @@ _DYNAMIC_IMPORT_ROOTS = {
     # importlib.import_module("src.core.inference.adapters.ollama_adapter").
     "src.core.inference.adapters",
     "src.core.plugin",
-    "src.core.skills",
     "src.core.messaging.event_bus",
     "src.config.toolsets",
     # The TUI ships as two byte-identical mirrors.  Runtime imports tui_src;
