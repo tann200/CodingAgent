@@ -44,15 +44,6 @@ _MEMORY_TIER_LIMITS = {
     },
 }
 
-# USER memory separate bounds (per hermes-agent dual-store pattern)
-# All tiers share the same limit; differentiate here when per-tier limits are needed.
-_USER_MAX_CHARS = 1375
-_USER_TIER_LIMITS = {
-    "lite": {"max_chars": _USER_MAX_CHARS},
-    "standard": {"max_chars": _USER_MAX_CHARS},
-    "full": {"max_chars": _USER_MAX_CHARS},
-}
-
 # Default to standard tier if unable to determine
 _DEFAULT_TIER = "standard"
 
@@ -147,13 +138,6 @@ def _get_tier_limits(tier: Optional[str] = None) -> Dict[str, int]:
     if tier and tier in _MEMORY_TIER_LIMITS:
         return _MEMORY_TIER_LIMITS[tier]
     return _MEMORY_TIER_LIMITS[_DEFAULT_TIER]
-
-
-def _get_user_tier_limits(tier: Optional[str] = None) -> int:
-    """Get user memory character limits for a specific tier."""
-    if tier and tier in _USER_TIER_LIMITS:
-        return _USER_TIER_LIMITS[tier]["max_chars"]
-    return _USER_TIER_LIMITS[_DEFAULT_TIER]["max_chars"]
 
 
 @tool(tags=["coding", "planning", "review"], permission_kind=PermissionKind.MEMORY)

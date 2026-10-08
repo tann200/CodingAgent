@@ -269,12 +269,6 @@ def is_blocked(cmd: str) -> bool:
     return level == BashRiskLevel.BLOCKED
 
 
-def is_dangerous(cmd: str) -> bool:
-    """Convenience: return True if *cmd* requires approval."""
-    level, _ = analyze_bash_command(cmd)
-    return level in (BashRiskLevel.DANGEROUS, BashRiskLevel.BLOCKED)
-
-
 # ---------------------------------------------------------------------------
 # PowerShell security analysis (G11)
 # ---------------------------------------------------------------------------

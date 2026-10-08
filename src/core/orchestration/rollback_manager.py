@@ -561,49 +561,6 @@ class RollbackManager:
 
         return deleted
 
-    def snapshot_step(self, step_id: str, file_paths: List[str]) -> str:
-        """
-        Snapshot files for a specific DAG step.
-
-        Args:
-            step_id: DAG step ID (e.g., "step_0", "step_1")
-            file_paths: Files modified by this step
-
-        Returns:
-            Snapshot ID (format: "step_{id}_{timestamp}")
-        """
-        snapshot_id = f"dag_{step_id}_{datetime.now().strftime('%H%M%S_%f')}"
-
-        self._step_to_snapshot[step_id] = snapshot_id
-
-        return self.snapshot_files(file_paths, snapshot_id)
-
-    def rollback_step(self, step_id: str) -> Dict[str, Any]:
-        """
-        Rollback a specific DAG step.
-
-        This restores only files modified by the specified step,
-        leaving other steps' changes intact.
-        """
-        snapshot_id = self._step_to_snapshot.get(step_id)
-        if not snapshot_id:
-            logger.warning(f"rollback_step: no snapshot found for {step_id}")
-            return {"status": "no_snapshot", "step_id": step_id}
-
-        return self.rollback(snapshot_id)
-
-    def rollback_wave(self, wave_step_ids: List[str]) -> Dict[str, Any]:
-        """
-        Rollback all steps in a wave (for parallel read/sequential write).
-
-        If Wave N fails verification, rollback all steps in that wave.
-        """
-        results = {}
-        for step_id in wave_step_ids:
-            results[step_id] = self.rollback_step(step_id)
-
-        return {"status": "wave_rollback_complete", "rolled_back": results}
-
     def commit_step(self, step_id: str) -> None:
         """
         Commit a step's changes as permanent.

@@ -957,8 +957,8 @@
       "path": "src/tools/repo_tools.py",
       "is_dir": false
     },
-    "src/tools/role_tools.py": {
-      "path": "src/tools/role_tools.py",
+    "src/tools/rollback_tools.py": {
+      "path": "src/tools/rollback_tools.py",
       "is_dir": false
     },
     "src/tools/sandbox.py": {
@@ -975,10 +975,6 @@
     },
     "src/tools/subagent_tools.py": {
       "path": "src/tools/subagent_tools.py",
-      "is_dir": false
-    },
-    "src/tools/symbol_reader.py": {
-      "path": "src/tools/symbol_reader.py",
       "is_dir": false
     },
     "src/tools/system_tools.py": {

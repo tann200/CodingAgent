@@ -90,7 +90,7 @@ class TestPRSWBuilder:
 
     def test_should_use_prsw_with_multiple_delegations(self):
         """Test should_use_prsw returns True for mixed read/write delegations."""
-        from src.core.orchestration.graph.builder import should_use_prsw
+        from src.core.orchestration.graph.tier_graph_routing import should_use_prsw
 
         state = {
             "delegations": [
@@ -103,7 +103,7 @@ class TestPRSWBuilder:
 
     def test_should_use_prsw_single_delegation(self):
         """Test should_use_prsw returns False for single delegation."""
-        from src.core.orchestration.graph.builder import should_use_prsw
+        from src.core.orchestration.graph.tier_graph_routing import should_use_prsw
 
         state = {
             "delegations": [
@@ -115,7 +115,7 @@ class TestPRSWBuilder:
 
     def test_should_use_prsw_no_delegations(self):
         """Test should_use_prsw returns False for no delegations."""
-        from src.core.orchestration.graph.builder import should_use_prsw
+        from src.core.orchestration.graph.tier_graph_routing import should_use_prsw
 
         state = {"delegations": []}
 
@@ -123,7 +123,7 @@ class TestPRSWBuilder:
 
     def test_should_use_prsw_read_only(self):
         """Test should_use_prsw returns False for read-only delegations."""
-        from src.core.orchestration.graph.builder import should_use_prsw
+        from src.core.orchestration.graph.tier_graph_routing import should_use_prsw
 
         state = {
             "delegations": [
@@ -136,7 +136,7 @@ class TestPRSWBuilder:
 
     def test_should_use_prsw_write_only(self):
         """Test should_use_prsw returns False for write-only delegations."""
-        from src.core.orchestration.graph.builder import should_use_prsw
+        from src.core.orchestration.graph.tier_graph_routing import should_use_prsw
 
         state = {
             "delegations": [

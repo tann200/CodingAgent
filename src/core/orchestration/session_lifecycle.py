@@ -106,9 +106,6 @@ class SessionLifecycleManager:
         self._shutdown_hooks: Dict[str, Callable[[str], None]] = {}
         self._lock = threading.Lock()
 
-        # Track shutdowns
-        self._shutdown_history: List[ShutdownResult] = []
-
     def on_shutdown(self, name: str, callback: Callable[[str], None]) -> None:
         """
         Register a shutdown hook.
@@ -120,23 +117,6 @@ class SessionLifecycleManager:
         with self._lock:
             self._shutdown_hooks[name] = callback
             logger.debug(f"Registered shutdown hook: {name}")
-
-    def off_shutdown(self, name: str) -> bool:
-        """
-        Unregister a shutdown hook.
-
-        Args:
-            name: Hook name to remove
-
-        Returns:
-            True if hook was removed
-        """
-        with self._lock:
-            if name in self._shutdown_hooks:
-                del self._shutdown_hooks[name]
-                logger.debug(f"Unregistered shutdown hook: {name}")
-                return True
-            return False
 
     def shutdown_session(
         self,
@@ -211,10 +191,6 @@ class SessionLifecycleManager:
             cleanup_actions=cleanup_actions,
             error=error,
         )
-
-        # Store in history
-        with self._lock:
-            self._shutdown_history.append(result)
 
         logger.info(
             f"Session {session_id} shutdown: success={success}, "
@@ -428,42 +404,6 @@ class SessionLifecycleManager:
         )
         return snapshot_file
 
-    def load_snapshot(self, session_id: str) -> Optional[SessionSnapshot]:
-        """
-        Load snapshot from disk.
-
-        Args:
-            session_id: Session ID to load
-
-        Returns:
-            SessionSnapshot or None if not found
-        """
-        snapshot_file = self.snapshot_dir / f"snapshot_{session_id}.json"
-
-        if not snapshot_file.exists():
-            return None
-
-        try:
-            data = json.loads(snapshot_file.read_text())
-
-            return SessionSnapshot(
-                session_id=data["session_id"],
-                task=data.get("task", ""),
-                history=data.get("history", []),
-                current_step=data.get("current_step", 0),
-                plan=data.get("plan"),
-                verified_reads=data.get("verified_reads", []),
-                files_read=data.get("files_read", {}),
-                tool_call_count=data.get("tool_call_count", 0),
-                round_count=data.get("round_count", 0),
-                created_at=data.get("created_at", time.time()),
-                last_checkpoint_at=data.get("last_checkpoint_at", time.time()),
-                metadata=data.get("metadata", {}),
-            )
-        except Exception as e:
-            logger.error(f"Failed to load snapshot for {session_id}: {e}")
-            return None
-
     def restore_snapshot(self, snapshot: SessionSnapshot) -> Dict[str, Any]:
         """
         Convert snapshot to initial state dict for resume.
@@ -533,20 +473,6 @@ class SessionLifecycleManager:
             return True
 
         return False
-
-    def get_shutdown_history(
-        self,
-        session_id: Optional[str] = None,
-        limit: int = 20,
-    ) -> List[ShutdownResult]:
-        """Get shutdown history."""
-        with self._lock:
-            history = self._shutdown_history.copy()
-
-        if session_id:
-            history = [h for h in history if h.session_id == session_id]
-
-        return history[-limit:]
 
 
 def get_session_lifecycle_manager(workdir: str) -> SessionLifecycleManager:

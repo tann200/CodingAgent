@@ -324,3 +324,89 @@ class TestImportResolverSoundness:
         unreachable = unreachable_modules.__wrapped__()
         stale = {m for m in _KNOWN_DEAD if m not in unreachable}
         assert not stale, f"baseline lists reachable modules: {sorted(stale)}"
+
+
+# ---------------------------------------------------------------------------
+# Tools-package contribution ratchet — the module-reachability gate above
+# treats every ``src.tools`` submodule as a dynamic root (the registry walks
+# the package with pkgutil and imports each module), so a tools module can be
+# *import-side-effect-only* and still count as "live".  ``symbol_reader.py``
+# (273 lines, zero ``@tool`` functions, imported by nobody) hid behind exactly
+# that exemption.  This ratchet closes the hole: a module directly under
+# ``src/tools/`` must either contribute a tool, expose a ``register_*`` entry
+# point, be imported by code outside the tools package, or be explicitly
+# allowlisted as shared infrastructure.
+# ---------------------------------------------------------------------------
+
+# Modules that are legitimately imported only within the tools package (or by
+# the registry itself) and therefore carry no @tool / register_* of their own.
+_TOOL_INFRA_ALLOWLIST: dict[str, str] = {
+    "src.tools._registry": "the pkgutil registry; imported by tool consumers",
+    "src.tools.__init__": "package initialiser",
+}
+
+
+def _defines_decorated_tool(tree: ast.AST) -> bool:
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            for dec in node.decorator_list:
+                target = dec.func if isinstance(dec, ast.Call) else dec
+                if isinstance(target, ast.Name) and target.id == "tool":
+                    return True
+    return False
+
+
+def _defines_register_entrypoint(tree: ast.AST) -> bool:
+    for node in tree.body if isinstance(tree, ast.Module) else ():
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith(
+            "register_"
+        ):
+            return True
+    return False
+
+
+class TestToolsPackageContributes:
+    """P1.4 follow-up: no tools module may be a zero-tool, unused orphan."""
+
+    def test_every_tools_module_contributes_or_is_imported(self) -> None:
+        tools_dir = REPO_ROOT / "src" / "tools"
+        mods = _build_module_set()
+        edges = _build_import_edges(mods)
+
+        # Every module that statically imports something under src.tools.*, other
+        # than the package ``__init__`` (which just aggregates the package) and
+        # the importer's own module.  Shared helpers such as ``bash_security`` or
+        # ``_workspace_guard`` are imported only by sibling tool modules, so the
+        # edge may be *within* src.tools — it must simply have a real consumer.
+        imported_by_other: set[str] = set()
+        for importer, targets in edges.items():
+            if importer == "src.tools":
+                continue
+            for target in targets:
+                if target.startswith("src.tools.") and target != importer:
+                    imported_by_other.add(target)
+
+        offenders: dict[str, str] = {}
+        for path in sorted(tools_dir.glob("*.py")):
+            name = path.stem
+            dotted = f"src.tools.{name}"
+            if dotted in _TOOL_INFRA_ALLOWLIST:
+                continue
+            try:
+                tree = ast.parse(path.read_text(encoding="utf-8", errors="ignore"))
+            except (OSError, SyntaxError):
+                continue
+            if _defines_decorated_tool(tree) or _defines_register_entrypoint(tree):
+                continue
+            if dotted in imported_by_other:
+                continue
+            offenders[name] = (
+                "defines no @tool, exposes no register_* entry point, and is "
+                "imported by no other module"
+            )
+
+        assert not offenders, (
+            "src/tools modules that contribute nothing and are imported by nobody "
+            "(dead module) — delete or wire them up:\n"
+            + "\n".join(f"  {n}: {why}" for n, why in sorted(offenders.items()))
+        )

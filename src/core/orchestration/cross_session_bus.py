@@ -136,17 +136,6 @@ class CrossSessionBus:
                 cls._instance.shutdown()
             cls._instance = None
 
-    def set_persistence(self, persistence_dir: Union[str, Path]) -> None:
-        """
-        Enable message persistence to disk.
-
-        Args:
-            persistence_dir: Directory for message persistence
-        """
-        self._persistence_dir = Path(persistence_dir)
-        self._persistence_dir.mkdir(parents=True, exist_ok=True)
-        logger.info(f"CrossSessionBus persistence enabled: {self._persistence_dir}")
-
     def subscribe(
         self,
         topic: str,
@@ -297,89 +286,6 @@ class CrossSessionBus:
         )
 
         return message_id
-
-    def send_reply(
-        self,
-        original_message: CrossSessionMessage,
-        payload: Dict[str, Any],
-        sender_session_id: str,
-        sender_role: str,
-    ) -> str:
-        """
-        Send a reply to a message.
-
-        Args:
-            original_message: Message being replied to
-            payload: Reply payload
-            sender_session_id: Session sending the reply
-            sender_role: Role sending the reply
-
-        Returns:
-            Message ID of the reply
-        """
-        return self.publish(
-            topic=original_message.topic,
-            sender_session_id=sender_session_id,
-            sender_role=sender_role,
-            payload=payload,
-            reply_to=original_message.message_id,
-            correlation_id=original_message.correlation_id,
-        )
-
-    async def send_and_wait(
-        self,
-        topic: str,
-        sender_session_id: str,
-        sender_role: str,
-        payload: Dict[str, Any],
-        timeout: float = 30.0,
-    ) -> Optional[CrossSessionMessage]:
-        """
-        Send a message and wait for a reply.
-
-        Args:
-            topic: Topic to send to
-            sender_session_id: Session sending
-            sender_role: Role sending
-            payload: Message payload
-            timeout: Timeout in seconds
-
-        Returns:
-            Reply message or None if timeout
-        """
-        correlation_id = str(uuid.uuid4())[:8]
-
-        # Create future for reply
-        future: asyncio.Future = asyncio.get_running_loop().create_future()
-
-        with self._lock:
-            self._pending_replies[correlation_id] = future
-
-        # Send message
-        self.publish(
-            topic=topic,
-            sender_session_id=sender_session_id,
-            sender_role=sender_role,
-            payload=payload,
-            correlation_id=correlation_id,
-        )
-
-        # Wait for reply with timeout
-        try:
-            reply = await asyncio.wait_for(future, timeout=timeout)
-            return reply
-        except asyncio.TimeoutError:
-            logger.warning(
-                f"send_and_wait timed out after {timeout}s (correlation={correlation_id})"
-            )
-            return None
-        finally:
-            # Cancel the future before removing it so any other awaiter gets a clean
-            # CancelledError instead of hanging indefinitely on a leaked future.
-            if not future.done():
-                future.cancel()
-            with self._lock:
-                self._pending_replies.pop(correlation_id, None)
 
     def get_messages(
         self,
@@ -594,25 +500,6 @@ class CrossSessionBus:
                     pass
         except Exception as e:
             logger.error(f"Failed to persist message: {e}")
-
-    def cleanup_expired(self) -> int:
-        """
-        Remove expired messages from history.
-
-        Returns:
-            Number of messages removed
-        """
-        with self._lock:
-            before = len(self._message_history)
-            self._message_history = [
-                m for m in self._message_history if not m.is_expired
-            ]
-            removed = before - len(self._message_history)
-
-            if removed > 0:
-                logger.debug(f"Cleaned up {removed} expired messages")
-
-            return removed
 
     def shutdown(self) -> None:
         """Shutdown the bus."""

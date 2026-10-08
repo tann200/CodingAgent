@@ -10,8 +10,6 @@ Implements ACP/MCP compliant state hydration:
 import copy
 import logging
 import threading
-import time
-import uuid
 from typing import Dict, Set, Callable, Any, List, Optional
 from dataclasses import dataclass, field
 from enum import Enum
@@ -203,66 +201,12 @@ class AgentSessionManager:
                     cls._instance = cls()
         return cls._instance
 
-    def buffer_p2p_message(self, source: str, payload: Dict[str, Any]):
-        """
-        Buffer incoming P2P message for later processing.
-
-        This is thread-safe and does NOT mutate LangGraph state.
-        """
-        with self._p2p_lock:
-            self._pending_p2p.append(
-                {
-                    "source": source,
-                    "payload": payload,
-                    "timestamp": time.time(),
-                }
-            )
-
     def flush_pending_p2p(self) -> List[Dict]:
         """Flush and return all pending P2P messages."""
         with self._p2p_lock:
             messages = self._pending_p2p.copy()
             self._pending_p2p.clear()
         return messages
-
-    def register_agent(self, role: AgentRole, task: str) -> AgentSession:
-        """Register a new agent session."""
-        session_id = str(uuid.uuid4())[:8]
-        agent_id = f"{role.value}_{session_id}"
-
-        session = AgentSession(
-            session_id=session_id,
-            role=role,
-            agent_id=agent_id,
-            task=task,
-            status="running",
-            callbacks={},
-        )
-        with self._session_state_lock:
-            self._sessions[agent_id] = session
-            self._role_subscriptions[role].add(agent_id)
-            self._session_id_to_agent_id[session_id] = agent_id
-
-        return session
-
-    def subscribe_to_role(
-        self, agent_id: str, role: AgentRole, callback: Callable[[Any], None]
-    ):
-        """Subscribe agent to messages from a specific role."""
-        from src.core.orchestration.event_bus import get_event_bus
-
-        eb = get_event_bus()
-        topic = f"agent.{role.value}.broadcast"
-
-        def wrapped(msg):
-            # msg is a dict from publish_to_role: {"from": sender_id, "role": ..., "payload": ...}
-            if msg.get("from") != agent_id:
-                callback(msg)
-
-        eb.subscribe(topic, wrapped)
-        with self._session_state_lock:
-            if agent_id in self._sessions:
-                self._sessions[agent_id].callbacks[topic] = wrapped
 
     def publish_to_role(self, sender_id: str, role: AgentRole, payload: Any):
         """Broadcast message to all agents of a specific role."""
@@ -279,34 +223,6 @@ class AgentSessionManager:
 
         eb = get_event_bus()
         eb.publish_to_agent(target_id, {"from": sender_id, "payload": payload})
-
-    def get_active_agents(self) -> Dict[str, AgentSession]:
-        """Get all active agent sessions."""
-        with self._session_state_lock:
-            return {k: v for k, v in self._sessions.items() if v.status == "running"}
-
-    def unregister_agent(self, agent_id: str):
-        """Unregister an agent session."""
-        with self._session_state_lock:
-            if agent_id in self._sessions:
-                session = self._sessions[agent_id]
-                session.status = "terminated"
-                self._role_subscriptions[session.role].discard(agent_id)
-                self._session_id_to_agent_id.pop(session.session_id, None)
-                del self._sessions[agent_id]
-
-    def unregister_agent_by_session_id(self, session_id: str) -> bool:
-        """Unregister an agent session by its session_id (O(1) lookup). Returns True if found."""
-        with self._session_state_lock:
-            agent_id = self._session_id_to_agent_id.get(session_id)
-            if agent_id and agent_id in self._sessions:
-                session = self._sessions[agent_id]
-                session.status = "terminated"
-                self._role_subscriptions[session.role].discard(agent_id)
-                del self._session_id_to_agent_id[session_id]
-                del self._sessions[agent_id]
-                return True
-        return False
 
 
 def get_agent_session_manager() -> AgentSessionManager:

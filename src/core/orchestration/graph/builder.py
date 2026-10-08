@@ -1,6 +1,6 @@
 import logging
 import threading
-from typing import Any, Dict, Mapping
+from typing import Any, Dict
 
 from langgraph.graph import StateGraph, END
 from langchain_core.runnables import RunnableConfig
@@ -105,28 +105,6 @@ _STATE_SCHEMAS_STRICT = False
 def _validated(name: str, fn):
     """Wrap a node so its returned state update is schema-checked at the boundary."""
     return wrap_node(name, fn, strict=_STATE_SCHEMAS_STRICT)
-
-
-_READ_ONLY_ROLES = _tier_graph_routing.READ_ONLY_ROLES
-_WRITE_ROLES = _tier_graph_routing.WRITE_ROLES
-
-
-def should_use_prsw(state: Mapping[str, Any]) -> bool:
-    """Compatibility wrapper for PRSW mixed-role delegation detection."""
-    return _tier_graph_routing.should_use_prsw(state)
-
-
-def _is_lite_mode(state: Mapping[str, Any]) -> bool:
-    """Return True when v2 SINGLE_LOOP mode should be used.
-
-    Uses workflow_selector if available (v2 Phase 0), otherwise falls back
-    to tier check (NANO/SMALL without v2 integration).
-    """
-    return _tier_graph_routing.is_lite_mode(
-        state,
-        should_use_single_loop_fn=_should_use_single_loop,
-        is_nano_or_small_fn=_is_nano_or_small,
-    )
 
 
 def _compile_full_graph():

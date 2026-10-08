@@ -29,7 +29,6 @@ Usage::
     if verdict.blocked:
         return verdict.result
     result = dispatch_tool(...)
-    await service.post_execute_async(name, args, result)
 """
 
 from __future__ import annotations
@@ -322,41 +321,6 @@ class ToolExecutionService:
 
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(None, _call)
-
-    async def post_execute_async(
-        self,
-        name: str,
-        args: Dict[str, Any],
-        result: Dict[str, Any],
-    ) -> None:
-        """Run post-execution hook asynchronously.
-
-        When the hook runner returns a denied result (exit 2), the tool
-        result dict is mutated in-place: ``ok=False`` and ``is_error=True``
-        are set so downstream code treats the output as an error (CP-7).
-        Never raises.
-        """
-        if self._hook_runner is None:
-            return
-        try:
-            hook_result = None
-            if hasattr(self._hook_runner, "async_run_post"):
-                hook_result = await self._hook_runner.async_run_post(name, args, result)
-            elif hasattr(self._hook_runner, "run_post"):
-                hook_result = self._hook_runner.run_post(name, args, result)
-            # CP-7: if post-hook denied, mark result as an error
-            if hook_result is not None and getattr(hook_result, "denied", False):
-                result["ok"] = False
-                result["is_error"] = True
-                messages = getattr(hook_result, "messages", [])
-                if messages:
-                    result["error"] = messages[0]
-                logger.info(
-                    "ToolExecutionService.post_execute_async: post-hook denied '%s'",
-                    name,
-                )
-        except Exception as exc:
-            logger.debug("ToolExecutionService.post_execute_async: error: %s", exc)
 
     def reset_idempotency(self) -> None:
         """Clear the seen-calls set at the start of each agent turn."""

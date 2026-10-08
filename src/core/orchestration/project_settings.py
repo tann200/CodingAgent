@@ -201,51 +201,6 @@ def reload_project_settings(workdir: str | Path | None = None) -> ProjectSetting
     return load_project_settings(workdir)
 
 
-def watch_project_settings(
-    workdir: str | Path,
-    callback: Any = None,
-) -> Any:
-    """Start watching settings files for changes.
-
-    Returns a watcher handle that can be stopped.
-    """
-    import threading
-
-    base = Path(workdir)
-    try:
-        from src.tools.tools_config import agent_context_path
-        ctx = agent_context_path(base)
-    except Exception:
-        ctx = base / ".codingAgent"
-    settings_files = [
-        ctx / "settings.json",
-        ctx / "settings.local.json",
-    ]
-
-    def _poll():
-        import time
-
-        mtimes = {f: f.stat().st_mtime for f in settings_files if f.exists()}
-        while getattr(_poll, "running", True):
-            time.sleep(2)
-            for f in settings_files:
-                if not f.exists():
-                    continue
-                try:
-                    if f.stat().st_mtime != mtimes.get(f, 0):
-                        mtimes[f] = f.stat().st_mtime
-                        reload_project_settings(workdir)
-                        if callback:
-                            callback()
-                except Exception:
-                    pass
-
-    _poll.running = True  # type: ignore[attr-defined]
-    thread = threading.Thread(target=_poll, daemon=True)
-    thread.start()
-    return _poll
-
-
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------

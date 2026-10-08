@@ -117,14 +117,12 @@ tools/
 ├── project_tools.py        # Tech-stack detection, manifest scanning
 ├── repo_read_tools.py      # Read-only repo analysis: overview, filemap
 ├── repo_write_tools.py     # Write-side repo tools: initialize intelligence
-├── role_tools.py           # In-memory role getter/setter
 ├── rollback_tools.py       # Filesystem snapshot and undo
 ├── sandbox.py              # Sandboxed subprocess (bwrap / sandbox-exec)
 ├── skill_tools.py          # load_skill tool for skill prompt retrieval
 ├── state_tools.py          # Agent state inspection and modification
 ├── subagent_payloads.py    # Subagent role normalization helpers
 ├── subagent_tools.py       # Subagent spawn/delegate tools
-├── symbol_reader.py        # Function/class-level code reading
 ├── system_tools.py         # System info tools
 ├── todo_tools.py           # TODO.md task tracking
 ├── tools_config.py         # Configurable tool values
