@@ -984,7 +984,7 @@ Cross-task contamination guards remain **[PARTIAL]**.
 > the entry below); P4.2–P4.4 open. A **post-audit defect batch** (test-suite
 > correctness + report accuracy) runs alongside; items land as bullets below.
 
-- **Post-audit defect batch — test/report correctness.** **DONE (3 of 5).**
+- **Post-audit defect batch — test/report correctness.** **DONE (5 of 5).**
   From a three-way review of the finished Phase 1–3 work (was any deletion a
   mistake, what else can be simplified, do the tests test the right thing?):
   - **The suite corrupted committed state — fixed.** `test_model_routing.py`
@@ -1021,12 +1021,39 @@ Cross-task contamination guards remain **[PARTIAL]**.
     (435 lines) and P2.5's list skipped them. Files deleted, false exemption
     dropped; HIGH-1 status/table and §14 item 11 corrected. `test_dead_code`
     still reports 7 passed, `_KNOWN_DEAD` empty, zero unreachable.
-  - *Open in this batch:* global `permissions.json` deny/allow rules are
-    write-only at the main tool gate (`orch.permission_policy` is never
-    assigned, so `tool_execution_pipeline.py:1142` always reads `None`);
-    ~880 dead functions inside live modules (incl. the whole
-    `src/tools/symbol_reader.py`, hidden by the blanket `src.tools`
-    dynamic-root exemption).
+  - **`permissions.json` rules were never enforced at the main gate — fixed.**
+    The TUI "Allow Always" persist called `PermissionPolicy.add_rule`, which
+    did not exist (a stale `# type: ignore[attr-defined]` hid the AttributeError,
+    swallowed to a warning), and even a persisted rule was inert because
+    `_check_agent_permission_override` read `getattr(orch, "permission_policy")`,
+    an attribute the orchestrator never assigns (global rules only reached the
+    doom-loop guard). Added `matching_rule`/`add_rule` (last-match-wins, still
+    thread-safe by tuple rebind); the override check now falls back to the
+    `get_permission_policy()` singleton and applies global rules with or without
+    an active agent; `_run_permission_gate` reconciles `needs_gate` with the
+    matched rule — explicit DENY hard-denies, explicit ASK prompts (autonomous
+    then fails closed via HS-1), explicit ALLOW skips the prompt **interactive
+    only** (autonomous still requires `autonomous_approval_allowed`, so
+    permissions.json is not a second HS-1 bypass) and `delete_file` is never
+    suppressed (HS-5). bash's command-granular tier-3 gate is deliberately
+    unchanged. New `tests/unit/test_permission_policy_enforcement.py` (12 cases,
+    autouse empty-policy isolation) + `matching_rule`/`add_rule` units. (`39b632f`)
+  - **~1,000 lines of unreachable code deleted + the gate made honest.**
+    The module-reachability ratchet only follows module import edges and treats
+    all of `src.tools` as a dynamic root, so dead *symbols* in live modules and
+    import-side-effect-only tool modules were invisible. Removed
+    `src/tools/symbol_reader.py` (273 lines, zero importers / zero `@tool`) and
+    `src/tools/role_tools.py` (deliberately unregistered; only its own stale test
+    used it, now removed), plus dead methods across `dag_parser`,
+    `agent_session_manager`, `cross_session_bus`, `session_lifecycle`,
+    `rollback_manager`, `tool_contracts`, `project_settings`,
+    `tool_execution_service`, `graph/builder`, `memory_tools`, `tools_config`,
+    and `bash_security` (1,081 deletions net). New
+    `test_dead_code.py::TestToolsPackageContributes` requires every `src/tools`
+    module to define a `@tool`, expose a `register_*` entry point, or be imported
+    by another module — verified it fails on a synthetic orphan. The unreferenced
+    PowerShell analyser block in `bash_security` is intentionally left for a
+    dedicated reviewed change. (`51660eb`)
 - **P4.1 — Incremental/cached repository indexing.** **DONE.** *Location:*
   `src/core/indexing/repo_indexer.py` (`walk_language_files`,
   `DEFAULT_IGNORE_DIRS`), consumed by `index_repository` (and thereby by
