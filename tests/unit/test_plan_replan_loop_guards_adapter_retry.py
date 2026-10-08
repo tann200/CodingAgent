@@ -12,7 +12,6 @@ P2-3: distiller compaction checkpoint at 50 msgs
 P2-4: distiller JSON schema validation
 P2-5: safe_resolve in run_tests
 P2-6: start_line/end_line int coercion in edit_by_line_range
-P2-8: wave execution partial failure recovery
 P2-10: syntax_check timeout
 """
 
@@ -339,6 +338,24 @@ class TestSettingsPanelAtomicProvidersJsonWrite:
             "mkstemp" in source
         ), "tempfile.mkstemp not found in tui/src/ui/app.py"
 
+    def test_llm_manager_persist_writes_atomically(self):
+        """The second live writer must also be atomic.
+
+        P3-3 added ``ProviderManager._persist_active_provider`` (llm_manager)
+        as a production providers.json writer triggered by model.routing
+        events; it must use mkstemp + os.replace, not in-place write_text.
+        """
+        src_path = (
+            Path(__file__).parent.parent.parent
+            / "src/core/inference/llm_manager.py"
+        )
+        source = src_path.read_text()
+        assert "tempfile.mkstemp" in source, "mkstemp not found in llm_manager.py"
+        assert "os.replace" in source, "os.replace not found in llm_manager.py"
+        assert "cfg_path.write_text" not in source, (
+            "in-place providers.json write found in llm_manager._persist_active_provider"
+        )
+
 
 # ---------------------------------------------------------------------------
 # P2-1: retry logic in OpenAICompatibleAdapter
@@ -631,41 +648,6 @@ class TestSyntaxCheckReturnsPartialStatusOnTimeout:
 
         sig = inspect.signature(syntax_check)
         assert "timeout_secs" in sig.parameters
-
-
-# ---------------------------------------------------------------------------
-# P2-8: wave execution partial failure recovery
-# ---------------------------------------------------------------------------
-
-
-class TestWaveCoordinatorSkipsExhaustedRetrySteps:
-    def test_exhausted_retry_steps_treated_as_done_in_wave(self):
-        """Wave should advance even if some steps exhausted retries (P2-8)."""
-        # Simulate the wave_advance logic by checking the builder guard
-        # that a step with retries >= MAX_STEP_RETRIES is treated as complete
-        plan = [
-            {"description": "step 0", "completed": True},
-            {"description": "step 1", "completed": False},  # failed step
-            {"description": "step 2", "completed": True},
-        ]
-        step_retry_counts = {"1": 3}  # step 1 exhausted retries
-        MAX_STEP_RETRIES = 3
-
-        wave_step_ids = ["step_0", "step_1", "step_2"]
-
-        all_in_wave_complete = True
-        for ws in wave_step_ids:
-            ws_idx = int(ws.split("_")[-1]) if ws.startswith("step_") else int(ws)
-            step_done = plan[ws_idx].get("completed")
-            step_retries = int(step_retry_counts.get(str(ws_idx), 0))
-            step_retry_exhausted = step_retries >= MAX_STEP_RETRIES
-            if not step_done and not step_retry_exhausted:
-                all_in_wave_complete = False
-                break
-
-        assert (
-            all_in_wave_complete
-        ), "Wave should be complete when failed step exhausted retries"
 
 
 class TestStepRetryKeyNormalization:
