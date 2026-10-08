@@ -249,7 +249,7 @@ def start_new_task_impl(orch) -> str:
     orch._agent_mode = "execution"
 
     # OP-5: Apply per-project tool enable/disable overrides from
-    # .agent-context/config.json so project-specific tool restrictions
+    # .codingAgent/config.json so project-specific tool restrictions
     # are enforced at the start of each task.
     try:
         from src.core.config_loader import get_project_tool_overrides  # type: ignore[attr-defined]

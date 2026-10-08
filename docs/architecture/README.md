@@ -42,7 +42,7 @@ the source tree.
 | Root shim | `main.py` | delegates to `src.main` |
 | TUI | `tui/tui_src/ui/main.py` | runtime imports `tui_src` |
 | Server | `src/server/` | HTTP + SSE + WS |
-| Launch scripts | `start.sh`, `start_tui.sh`, `start.ps1`, `starth.sh`, `scripts/run.sh` | 5, not 1 |
+| Launch script | `scripts/run.sh` | single canonical launcher (P4.4); `uv run codingagent` equivalent |
 
 ---
 

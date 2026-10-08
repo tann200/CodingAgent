@@ -4,6 +4,17 @@ All notable changes to this project are recorded in this file.
 
 ## Unreleased — Sprint 4 Improvements (2026-05-24)
 
+### Entrypoint consolidation (P4.4)
+
+- `scripts/run.sh` is now the single supported launcher: it requires `uv`, fails
+  fast with an install hint when `uv` is absent, and delegates to
+  `uv run python -m src.main`. The `codingagent` console script
+  (`uv run codingagent`) is the equivalent entrypoint on any platform.
+- Deleted the deprecated wrappers `start.sh`, `starth.sh`, `start_tui.sh`,
+  `start.ps1`, and the redundant `scripts/start_tui.py` (it merely re-invoked
+  `src.main`, same as `python -m src.main`). `scripts/run_tui.py` and
+  `scripts/ensure_venv.sh` remain (TUI-only dev runner and venv bootstrap).
+
 ### P1-6 Phase A: TUI component extraction
 
 - Created `tui/src/ui/components/status_bar.py` — `StatusBarMixin` with all status-bar

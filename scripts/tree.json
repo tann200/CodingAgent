@@ -185,10 +185,6 @@
       "path": "scripts/simulate_tui.py",
       "is_dir": false
     },
-    "scripts/start_tui.py": {
-      "path": "scripts/start_tui.py",
-      "is_dir": false
-    },
     "scripts/test_agent_stability.py": {
       "path": "scripts/test_agent_stability.py",
       "is_dir": false

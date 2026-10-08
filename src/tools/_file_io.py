@@ -48,17 +48,17 @@ _READ_FILE_MAX_CHARS = 100_000
 
 
 def get_project_deny_write_patterns(workdir: str) -> list[str]:
+    """Return ``deny_write`` patterns from ``.codingAgent/config.json``.
+
+    Delegates to the canonical reader in ``config_loader`` so the schema is
+    defined in exactly one place.  Never raises.
+    """
     try:
-        from src.tools.tools_config import agent_context_path
+        from src.core.config_loader import (
+            get_project_deny_write_patterns as _canonical,
+        )
 
-        config_path = agent_context_path(Path(workdir)) / "config.json"
-        if not config_path.exists():
-            return []
-        import json
-
-        data = json.loads(config_path.read_text(encoding="utf-8"))
-        patterns = data.get("deny_write") or []
-        return [str(pattern) for pattern in patterns if pattern]
+        return _canonical(str(workdir))
     except Exception:
         return []
 
@@ -79,7 +79,7 @@ def _is_in_workspace(path: Path, workdir: Path) -> bool:
 def _check_project_deny_write(abs_path: Path, workdir: Path) -> None:
     """Raise PermissionError if *abs_path* matches a project config deny_write pattern.
 
-    OP-5: Reads ``deny_write`` patterns from ``.agent-context/config.json``
+    OP-5: Reads ``deny_write`` patterns from ``.codingAgent/config.json``
     (relative to *workdir*) and applies them via ``fnmatch.fnmatch`` against
     the relative path of *abs_path*.  No-ops silently when the config file is
     absent or when no patterns are configured.
@@ -189,7 +189,7 @@ def write_file(
     except Exception:
         pass
 
-    # OP-5: Apply project-level deny_write patterns from .agent-context/config.json.
+    # OP-5: Apply project-level deny_write patterns from .codingAgent/config.json.
     try:
         _check_project_deny_write(p, workdir)
     except PermissionError as _pe:

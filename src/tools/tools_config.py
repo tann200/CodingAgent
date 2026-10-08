@@ -352,8 +352,9 @@ def requires_preview_confirmation() -> bool:
     until the TUI user clicks Accept or Reject.  When *False* (default), writes
     proceed immediately and the diff is displayed as informational output only.
 
-    Controlled by the ``preview_confirmation`` key in ``.localAgent/config.json``.
-    Can also be toggled at runtime via ``set_require_preview_confirmation()``.
+    This is a process-global runtime flag (set via ``configure()`` or
+    ``set_require_preview_confirmation()``); it is not read from
+    ``.codingAgent/config.json``.
     """
     with _config_lock:
         return _REQUIRE_PREVIEW_CONFIRMATION

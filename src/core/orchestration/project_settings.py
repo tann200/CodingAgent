@@ -5,8 +5,8 @@ what CodingAgent needs: project-level and local-override settings files with
 deep-merge semantics.
 
 Supported settings file locations (loaded in order, later wins):
-    {workdir}/.agent/settings.json        — project settings (committed to VCS)
-    {workdir}/.agent/settings.local.json  — local overrides  (gitignored)
+    {workdir}/.codingAgent/settings.json        — project settings (committed to VCS)
+    {workdir}/.codingAgent/settings.local.json  — local overrides  (gitignored)
 
 Recognised keys (all optional):
 
@@ -143,7 +143,7 @@ class ProjectSettings:
 
 
 def load_project_settings(workdir: str | Path | None = None) -> ProjectSettings:
-    """Load and merge project settings from ``{workdir}/.agent/settings*.json``.
+    """Load and merge project settings from ``{workdir}/.codingAgent/settings*.json``.
 
     Parameters
     ----------

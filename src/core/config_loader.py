@@ -4,8 +4,8 @@ Merges configuration from four layers (later layers override earlier ones):
 
 1. ``src/config/providers.json``         — bundled defaults (committed to repo)
 2. ``~/.config/codingagent/config.json``   — user-level overrides
-3. ``<cwd>/.agent/config.json``           — workspace config (committable)
-4. ``<cwd>/.agent/config.local.json``     — local overrides (add to .gitignore)
+3. ``<cwd>/.codingAgent/config.json``           — workspace config (committable)
+4. ``<cwd>/.codingAgent/config.local.json``     — local overrides (add to .gitignore)
 
 Dictionaries are deep-merged; scalar values and lists are replaced by the
 later layer.
@@ -91,7 +91,7 @@ def load_merged_config(working_dir: Optional[Path] = None) -> Dict[str, Any]:
     """Load and deep-merge all configuration layers.
 
     If ``working_dir`` is provided, workspace layer files are resolved relative
-    to that directory (``<working_dir>/.agent/config.json`` and
+    to that directory (``<working_dir>/.codingAgent/config.json`` and
     ``config.local.json``). This mirrors test expectations which call
     ``load_merged_config(working_dir=...)``.
     """
@@ -228,7 +228,7 @@ def get_mcp_config(working_dir: Optional[Path] = None) -> Dict[str, Any]:
       - auto_register_tools: bool
 
     When "working_dir" is provided, workspace overrides are loaded from
-    ``<working_dir>/.agent/config.json`` and ``config.local.json``. When
+    ``<working_dir>/.codingAgent/config.json`` and ``config.local.json``. When
     omitted, the normal merged config is used.
     """
     defaults = {"servers": [], "timeout_seconds": 30, "auto_register_tools": True}
@@ -352,7 +352,7 @@ def get_small_model(working_dir: Optional[Path] = None) -> Optional[str]:
     """Return a configured 'small_model' string.
 
     Preference order:
-      1. workspace .agent/config.json small_model
+      1. workspace .codingAgent/config.json small_model
       2. active provider small_model entry in providers.json
       3. None
     """
@@ -381,6 +381,91 @@ def get_small_model(working_dir: Optional[Path] = None) -> Optional[str]:
     except Exception:
         return None
     return None
+
+
+# ---------------------------------------------------------------------------
+# OP-5: Project-level config — <workdir>/.codingAgent/config.json
+#
+# Single canonical reader for the workspace config file.  The OP-5 helper
+# family (tool overrides / deny_write) was lost from this module in a later
+# regression; it is restored here on the canonical ``.codingAgent`` directory
+# so every consumer shares one parser and one schema.
+# ---------------------------------------------------------------------------
+
+_PROJECT_CONFIG_CACHE: Dict[str, tuple] = {}  # path_str → (mtime, config_dict)
+
+
+def load_project_config(working_dir: str) -> Dict[str, Any]:
+    """Load ``.codingAgent/config.json`` from *working_dir* if it exists.
+
+    Uses mtime-based caching so hot paths only hit disk when the file changes.
+    Returns ``{}`` on missing/invalid JSON — callers never need to guard.
+
+    Schema (all fields optional):
+
+    .. code-block:: json
+
+        {
+          "tools": {"bash": false, "glob": true},
+          "deny_write": ["*.env", "db/migrations/*"]
+        }
+    """
+    try:
+        from src.tools.tools_config import agent_context_path
+
+        path = agent_context_path(Path(working_dir)) / "config.json"
+    except Exception:
+        path = Path(working_dir) / ".codingAgent" / "config.json"
+    if not path.exists():
+        return {}
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return {}
+    cached = _PROJECT_CONFIG_CACHE.get(str(path))
+    if cached is not None and cached[0] == mtime:
+        return cached[1]
+    try:
+        cfg = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(cfg, dict):
+            cfg = {}
+        _PROJECT_CONFIG_CACHE[str(path)] = (mtime, cfg)
+        return cfg
+    except Exception as exc:
+        logger.warning("load_project_config: failed to parse %s: %s", path, exc)
+        return {}
+
+
+def get_project_tool_overrides(working_dir: str) -> Dict[str, bool]:
+    """Return tool enable/disable overrides from the project config.
+
+    Keys are tool names; values are ``True`` (keep enabled) or ``False``
+    (deregister before the next task).  Read from the ``tools`` key.
+    """
+    raw = load_project_config(working_dir).get("tools", {})
+    if not isinstance(raw, dict):
+        return {}
+    return {str(k): bool(v) for k, v in raw.items()}
+
+
+def get_project_deny_write_patterns(working_dir: str) -> List[str]:
+    """Return path glob patterns that must never be written by the agent.
+
+    Accepts both the top-level ``deny_write`` list and the nested
+    ``permissions.deny_write`` list (union), matched against the *relative*
+    path of the target file via ``fnmatch.fnmatch``.
+    """
+    cfg = load_project_config(working_dir)
+    patterns: List[str] = []
+    top = cfg.get("deny_write")
+    if isinstance(top, list):
+        patterns.extend(str(p) for p in top if p)
+    perms = cfg.get("permissions")
+    if isinstance(perms, dict):
+        nested = perms.get("deny_write")
+        if isinstance(nested, list):
+            patterns.extend(str(p) for p in nested if p)
+    return patterns
 
 
 # ---------------------------------------------------------------------------

@@ -627,8 +627,11 @@ Cross-task contamination guards remain **[PARTIAL]**.
   disables verification (§MEDIUM-2) with no warning. **[PARTIAL]** —
   **closed by P2.3:** the lite graph verifies writes (and the downgrade is now
   the documented tier policy rather than a silent hole).
-- Six launch scripts (`start.sh`, `start_tui.sh`, `start.ps1`, `starth.sh`,
-  `scripts/run.sh`, …) for one binary is redundant surface. **[READ]**
+- **Launch scripts consolidated to one (P4.4).** The deprecated wrappers
+  `start.sh`, `start_tui.sh`, `start.ps1`, `starth.sh`, and the redundant
+  `scripts/start_tui.py` were deleted; `scripts/run.sh` is the single canonical
+  launcher (`uv run codingagent` equivalent). `scripts/run_tui.py` and
+  `scripts/ensure_venv.sh` remain as a TUI-only dev runner and venv bootstrap.
 - The TUI is the most polished surface; headless debugging is comparatively thin. **[READ]**
 
 ---
@@ -688,7 +691,7 @@ Cross-task contamination guards remain **[PARTIAL]**.
 | 10 | Repair or delete `tests/_deprecated/` | Medium | `tests/_deprecated/` | Low | Stops misleading green | **DONE (P2.4)** — deleted |
 | 11 | Delete remaining dead modules (session_watcher, event_log, event_persistence, agent_hooks, context_manager, env_registry, adapter_wrappers, wave_coordinator, graph_factory) | High | 22 modules (P2.5) | Low–Medium | P2.5: −5,005 lines; P2.1: −1,307 lines | **DONE (P2.5)** — true count 25 modules total including P2.1, not 28; skills island (2 modules / 435 lines) was wrongly listed here — its false dynamic-root exemption hid it from P2.5; closed post-audit |
 | 12 | Measure `index_repository` cost on the analysis path | Medium | `analysis_node.py:319` | Low | Confirms/denies latency risk | **DONE (P4.1)** — 3,943 ms → 69 ms warm; see Phase 4 |
-| 13 | Consolidate the 6 launch scripts to one | Low | root | Low | Less surface | **open (P4.4)** |
+| 13 | Consolidate the 6 launch scripts to one | Low | root | Low | Less surface | **DONE (P4.4)** — `scripts/run.sh` only; 5 wrappers deleted |
 
 ---
 
@@ -980,9 +983,10 @@ Cross-task contamination guards remain **[PARTIAL]**.
 
 ## Phase 4 — Advanced features
 
-> **Status: 1 of 4 complete** — P4.1 done (measurements and file references in
-> the entry below); P4.2–P4.4 open. A **post-audit defect batch** (test-suite
-> correctness + report accuracy) runs alongside; items land as bullets below.
+> **Status: 2 of 4 complete** — P4.1 and P4.4 done (measurements and file
+> references in the entries below); P4.2–P4.3 open. A **post-audit defect batch**
+> (test-suite correctness + report accuracy) runs alongside; items land as
+> bullets below.
 
 - **Post-audit defect batch — test/report correctness.** **DONE (5 of 5).**
   From a three-way review of the finished Phase 1–3 work (was any deletion a
@@ -1089,8 +1093,29 @@ Cross-task contamination guards remain **[PARTIAL]**.
   *Impact:* Medium–High. Content-provenance labelling, not only pattern
   matching, so the model can distinguish tool output from operator intent.
 - **P4.4 — Configuration consolidation and launch-script unification.**
-  *Location:* `.localAgent/config.json` resolution chain, root scripts.
-  *Complexity:* Medium. *Impact:* Low–Medium.
+  **DONE.** *Location:* `.codingAgent/config.json` resolution chain, root
+  scripts. *Complexity:* Medium. *Impact:* Low–Medium. Two real config-path
+  defects were found and fixed while consolidating, plus doc/launch cleanup:
+  - **`codingagent mcp add` wrote to the wrong directory.** It persisted to
+    `<workdir>/.agent/config.json` while the loader reads
+    `<workdir>/.codingAgent/config.json`, so an added server never appeared in
+    `mcp list`/`get_mcp_servers` — a broken round-trip. Now written through
+    `agent_context_path(workdir)`; covered by a round-trip test.
+  - **The OP-5 project-config helper family was missing from `config_loader`.**
+    `task_lifecycle.start_new_task_impl` imported `get_project_tool_overrides`
+    (with a `# type: ignore[attr-defined]`) that did not exist — the ImportError
+    was swallowed, so per-project tool enable/disable silently never applied.
+    Restored `load_project_config` / `get_project_tool_overrides` /
+    `get_project_deny_write_patterns` on the canonical `.codingAgent` dir (one
+    mtime-cached parser); `_file_io`'s deny_write reader now delegates to it.
+    New `tests/unit/test_project_config.py` pins the schema and the
+    deregistration.
+  - Docstrings/comments that named legacy dirs (`.localAgent`, `.agent`,
+    `.agent-context`, plus a `preview_confirmation` config key that was never
+    read) corrected to the canonical `.codingAgent` name / actual behaviour.
+  - Launch scripts: `scripts/run.sh` is the single supported launcher; the
+    deprecated `start.sh`, `starth.sh`, `start_tui.sh`, `start.ps1` and the
+    redundant `scripts/start_tui.py` are deleted. (See §11 / row 13.)
 
 ---
 

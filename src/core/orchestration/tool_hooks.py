@@ -1,6 +1,6 @@
 """Pre/post tool call hooks.
 
-Users can create ``.agent/hooks.json`` (or the global hooks file returned by
+Users can create ``.codingAgent/hooks.json`` (or the global hooks file returned by
 ``src.core.paths.get_hooks_path()`` for global defaults) to configure shell
 commands that run before and after tool
 calls.
@@ -71,7 +71,7 @@ class _HookConfig:
 
 
 def _load_hook_config(working_dir: Optional[Path]) -> _HookConfig:
-    """Merge global hooks.json with workspace .agent/hooks.json.
+    """Merge global hooks.json with workspace .codingAgent/hooks.json.
 
     Workspace entries take precedence by being appended last (evaluated first
     in ``_run_hooks`` which stops on first match).
@@ -79,8 +79,8 @@ def _load_hook_config(working_dir: Optional[Path]) -> _HookConfig:
     If no hooks.json exists in the workspace, the loader also checks for the
     shell stubs scaffolded by ``codingagent init``:
 
-    - ``.agent/hooks/pre_tool.sh``  → implicit wildcard pre-tool hook
-    - ``.agent/hooks/post_tool.sh`` → implicit wildcard post-tool hook
+    - ``.codingAgent/hooks/pre_tool.sh``  → implicit wildcard pre-tool hook
+    - ``.codingAgent/hooks/post_tool.sh`` → implicit wildcard post-tool hook
 
     The stubs are auto-wired only when neither the global nor the workspace
     ``hooks.json`` provides any entries for the corresponding hook type, so
@@ -100,7 +100,7 @@ def _load_hook_config(working_dir: Optional[Path]) -> _HookConfig:
         except Exception as exc:
             logger.debug("tool_hooks: failed to load %s: %s", path, exc)
 
-    # Auto-detect .localAgent/hooks/pre_tool.sh / post_tool.sh stubs (from
+    # Auto-detect .codingAgent/hooks/pre_tool.sh / post_tool.sh stubs (from
     # `codingagent init`) when no hooks.json entries exist for that hook type.
     if working_dir is not None:
         # Resolve the configured agent-context directory using the central

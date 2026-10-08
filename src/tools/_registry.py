@@ -524,7 +524,7 @@ def build_registry(
             logger.warning("build_registry: discover failed for %r: %s", mod, exc)
 
     # Load plugin tools declared in config (plugin_tools key in providers.json /
-    # .agent/config.json).  Each entry is a dotted module path whose @tool-decorated
+    # .codingAgent/config.json).  Each entry is a dotted module path whose @tool-decorated
     # functions are discovered at startup.
     try:
         from src.core.config_loader import get as _cfg_get

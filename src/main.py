@@ -157,7 +157,7 @@ def _parse_args(argv: list) -> argparse.Namespace:
     mcp_list.add_argument("--json", action="store_true")
     mcp_status = mcp_sub.add_parser("status", help="Show configured MCP servers (no live connections headlessly).")
     mcp_status.add_argument("--json", action="store_true")
-    mcp_add = mcp_sub.add_parser("add", help="Add an MCP server to .agent/config.json.")
+    mcp_add = mcp_sub.add_parser("add", help="Add an MCP server to .codingAgent/config.json.")
     mcp_add.add_argument("name")
     mcp_add.add_argument("cmd", nargs=argparse.REMAINDER)
 
@@ -255,13 +255,13 @@ def _parse_args(argv: list) -> argparse.Namespace:
         default=None,
         help="Block any tool whose name starts with PREFIX (case-insensitive).",
     )
-    # UX-2: --validate-config — validate .agent/settings.json without running the agent
+    # UX-2: --validate-config — validate .codingAgent/settings.json without running the agent
     parser.add_argument(
         "--validate-config",
         action="store_true",
         default=False,
         help=(
-            "Validate .agent/settings.json (and settings.local.json) for the "
+            "Validate .codingAgent/settings.json (and settings.local.json) for the "
             "working directory and print a summary.  Exits 0 on success, 1 on error."
         ),
     )

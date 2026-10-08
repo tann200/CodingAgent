@@ -425,7 +425,7 @@ def _create_session_snapshot_impl(orch: Any) -> None:
 
 
 def _ensure_working_dir_impl(orch: Any) -> None:
-    """Ensure the working directory and .localAgent scaffold exist."""
+    """Ensure the working directory and .codingAgent scaffold exist."""
     start_ts = time.time()
     try:
         orch.working_dir.mkdir(parents=True, exist_ok=True)

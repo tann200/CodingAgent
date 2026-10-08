@@ -93,8 +93,9 @@ def _add_server(workdir: str, name: str, cmd: list) -> int:
         print("Error: command contains unsafe shell characters", file=sys.stderr)
         return 1
 
-    agent_dir = Path(workdir) / ".agent"
-    agent_dir.mkdir(parents=True, exist_ok=True)
+    from src.tools.tools_config import agent_context_path
+
+    agent_dir = agent_context_path(Path(workdir))
     config_path = agent_dir / "config.json"
     cfg: dict = {}
     if config_path.exists():

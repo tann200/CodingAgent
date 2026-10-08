@@ -245,10 +245,24 @@ class TestMcpSubcommand:
             )
             == 0
         )
-        cfg_path = tmp_path / ".agent" / "config.json"
+        cfg_path = tmp_path / ".codingAgent" / "config.json"
         assert cfg_path.exists()
         cfg = json.loads(cfg_path.read_text())
         assert cfg["mcp"]["servers"][0]["name"] == "my_srv"
+
+    def test_mcp_add_roundtrips_through_loader(self, tmp_path):
+        assert (
+            mcp_cmd.run_mcp(
+                _parse_args(
+                    ["mcp", "--workdir", str(tmp_path), "add", "my_srv", "npx", "-y", "@x/mcp"]
+                )
+            )
+            == 0
+        )
+        from src.core.config_loader import get_mcp_servers
+
+        servers = get_mcp_servers(working_dir=tmp_path)
+        assert [s["name"] for s in servers if s.get("name") == "my_srv"] == ["my_srv"]
 
 
 # --------------------------------------------------------------------------
