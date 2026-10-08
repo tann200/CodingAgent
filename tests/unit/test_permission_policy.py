@@ -370,3 +370,71 @@ class TestSingleton:
         """The default singleton must deny doom_loop even without a config file."""
         policy = get_permission_policy()
         assert policy.check(DOOM_LOOP_TOKEN) == Behavior.DENY
+
+
+# ---------------------------------------------------------------------------
+# matching_rule / add_rule (post-audit defect batch: permissions.json
+# enforcement at the main tool gate)
+# ---------------------------------------------------------------------------
+
+
+class TestMatchingRule:
+    def test_no_matching_rule_returns_none(self):
+        policy = PermissionPolicy([PermissionRule(pattern="bash", behavior=Behavior.DENY)])
+        assert policy.matching_rule("read_file") is None
+
+    def test_explicit_rule_is_distinguished_from_default_allow(self):
+        # check() returns ALLOW both for "matched allow rule" and "default
+        # fallback"; matching_rule must only fire for the explicit rule.
+        empty = PermissionPolicy()
+        assert empty.check("git_commit") == Behavior.ALLOW
+        assert empty.matching_rule("git_commit") is None
+
+        allowed = PermissionPolicy(
+            [PermissionRule(pattern="git_commit", behavior=Behavior.ALLOW)]
+        )
+        assert allowed.matching_rule("git_commit") is not None
+        assert allowed.matching_rule("git_commit").behavior == Behavior.ALLOW
+
+    def test_last_matching_rule_wins(self):
+        policy = PermissionPolicy(
+            [
+                PermissionRule(pattern="*", behavior=Behavior.DENY),
+                PermissionRule(pattern="read_file", behavior=Behavior.ALLOW),
+            ]
+        )
+        matched = policy.matching_rule("read_file")
+        assert matched is not None and matched.behavior == Behavior.ALLOW
+        matched_other = policy.matching_rule("bash")
+        assert matched_other is not None and matched_other.behavior == Behavior.DENY
+
+    def test_glob_and_case_insensitive(self):
+        policy = PermissionPolicy(
+            [PermissionRule(pattern="write_*", behavior=Behavior.ASK)]
+        )
+        matched = policy.matching_rule("WRITE_FILE")
+        assert matched is not None and matched.behavior == Behavior.ASK
+
+
+class TestAddRule:
+    def test_add_rule_appends_and_takes_precedence(self):
+        policy = PermissionPolicy(
+            [PermissionRule(pattern="*", behavior=Behavior.DENY)]
+        )
+        policy.add_rule(
+            PermissionRule(pattern="bash", behavior=Behavior.ALLOW)
+        )
+        assert policy.is_denied("bash") is False  # last match wins
+        assert policy.is_denied("write_file") is True
+        assert len(policy) == 2
+
+    def test_add_rule_roundtrips_through_save(self, tmp_path):
+        policy = PermissionPolicy()
+        policy.add_rule(
+            PermissionRule(pattern="git_commit", behavior=Behavior.ALLOW)
+        )
+        out = tmp_path / "permissions.json"
+        policy.save(path=out)
+        reloaded = PermissionPolicy.load(path=out)
+        matched = reloaded.matching_rule("git_commit")
+        assert matched is not None and matched.behavior == Behavior.ALLOW

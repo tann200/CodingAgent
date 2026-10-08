@@ -737,7 +737,7 @@ class AppToolHandlersMixin(AgentAppProtocol):
                     )
 
                     policy = get_permission_policy()
-                    policy.add_rule(  # type: ignore[attr-defined]
+                    policy.add_rule(
                         PermissionRule(pattern=tool_name, behavior=Behavior.ALLOW)
                     )
                     policy.save()

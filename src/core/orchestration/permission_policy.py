@@ -148,8 +148,10 @@ class PermissionPolicy:
 
     Thread safety
     -------------
-    Instances are effectively immutable after construction — ``_rules`` is
-    never mutated after ``__init__``.  Concurrent reads are safe.
+    ``_rules`` is only ever *rebound* to a new tuple (never mutated in
+    place), so concurrent reads are safe; two concurrent ``add_rule``
+    calls could lose one update (read-modify-write), which matches the
+    existing single-writer usage (TUI settings actions).
     """
 
     def __init__(
@@ -189,6 +191,29 @@ class PermissionPolicy:
     def requires_confirmation(self, tool_name: str) -> bool:
         """Return True if the tool should prompt the user before executing."""
         return self.check(tool_name) == Behavior.ASK
+
+    def matching_rule(self, tool_name: str) -> Optional[PermissionRule]:
+        """Return the last rule matching *tool_name*, or None when unmatched.
+
+        Unlike ``check``/``is_denied`` — which fall back to the default
+        behavior — this distinguishes an *explicit* operator rule from the
+        open-by-default fallback.  Callers need that to tell "the operator
+        wrote an ALLOW rule for this tool" (TUI "Allow Always") from "no rule
+        cares", because the fallback default is also ALLOW.
+        """
+        matched: Optional[PermissionRule] = None
+        for rule in self._rules:
+            if rule.matches(tool_name):
+                matched = rule
+        return matched
+
+    def add_rule(self, rule: PermissionRule) -> None:
+        """Append *rule* to the policy.
+
+        Rules evaluate in order with last-match-wins semantics, so a newly
+        appended rule overrides earlier ones for the tools it matches.
+        """
+        self._rules = self._rules + (rule,)
 
     # ------------------------------------------------------------------
     # Doom-loop integration (PERM-05)

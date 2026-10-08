@@ -1135,22 +1135,45 @@ def _check_agent_permission_override(
     name: str,
     args: dict,
 ) -> Optional[Dict[str, Any]]:
-    """Apply per-agent permission rules; returns error dict if denied."""
+    """Apply global + per-agent permission rules; returns error dict if denied."""
     try:
         active_agent = getattr(orch, "active_agent", None)
-        if active_agent is not None:
-            global_policy = getattr(orch, "permission_policy", None)
-            merged_policy = active_agent.get_merged_policy(global_policy)
-            if merged_policy is not None and merged_policy.is_denied(name):
-                _write_permission_audit(
-                    orch.working_dir, name, args, "deny", "agent_permission_rules"
+        global_policy = getattr(orch, "permission_policy", None)
+        if global_policy is None:
+            # The orchestrator never assigns .permission_policy, so without
+            # this fallback the operator's permissions.json (TUI "Allow
+            # Always" grants and hand-written DENY rules) was write-only at
+            # the main gate — only the doom-loop guard ever read it.
+            try:
+                from src.core.orchestration.permission_policy import (
+                    get_permission_policy,
                 )
-                return {
-                    "ok": False,
-                    "error": (
-                        f"Tool '{name}' is denied by the active agent's permission rules."
-                    ),
-                }
+
+                global_policy = get_permission_policy()
+            except Exception as exc:
+                guilogger.warning(
+                    "tool_execution_pipeline: permission policy unavailable "
+                    "(continuing without global rules): %s",
+                    exc,
+                )
+                global_policy = None
+        if active_agent is not None:
+            # PERM-W4: agent rules append after global rules (last-match-wins).
+            merged_policy = active_agent.get_merged_policy(global_policy)
+        else:
+            # Global DENY rules must apply even without an active agent.
+            merged_policy = global_policy
+        if merged_policy is not None and merged_policy.is_denied(name):
+            _write_permission_audit(
+                orch.working_dir, name, args, "deny", "agent_permission_rules"
+            )
+            return {
+                "ok": False,
+                "error": (
+                    f"Tool '{name}' is denied by permission rules "
+                    "(permissions.json / agent overrides)."
+                ),
+            }
     except Exception as e:
         guilogger.error(
             "tool_execution_pipeline: _check_agent_permission_override failed (fail-closed): %s",
@@ -1170,7 +1193,41 @@ def _run_permission_gate(
     tool_call_id: str,
     needs_gate: bool,
 ) -> Optional[Dict[str, Any]]:
-    """Run the approval gate when needed."""
+    """Run the approval gate when needed.
+
+    The global permissions.json policy (PermissionPolicy) reconciles the
+    decision, so TUI "Allow Always" grants and hand-written rules actually
+    take effect at this gate:
+
+    - an explicit DENY rule hard-denies (both modes),
+    - an explicit ASK rule forces the prompt (both modes — autonomous mode
+      then fails closed unless the tool is on the HS-1 allowlist),
+    - an explicit ALLOW rule skips the prompt *interactive only* (the
+      "Allow Always" promise).  Autonomous mode still requires the HS-1
+      ``autonomous_approval_allowed`` allowlist — permissions.json is a
+      second, independent suppression channel and must not become an HS-1
+      bypass — and ``delete_file`` is never suppressed (HS-5/SEC-8).
+    """
+    matched_rule = None
+    try:
+        from src.core.orchestration.permission_policy import (
+            Behavior,
+            get_permission_policy,
+        )
+
+        matched_rule = get_permission_policy().matching_rule(name)
+    except Exception:
+        matched_rule = None
+
+    if matched_rule is not None and matched_rule.behavior == Behavior.DENY:
+        return {
+            "ok": False,
+            "error": f"Tool '{name}' is denied by a permissions.json rule.",
+        }
+
+    if matched_rule is not None and matched_rule.behavior == Behavior.ASK:
+        needs_gate = True
+
     if not needs_gate:
         return None
 
@@ -1202,6 +1259,15 @@ def _run_permission_gate(
                 "CODINGAGENT_AUTONOMOUS_APPROVE env var to auto-approve it."
             ),
         }
+
+    # Interactive mode only (autonomous handled above via HS-1): an explicit
+    # ALLOW rule is the operator's persistent "don't ask me again".
+    if (
+        matched_rule is not None
+        and matched_rule.behavior == Behavior.ALLOW
+        and name != "delete_file"
+    ):
+        return None
 
     gate_event = None
     try:
