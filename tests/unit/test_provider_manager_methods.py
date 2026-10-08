@@ -16,6 +16,7 @@ Coverage targets
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -23,6 +24,26 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from src.core.inference.llm_manager import ProviderManager
+
+
+@pytest.fixture(autouse=True)
+def _isolated_providers_json(tmp_path, monkeypatch):
+    """Resolve providers.json to a temp copy for every test in this module.
+
+    test_on_model_routing_no_event_bus_does_not_raise exercised the
+    cross-provider persist path unpatched and wrote to the COMMITTED
+    src/config/providers.json (flipping the active provider) while the
+    suite stayed green. The copy keeps read/persist behaviour identical
+    without corrupting repo state.
+    """
+    real = Path(__file__).resolve().parent.parent.parent / "src" / "config" / "providers.json"
+    sandbox = tmp_path / "providers.json"
+    sandbox.write_text(real.read_text(encoding="utf-8"), encoding="utf-8")
+
+    def _resolve(path: str | None = None) -> Path:
+        return Path(path) if path else sandbox
+
+    monkeypatch.setattr("src.core.inference.llm_manager.resolve_config_path", _resolve)
 
 
 # ---------------------------------------------------------------------------

@@ -2,11 +2,34 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from src.core.inference.llm_manager import ProviderManager
+
+
+@pytest.fixture(autouse=True)
+def _isolated_providers_json(tmp_path, monkeypatch):
+    """Resolve providers.json to a temp copy for every test in this module.
+
+    _on_model_routing's cross-provider branch persists the active flag via
+    resolve_config_path(); unpatched, these tests wrote to the COMMITTED
+    src/config/providers.json (flipping lmstudio true->false, ollama
+    false->true — and, with an unknown provider key, all flags false) while
+    the suite stayed green. The copy keeps read/persist behaviour identical
+    without corrupting repo state.
+    """
+    real = Path(__file__).resolve().parent.parent.parent / "src" / "config" / "providers.json"
+    sandbox = tmp_path / "providers.json"
+    sandbox.write_text(real.read_text(encoding="utf-8"), encoding="utf-8")
+
+    def _resolve(path: str | None = None) -> Path:
+        return Path(path) if path else sandbox
+
+    monkeypatch.setattr("src.core.inference.llm_manager.resolve_config_path", _resolve)
 
 
 def _make_manager_with_bus() -> tuple[ProviderManager, MagicMock]:
@@ -150,3 +173,47 @@ class TestIntegration:
         subscribed_handlers["model.routing"]({"selected": "claude-3-7-sonnet", "provider": "anthropic"})
 
         assert adapter.default_model == "claude-3-7-sonnet"
+
+
+class TestPersistActiveProviderAtomic:
+    """P1-7/P3-3: the llm_manager-side providers.json writer (the second live
+    writer, alongside tui/src/ui/app.py::_activate_provider) must be atomic
+    (mkstemp + os.replace) and confined to the configured path."""
+
+    def test_persists_flags_to_configured_path_only(self, tmp_path):
+        cfg = tmp_path / "providers.json"
+        cfg.write_text(
+            json.dumps(
+                [
+                    {"name": "lm-studio", "type": "openai", "active": True},
+                    {"name": "ollama", "type": "ollama", "active": False},
+                ]
+            ),
+            encoding="utf-8",
+        )
+        pm = ProviderManager(providers_config_path=str(cfg))
+
+        assert pm._persist_active_provider("ollama") is True
+
+        entries = json.loads(cfg.read_text(encoding="utf-8"))
+        assert {e["name"]: e["active"] for e in entries} == {
+            "lm-studio": False,
+            "ollama": True,
+        }
+        # Atomic swap leaves no temp residue behind.
+        assert list(tmp_path.glob("*.tmp")) == []
+        # Nothing else was written beside the configured file.
+        assert {p.name for p in tmp_path.iterdir()} == {"providers.json"}
+
+    def test_unknown_target_clears_all_active_flags(self, tmp_path):
+        cfg = tmp_path / "providers.json"
+        cfg.write_text(
+            json.dumps([{"name": "ollama", "type": "ollama", "active": True}]),
+            encoding="utf-8",
+        )
+        pm = ProviderManager(providers_config_path=str(cfg))
+
+        assert pm._persist_active_provider("no_such_provider") is True
+        entries = json.loads(cfg.read_text(encoding="utf-8"))
+        assert entries[0]["active"] is False
+        assert list(tmp_path.glob("*.tmp")) == []

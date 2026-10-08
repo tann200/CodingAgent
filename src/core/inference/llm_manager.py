@@ -27,6 +27,7 @@ from typing import (
 from pathlib import Path
 import json
 import inspect
+import tempfile
 
 # Prefer the central project logger so all components share the same logging pipeline.
 # If the central logger isn't importable (tests or early import), fall back to the standard
@@ -607,10 +608,20 @@ class ProviderManager(ProviderManagerProtocol):
                         p["active"] = should_be_active
                         changed = True
                 if changed:
-                    cfg_path.write_text(
-                        json.dumps(providers if isinstance(raw, list) else providers[0], indent=2),
-                        encoding="utf-8",
+                    new_text = json.dumps(
+                        providers if isinstance(raw, list) else providers[0], indent=2
                     )
+                    fd, tmp = tempfile.mkstemp(dir=cfg_path.parent, suffix=".tmp")
+                    try:
+                        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                            fh.write(new_text)
+                        os.replace(tmp, cfg_path)
+                    except Exception:
+                        try:
+                            os.unlink(tmp)
+                        except OSError:
+                            pass
+                        raise
             return True
         except Exception as exc:
             import logging as _logging
