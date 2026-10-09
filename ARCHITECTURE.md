@@ -63,7 +63,7 @@ Graph checkpoints can persist and rehydrate graph state. They improve crash reco
 
 - `_file_io.py`, `_edit_tools.py`, `patch_tools.py`, and `repo_write_tools.py` for workspace modification.
 - `_bash_exec.py`, `bash_security.py`, and `sandbox.py` for command execution.
-- `repo_read_tools.py`, `symbol_reader.py`, `lsp_tools.py`, and `project_tools.py` for repository inspection.
+- `repo_read_tools.py`, `lsp_tools.py`, and `project_tools.py` for repository inspection.
 - `verification_tools.py`, `lint_dispatch.py`, and `formatter.py` for validation.
 - `memory_tools.py`, `todo_tools.py`, `plan_mode_tools.py`, and `subagent_tools.py` for agent state and workflow support.
 
@@ -74,7 +74,7 @@ Direct `ToolRegistry.call()` does not provide the complete pipeline guarantees. 
 - `src/core/context/` constructs prompts from task messages, tool descriptions, skills, optional prior-session context, LSP context, and retrieved snippets.
 - `src/core/memory/` provides JSONL and SQLite session stores, summaries/distillation, compaction, snapshots, and sidecar diagnostics.
 - `src/core/indexing/` extracts symbols and maintains a repository index, with optional embedding support. Current fallback retrieval is symbol and path oriented rather than a complete semantic code-chunk index.
-- `src/core/skills/`, `src/config/agent-brain/roles/`, and `src/config/agent-brain/skills/` supply prompt-time role and skill content.
+- `src/config/agent-brain/roles/` and `src/config/agent-brain/skills/` supply prompt-time role and skill content.
 
 ### Providers And Evaluation
 
@@ -92,7 +92,7 @@ Direct `ToolRegistry.call()` does not provide the complete pipeline guarantees. 
 
 Project-local runtime configuration is read from `.codingAgent/`. User-level preferences, provider credentials, session history, checkpoints, indexes, summaries, metrics, and audit/trace records are managed by their respective core services. Never assume session data is safe to expose to an LLM or remote client without redaction.
 
-Configuration has historical inconsistency: `codingagent init` and active configuration resolution use `.codingAgent`, while `codingagent mcp add` currently writes `.agent/config.json`. Treat the former as canonical until this is reconciled.
+Project-local configuration is resolved from `.codingAgent/config.json`. `codingagent init`, `codingagent mcp add`, and active configuration resolution all use that directory; the legacy `.agent` and `.localAgent` names are not used.
 
 ## Trust Boundaries
 

@@ -26,6 +26,8 @@ The highest-risk design problem is a mismatch between available and selected con
 
 **Deployment conclusion:** use only for supervised local work in a trusted workspace. Do not expose the HTTP server, grant broad autonomous approval, or rely on sandboxing as a host-security boundary before the Phase 1 fixes are complete.
 
+**Remediation note:** this report was authored against an earlier revision. Section 15 reconciles every Phase 1 and section-4 High finding with the current tree (status, current source evidence, and the commits that changed it). Treat §15 as the current status of these findings.
+
 ## 2. Architecture Strengths
 
 - `src/main.py` separates CLI dispatch from the Textual UI; the runtime UI communicates with core services through bridge/event abstractions.
@@ -189,6 +191,72 @@ The source mirror is currently identical, but maintaining both `tui/src` and `tu
 | Make completion, sandbox, SSRF, secrets, rollback, server isolation, providers, and timeout termination required CI scenarios. | tests and CI      |     Medium | Prevents high-risk regressions.                        |
 | Create repository-scale evaluation for retrieval, plans, edits, recovery, and tool safety.                                     | evaluation and CI |       High | Measures actual agent quality.                         |
 | Wire or remove dormant subsystems and consolidate the TUI mirror.                                                              | core and `tui/`   |     Medium | Reduces maintenance and misleading capability surface. |
+
+## 15. Remediation Status Against the Current Tree
+
+The findings above were authored against an earlier revision. The current working
+tree additionally contains a remediation branch that the audit authors could not
+see. This section reconciles the two. **Every status below was re-verified by
+reading the current source**; the paths and line numbers are current, not the
+audit's original citations.
+
+Status legend: **FIXED** — the cited defect is no longer present; **PARTIAL** —
+the primary risk is mitigated but the audit's stated contract is not fully met;
+**OPEN** — the defect is present as described.
+
+### Phase 1 — Critical Stability Fixes
+
+| # | Item | Status | Current evidence | Commits |
+| - | ---- | ------ | ---------------- | ------- |
+| 1 | Evidence-based completion + minimum verification on every tier | **OPEN** (partial) | `frontier_loop_node.py:783-796` still sets `ok=True, completed_without_tool=True, _completion_detected=True` on any no-tool turn (including empty text). `verification_node.py:76,130,138` still gates on `last_tool_name` and `_WRITE_TOOLS_ALWAYS_VERIFY`, not on `modified_files`/side effects. | Lite-tier verification parity `9bbf470`; in-loop verification checkpoint `d7e36b1` mitigate but do not close. |
+| 2 | Unavailable sandbox enforcement must deny by default; private temp | **PARTIAL** | `sandbox.py:452-480` falls back to plain `subprocess.run`; it refuses only when `_enforcement_required()` (`sandbox.py:515-524`) is true (env `SANDBOX_REQUIRE_ENFORCEMENT` **or** autonomous mode). Interactive default still fails open. bwrap still bind-mounts host `/tmp` (`sandbox.py:311-317`). | — |
+| 3 | Protected paths + secret detection + universal redaction | **OPEN** | No redaction exists anywhere in `src/` (`rg redact src` → 0 hits). `tool_execution_pipeline.py` has no secret scan. `WorkspaceGuard` protects paths only for `write_file`/`delete_file` (`_file_io.py:176-177,472-473`), not reads, prompts, traces, or events. | — |
+| 4 | Server workspace roots + bounded admission + cancellation-before-start | **OPEN** (partial) | `submit_task` accepts `request_body.working_dir` with no approved-root check (`task_endpoints.py:217-254`) and `orchestrator_factory(working_dir, model)` builds an `Orchestrator` for it (`:164`). Worker count is bounded (`max_workers=10`, `:33-36`) but the executor queue is unbounded. `_run_task_thread` marks RUNNING (`:151`) and builds the orchestrator (`:164`) before any `cancel_event` check (the event is only threaded into `run_agent_once` at `:182`). | — |
+| 5 | Redirect-hop / peer-address SSRF validation | **OPEN** | `web_tools.py:304-308` calls `requests.get(url, ...)` with default redirect following; only the initial URL is checked (`_is_ssrf_blocked(url)`, `:294`). No `allow_redirects=False` and no per-hop validation. | — |
+| 6a | SQLite session deletion correctness | **OPEN** | `sqlite_session_store.py:758-769` issues `DELETE FROM session_children WHERE session_id=?`, but that table's key is `parent_session_id` (`sqlite_store_session_ops.py:14,103-107`) → `no such column` raises and the transaction never commits. | — |
+| 6b | LSP prompt context for real `SymbolGraph` data | **OPEN** | `lsp_context.py:56-75` iterates `file_node["symbols"]` and calls `.get()` on each value, but those values are the lists `"classes"`/`"functions"` (`symbol_graph.py:229-230,317`) → `AttributeError` swallowed at `:76` → block is always empty. | — |
+| 6c | Incremental index refresh | **PARTIAL** | `repo_indexer.refresh_file_in_index` now rebuilds the flat top-level `symbols` list (`:651-665`) — the symbol-search staleness is fixed. It still replaces the normalized file entry `{"path","language","imports"}` (`:380-386`) with raw parser output (`:645 files_list[i] = parsed`), so the entry-schema part of the finding remains. | `976813a` (P1.2) |
+
+### Section 4 — High-Risk Safety (High rows)
+
+| Finding | Status | Current evidence |
+| ------- | ------ | ---------------- |
+| Sandbox falls back to unrestricted host execution | **PARTIAL** | Same as Phase 1 item 2. |
+| Linux sandbox shares writable host `/tmp` | **OPEN** | `sandbox.py:311-317` binds `/tmp` into the namespace. |
+| Redirects bypass SSRF validation | **OPEN** | Same as Phase 1 item 5. |
+| Server tasks may select arbitrary host directories | **OPEN** | Same as Phase 1 item 4. |
+| Raw `ToolRegistry.call()` bypasses central enforcement | **OPEN** | `_registry.py:305-316` unchanged. The guarded entry point remains `Orchestrator.execute_tool()` / `tool_execution_pipeline.py`; no runtime restriction prevents direct calls. |
+| Secret-bearing content can enter prompts, sessions, and logs | **OPEN** | Same as Phase 1 item 3. |
+| Prior-session memory inserted without the safety scanner | **OPEN** | `memory/security.py:63` provides `scan_memory_content`, but the retrieval path in `context_builder.py` does not call it; only the explicit `memory_save` path scans. |
+| `rename_file` can overwrite a destination | **OPEN** | `_file_io.py:581-586` calls `src_resolved.rename(dst_resolved)` with no destination-exists check, no `WorkspaceGuard`, and no snapshot; `dst_resolved.parent.mkdir` runs first. |
+| Fallback file locking can evict a live holder | **OPEN** | `file_lock.py:243-253`: on a successful `os.kill(pid, 0)` (owner alive) it still reclaims when `same_host or too_old`. |
+| Parallel delegation re-enters one `Context` concurrently | **OPEN** | `subagent_tools.py:1034` creates one `copy_context()` reused by every worker via `_ctx.run` (`:1039`, pool at `:1071-1072`). |
+
+### Additional findings already resolved in the current tree
+
+| Audit reference | Status | Evidence / commit |
+| --------------- | ------ | ----------------- |
+| §11 `codingagent mcp add` writes `.agent/config.json` | **FIXED** | `cli/mcp_cmd.py` now writes through `agent_context_path(workdir)` (`.codingAgent`); round-trip covered by `tests/unit/test_cli_subcommands.py::test_mcp_add_roundtrips_through_loader`. Commit `0c67999`. |
+| §8 incremental index symbol staleness | **FIXED** | `repo_indexer.refresh_file_in_index` rebuilds top-level `symbols` (`:651-665`). Commit `976813a`. |
+| §13 dormant skills island (`SkillLoader`/`SkillRegistry`), `symbol_reader`, `role_tools` | **REMOVED** | Deleted with ~1,000 lines of unreachable production code and their tests. Commits `51660eb`, `6dcd1a9`, `62e9480`. |
+| §7 `symbol_reader.read_file_chunked` external-path read | **N/A** | Module deleted (see above). |
+| §3 lite/small paths skip verification | **FIXED** (partial) | Lite tier now shares verification (commit `9bbf470`). |
+| §11 config reload / `.agent` vs `.codingAgent` reconciliation | **PARTIAL** | Workspace config chain consolidated on `.codingAgent` (commit `0c67999`); `ConfigReloader` lifecycle issues in §11 are not addressed. |
+
+### Still-open tool/read defects (unchanged)
+
+- `tail_log_file` reads the whole file for large `lines` and reports byte size as
+  `total_lines` (`_file_io.py:707-712,728-733`).
+- Tool schemas still do not reject undeclared fields (`_tool.py`) — not reassessed.
+
+### Method note
+
+Statuses were established by direct source inspection of the files and line
+ranges listed above on the current tree, supplemented by `git log` of the
+remediation branch. No assertion above relies on the deleted historical
+documentation. Where a finding was not re-verified (e.g. schema
+`additionalProperties`), it is marked "not reassessed" rather than presumed
+fixed.
 
 ## Appendix: TUI Defects
 
