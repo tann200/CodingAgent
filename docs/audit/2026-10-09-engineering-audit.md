@@ -156,14 +156,18 @@ The source mirror is currently identical, but maintaining both `tui/src` and `tu
 
 ### Phase 1 - Critical Stability Fixes
 
-| Task                                                                                   | Location                                              | Complexity | Expected impact                                            |
-| -------------------------------------------------------------------------------------- | ----------------------------------------------------- | ---------: | ---------------------------------------------------------- |
-| Add evidence-based completion contracts and minimum verification to every tier.        | graph builder, frontier, verification, evaluation     |       High | Stops false success and unverified edits.                  |
-| Make unavailable sandbox enforcement deny by default; isolate temporary storage.       | `sandbox.py`, `_bash_exec.py`                         |     Medium | Prevents host-privilege shell execution.                   |
-| Add protected paths, secret detection, and universal redaction.                        | file tools, pipeline, context, memory, events, server |       High | Prevents credential disclosure.                            |
-| Enforce task-server workspace roots, bounded admission, and cancellation-before-start. | `server/task_endpoints.py`                            |     Medium | Prevents arbitrary-host access and queue abuse.            |
-| Validate redirect hops and peer addresses.                                             | `web_tools.py`                                        |     Medium | Closes SSRF redirect bypass.                               |
-| Repair SQLite session deletion, LSP context, and incremental index refresh.            | memory/indexing modules                               |     Medium | Restores persistence and repository awareness correctness. |
+Status is reconciled against the current tree in §15 (with source evidence).
+`OPEN` = present as described; `PARTIAL` = primary risk mitigated, contract not
+fully met; `MIXED` = sub-items differ.
+
+| Task                                                                                   | Location                                              | Complexity | Expected impact                                            | Status |
+| -------------------------------------------------------------------------------------- | ----------------------------------------------------- | ---------: | ---------------------------------------------------------- | ------ |
+| Add evidence-based completion contracts and minimum verification to every tier.        | graph builder, frontier, verification, evaluation     |       High | Stops false success and unverified edits.                  | OPEN |
+| Make unavailable sandbox enforcement deny by default; isolate temporary storage.       | `sandbox.py`, `_bash_exec.py`                         |     Medium | Prevents host-privilege shell execution.                   | PARTIAL |
+| Add protected paths, secret detection, and universal redaction.                        | file tools, pipeline, context, memory, events, server |       High | Prevents credential disclosure.                            | OPEN |
+| Enforce task-server workspace roots, bounded admission, and cancellation-before-start. | `server/task_endpoints.py`                            |     Medium | Prevents arbitrary-host access and queue abuse.            | OPEN |
+| Validate redirect hops and peer addresses.                                             | `web_tools.py`                                        |     Medium | Closes SSRF redirect bypass.                               | OPEN |
+| Repair SQLite session deletion, LSP context, and incremental index refresh.            | memory/indexing modules                               |     Medium | Restores persistence and repository awareness correctness. | MIXED |
 
 ### Phase 2 - Robustness Improvements
 
