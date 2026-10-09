@@ -52,22 +52,29 @@ def _get_symbols(workdir: Path) -> List[Dict[str, Any]]:
 
         sg = SymbolGraph(workdir=str(workdir))
         symbols = []
-        # SymbolGraph.nodes is file-level: {file_path: {"symbols": {sym_id: {...}}}}
+        # SymbolGraph.nodes is file-level:
+        # {file_path: {"symbols": {"classes": [..], "functions": [..], "imports": [..]}}}
+        # ``classes`` and ``functions`` are lists of {name, line, ...} dicts, not
+        # maps, so iterate the lists directly.
         for file_path, file_node in sg.nodes.items():
-            file_symbols = file_node.get("symbols", {})
-            for sym_id, sym_data in file_symbols.items():
-                kind = sym_data.get("type", "")
-                name = sym_data.get("name", "")
-                line = sym_data.get("line", 0)
-                if name and kind in ("function", "class", "method"):
-                    symbols.append(
-                        {
-                            "name": name,
-                            "kind": kind,
-                            "file": file_path,
-                            "line": line,
-                        }
-                    )
+            file_symbols = file_node.get("symbols") or {}
+            for kind, key in (("class", "classes"), ("function", "functions")):
+                entries = file_symbols.get(key) or []
+                if not isinstance(entries, list):
+                    continue
+                for entry in entries:
+                    if not isinstance(entry, dict):
+                        continue
+                    name = entry.get("name", "")
+                    if name:
+                        symbols.append(
+                            {
+                                "name": name,
+                                "kind": kind,
+                                "file": file_path,
+                                "line": entry.get("line", 0),
+                            }
+                        )
         # Sort: classes first, then functions, by file then name
         symbols.sort(
             key=lambda s: (0 if s["kind"] == "class" else 1, s["file"], s["name"])
