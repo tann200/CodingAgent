@@ -1,341 +1,86 @@
 # CodingAgent
 
-A local-first autonomous coding agent built on LangGraph. Runs on local LLMs (LM Studio, Ollama) or cloud providers (OpenRouter, OpenAI, Anthropic, GitHub Copilot, Groq, LiteLLM). No cloud dependency required.
+CodingAgent is a local Python coding agent with a Textual terminal UI and a headless CLI. It runs LLM-backed coding tasks against a selected working directory, exposing file, patch, shell, repository, LSP, planning, memory, and verification tools through an orchestration layer.
 
-## Features
-
-- **LangGraph pipeline** — 16-node cognitive pipeline (perception → analysis → planning → execution → verification → evaluation)
-- **60+ tools** — auto-discovered via `@tool` decorator: file ops, git, web, AST, repo search, verification, memory, subagents
-- **Production TUI** — Textual-based terminal UI with streaming, per-tool icons, diff preview, slash commands
-- **Multi-agent delegation** — `delegate_task` spawns role-specific subagents (analyst, operational, strategic, reviewer, debugger)
-- **Security** — bwrap sandbox, 3-tier bash allowlist, workspace scope guard, read-before-write enforcement
-- **Memory** — SQLite session store, vector store-based semantic search, context distiller, auto-compactor
-- **Repository intelligence** — SHA-256 incremental indexing, symbol graph, semantic code search
-- **Model tiers** — NANO (8 tools) → FRONTIER (60 tools) based on model capability
-- **Session fork/revert** — branch sessions for experimental changes
+This document is generated from the live codebase. For architecture, see [ARCHITECTURE.md](ARCHITECTURE.md). For the current engineering assessment, see [docs/audit/2026-10-09-engineering-audit.md](docs/audit/2026-10-09-engineering-audit.md).
 
 ## Requirements
 
-Python 3.11+
+- Python 3.11 or later
+- A configured model provider. Provider configuration is loaded from `src/config/providers.json` and user preferences.
+- Optional server dependencies for HTTP/SSE/WebSocket support: `pip install -e '.[server]'`
 
-## Quick Start
-
-```bash
-# Install
-python3.11 -m venv .venv
-source .venv/bin/activate
-pip install -e .
-
-# Run TUI (recommended)
-python -m src.main
-
-# Headless mode
-python -m src.main --task "fix the bug" --workdir /path/to/repo
-```
-
-## Configuration
-
-Edit `src/config/providers.json`:
-
-```json
-[
-  {
-    "name": "lm_studio",
-    "type": "lm_studio",
-    "base_url": "http://localhost:1234/v1",
-    "models": ["gemma-4-e4b-it"],
-    "active": true
-  }
-]
-```
-
-Supported: `lm_studio`, `ollama`, `openrouter`, `openai`, `anthropic`, `github_copilot`, `groq`, `litellm`
-
-## CLI Usage
+Install the application and development dependencies:
 
 ```bash
-# Basic usage
-python -m src.main --task "your task"
-
-# Resume session
-python -m src.main --resume-session <session_id> --task "continue"
-
-# Dry run (preview only)
-python -m src.main --dry-run --task "refactor"
-
-# Output formats
-python -m src.main --task "fix bug" --output-format json
+python -m pip install -e '.[dev,server]'
 ```
 
-## Architecture
+The project metadata is authoritative for dependencies. `requirements.txt` exists for the legacy startup script and is not guaranteed to match the package constraints.
 
-### System Overview
+## Run
 
-```mermaid
-flowchart TB
-    %% Entry points
-    CLI[CLI / main.py] --> Orch[Orchestrator]
-    TUI[Textual TUI] --> Bridge[TUI Bridge]
-    HTTP[HTTP Server] --> Orch
-    Scheduler[Scheduler] --> Orch
-
-    %% Core pipeline
-    subgraph Core["Core Engine"]
-        Orch --> Graph[LangGraph Pipeline]
-        Graph --> Nodes[16 Cognitive Nodes]
-        Graph --> State[AgentState]
-        Graph --> Tools[ToolRegistry 60+]
-    end
-
-    %% Event system
-    subgraph Events["Event System"]
-        EB[EventBus<br/>string-based]
-        MB[MessageBus<br/>typed events]
-        Bridge --> EB
-        Bridge --> MB
-        Graph --> EB
-        EB -.->|dual emit| MB
-    end
-
-    %% Services
-    subgraph Services["Infrastructure Services"]
-        MM[MessageManager]
-        CTX[ContextBuilder]
-        MEM[Memory / SessionStore]
-        IDX[Repo Indexer / LSP]
-        MCP[MCP Client]
-        PRV[PreviewService]
-    end
-
-    %% Sources
-    subgraph Sources["Data Sources"]
-        SQL[(SQLite)]
-        VS[(Vector Store)]
-        FS[File System]
-        MCP_SRV[MCP Servers]
-    end
-
-    Orch --> Services
-    Graph --> Services
-    Services --> Sources
-    Nodes --> EB
-    TUI ---> UIComp[TUI Components]
-    EB --> TUI
-    MB --> Bridge
-```
-
-### Event System Architecture
-
-The event system has two cooperating buses. Phase 5 eliminated the separate `DualPublishBus` adapter by folding dual-emission directly into `EventBus`:
-
-```mermaid
-flowchart LR
-    %% Backend publishers
-    subgraph Publishers["Event Publishers"]
-        GN[Graph Nodes]
-        TE[Tool Execution]
-        SM[Session Manager]
-        CFG[Config Watcher]
-        ORC[Orchestrator]
-    end
-
-    %% EventBus
-    subgraph Bus["EventBus (orchestration/event_bus.py)"]
-        OLD[String subscribers<br/>publish(\"name\", dict)]
-        NEW[Typed emission<br/>publish_typed(Event(...))]
-        MAP[EVENT_NAME_TO_TYPED<br/>90+ event mappings]
-    end
-
-    %% MessageBus
-    MB[MessageBus<br/>typed Event handlers]
-
-    %% Consumers
-    subgraph Consumers["Consumers"]
-        TUI[Textual TUI Bridge]
-        HTTP[HTTP/SSE Server]
-        LOG[Logger / Telemetry]
-    end
-
-    Publishers --> OLD
-    OLD --> MAP -->|auto-build| MB
-    NEW --> MB
-    MB -->|to_dict| OLD
-
-    MB --> TUI
-    MB --> HTTP
-    OLD --> LOG
-    OLD --> HTTP
-```
-
-**Key design points:**
-- `EventBus.publish("name", dict)` delivers to old string subscribers **and** auto-emits a typed event on `MessageBus` via `_build_typed_event()`.
-- `EventBus.publish_typed(Event(...))` emits on `MessageBus` first, then delivers `event.to_dict()` to old string subscribers.
-- The bridge subscribes exclusively through `MessageBus` (typed events), with `_DictBridgeAdapter` converting typed events to dicts for existing handlers.
-- `get_event_bus()` returns `EventBus(typed_bus=get_typed_bus())` — no separate adapter wrapper.
-
-### Cognitive Pipeline
-
-```mermaid
-flowchart TD
-    P[perception] -->|route| A[analysis]
-    P -->|fast-path| E[execution]
-    P -->|overflow| MS[memory_sync]
-
-    A --> AD[analyst_delegation]
-    A --> PL[planning]
-
-    AD --> PL
-    PL --> PV[plan_validator]
-    PV -->|valid| E
-    PV -->|invalid| PL
-    PV --> WAIT[wait_for_user]
-
-    E --> SC[step_controller]
-    E -->|verify| V[verification]
-    E --> MS
-    E --> RP[replan]
-
-    SC --> E
-    SC --> V
-
-    V --> EV[evaluation]
-    RP --> SC
-    RP --> P
-
-    EV -->|pass| MS
-    EV -->|fail| DB[debug]
-    EV --> RP
-
-    DB -->|fixed| E
-    DB --> MS
-
-    MS -->|delegate| DL[delegation]
-    MS --> P
-    MS --> END((END))
-
-    WAIT -->|approve| E
-    WAIT --> P
-```
-
-### Component Overview
-
-| Component | File | Purpose |
-|-----------|------|---------|
-| Orchestrator | `src/core/orchestration/orchestrator.py` | Main agent class |
-| Graph Builder | `src/core/orchestration/graph/builder.py` | LangGraph compilation |
-| EventBus | `src/core/orchestration/event_bus.py` | Thread-safe event bus + typed dual-emission |
-| MessageBus | `src/core/messaging/bus.py` | Typed event delivery with error isolation |
-| Tool Registry | `src/tools/_registry.py` | Tool auto-discovery |
-| Context Builder | `src/core/context/context_builder.py` | Prompt building |
-| Model Tiers | `src/core/inference/model_tiers.py` | Tier classification |
-| TUI Bridge | `tui/src/ui/core_bridge.py` | TUI-backend connectivity |
-| Session Store | `src/core/memory/session_store.py` | SQLite persistence |
-
-### Pipeline Paths
-
-```
-Fast-path: perception → analysis → planning → plan_validator → wait_for_user/execution
-           → step_controller → verification → evaluation → memory_sync
-Full:     perception → analysis → planning → plan_validator → execution → verification → evaluation → memory_sync
-Frontier: perception → frontier_loop → verification → evaluation → memory_sync
-Overflow: perception → memory_sync → perception (context compaction)
-```
-
-The default compiled fast path is a ten-node graph. `replan`, `debug`, `delegation`, and `analyst_delegation` are frozen but selectable; the approval boundary routes through `wait_for_user`, never straight to `execution`.
-
-## Testing
+Launch the terminal UI:
 
 ```bash
-# Unit tests (no LLM required)
-pytest tests/unit -q
-
-# With specific test
-pytest tests/unit/test_tools_file_io.py -v
-
-# Benchmark tests
-pytest tests/benchmarks -v
+codingagent
 ```
 
-## Development
-
-### Adding a Tool
-
-```python
-from src.tools import tool
-
-@tool(side_effects=["write"], tags=["coding"])
-def my_tool(param: str) -> dict:
-    """Description shown to the LLM."""
-    return {"ok": True, "result": param}
-```
-
-### Running Tests
+Run one task without the UI:
 
 ```bash
-# All unit tests
-pytest tests/unit -q
-
-# Integration tests (requires running provider)
-RUN_INTEGRATION=1 pytest tests/integration -q
+codingagent --task "Explain the current repository structure" --workdir /path/to/repository
 ```
 
-### Code Quality
+Start a project-local agent workspace:
 
 ```bash
-# Lint
-ruff check src tests
-
-# Type checking
-mypy src/server src/core/inference/provider_utils.py src/core/orchestration/tool_contracts.py src/core/orchestration/tool_parser.py --ignore-missing-imports --follow-imports=silent --disable-error-code=import-untyped --no-error-summary
+codingagent init --dir /path/to/repository
 ```
 
-CI runs these as fail-closed gates: newly introduced Ruff or mypy errors break the build.
+`init` creates `.codingAgent/` with agent configuration, hooks, and a project instruction file. Use `codingagent --help` for the complete command surface. Key commands include `init`, `system-prompt`, `session`, `status`, `mcp`, and `diff`.
 
-## Documentation
+## Safety Model
 
-| Document | Description |
-|----------|-------------|
-| `ARCHITECTURE.md` | **Single source of truth** — system overview, event system, pipeline, component map |
-| `AGENTS.md` | Agent instructions, conventions, code layout |
-| `docs/DEVELOPMENT.md` | Developer guide |
-| `docs/audit/` | Audit reports (vol1–vol33) |
-| `docs/TODO_METRICS.md` | How to enable and use TODO metrics (Prometheus) |
+Normal agent tool calls go through a centralized execution pipeline that applies tool normalization, permission checks, read-before-write rules, workspace checks, approval handling, validation, snapshots, hooks, and telemetry. Use the least permissive mode that satisfies the task:
 
-## Model Tiers
+```bash
+codingagent --task "Inspect this repository" --permission-mode read_only
+codingagent --task "Update one test" --permission-mode workspace_write
+codingagent --task "Plan an upgrade" --dry-run
+```
 
-| Tier | Params | Tools | Max Turns |
-|------|--------|-------|-----------|
-| NANO | ≤7B | 8 | 15 |
-| SMALL | 7-14B | 20 | 25 |
-| MEDIUM | 14-70B | 35 | 40 |
-| LARGE | >70B | 50 | 60 |
-| FRONTIER | Cloud | 60 | 80 |
+`--autonomous` does not approve gated tools unless their canonical names are explicitly passed with `--autonomous-approve`. Do not use `--autonomous-approve '*'` unless you accept every gated action.
 
-## Security
+Shell containment is not currently a reliable security boundary on hosts without an enforcing sandbox backend. Treat shell-capable and server-enabled deployments as trusted, local use only until the high-severity audit findings are resolved.
 
-5-layer security model:
-1. Pattern block (`_BASE_DANGEROUS_PATTERNS`)
-2. Restricted commands (approval required)
-3. Safe commands (auto-allowed)
-4. AST-level analysis (`bash_security.py`)
-5. Sandbox (`sandbox.py` with bubblewrap)
+## Test And Quality Commands
 
-## Environment Variables
+```bash
+python -m pytest tests/unit -q -p no:logging
+python -m pytest tests/integration/test_langgraph_orchestrator.py tests/integration/test_fast_path_graph_e2e.py -q -p no:logging
+python -m ruff check src tests --select=E,F,W --ignore=E501
+python -m mypy src/server src/core/inference/provider_utils.py src/core/orchestration/tool_contracts.py src/core/orchestration/tool_parser.py --ignore-missing-imports --follow-imports=silent --disable-error-code=import-untyped --no-error-summary
+```
 
-| Variable | Purpose |
-|----------|---------|
-| `CODINGAGENT_SANDBOX_LEVEL` | off/workspace/full |
-| `CODINGAGENT_TRUSTED` | Skip approval in CI |
-| `CODING_AGENT_HTTP_SERVER` | Start HTTP server |
+The CI workflow defines the maintained quality, mock integration, mock E2E, platform smoke, benchmark, and optional live-provider jobs. Full test collection requires the `server` extras because server tests import FastAPI and Uvicorn.
 
-## Test Baseline
+## Repository Layout
 
-- **4,850** tests collecting (4,846 unit pass + 1 unit skip + 3 fast-path integration; see note below)
-- **18** benchmark tests
-- **0** Critical issues
-- **0** High issues
-- CI runs Ruff + mypy as fail-closed gates; the full `tests/unit` suite must pass from a clean environment
+- `src/main.py`: installed CLI entry point and TUI/headless dispatch.
+- `src/core/`: orchestration, graph workflows, providers, memory, indexing, evaluation, telemetry, and configuration.
+- `src/tools/`: registered tool implementations and local safety helpers.
+- `src/server/`: optional FastAPI task, event-streaming, scheduler, and WebSocket interfaces.
+- `tui/`: Textual UI and bridge to the core event bus.
+- `src/config/`: providers, toolsets, roles, skills, formatters, and LSP configuration.
+- `tests/`: unit, integration, E2E, benchmark, acceptance, and real-provider test suites.
+- `docs/audit/`: audit instructions and the current source-derived audit.
 
-> **Authoritative count:** run `pytest tests/unit tests/integration/test_fast_path_graph_e2e.py` — the
-> baseline is the number of tests it collects (currently 4,850). This is the single source of truth for
-> all documentation baselines (see PHASE3 item 3.8) and is refreshed whenever the suite gains or loses tests.
+## Current Limitations
+
+- The non-lite live graph is an LLM-directed frontier loop; the full plan/step/debug/delegation graph is present but disabled.
+- A text-only model response can currently be treated as completion without objective repository verification.
+- Code retrieval is symbol-oriented and is not guaranteed before every planning or editing path.
+- HTTP task execution, when enabled, must remain loopback-bound and trusted; it is not a multi-tenant service boundary.
+
+See the audit for evidence, severity, and the prioritized remediation roadmap.
