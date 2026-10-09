@@ -9,7 +9,7 @@ import logging
 import re
 import socket
 import ipaddress
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 from src.tools._tool import tool, PermissionKind
 
@@ -23,6 +23,7 @@ _BLOCKED_HOSTS = re.compile(
 )
 
 _MAX_WEB_PAGE_CHARS = 100_000
+_MAX_REDIRECTS = 5
 
 
 def _strip_html(html: str) -> str:
@@ -269,6 +270,43 @@ def web_search(query: str, max_results: int = 5) -> Dict[str, Any]:
         return {"status": "error", "error": f"web_search failed: {e}"}
 
 
+def _fetch_with_validated_redirects(url: str, timeout: int = 15) -> Tuple[Any, str]:
+    """GET *url*, following redirects manually and validating every hop.
+
+    ``requests`` follows redirects by default, so a public URL could redirect
+    to a loopback/metadata/private address and bypass the SSRF check that only
+    inspects the initial URL.  Automatic redirects are disabled here and each
+    ``Location`` target is validated (scheme plus all resolved peer addresses,
+    via :func:`_is_ssrf_blocked`) before it is followed.
+
+    Returns ``(response, final_url)``.  Raises ``PermissionError`` when a hop is
+    blocked or the redirect chain exceeds ``_MAX_REDIRECTS``.
+    """
+    import requests
+    from urllib.parse import urljoin
+
+    current = url
+    for _ in range(_MAX_REDIRECTS + 1):
+        # Validate this hop before connecting (hostname + resolved peer IPs).
+        _is_ssrf_blocked(current)
+        resp = requests.get(
+            current,
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=timeout,
+            allow_redirects=False,
+        )
+        if resp.status_code in (301, 302, 303, 307, 308):
+            location = resp.headers.get("Location")
+            if not location:
+                return resp, current
+            current = urljoin(current, location)
+            continue
+        return resp, current
+    raise PermissionError(
+        f"Too many redirects (>{_MAX_REDIRECTS}) for URL '{url}'"
+    )
+
+
 @tool(tags=["coding", "planning"], permission_kind=PermissionKind.NETWORK)
 def read_web_page(url: str, format: str = "markdown") -> Dict[str, Any]:
     """Fetch and return the text content of a web page.
@@ -299,13 +337,7 @@ def read_web_page(url: str, format: str = "markdown") -> Dict[str, Any]:
         return {"status": "error", "error": "format must be 'markdown' or 'text'"}
 
     try:
-        import requests
-
-        resp = requests.get(
-            url,
-            headers={"User-Agent": "Mozilla/5.0"},
-            timeout=15,
-        )
+        resp, final_url = _fetch_with_validated_redirects(url)
         resp.raise_for_status()
 
         content = resp.text
@@ -325,9 +357,11 @@ def read_web_page(url: str, format: str = "markdown") -> Dict[str, Any]:
         truncated = len(content) > _MAX_WEB_PAGE_CHARS
         return {
             "status": "ok",
-            "url": url,
+            "url": final_url,
             "content": content[:_MAX_WEB_PAGE_CHARS],
             "truncated": truncated,
         }
+    except PermissionError as pe:
+        return {"status": "error", "error": str(pe)}
     except Exception as e:
         return {"status": "error", "error": f"read_web_page failed: {e}"}
