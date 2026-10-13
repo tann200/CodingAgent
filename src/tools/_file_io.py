@@ -579,9 +579,17 @@ def rename_file(
         pass
 
     try:
+        # Reject overwrite if destination exists (safety guard)
+        if dst_resolved.exists() and dst_resolved.resolve() != src_resolved.resolve():
+            return {
+                "status": "error",
+                "error": f"destination exists: {dst_resolved}",
+            }
         dst_resolved.parent.mkdir(parents=True, exist_ok=True)
         src_resolved.rename(dst_resolved)
         return {"ok": True, "status": "ok", "renamed": str(dst_resolved)}
+    except PermissionError as pe:
+        return {"status": "error", "error": str(pe)}
     except Exception as e:
         return {"status": "error", "error": str(e)}
 

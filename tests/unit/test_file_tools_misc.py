@@ -103,6 +103,34 @@ def test_file_tools_edit_bad_patch(tmp_path):
 def test_file_tools_write_creates_parent_dir(tmp_path):
     from src.tools.file_tools import write_file
     res = write_file("new_dir/new_file.txt", "test", workdir=tmp_path)
+
+
+def test_rename_file_rejects_existing_destination(tmp_path):
+    from src.tools.file_tools import write_file, read_file, rename_file
+
+    write_file("src.txt", "source-content\n", workdir=tmp_path)
+    write_file("dst.txt", "dest-content-that-must-survive\n", workdir=tmp_path)
+    # satisfy read-before-write guardrail
+    read_file("src.txt", workdir=tmp_path)
+
+    res = rename_file("src.txt", "dst.txt", workdir=tmp_path)
+    assert res.get("status") == "error"
+    assert "destination exists" in res.get("error", "")
+    # both files untouched
+    assert (tmp_path / "src.txt").read_text() == "source-content\n"
+    assert (tmp_path / "dst.txt").read_text() == "dest-content-that-must-survive\n"
+
+
+def test_rename_file_moves_when_destination_absent(tmp_path):
+    from src.tools.file_tools import write_file, read_file, rename_file
+
+    write_file("old.txt", "payload\n", workdir=tmp_path)
+    read_file("old.txt", workdir=tmp_path)
+
+    res = rename_file("old.txt", "sub/new.txt", workdir=tmp_path)
+    assert res.get("ok") is True
+    assert not (tmp_path / "old.txt").exists()
+    assert (tmp_path / "sub" / "new.txt").read_text() == "payload\n"
     assert res.get("status") == "ok"
 
 

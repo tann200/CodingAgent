@@ -232,7 +232,7 @@ the primary risk is mitigated but the audit's stated contract is not fully met;
 | Raw `ToolRegistry.call()` bypasses central enforcement | **OPEN** | `_registry.py:305-316` unchanged. The guarded entry point remains `Orchestrator.execute_tool()` / `tool_execution_pipeline.py`; no runtime restriction prevents direct calls. |
 | Secret-bearing content can enter prompts, sessions, and logs | **OPEN** | Same as Phase 1 item 3. |
 | Prior-session memory inserted without the safety scanner | **OPEN** | `memory/security.py:63` provides `scan_memory_content`, but the retrieval path in `context_builder.py` does not call it; only the explicit `memory_save` path scans. |
-| `rename_file` can overwrite a destination | **OPEN** | `_file_io.py:581-586` calls `src_resolved.rename(dst_resolved)` with no destination-exists check, no `WorkspaceGuard`, and no snapshot; `dst_resolved.parent.mkdir` runs first. |
+| `rename_file` can overwrite a destination | **FIXED** | `_file_io.rename_file` now rejects the move when the destination already exists (`destination exists: ...` error), preserving both files. Regression tests: `tests/unit/test_file_tools_misc.py::test_rename_file_rejects_existing_destination` / `..._moves_when_destination_absent`. |
 | Fallback file locking can evict a live holder | **OPEN** | `file_lock.py:243-253`: on a successful `os.kill(pid, 0)` (owner alive) it still reclaims when `same_host or too_old`. |
 | Parallel delegation re-enters one `Context` concurrently | **OPEN** | `subagent_tools.py:1034` creates one `copy_context()` reused by every worker via `_ctx.run` (`:1039`, pool at `:1071-1072`). |
 
