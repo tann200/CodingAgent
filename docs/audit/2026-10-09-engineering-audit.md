@@ -217,7 +217,7 @@ the primary risk is mitigated but the audit's stated contract is not fully met;
 | 3 | Protected paths + secret detection + universal redaction | **OPEN** | No redaction exists anywhere in `src/` (`rg redact src` → 0 hits). `tool_execution_pipeline.py` has no secret scan. `WorkspaceGuard` protects paths only for `write_file`/`delete_file` (`_file_io.py:176-177,472-473`), not reads, prompts, traces, or events. | — |
 | 4 | Server workspace roots + bounded admission + cancellation-before-start | **OPEN** (partial) | `submit_task` accepts `request_body.working_dir` with no approved-root check (`task_endpoints.py:217-254`) and `orchestrator_factory(working_dir, model)` builds an `Orchestrator` for it (`:164`). Worker count is bounded (`max_workers=10`, `:33-36`) but the executor queue is unbounded. `_run_task_thread` marks RUNNING (`:151`) and builds the orchestrator (`:164`) before any `cancel_event` check (the event is only threaded into `run_agent_once` at `:182`). | — |
 | 5 | Redirect-hop / peer-address SSRF validation | **FIXED** | `web_tools.py` now fetches through `_fetch_with_validated_redirects`: `allow_redirects=False`, and every hop is validated with `_is_ssrf_blocked` (scheme + resolved peer addresses) before being followed, with a bounded redirect count. Tests: `tests/unit/test_web_tools_ssrf.py` (`..._blocks_redirect_to_loopback`, `..._follows_validated_redirect`, `..._too_many_redirects`, `..._blocks_redirect_scheme_change`). | this change |
-| 6a | SQLite session deletion correctness | **OPEN** | `sqlite_session_store.py:758-769` issues `DELETE FROM session_children WHERE session_id=?`, but that table's key is `parent_session_id` (`sqlite_store_session_ops.py:14,103-107`) → `no such column` raises and the transaction never commits. | — |
+| 6a | SQLite session deletion correctness | **FIXED** | `delete_session` in `sqlite_session_store.py` now cascades correctly: snapshot rows deleted by snapshot ID before snapshots, `session_children` deleted by parent/child ID, and session tables (`messages`, `tool_calls`, `errors`, `plans`, `decisions`, `mistakes`, `session_plans`, `messages_fts`) cleaned up. Covered by `tests/unit/test_sqlite_session_delete.py`. | this change |
 | 6b | LSP prompt context for real `SymbolGraph` data | **FIXED** | `lsp_context.py:_get_symbols` now iterates `symbols["classes"]` and `symbols["functions"]` as lists (handling None/non-list shapes) and extracts `{name, kind, file, line}`. New `tests/unit/test_lsp_context.py` covers AST-based lists, sorting, and bad shapes. | this change |
 | 6c | Incremental index refresh | **PARTIAL** | `repo_indexer.refresh_file_in_index` now rebuilds the flat top-level `symbols` list (`:651-665`) — the symbol-search staleness is fixed. It still replaces the normalized file entry `{"path","language","imports"}` (`:380-386`) with raw parser output (`:645 files_list[i] = parsed`), so the entry-schema part of the finding remains. | `976813a` (P1.2) |
 
@@ -231,10 +231,10 @@ the primary risk is mitigated but the audit's stated contract is not fully met;
 | Server tasks may select arbitrary host directories | **OPEN** | Same as Phase 1 item 4. |
 | Raw `ToolRegistry.call()` bypasses central enforcement | **OPEN** | `_registry.py:305-316` unchanged. The guarded entry point remains `Orchestrator.execute_tool()` / `tool_execution_pipeline.py`; no runtime restriction prevents direct calls. |
 | Secret-bearing content can enter prompts, sessions, and logs | **OPEN** | Same as Phase 1 item 3. |
-| Prior-session memory inserted without the safety scanner | **OPEN** | `memory/security.py:63` provides `scan_memory_content`, but the retrieval path in `context_builder.py` does not call it; only the explicit `memory_save` path scans. |
-| `rename_file` can overwrite a destination | **FIXED** | `_file_io.rename_file` now rejects the move when the destination already exists (`destination exists: ...` error), preserving both files. Regression tests: `tests/unit/test_file_tools_misc.py::test_rename_file_rejects_existing_destination` / `..._moves_when_destination_absent`. |
-| Fallback file locking can evict a live holder | **OPEN** | `file_lock.py:243-253`: on a successful `os.kill(pid, 0)` (owner alive) it still reclaims when `same_host or too_old`. |
-| Parallel delegation re-enters one `Context` concurrently | **OPEN** | `subagent_tools.py:1034` creates one `copy_context()` reused by every worker via `_ctx.run` (`:1039`, pool at `:1071-1072`). |
+| Prior-session memory inserted without the safety scanner | **FIXED** | `context_builder.py:553-568` scans retrieved prior-session memory and frozen memory snapshots with `scan_memory_content` from `memory/security.py`, omitting threat/injection patterns, and labels `<prior_context>` as untrusted reference data. Covered by `tests/unit/test_prior_session_memory_scan.py`. |
+| `rename_file` can overwrite a destination | **FIXED** | `_file_io.rename_file` now rejects the move when the destination already exists (`destination exists: ...` error), enforces `WorkspaceGuard` on both paths, applies project `deny_write`, and `tool_execution_pipeline` snapshots both paths. Covered by `tests/unit/test_rename_file_safeguards.py`. |
+| Fallback file locking can evict a live holder | **FIXED** | `file_lock.py:244-258` never reclaims when `os.kill(pid, 0)` confirms owner is alive; `FileLock` provides explicit `acquire()` / `release()`. Covered by `tests/unit/test_todo_lock_live_holder.py`. |
+| Parallel delegation re-enters one `Context` concurrently | **FIXED** | `subagent_tools.py:1036-1046` copies `contextvars.Context` per worker subtask execution in `ThreadPoolExecutor`. Covered by `tests/unit/test_parallel_delegation_context.py`. |
 
 ### Additional findings already resolved in the current tree
 
@@ -249,8 +249,6 @@ the primary risk is mitigated but the audit's stated contract is not fully met;
 
 ### Still-open tool/read defects (unchanged)
 
-- `tail_log_file` reads the whole file for large `lines` and reports byte size as
-  `total_lines` (`_file_io.py:707-712,728-733`).
 - Tool schemas still do not reject undeclared fields (`_tool.py`) — not reassessed.
 
 ### Method note

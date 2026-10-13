@@ -13,7 +13,7 @@ from typing import Optional
 # Threat patterns that indicate prompt injection or exfiltration attempts
 _MEMORY_THREAT_PATTERNS = [
     # Prompt injection patterns (case-insensitive, SPECIFIC matches only)
-    (r"ignore\s+all\s+previous\s+instructions", "prompt_injection"),
+    (r"ignore\s+(all\s+)?previous\s+instructions", "prompt_injection"),
     (r"ignore\s+(all\s+)?my\s+instructions", "prompt_injection"),
     (r"disregard\s+(all|your)\s+.*(instructions|rules)", "disregard_rules"),
     (r"forget\s+(all|your|the)\s+.*(instructions|rules)", "forget_instructions"),

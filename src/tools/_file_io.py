@@ -535,12 +535,14 @@ def rename_file(
     dst: str = "",
     old_path: str = "",
     new_name: str = "",
+    user_approved: bool = False,
 ) -> Dict[str, Any]:
     """Rename (move) a file within the workspace.
 
     Args:
         path: Current path of the file (also accepted as src_path, src, old_path).
         new_path: New path for the file (also accepted as dst_path, dst, new_name).
+        user_approved: Whether explicit user approval was granted for protected paths.
 
     Both paths are resolved against workdir and validated to prevent path traversal.
     """
@@ -561,9 +563,25 @@ def rename_file(
             "error": "Missing destination path (use 'new_path' parameter)",
         }
 
+    # WorkspaceGuard integration - check protected files for both paths
+    guard = WorkspaceGuard()
+    guard_src = guard.guard_operation("rename_file", resolved_src, user_approved)
+    if guard_src.get("status") == "error":
+        return {"path": resolved_src, "status": "error", "error": guard_src.get("error")}
+    guard_dst = guard.guard_operation("rename_file", resolved_dst, user_approved)
+    if guard_dst.get("status") == "error":
+        return {"path": resolved_dst, "status": "error", "error": guard_dst.get("error")}
+
     try:
         src_resolved = _safe_resolve(resolved_src, workdir)
         dst_resolved = _safe_resolve(resolved_dst, workdir)
+    except PermissionError as pe:
+        return {"status": "error", "error": str(pe)}
+
+    # Apply project-level deny_write patterns
+    try:
+        _check_project_deny_write(src_resolved, workdir)
+        _check_project_deny_write(dst_resolved, workdir)
     except PermissionError as pe:
         return {"status": "error", "error": str(pe)}
 
@@ -700,6 +718,13 @@ def tail_log_file(
         n = int(lines)
     except (TypeError, ValueError):
         return {"status": "error", "error": f"lines must be an integer, got {lines!r}"}
+    if n <= 0:
+        return {"status": "error", "error": f"lines must be greater than 0, got {n}"}
+
+    _MAX_TAIL_LINES = 1_000
+    _MAX_TAIL_BYTES = 512 * 1024
+    n = min(n, _MAX_TAIL_LINES)
+
     try:
         import os as _os
 
@@ -707,12 +732,19 @@ def tail_log_file(
             _fh.seek(0, _os.SEEK_END)
             _size = _fh.tell()
             if _size == 0:
-                return {"path": str(p), "status": "ok", "content": "", "total_lines": 0, "lines_shown": 0}
+                return {
+                    "path": str(p),
+                    "status": "ok",
+                    "content": "",
+                    "total_lines": 0,
+                    "lines_shown": 0,
+                    "file_size_bytes": 0,
+                }
             _chunk = 4096
             _buf = bytearray()
             _pos = _size
             _found_lines = 0
-            while _pos > 0 and _found_lines <= n:
+            while _pos > 0 and _found_lines <= n and len(_buf) < _MAX_TAIL_BYTES:
                 _read_size = min(_chunk, _pos)
                 _pos -= _read_size
                 _fh.seek(_pos)
@@ -721,8 +753,6 @@ def tail_log_file(
             # Ensure we start at a newline boundary
             if _found_lines > n:
                 _idx = _buf.find(b"\n")
-                # Skip the first newline to get exactly n lines (or start from the buffer's
-                # offset if we didn't overshoot).  Use a simple loop to count newlines.
                 _nl_count = 0
                 for _i, _b in enumerate(_buf):
                     if _b == 10:  # \n
@@ -731,14 +761,23 @@ def tail_log_file(
                             _buf = _buf[_i + 1:]
                             break
             content = _buf.decode("utf-8", errors="replace")
+
         all_lines = content.splitlines(keepends=True)
         tail = all_lines[-n:] if n < len(all_lines) else all_lines
+
+        # Count total newlines in the file accurately
+        total_lines_count = 0
+        with p.open("rb") as _cnt_f:
+            for chunk in iter(lambda: _cnt_f.read(65536), b""):
+                total_lines_count += chunk.count(b"\n")
+
         return {
             "path": str(p),
             "status": "ok",
             "content": "".join(tail),
-            "total_lines": _size,
+            "total_lines": total_lines_count,
             "lines_shown": len(tail),
+            "file_size_bytes": _size,
         }
     except Exception as e:
         return {"status": "error", "error": str(e)}

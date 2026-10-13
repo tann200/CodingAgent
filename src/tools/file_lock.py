@@ -243,15 +243,18 @@ class FileLock:
                             if pid is not None:
                                 try:
                                     os.kill(pid, 0)
-                                    if same_host or too_old:
-                                        if self._try_reclaim(pid, same_host, too_old):
-                                            continue
+                                    # The owner process is alive — never reclaim a
+                                    # lock from a live holder, regardless of age or
+                                    # host. (Audit §4: previously a live same_host
+                                    # or TTL-expired holder was evicted here.)
                                 except OSError as e:
                                     if getattr(e, "errno", None) == errno.ESRCH:
-                                        if same_host or too_old:
-                                            if self._try_reclaim(pid, same_host, too_old):
-                                                continue
+                                        # Conclusively dead — safe to reclaim.
+                                        if self._try_reclaim(pid, same_host, too_old):
+                                            continue
                                     elif getattr(e, "errno", None) == errno.EPERM:
+                                        # Alive but owned by another user — treat
+                                        # as live, do not reclaim.
                                         pass
                                     else:
                                         pass
@@ -302,3 +305,11 @@ class FileLock:
         except FileNotFoundError:
             pass
         return False
+
+    def acquire(self) -> FileLock:
+        """Acquire the lock explicitly; returns self."""
+        return self.__enter__()
+
+    def release(self) -> None:
+        """Release the lock explicitly."""
+        self.__exit__(None, None, None)

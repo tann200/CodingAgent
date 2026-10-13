@@ -758,43 +758,62 @@ class SqliteSessionStore:
         total = 0
         with self._lock:
             conn = self._get_writer_connection()
-            # Delete as parent or as child from session_children first (explicitly)
+            # 1. Clean up snapshot rows for snapshots belonging to this session that
+            # are not referenced by any other session. Must run BEFORE deleting
+            # from session_snapshots.
+            try:
+                cur = conn.execute(
+                    """DELETE FROM session_snapshot_rows
+                       WHERE snapshot_id IN (SELECT snapshot_id FROM session_snapshots WHERE session_id=?)
+                         AND snapshot_id NOT IN (SELECT snapshot_id FROM session_snapshots WHERE session_id != ?)""",
+                    (sid, sid),
+                )
+                if cur is not None and cur.rowcount is not None and cur.rowcount > 0:
+                    total += cur.rowcount
+            except Exception:
+                pass
+
+            # 2. Delete as parent or as child from session_children
             try:
                 cur = conn.execute(
                     "DELETE FROM session_children WHERE parent_session_id=? OR child_session_id=?",
                     (sid, sid),
                 )
-                if cur is not None and cur.rowcount is not None:
+                if cur is not None and cur.rowcount is not None and cur.rowcount > 0:
                     total += cur.rowcount
             except Exception:
                 pass
+
+            # 3. Delete from all tables keyed by session_id
             for tbl in (
                 "messages",
                 "tool_calls",
                 "errors",
                 "plans",
                 "decisions",
+                "mistakes",
+                "session_plans",
                 "session_snapshots",
-                "session_snapshot_rows",  # snapshot rows are keyed by snapshot_id; clean up via snapshots below if needed
             ):
                 try:
                     cur = conn.execute(
                         f"DELETE FROM {tbl} WHERE session_id=?", (sid,)
                     )
-                    if cur is not None and cur.rowcount is not None:
+                    if cur is not None and cur.rowcount is not None and cur.rowcount > 0:
                         total += cur.rowcount
                 except Exception:
                     pass
-            # Clean up snapshot rows for snapshots belonging to this session
+
+            # 4. Clean up messages_fts virtual table if present
             try:
                 cur = conn.execute(
-                    "DELETE FROM session_snapshot_rows WHERE snapshot_id IN (SELECT snapshot_id FROM session_snapshots WHERE session_id=?)",
-                    (sid,),
+                    "DELETE FROM messages_fts WHERE session_id=?", (sid,)
                 )
-                if cur is not None and cur.rowcount is not None:
+                if cur is not None and cur.rowcount is not None and cur.rowcount > 0:
                     total += cur.rowcount
             except Exception:
                 pass
+
             conn.commit()
         return total
 

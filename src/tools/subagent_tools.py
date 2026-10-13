@@ -1031,12 +1031,12 @@ def delegate_tasks_parallel(
             }
         )
 
-    _ctx = _cv.copy_context()
-
     def _run_one(task: Dict[str, Any]) -> Dict[str, Any]:
         """Run a single delegate_task call; capture result or error."""
         try:
-            output = _ctx.run(
+            # Copy context per task to avoid concurrent context re-entry
+            task_ctx = _cv.copy_context()
+            output = task_ctx.run(
                 delegate_task,
                 task["role"],
                 task["subtask_description"],

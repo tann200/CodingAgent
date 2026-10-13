@@ -547,15 +547,25 @@ def _run_sandbox_and_snapshot(
         }
 
     if "write" in tool.get("side_effects", []) and path_arg:
+        paths_to_snap = [path_arg]
+        dst_arg = (
+            args.get("new_path")
+            or args.get("dst_path")
+            or args.get("dst")
+            or args.get("new_name")
+        )
+        if dst_arg and dst_arg not in paths_to_snap:
+            paths_to_snap.append(str(dst_arg))
         try:
             if getattr(orch, "_step_snapshot_id", None):
-                orch.rollback_manager.append_to_snapshot(
-                    orch._step_snapshot_id, path_arg
-                )
+                for p_snap in paths_to_snap:
+                    orch.rollback_manager.append_to_snapshot(
+                        orch._step_snapshot_id, p_snap
+                    )
                 orch._current_snapshot_id = orch._step_snapshot_id
             else:
                 orch._current_snapshot_id = orch.rollback_manager.snapshot_files(
-                    [path_arg], snapshot_id=None
+                    paths_to_snap, snapshot_id=None
                 )
         except Exception as snap_err:
             guilogger.warning(f"Snapshot failed (non-blocking): {snap_err}")

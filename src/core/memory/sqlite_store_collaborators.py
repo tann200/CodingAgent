@@ -432,8 +432,9 @@ class SnapshotManager:
                 )
                 for tbl in tables:
                     try:
+                        col = "parent_session_id" if tbl == "session_children" else "session_id"
                         rows = wconn.execute(
-                            f"SELECT * FROM {tbl} WHERE session_id=? ORDER BY created_at",
+                            f"SELECT * FROM {tbl} WHERE {col}=? ORDER BY created_at",
                             (sid,),
                         ).fetchall()
                         serialised = serialise_snapshot_rows(rows)

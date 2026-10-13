@@ -28,13 +28,6 @@ class DummySessionStore:
 
 
 def test_build_perception_messages_injections(tmp_path, monkeypatch):
-    # Prepare a fake max_steps.txt template
-    repo_root = Path(__file__).resolve().parents[3]
-    tpl_dir = repo_root / "src" / "core" / "prompts" / "templates"
-    tpl_dir.mkdir(parents=True, exist_ok=True)
-    tpl_path = tpl_dir / "max_steps.txt"
-    tpl_path.write_text("MAX STEPS WARNING", encoding="utf-8")
-
     base_messages = [{"role": "system", "content": "SYSTEM BASE"}]
     builder = DummyBuilder(base_messages)
 
