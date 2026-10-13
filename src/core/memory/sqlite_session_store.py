@@ -751,25 +751,50 @@ class SqliteSessionStore:
         return extract_session_ids(rows)
 
     def delete_session(self, session_id: str) -> int:
-        # Delete rows in all tables for the session; return total deleted rows
+        # Delete rows in all tables for the session; return total deleted rows.
+        # session_children is keyed by parent_session_id; also remove entries
+        # where this session is a child.
+        sid = session_id or "unknown"
         total = 0
         with self._lock:
             conn = self._get_writer_connection()
+            # Delete as parent or as child from session_children first (explicitly)
+            try:
+                cur = conn.execute(
+                    "DELETE FROM session_children WHERE parent_session_id=? OR child_session_id=?",
+                    (sid, sid),
+                )
+                if cur is not None and cur.rowcount is not None:
+                    total += cur.rowcount
+            except Exception:
+                pass
             for tbl in (
                 "messages",
                 "tool_calls",
                 "errors",
                 "plans",
                 "decisions",
-                "session_children",
                 "session_snapshots",
+                "session_snapshot_rows",  # snapshot rows are keyed by snapshot_id; clean up via snapshots below if needed
             ):
+                try:
+                    cur = conn.execute(
+                        f"DELETE FROM {tbl} WHERE session_id=?", (sid,)
+                    )
+                    if cur is not None and cur.rowcount is not None:
+                        total += cur.rowcount
+                except Exception:
+                    pass
+            # Clean up snapshot rows for snapshots belonging to this session
+            try:
                 cur = conn.execute(
-                    f"DELETE FROM {tbl} WHERE session_id=?", (session_id or "unknown",)
+                    "DELETE FROM session_snapshot_rows WHERE snapshot_id IN (SELECT snapshot_id FROM session_snapshots WHERE session_id=?)",
+                    (sid,),
                 )
-                total += (
-                    cur.rowcount if cur is not None and cur.rowcount is not None else 0
-                )
+                if cur is not None and cur.rowcount is not None:
+                    total += cur.rowcount
+            except Exception:
+                pass
             conn.commit()
         return total
 
