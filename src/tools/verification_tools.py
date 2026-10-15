@@ -148,8 +148,9 @@ def run_tests(
         errors = _extract_test_errors(stdout)
         tracebacks = _extract_tracebacks(stdout)
 
+        status = "ok" if proc.returncode == 0 else ("skipped" if proc.returncode == 5 else "fail")
         return {
-            "status": "ok" if proc.returncode == 0 else "fail",
+            "status": status,
             "returncode": proc.returncode,
             "passed": passed,
             "failed": failed,

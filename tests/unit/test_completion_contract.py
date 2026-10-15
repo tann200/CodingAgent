@@ -236,7 +236,11 @@ class TestVerificationNodeMinimumTierParity:
             "last_result": {"status": "ok", "path": str(test_py)},
         }
 
-        with patch("src.core.orchestration.graph.nodes.verification_node._resolve_orchestrator", return_value=orch):
+        with (
+            patch("src.core.orchestration.graph.nodes.verification_node._resolve_orchestrator", return_value=orch),
+            patch("src.tools.verification_tools.run_tests", return_value={"status": "ok"}),
+            patch("src.tools.verification_tools.run_linter", return_value={"status": "ok"}),
+        ):
             res = await verification_node(state, config={})
 
         # Verification must NOT be skipped as 'skipped_small_readonly'
