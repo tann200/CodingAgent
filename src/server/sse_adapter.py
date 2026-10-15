@@ -15,6 +15,7 @@ from src.core.orchestration.event_bus import EventBus
 from src.server.event_delivery import enqueue_with_drop_policy, record_dropped_event
 from src.server.event_subscriptions import DEFAULT_SERVER_EVENT_TYPES
 from src.server.metrics import inc_client_event_dropped_counter, inc_event_dropped_counter
+from src.core.security.redaction import redact_data
 
 logger = logging.getLogger(__name__)
 
@@ -124,7 +125,7 @@ class ServerEventBusAdapter:
                     data = json.dumps(
                         {
                             "event": event_name,
-                            "data": payload,
+                            "data": redact_data(payload),
                         }
                     )
                     yield f"data: {data}\n\n"

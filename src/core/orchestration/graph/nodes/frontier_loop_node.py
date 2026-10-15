@@ -25,10 +25,7 @@ from src.core.orchestration.graph.nodes.tool_output_truncation import (
     prune_tool_outputs,
     truncate_tool_output,
 )
-from src.core.orchestration.graph.nodes.node_utils import (
-    _resolve_orchestrator,
-    _notify_provider_limit,
-)
+from src.core.orchestration.graph.nodes.node_utils import _notify_provider_limit, _resolve_orchestrator
 from src.core.orchestration.graph.nodes.repo_context import (
     build_repo_context_block,
     refresh_index_after_write,
@@ -39,8 +36,7 @@ from src.core.orchestration.graph.nodes.frontier_toolcalls import (
     _render_tool_calls_text,
 )
 from src.core.orchestration.graph.nodes.frontier_messages import (
-    _extract_tool_call_from_text,
-    _normalize_messages_for_native_tools,
+    _extract_tool_call_from_text, _normalize_messages_for_native_tools,
 )
 from src.core.orchestration.graph.nodes.frontier_completion import (
     build_exit_result,
@@ -53,6 +49,7 @@ from src.core.orchestration.graph.nodes.in_loop_verification import (
     run_inline_check,
 )
 from src.core.orchestration.graph.nodes.tool_result_safety import sanitize_tool_result
+from src.core.security.redaction import redact_secrets
 
 # Re-exported for backwards compatibility with the legacy test surface that
 # imports these helpers from this module.
@@ -243,7 +240,7 @@ async def _prepare_turn_messages(
         cb = ContextBuilder(working_dir=getattr(orchestrator, "working_dir", None))
 
         guilogger.info("[frontier_loop_node] turn=%d history_before_prune=%s",
-                       turns_taken, [(m.get("role"), str(m.get("content", ""))[:300]) for m in history])
+                       turns_taken, [(m.get("role"), redact_secrets(str(m.get("content", "")))[:300]) for m in history])
         history = prune_tool_outputs(history)
 
         token_budget = get_context_budget(model_tier=model_tier)
@@ -309,7 +306,7 @@ async def _prepare_turn_messages(
             guilogger.info(
                 "[frontier_loop_node] turn=%d after_normalization=%s",
                 turns_taken,
-                [(m.get("role"), str(m.get("content") or m.get("tool_calls") or "")[:200]) for m in messages],
+                [(m.get("role"), redact_secrets(str(m.get("content") or m.get("tool_calls") or ""))[:200]) for m in messages],
             )
         return messages
     except Exception as exc:
@@ -348,7 +345,7 @@ async def _call_llm_for_turn(
     guilogger.info(
         "[frontier_loop_node] turn=%d messages_preview=%s",
         turns_taken,
-        [(m.get("role"), str(m.get("content") or m.get("tool_calls") or "")[:300]) for m in messages],
+        [(m.get("role"), redact_secrets(str(m.get("content") or m.get("tool_calls") or ""))[:300]) for m in messages],
     )
     guilogger.info(
         "[frontier_loop_node] turn=%d messages_has_tool_calls=%s",
@@ -668,7 +665,7 @@ async def frontier_loop_node(
 
     logger.info(
         "frontier_loop_node: starting (task=%r, tool_calls=%d/%d, tier=%s)",
-        task[:80],
+        redact_secrets(task[:80]),
         tool_call_count,
         max_tool_calls,
         model_tier,
@@ -677,7 +674,7 @@ async def frontier_loop_node(
     bus: Any = getattr(orchestrator, "event_bus", None) if orchestrator else None
     try:
         if bus:
-            bus.publish_typed(AgentStatus(status="working", node="frontier_loop", task=task[:100]))
+            bus.publish_typed(AgentStatus(status="working", node="frontier_loop", task=redact_secrets(task[:100])))
     except Exception:
         pass
 
@@ -786,7 +783,7 @@ async def frontier_loop_node(
                 "completed_without_tool": True,
                 "_completion_detected": True,
             }
-            content_preview = (content_text or "")[:200]
+            content_preview = redact_secrets((content_text or "")[:200])
             logger.info(
                 "frontier_loop_node: no tool calls in turn %d — task complete. "
                 "Content preview: %r",

@@ -22,6 +22,7 @@ import logging
 import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -234,9 +235,11 @@ def _run_tests(repo_dir: Path, instance: SWEBenchInstance, timeout: int) -> Tupl
     """Run the instance tests; returns ``(returncode, output)``."""
     if instance.test_command:
         cmd = shlex.split(instance.test_command)
+        if cmd and cmd[0] == "python":
+            cmd[0] = sys.executable
     else:
         test_ids = list(dict.fromkeys(instance.fail_to_pass + instance.pass_to_pass))
-        cmd = ["python", "-m", "pytest", "-q", "--no-header", "--tb=short", "-x"]
+        cmd = [sys.executable, "-m", "pytest", "-q", "--no-header", "--tb=short", "-x"]
         cmd.extend(test_ids)
     try:
         result = subprocess.run(

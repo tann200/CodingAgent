@@ -14,6 +14,20 @@ if _ROOT not in sys.path:
 # permit unenforced execution for tests that invoke local shell commands.
 os.environ.setdefault("CODINGAGENT_SANDBOX_ALLOW_UNENFORCED", "1")
 
+# If the home directory is not writable (e.g. sandboxed test runner),
+# redirect HOME to /tmp to ensure test logs and artifacts can be created.
+try:
+    from pathlib import Path
+    _probe_dir = Path.home() / ".coding_agent" / "logs"
+    _probe_dir.mkdir(parents=True, exist_ok=True)
+    _probe_file = _probe_dir / ".write_probe"
+    with open(_probe_file, "a") as _f:
+        pass
+    _probe_file.unlink(missing_ok=True)
+except Exception:
+    import tempfile
+    os.environ["HOME"] = tempfile.gettempdir()
+
 
 def recv_json_ws_factory():
     """Return a recv helper for blocking TestClient WebSocket objects.

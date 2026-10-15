@@ -56,6 +56,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
+from src.core.security.redaction import redact_data, redact_secrets
 from src.core.memory.file_lock import locked_file
 from src.core.memory.jsonl_sidecar_io import atomic_write_json_with_fallback
 from src.core.memory.jsonl_store_helpers import (
@@ -347,7 +348,7 @@ class JsonlSessionStore:
             {
                 "type": "message",
                 "role": role,
-                "content": content,
+                "content": redact_secrets(content),
                 "ts": _utc_now(),
             },
         )
@@ -715,8 +716,8 @@ class JsonlSessionStore:
             {
                 "type": "tool_call",
                 "tool_name": tool_name,
-                "args": args,
-                "result": result,
+                "args": redact_data(args),
+                "result": redact_data(result),
                 "success": bool(success),
                 "ts": _utc_now(),
             },

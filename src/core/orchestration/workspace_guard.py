@@ -3,7 +3,9 @@ Workspace Safety Guard - Protects critical files from automatic modification.
 """
 
 from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Union
+
+from src.core.security.redaction import is_secret_path
 
 
 PROTECTED_PATTERNS = [
@@ -45,13 +47,20 @@ PROTECTED_PATTERNS = [
 
 
 class WorkspaceGuard:
-    """Protects critical files from automatic modification."""
+    """Protects critical and secret-bearing files from modification and unauthorized reading."""
 
     def __init__(self, protected_patterns: Optional[List[str]] = None):
         self.protected_patterns = protected_patterns or PROTECTED_PATTERNS
 
+    def is_secret(self, path: Union[str, Path]) -> bool:
+        """Check if path points to a secret-bearing file or credential."""
+        return is_secret_path(path)
+
     def is_protected(self, path: str) -> bool:
-        """Check if path matches protected pattern."""
+        """Check if path matches protected pattern or secret path."""
+        if self.is_secret(path):
+            return True
+
         path_obj = Path(path)
         path_str = str(path_obj)
 
@@ -84,22 +93,43 @@ class WorkspaceGuard:
         """Validate operation against protected files.
 
         Args:
-            operation: Type of operation (write_file, edit_file, delete_file, etc)
+            operation: Type of operation (write_file, edit_file, delete_file, read_file, etc)
             path: File path being operated on
             user_approved: Whether user has explicitly approved this operation
 
         Returns:
             Dict with status and error message if blocked
         """
-        if not self.is_protected(path):
-            return {"status": "ok", "protected": False}
+        is_sec = self.is_secret(path)
+        is_prot = self.is_protected(path)
+
+        if not is_prot and not is_sec:
+            return {"status": "ok", "protected": False, "secret": False}
 
         if user_approved:
             return {
                 "status": "ok",
                 "protected": True,
+                "secret": is_sec,
                 "user_approved": True,
-                "message": f"Operation on protected file '{path}' approved by user",
+                "message": f"Operation on protected {'secret ' if is_sec else ''}file '{path}' approved by user",
+            }
+
+        # Reading secret-bearing files requires explicit approval and is restricted
+        if is_sec and operation in (
+            "read_file",
+            "read_file_chunk",
+            "tail_log_file",
+            "fs.read",
+            "grep",
+        ):
+            return {
+                "status": "error",
+                "error": f"Protected secret file: '{path}'. Reading credentials, environment files, or private keys is restricted.",
+                "requires_approval": True,
+                "operation": operation,
+                "protected": True,
+                "secret": True,
             }
 
         return {
@@ -108,6 +138,7 @@ class WorkspaceGuard:
             "requires_approval": True,
             "operation": operation,
             "protected": True,
+            "secret": is_sec,
         }
 
     def get_protected_info(self, path: str) -> Dict[str, Any]:
@@ -126,6 +157,8 @@ class WorkspaceGuard:
         path_obj = Path(path)
         name = path_obj.name
 
+        if self.is_secret(path):
+            return "Secret file containing credentials, keys, or sensitive configuration"
         if ".git" in str(path_obj):
             return "Git repository metadata (do not modify)"
         if name == ".env" or ".env." in name:
@@ -147,5 +180,13 @@ def guard_write_operation(
     tool_name: str, path: str, user_approved: bool = False
 ) -> Dict[str, Any]:
     """Convenience function to guard write operations."""
+    guard = WorkspaceGuard()
+    return guard.guard_operation(tool_name, path, user_approved)
+
+
+def guard_read_operation(
+    tool_name: str, path: str, user_approved: bool = False
+) -> Dict[str, Any]:
+    """Convenience function to guard read operations."""
     guard = WorkspaceGuard()
     return guard.guard_operation(tool_name, path, user_approved)

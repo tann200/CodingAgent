@@ -37,6 +37,10 @@ from src.tools.guardrails import (
 from src.core.orchestration.event_bus import get_event_bus as _get_event_bus
 from src.tools.formatter import run_formatter as _run_formatter
 from src.tools._diff_gate import _publish_diff_preview
+from src.core.security.redaction import (
+    is_secret_path as _is_secret_path,
+    redact_secrets as _redact_secrets,
+)
 
 _logger = logging.getLogger(__name__)
 _get_bus = _get_event_bus
@@ -366,6 +370,13 @@ def read_file(
     if not p.exists():
         return {"path": str(p), "status": "not_found"}
 
+    if _is_secret_path(p):
+        return {
+            "path": str(p),
+            "status": "error",
+            "error": f"Access denied: '{p.name}' is a protected secret file. Reading credentials and private keys is restricted.",
+        }
+
     # Binary detection: read first 512 bytes for null-byte check
     # without loading the entire file into memory (OOM-1 fix).
     try:
@@ -395,6 +406,8 @@ def read_file(
             "error": "File is not valid UTF-8. Cannot read as text.",
         }
 
+    content = _redact_secrets(content)
+
     # GAP-S1: Mark file as read for guardrail enforcement
     try:
         _mark_file_read(str(p.resolve()))
@@ -411,6 +424,7 @@ def read_file(
             )
         else:
             summary = f"[{len(content)} chars] {content[:500]}..."
+        summary = _redact_secrets(summary)
         return {"path": str(p), "status": "ok", "content": summary, "truncated": True}
 
     # Per-line cap: single pass — avoids scanning lines twice.
@@ -625,13 +639,28 @@ def read_file_chunk(
     if not p.exists():
         return {"path": str(p), "status": "not_found"}
 
+    if _is_secret_path(p):
+        return {
+            "path": str(p),
+            "status": "error",
+            "error": f"Access denied: '{p.name}' is a protected secret file. Reading credentials and private keys is restricted.",
+        }
+
+    _CHUNK_MAX_BYTES = 65_536
+    safe_offset = max(0, offset)
+    if limit <= 0 or limit > _CHUNK_MAX_BYTES:
+        actual_limit = _CHUNK_MAX_BYTES
+    else:
+        actual_limit = limit
+
     # Open in binary, apply byte offset, then decode to handle multi-byte UTF-8
     # correctly. Text-mode seek() is only safe with offsets returned by tell().
     with p.open("rb") as _bf:
-        if offset > 0:
-            _bf.seek(offset)
-        raw = _bf.read(limit if limit != -1 else None)
+        if safe_offset > 0:
+            _bf.seek(safe_offset)
+        raw = _bf.read(actual_limit)
     content = raw.decode("utf-8", errors="replace")
+    content = _redact_secrets(content)
     # GAP-S1: Mark file as read for guardrail enforcement
     try:
         _mark_file_read(str(p.resolve()))
@@ -641,8 +670,8 @@ def read_file_chunk(
         "path": str(p),
         "status": "ok",
         "content": content,
-        "offset": offset,
-        "limit": limit,
+        "offset": safe_offset,
+        "limit": limit if limit > 0 else _CHUNK_MAX_BYTES,
     }
 
 
@@ -714,6 +743,14 @@ def tail_log_file(
     p = _safe_resolve(path, workdir)
     if not p.exists():
         return {"path": str(p), "status": "not_found"}
+
+    if _is_secret_path(p):
+        return {
+            "path": str(p),
+            "status": "error",
+            "error": f"Access denied: '{p.name}' is a protected secret file. Reading credentials and private keys is restricted.",
+        }
+
     try:
         n = int(lines)
     except (TypeError, ValueError):
@@ -771,10 +808,12 @@ def tail_log_file(
             for chunk in iter(lambda: _cnt_f.read(65536), b""):
                 total_lines_count += chunk.count(b"\n")
 
+        content_str = _redact_secrets("".join(tail))
+
         return {
             "path": str(p),
             "status": "ok",
-            "content": "".join(tail),
+            "content": content_str,
             "total_lines": total_lines_count,
             "lines_shown": len(tail),
             "file_size_bytes": _size,
@@ -794,6 +833,10 @@ def create_directory(path: str, workdir: Path | None = None) -> Dict[str, Any]:
         p = _safe_resolve(path, workdir)
     except (PermissionError, ValueError) as exc:
         return {"path": path, "status": "error", "error": str(exc)}
+    guard = WorkspaceGuard()
+    guard_result = guard.guard_operation("create_directory", str(p))
+    if guard_result.get("status") == "error":
+        return {"path": str(p), "status": "error", "error": guard_result.get("error")}
     try:
         p.mkdir(parents=True, exist_ok=True)
         return {"path": str(p), "status": "ok", "created": True}
@@ -820,6 +863,14 @@ def read_file_bytes(
     p = _safe_resolve(path, workdir)
     if not p.exists():
         return {"path": str(p), "status": "not_found"}
+
+    if _is_secret_path(p):
+        return {
+            "path": str(p),
+            "status": "error",
+            "error": f"Access denied: '{p.name}' is a protected secret file. Reading credentials and private keys is restricted.",
+        }
+
     try:
         mb = int(max_bytes)
     except (TypeError, ValueError):
@@ -827,6 +878,11 @@ def read_file_bytes(
             "status": "error",
             "error": f"max_bytes must be an integer, got {max_bytes!r}",
         }
+
+    _MAX_BYTES_HARD_CAP = 10_485_760  # 10 MB
+    if mb <= 0 or mb > _MAX_BYTES_HARD_CAP:
+        mb = 1_048_576 if mb <= 0 else _MAX_BYTES_HARD_CAP
+
     try:
         with p.open("rb") as _fh:
             data = _fh.read(mb)

@@ -18,6 +18,10 @@ class WorkspaceGuard:
     must not grant write access).
     """
 
+    def is_secret(self, path: object) -> bool:
+        """Fail-closed secret check."""
+        return True
+
     def guard_operation(self, *args: object, **kwargs: object) -> Dict[str, str]:
         """Fail-closed operation - always blocks with an error."""
         return {
@@ -27,8 +31,16 @@ class WorkspaceGuard:
         }
 
 
+def is_secret_path(path: object) -> bool:
+    """Fail-closed fallback for is_secret_path."""
+    return True
+
+
 try:
-    from src.core.orchestration.workspace_guard import WorkspaceGuard as WorkspaceGuard  # type: ignore[assignment]  # noqa: F401
+    from src.core.orchestration.workspace_guard import (  # type: ignore[assignment]  # noqa: F401
+        WorkspaceGuard as WorkspaceGuard,
+        is_secret_path as is_secret_path,
+    )
 except ImportError:
     logging.getLogger(__name__).warning(
         "Could not import real WorkspaceGuard from src.core.orchestration.workspace_guard; "

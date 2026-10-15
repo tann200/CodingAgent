@@ -21,6 +21,7 @@ from src.core.orchestration.graph.nodes.tool_output_truncation import (
     detect_prompt_injection,
     truncate_tool_output,
 )
+from src.core.security.redaction import redact_data
 
 logger = logging.getLogger(__name__)
 
@@ -62,4 +63,5 @@ def sanitize_tool_result(
             exc_info=True,
         )
         scanned = result
+    scanned = redact_data(scanned)
     return truncate_tool_output(scanned, marker_label=marker_label)

@@ -24,6 +24,7 @@ from src.server.websocket_control import (
     build_control_unsubscribed_payload,
     parse_websocket_control_message,
 )
+from src.core.security.redaction import redact_data
 
 logger = logging.getLogger(__name__)
 
@@ -163,7 +164,7 @@ async def websocket_session_handler(
                     break
                 event_name, payload = item
                 try:
-                    await websocket.send_json({"event": event_name, "data": payload})
+                    await websocket.send_json({"event": event_name, "data": redact_data(payload)})
                 except WebSocketDisconnect:
                     break
                 except Exception:

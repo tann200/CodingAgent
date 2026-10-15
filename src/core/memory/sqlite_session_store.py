@@ -10,6 +10,8 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
+from src.core.security.redaction import redact_data, redact_secrets
+
 from src.core.memory.sqlite_store_session_ops import (
     copy_missing_snapshot_rows,
     copy_session_rows,
@@ -205,9 +207,10 @@ class SqliteSessionStore:
 
     def add_message(self, session_id: str, role: str, content: str) -> None:
         sid = session_id or "unknown"
+        safe_content = redact_secrets(content)
         self._execute_write(
             "INSERT INTO messages (session_id, role, content) VALUES (?, ?, ?)",
-            (sid, role, content),
+            (sid, role, safe_content),
         )
 
     def get_messages(self, session_id: str) -> List[Dict[str, Any]]:
@@ -339,14 +342,16 @@ class SqliteSessionStore:
         success: bool = True,
     ) -> None:
         sid = session_id or "unknown"
+        safe_args = redact_data(args)
+        safe_result = redact_data(result)
         try:
-            args_text = json.dumps(args, ensure_ascii=False)
+            args_text = json.dumps(safe_args, ensure_ascii=False)
         except Exception:
-            args_text = str(args)
+            args_text = str(safe_args)
         try:
-            result_text = json.dumps(result, ensure_ascii=False)
+            result_text = json.dumps(safe_result, ensure_ascii=False)
         except Exception:
-            result_text = str(result)
+            result_text = str(safe_result)
         self._execute_write(
             "INSERT INTO tool_calls (session_id, tool_name, args, result, success) VALUES (?, ?, ?, ?, ?)",
             (sid, tool_name, args_text, result_text, 1 if success else 0),

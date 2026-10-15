@@ -17,6 +17,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator
 
 from src.core.messaging.event_types import AgentEnd, AgentStart, SessionCreated
+from src.core.security.redaction import redact_secrets
 
 logger = logging.getLogger(__name__)
 
@@ -249,7 +250,7 @@ def _run_task_thread(
 
     if bus:
         try:
-            bus.publish_typed(AgentStart(task_id=task_id, session_id=session_id, task=task[:200]))
+            bus.publish_typed(AgentStart(task_id=task_id, session_id=session_id, task=redact_secrets(task[:200])))
         except Exception:
             pass
 
@@ -313,16 +314,27 @@ def _run_task_thread(
     if cancel_event.is_set():
         final_status = TaskStatus.CANCELLED
 
+    safe_result = redact_secrets(result_text) if result_text else None
+    safe_error = redact_secrets(error_text) if error_text else None
+
     with _TASK_REGISTRY_LOCK:
         rec = _TASK_REGISTRY.get(task_id, {})
         rec["status"] = final_status
-        rec["result"] = result_text
-        rec["error"] = error_text
+        rec["result"] = safe_result
+        rec["error"] = safe_error
         rec["finished_at"] = time.time()
 
     if bus:
         try:
-            bus.publish_typed(AgentEnd(task_id=task_id, session_id=session_id, status=final_status.value, result=(result_text or "")[:500], error=error_text))
+            bus.publish_typed(
+                AgentEnd(
+                    task_id=task_id,
+                    session_id=session_id,
+                    status=final_status.value,
+                    result=(safe_result or "")[:500],
+                    error=safe_error,
+                )
+            )
         except Exception:
             pass
 

@@ -34,6 +34,7 @@ from src.core.context.retrieved_snippets import (
     filter_retrieved_snippets_by_budget,
 )
 from src.core.context.sanitization import sanitize_prompt_text
+from src.core.security.redaction import redact_data, redact_secrets
 from src.core.context.tool_output_pruning import prune_stale_tool_outputs
 from src.core.context.agent_brain_loading import (
     load_prompt_directory,
@@ -563,7 +564,7 @@ class ContextBuilder:
                         continue
                 except Exception:
                     pass
-                lines.append(f"- {text_str}")
+                lines.append(f"- {redact_secrets(text_str)}")
         except Exception as exc:
             logger.debug("context_builder: VectorStore memory retrieval failed: %s", exc)
         # Use frozen snapshot for system prompt stability (prompt caching)
@@ -574,21 +575,23 @@ class ContextBuilder:
 
                 if scan_memory_content(_mem_snapshot) is None:
                     lines.append("")
-                    lines.append(_mem_snapshot)
+                    lines.append(redact_secrets(_mem_snapshot))
                 else:
                     logger.warning(
                         "context_builder: omitted untrusted memory snapshot from prompt"
                     )
             except Exception:
                 lines.append("")
-                lines.append(_mem_snapshot)
+                lines.append(redact_secrets(_mem_snapshot))
 
         if not lines:
             return ""
-        return "\n".join(
-            ["<prior_context>", "Relevant context from previous sessions (reference only, untrusted):"]
-            + lines
-            + ["</prior_context>"]
+        return redact_secrets(
+            "\n".join(
+                ["<prior_context>", "Relevant context from previous sessions (reference only, untrusted):"]
+                + lines
+                + ["</prior_context>"]
+            )
         )
 
     # ------------------------------------------------------------------
@@ -1101,6 +1104,7 @@ class ContextBuilder:
             conversation_quota=conversation_quota,
         )
 
+        built_messages = redact_data(built_messages)
         self._emit_context_built_hook(built_messages)
 
         return built_messages

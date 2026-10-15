@@ -7,6 +7,7 @@ import re
 from src.tools._path_utils import safe_resolve as _safe_resolve
 from src.tools._result import ToolResult, ErrorCode
 from src.tools._tool import tool, PermissionKind
+from src.core.security.redaction import is_secret_path, redact_secrets
 
 
 def _parse_grep_output(raw: str) -> list:
@@ -65,6 +66,12 @@ def grep(
     except PermissionError as e:
         return ToolResult.failure(str(e), ErrorCode.PERMISSION).to_dict()
 
+    if is_secret_path(search_path):
+        return ToolResult.failure(
+            f"Access denied: '{search_path.name}' is a protected secret file.",
+            ErrorCode.PERMISSION,
+        ).to_dict()
+
     try:
         cmd = ["grep", "-r", "-n", pattern]
         if context > 0:
@@ -81,9 +88,13 @@ def grep(
             timeout=30,
         )
         if process.returncode == 0:
-            raw = process.stdout
+            raw = redact_secrets(process.stdout)
+            matches = _parse_grep_output(raw)
+            for m in matches:
+                if isinstance(m, dict) and "content" in m:
+                    m["content"] = redact_secrets(m["content"])
             return ToolResult.success(
-                {"output": raw, "matches": _parse_grep_output(raw)}
+                {"output": raw, "matches": matches}
             ).to_dict()
         elif process.returncode == 1:
             return ToolResult.success(
@@ -113,6 +124,8 @@ def grep(
         for p in search_path.rglob("*"):
             if not p.is_file():
                 continue
+            if is_secret_path(p):
+                continue
             if suffix_filter and p.suffix != suffix_filter:
                 continue
             try:
@@ -121,17 +134,20 @@ def grep(
                 rel = str(p.relative_to(search_path)) if p.exists() else str(p)
                 for i, line in enumerate(file_lines):
                     if regex.search(line):
+                        line_clean = redact_secrets(line.rstrip())
                         matches.append(
                             {
                                 "file_path": rel,
                                 "line_number": i + 1,
-                                "content": line.rstrip(),
+                                "content": line_clean,
                             }
                         )
                         start = max(0, i - context)
                         end = min(len(file_lines), i + context + 1)
                         for j in range(start, end):
-                            out_lines.append(f"{rel}:{j + 1}:{file_lines[j].rstrip()}")
+                            out_lines.append(
+                                f"{rel}:{j + 1}:{redact_secrets(file_lines[j].rstrip())}"
+                            )
             except Exception:
                 continue
 

@@ -10,6 +10,7 @@ import logging
 import math
 import shlex
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Callable
@@ -206,6 +207,8 @@ class ScenarioEvaluator:
         if scenario.test_command:
             try:
                 cmd_parts = shlex.split(scenario.test_command)
+                if cmd_parts and cmd_parts[0] == "python":
+                    cmd_parts[0] = sys.executable
                 result = subprocess.run(
                     cmd_parts,
                     shell=False,
@@ -276,8 +279,11 @@ class ScenarioEvaluator:
             # Cleanup
             if scenario_dir and scenario.cleanup_command:
                 try:
+                    cleanup_parts = shlex.split(scenario.cleanup_command)
+                    if cleanup_parts and cleanup_parts[0] == "python":
+                        cleanup_parts[0] = sys.executable
                     subprocess.run(
-                        shlex.split(scenario.cleanup_command),
+                        cleanup_parts,
                         shell=False,
                         cwd=scenario_dir,
                         capture_output=True,

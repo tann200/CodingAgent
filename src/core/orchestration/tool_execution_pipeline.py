@@ -16,6 +16,7 @@ from typing import Any, Dict, Optional, cast
 
 from src.core.messaging.event_types import AgentModeChanged, AgentPlanCommitted, FileDeleted, FileModified, PreviewPending, SpawnPermissionRequired, TokenBudget, TokenBudgetUpdate, ToolExecuteError, ToolExecuteFinish, ToolExecuteStart, ToolInvoked, ToolPermissionRequired
 from src.tools._truncate import RESULT_MAX_CHARS
+from src.core.security.redaction import redact_data, redact_secrets
 logger = logging.getLogger(__name__)
 
 APPROVAL_TIMEOUT_SECONDS: float = 120.0
@@ -799,6 +800,7 @@ def _run_post_execution(
     """
     res = orch._normalize_tool_result(res)
     res = _truncate_result_strings(res)
+    res = redact_data(res)
 
     if name in ("plan_enter", "plan_exit") and isinstance(res, dict) and res.get("ok"):
         new_mode = res.get("agent_mode", "execution")
@@ -922,7 +924,7 @@ def _run_post_execution(
         orch._append_execution_trace(
             {
                 "tool": name,
-                "args": orch._normalize_args(args),
+                "args": redact_data(orch._normalize_args(args)),
                 "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
                 "result_ok": bool(res.get("status") == "ok" or res.get("ok") is True),
             }
@@ -932,7 +934,17 @@ def _run_post_execution(
 
     try:
         formatted = _format_tool_result(res, name)
-        orch.event_bus.publish_typed(ToolExecuteFinish(session_update="tool_call_update", tool_call_id=tool_call_id, title=name, status="completed", content=[{"type": "text", "text": formatted}], raw_output=res, workdir=str(orch.working_dir)))
+        orch.event_bus.publish_typed(
+            ToolExecuteFinish(
+                session_update="tool_call_update",
+                tool_call_id=tool_call_id,
+                title=name,
+                status="completed",
+                content=[{"type": "text", "text": redact_secrets(formatted)}],
+                raw_output=redact_data(res),
+                workdir=str(orch.working_dir),
+            )
+        )
     except Exception:
         pass
 
@@ -962,8 +974,8 @@ def _run_post_execution(
         orch.session_store.add_tool_call(
             session_id=getattr(orch, "_current_task_id", None),
             tool_name=name,
-            args=safe_args,
-            result=res,
+            args=redact_data(safe_args),
+            result=redact_data(res),
             success=True,
         )
     except Exception:
@@ -1017,12 +1029,12 @@ def execute_tool_impl(orch: Any, tool_call: Dict[str, Any]) -> Dict[str, Any]:
         # be surfaced to callers even in dry_run mode.
         args = dict(args)
         args.pop("user_approved", None)
-        entry = {"tool": name, "args": args}
+        entry = {"tool": name, "args": redact_data(args)}
         try:
             orch._dry_run_log.append(entry)
         except Exception:
             pass
-        return {"status": "dry_run", "would_call": name, "args": args}
+        return {"status": "dry_run", "would_call": name, "args": redact_data(args)}
 
     path_arg = args.get("path") or args.get("file_path") or args.get("src_path")
     tool_call_id = uuid.uuid4().hex[:8]
