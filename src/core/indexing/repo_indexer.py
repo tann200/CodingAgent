@@ -639,13 +639,19 @@ def refresh_file_in_index(file_path: str, working_dir: str) -> bool:
         files_list = data.get("files", [])
         if not isinstance(files_list, list):
             files_list = []
+
+        language = parsed.get("language") or get_language(p) or ""
+        file_entry: Dict[str, Any] = {"path": rel, "language": language}
+        if "imports" in parsed:
+            file_entry["imports"] = parsed["imports"]
+
         # Update existing entry or append new one
         for i, entry in enumerate(files_list):
             if isinstance(entry, dict) and entry.get("path") == rel:
-                files_list[i] = parsed
+                files_list[i] = file_entry
                 break
         else:
-            files_list.append(parsed)
+            files_list.append(file_entry)
         data["files"] = files_list
 
         # Replace this file's symbols: drop the stale ones, re-add from the
@@ -660,9 +666,14 @@ def refresh_file_in_index(file_path: str, working_dir: str) -> bool:
             for s in symbols_list
             if not (isinstance(s, dict) and s.get("file_path") == rel)
         ]
-        language = parsed.get("language") or get_language(p) or ""
         retained.extend(_flat_symbols_for_file(parsed, rel, language))
         data["symbols"] = retained
+
+        # Update metadata hashes if metadata exists
+        meta = _load_index_metadata(Path(working_dir))
+        if meta and "hashes" in meta and isinstance(meta["hashes"], dict):
+            meta["hashes"][rel] = compute_file_hash(p)
+            _save_index_metadata(Path(working_dir), meta)
 
         if _atomic_write_json is not None:
             return bool(_atomic_write_json(index_path, data))

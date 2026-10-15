@@ -165,9 +165,9 @@ fully met; `MIXED` = sub-items differ.
 | Add evidence-based completion contracts and minimum verification to every tier.        | graph builder, frontier, verification, evaluation     |       High | Stops false success and unverified edits.                  | OPEN |
 | Make unavailable sandbox enforcement deny by default; isolate temporary storage.       | `sandbox.py`, `_bash_exec.py`                         |     Medium | Prevents host-privilege shell execution.                   | PARTIAL |
 | Add protected paths, secret detection, and universal redaction.                        | file tools, pipeline, context, memory, events, server |       High | Prevents credential disclosure.                            | OPEN |
-| Enforce task-server workspace roots, bounded admission, and cancellation-before-start. | `server/task_endpoints.py`                            |     Medium | Prevents arbitrary-host access and queue abuse.            | OPEN |
+| Enforce task-server workspace roots, bounded admission, and cancellation-before-start. | `server/task_endpoints.py`                            |     Medium | Prevents arbitrary-host access and queue abuse.            | FIXED |
 | Validate redirect hops and peer addresses.                                             | `web_tools.py`                                        |     Medium | Closes SSRF redirect bypass.                               | FIXED |
-| Repair SQLite session deletion, LSP context, and incremental index refresh.            | memory/indexing modules                               |     Medium | Restores persistence and repository awareness correctness. | MIXED |
+| Repair SQLite session deletion, LSP context, and incremental index refresh.            | memory/indexing modules                               |     Medium | Restores persistence and repository awareness correctness. | FIXED |
 
 ### Phase 2 - Robustness Improvements
 
@@ -215,11 +215,11 @@ the primary risk is mitigated but the audit's stated contract is not fully met;
 | 1 | Evidence-based completion + minimum verification on every tier | **OPEN** (partial) | `frontier_loop_node.py:783-796` still sets `ok=True, completed_without_tool=True, _completion_detected=True` on any no-tool turn (including empty text). `verification_node.py:76,130,138` still gates on `last_tool_name` and `_WRITE_TOOLS_ALWAYS_VERIFY`, not on `modified_files`/side effects. | Lite-tier verification parity `9bbf470`; in-loop verification checkpoint `d7e36b1` mitigate but do not close. |
 | 2 | Unavailable sandbox enforcement must deny by default; private temp | **PARTIAL** | `sandbox.py:452-480` falls back to plain `subprocess.run`; it refuses only when `_enforcement_required()` (`sandbox.py:515-524`) is true (env `SANDBOX_REQUIRE_ENFORCEMENT` **or** autonomous mode). Interactive default still fails open. bwrap still bind-mounts host `/tmp` (`sandbox.py:311-317`). | — |
 | 3 | Protected paths + secret detection + universal redaction | **OPEN** | No redaction exists anywhere in `src/` (`rg redact src` → 0 hits). `tool_execution_pipeline.py` has no secret scan. `WorkspaceGuard` protects paths only for `write_file`/`delete_file` (`_file_io.py:176-177,472-473`), not reads, prompts, traces, or events. | — |
-| 4 | Server workspace roots + bounded admission + cancellation-before-start | **OPEN** (partial) | `submit_task` accepts `request_body.working_dir` with no approved-root check (`task_endpoints.py:217-254`) and `orchestrator_factory(working_dir, model)` builds an `Orchestrator` for it (`:164`). Worker count is bounded (`max_workers=10`, `:33-36`) but the executor queue is unbounded. `_run_task_thread` marks RUNNING (`:151`) and builds the orchestrator (`:164`) before any `cancel_event` check (the event is only threaded into `run_agent_once` at `:182`). | — |
+| 4 | Server workspace roots + bounded admission + cancellation-before-start | **FIXED** | `task_endpoints.py` now enforces workspace roots via `validate_working_dir_within_roots` against `get_allowed_workspace_roots()` (defaulting to cwd if unspecified), rejecting unauthorized directories (e.g. `/etc`, home, sibling dirs) with HTTP 403; bounds accepted queue with `_TASK_MAX_QUEUE` (HTTP 503 on overflow); checks `cancel_event` before worker start to prevent orchestrator creation/execution; and propagates `session_id`/`task_id` to orchestrator state and session manager. Covered by `tests/unit/test_task_server_safeguards.py` and `tests/unit/test_server_app.py`. | this change |
 | 5 | Redirect-hop / peer-address SSRF validation | **FIXED** | `web_tools.py` now fetches through `_fetch_with_validated_redirects`: `allow_redirects=False`, and every hop is validated with `_is_ssrf_blocked` (scheme + resolved peer addresses) before being followed, with a bounded redirect count. Tests: `tests/unit/test_web_tools_ssrf.py` (`..._blocks_redirect_to_loopback`, `..._follows_validated_redirect`, `..._too_many_redirects`, `..._blocks_redirect_scheme_change`). | this change |
 | 6a | SQLite session deletion correctness | **FIXED** | `delete_session` in `sqlite_session_store.py` now cascades correctly: snapshot rows deleted by snapshot ID before snapshots, `session_children` deleted by parent/child ID, and session tables (`messages`, `tool_calls`, `errors`, `plans`, `decisions`, `mistakes`, `session_plans`, `messages_fts`) cleaned up. Covered by `tests/unit/test_sqlite_session_delete.py`. | this change |
 | 6b | LSP prompt context for real `SymbolGraph` data | **FIXED** | `lsp_context.py:_get_symbols` now iterates `symbols["classes"]` and `symbols["functions"]` as lists (handling None/non-list shapes) and extracts `{name, kind, file, line}`. New `tests/unit/test_lsp_context.py` covers AST-based lists, sorting, and bad shapes. | this change |
-| 6c | Incremental index refresh | **PARTIAL** | `repo_indexer.refresh_file_in_index` now rebuilds the flat top-level `symbols` list (`:651-665`) — the symbol-search staleness is fixed. It still replaces the normalized file entry `{"path","language","imports"}` (`:380-386`) with raw parser output (`:645 files_list[i] = parsed`), so the entry-schema part of the finding remains. | `976813a` (P1.2) |
+| 6c | Incremental index refresh | **FIXED** | `repo_indexer.refresh_file_in_index` rebuilds top-level `symbols` (`:656-665`) and updates `files_list` with normalized `{"path", "language", "imports"}` dicts (`:643-655`) and metadata hashes. Covered by `tests/unit/test_repo_indexer_schema.py` and `tests/unit/test_repo_indexer*.py`. | this change |
 
 ### Section 4 — High-Risk Safety (High rows)
 
@@ -228,7 +228,7 @@ the primary risk is mitigated but the audit's stated contract is not fully met;
 | Sandbox falls back to unrestricted host execution | **PARTIAL** | Same as Phase 1 item 2. |
 | Linux sandbox shares writable host `/tmp` | **OPEN** | `sandbox.py:311-317` binds `/tmp` into the namespace. |
 | Redirects bypass SSRF validation | **FIXED** | Same as Phase 1 item 5. |
-| Server tasks may select arbitrary host directories | **OPEN** | Same as Phase 1 item 4. |
+| Server tasks may select arbitrary host directories | **FIXED** | Same as Phase 1 item 4. |
 | Raw `ToolRegistry.call()` bypasses central enforcement | **OPEN** | `_registry.py:305-316` unchanged. The guarded entry point remains `Orchestrator.execute_tool()` / `tool_execution_pipeline.py`; no runtime restriction prevents direct calls. |
 | Secret-bearing content can enter prompts, sessions, and logs | **OPEN** | Same as Phase 1 item 3. |
 | Prior-session memory inserted without the safety scanner | **FIXED** | `context_builder.py:553-568` scans retrieved prior-session memory and frozen memory snapshots with `scan_memory_content` from `memory/security.py`, omitting threat/injection patterns, and labels `<prior_context>` as untrusted reference data. Covered by `tests/unit/test_prior_session_memory_scan.py`. |
@@ -246,10 +246,8 @@ the primary risk is mitigated but the audit's stated contract is not fully met;
 | §7 `symbol_reader.read_file_chunked` external-path read | **N/A** | Module deleted (see above). |
 | §3 lite/small paths skip verification | **FIXED** (partial) | Lite tier now shares verification (commit `9bbf470`). |
 | §11 config reload / `.agent` vs `.codingAgent` reconciliation | **PARTIAL** | Workspace config chain consolidated on `.codingAgent` (commit `0c67999`); `ConfigReloader` lifecycle issues in §11 are not addressed. |
-
-### Still-open tool/read defects (unchanged)
-
-- Tool schemas still do not reject undeclared fields (`_tool.py`) — not reassessed.
+| §6 provider fallback circuit breaker + candidate model | **FIXED** | `llm_manager.py:1410-1440` routes open circuit breaker into cross-provider fallback; `provider_fallback.py:120-230` resolves candidate-supported model ID. Covered by `tests/unit/test_circuit_breaker_fallback.py`. |
+| §7 tool schema strictness (`additionalProperties: false`) | **FIXED** | `_tool.py:114-233` generates `additionalProperties: False` in function calling schema unless `**kwargs` is declared, and `validate_args` flags unexpected parameters. Covered by `tests/unit/test_tool_schema_strictness.py`. |
 
 ### Method note
 

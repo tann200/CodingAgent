@@ -1403,37 +1403,42 @@ async def call_model(
     except Exception:
         _call_event_bus = None
 
-    # #31: Circuit-breaker fast-fail — skip call entirely when provider is known-bad
+    # #31: Circuit-breaker fast-fail — skip primary call when provider is known-bad
     _cb_key = canonical_provider(provider) if provider else ""
+    _cb_open = False
     if _cb_key:
         _cb = get_circuit_breaker(_cb_key)
         if _cb.is_open():
             guilogger.warning(
-                f"call_model: circuit breaker OPEN for provider '{_cb_key}' — fast-failing"
+                f"call_model: circuit breaker OPEN for provider '{_cb_key}' — fast-failing primary call"
             )
-            return {"ok": False, "error": f"circuit_breaker_open:{_cb_key}"}
+            res = {"ok": False, "error": f"circuit_breaker_open:{_cb_key}"}
+            _cb_open = True
 
-    res = await _call_model_internal(
-        messages, provider, model, stream, format_json, tools, **kwargs
-    )
+    if not _cb_open:
+        res = await _call_model_internal(
+            messages, provider, model, stream, format_json, tools, **kwargs
+        )
 
-    res, _cb_handled = await _attempt_model_fallback(
-        enabled=os.getenv("LLM_MANAGER_ENABLE_MODEL_FALLBACK", "1") == "1",
-        current_result=res,
-        current_model=model,
-        provider=provider,
-        messages=messages,
-        stream=stream,
-        format_json=format_json,
-        tools=tools,
-        kwargs=kwargs,
-        max_fallbacks=int(os.getenv("LLM_MANAGER_MAX_FALLBACKS", "2")),
-        get_available_models=get_available_models,
-        call_model_internal=_call_model_internal,
-        on_success=(lambda: get_circuit_breaker(_cb_key).record_success())
-        if _cb_key
-        else None,
-    )
+        res, _cb_handled = await _attempt_model_fallback(
+            enabled=os.getenv("LLM_MANAGER_ENABLE_MODEL_FALLBACK", "1") == "1",
+            current_result=res,
+            current_model=model,
+            provider=provider,
+            messages=messages,
+            stream=stream,
+            format_json=format_json,
+            tools=tools,
+            kwargs=kwargs,
+            max_fallbacks=int(os.getenv("LLM_MANAGER_MAX_FALLBACKS", "2")),
+            get_available_models=get_available_models,
+            call_model_internal=_call_model_internal,
+            on_success=(lambda: get_circuit_breaker(_cb_key).record_success())
+            if _cb_key
+            else None,
+        )
+    else:
+        _cb_handled = True
 
     # P1-1: Cross-provider fallback — if model-level fallback also failed, try
     # other registered providers before giving up entirely.

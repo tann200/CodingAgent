@@ -99,7 +99,7 @@ Project-local configuration is resolved from `.codingAgent/config.json`. `coding
 - Provider output is untrusted and must remain subject to tool permissions and validation.
 - Repository content, tool output, web content, prior-session memory, MCP responses, and hook output can contain prompt injection.
 - Shell commands and project hooks are host-code execution. Sandbox availability must be verified, not assumed.
-- The optional server is a local control plane, not a general public API; task workdirs require an explicit allowlist before non-local use.
+- The optional server is a local control plane, not a general public API; task workdirs enforce an approved root allowlist (`CODINGAGENT_ALLOWED_WORKSPACE_ROOTS`, defaulting to the server's working directory), queue admission is bounded, and cancelled queued tasks abort before orchestrator construction.
 
 ## Design Constraints
 

@@ -116,6 +116,39 @@ class ProviderFallbackChain:
         primary_key = (primary_provider or "").lower().replace(" ", "_")
         return [k for k in candidates if k.lower().replace(" ", "_") != primary_key]
 
+    def _resolve_candidate_model(
+        self,
+        candidate_key: str,
+        original_model: Optional[str],
+        mgr: Any,
+    ) -> Optional[str]:
+        """Resolve a model name supported by candidate_key.
+
+        Preserves original_model if supported; otherwise falls back to
+        candidate provider's default_model or configured model list.
+        """
+        if not mgr:
+            return original_model
+        try:
+            adapter = mgr.get_provider(candidate_key)
+            if adapter is None:
+                return original_model
+
+            supported_models: List[str] = getattr(adapter, "models", []) or []
+            if original_model and original_model in supported_models:
+                return original_model
+
+            default_model = getattr(adapter, "default_model", None)
+            if default_model:
+                return str(default_model)
+
+            if supported_models:
+                return str(supported_models[0])
+
+            return None
+        except Exception:
+            return original_model
+
     async def call(
         self,
         *,
@@ -186,11 +219,12 @@ class ProviderFallbackChain:
                 max_attempts,
             )
 
+            candidate_model = self._resolve_candidate_model(candidate_key, model, mgr)
             try:
                 result = await call_model_internal(
                     messages,
                     candidate_key,
-                    model,
+                    candidate_model,
                     stream,
                     format_json,
                     tools,

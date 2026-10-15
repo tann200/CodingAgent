@@ -116,17 +116,18 @@ class ToolDefinition:
         import inspect
         import re
 
-        params: dict = {"type": "object", "properties": {}}
+        params: dict = {"type": "object", "properties": {}, "additionalProperties": False}
         required: list[str] = []
+        has_var_keyword = False
 
         try:
             sig = inspect.signature(self.fn)
             for pname, param in sig.parameters.items():
-                # Skip *args, **kwargs (by kind), and internal non-LLM params by name
-                if param.kind in (
-                    inspect.Parameter.VAR_POSITIONAL,
-                    inspect.Parameter.VAR_KEYWORD,
-                ):
+                if param.kind == inspect.Parameter.VAR_KEYWORD:
+                    has_var_keyword = True
+                    continue
+                # Skip *args (by kind) and internal non-LLM params by name
+                if param.kind == inspect.Parameter.VAR_POSITIONAL:
                     continue
                 if pname in ("self", "cls", "workdir"):
                     continue
@@ -152,6 +153,7 @@ class ToolDefinition:
                 params["properties"][pname] = prop
                 if param.default is inspect.Parameter.empty:
                     required.append(pname)
+            params["additionalProperties"] = has_var_keyword
         except Exception:
             pass
 
@@ -187,6 +189,7 @@ class ToolDefinition:
         - Required fields are present.
         - Field types match the schema (string, integer, number, boolean,
           array, object).  ``None`` values are allowed for optional fields.
+        - Undeclared fields are rejected when additionalProperties is False.
         """
         errors: list[str] = []
         try:
@@ -227,6 +230,12 @@ class ToolDefinition:
                         f"field '{field_name}' expected {expected_type_name},"
                         f" got {type(val).__name__}"
                     )
+
+            # 3. Reject undeclared fields when additionalProperties is False
+            if not params.get("additionalProperties", False):
+                for field_name in args:
+                    if field_name not in properties and field_name not in ("self", "cls", "workdir"):
+                        errors.append(f"unexpected undeclared field '{field_name}'")
         except Exception:
             # Schema generation can fail for complex signatures; skip validation
             pass

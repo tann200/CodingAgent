@@ -35,6 +35,84 @@ _TASK_EXECUTOR = ThreadPoolExecutor(
     thread_name_prefix="task",
 )
 
+# Bounded queue limit for admitted tasks waiting to execute.
+_TASK_MAX_QUEUE: int = int(
+    os.environ.get(
+        "CODINGAGENT_TASK_MAX_QUEUE",
+        os.environ.get("CODING_AGENT_TASK_MAX_QUEUE", "50"),
+    )
+)
+
+_ALLOWED_WORKSPACE_ROOTS: Optional[List[Path]] = None
+
+
+def set_allowed_workspace_roots(roots: Optional[List[str | Path]]) -> None:
+    """Explicitly set the allowed workspace roots for task execution."""
+    global _ALLOWED_WORKSPACE_ROOTS
+    if roots is None:
+        _ALLOWED_WORKSPACE_ROOTS = None
+    else:
+        _ALLOWED_WORKSPACE_ROOTS = [Path(r).resolve() for r in roots]
+
+
+def get_allowed_workspace_roots() -> List[Path]:
+    """Return the list of allowed workspace roots.
+
+    Defaults to CODINGAGENT_ALLOWED_WORKSPACE_ROOTS or CODING_AGENT_ALLOWED_WORKSPACE_ROOTS
+    env var (delimited by os.pathsep or comma). If not configured, defaults to [Path.cwd().resolve()].
+    """
+    if _ALLOWED_WORKSPACE_ROOTS is not None:
+        return list(_ALLOWED_WORKSPACE_ROOTS)
+
+    env_val = os.environ.get(
+        "CODINGAGENT_ALLOWED_WORKSPACE_ROOTS",
+        os.environ.get("CODING_AGENT_ALLOWED_WORKSPACE_ROOTS", ""),
+    ).strip()
+    if env_val:
+        parts: List[str] = []
+        for chunk in env_val.split(os.pathsep):
+            for sub in chunk.split(","):
+                s = sub.strip()
+                if s:
+                    parts.append(s)
+        if parts:
+            return [Path(p).resolve() for p in parts]
+
+    return [Path.cwd().resolve()]
+
+
+def validate_working_dir_within_roots(
+    working_dir: Optional[str],
+    allowed_roots: Optional[List[Path]] = None,
+) -> Optional[Path]:
+    """Validate that *working_dir* resolves to a path within an approved workspace root.
+
+    Raises HTTPException(403) if outside approved roots, or HTTPException(400) if invalid path.
+    """
+    if working_dir is None:
+        return None
+    try:
+        resolved = Path(working_dir).resolve()
+    except Exception as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"working_dir is not a valid path: {exc}",
+        ) from exc
+
+    if not resolved.is_dir():
+        raise HTTPException(
+            status_code=400,
+            detail=f"working_dir does not exist or is not a directory: {resolved}",
+        )
+
+    roots = allowed_roots if allowed_roots is not None else get_allowed_workspace_roots()
+    if not any(resolved == root or resolved.is_relative_to(root) for root in roots):
+        raise HTTPException(
+            status_code=403,
+            detail=f"working_dir '{resolved}' is not within an approved workspace root",
+        )
+    return resolved
+
 
 def _evict_stale_tasks() -> None:
     """Remove terminal task records older than _TASK_REGISTRY_TTL_SECONDS.
@@ -148,6 +226,24 @@ def _run_task_thread(
         rec = _TASK_REGISTRY.get(task_id)
         if rec is None:
             return
+        # If task was cancelled before starting, abort immediately without running or creating orchestrator
+        if cancel_event.is_set() or rec.get("status") == TaskStatus.CANCELLED:
+            rec["status"] = TaskStatus.CANCELLED
+            rec["finished_at"] = time.time()
+            if bus:
+                try:
+                    bus.publish_typed(
+                        AgentEnd(
+                            task_id=task_id,
+                            session_id=session_id,
+                            status=TaskStatus.CANCELLED.value,
+                            result="",
+                            error="Cancelled before start",
+                        )
+                    )
+                except Exception:
+                    pass
+            return
         rec["status"] = TaskStatus.RUNNING
         rec["started_at"] = time.time()
 
@@ -160,13 +256,33 @@ def _run_task_thread(
     result_text: Optional[str] = None
     error_text: Optional[str] = None
     try:
+        if cancel_event.is_set():
+            raise RuntimeError("Task was cancelled before start")
+
         from src.server.app import _get_or_create_orchestrator as orchestrator_factory
         orch = orchestrator_factory(working_dir, model)
+
+        # Propagate task_id and session_id into orchestrator state so session stores,
+        # message history, and checkpoints are tied to the client session.
+        orch._current_task_id = session_id
+        orch.session_id = session_id
+        orch.task_id = task_id
+        if hasattr(orch, "session_mgr") and orch.session_mgr:
+            try:
+                orch.session_mgr.task_id = session_id
+                if hasattr(orch.session_mgr, "update_session_state"):
+                    orch.session_mgr.update_session_state(session_id=session_id)
+            except Exception:
+                pass
+
         if bus:
             try:
                 orch.event_bus = bus
             except Exception:
                 pass
+
+        if cancel_event.is_set():
+            raise RuntimeError("Task was cancelled before start")
 
         messages = [{"role": "user", "content": task}]
         tools = getattr(orch, "tools", {}) or {}
@@ -218,22 +334,39 @@ task_router = APIRouter(tags=["tasks"])
 async def submit_task(request_body: TaskCreateRequest, request: Request):
     if _deps.require_admin_auth is not None:
         _deps.require_admin_auth(request)
+
+    # Enforce workspace root allowlist
+    resolved_workdir = validate_working_dir_within_roots(request_body.working_dir)
+    working_dir_str = str(resolved_workdir) if resolved_workdir else None
+
     task_id = str(uuid.uuid4())
     session_id = request_body.session_id or f"session-{task_id[:8]}"
     cancel_event = threading.Event()
 
-    rec: Dict[str, object] = {
-        "task_id": task_id,
-        "session_id": session_id,
-        "status": TaskStatus.ACCEPTED,
-        "result": None,
-        "error": None,
-        "started_at": None,
-        "finished_at": None,
-        "cancel_event": cancel_event,
-    }
     with _TASK_REGISTRY_LOCK:
         _evict_stale_tasks()
+        # Enforce bounded queue capacity for waiting/accepted tasks
+        queued_count = sum(
+            1
+            for rec in _TASK_REGISTRY.values()
+            if rec.get("status") == TaskStatus.ACCEPTED
+        )
+        if queued_count >= _TASK_MAX_QUEUE:
+            raise HTTPException(
+                status_code=503,
+                detail="Task queue is full; server overloaded. Please retry later.",
+            )
+
+        rec: Dict[str, object] = {
+            "task_id": task_id,
+            "session_id": session_id,
+            "status": TaskStatus.ACCEPTED,
+            "result": None,
+            "error": None,
+            "started_at": None,
+            "finished_at": None,
+            "cancel_event": cancel_event,
+        }
         _TASK_REGISTRY[task_id] = rec
 
     bus = _deps.event_bus
@@ -248,7 +381,7 @@ async def submit_task(request_body: TaskCreateRequest, request: Request):
         task_id,
         session_id,
         request_body.task,
-        request_body.working_dir,
+        working_dir_str,
         request_body.model,
         cancel_event,
     )
@@ -285,11 +418,15 @@ async def cancel_task(task_id: str, request: Request):
         _deps.require_admin_auth(request)
     with _TASK_REGISTRY_LOCK:
         rec = _TASK_REGISTRY.get(task_id)
-    if rec is None:
-        raise HTTPException(status_code=404, detail="Task not found")
-    cancel_event = rec.get("cancel_event")
-    if cancel_event:
-        cancel_event.set()
+        if rec is None:
+            raise HTTPException(status_code=404, detail="Task not found")
+        cancel_event = rec.get("cancel_event")
+        if cancel_event:
+            cancel_event.set()
+        # If task was still ACCEPTED (queued), mark CANCELLED immediately
+        if rec.get("status") == TaskStatus.ACCEPTED:
+            rec["status"] = TaskStatus.CANCELLED
+            rec["finished_at"] = time.time()
     return TaskStatusResponse(
         task_id=rec["task_id"],
         session_id=rec["session_id"],
