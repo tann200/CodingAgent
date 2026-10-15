@@ -223,3 +223,67 @@ def persist_plan_progress(
         workdir,
     )
     return True
+
+
+def handle_no_tool_completion(
+    *,
+    task: str,
+    content_text: Optional[str],
+    turns_taken: int,
+    tool_call_count: int,
+    state: Mapping[str, Any],
+    orchestrator: Any,
+) -> Dict[str, Any]:
+    """Evaluate completion contracts when the model returns no tool calls."""
+    from src.core.orchestration.graph.completion_contract import evaluate_completion_contract
+    from src.core.security.redaction import redact_secrets
+
+    modified_files: set[str] = set()
+    if orchestrator and hasattr(orchestrator, "_session_modified_files") and orchestrator._session_modified_files:
+        modified_files.update(orchestrator._session_modified_files)
+    if state.get("modified_files"):
+        modified_files.update(state.get("modified_files"))
+    if state.get("_session_modified_files"):
+        modified_files.update(state.get("_session_modified_files"))
+
+    contract = evaluate_completion_contract(
+        task=task,
+        content_text=content_text,
+        tool_calls_count=tool_call_count,
+        modified_files=modified_files,
+        current_plan=state.get("current_plan"),
+        affected_files=state.get("affected_files"),
+        last_result=state.get("last_result"),
+        errors=state.get("errors"),
+    )
+
+    if contract.is_complete:
+        content_preview = redact_secrets((content_text or "")[:200])
+        logger.info(
+            "frontier_loop_node: no tool calls in turn %d — task complete (type=%s). "
+            "Content preview: %r",
+            turns_taken,
+            contract.task_type.value,
+            content_preview,
+        )
+        return {
+            "ok": True,
+            "completed_without_tool": True,
+            "_completion_detected": True,
+            "task_type": contract.task_type.value,
+        }
+
+    logger.warning(
+        "frontier_loop_node: completion rejected by contract in turn %d: %s (type=%s)",
+        turns_taken,
+        contract.failure_reason,
+        contract.task_type.value,
+    )
+    return {
+        "ok": False,
+        "error": contract.failure_reason or "Completion contract unsatisfied",
+        "error_code": contract.error_code or "completion_contract_failed",
+        "task_type": contract.task_type.value,
+        "_completion_detected": False,
+    }
+

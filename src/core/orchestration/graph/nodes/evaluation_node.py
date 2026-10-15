@@ -98,23 +98,61 @@ async def _evaluation_node_impl(state: StateLike, config: RunnableConfig) -> Dic
                     f"{label} failed: {r.get('message', r.get('stdout', 'Unknown error'))[:200]}"
                 )
 
-    # Check plan completion
-    # P3.3: prefer the loop's own declaration when it is present. The frontier
-    # graphs run a whole plan as one loop and never advance ``current_step`` or
-    # set a per-step ``completed`` flag, so the index-based checks below are
-    # unsatisfiable there — an N-step plan that finished successfully would
-    # otherwise be reported as "PARTIAL COMPLETION" with evaluation_result
-    # "replan". Mirrors how ``verification_passed`` is trusted over recompute.
-    plan_completed = (
-        bool(state.get("plan_completed"))
-        or not current_plan
-        or current_step >= len(current_plan)
-        or all(step.get("completed", False) for step in current_plan)
+    # Check plan completion & evidence contract
+    from src.core.orchestration.graph.completion_contract import evaluate_completion_contract
+
+    session_modified: set[str] = set()
+    try:
+        from src.core.orchestration.graph.nodes.node_utils import _resolve_orchestrator
+
+        _orch = _resolve_orchestrator(state, config)
+        if _orch and getattr(_orch, "_session_modified_files", None):
+            session_modified.update(_orch._session_modified_files)
+    except Exception:
+        pass
+    if state.get("modified_files"):
+        session_modified.update(state.get("modified_files"))
+    if state.get("_session_modified_files"):
+        session_modified.update(state.get("_session_modified_files"))
+
+    history = state.get("history") or []
+    content_text = None
+    for msg in reversed(history):
+        if isinstance(msg, dict) and msg.get("role") == "assistant" and msg.get("content"):
+            content_text = msg.get("content")
+            break
+
+    contract = evaluate_completion_contract(
+        task=state.get("task") or "",
+        content_text=content_text,
+        tool_calls_count=int(state.get("tool_call_count") or 0),
+        modified_files=session_modified,
+        current_plan=current_plan,
+        affected_files=state.get("affected_files"),
+        last_result=state.get("last_result"),
+        errors=errors,
     )
 
-    # Check for critical errors
+    if not contract.is_complete:
+        plan_completed = False
+        verification_passed = False
+        failure_reasons.append(contract.failure_reason or "Completion contract unsatisfied")
+    else:
+        plan_completed = (
+            bool(state.get("plan_completed"))
+            or not current_plan
+            or current_step >= len(current_plan)
+            or all(step.get("completed", False) for step in current_plan)
+        )
+
     critical_errors = [
-        e for e in errors if e not in ["canceled", "orchestrator not found"]
+        e
+        for e in errors
+        if e not in [
+            "canceled",
+            "orchestrator not found",
+            "orchestrator not found in config",
+        ]
     ]
 
     # Read debug_attempts to gate debug routing — this prevents an unbounded loop.

@@ -164,6 +164,16 @@ def route_frontier_loop_exit_lite(
     if "context_overflow" in (state.get("errors") or []):
         return "memory_sync"
 
+    # Minimum mutation verification on lite tier: route to verification if files
+    # were modified, if a mutating action failed, or if the last tool was a write.
+    modified = state.get("modified_files") or state.get("_session_modified_files") or []
+    if modified:
+        return "verification"
+
+    last_res = state.get("last_result") or {}
+    if isinstance(last_res, Mapping) and (last_res.get("ok") is False or last_res.get("status") in ("error", "failed")):
+        return "verification"
+
     last_tool = str(state.get("last_tool_name") or "").strip()
     if not last_tool:
         return "memory_sync"

@@ -71,10 +71,20 @@ async def _verification_node_impl(state: StateLike, config: RunnableConfig) -> D
     """
     logger.info("=== verification_node START ===")
 
+    # Collect modified files across session/orchestrator
+    session_modified: set[str] = set()
+    orch = _resolve_orchestrator(state, config)
+    if orch and getattr(orch, "_session_modified_files", None):
+        session_modified.update(orch._session_modified_files)
+    if state.get("modified_files"):
+        session_modified.update(state.get("modified_files"))
+    if state.get("_session_modified_files"):
+        session_modified.update(state.get("_session_modified_files"))
+
     # P3-B: Tier-gated early exits.
     _tier = (state.get("model_tier") or "").lower()
     _last_tool = state.get("last_tool_name") or ""
-    if _tier == "small" and _last_tool not in _WRITE_TOOLS_ALWAYS_VERIFY:
+    if _tier == "small" and _last_tool not in _WRITE_TOOLS_ALWAYS_VERIFY and not session_modified:
         logger.info(
             "verification_node: P3-B SMALL tier + read-only tool '%s' — skipping verification",
             _last_tool,
@@ -133,18 +143,26 @@ async def _verification_node_impl(state: StateLike, config: RunnableConfig) -> D
             r = (
                 last_result.get("result") or last_result
             )  # handle both wrapped and flat results
-            if isinstance(r, dict) and r.get("status") == "ok":
-                # Any side-effecting tool that succeeded triggers verification
-                if last_tool_name in _WRITE_TOOLS_ALWAYS_VERIFY:
-                    need_verify = True
-                # Fallback: path present → legacy edit_file shape
-                elif r.get("path"):
-                    need_verify = True
-                # Fallback: bash success (returncode present and == 0)
-                elif "returncode" in r and r["returncode"] == 0:
+            if isinstance(r, dict):
+                if r.get("status") == "ok":
+                    # Any side-effecting tool that succeeded triggers verification
+                    if last_tool_name in _WRITE_TOOLS_ALWAYS_VERIFY:
+                        need_verify = True
+                    # Fallback: path present → legacy edit_file shape
+                    elif r.get("path"):
+                        need_verify = True
+                    # Fallback: bash success (returncode present and == 0)
+                    elif "returncode" in r and r["returncode"] == 0:
+                        need_verify = True
+                # Trigger verification on command or tool failure
+                elif ("returncode" in r and r["returncode"] != 0) or r.get("status") in ("error", "failed") or last_result.get("ok") is False:
                     need_verify = True
     except Exception:
         pass
+
+    # Minimum mutation verification: if ANY file was modified, verification is required
+    if session_modified:
+        need_verify = True
 
     # Also trigger verification when the current plan step explicitly requests it
     if not need_verify and _step_requests_verification(state):
@@ -320,6 +338,24 @@ async def _verification_node_impl(state: StateLike, config: RunnableConfig) -> D
         if _failed(results.get(key, {})):
             verification_passed = False
             break
+
+    # If the last action was a failed command or failed mutation, verification must fail
+    if isinstance(last_result, dict):
+        r = last_result.get("result") or last_result
+        if isinstance(r, dict):
+            if "returncode" in r and r["returncode"] != 0:
+                verification_passed = False
+                results["command"] = {
+                    "status": "fail",
+                    "error": f"Command failed with exit code {r['returncode']}",
+                    "details": r.get("stderr") or r.get("stdout") or "",
+                }
+            elif (r.get("status") in ("error", "failed") or last_result.get("ok") is False) and (last_tool_name in _WRITE_TOOLS_ALWAYS_VERIFY or session_modified):
+                verification_passed = False
+                results["mutation"] = {
+                    "status": "fail",
+                    "error": str(r.get("error") or last_result.get("error") or "Mutation action failed"),
+                }
 
     # Step-level atomic rollback: if verification failed, restore all files written
     # during this step to their pre-edit state.

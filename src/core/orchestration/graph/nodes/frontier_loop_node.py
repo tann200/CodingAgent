@@ -40,6 +40,7 @@ from src.core.orchestration.graph.nodes.frontier_messages import (
 )
 from src.core.orchestration.graph.nodes.frontier_completion import (
     build_exit_result,
+    handle_no_tool_completion,
     persist_plan_progress,
     plan_completion_patch,
 )
@@ -776,20 +777,18 @@ async def frontier_loop_node(
             history = list(history)
             history.append({"role": "assistant", "content": content_text or ""})
 
-        # ---- No tool calls → task done -----------------------------------
+        # ---- No tool calls → evaluate completion contract --------------
         if not tool_calls:
-            last_result = {
-                "ok": True,
-                "completed_without_tool": True,
-                "_completion_detected": True,
-            }
-            content_preview = redact_secrets((content_text or "")[:200])
-            logger.info(
-                "frontier_loop_node: no tool calls in turn %d — task complete. "
-                "Content preview: %r",
-                turns_taken,
-                content_preview,
+            last_result = handle_no_tool_completion(
+                task=task,
+                content_text=content_text,
+                turns_taken=turns_taken,
+                tool_call_count=tool_call_count,
+                state=state,
+                orchestrator=orchestrator,
             )
+            if not last_result.get("ok"):
+                errors = list(errors) + [last_result.get("error_code") or "unverified_completion"]
             break
 
         # ---- Plan-mode gate ----------------------------------------------
