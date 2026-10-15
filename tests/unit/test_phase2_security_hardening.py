@@ -163,12 +163,22 @@ def test_enforcement_required_when_autonomous_mode():
         assert sbox._enforcement_required() is True
 
 
-def test_enforcement_not_required_when_interactive():
+def test_enforcement_not_required_when_opt_out_set():
     with (
         patch.object(sbox, "_REQUIRE_ENFORCEMENT", False),
         patch.object(sbox, "_autonomous_mode", return_value=False),
+        patch.object(sbox, "_allow_unenforced", return_value=True),
     ):
         assert sbox._enforcement_required() is False
+
+
+def test_enforcement_required_by_default_when_interactive():
+    with (
+        patch.object(sbox, "_REQUIRE_ENFORCEMENT", False),
+        patch.object(sbox, "_autonomous_mode", return_value=False),
+        patch.object(sbox, "_allow_unenforced", return_value=False),
+    ):
+        assert sbox._enforcement_required() is True
 
 
 def test_run_sandboxed_refuses_unsandboxed_in_autonomous_mode():
@@ -184,14 +194,28 @@ def test_run_sandboxed_refuses_unsandboxed_in_autonomous_mode():
             sbox.run_sandboxed(["echo", "hi"], cwd=Path("/tmp"))
 
 
-def test_run_sandboxed_falls_back_when_interactive():
-    """In interactive (non-autonomous) mode with enforcement not required, the
-    documented fallback to plain subprocess is preserved (no regression)."""
+def test_run_sandboxed_refuses_by_default_when_interactive_and_no_backend():
+    """By default (fail-closed), run_sandboxed must reject execution when no backend is available."""
     with (
         patch.object(sbox, "_bwrap_available", return_value=False),
         patch.object(sbox, "_sandbox_exec_available", return_value=False),
         patch.object(sbox, "_REQUIRE_ENFORCEMENT", False),
         patch.object(sbox, "_autonomous_mode", return_value=False),
+        patch.object(sbox, "_allow_unenforced", return_value=False),
+    ):
+        with pytest.raises(RuntimeError, match="no sandbox backend is available"):
+            sbox.run_sandboxed(["echo", "hi"], cwd=Path("/tmp"))
+
+
+def test_run_sandboxed_falls_back_when_opt_out_set():
+    """When explicit opt-out is set (CODINGAGENT_SANDBOX_ALLOW_UNENFORCED=1),
+    fallback to plain subprocess is permitted with warning."""
+    with (
+        patch.object(sbox, "_bwrap_available", return_value=False),
+        patch.object(sbox, "_sandbox_exec_available", return_value=False),
+        patch.object(sbox, "_REQUIRE_ENFORCEMENT", False),
+        patch.object(sbox, "_autonomous_mode", return_value=False),
+        patch.object(sbox, "_allow_unenforced", return_value=True),
         patch("src.tools.sandbox.subprocess.run", return_value=MagicMock(returncode=0)),
     ):
         result = sbox.run_sandboxed(["echo", "hi"], cwd=Path("/tmp"))

@@ -47,9 +47,37 @@ def test_run_sandboxed_network_flag(monkeypatch, tmp_path):
     assert not any(x == "--unshare-net" for x in captured["cmd"])
 
 
-def test_run_sandboxed_fallback_when_bwrap_missing(monkeypatch, tmp_path):
-    # Simulate bwrap not available
+def test_bwrap_mounts_private_tmpfs_tmp(monkeypatch, tmp_path):
+    monkeypatch.setattr(sandbox, "_BWRAP_PATH", "/usr/bin/bwrap", raising=False)
+    args = sandbox._build_bwrap_args(tmp_path, "workspace")
+    assert "--tmpfs" in args
+    idx = args.index("--tmpfs")
+    assert args[idx + 1] == "/tmp"
+    # Writable host /tmp bind mount must NOT be used
+    for i, a in enumerate(args[:-1]):
+        if a == "--bind" and args[i + 1] == "/tmp":
+            assert False, "Found --bind /tmp, must use private --tmpfs /tmp"
+
+
+def test_run_sandboxed_refuses_when_bwrap_missing_by_default(monkeypatch, tmp_path):
+    # Simulate bwrap and sandbox-exec not available, no opt-out set
     monkeypatch.setattr(sandbox, "_BWRAP_AVAILABLE", False, raising=False)
+    monkeypatch.setattr(sandbox, "_bwrap_available", lambda: False)
+    monkeypatch.setattr(sandbox, "_sandbox_exec_available", lambda: False)
+    monkeypatch.setattr(sandbox, "_allow_unenforced", lambda: False)
+
+    import pytest
+    with pytest.raises(RuntimeError, match="no sandbox backend is available"):
+        sandbox.run_sandboxed(["echo", "hi"], tmp_path)
+
+
+def test_run_sandboxed_fallback_when_bwrap_missing(monkeypatch, tmp_path):
+    # Simulate bwrap not available, but explicit opt-out is set
+    monkeypatch.setattr(sandbox, "_BWRAP_AVAILABLE", False, raising=False)
+    monkeypatch.setattr(sandbox, "_bwrap_available", lambda: False)
+    monkeypatch.setattr(sandbox, "_sandbox_exec_available", lambda: False)
+    monkeypatch.setenv("CODINGAGENT_SANDBOX_ALLOW_UNENFORCED", "1")
+    monkeypatch.setattr(sandbox, "_allow_unenforced", lambda: True)
 
     captured = {}
 
@@ -59,7 +87,7 @@ def test_run_sandboxed_fallback_when_bwrap_missing(monkeypatch, tmp_path):
 
     monkeypatch.setattr(sandbox.subprocess, "run", fake_run)
 
-    # When bwrap isn't available, run_sandboxed should call subprocess.run with the
+    # When explicit opt-out is set, run_sandboxed calls subprocess.run with the
     # original command (not prefixed with bwrap args)
     sandbox.run_sandboxed(["echo", "hi"], tmp_path)
     assert captured["cmd"] == ["echo", "hi"]

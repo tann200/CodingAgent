@@ -106,10 +106,18 @@ class TestRunSandboxedRouting:
             result = sbox.run_sandboxed(["echo", "hi"], cwd=Path("/tmp"))
             assert result.returncode == 0
 
-    def test_fallback_to_subprocess_when_all_unavailable(self):
+    def test_refuses_to_run_by_default_when_all_unavailable(self):
+        with patch.object(sbox, "_bwrap_available", return_value=False), \
+             patch.object(sbox, "_sandbox_exec_available", return_value=False), \
+             patch.object(sbox, "_allow_unenforced", return_value=False):
+            with pytest.raises(RuntimeError, match="no sandbox backend is available"):
+                sbox.run_sandboxed(["echo", "hi"], cwd=Path("/tmp"))
+
+    def test_fallback_to_subprocess_when_opt_out_set(self):
         with patch("src.tools.sandbox.subprocess.run", side_effect=_mock_success) as mock_run, \
              patch.object(sbox, "_bwrap_available", return_value=False), \
-             patch.object(sbox, "_sandbox_exec_available", return_value=False):
+             patch.object(sbox, "_sandbox_exec_available", return_value=False), \
+             patch.object(sbox, "_allow_unenforced", return_value=True):
             sbox.run_sandboxed(["echo", "hi"], cwd=Path("/tmp"))
             mock_run.assert_called_once()
             args = mock_run.call_args[0][0]

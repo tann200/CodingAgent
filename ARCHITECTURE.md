@@ -62,7 +62,7 @@ Graph checkpoints can persist and rehydrate graph state. They improve crash reco
 `src/tools/` provides the registered functions. Important groups are:
 
 - `_file_io.py`, `_edit_tools.py`, `patch_tools.py`, and `repo_write_tools.py` for workspace modification.
-- `_bash_exec.py`, `bash_security.py`, and `sandbox.py` for command execution.
+- `_bash_exec.py`, `bash_security.py`, and `sandbox.py` for command execution. Sandboxed execution isolates `/tmp` using `--tmpfs` (avoiding host temp data exposure) and fails closed by default if no backend is available or enforcing, unless explicitly opted out via `CODINGAGENT_SANDBOX_ALLOW_UNENFORCED=1` or `CODINGAGENT_SANDBOX_LEVEL=off`.
 - `repo_read_tools.py`, `lsp_tools.py`, and `project_tools.py` for repository inspection.
 - `verification_tools.py`, `lint_dispatch.py`, and `formatter.py` for validation.
 - `memory_tools.py`, `todo_tools.py`, `plan_mode_tools.py`, and `subagent_tools.py` for agent state and workflow support.
@@ -78,7 +78,7 @@ Direct `ToolRegistry.call()` does not provide the complete pipeline guarantees. 
 
 ### Providers And Evaluation
 
-- `src/core/inference/` manages provider discovery, capability profiles, routing, token counting, streaming, retries, fallback, telemetry, and adapters.
+- `src/core/inference/` manages provider discovery, capability profiles, routing, token counting, streaming, retries, fallback, telemetry, and adapters. Anthropic adapter maps natively to `/v1/messages` with prompt-cache boundary support, required token budgeting, tool schema conversion, and response normalization.
 - `src/config/providers.json` contains provider definitions.
 - `src/core/evaluation/` includes scenario, regression, comparison, and SWE-bench-oriented utilities. CI runs deterministic and mock-backed coverage by default; live-provider checks are scheduled or manually enabled.
 
@@ -98,7 +98,7 @@ Project-local configuration is resolved from `.codingAgent/config.json`. `coding
 
 - Provider output is untrusted and must remain subject to tool permissions and validation.
 - Repository content, tool output, web content, prior-session memory, MCP responses, and hook output can contain prompt injection.
-- Shell commands and project hooks are host-code execution. Sandbox availability must be verified, not assumed.
+- Shell commands and project hooks are host-code execution. Sandbox availability is enforced fail-closed by default; commands are denied if no enforcing backend is present unless explicit unconfined opt-out is granted.
 - The optional server is a local control plane, not a general public API; task workdirs enforce an approved root allowlist (`CODINGAGENT_ALLOWED_WORKSPACE_ROOTS`, defaulting to the server's working directory), queue admission is bounded, and cancelled queued tasks abort before orchestrator construction.
 
 ## Design Constraints

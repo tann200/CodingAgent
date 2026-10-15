@@ -24,6 +24,13 @@ import os
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _allow_unenforced_sandbox_in_tests(monkeypatch):
+    monkeypatch.setenv("CODINGAGENT_SANDBOX_ALLOW_UNENFORCED", "1")
+
 
 # ---------------------------------------------------------------------------
 # T1 — is_tier3() exact first-token matching

@@ -57,6 +57,13 @@ _REQUIRE_ENFORCEMENT: bool = os.environ.get(
     "SANDBOX_REQUIRE_ENFORCEMENT", ""
 ).strip().lower() in ("1", "true", "yes")
 
+# Explicit unsafe opt-out: by default, un-enforced host execution is denied (fail closed).
+# Setting CODINGAGENT_SANDBOX_ALLOW_UNENFORCED=1 permits unconfined host execution fallback.
+_ALLOW_UNENFORCED: bool = os.environ.get(
+    "CODINGAGENT_SANDBOX_ALLOW_UNENFORCED",
+    os.environ.get("SANDBOX_ALLOW_UNENFORCED", ""),
+).strip().lower() in ("1", "true", "yes")
+
 # ---------------------------------------------------------------------------
 # sandbox-exec detection (macOS)
 # ---------------------------------------------------------------------------
@@ -308,9 +315,8 @@ def _build_bwrap_args(
     if Path("/dev").exists():
         args += ["--dev", "/dev"]
 
-    # Writable mount for /tmp (many programs require it)
-    if Path("/tmp").exists():
-        args += ["--bind", "/tmp", "/tmp"]
+    # Private tmpfs mount for /tmp (prevents exposing host temporary data/tokens)
+    args += ["--tmpfs", "/tmp"]
 
     # Make the working directory writable
     cwd_str = str(cwd.resolve())
@@ -408,9 +414,9 @@ def run_sandboxed(
                     "sandbox: sandbox-exec is present but NOT enforcing restrictions "
                     "on this host (Apple Silicon / modern macOS deprecation). "
                     "Refusing to run unsandboxed command because "
-                    "sandbox enforcement is required (SANDBOX_REQUIRE_ENFORCEMENT "
-                    "or autonomous mode). "
-                    "Install bwrap or set CODINGAGENT_SANDBOX_LEVEL=off to opt out."
+                    "sandbox enforcement is required by default (fail-closed). "
+                    "Install bwrap, set CODINGAGENT_SANDBOX_ALLOW_UNENFORCED=1, "
+                    "or set CODINGAGENT_SANDBOX_LEVEL=off to opt out."
                 )
         else:
             try:
@@ -451,20 +457,21 @@ def run_sandboxed(
 
     # 4. Final fallback — plain subprocess with warning (or hard-stop)
     if level != "off":
-        import sys as _sys
-
-        _warn = (
-            "WARNING: sandbox: bwrap and sandbox-exec are unavailable — "
-            "running command WITHOUT sandboxing. Set SANDBOX_LEVEL=off to suppress.\n"
-        )
         if _enforcement_required():
             raise RuntimeError(
                 "sandbox: no sandbox backend is available or enforcing. "
                 "Refusing to run unsandboxed command because "
-                "sandbox enforcement is required (SANDBOX_REQUIRE_ENFORCEMENT "
-                "or autonomous mode). "
-                "Install bwrap or set CODINGAGENT_SANDBOX_LEVEL=off to opt out."
+                "sandbox enforcement is required by default (fail-closed). "
+                "Install bwrap, set CODINGAGENT_SANDBOX_ALLOW_UNENFORCED=1, "
+                "or set CODINGAGENT_SANDBOX_LEVEL=off to opt out."
             )
+        import sys as _sys
+
+        _warn = (
+            "WARNING: sandbox: bwrap and sandbox-exec are unavailable — "
+            "running command WITHOUT sandboxing due to explicit opt-out. "
+            "Set CODINGAGENT_SANDBOX_LEVEL=off to suppress.\n"
+        )
         _sys.stderr.write(_warn)
         logger.warning(
             "sandbox: bwrap and sandbox-exec unavailable — falling back to unsandboxed execution"
@@ -512,16 +519,26 @@ def _autonomous_mode() -> bool:
         return False
 
 
+def _allow_unenforced() -> bool:
+    """Return True when the operator explicitly opted in to unconfined host execution."""
+    return os.environ.get(
+        "CODINGAGENT_SANDBOX_ALLOW_UNENFORCED",
+        os.environ.get("SANDBOX_ALLOW_UNENFORCED", ""),
+    ).strip().lower() in ("1", "true", "yes") or _ALLOW_UNENFORCED
+
+
 def _enforcement_required() -> bool:
     """Return True when unsandboxed execution must be refused.
 
-    True when ``SANDBOX_REQUIRE_ENFORCEMENT`` is set OR the agent is in
-    autonomous mode (CF-2: sandbox must not silently fail open to full-user-
-    privilege execution when no operator is watching to approve/gate tools).
+    By default, unavailable or non-enforcing sandboxing refuses to execute commands (fail-closed).
+    Execution without enforcement is only permitted when the operator explicitly opts in via
+    CODINGAGENT_SANDBOX_ALLOW_UNENFORCED=1 (or CODINGAGENT_SANDBOX_LEVEL=off).
+    When SANDBOX_REQUIRE_ENFORCEMENT=1 or autonomous mode is active, enforcement
+    is strictly required regardless of opt-outs.
     """
-    if _REQUIRE_ENFORCEMENT:
+    if _REQUIRE_ENFORCEMENT or _autonomous_mode():
         return True
-    return _autonomous_mode()
+    return not _allow_unenforced()
 
 
 def set_sandbox_level(level: str) -> None:

@@ -611,6 +611,8 @@ def bash(
         return {"status": "error", "error": f"Command not found: {cmd_parts[0]}"}
     except PermissionError:
         return {"status": "error", "error": f"Permission denied: {cmd_parts[0]}"}
+    except RuntimeError as _rte:
+        return {"status": "error", "error": f"Sandbox execution denied: {_rte}"}
     except OSError as e:
         return {"status": "error", "error": f"OS error: {e}"}
 
