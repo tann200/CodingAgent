@@ -10,6 +10,10 @@ _ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
+# In test runners without bubblewrap/sandbox-exec (e.g. GitHub Actions Linux VMs),
+# permit unenforced execution for tests that invoke local shell commands.
+os.environ.setdefault("CODINGAGENT_SANDBOX_ALLOW_UNENFORCED", "1")
+
 
 def recv_json_ws_factory():
     """Return a recv helper for blocking TestClient WebSocket objects.
