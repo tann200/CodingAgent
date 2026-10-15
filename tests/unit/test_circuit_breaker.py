@@ -316,9 +316,10 @@ def test_get_circuit_breaker_returns_circuit_breaker_instance():
 
 
 @pytest.mark.asyncio
-async def test_call_model_cb_fast_fail_skips_internal_call():
+async def test_call_model_cb_fast_fail_skips_internal_call(monkeypatch):
     """When CB is OPEN for the provider, call_model must return error without
     calling _call_model_internal."""
+    monkeypatch.setenv("LLM_PROVIDER_FALLBACK_ENABLED", "0")
 
     key = "openai"
     with _CB_LOCK:

@@ -39,10 +39,10 @@ def test_get_provider_capabilities_from_adapter_instance():
     assert caps.get("context_window") == 8192
 
 
-def test_get_provider_capabilities_from_registered_provider_key():
+def test_get_provider_capabilities_from_registered_provider_key(monkeypatch):
     mgr = get_provider_manager()
     # register under a canonical key
-    mgr._providers["fakeprovider"] = FakeAdapter()
+    monkeypatch.setitem(mgr._providers, "fakeprovider", FakeAdapter())
     # ensure we treat lookup by key correctly
     caps = mgr.get_provider_capabilities("fakeprovider")
     assert caps.get("provider_name") in ("FakeProvider", "fake")

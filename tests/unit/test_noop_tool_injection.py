@@ -34,8 +34,8 @@ def test_noop_injected_for_proxy_adapter(monkeypatch):
     mgr = get_provider_manager()
     # register fake proxy adapter and mark manager initialized to avoid probing
     proxy = FakeProxyAdapter()
-    mgr._providers["litellm"] = proxy
-    mgr._initialized = True
+    monkeypatch.setitem(mgr._providers, "litellm", proxy)
+    monkeypatch.setattr(mgr, "_initialized", True)
 
     # History has tool calls → noop should be injected
     messages = [
@@ -59,8 +59,8 @@ def test_noop_not_injected_when_history_lacks_tool_calls(monkeypatch):
     """Noop should NOT be injected when history has no tool calls (e.g. compaction)."""
     mgr = get_provider_manager()
     proxy = FakeProxyAdapter()
-    mgr._providers["litellm"] = proxy
-    mgr._initialized = True
+    monkeypatch.setitem(mgr._providers, "litellm", proxy)
+    monkeypatch.setattr(mgr, "_initialized", True)
 
     messages = [{"role": "user", "content": "summarize the history"}]
     resp = asyncio.run(call_model(messages, provider="litellm", tools=None))
@@ -73,8 +73,8 @@ def test_noop_not_injected_when_history_lacks_tool_calls(monkeypatch):
 def test_noop_not_injected_for_non_proxy(monkeypatch):
     mgr = get_provider_manager()
     opena = FakeOpenAdapter()
-    mgr._providers["openai"] = opena
-    mgr._initialized = True
+    monkeypatch.setitem(mgr._providers, "openai", opena)
+    monkeypatch.setattr(mgr, "_initialized", True)
 
     messages = [{"role": "user", "content": "call a tool"}]
     resp = asyncio.run(call_model(messages, provider="openai", tools=None))

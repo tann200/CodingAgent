@@ -21,8 +21,8 @@ class FakeProxyAdapterForward:
 def test_explicit_tools_forwarded(monkeypatch):
     mgr = get_provider_manager()
     proxy = FakeProxyAdapterForward()
-    mgr._providers["litellm"] = proxy
-    mgr._initialized = True
+    monkeypatch.setitem(mgr._providers, "litellm", proxy)
+    monkeypatch.setattr(mgr, "_initialized", True)
 
     messages = [{"role": "user", "content": "call a tool"}]
     explicit_tools = [
