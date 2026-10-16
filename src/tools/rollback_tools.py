@@ -35,8 +35,12 @@ WRITE_TOOL_NAMES = frozenset(
         "edit_file",
         "edit_file_atomic",
         "edit_by_line_range",
+        "multiedit",
         "apply_patch",
+        "patch_directory",
         "delete_file",
+        "rename_file",
+        "create_directory",
     }
 )
 

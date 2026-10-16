@@ -54,13 +54,16 @@ class TestRollbackManager:
         assert len(mgr.snapshots[snapshot_id]) == 1
 
     def test_snapshot_nonexistent_file(self, temp_workdir):
-        """Test snapshot with nonexistent file."""
+        """Test snapshot with nonexistent file captures pre-state exists=False for rollback."""
         mgr = RollbackManager(temp_workdir)
         snapshot_id = mgr.snapshot_files(["nonexistent.py"])
 
-        # Should not fail, just skip
         assert snapshot_id is not None
-        assert len(mgr.snapshots[snapshot_id]) == 0
+        assert len(mgr.snapshots[snapshot_id]) == 1
+        snap = mgr.snapshots[snapshot_id][0]
+        assert snap.path == "nonexistent.py"
+        assert snap.exists is False
+        assert snap.content is None
 
     def test_rollback_files(self, temp_workdir):
         """Test rolling back files."""

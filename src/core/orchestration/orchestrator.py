@@ -107,7 +107,7 @@ class Orchestrator:
     def __init__(
         self,
         adapter: Any = None,
-        tool_registry: Optional[ToolRegistry] = None,
+        tool_registry: Optional[Any] = None,
         working_dir: Optional[str | Path] = None,
         allow_external_working_dir: bool = False,
         message_max_tokens: Optional[int] = 4000,
@@ -133,6 +133,8 @@ class Orchestrator:
                     self.tool_registry = _filtered
         except Exception:
             pass
+        if hasattr(self.tool_registry, "set_orchestrator"):
+            self.tool_registry.set_orchestrator(self)
         # TUI-01: accept an externally-created EventBus (e.g. from AgentBridge)
         self.event_bus = event_bus if event_bus is not None else EventBus()
         # P2-T5: register stderr fallback for safety events so they are always

@@ -93,7 +93,11 @@ class ToolRegistry:
         (50).  Pass ``0`` to disable the cap entirely.
     """
 
-    def __init__(self, max_plugin_tools: Optional[int] = None) -> None:
+    def __init__(
+        self,
+        max_plugin_tools: Optional[int] = None,
+        working_dir: Optional[str] = None,
+    ) -> None:
         self._tools: Dict[str, Dict[str, Any]] = {}
         self._lock = threading.Lock()
         # TASK-03: track origin ('builtin' or 'plugin') for each registered name
@@ -106,6 +110,25 @@ class ToolRegistry:
                 max_plugin_tools = _DEFAULT_MAX_PLUGIN_TOOLS
         self._max_plugin_tools: int = max(0, max_plugin_tools)
         self._plugin_count: int = 0
+        self.working_dir: Optional[str] = working_dir
+        self._orchestrator: Optional[Any] = None
+
+    def set_orchestrator(self, orchestrator: Any) -> None:
+        """Bind an active orchestrator to this registry for guarded tool execution."""
+        with self._lock:
+            self._orchestrator = orchestrator
+
+    def get_orchestrator(self) -> Optional[Any]:
+        """Return the bound orchestrator, or active orchestrator from ContextVar, or None."""
+        with self._lock:
+            if self._orchestrator is not None:
+                return self._orchestrator
+        try:
+            from src.tools.subagent_tools import _PARENT_ORCHESTRATOR_VAR
+
+            return _PARENT_ORCHESTRATOR_VAR.get(None)
+        except Exception:
+            return None
 
     # ------------------------------------------------------------------
     # Registration
@@ -305,6 +328,10 @@ class ToolRegistry:
     def call(self, name: str, **kwargs: Any) -> Any:
         """Call the tool registered as *name* with keyword arguments.
 
+        All invocations are routed through guarded execution (central orchestrator
+        pipeline), ensuring read-before-write validation, workspace confinement,
+        secret redaction, transaction snapshots, timeouts, and audit traces.
+
         Raises
         ------
         KeyError
@@ -313,6 +340,24 @@ class ToolRegistry:
         entry = self.get(name)
         if entry is None:
             raise KeyError(f"Tool not found: {name!r}")
+
+        orch = self.get_orchestrator()
+        if orch is None:
+            try:
+                from src.core.orchestration.orchestrator import Orchestrator
+
+                wd = self.working_dir or kwargs.get("workdir") or os.getcwd()
+                orch = Orchestrator(adapter=None, tool_registry=self, working_dir=str(wd), allow_external_working_dir=True)
+                self.set_orchestrator(orch)
+            except Exception as exc:
+                logger.warning("ToolRegistry.call: could not create fallback orchestrator: %s", exc)
+
+        if orch is not None:
+            out = orch.execute_tool({"name": name, "arguments": kwargs})
+            if isinstance(out, dict) and "result" in out and out.get("ok") is True:
+                return out["result"]
+            return out
+
         return entry["fn"](**kwargs)
 
     def get_openai_functions(self) -> List[Dict[str, Any]]:
@@ -345,7 +390,8 @@ class ToolRegistry:
 
     def filter_by_tags(self, *tags: str) -> "ToolRegistry":
         """Return a new registry containing only tools that match any of *tags*."""
-        sub = ToolRegistry()
+        sub = ToolRegistry(working_dir=self.working_dir)
+        sub._orchestrator = self._orchestrator
         with self._lock:
             items = list(self._tools.items())
         for name, entry in items:
@@ -357,7 +403,8 @@ class ToolRegistry:
 
     def filter_by_names(self, names: List[str]) -> "ToolRegistry":
         """Return a new registry restricted to the given tool *names*."""
-        sub = ToolRegistry()
+        sub = ToolRegistry(working_dir=self.working_dir)
+        sub._orchestrator = self._orchestrator
         with self._lock:
             for n in names:
                 if n in self._tools:
@@ -486,7 +533,7 @@ def build_registry(
 
         configure(default_workdir=Path(working_dir))
 
-    reg = ToolRegistry()
+    reg = ToolRegistry(working_dir=working_dir)
 
     # Discover all built-in tool modules (auto-discovered, TW-5)
     for mod_name in _builtin_module_names():

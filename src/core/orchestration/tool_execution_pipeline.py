@@ -131,7 +131,15 @@ def _check_read_before_write(
     if name not in workspace_guard_tools:
         return None
 
-    path_arg = args.get("path") or args.get("file_path") or args.get("src_path")
+    path_arg = (
+        args.get("path")
+        or args.get("file_path")
+        or args.get("src_path")
+        or args.get("src")
+        or args.get("old_path")
+        or args.get("dir_path")
+        or args.get("directory")
+    )
     if not path_arg:
         return None
 
@@ -178,7 +186,15 @@ def _check_workspace_scope_guard(
     if name not in workspace_guard_tools:
         return None
 
-    path_arg = args.get("path") or args.get("file_path") or args.get("src_path")
+    path_arg = (
+        args.get("path")
+        or args.get("file_path")
+        or args.get("src_path")
+        or args.get("src")
+        or args.get("old_path")
+        or args.get("dir_path")
+        or args.get("directory")
+    )
     if not path_arg:
         return None
 
@@ -547,16 +563,21 @@ def _run_sandbox_and_snapshot(
             "error": f"Sandbox validation aborted: {str(e)}. Write operation blocked for safety.",
         }
 
-    if "write" in tool.get("side_effects", []) and path_arg:
-        paths_to_snap = [path_arg]
-        dst_arg = (
-            args.get("new_path")
-            or args.get("dst_path")
-            or args.get("dst")
-            or args.get("new_name")
-        )
-        if dst_arg and dst_arg not in paths_to_snap:
-            paths_to_snap.append(str(dst_arg))
+    from src.tools.rollback_tools import WRITE_TOOL_NAMES
+
+    paths_to_snap: list[str] = []
+    if path_arg:
+        paths_to_snap.append(str(path_arg))
+    dst_arg = (
+        args.get("new_path")
+        or args.get("dst_path")
+        or args.get("dst")
+        or args.get("new_name")
+    )
+    if dst_arg and str(dst_arg) not in paths_to_snap:
+        paths_to_snap.append(str(dst_arg))
+
+    if ("write" in tool.get("side_effects", []) or name in WRITE_TOOL_NAMES) and paths_to_snap:
         try:
             if getattr(orch, "_step_snapshot_id", None):
                 for p_snap in paths_to_snap:
@@ -1036,7 +1057,15 @@ def execute_tool_impl(orch: Any, tool_call: Dict[str, Any]) -> Dict[str, Any]:
             pass
         return {"status": "dry_run", "would_call": name, "args": redact_data(args)}
 
-    path_arg = args.get("path") or args.get("file_path") or args.get("src_path")
+    path_arg = (
+        args.get("path")
+        or args.get("file_path")
+        or args.get("src_path")
+        or args.get("src")
+        or args.get("old_path")
+        or args.get("dir_path")
+        or args.get("directory")
+    )
     tool_call_id = uuid.uuid4().hex[:8]
 
     read_guard = _check_read_before_write(orch, name, args, WRITE_TOOLS_REQUIRING_READ)
@@ -1109,7 +1138,15 @@ def execute_tool_impl(orch: Any, tool_call: Dict[str, Any]) -> Dict[str, Any]:
     # Strip LLM-injected user_approved (prevents WorkspaceGuard bypass)
     args.pop("user_approved", None)
 
-    path_arg = args.get("path") or args.get("file_path") or args.get("src_path")
+    path_arg = (
+        args.get("path")
+        or args.get("file_path")
+        or args.get("src_path")
+        or args.get("src")
+        or args.get("old_path")
+        or args.get("dir_path")
+        or args.get("directory")
+    )
 
     sandbox_err = _run_sandbox_and_snapshot(orch, name, args, tool, path_arg)
     if sandbox_err is not None:

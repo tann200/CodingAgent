@@ -191,6 +191,12 @@ def example_registry() -> ToolRegistry:
         side_effects=["write"],
         description="rename_file(src_path, dst_path) -> Rename or move a file within the workspace",
     )
+    reg.register(
+        "create_directory",
+        file_tools.create_directory,
+        side_effects=["write"],
+        description="create_directory(path) -> Create a directory and all necessary parents",
+    )
     # alias: fs.list
     try:
         reg.register(

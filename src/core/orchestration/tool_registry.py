@@ -73,6 +73,22 @@ class ToolRegistry:
     def __init__(self) -> None:
         # name -> metadata dict (fn, side_effects, description)
         self.tools: Dict[str, Dict[str, Any]] = {}
+        self._orchestrator: Optional[Any] = None
+
+    def set_orchestrator(self, orchestrator: Any) -> None:
+        """Bind an active orchestrator to this registry for guarded tool execution."""
+        self._orchestrator = orchestrator
+
+    def get_orchestrator(self) -> Optional[Any]:
+        """Return the bound orchestrator, or active orchestrator from ContextVar, or None."""
+        if getattr(self, "_orchestrator", None) is not None:
+            return self._orchestrator
+        try:
+            from src.tools.subagent_tools import _PARENT_ORCHESTRATOR_VAR
+
+            return _PARENT_ORCHESTRATOR_VAR.get(None)
+        except Exception:
+            return None
 
     def register(
         self,
@@ -98,11 +114,37 @@ class ToolRegistry:
     def filter_by_names(self, names: List[str]) -> "ToolRegistry":
         """Return a new ToolRegistry containing only tools whose names are in *names*."""
         filtered = ToolRegistry()
+        filtered._orchestrator = getattr(self, "_orchestrator", None)
         for name in names:
             meta = self.tools.get(name)
             if meta:
                 filtered.tools[name] = meta
         return filtered
+
+    def call(self, name: str, **kwargs: Any) -> Any:
+        """Call the tool registered as *name* with keyword arguments through guarded execution."""
+        entry = self.get(name)
+        if entry is None:
+            raise KeyError(f"Tool not found: {name!r}")
+
+        orch = self.get_orchestrator()
+        if orch is None:
+            try:
+                from src.core.orchestration.orchestrator import Orchestrator
+
+                wd = kwargs.get("workdir")
+                orch = Orchestrator(adapter=None, tool_registry=self, working_dir=str(wd) if wd else None, allow_external_working_dir=True)
+                self.set_orchestrator(orch)
+            except Exception:
+                pass
+
+        if orch is not None:
+            out = orch.execute_tool({"name": name, "arguments": kwargs})
+            if isinstance(out, dict) and "result" in out and out.get("ok") is True:
+                return out["result"]
+            return out
+
+        return entry["fn"](**kwargs)
 
     def get_openai_functions(self) -> List[Dict[str, Any]]:
         """Convert registered tools to OpenAI function-calling format.

@@ -25,9 +25,10 @@ class FileSnapshot:
     """Represents a snapshot of a file at a point in time."""
 
     path: str
-    content: str
-    timestamp: str
-    checksum: str
+    content: Optional[str] = None
+    timestamp: str = ""
+    checksum: str = ""
+    exists: bool = True
 
 
 class RollbackManager:
@@ -94,6 +95,27 @@ class RollbackManager:
                 )
                 continue
             if not path.exists():
+                snapshots.append(
+                    FileSnapshot(
+                        path=file_path,
+                        content=None,
+                        timestamp=datetime.now().isoformat(),
+                        checksum="",
+                        exists=False,
+                    )
+                )
+                continue
+
+            if path.is_dir():
+                snapshots.append(
+                    FileSnapshot(
+                        path=file_path,
+                        content="__DIRECTORY__",
+                        timestamp=datetime.now().isoformat(),
+                        checksum="",
+                        exists=True,
+                    )
+                )
                 continue
 
             try:
@@ -104,6 +126,7 @@ class RollbackManager:
                         content=content,
                         timestamp=datetime.now().isoformat(),
                         checksum=self._compute_checksum(content),
+                        exists=True,
                     )
                 )
             except Exception as e:
@@ -122,6 +145,7 @@ class RollbackManager:
                     "content": s.content,
                     "timestamp": s.timestamp,
                     "checksum": s.checksum,
+                    "exists": s.exists,
                 }
                 for s in snapshots
             ],
@@ -232,9 +256,10 @@ class RollbackManager:
                     snapshots = [
                         FileSnapshot(
                             path=f["path"],
-                            content=f["content"],
-                            timestamp=f["timestamp"],
-                            checksum=f["checksum"],
+                            content=f.get("content"),
+                            timestamp=f.get("timestamp", ""),
+                            checksum=f.get("checksum", ""),
+                            exists=f.get("exists", True if f.get("content") is not None else False),
                         )
                         for f in data.get("files", [])
                     ]
@@ -258,7 +283,35 @@ class RollbackManager:
                 failed_files.append({"path": snap.path, "error": "path escapes workspace"})
                 continue
             try:
-                # Create backup before restoring (best-effort; never abort on backup failure)
+                # Case 1: Path did not exist at snapshot time -> delete newly created file/dir
+                if not snap.exists or snap.content is None:
+                    if file_path.is_dir():
+                        try:
+                            shutil.rmtree(file_path)
+                            restored_files.append(snap.path)
+                            logger.info(f"rollback: removed newly created directory {snap.path}")
+                        except Exception as e:
+                            logger.error(f"Failed to remove created directory {snap.path}: {e}")
+                            failed_files.append({"path": snap.path, "error": str(e)})
+                    elif file_path.exists() or file_path.is_symlink():
+                        try:
+                            file_path.unlink()
+                            restored_files.append(snap.path)
+                            logger.info(f"rollback: removed newly created file {snap.path}")
+                        except Exception as e:
+                            logger.error(f"Failed to remove created file {snap.path}: {e}")
+                            failed_files.append({"path": snap.path, "error": str(e)})
+                    else:
+                        restored_files.append(snap.path)
+                    continue
+
+                # Case 2: Path was a directory that existed -> ensure directory exists
+                if snap.content == "__DIRECTORY__":
+                    file_path.mkdir(parents=True, exist_ok=True)
+                    restored_files.append(snap.path)
+                    continue
+
+                # Case 3: Regular file with content -> restore content atomically
                 if file_path.exists():
                     backup_path = file_path.with_suffix(file_path.suffix + ".backup")
                     try:
@@ -344,9 +397,6 @@ class RollbackManager:
                 f"append_to_snapshot: path '{file_path}' escapes workspace — skipping"
             )
             return False
-        if not path.exists():
-            return False
-
         # Load snapshot from memory or disk; create empty if first append
         if snapshot_id not in self.snapshots:
             snapshot_file = self.snapshot_dir / f"{snapshot_id}.json"
@@ -356,9 +406,10 @@ class RollbackManager:
                     self.snapshots[snapshot_id] = [
                         FileSnapshot(
                             path=f["path"],
-                            content=f["content"],
-                            timestamp=f["timestamp"],
-                            checksum=f["checksum"],
+                            content=f.get("content"),
+                            timestamp=f.get("timestamp", ""),
+                            checksum=f.get("checksum", ""),
+                            exists=f.get("exists", True if f.get("content") is not None else False),
                         )
                         for f in data.get("files", [])
                     ]
@@ -375,19 +426,41 @@ class RollbackManager:
         if file_path in existing_paths:
             return False  # already captured
 
-        try:
-            content = path.read_text(encoding="utf-8")
+        if not path.exists():
             self.snapshots[snapshot_id].append(
                 FileSnapshot(
                     path=file_path,
-                    content=content,
+                    content=None,
                     timestamp=datetime.now().isoformat(),
-                    checksum=self._compute_checksum(content),
+                    checksum="",
+                    exists=False,
                 )
             )
-        except Exception as e:
-            logger.warning(f"append_to_snapshot: failed to read {file_path}: {e}")
-            return False
+        elif path.is_dir():
+            self.snapshots[snapshot_id].append(
+                FileSnapshot(
+                    path=file_path,
+                    content="__DIRECTORY__",
+                    timestamp=datetime.now().isoformat(),
+                    checksum="",
+                    exists=True,
+                )
+            )
+        else:
+            try:
+                content = path.read_text(encoding="utf-8")
+                self.snapshots[snapshot_id].append(
+                    FileSnapshot(
+                        path=file_path,
+                        content=content,
+                        timestamp=datetime.now().isoformat(),
+                        checksum=self._compute_checksum(content),
+                        exists=True,
+                    )
+                )
+            except Exception as e:
+                logger.warning(f"append_to_snapshot: failed to read {file_path}: {e}")
+                return False
 
         # Persist updated snapshot to disk
         try:
@@ -401,6 +474,7 @@ class RollbackManager:
                         "content": s.content,
                         "timestamp": s.timestamp,
                         "checksum": s.checksum,
+                        "exists": s.exists,
                     }
                     for s in self.snapshots[snapshot_id]
                 ],

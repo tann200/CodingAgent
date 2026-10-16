@@ -31,8 +31,11 @@ _IMPORT_MAP = {
     "write_file": ("src.tools._file_io", "write_file"),
     "read_file": ("src.tools._file_io", "read_file"),
     "read_file_chunk": ("src.tools._file_io", "read_file_chunk"),
+    "read_file_bytes": ("src.tools._file_io", "read_file_bytes"),
     "delete_file": ("src.tools._file_io", "delete_file"),
     "rename_file": ("src.tools._file_io", "rename_file"),
+    "create_directory": ("src.tools._file_io", "create_directory"),
+    "tail_log_file": ("src.tools._file_io", "tail_log_file"),
     "glob": ("src.tools._file_io", "glob"),
     "list_files": ("src.tools._file_io", "list_dir"),
     # edit tools

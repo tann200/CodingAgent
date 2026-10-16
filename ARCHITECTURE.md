@@ -67,7 +67,7 @@ Graph checkpoints can persist and rehydrate graph state. They improve crash reco
 - `verification_tools.py`, `lint_dispatch.py`, and `formatter.py` for validation.
 - `memory_tools.py`, `todo_tools.py`, `plan_mode_tools.py`, and `subagent_tools.py` for agent state and workflow support.
 
-Direct `ToolRegistry.call()` does not provide the complete pipeline guarantees. New application integrations must invoke tools through the orchestrator pipeline, not the registry directly.
+`ToolRegistry.call()` routes invocations through guarded orchestrator execution (`Orchestrator.execute_tool()`), ensuring read-before-write validation, workspace confinement, secret redaction, and transactional pre-call snapshots for all mutations (including unlinking newly created files/directories on rollback).
 
 ### Context, Memory, And Repository Intelligence
 
