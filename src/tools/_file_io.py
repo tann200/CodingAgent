@@ -275,6 +275,20 @@ def write_file(
         # Fallback: publish without gate
         _publish_diff_preview(str(p), diff, is_new_file=not bool(original_content))
 
+    # Cooperative cancellation check: abort if tool execution timed out or was cancelled
+    try:
+        from src.core.orchestration.tool_execution_pipeline import is_current_tool_cancelled
+
+        if is_current_tool_cancelled():
+            return {
+                "path": str(p),
+                "status": "error",
+                "error": "Tool execution was cancelled or timed out before write committed.",
+                "cancelled": True,
+            }
+    except Exception:
+        pass
+
     # Write new content atomically using mkstemp -> os.replace with fsync.
     # This avoids exposing partially-written files to readers.
     _fd = None
@@ -292,6 +306,22 @@ def write_file(
                 except Exception:
                     # fsync best-effort; don't fail the write for platform limits
                     pass
+            try:
+                from src.core.orchestration.tool_execution_pipeline import is_current_tool_cancelled
+
+                if is_current_tool_cancelled():
+                    try:
+                        os.unlink(_tmp_path)
+                    except Exception:
+                        pass
+                    return {
+                        "path": str(p),
+                        "status": "error",
+                        "error": "Tool execution was cancelled or timed out before write committed.",
+                        "cancelled": True,
+                    }
+            except Exception:
+                pass
             try:
                 os.replace(_tmp_path, str(p))
             except Exception:
@@ -523,6 +553,19 @@ def delete_file(
         except Exception:
             pass
 
+        try:
+            from src.core.orchestration.tool_execution_pipeline import is_current_tool_cancelled
+
+            if is_current_tool_cancelled():
+                return {
+                    "path": str(p),
+                    "status": "error",
+                    "error": "Tool execution was cancelled or timed out before delete committed.",
+                    "cancelled": True,
+                }
+        except Exception:
+            pass
+
         if p.is_dir():
             shutil.rmtree(p)
         else:
@@ -617,6 +660,18 @@ def rename_file(
                 "status": "error",
                 "error": f"destination exists: {dst_resolved}",
             }
+        try:
+            from src.core.orchestration.tool_execution_pipeline import is_current_tool_cancelled
+
+            if is_current_tool_cancelled():
+                return {
+                    "status": "error",
+                    "error": "Tool execution was cancelled or timed out before rename committed.",
+                    "cancelled": True,
+                }
+        except Exception:
+            pass
+
         dst_resolved.parent.mkdir(parents=True, exist_ok=True)
         src_resolved.rename(dst_resolved)
         return {"ok": True, "status": "ok", "renamed": str(dst_resolved)}
@@ -837,6 +892,18 @@ def create_directory(path: str, workdir: Path | None = None) -> Dict[str, Any]:
     guard_result = guard.guard_operation("create_directory", str(p))
     if guard_result.get("status") == "error":
         return {"path": str(p), "status": "error", "error": guard_result.get("error")}
+    try:
+        from src.core.orchestration.tool_execution_pipeline import is_current_tool_cancelled
+
+        if is_current_tool_cancelled():
+            return {
+                "path": str(p),
+                "status": "error",
+                "error": "Tool execution was cancelled or timed out before create committed.",
+                "cancelled": True,
+            }
+    except Exception:
+        pass
     try:
         p.mkdir(parents=True, exist_ok=True)
         return {"path": str(p), "status": "ok", "created": True}

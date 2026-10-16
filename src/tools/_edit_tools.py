@@ -27,6 +27,14 @@ def _atomic_write(path: Path, content: str, encoding: str = "utf-8") -> None:
     partially-written file — even if the process is interrupted mid-write.
     """
     _target = path.resolve()
+    try:
+        from src.core.orchestration.tool_execution_pipeline import is_current_tool_cancelled
+
+        if is_current_tool_cancelled():
+            raise TimeoutError("Tool execution was cancelled or timed out before write committed.")
+    except ImportError:
+        pass
+
     fd, tmp = tempfile.mkstemp(
         dir=str(_target.parent),
         prefix=f".{_target.stem}.write.",
@@ -35,6 +43,17 @@ def _atomic_write(path: Path, content: str, encoding: str = "utf-8") -> None:
     try:
         with os.fdopen(fd, "w", encoding=encoding) as fh:
             fh.write(content)
+        try:
+            from src.core.orchestration.tool_execution_pipeline import is_current_tool_cancelled
+
+            if is_current_tool_cancelled():
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+                raise TimeoutError("Tool execution was cancelled or timed out before write committed.")
+        except ImportError:
+            pass
         try:
             os.replace(tmp, str(_target))
         except OSError:

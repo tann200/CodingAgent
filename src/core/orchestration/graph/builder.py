@@ -1,4 +1,5 @@
 import logging
+import os
 import threading
 from typing import Any, Dict
 
@@ -99,7 +100,9 @@ _USE_FULL_GRAPH = False
 # emitted as a typed NodeResultValidationFailed event but never abort a run.
 # When True, an invalid node->state transition raises NodeResultViolation
 # (fail-closed).  Scenario tests exercise both modes.
-_STATE_SCHEMAS_STRICT = False
+_STATE_SCHEMAS_STRICT = os.environ.get(
+    "CODINGAGENT_STATE_SCHEMAS_STRICT", ""
+).lower() in ("1", "true", "yes")
 
 
 def _validated(name: str, fn):
@@ -455,35 +458,35 @@ def _compile_frontier_graph():
         return await _validated("perception", perception_node)(state, config)
 
     async def _analysis(state: StateLike, config: RunnableConfig):
-        return await analysis_node(state, config)
+        return await _validated("analysis", analysis_node)(state, config)
 
     async def _analyst_delegation(state: StateLike, config: RunnableConfig):
-        return await analyst_delegation_node(state, config)
+        return await _validated("analyst_delegation", analyst_delegation_node)(state, config)
 
     async def _frontier_loop(state: StateLike, config: RunnableConfig):
-        return await frontier_loop_node(state, config)
+        return await _validated("frontier_loop", frontier_loop_node)(state, config)
 
     async def _verification(state: StateLike, config: RunnableConfig):
         return await _validated("verification", verification_node)(state, config)
 
     async def _evaluation(state: StateLike, config: RunnableConfig):
-        return await evaluation_node(state, config)
+        return await _validated("evaluation", evaluation_node)(state, config)
 
     async def _debug(state: StateLike, config: RunnableConfig):
-        return await debug_node(state, config)
+        return await _validated("debug", debug_node)(state, config)
 
     async def _memory_sync(state: StateLike, config: RunnableConfig):
-        return await memory_update_node(state, config)
+        return await _validated("memory_sync", memory_update_node)(state, config)
 
     async def _delegation(state: StateLike, config: RunnableConfig):
-        return await delegation_node(state, config)
+        return await _validated("delegation", delegation_node)(state, config)
 
     async def _wait_for_user(state: StateLike, config: RunnableConfig):
         from src.core.orchestration.graph.nodes.wait_for_user_node import (
             wait_for_user_node,
         )
 
-        return await wait_for_user_node(state, config)
+        return await _validated("wait_for_user", wait_for_user_node)(state, config)
 
     workflow.add_node("perception", _perception)
     workflow.add_node("analysis", _analysis)
@@ -641,10 +644,10 @@ def _compile_lite_graph():
         return await _validated("perception", perception_node)(state, config)
 
     async def _frontier_loop(state: StateLike, config: RunnableConfig):
-        return await frontier_loop_node(state, config)
+        return await _validated("frontier_loop", frontier_loop_node)(state, config)
 
     async def _memory_sync(state: StateLike, config: RunnableConfig):
-        return await memory_update_node(state, config)
+        return await _validated("memory_sync", memory_update_node)(state, config)
 
     async def _verification(state: StateLike, config: RunnableConfig):
         return await _validated("verification", verification_node)(state, config)

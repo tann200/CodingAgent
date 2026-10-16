@@ -49,9 +49,22 @@ class FileLockManager:
         self._async_lock = asyncio.Lock()
         self._read_locks: Dict[str, Set[str]] = {}
         self._write_lock: Optional[FileLock] = None
-        # Guard task reference for zombie-lock auto-release
-        self._lock_release_guard: Optional[asyncio.Task] = None
+        # Per-(path, owner) guard task reference for zombie-lock auto-release
+        self._lock_release_guards: Dict[tuple[str, str], asyncio.Task] = {}
         self._install_atexit_cleanup()
+
+    @property
+    def _lock_release_guard(self) -> Optional[asyncio.Task]:
+        """Backward-compatibility property returning the active guard task if any."""
+        if self._write_lock:
+            key = (self._write_lock.path, self._write_lock.locked_by)
+            guard = self._lock_release_guards.get(key)
+            if guard is not None and not guard.done():
+                return guard
+        for guard in self._lock_release_guards.values():
+            if guard and not guard.done():
+                return guard
+        return None
 
     @classmethod
     def get_instance(
@@ -179,10 +192,11 @@ class FileLockManager:
                     return False
                 if self.can_write(path):
                     self._write_lock = FileLock(path, agent_id, "write", time.time())
-                    # Start auto-release guard for zombie-lock prevention
-                    self._lock_release_guard = asyncio.ensure_future(
+                    # Start auto-release guard for zombie-lock prevention (per path/owner)
+                    guard_task = asyncio.ensure_future(
                         self._auto_release_after_timeout(path, agent_id, timeout)
                     )
+                    self._lock_release_guards[(path, agent_id)] = guard_task
                     logger.info(
                         f"acquire_write_async: acquired for {path} by {agent_id}"
                     )
@@ -201,6 +215,7 @@ class FileLockManager:
         """
         await asyncio.sleep(timeout_sec)
         async with self._async_lock:
+            self._lock_release_guards.pop((path, agent_id), None)
             if self._write_lock and self._write_lock.path == path:
                 if self._write_lock.locked_by == agent_id:
                     logger.critical(
@@ -220,17 +235,22 @@ class FileLockManager:
     async def release_write(self, path: str, agent_id: str):
         """Release write lock (async).
 
-        Cancels the auto-release guard task if running, so the normal
-        release path does not race with the timeout-based fallback.
+        Cancels the auto-release guard task for this specific owner/path,
+        ensuring a stale owner cannot cancel an active owner's guard task.
         """
-        if self._lock_release_guard is not None and not self._lock_release_guard.done():
-            self._lock_release_guard.cancel()
-            self._lock_release_guard = None
         async with self._async_lock:
             if self._write_lock and self._write_lock.path == path:
                 if self._write_lock.locked_by == agent_id:
+                    guard = self._lock_release_guards.pop((path, agent_id), None)
+                    if guard is not None and not guard.done():
+                        guard.cancel()
                     logger.info(f"release_write: released {path} from {agent_id}")
                     self._write_lock = None
+            else:
+                # Clean up any leftover guard for this agent without affecting current holder
+                guard = self._lock_release_guards.pop((path, agent_id), None)
+                if guard is not None and not guard.done():
+                    guard.cancel()
 
     def cancel(self, owner: Optional[str] = None):
         """Signal cancellation to all waiting acquire operations.
@@ -238,6 +258,10 @@ class FileLockManager:
         When *owner* is set, only operations matching that owner can
         clear this cancel signal via ``reset_cancel()``.
         """
+        for guard in list(self._lock_release_guards.values()):
+            if guard and not guard.done():
+                guard.cancel()
+        self._lock_release_guards.clear()
         self._cancel_event.set()
         if owner is not None:
             self._cancel_owner = owner

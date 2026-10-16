@@ -11,6 +11,7 @@ import json
 import logging
 import threading
 import uuid
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, Dict, Optional, cast
 
@@ -26,6 +27,24 @@ TOOL_EXECUTOR_MAX_WORKERS: int = 4
 TOOL_OUTPUT_MAX_CHARS: int = RESULT_MAX_CHARS
 
 _TOOL_EXECUTOR_LOCK: threading.Lock = threading.Lock()
+_CURRENT_TOOL_CANCEL_EVENT: ContextVar[Optional[threading.Event]] = ContextVar(
+    "_CURRENT_TOOL_CANCEL_EVENT", default=None
+)
+_THREAD_CANCEL_EVENTS: Dict[int, threading.Event] = {}
+_THREAD_CANCEL_LOCK: threading.Lock = threading.Lock()
+
+
+def is_current_tool_cancelled() -> bool:
+    """Return True if the currently executing tool has been cancelled or timed out."""
+    ev = _CURRENT_TOOL_CANCEL_EVENT.get()
+    if ev is not None and ev.is_set():
+        return True
+    tid = threading.get_ident()
+    with _THREAD_CANCEL_LOCK:
+        ev = _THREAD_CANCEL_EVENTS.get(tid)
+    if ev is not None and ev.is_set():
+        return True
+    return False
 
 
 def _truncate_result_strings(result: Any, _depth: int = 0) -> Any:
@@ -678,32 +697,42 @@ def _dispatch_tool_call(
         except (ValueError, TypeError):
             pass
 
-    def _run_tool_callable(fn: Any, kwargs: dict) -> Any:
-        rv = fn(**kwargs)
-        if _inspect.isawaitable(rv):
-            import asyncio as _asyncio
-            from typing import Coroutine
+    cancel_ev = threading.Event()
+    cancel_token = _CURRENT_TOOL_CANCEL_EVENT.set(cancel_ev)
 
-            # Check if we're in a thread with an existing event loop
-            try:
-                loop = _asyncio.get_running_loop()
-                # If we're in a thread with a running loop, use run_coroutine_threadsafe
-                if loop.is_running():
-                    # This should be called from the main thread, but we're in a worker thread
-                    # So we need to handle this carefully - create a new event loop for this thread
-                    new_loop = _asyncio.new_event_loop()
-                    _asyncio.set_event_loop(new_loop)
-                    try:
-                        return new_loop.run_until_complete(rv)
-                    finally:
-                        new_loop.close()
-                else:
-                    # Loop exists but not running - safe to use run_until_complete
-                    return loop.run_until_complete(rv)
-            except RuntimeError:
-                # No running loop - safe to use asyncio.run
-                return _asyncio.run(cast(Coroutine[Any, Any, Any], rv))
-        return rv
+    def _run_tool_callable(fn: Any, kwargs: dict) -> Any:
+        tid = threading.get_ident()
+        with _THREAD_CANCEL_LOCK:
+            _THREAD_CANCEL_EVENTS[tid] = cancel_ev
+        try:
+            rv = fn(**kwargs)
+            if _inspect.isawaitable(rv):
+                import asyncio as _asyncio
+                from typing import Coroutine
+
+                # Check if we're in a thread with an existing event loop
+                try:
+                    loop = _asyncio.get_running_loop()
+                    # If we're in a thread with a running loop, use run_coroutine_threadsafe
+                    if loop.is_running():
+                        # This should be called from the main thread, but we're in a worker thread
+                        # So we need to handle this carefully - create a new event loop for this thread
+                        new_loop = _asyncio.new_event_loop()
+                        _asyncio.set_event_loop(new_loop)
+                        try:
+                            return new_loop.run_until_complete(rv)
+                        finally:
+                            new_loop.close()
+                    else:
+                        # Loop exists but not running - safe to use run_until_complete
+                        return loop.run_until_complete(rv)
+                except RuntimeError:
+                    # No running loop - safe to use asyncio.run
+                    return _asyncio.run(cast(Coroutine[Any, Any, Any], rv))
+            return rv
+        finally:
+            with _THREAD_CANCEL_LOCK:
+                _THREAD_CANCEL_EVENTS.pop(tid, None)
 
     orch_token = None
     try:
@@ -734,6 +763,7 @@ def _dispatch_tool_call(
             try:
                 res = future.result(timeout=timeout_seconds)
             except _cf.TimeoutError:
+                cancel_ev.set()
                 future.cancel()
                 raise TimeoutError(
                     f"Tool '{name}' timed out after {timeout_seconds} seconds"
@@ -741,6 +771,10 @@ def _dispatch_tool_call(
         else:
             res = _run_tool_callable(tool["fn"], args)
     finally:
+        try:
+            _CURRENT_TOOL_CANCEL_EVENT.reset(cancel_token)
+        except Exception:
+            pass
         try:
             if orch_token is not None:
                 from src.tools.subagent_tools import _PARENT_ORCHESTRATOR_VAR

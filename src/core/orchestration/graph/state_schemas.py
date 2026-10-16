@@ -243,6 +243,27 @@ _NODE_OUTPUT_SCHEMAS: dict[str, NodeOutputSchema] = {
         frozenset({"plan_validation", "errors", "action_failed"}),
         core_keys=("plan_validation",),
     ),
+    "frontier_loop": NodeOutputSchema(
+        frozenset(
+            {
+                "history",
+                "tool_call_count",
+                "last_result",
+                "last_tool_name",
+                "errors",
+                "_frontier_loop_turns",
+                "awaiting_plan_approval",
+                "next_action",
+                "inline_verification_failures",
+                "replan_required",
+                "action_failed",
+                "_budget_compaction",
+                "_should_distill",
+                "plan_completed",
+            }
+        ),
+        core_keys=("history", "tool_call_count", "errors", "awaiting_plan_approval"),
+    ),
 }
 
 

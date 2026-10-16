@@ -118,6 +118,8 @@ class SessionLifecycleManager:
             self._shutdown_hooks[name] = callback
             logger.debug(f"Registered shutdown hook: {name}")
 
+    register_shutdown_hook = on_shutdown
+
     def shutdown_session(
         self,
         session_id: str,
@@ -137,19 +139,39 @@ class SessionLifecycleManager:
         """
         from src.core.orchestration.session_registry import get_session_registry
 
+        import concurrent.futures as _cf
+
         start_time = time.time()
         cleanup_actions: List[str] = []
         error: Optional[str] = None
 
         try:
-            # 1. Run shutdown hooks
-            for name, callback in list(self._shutdown_hooks.items()):
-                try:
-                    callback(session_id)
-                    cleanup_actions.append(f"hook:{name}")
-                except Exception as e:
-                    logger.error(f"Shutdown hook '{name}' failed: {e}")
-                    cleanup_actions.append(f"hook:{name}:error:{str(e)}")
+            # 1. Run shutdown hooks under bounded execution
+            executor = _cf.ThreadPoolExecutor(max_workers=1)
+            try:
+                for name, callback in list(self._shutdown_hooks.items()):
+                    elapsed = time.time() - start_time
+                    remaining = max(0.0, timeout - elapsed)
+                    if remaining <= 0:
+                        logger.warning(
+                            f"Shutdown timeout ({timeout}s) exceeded before running hook '{name}'"
+                        )
+                        cleanup_actions.append(f"hook:{name}:timeout")
+                        continue
+                    try:
+                        fut = executor.submit(callback, session_id)
+                        fut.result(timeout=remaining)
+                        cleanup_actions.append(f"hook:{name}")
+                    except _cf.TimeoutError:
+                        logger.error(
+                            f"Shutdown hook '{name}' timed out after {remaining:.2f}s"
+                        )
+                        cleanup_actions.append(f"hook:{name}:timeout")
+                    except Exception as e:
+                        logger.error(f"Shutdown hook '{name}' failed: {e}")
+                        cleanup_actions.append(f"hook:{name}:error:{str(e)}")
+            finally:
+                executor.shutdown(wait=False, cancel_futures=True)
 
             # 2. Unregister from registry
             # Use the public get_session() API so the registry's internal lock
@@ -159,17 +181,23 @@ class SessionLifecycleManager:
                 registry.unregister_session(session_id, reason=reason.value)
                 cleanup_actions.append("registry:unregistered")
 
-            # 3. Cleanup P2P subscriptions
-            try:
-                from src.core.orchestration.cross_session_bus import (
-                    get_cross_session_bus,
-                )
+            # 3. Cleanup P2P subscriptions (bounded by remaining timeout)
+            elapsed = time.time() - start_time
+            remaining = max(0.0, timeout - elapsed)
+            if remaining <= 0:
+                logger.warning("Shutdown timeout exceeded before P2P cleanup")
+                cleanup_actions.append("p2p:timeout")
+            else:
+                try:
+                    from src.core.orchestration.cross_session_bus import (
+                        get_cross_session_bus,
+                    )
 
-                bus = get_cross_session_bus()
-                bus.unsubscribe_session(session_id)
-                cleanup_actions.append("p2p:unsubscribed")
-            except Exception as e:
-                logger.debug(f"P2P cleanup skipped: {e}")
+                    bus = get_cross_session_bus()
+                    bus.unsubscribe_session(session_id)
+                    cleanup_actions.append("p2p:unsubscribed")
+                except Exception as e:
+                    logger.debug(f"P2P cleanup skipped: {e}")
 
             # 4. Cancel any pending operations
             cleanup_actions.append("operations:cancelled")
