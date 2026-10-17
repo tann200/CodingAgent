@@ -25,11 +25,6 @@ def build_decision_records(rows: Iterable[Any]) -> List[Dict[str, Any]]:
                 "decision": redact_secrets(dec),
                 "rationale": redact_secrets(rat) if rat else None,
                 "ts": row["created_at"],
-                "provenance": {
-                    "source": "sqlite_session",
-                    "trust_level": "untrusted_reference",
-                    "sanitized": True,
-                },
             }
         )
     return records
@@ -146,12 +141,6 @@ def read_decisions_sidecar(*, path: Path, max_entries: int) -> List[Dict[str, An
             entry["decision"] = redact_secrets(dec)
             if rat:
                 entry["rationale"] = redact_secrets(rat)
-            if "provenance" not in entry:
-                entry["provenance"] = {
-                    "source": "decisions_sidecar",
-                    "trust_level": "untrusted_reference",
-                    "sanitized": True,
-                }
             clean_entries.append(entry)
             if len(clean_entries) >= max(0, int(max_entries)):
                 break

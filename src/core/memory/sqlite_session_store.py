@@ -558,7 +558,7 @@ class SqliteSessionStore:
                 build_mistake_search_sql(),
                 build_mistake_search_params(fts_query=fts_query, limit=limit),
             ).fetchall()
-            return map_mistake_rows(rows)
+            return map_mistake_rows(rows, include_provenance=True)
         except Exception:
             pass
 
@@ -569,7 +569,7 @@ class SqliteSessionStore:
                 build_mistake_like_search_sql(),
                 build_mistake_like_search_params(query=query, limit=limit),
             ).fetchall()
-            return map_mistake_rows(rows)
+            return map_mistake_rows(rows, include_provenance=True)
         except Exception:
             return []
 

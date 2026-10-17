@@ -872,11 +872,6 @@ class JsonlSessionStore:
                             "decision": redact_secrets(dec),
                             "rationale": redact_secrets(rat) if rat else None,
                             "ts": d.get("ts"),
-                            "provenance": {
-                                "source": "jsonl_session",
-                                "trust_level": "untrusted_reference",
-                                "sanitized": True,
-                            },
                         }
                     )
                 if len(candidates) > keep:

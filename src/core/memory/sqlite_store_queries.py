@@ -179,7 +179,7 @@ def map_child_session_rows(rows: Iterable[Any]) -> List[Dict[str, Any]]:
     ]
 
 
-def map_mistake_rows(rows: Iterable[Any]) -> List[Dict[str, Any]]:
+def map_mistake_rows(rows: Iterable[Any], include_provenance: bool = False) -> List[Dict[str, Any]]:
     from src.core.memory.security import scan_memory_content
     from src.core.security.redaction import redact_secrets
 
@@ -189,19 +189,19 @@ def map_mistake_rows(rows: Iterable[Any]) -> List[Dict[str, Any]]:
         context = str(row["context"] or "")
         if scan_memory_content(summary) is not None or (context and scan_memory_content(context) is not None):
             continue
-        records.append(
-            {
-                "summary": redact_secrets(summary),
-                "context": redact_secrets(context) if context else "",
-                "tool": row["tool"],
-                "ts": row["created_at"],
-                "provenance": {
-                    "source": "sqlite_mistakes",
-                    "trust_level": "untrusted_reference",
-                    "sanitized": True,
-                },
+        entry = {
+            "summary": redact_secrets(summary),
+            "context": redact_secrets(context) if context else "",
+            "tool": row["tool"],
+            "ts": row["created_at"],
+        }
+        if include_provenance:
+            entry["provenance"] = {
+                "source": "sqlite_mistakes",
+                "trust_level": "untrusted_reference",
+                "sanitized": True,
             }
-        )
+        records.append(entry)
     return records
 
 
