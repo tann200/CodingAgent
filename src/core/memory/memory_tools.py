@@ -9,11 +9,11 @@ from src.tools._tool import tool, PermissionKind
     tags=["coding", "planning", "debug", "analysis"],
     permission_kind=PermissionKind.READ_FILE,
 )
-def memory_search(query: str, workdir: str) -> Dict[str, Any]:
+def memory_search(query: str, workdir: str = ".") -> Dict[str, Any]:
     """Search TASK_STATE.md and execution_trace.json for the query.
     Returns simple ranked results: exact match lines from TASK_STATE.md first, then trace entries sorted by recency.
     """
-    wd = Path(workdir)
+    wd = Path(workdir).resolve()
     from src.tools.tools_config import agent_context_path
 
     agent_ctx = agent_context_path(wd)

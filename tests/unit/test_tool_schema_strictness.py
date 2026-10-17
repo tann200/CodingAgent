@@ -41,15 +41,20 @@ def test_validate_args_rejects_undeclared_fields():
     assert "unexpected undeclared field 'hallucinated_param'" in errors[0]
 
 
-def test_validate_args_allows_internal_parameters():
+def test_validate_args_rejects_workdir_and_working_dir():
     def tool_with_internal(path: str):
         """Tool."""
         pass
 
     defn = ToolDefinition(name="tool_with_internal", fn=tool_with_internal, description="test")
-    # workdir is an internal param passed by execution pipeline; must not be rejected
+    # workdir and working_dir must be rejected as model arguments to prevent workspace escape (SPEC-01)
     errors = defn.validate_args({"path": "foo.py", "workdir": "/some/dir"})
-    assert errors == []
+    assert len(errors) == 1
+    assert "unexpected undeclared field 'workdir'" in errors[0]
+
+    errors_wd = defn.validate_args({"path": "foo.py", "working_dir": "/some/dir"})
+    assert len(errors_wd) == 1
+    assert "unexpected undeclared field 'working_dir'" in errors_wd[0]
 
 
 def test_validate_args_accepts_extra_fields_when_kwargs_declared():

@@ -116,12 +116,30 @@ def preflight_check_impl(orch: Any, tool_call: Dict[str, Any]) -> Dict[str, Any]
                         ),
                     }
 
-    path_arg = args.get("path") or args.get("file_path")
-    if path_arg and "write" in tool.get("side_effects", []):
+    work_dir = Path(orch.working_dir or ".").resolve()
+
+    # SPEC-01: Confine workdir and working_dir if provided in args
+    for wd_key in ("workdir", "working_dir"):
+        if wd_key in args and args[wd_key]:
+            try:
+                candidate_wd = Path(args[wd_key]).resolve()
+                if not candidate_wd.is_relative_to(work_dir):
+                    return {
+                        "ok": False,
+                        "error": f"Path '{args[wd_key]}' is outside working directory.",
+                    }
+            except Exception as e:
+                return {"ok": False, "error": f"Invalid path: {e}"}
+
+    path_arg = (
+        args.get("path")
+        or args.get("file_path")
+        or args.get("src_path")
+        or args.get("dst_path")
+    )
+    if path_arg and ("write" in tool.get("side_effects", []) or "read" in tool.get("side_effects", [])):
         try:
-            # Resolve the path and see if it's inside working_dir
-            target_path = (Path(orch.working_dir or ".") / path_arg).resolve()
-            work_dir = Path(orch.working_dir or ".").resolve()
+            target_path = (work_dir / str(path_arg)).resolve()
             if not target_path.is_relative_to(work_dir):
                 return {
                     "ok": False,
@@ -129,6 +147,20 @@ def preflight_check_impl(orch: Any, tool_call: Dict[str, Any]) -> Dict[str, Any]
                 }
         except Exception as e:
             return {"ok": False, "error": f"Invalid path: {e}"}
+
+    paths_arg = args.get("paths")
+    if isinstance(paths_arg, list):
+        for p in paths_arg:
+            if isinstance(p, str):
+                try:
+                    target_path = (work_dir / p).resolve()
+                    if not target_path.is_relative_to(work_dir):
+                        return {
+                            "ok": False,
+                            "error": f"Path '{p}' is outside working directory.",
+                        }
+                except Exception as e:
+                    return {"ok": False, "error": f"Invalid path: {e}"}
 
     # P1-4: Validate LLM-supplied arguments against the tool's JSON Schema.
     # This catches missing required fields and wrong types before execution,

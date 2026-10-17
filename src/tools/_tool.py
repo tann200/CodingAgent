@@ -129,7 +129,7 @@ class ToolDefinition:
                 # Skip *args (by kind) and internal non-LLM params by name
                 if param.kind == inspect.Parameter.VAR_POSITIONAL:
                     continue
-                if pname in ("self", "cls", "workdir"):
+                if pname in ("self", "cls", "workdir", "working_dir"):
                     continue
                 ptype = "string"
                 if param.annotation != inspect.Parameter.empty:
@@ -234,7 +234,7 @@ class ToolDefinition:
             # 3. Reject undeclared fields when additionalProperties is False
             if not params.get("additionalProperties", False):
                 for field_name in args:
-                    if field_name not in properties and field_name not in ("self", "cls", "workdir"):
+                    if field_name not in properties and field_name not in ("self", "cls"):
                         errors.append(f"unexpected undeclared field '{field_name}'")
         except Exception:
             # Schema generation can fail for complex signatures; skip validation

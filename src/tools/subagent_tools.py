@@ -509,6 +509,12 @@ def delegate_task(
     workdir = working_dir or "."
     workdir_path = Path(workdir).resolve()
 
+    parent_orchestrator = _PARENT_ORCHESTRATOR_VAR.get(None)
+    if parent_orchestrator is not None and getattr(parent_orchestrator, "working_dir", None):
+        parent_wd = Path(parent_orchestrator.working_dir).resolve()
+        if not workdir_path.is_relative_to(parent_wd):
+            return f"Error: working_dir '{workdir}' is outside workspace '{parent_wd}'"
+
     # HR-5 fix: Check delegation depth to prevent unbounded recursive spawning.
     # Use the process-local ContextVar as the authoritative source — it cannot
     # be forged by subprocesses. AgentState["delegation_depth"] is used for
@@ -1021,11 +1027,23 @@ def delegate_tasks_parallel(
                 "succeeded": 0,
                 "failed": 0,
             }
+        task_wd = task.get("working_dir") or working_dir
+        parent_orch = _PARENT_ORCHESTRATOR_VAR.get(None)
+        if parent_orch is not None and getattr(parent_orch, "working_dir", None):
+            parent_wd = Path(parent_orch.working_dir).resolve()
+            if task_wd and not Path(task_wd).resolve().is_relative_to(parent_wd):
+                return {
+                    "ok": False,
+                    "error": f"subtask[{i}] working_dir '{task_wd}' is outside workspace.",
+                    "results": [],
+                    "succeeded": 0,
+                    "failed": 0,
+                }
         validated.append(
             {
                 "role": role,
                 "subtask_description": desc,
-                "working_dir": task.get("working_dir") or working_dir,
+                "working_dir": task_wd,
                 "allowed_tools": task.get("allowed_tools"),
                 "model": task.get("model") or model,
             }

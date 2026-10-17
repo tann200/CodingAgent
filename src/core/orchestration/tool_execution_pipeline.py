@@ -385,6 +385,12 @@ def _check_workdir_confinement(orch: Any, name: str, args: dict) -> bool:
         except Exception:
             return False
 
+    # SPEC-01: if workdir or working_dir is explicitly passed and points outside workspace, require approval gate
+    for wd_key in ("workdir", "working_dir"):
+        if wd_key in args and args[wd_key]:
+            if not _inside(args[wd_key]):
+                return True
+
     if name in ("bash", "run_tests", "run_bash"):
         if _inside(args.get("workdir", workdir_path)):
             return False
@@ -686,14 +692,45 @@ def _dispatch_tool_call(
     import contextvars as _contextvars
     import inspect as _inspect
 
-    # Inject working directory so tool functions resolve paths correctly.
-    if "workdir" not in args and hasattr(orch, "working_dir") and orch.working_dir:
+    # Inject and confine working directory so tool functions resolve paths correctly (SPEC-01).
+    if hasattr(orch, "working_dir") and orch.working_dir:
         try:
             sig = _inspect.signature(tool["fn"])
+            from pathlib import Path as _Path
+            target_workdir = _Path(orch.working_dir).resolve()
+
+            def _is_confined(p: Any) -> bool:
+                try:
+                    resolved = _Path(p).resolve()
+                    return resolved == target_workdir or str(resolved).startswith(
+                        str(target_workdir) + "/"
+                    )
+                except Exception:
+                    return False
+
             if "workdir" in sig.parameters:
                 args = dict(args)
-                from pathlib import Path as _Path
-                args["workdir"] = _Path(orch.working_dir)
+                if "workdir" in args and args["workdir"]:
+                    if not _is_confined(args["workdir"]):
+                        return {
+                            "ok": False,
+                            "error": f"Path '{args['workdir']}' is outside working directory.",
+                        }
+                    args["workdir"] = _Path(args["workdir"]).resolve()
+                else:
+                    args["workdir"] = target_workdir
+
+            if "working_dir" in sig.parameters:
+                args = dict(args)
+                if "working_dir" in args and args["working_dir"]:
+                    if not _is_confined(args["working_dir"]):
+                        return {
+                            "ok": False,
+                            "error": f"Path '{args['working_dir']}' is outside working directory.",
+                        }
+                    args["working_dir"] = str(_Path(args["working_dir"]).resolve())
+                else:
+                    args["working_dir"] = str(target_workdir)
         except (ValueError, TypeError):
             pass
 
