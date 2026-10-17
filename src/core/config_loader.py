@@ -281,18 +281,37 @@ def get_mcp_servers(working_dir: Optional[Path] = None) -> List[Dict[str, Any]]:
     if not isinstance(servers, list):
         return []
 
-    # Add Context7 test server if no servers configured
-    if not servers:
-        servers = [
-            {
-                "name": "context7",
-                "transport": "stdio",
-                "command": "npx",
-                "args": ["-y", "@upstash/context7-mcp"],
-            }
-        ]
+    # Identify user-global servers to distinguish them from workspace-local servers
+    global_server_names = set()
+    if _USER_CONFIG.exists():
+        try:
+            raw = _load_config_file(_USER_CONFIG)
+            if isinstance(raw, dict) and isinstance(raw.get("mcp", {}).get("servers"), list):
+                for s in raw["mcp"]["servers"]:
+                    if isinstance(s, dict) and s.get("name"):
+                        global_server_names.add(s["name"])
+        except Exception:
+            pass
 
-    return servers
+    normalized: List[Dict[str, Any]] = []
+    for s in servers:
+        if not isinstance(s, dict):
+            continue
+        entry = dict(s)
+        # Normalize cmd -> command + args if cmd is a list
+        if "cmd" in entry and isinstance(entry["cmd"], list) and entry["cmd"]:
+            if "command" not in entry:
+                entry["command"] = entry["cmd"][0]
+            if "args" not in entry:
+                entry["args"] = entry["cmd"][1:]
+        name = entry.get("name", "")
+        if name in global_server_names or working_dir is None:
+            entry.setdefault("source", "global")
+        else:
+            entry.setdefault("source", "workspace")
+        normalized.append(entry)
+
+    return normalized
 
 
 # Keys for per-role model overrides in providers.json / config

@@ -205,6 +205,22 @@ class McpServerManager:
                 self._publish_status()
                 continue
 
+            # SPEC-03: Workspace-defined stdio servers require explicit trust to execute host commands
+            source = cfg.get("source")
+            if transport == "stdio" and source == "workspace":
+                if os.environ.get("CODINGAGENT_TRUST_WORKSPACE_MCP") != "1" and not cfg.get("trusted", False):
+                    logger.warning(
+                        "mcp manager: refusing to auto-start untrusted workspace stdio MCP server %r. "
+                        "Set CODINGAGENT_TRUST_WORKSPACE_MCP=1 or mark server as trusted to allow.",
+                        name,
+                    )
+                    with self._lock:
+                        st = McpServerState(name=name, transport=transport)
+                        self._states[name] = st
+                        st.last_error = "Untrusted workspace MCP server (requires approval)"
+                    self._publish_status()
+                    continue
+
             url = cfg.get("url") or cfg.get("endpoint")
             cmd = self._normalize_server_cmd(cfg)
             # Allow servers to provide an `env` mapping to be passed to subprocess

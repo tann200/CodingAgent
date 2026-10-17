@@ -135,12 +135,24 @@ class McpStdioClient:
             return
 
         logger.info("mcp_client[%s]: starting subprocess %s", self.name, self.cmd)
-        # Merge provided env onto the current os.environ to avoid dropping
-        # necessary system variables. If no env overrides were provided the
-        # subprocess inherits the parent environment unchanged.
-        proc_env = None
+        # Scrub parent environment to prevent leaking secrets/API keys to untrusted MCP servers (SPEC-03).
+        _SAFE_ENV_KEYS = {
+            "PATH",
+            "HOME",
+            "USER",
+            "LOGNAME",
+            "SHELL",
+            "LANG",
+            "LC_ALL",
+            "TERM",
+            "TMPDIR",
+            "TMP",
+            "TEMP",
+            "SYSTEMROOT",
+            "WINDIR",
+        }
+        proc_env = {k: v for k, v in os.environ.items() if k in _SAFE_ENV_KEYS}
         if self._env is not None:
-            proc_env = os.environ.copy()
             proc_env.update({str(k): str(v) for k, v in self._env.items()})
 
         self._process = await asyncio.create_subprocess_exec(

@@ -100,7 +100,12 @@ def set_tool_permission(tool_name: str, level: PermissionLevel) -> None:
 def get_tool_permission(tool_name: str) -> PermissionLevel:
     """Return the effective permission level for *tool_name*."""
     with _config_lock:
-        return TOOL_PERMISSIONS.get(tool_name, DEFAULT_PERMISSION_LEVEL)
+        if tool_name in TOOL_PERMISSIONS:
+            return TOOL_PERMISSIONS[tool_name]
+        # MCP tools (e.g. "server/tool" or "mcp_*") default to PROMPT for safety (SPEC-03)
+        if "/" in tool_name or tool_name.startswith("mcp_") or tool_name.startswith("mcp__"):
+            return PermissionLevel.PROMPT
+        return DEFAULT_PERMISSION_LEVEL
 
 
 # ---------------------------------------------------------------------------
