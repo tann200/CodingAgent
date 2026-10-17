@@ -80,12 +80,16 @@ def grep(
             cmd += [f"--include={include}"]
         cmd.append(str(search_path))
 
-        process = subprocess.run(
+        from src.tools.sandbox import run_sandboxed
+
+        process = run_sandboxed(
             cmd,
+            cwd=workdir if isinstance(workdir, Path) else Path(workdir),
             capture_output=True,
             text=True,
             check=False,
             timeout=30,
+            network=False,
         )
         if process.returncode == 0:
             raw = redact_secrets(process.stdout)

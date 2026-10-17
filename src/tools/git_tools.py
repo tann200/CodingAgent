@@ -26,13 +26,16 @@ DEFAULT_WORKDIR = Path(".")
 def _run_git(args: list[str], workdir: Path, timeout: int = 30) -> Dict[str, Any]:
     """Run a git command and return a normalised result dict."""
     try:
-        proc = subprocess.run(
+        from src.tools.sandbox import run_sandboxed
+
+        proc = run_sandboxed(
             ["git"] + args,
-            cwd=str(workdir),
+            cwd=Path(workdir),
             capture_output=True,
             text=True,
             check=False,
             timeout=timeout,
+            network=False,
         )
         if proc.returncode == 0:
             return {"status": "ok", "output": proc.stdout.strip()}

@@ -53,13 +53,34 @@ def _lint_python(path: str, timeout: int) -> Dict[str, Any]:
         return {"lint_errors": [{"line": None, "message": msg, "code": "E999"}]}
 
 
+def _run_lint_cmd(cmd: list[str], cwd: Path, timeout: int) -> subprocess.CompletedProcess:
+    try:
+        from src.tools.sandbox import run_sandboxed
+
+        return run_sandboxed(
+            cmd,
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            network=False,
+        )
+    except Exception:
+        return subprocess.run(
+            cmd,
+            cwd=str(cwd),
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+
+
 def _lint_js(path: str, timeout: int) -> Dict[str, Any]:
     """node --check <file>"""
     try:
-        result = subprocess.run(
+        result = _run_lint_cmd(
             ["node", "--check", path],
-            capture_output=True,
-            text=True,
+            cwd=Path(path).parent,
             timeout=timeout,
         )
     except FileNotFoundError:
@@ -77,7 +98,7 @@ def _lint_ts(path: str, timeout: int) -> Dict[str, Any]:
     """
     # Try standalone tsc first (most informative)
     try:
-        result = subprocess.run(
+        result = _run_lint_cmd(
             [
                 "npx",
                 "--no-install",
@@ -92,8 +113,7 @@ def _lint_ts(path: str, timeout: int) -> Dict[str, Any]:
                 "es2020",
                 path,
             ],
-            capture_output=True,
-            text=True,
+            cwd=Path(path).parent,
             timeout=timeout,
         )
         errors = _parse_tsc_output(result.stdout + result.stderr, path)
@@ -111,14 +131,12 @@ def _lint_go(path: str, workdir: Path, timeout: int) -> Dict[str, Any]:
     passing a relative path, which can fail when workdir and path don't
     share a common root (e.g. after symlink resolution).
     """
-    file_dir = str(Path(path).parent)
+    file_dir = Path(path).parent
     try:
-        result = subprocess.run(
+        result = _run_lint_cmd(
             ["go", "build", "-o", os.devnull, "."],
-            capture_output=True,
-            text=True,
-            timeout=timeout,
             cwd=file_dir,
+            timeout=timeout,
         )
     except FileNotFoundError:
         return {"lint_errors": []}
@@ -131,10 +149,9 @@ def _lint_go(path: str, workdir: Path, timeout: int) -> Dict[str, Any]:
 def _lint_rust(path: str, timeout: int) -> Dict[str, Any]:
     """rustc --edition=2021 --emit=metadata <file>"""
     try:
-        result = subprocess.run(
+        result = _run_lint_cmd(
             ["rustc", "--edition=2021", "--emit=metadata", path, "-o", os.devnull],
-            capture_output=True,
-            text=True,
+            cwd=Path(path).parent,
             timeout=timeout,
         )
     except FileNotFoundError:

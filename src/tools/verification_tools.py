@@ -1,4 +1,4 @@
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Union
 from pathlib import Path
 import subprocess
 import shutil
@@ -44,6 +44,20 @@ def _safe_resolve_workdir(workdir: str) -> str:
         raise ValueError(f"Invalid workdir: {workdir!r}")
 
 
+def _run_subprocess(cmd: list[str], cwd: Union[str, Path], **kwargs) -> subprocess.CompletedProcess:
+    try:
+        from src.tools.sandbox import run_sandboxed
+
+        return run_sandboxed(
+            cmd,
+            cwd=Path(cwd),
+            network=False,
+            **kwargs,
+        )
+    except Exception:
+        return subprocess.run(cmd, cwd=str(cwd), **kwargs)
+
+
 @tool(
     side_effects=["execute"],
     tags=["coding"],
@@ -85,7 +99,7 @@ def run_tests(
         if use_last_failed:
             cmd.append("--lf")
             cmd.append("--co")
-            proc = subprocess.run(
+            proc = _run_subprocess(
                 cmd,
                 cwd=workdir,
                 capture_output=True,
@@ -110,7 +124,7 @@ def run_tests(
             if test_ids:
                 cmd.extend(test_ids)
                 cmd.append("--co")
-                proc = subprocess.run(
+                proc = _run_subprocess(
                     cmd,
                     cwd=workdir,
                     capture_output=True,
@@ -135,7 +149,7 @@ def run_tests(
         else:
             cmd.append(workdir)
 
-        proc = subprocess.run(
+        proc = _run_subprocess(
             cmd, cwd=workdir, capture_output=True, text=True, check=False, timeout=120
         )
 
@@ -398,7 +412,7 @@ def _run_ruff(workdir: str, fix: bool = False) -> Dict[str, Any]:
     cmd = ["ruff", "check", workdir]
     if fix:
         cmd.append("--fix")
-    proc = subprocess.run(
+    proc = _run_subprocess(
         cmd, cwd=workdir, capture_output=True, text=True, check=False, timeout=60
     )
     errors = _parse_ruff_output(proc.stdout)
@@ -415,7 +429,7 @@ def _run_eslint_internal(workdir: str) -> Dict[str, Any]:
     else:
         return {"status": "skipped", "errors": []}
     cmd = runner + ["--format=compact", "."]
-    proc = subprocess.run(
+    proc = _run_subprocess(
         cmd, cwd=workdir, capture_output=True, text=True, check=False, timeout=60
     )
     errors = _parse_eslint_compact(proc.stdout + proc.stderr)
@@ -431,7 +445,7 @@ def _run_tsc_internal(workdir: str) -> Dict[str, Any]:
         if shutil.which("npx")
         else ["tsc", "--noEmit"]
     )
-    proc = subprocess.run(
+    proc = _run_subprocess(
         cmd, cwd=workdir, capture_output=True, text=True, check=False, timeout=120
     )
     errors = _parse_tsc_output(proc.stdout + proc.stderr)
@@ -440,7 +454,7 @@ def _run_tsc_internal(workdir: str) -> Dict[str, Any]:
 
 def _run_clippy(workdir: str) -> Dict[str, Any]:
     """Internal cargo clippy runner."""
-    proc = subprocess.run(
+    proc = _run_subprocess(
         ["cargo", "clippy", "--message-format=json", "--", "-D", "warnings"],
         cwd=workdir,
         capture_output=True,
@@ -476,7 +490,7 @@ def _run_clippy(workdir: str) -> Dict[str, Any]:
 
 def _run_go_vet(workdir: str) -> Dict[str, Any]:
     """Internal go vet runner."""
-    proc = subprocess.run(
+    proc = _run_subprocess(
         ["go", "vet", "./..."],
         cwd=workdir,
         capture_output=True,
@@ -607,8 +621,9 @@ def syntax_check(workdir: str, timeout_secs: float = 30.0) -> Dict[str, Any]:
 
                 elif ext in (".js", ".mjs", ".cjs", ".jsx"):
                     try:
-                        result = subprocess.run(
+                        result = _run_subprocess(
                             ["node", "--check", path],
+                            cwd=Path(path).parent,
                             capture_output=True,
                             text=True,
                             timeout=10,
@@ -632,7 +647,7 @@ def syntax_check(workdir: str, timeout_secs: float = 30.0) -> Dict[str, Any]:
 
                 elif ext == ".go":
                     try:
-                        result = subprocess.run(
+                        result = _run_subprocess(
                             ["go", "build", "-o", os.devnull, path],
                             capture_output=True,
                             text=True,
@@ -660,7 +675,7 @@ def syntax_check(workdir: str, timeout_secs: float = 30.0) -> Dict[str, Any]:
 
                 elif ext == ".rs":
                     try:
-                        result = subprocess.run(
+                        result = _run_subprocess(
                             [
                                 "rustc",
                                 "--edition=2021",
@@ -669,6 +684,7 @@ def syntax_check(workdir: str, timeout_secs: float = 30.0) -> Dict[str, Any]:
                                 "-o",
                                 os.devnull,
                             ],
+                            cwd=Path(path).parent,
                             capture_output=True,
                             text=True,
                             timeout=15,
@@ -743,7 +759,7 @@ def run_js_tests(
             cmd = parts[:]
             if test_files:
                 cmd.extend(test_files)
-            proc = subprocess.run(
+            proc = _run_subprocess(
                 cmd,
                 cwd=workdir,
                 capture_output=True,
@@ -796,7 +812,7 @@ def run_ts_check(workdir: str) -> Dict[str, Any]:
         else:
             cmd = ["tsc", "--noEmit"]
 
-        proc = subprocess.run(
+        proc = _run_subprocess(
             cmd, cwd=workdir, capture_output=True, text=True, check=False, timeout=120
         )
         stdout = proc.stdout + proc.stderr
@@ -852,7 +868,7 @@ def run_eslint(workdir: str, paths: Optional[List[str]] = None) -> Dict[str, Any
             return {"status": "skipped", "reason": "eslint not found"}
 
         cmd = runner + ["--format=compact"] + (paths or ["."])
-        proc = subprocess.run(
+        proc = _run_subprocess(
             cmd, cwd=workdir, capture_output=True, text=True, check=False, timeout=60
         )
         stdout = proc.stdout + proc.stderr
@@ -945,8 +961,9 @@ def format_file(path: str) -> Dict[str, Any]:
         }
 
     try:
-        result = subprocess.run(
+        result = _run_subprocess(
             cmd,
+            cwd=p.parent,
             capture_output=True,
             text=True,
             timeout=30,

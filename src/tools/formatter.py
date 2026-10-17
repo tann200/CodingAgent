@@ -108,11 +108,15 @@ def run_formatter(file_path: str, timeout: float = 15.0) -> bool:
         return False
 
     try:
-        result = subprocess.run(
+        from src.tools.sandbox import run_sandboxed
+
+        result = run_sandboxed(
             cmd,
+            cwd=Path(file_path).resolve().parent,
             capture_output=True,
             text=True,
             timeout=timeout,
+            network=False,
         )
         if result.returncode != 0:
             logger.debug(

@@ -92,10 +92,10 @@ def _probe_sandbox_exec_enforced() -> bool:
     """Check whether sandbox-exec actually *enforces* restrictions on this host.
 
     Apple deprecated sandbox-exec and on some macOS / Apple Silicon
-    configurations it silently accepts profiles but does not enforce them.
-    We detect this by attempting a write to a path outside /tmp inside a
-    sandbox that should deny it.  If the write succeeds the sandbox is not
-    enforcing.
+    configurations it silently accepts profiles but does not enforce them,
+    or fails to apply them (sandbox_apply: Operation not permitted).
+    We detect this by attempting a write inside an allowed probe dir (must succeed)
+    and a write outside it (must be denied).
 
     Returns True when the sandbox appears to be enforced, False otherwise.
     Errors in the probe itself are treated conservatively as "not enforced".
@@ -107,43 +107,69 @@ def _probe_sandbox_exec_enforced() -> bool:
     try:
         import tempfile as _tf
 
-        # Create an isolated probe dir and a *target outside it*
-        with _tf.TemporaryDirectory() as probe_dir:
-            target_outside = Path(probe_dir) / ".." / "sandbox_probe_canary"
-            target_outside = target_outside.resolve()
+        with _tf.TemporaryDirectory(prefix="codingagent-probe-") as probe_dir:
+            probe_path = Path(probe_dir).resolve()
+            target_inside = probe_path / "inside_ok.txt"
+            target_outside = probe_path.parent / f"codingagent_probe_canary_{os.getpid()}.txt"
 
-            # Profile that only allows writes to probe_dir
+            escaped_probe = str(probe_path).replace("\\", "\\\\").replace('"', '\\"')
             profile = (
                 "(version 1)\n"
                 "(allow default)\n"
-                f'(deny file-write* (not (subpath "{probe_dir}")))\n'
+                f'(deny file-write* (require-not (subpath "{escaped_probe}")))\n'
             )
             _fd, profile_path = _tf.mkstemp(suffix=".sb", prefix="codingagent-probe-")
             try:
                 with os.fdopen(_fd, "w") as f:
                     f.write(profile)
-                cmd = [
+
+                # Probe A: Write inside probe_dir must succeed
+                cmd_inside = [
                     str(_SANDBOX_EXEC_PATH),
                     "-f", profile_path,
                     "sh", "-c",
-                    f"echo canary > {target_outside} 2>/dev/null; echo $?",
+                    f'echo ok > "{target_inside}"',
+                ]
+                res_inside = subprocess.run(
+                    cmd_inside, capture_output=True, text=True, timeout=5
+                )
+                if res_inside.returncode != 0 or not target_inside.exists():
+                    logger.debug(
+                        "sandbox-exec Probe A (inside write) failed: code %d, stderr: %s",
+                        res_inside.returncode,
+                        res_inside.stderr,
+                    )
+                    return False
+
+                # Probe B: Write outside probe_dir must fail / be denied
+                cmd_outside = [
+                    str(_SANDBOX_EXEC_PATH),
+                    "-f", profile_path,
+                    "sh", "-c",
+                    f'echo canary > "{target_outside}" 2>/dev/null',
                 ]
                 subprocess.run(
-                    cmd, capture_output=True, text=True, timeout=5
+                    cmd_outside, capture_output=True, text=True, timeout=5
                 )
-                # If the canary file was created, sandbox did not enforce
                 if target_outside.exists():
                     try:
                         target_outside.unlink()
                     except Exception:
                         pass
+                    logger.debug("sandbox-exec Probe B failed: canary file was created outside sandbox")
                     return False
+
                 return True
             finally:
                 try:
                     os.unlink(profile_path)
                 except Exception:
                     pass
+                if target_outside.exists():
+                    try:
+                        target_outside.unlink()
+                    except Exception:
+                        pass
     except Exception as exc:
         logger.debug("sandbox-exec enforcement probe error: %s", exc)
         return False  # conservative: assume not enforced
@@ -181,31 +207,51 @@ def sandbox_exec_enforced() -> bool:
 # ---------------------------------------------------------------------------
 
 
-def _build_sandbox_exc_profile(cwd: Path, level: str) -> str:
+def _sbpl_escape(p: str) -> str:
+    return p.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _build_sandbox_exc_profile(cwd: Path, level: str, private_tmp: Optional[Path] = None) -> str:
     """Generate a sandbox-exec profile string for the given *level*.
 
     The profile:
     - Allows read-only access to /usr, /bin, /sbin, /System, /Library
-    - Allows writable access to *cwd* only
+    - Denies all writes by default
+    - Allows writable access to *cwd* and private temporary dir only
     - Denies network by default (no network-outbound rule)
-    - Denies everything else
     """
-    cwd_str = str(cwd.resolve())
+    cwd_str = _sbpl_escape(str(cwd.resolve()))
     lines = [
         "(version 1)",
         "(allow default)",
+        "(deny file-write*)",
         "",
-        ";; ---- read-only system paths ----",
-        "(allow file-read*",
-        "    (require",
-        '        (file-issue-extension* (literal "/"))',
-        '        (not (subpath "/tmp"))',
-        '        (not (subpath "/private/tmp"))',
-        "    )",
+        ";; ---- writable working directory and dev nodes ----",
+        "(allow file-write*",
+        f'    (subpath "{cwd_str}")',
+    ]
+    if private_tmp is not None:
+        lines.append(f'    (subpath "{_sbpl_escape(str(private_tmp.resolve()))}")')
+    lines += [
+        '    (literal "/dev/null")',
+        '    (literal "/dev/zero")',
+        '    (literal "/dev/tty")',
+        '    (literal "/dev/dtracehelper")',
         ")",
         "",
-        ";; ---- writable working directory ----",
-        f'(allow file-write* (subpath "{cwd_str}"))',
+        ";; ---- isolate /tmp read access ----",
+        "(deny file-read*",
+        '    (subpath "/tmp")',
+        '    (subpath "/private/tmp")',
+        ")",
+        "(allow file-read*",
+        f'    (subpath "{cwd_str}")',
+    ]
+    if private_tmp is not None:
+        lines.append(f'    (subpath "{_sbpl_escape(str(private_tmp.resolve()))}")')
+    lines.append(")")
+
+    lines += [
         "",
         ";; ---- deny network ----",
         "(deny network*)",
@@ -225,13 +271,13 @@ def _build_sandbox_exc_profile(cwd: Path, level: str) -> str:
     return "\n".join(lines)
 
 
-def _write_sandbox_exc_profile(cwd: Path, level: str) -> str:
+def _write_sandbox_exc_profile(cwd: Path, level: str, private_tmp: Optional[Path] = None) -> str:
     """Write a temporary sandbox-exec profile and return its path.
 
     The file is created in a temporary directory that persists until the
     process exits (deleted by the OS on close in /tmp).
     """
-    profile_content = _build_sandbox_exc_profile(cwd, level)
+    profile_content = _build_sandbox_exc_profile(cwd, level, private_tmp=private_tmp)
     # Use a named temp file so sandbox-exec can read it
     fd, path = tempfile.mkstemp(suffix=".sb", prefix="codingagent-sandbox-")
     try:
@@ -305,7 +351,23 @@ def _build_bwrap_args(
     args += ["--die-with-parent"]
 
     # Bind common read-only system directories individually (safer than ro-binding /)
-    for d in ("/usr", "/lib", "/lib64", "/bin", "/sbin"):
+    for d in (
+        "/usr",
+        "/lib",
+        "/lib64",
+        "/bin",
+        "/sbin",
+        "/etc/ld.so.cache",
+        "/etc/ld.so.conf",
+        "/etc/ld.so.conf.d",
+        "/etc/alternatives",
+        "/etc/ssl",
+        "/etc/ca-certificates",
+        "/etc/resolv.conf",
+        "/etc/hosts",
+        "/etc/nsswitch.conf",
+        "/etc/localtime",
+    ):
         if Path(d).exists():
             args += ["--ro-bind", d, d]
 
@@ -419,41 +481,62 @@ def run_sandboxed(
                     "or set CODINGAGENT_SANDBOX_LEVEL=off to opt out."
                 )
         else:
+            private_tmp = None
             try:
-                profile_path = _write_sandbox_exc_profile(cwd, level)
+                import tempfile as _tf
+
+                private_tmp = Path(_tf.mkdtemp(prefix="codingagent-sandbox-tmp-"))
+                profile_path = _write_sandbox_exc_profile(cwd, level, private_tmp=private_tmp)
                 try:
                     sbox_cmd = [str(_SANDBOX_EXEC_PATH), "-f", profile_path] + cmd
-                    # Note: sandbox-exec does not support --unshare-net; network
-                    # is denied via the profile instead.
+                    exec_kwargs = dict(kwargs)
+                    run_env = dict(exec_kwargs.get("env") or os.environ)
+                    run_env["TMPDIR"] = str(private_tmp)
+                    exec_kwargs["env"] = run_env
+
                     result = subprocess.run(
-                        sbox_cmd, cwd=str(cwd), timeout=timeout, **kwargs
+                        sbox_cmd, cwd=str(cwd), timeout=timeout, **exec_kwargs
                     )
-                    # macOS sandbox-exec can fail before the command starts if the
-                    # generated profile uses unsupported syntax on the host version.
-                    # In that case degrade to the documented plain-subprocess fallback
-                    # instead of surfacing sandbox parser errors as command output.
                     _stderr = result.stderr or ""
                     if isinstance(_stderr, bytes):
                         _stderr = _stderr.decode(errors="replace")
-                    if result.returncode == 65 and "sandbox-exec:" in str(_stderr):
+                    if result.returncode in (65, 71) and (
+                        "sandbox-exec:" in str(_stderr)
+                        or "sandbox_apply:" in str(_stderr)
+                    ):
                         logger.warning(
-                            "sandbox: sandbox-exec profile rejected (%s) — falling back to unsandboxed",
-                            str(_stderr).splitlines()[0] if _stderr else "unknown error",
+                            "sandbox: sandbox-exec failed (%s)",
+                            str(_stderr).splitlines()[0] if _stderr else f"exit code {result.returncode}",
                         )
+                        if _enforcement_required():
+                            raise RuntimeError(
+                                f"sandbox: sandbox-exec failed to apply profile ({_stderr.strip()}). "
+                                "Enforcement is required (fail-closed)."
+                            )
                     else:
                         return result
                 finally:
-                    # Best-effort cleanup of the temp profile
                     try:
                         os.unlink(profile_path)
                     except Exception:
                         pass
+            except RuntimeError:
+                raise
             except Exception as exc:
                 logger.warning(
                     "sandbox: sandbox-exec failed (%s) — falling back to unsandboxed",
                     exc,
                 )
-                # fall through
+                if _enforcement_required():
+                    raise RuntimeError(f"sandbox: sandbox-exec failed: {exc}")
+            finally:
+                if private_tmp is not None:
+                    try:
+                        import shutil as _shutil
+
+                        _shutil.rmtree(private_tmp, ignore_errors=True)
+                    except Exception:
+                        pass
 
     # 4. Final fallback — plain subprocess with warning (or hard-stop)
     if level != "off":
@@ -536,6 +619,8 @@ def _enforcement_required() -> bool:
     When SANDBOX_REQUIRE_ENFORCEMENT=1 or autonomous mode is active, enforcement
     is strictly required regardless of opt-outs.
     """
+    if get_sandbox_level() == "off" and not (_REQUIRE_ENFORCEMENT or _autonomous_mode()):
+        return False
     if _REQUIRE_ENFORCEMENT or _autonomous_mode():
         return True
     return not _allow_unenforced()
