@@ -22,6 +22,7 @@ from .bus import (
     StreamingThinkingUpdate,
     StreamChunkEvent,
     ToolPermissionEvent,
+    SpawnPermissionEvent,
     UsageTurnSummaryEvent,
     WorkerError,
 )
@@ -184,6 +185,29 @@ class AppMessageHandlersMixin(AgentAppProtocol):
         await row.mount(
             Button("Allow Always", id=f"btn_tool_perm_always_{tid}", variant="warning")
         )
+        chat_log.scroll_end(animate=False)
+        self._prune_chat_log()
+
+    @on(SpawnPermissionEvent)
+    async def handle_spawn_permission(self: AgentAppProtocol, event) -> None:
+        logger.warning(
+            f"Spawn permission required: {event.role} tool={event.tool} id={event.tool_id}"
+        )
+        self._update_perm_badge(+1)
+        chat_log = self.query_one("#chat_log", VerticalScroll)
+        role_label = event.role or "unknown"
+        task_desc = f" ({event.task})" if event.task else ""
+        warn = Static(
+            f"[bold #facc15]⚠ Spawn permission required:[/] Subagent [bold]{role_label}[/]{task_desc}",
+            classes="retry_msg",
+            markup=True,
+        )
+        await chat_log.mount(warn)
+        tid = event.tool_id
+        row = Horizontal(id=f"spawn_perm_{tid}", classes="approval_row")
+        await chat_log.mount(row)
+        await row.mount(Button("Allow", id=f"btn_spawn_allow_{tid}", variant="success"))
+        await row.mount(Button("Deny", id=f"btn_spawn_deny_{tid}", variant="error"))
         chat_log.scroll_end(animate=False)
         self._prune_chat_log()
 

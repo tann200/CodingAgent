@@ -757,14 +757,12 @@ class AppSlashCommandsMixin(AgentAppProtocol):
                         classes="system_msg",
                         markup=True,
                     )
-                    await self._mount_chat_widget(w)
                 else:
                     w = Static(
                         f"[bold]✓ Exported[/] {len(history)} messages\n  → {export_path}",
                         classes="system_msg",
                         markup=True,
                     )
-                    await self._mount_chat_widget(w)
             except Exception as exc:
                 w = Static(
                     f"[bold #ff5555]✗ Export failed:[/] {exc}",

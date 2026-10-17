@@ -245,6 +245,14 @@ class GUILogger:
         )
         self.log(full_msg, "ERROR")
 
+    def isEnabledFor(self, level: int) -> bool:
+        """Return whether logging at this level is enabled."""
+        try:
+            return logging.getLogger("agent_tui").isEnabledFor(level)
+        except Exception:
+            return False
+
+
 
 # --- Audit Logging (background writer with rotation) ---
 

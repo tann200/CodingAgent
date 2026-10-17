@@ -100,11 +100,18 @@ class SideBySideDiff(Widget):
             self.path = path
             super().__init__()
 
-    def __init__(self, path: str, diff: str, is_new_file: bool = False) -> None:
+    def __init__(
+        self,
+        path: str,
+        diff: str,
+        is_new_file: bool = False,
+        requires_confirmation: bool = False,
+    ) -> None:
         super().__init__()
         self._path = path
         self._diff = diff
         self._is_new_file = is_new_file
+        self._requires_confirmation = requires_confirmation
 
     def compose(self):
         action = "NEW FILE" if self._is_new_file else "DIFF"
@@ -140,10 +147,11 @@ class SideBySideDiff(Widget):
                     markup=True,
                 )
 
-        with Horizontal(classes="sbs_actions"):
-            yield Static("Apply changes?  ", classes="sbs_prompt")
-            yield Button("Accept", variant="success", id="btn_sbs_accept")
-            yield Button("Reject", variant="error", id="btn_sbs_reject")
+        if self._requires_confirmation:
+            with Horizontal(classes="sbs_actions"):
+                yield Static("Apply changes?  ", classes="sbs_prompt")
+                yield Button("Accept", variant="success", id="btn_sbs_accept")
+                yield Button("Reject", variant="error", id="btn_sbs_reject")
 
     @on(Button.Pressed, "#btn_sbs_accept")
     def _on_accept(self, event: Button.Pressed) -> None:
@@ -187,11 +195,18 @@ class InlineDiff(Widget):
     Accepted = SideBySideDiff.Accepted
     Rejected = SideBySideDiff.Rejected
 
-    def __init__(self, path: str, diff: str, is_new_file: bool = False) -> None:
+    def __init__(
+        self,
+        path: str,
+        diff: str,
+        is_new_file: bool = False,
+        requires_confirmation: bool = False,
+    ) -> None:
         super().__init__()
         self._path = path
         self._diff = diff
         self._is_new_file = is_new_file
+        self._requires_confirmation = requires_confirmation
 
     def compose(self):
         action = "NEW FILE" if self._is_new_file else "DIFF"
@@ -214,10 +229,12 @@ class InlineDiff(Widget):
             markup=True,
         )
 
-        with Horizontal(classes="sbs_actions"):
-            yield Static("Apply changes?  ", classes="sbs_prompt")
-            yield Button("Accept", variant="success", id="btn_inline_accept")
-            yield Button("Reject", variant="error", id="btn_inline_reject")
+        if self._requires_confirmation:
+            with Horizontal(classes="sbs_actions"):
+                yield Static("Apply changes?  ", classes="sbs_prompt")
+                yield Button("Accept", variant="success", id="btn_inline_accept")
+                yield Button("Reject", variant="error", id="btn_inline_reject")
+
 
     @on(Button.Pressed, "#btn_inline_accept")
     def _on_accept(self, event: Button.Pressed) -> None:

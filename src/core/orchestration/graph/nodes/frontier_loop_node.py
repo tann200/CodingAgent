@@ -70,7 +70,6 @@ from src.core.inference.kv_cache_governor import (
 )
 
 logger = logging.getLogger(__name__)
-from src.core.logger import logger as guilogger  # noqa: E402
 from src.core.messaging.event_types import AgentStatus, ToolResult  # noqa: E402
 
 # Core tools for small/local models.  Larger tiers get core + extras up to
@@ -223,6 +222,7 @@ async def _prepare_turn_messages(
     history: list,
     model_tier: str,
     turns_taken: int,
+    retrieved_snippets: "list | None" = None,
 ) -> list:
     """Build the messages list for one LLM turn.
 
@@ -240,8 +240,8 @@ async def _prepare_turn_messages(
 
         cb = ContextBuilder(working_dir=getattr(orchestrator, "working_dir", None))
 
-        if guilogger.isEnabledFor(logging.DEBUG):
-            guilogger.debug("[frontier_loop_node] turn=%d history_before_prune=%s", turns_taken, [(m.get("role"), redact_secrets(str(m.get("content", "")))[:100]) for m in history])
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug("[frontier_loop_node] turn=%d history_before_prune=%s", turns_taken, [(m.get("role"), redact_secrets(str(m.get("content", "")))[:100]) for m in history])
         history = prune_tool_outputs(history)
 
         token_budget = get_context_budget(model_tier=model_tier)
@@ -263,7 +263,7 @@ async def _prepare_turn_messages(
         partial_fn = functools.partial(
             cb.build_prompt,
             "operational",
-            [],
+            retrieved_snippets or [],
             task,
             tools_schema or [],
             history,
@@ -304,8 +304,8 @@ async def _prepare_turn_messages(
                 messages = [{"role": "system", "content": _sys_content}] + messages
 
             messages = _normalize_messages_for_native_tools(messages)
-            if guilogger.isEnabledFor(logging.DEBUG):
-                guilogger.debug("[frontier_loop_node] turn=%d after_normalization=%s", turns_taken, [(m.get("role"), redact_secrets(str(m.get("content") or m.get("tool_calls") or ""))[:100]) for m in messages])
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug("[frontier_loop_node] turn=%d after_normalization=%s", turns_taken, [(m.get("role"), redact_secrets(str(m.get("content") or m.get("tool_calls") or ""))[:100]) for m in messages])
         return messages
     except Exception as exc:
         logger.warning("frontier_loop_node: context build failed: %s", exc)
@@ -340,9 +340,9 @@ async def _call_llm_for_turn(
 
     tools_schema = _filter_tools_for_tier(tools_schema, model_tier)
 
-    if guilogger.isEnabledFor(logging.DEBUG):
-        guilogger.debug("[frontier_loop_node] turn=%d messages_preview=%s", turns_taken, [(m.get("role"), redact_secrets(str(m.get("content") or m.get("tool_calls") or ""))[:100]) for m in messages])
-        guilogger.debug("[frontier_loop_node] turn=%d messages_has_tool_calls=%s", turns_taken, [bool(m.get("tool_calls")) for m in messages])
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug("[frontier_loop_node] turn=%d messages_preview=%s", turns_taken, [(m.get("role"), redact_secrets(str(m.get("content") or m.get("tool_calls") or ""))[:100]) for m in messages])
+        logger.debug("[frontier_loop_node] turn=%d messages_has_tool_calls=%s", turns_taken, [bool(m.get("tool_calls")) for m in messages])
 
     _llm_timeout: int | None = 120
     try:
@@ -364,8 +364,8 @@ async def _call_llm_for_turn(
         timeout=_llm_timeout,
     )
 
-    if guilogger.isEnabledFor(logging.DEBUG):
-        guilogger.debug(
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug(
             "[frontier_loop_node] turn=%d tools_sent=%d finish_reason=%s tool_calls_len=%s content_len=%s",
             turns_taken,
             len(tools_schema),
@@ -622,6 +622,14 @@ async def frontier_loop_node(
             "frontier_loop_node: injected repo_context (%d chars)", len(repo_context)
         )
 
+    retrieved_snippets = state.get("retrieved_snippets")
+    if retrieved_snippets is None and orchestrator:
+        try:
+            from src.core.orchestration.graph.nodes.perception_retrieval import _retrieve_context
+            retrieved_snippets = await _retrieve_context(state, orchestrator)
+        except Exception:
+            retrieved_snippets = []
+
     provider_name: str | None = None
     model_name: str | None = None
 
@@ -694,14 +702,17 @@ async def frontier_loop_node(
                 "frontier_loop_node: using precomputed next_action before LLM call"
             )
         else:
-            # ---- Build prompt then call LLM --------------------------------
-            messages = await _prepare_turn_messages(
-                orchestrator=orchestrator,
-                task=task,
-                history=history,
-                model_tier=model_tier,
-                turns_taken=turns_taken,
-            )
+            try:
+                messages = await _prepare_turn_messages(
+                    orchestrator=orchestrator, task=task, history=history,
+                    model_tier=model_tier, turns_taken=turns_taken,
+                    retrieved_snippets=retrieved_snippets,
+                )
+            except TypeError:
+                messages = await _prepare_turn_messages(
+                    orchestrator=orchestrator, task=task, history=history,
+                    model_tier=model_tier, turns_taken=turns_taken,
+                )
 
             try:
                 response, content_text, tool_calls = await _call_llm_for_turn(
@@ -881,4 +892,6 @@ async def frontier_loop_node(
     if _progress:
         result.update(_progress)
         persist_plan_progress(orchestrator, state)
+    if retrieved_snippets:
+        result["retrieved_snippets"] = retrieved_snippets
     return result

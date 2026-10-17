@@ -229,3 +229,156 @@ def test_kv_cache_governor_custom_thresholds():
     assert state2.action == CompactionAction.COMPACT
 
 
+def test_analysis_node_per_file_freshness_tracking(tmp_path: Path):
+    from src.core.orchestration.graph.nodes.analysis_node import (
+        _is_already_indexed,
+        _mark_indexed,
+    )
+    from src.core.indexing.repo_indexer import _get_ctx_dir_name
+
+    ctx_dir = tmp_path / _get_ctx_dir_name()
+    ctx_dir.mkdir(parents=True, exist_ok=True)
+    index_file = ctx_dir / "repo_index.json"
+    index_file.write_text("{}", encoding="utf-8")
+
+    sub_dir = tmp_path / "pkg"
+    sub_dir.mkdir()
+    py_file = sub_dir / "module.py"
+    py_file.write_text("def hello(): pass\n", encoding="utf-8")
+
+    # Initially not indexed
+    assert _is_already_indexed(str(tmp_path)) is False
+
+    # Mark as indexed
+    _mark_indexed(str(tmp_path))
+    assert _is_already_indexed(str(tmp_path)) is True
+
+    # Root directory mtime does NOT change when an existing file inside pkg/ is modified!
+    # Update file content and mtime:
+    py_file.write_text("def hello_updated(): pass\n", encoding="utf-8")
+    import os
+    import time
+    new_time = time.time() + 10
+    os.utime(py_file, (new_time, new_time))
+
+    # Freshness check must detect the file modification and return False!
+    assert _is_already_indexed(str(tmp_path)) is False
+
+    # Re-marking as indexed should make it fresh again
+    _mark_indexed(str(tmp_path))
+    assert _is_already_indexed(str(tmp_path)) is True
+
+
+@pytest.mark.asyncio
+async def test_frontier_loop_auto_retrieves_context_on_simple_tasks(tmp_path: Path):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, patch
+    from src.core.orchestration.graph.nodes.frontier_loop_node import frontier_loop_node
+
+    dummy_snippets = [{"file_path": "auth.py", "symbol": "login"}]
+    orch = SimpleNamespace(
+        working_dir=str(tmp_path),
+        tool_registry=SimpleNamespace(get_openai_functions=lambda: []),
+        event_bus=None,
+        _session_modified_files=set(),
+    )
+    state = {
+        "task": "explain authentication in auth.py",
+        "history": [],
+        "tool_call_count": 0,
+        "max_tool_calls": 5,
+        "model_tier": "frontier",
+        # Note: 'retrieved_snippets' is intentionally omitted to simulate a simple frontier task
+    }
+
+    mock_build_prompt = MagicMock(return_value=[{"role": "system", "content": "You are assistant."}])
+    with (
+        patch("src.core.orchestration.graph.nodes.frontier_loop_node._resolve_orchestrator", return_value=orch),
+        patch("src.core.orchestration.graph.nodes.perception_retrieval._retrieve_context", new=AsyncMock(return_value=dummy_snippets)) as mock_retrieve,
+        patch("src.core.context.context_builder.ContextBuilder.build_prompt", mock_build_prompt),
+        patch("src.core.orchestration.graph.nodes.frontier_loop_node.call_model", new=AsyncMock(return_value={"choices": [{"message": {"content": "Auth explained"}}]})),
+    ):
+        result = await frontier_loop_node(state, config={})
+        # Verify _retrieve_context was called because snippets were absent
+        mock_retrieve.assert_awaited_once()
+        # Verify ContextBuilder was given the retrieved snippets
+        args, kwargs = mock_build_prompt.call_args
+        # args: (mode, retrieved_snippets, task, tools_schema, history, token_budget, ...)
+        assert args[1] == dummy_snippets
+        # Verify result contains the retrieved snippets
+        assert result.get("retrieved_snippets") == dummy_snippets
+
+
+def test_tui_diff_preview_requires_confirmation():
+    from textual._context import active_app
+    from tui.tui_src.ui.components.diff_viewer import SideBySideDiff, InlineDiff
+
+    mock_app = MagicMock()
+    mock_app._compose_stacks = [[]]
+    token = active_app.set(mock_app)
+    try:
+        # When requires_confirmation is False: no action bar should be rendered
+        sbs_nogate = SideBySideDiff(path="foo.py", diff="@@ -1 +1 @@\n-old\n+new", requires_confirmation=False)
+        assert sbs_nogate._requires_confirmation is False
+
+        # When requires_confirmation is True: action bar with Accept and Reject buttons must be rendered
+        sbs_gated = SideBySideDiff(path="foo.py", diff="@@ -1 +1 @@\n-old\n+new", requires_confirmation=True)
+        assert sbs_gated._requires_confirmation is True
+
+        # Same check for InlineDiff
+        inline_nogate = InlineDiff(path="foo.py", diff="@@ -1 +1 @@\n-old\n+new", requires_confirmation=False)
+        assert inline_nogate._requires_confirmation is False
+
+        inline_gated = InlineDiff(path="foo.py", diff="@@ -1 +1 @@\n-old\n+new", requires_confirmation=True)
+        assert inline_gated._requires_confirmation is True
+    finally:
+        active_app.reset(token)
+
+
+
+@pytest.mark.asyncio
+async def test_tui_spawn_permission_button_allow_and_deny():
+    from textual.widgets import Button
+    from tui.tui_src.ui._app_tool_handlers_mixin import AppToolHandlersMixin
+    from tui.tui_src.ui.events import SpawnPermissionApproved, SpawnPermissionDenied
+
+    class DummyApp(AppToolHandlersMixin):
+        def __init__(self):
+            self._bridge = MagicMock()
+            self._posted_messages = []
+            self._perm_count = 1
+
+        def _update_perm_badge(self, delta):
+            self._perm_count += delta
+
+        async def _mount_chat_widget(self, w):
+            pass
+
+        def post_message(self, msg):
+            self._posted_messages.append(msg)
+
+        def query_one(self, selector):
+            return MagicMock()
+
+    app = DummyApp()
+
+    # Test Allow button
+    allow_event = MagicMock()
+    allow_event.button = Button("Allow", id="btn_spawn_allow_tool123")
+    await app.on_any_button(allow_event)
+
+    app._bridge.publish.assert_any_call("spawn.permission_granted", {"tool_id": "tool123"})
+    app._bridge.publish.assert_any_call("tool.permission_granted", {"tool_id": "tool123"})
+    assert any(isinstance(m, SpawnPermissionApproved) and m.tool_id == "tool123" for m in app._posted_messages)
+    assert app._perm_count == 0
+
+    # Test Deny button
+    deny_event = MagicMock()
+    deny_event.button = Button("Deny", id="btn_spawn_deny_tool456")
+    await app.on_any_button(deny_event)
+
+    app._bridge.publish.assert_any_call("spawn.permission_denied", {"tool_id": "tool456"})
+    app._bridge.publish.assert_any_call("tool.permission_denied", {"tool_id": "tool456"})
+    assert any(isinstance(m, SpawnPermissionDenied) and m.tool_id == "tool456" for m in app._posted_messages)
+
+

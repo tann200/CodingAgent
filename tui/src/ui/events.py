@@ -119,6 +119,24 @@ class ToolPermissionDenied(Message):
         super().__init__()
 
 
+class SpawnPermissionApproved(Message):
+    """User approved a subagent spawn request."""
+
+    def __init__(self, tool_id: str = "", role: str = "") -> None:
+        self.tool_id = tool_id
+        self.role = role
+        super().__init__()
+
+
+class SpawnPermissionDenied(Message):
+    """User denied a subagent spawn request."""
+
+    def __init__(self, tool_id: str = "", role: str = "") -> None:
+        self.tool_id = tool_id
+        self.role = role
+        super().__init__()
+
+
 class StartGithubDeviceFlow(Message):
     """User pressed 'Login with GitHub Copilot' in Settings.
 

@@ -172,6 +172,7 @@ class BridgeContextMixin(AgentBridgeProtocol):
                 path=payload.get("path") or payload.get("preview_id") or payload.get("tool", ""),
                 diff=payload.get("diff", ""),
                 is_new_file=payload.get("is_new_file", False),
+                requires_confirmation=payload.get("requires_confirmation", True),
             )
         )
 

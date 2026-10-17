@@ -27,6 +27,7 @@ _SKIP_WORDS = {
 # errors in concurrent asyncio tasks sharing the same event loop thread.
 _INDEXED_DIRS_MAX = 128
 _INDEXED_DIRS: dict = {}  # {resolved_path: mtime_ns}  (insertion-ordered via Python 3.7+)
+_INDEXED_FILE_REVISIONS: dict = {}  # {resolved_path: revision_hash}
 _INDEXED_DIRS_LOCK = threading.Lock()
 
 # PB-2: Cache generate_repo_summary() results keyed by resolved working_dir.
@@ -148,29 +149,59 @@ def _build_lightweight_test_map(task: str, working_dir: str) -> dict:
         return {}
 
 
+def _compute_workspace_revision(working_dir: str) -> int:
+    """Return a hash of language file paths, mtimes, and sizes for freshness tracking."""
+    try:
+        from pathlib import Path
+        from src.core.indexing.repo_indexer import walk_language_files
+
+        files = walk_language_files(Path(working_dir))
+        return hash(
+            tuple(
+                (rel, p.stat().st_mtime_ns, p.stat().st_size)
+                for rel, p in files.items()
+            )
+        )
+    except Exception:
+        try:
+            return os.stat(os.path.realpath(working_dir)).st_mtime_ns
+        except Exception:
+            return 0
+
+
 def _is_already_indexed(working_dir: str) -> bool:
-    """Return True if working_dir was indexed and its mtime has not changed."""
+    """Return True if working_dir repo index is fresh and no indexed files have changed."""
     try:
         resolved = str(os.path.realpath(working_dir))
         with _INDEXED_DIRS_LOCK:
-            mtime = os.stat(resolved).st_mtime_ns
-            return _INDEXED_DIRS.get(resolved) == mtime
+            current_mtime = os.stat(resolved).st_mtime_ns
+            if _INDEXED_DIRS.get(resolved) != current_mtime:
+                return False
+            stored_rev = _INDEXED_FILE_REVISIONS.get(resolved)
+            if stored_rev is not None:
+                current_rev = _compute_workspace_revision(working_dir)
+                if current_rev != stored_rev:
+                    return False
+            return True
     except Exception:
         return False
 
 
 def _mark_indexed(working_dir: str) -> None:
-    """Record that working_dir has been indexed at its current mtime."""
+    """Record that working_dir has been indexed at its current mtime and per-file revision."""
     try:
         resolved = str(os.path.realpath(working_dir))
         with _INDEXED_DIRS_LOCK:
-            mtime = os.stat(resolved).st_mtime_ns
+            current_mtime = os.stat(resolved).st_mtime_ns
             # Move-to-end (LRU update) if already present, else insert at end
             _INDEXED_DIRS.pop(resolved, None)
-            _INDEXED_DIRS[resolved] = mtime
+            _INDEXED_DIRS[resolved] = current_mtime
+            _INDEXED_FILE_REVISIONS[resolved] = _compute_workspace_revision(working_dir)
             # Evict oldest entry when over capacity
             while len(_INDEXED_DIRS) > _INDEXED_DIRS_MAX:
-                _INDEXED_DIRS.pop(next(iter(_INDEXED_DIRS)))
+                oldest = next(iter(_INDEXED_DIRS))
+                _INDEXED_DIRS.pop(oldest, None)
+                _INDEXED_FILE_REVISIONS.pop(oldest, None)
     except Exception:
         pass
 
@@ -190,9 +221,11 @@ def clear_repo_summary_cache(working_dir: str | None = None) -> None:
     with _REPO_SUMMARY_CACHE_LOCK:
         if working_dir is None:
             _REPO_SUMMARY_CACHE.clear()
+            _INDEXED_FILE_REVISIONS.clear()
             logger.debug("analysis_node: repo summary cache cleared (all entries)")
         else:
             resolved = str(os.path.realpath(working_dir))
+            _INDEXED_FILE_REVISIONS.pop(resolved, None)
             removed = _REPO_SUMMARY_CACHE.pop(resolved, None)
             if removed is not None:
                 logger.debug(

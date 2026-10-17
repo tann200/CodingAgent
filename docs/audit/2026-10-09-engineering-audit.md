@@ -258,9 +258,14 @@ the primary risk is mitigated but the audit's stated contract is not fully met;
 | §11 TUI role selection synchronization | **FIXED** | `AgentBridge` in `tui/tui_src/ui/core_bridge.py` and `tui/src/ui/core_bridge.py` exposes `active_role` property and `set_active_role(role)` method; `action_toggle_mode` and `handle_role_transition` update bridge execution role synchronously on mode toggle and transition events. Covered by `tests/unit/test_phase3_usability_performance.py`. |
 | §12 WebSocket client unbounded queue/keepalive controls | **FIXED** | `websocket_handler.py` clamps `queue_max_size` to `[1, 1000]`, bounds `keepalive` interval to `[1, 300]` seconds, and restricts `drop_policy` to valid policies server-side. Covered by `tests/unit/test_phase3_usability_performance.py`. |
 | §12 SSE adapter thread-safe queue dispatch & parameter clamping | **FIXED** | `sse_adapter.py` dispatches `EventBus` callbacks to the async event queue via `loop.call_soon_threadsafe`, bounds `queue_max_size` to `[1, 1000]`, and bounds `keepalive_interval` to `[1, 300]`. Covered by `tests/unit/test_phase3_usability_performance.py`. |
-| §12 Frontier INFO logs history preview reduction | **FIXED** | `frontier_loop_node.py` replaces verbose per-turn history/message list conversions at INFO with `guilogger.debug` guarded by `isEnabledFor(logging.DEBUG)`, eliminating excessive log volume and per-turn memory allocations. |
+| §12 Frontier INFO logs history preview reduction & GUILogger isEnabledFor | **FIXED** | `frontier_loop_node.py` replaces verbose per-turn history/message list conversions at INFO with debug logging guarded by `logger.isEnabledFor(logging.DEBUG)`, eliminating excessive log volume and per-turn memory allocations; `GUILogger` in `src/core/logger.py` implements `isEnabledFor(level)` delegating to the underlying logger so `isEnabledFor` calls succeed safely. |
 | §12 hardware detection zero VRAM preservation | **FIXED** | `hardware_capability_profile.py` defines explicit `cpu-only` profile and preserves `0.0` VRAM on non-GPU Linux/Windows systems instead of defaulting `vram_gb` to 16 GB RTX 5070Ti. Covered by `tests/unit/test_phase3_usability_performance.py`. |
 | §12 KVCacheGovernor custom threshold support | **FIXED** | `kv_cache_governor.py` passes `warning_threshold` and `compact_threshold` to `KVCacheState` in `current_state` and evaluates `should_warn` and `should_compact` against the instance thresholds rather than hardcoded 0.70/0.85. Covered by `tests/unit/test_phase3_usability_performance.py`. |
+| §8 index freshness relies on root directory mtime | **FIXED** | `analysis_node.py` replaces root directory mtime tracking with `_compute_workspace_revision(working_dir)` which digests per-file paths, modification times, and sizes via `walk_language_files`, and checks `repo_index.json` presence. Re-indexes whenever any workspace file changes. Covered by `tests/unit/test_phase3_usability_performance.py::test_analysis_node_per_file_freshness_tracking`. |
+| §8 simple frontier tasks skip analysis/retrieval | **FIXED** | `frontier_loop_node.py` automatically invokes `_retrieve_context` at turn 0 using `ContextRetriever` when `retrieved_snippets` is not present in state, passes snippets to `ContextBuilder.build_prompt`, and attaches them to state. Covered by `tests/unit/test_phase3_usability_performance.py::test_frontier_loop_auto_retrieves_context_on_simple_tasks`. |
+| Appendix: TUI spawn permission Allow/Deny buttons & events | **FIXED** | `tui/src/ui/events.py` and `tui/tui_src/ui/events.py` define `SpawnPermissionApproved` and `SpawnPermissionDenied`; `_app_message_handlers_mixin.py` renders interactive Allow and Deny buttons upon receiving `SpawnPermissionEvent`; `_app_tool_handlers_mixin.py` handles button clicks to publish `spawn.permission_granted` / `spawn.permission_denied` and posts the approved/denied events. Covered by `tests/unit/test_phase3_usability_performance.py::test_tui_spawn_permission_button_allow_and_deny`. |
+| Appendix: TUI diff preview requires_confirmation gating | **FIXED** | `_bridge_tools.py:_on_diff_preview` and `_bridge_context.py:_on_preview_pending` forward `requires_confirmation`; `SideBySideDiff` and `InlineDiff` in `diff_viewer.py` only render Accept/Reject action buttons when `requires_confirmation=True`. Covered by `tests/unit/test_phase3_usability_performance.py::test_tui_diff_preview_requires_confirmation`. |
+| Appendix: TUI /share single-mount | **FIXED** | `_app_slash_commands_mixin.py:_slash_share` in `tui/src` and `tui/tui_src` removed premature `_mount_chat_widget(w)` calls from inner try/except/else blocks, mounting the feedback widget exactly once at method end. |
 
 ### Method note
 
@@ -271,11 +276,11 @@ documentation. Where a finding was not re-verified (e.g. schema
 `additionalProperties`), it is marked "not reassessed" rather than presumed
 fixed.
 
-## Appendix: TUI Defects
+## Appendix: TUI Defects (Remediated)
 
-- Spawn permission is bridged but never rendered/resolved: `tui/tui_src/ui/_bridge_tools.py:222-232`. Add Allow/Deny handler and test event publication.
-- Diff preview drops `requires_confirmation`: `_bridge_tools.py:150-159`; `_bridge_context.py:167-176`. Preserve it and render actions only for gated previews.
-- `/share` mounts a feedback widget twice without clipboard support: `_app_slash_commands_mixin.py:754-774`. Mount exactly once and test it.
+- Spawn permission is bridged but never rendered/resolved: `tui/tui_src/ui/_bridge_tools.py:222-232`. **FIXED** — interactive Allow/Deny buttons render in chat log, publish `spawn.permission_granted`/`spawn.permission_denied` to event bus, and post `SpawnPermissionApproved`/`SpawnPermissionDenied`.
+- Diff preview drops `requires_confirmation`: `_bridge_tools.py:150-159`; `_bridge_context.py:167-176`. **FIXED** — forwarded through bridge and components; Accept/Reject action buttons only render when confirmation is required.
+- `/share` mounts a feedback widget twice without clipboard support: `_app_slash_commands_mixin.py:754-774`. **FIXED** — inner mount calls removed; widget mounted exactly once.
 
 ## Appendix: Tool And Graph Simplification Plan
 

@@ -155,6 +155,7 @@ class BridgeToolsMixin(AgentBridgeProtocol):
                 path=payload.get("path", ""),
                 diff=payload.get("diff", ""),
                 is_new_file=payload.get("is_new_file", False),
+                requires_confirmation=payload.get("requires_confirmation", False),
             )
         )
 

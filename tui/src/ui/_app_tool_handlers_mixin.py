@@ -29,6 +29,8 @@ from .events import (
     BashDenied,
     PlanApproved,
     PlanRejected,
+    SpawnPermissionApproved,
+    SpawnPermissionDenied,
     ToolPermissionApproved,
     ToolPermissionDenied,
 )
@@ -475,6 +477,7 @@ class AppToolHandlersMixin(AgentAppProtocol):
     async def handle_diff_preview(self: AgentAppProtocol, event) -> None:
         logger.info(f"Diff preview: {event.path}")
         use_inline = self._settings.get("diff_style", "side-by-side") == "inline"
+        requires_conf = bool(getattr(event, "requires_confirmation", False))
         if use_inline:
             from .components import InlineDiff
 
@@ -482,12 +485,14 @@ class AppToolHandlersMixin(AgentAppProtocol):
                 path=event.path,
                 diff=event.diff,
                 is_new_file=event.is_new_file,
+                requires_confirmation=requires_conf,
             )
         else:
             widget = SideBySideDiff(
                 path=event.path,
                 diff=event.diff,
                 is_new_file=event.is_new_file,
+                requires_confirmation=requires_conf,
             )
         await self._mount_chat_widget(widget)
 
@@ -569,6 +574,8 @@ class AppToolHandlersMixin(AgentAppProtocol):
             or btn_id.startswith("btn_bash_deny_")
             or btn_id.startswith("btn_tool_perm_allow_")
             or btn_id.startswith("btn_tool_perm_deny_")
+            or btn_id.startswith("btn_spawn_allow_")
+            or btn_id.startswith("btn_spawn_deny_")
             or btn_id.startswith("btn_doom_allow_")
             or btn_id.startswith("btn_doom_deny_")
         )
@@ -754,6 +761,36 @@ class AppToolHandlersMixin(AgentAppProtocol):
             )
             await self._mount_chat_widget(w)
             self.post_message(ToolPermissionApproved(tool_id=tool_id))
+
+        elif btn_id.startswith("btn_spawn_allow_"):
+            tool_id = btn_id[len("btn_spawn_allow_") :]
+            self._update_perm_badge(-1)
+            self._bridge.publish("spawn.permission_granted", {"tool_id": tool_id})
+            self._bridge.publish("tool.permission_granted", {"tool_id": tool_id})
+            try:
+                self.query_one(f"#spawn_perm_{tool_id}").remove()
+            except Exception:
+                pass
+            w = Static(
+                "[bold #22c55e]✓ Subagent spawn allowed[/]", classes="retry_msg", markup=True
+            )
+            await self._mount_chat_widget(w)
+            self.post_message(SpawnPermissionApproved(tool_id=tool_id))
+
+        elif btn_id.startswith("btn_spawn_deny_"):
+            tool_id = btn_id[len("btn_spawn_deny_") :]
+            self._update_perm_badge(-1)
+            self._bridge.publish("spawn.permission_denied", {"tool_id": tool_id})
+            self._bridge.publish("tool.permission_denied", {"tool_id": tool_id})
+            try:
+                self.query_one(f"#spawn_perm_{tool_id}").remove()
+            except Exception:
+                pass
+            w = Static(
+                "[bold #ff5555]✗ Subagent spawn denied[/]", classes="retry_msg", markup=True
+            )
+            await self._mount_chat_widget(w)
+            self.post_message(SpawnPermissionDenied(tool_id=tool_id))
 
         elif btn_id.startswith("btn_doom_allow_"):
             tid = btn_id[len("btn_doom_allow_") :]
