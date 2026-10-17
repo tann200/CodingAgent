@@ -99,12 +99,19 @@ async def websocket_session_handler(
         qms = int(queue_max_raw) if queue_max_raw is not None else 100
     except Exception:
         qms = 100
-    drop_policy = (qp.get("drop_policy") or _getenv("CODINGAGENT_SSE_DROP_POLICY", "CODING_AGENT_SSE_DROP_POLICY") or "drop_oldest").lower()
+    # Bound queue_max_size server-side to prevent memory exhaustion
+    qms = max(1, min(qms, 1000))
+
+    raw_drop_policy = (qp.get("drop_policy") or _getenv("CODINGAGENT_SSE_DROP_POLICY", "CODING_AGENT_SSE_DROP_POLICY") or "drop_oldest").lower()
+    drop_policy = raw_drop_policy if raw_drop_policy in ("drop_oldest", "drop_new") else "drop_oldest"
+
     keepalive_raw = qp.get("keepalive") or _getenv("CODINGAGENT_SSE_KEEPALIVE", "CODING_AGENT_SSE_KEEPALIVE")
     try:
         keepalive_interval = int(keepalive_raw) if keepalive_raw is not None else 15
     except Exception:
         keepalive_interval = 15
+    # Bound keepalive interval between 1s and 300s server-side
+    keepalive_interval = max(1, min(keepalive_interval, 300))
 
     if admin_token:
         token = extract_admin_token_from_headers(websocket.headers)

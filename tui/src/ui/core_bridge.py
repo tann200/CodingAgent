@@ -238,6 +238,20 @@ class AgentBridge(
         self._active_role: str = "lead_architect"
         self._deferred_init_done: bool = False
 
+    @property
+    def active_role(self) -> str:
+        """Get the active TUI execution role."""
+        return self._active_role
+
+    @active_role.setter
+    def active_role(self, role: str) -> None:
+        """Set the active TUI execution role."""
+        self._active_role = str(role or "lead_architect")
+
+    def set_active_role(self, role: str) -> None:
+        """Set the active TUI execution role."""
+        self._active_role = str(role or "lead_architect")
+
     def _ensure_deferred_init(self) -> None:
         """Run trusted-gated deferred init once per bridge lifetime.
 

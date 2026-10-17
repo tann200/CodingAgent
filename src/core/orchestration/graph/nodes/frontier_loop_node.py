@@ -240,8 +240,8 @@ async def _prepare_turn_messages(
 
         cb = ContextBuilder(working_dir=getattr(orchestrator, "working_dir", None))
 
-        guilogger.info("[frontier_loop_node] turn=%d history_before_prune=%s",
-                       turns_taken, [(m.get("role"), redact_secrets(str(m.get("content", "")))[:300]) for m in history])
+        if guilogger.isEnabledFor(logging.DEBUG):
+            guilogger.debug("[frontier_loop_node] turn=%d history_before_prune=%s", turns_taken, [(m.get("role"), redact_secrets(str(m.get("content", "")))[:100]) for m in history])
         history = prune_tool_outputs(history)
 
         token_budget = get_context_budget(model_tier=model_tier)
@@ -304,11 +304,8 @@ async def _prepare_turn_messages(
                 messages = [{"role": "system", "content": _sys_content}] + messages
 
             messages = _normalize_messages_for_native_tools(messages)
-            guilogger.info(
-                "[frontier_loop_node] turn=%d after_normalization=%s",
-                turns_taken,
-                [(m.get("role"), redact_secrets(str(m.get("content") or m.get("tool_calls") or ""))[:200]) for m in messages],
-            )
+            if guilogger.isEnabledFor(logging.DEBUG):
+                guilogger.debug("[frontier_loop_node] turn=%d after_normalization=%s", turns_taken, [(m.get("role"), redact_secrets(str(m.get("content") or m.get("tool_calls") or ""))[:100]) for m in messages])
         return messages
     except Exception as exc:
         logger.warning("frontier_loop_node: context build failed: %s", exc)
@@ -343,16 +340,9 @@ async def _call_llm_for_turn(
 
     tools_schema = _filter_tools_for_tier(tools_schema, model_tier)
 
-    guilogger.info(
-        "[frontier_loop_node] turn=%d messages_preview=%s",
-        turns_taken,
-        [(m.get("role"), redact_secrets(str(m.get("content") or m.get("tool_calls") or ""))[:300]) for m in messages],
-    )
-    guilogger.info(
-        "[frontier_loop_node] turn=%d messages_has_tool_calls=%s",
-        turns_taken,
-        [bool(m.get("tool_calls")) for m in messages],
-    )
+    if guilogger.isEnabledFor(logging.DEBUG):
+        guilogger.debug("[frontier_loop_node] turn=%d messages_preview=%s", turns_taken, [(m.get("role"), redact_secrets(str(m.get("content") or m.get("tool_calls") or ""))[:100]) for m in messages])
+        guilogger.debug("[frontier_loop_node] turn=%d messages_has_tool_calls=%s", turns_taken, [bool(m.get("tool_calls")) for m in messages])
 
     _llm_timeout: int | None = 120
     try:
@@ -374,16 +364,15 @@ async def _call_llm_for_turn(
         timeout=_llm_timeout,
     )
 
-    guilogger.info(
-        "[frontier_loop_node] turn=%d tools_sent=%d finish_reason=%s tool_calls_len=%s content_len=%s raw_choices=%s raw_response=%s",
-        turns_taken,
-        len(tools_schema),
-        response.get("finish_reason") if isinstance(response, dict) else "n/a",
-        len(response.get("tool_calls") or []) if isinstance(response, dict) else "n/a",
-        len(response.get("content", "") or "") if isinstance(response, dict) else "n/a",
-        str(response.get("choices", []))[:300] if isinstance(response, dict) else "n/a",
-        str({k: v for k, v in response.items() if k not in ("choices", "raw")})[:300] if isinstance(response, dict) else "n/a",
-    )
+    if guilogger.isEnabledFor(logging.DEBUG):
+        guilogger.debug(
+            "[frontier_loop_node] turn=%d tools_sent=%d finish_reason=%s tool_calls_len=%s content_len=%s",
+            turns_taken,
+            len(tools_schema),
+            response.get("finish_reason") if isinstance(response, dict) else "n/a",
+            len(response.get("tool_calls") or []) if isinstance(response, dict) else "n/a",
+            len(response.get("content", "") or "") if isinstance(response, dict) else "n/a",
+        )
 
     content_text = _extract_content_text(response)
 

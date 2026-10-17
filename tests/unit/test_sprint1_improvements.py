@@ -268,6 +268,7 @@ class TestOptionalModuleGracefulDiscovery:
 
         class _Handler(logging.Handler):
             def emit(self, record):
+                record.message = record.getMessage()
                 records.append(record)
 
         logger = logging.getLogger("src.tools._registry")
@@ -283,8 +284,8 @@ class TestOptionalModuleGracefulDiscovery:
             logger.removeHandler(handler)
             logger.setLevel(old_level)
 
-        debug_msgs = [r for r in records if r.levelno == logging.DEBUG and optional_name in r.message]
-        warn_msgs = [r for r in records if r.levelno == logging.WARNING and optional_name in r.message]
+        debug_msgs = [r for r in records if r.levelno == logging.DEBUG and optional_name in r.getMessage()]
+        warn_msgs = [r for r in records if r.levelno == logging.WARNING and optional_name in r.getMessage()]
         assert len(debug_msgs) >= 1, "Expected DEBUG log for optional module import failure"
         assert len(warn_msgs) == 0, f"Unexpected WARNING log: {warn_msgs}"
 
@@ -299,6 +300,7 @@ class TestOptionalModuleGracefulDiscovery:
 
         class _Handler(logging.Handler):
             def emit(self, record):
+                record.message = record.getMessage()
                 records.append(record)
 
         logger = logging.getLogger("src.tools._registry")
@@ -313,7 +315,7 @@ class TestOptionalModuleGracefulDiscovery:
             logger.removeHandler(handler)
             logger.setLevel(old_level)
 
-        warn_msgs = [r for r in records if r.levelno == logging.WARNING and fake_module in r.message]
+        warn_msgs = [r for r in records if r.levelno == logging.WARNING and fake_module in r.getMessage()]
         assert len(warn_msgs) >= 1, "Expected WARNING for non-optional module import failure"
 
 

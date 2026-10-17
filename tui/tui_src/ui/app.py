@@ -699,6 +699,11 @@ class AgentApp(
         self.active_role = new_role
         self._update_role_display(new_role)
         self._update_status_bar()
+        if hasattr(self, "_bridge") and self._bridge is not None:
+            try:
+                self._bridge.set_active_role(new_role)
+            except Exception:
+                pass
         self.notify(f"Switched to {ROLE_LABELS.get(new_role, new_role)}")
 
     def action_toggle_console(self) -> None:

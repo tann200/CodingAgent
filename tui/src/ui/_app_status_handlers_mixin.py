@@ -170,6 +170,11 @@ class AppStatusHandlersMixin(AgentAppProtocol):
         self.active_role = event.to_role
         self._update_role_display(event.to_role)
         self._update_status_bar()
+        if hasattr(self, "_bridge") and self._bridge is not None:
+            try:
+                self._bridge.set_active_role(event.to_role)
+            except Exception:
+                pass
         logger.info(f"Role transition: {event.from_role} → {event.to_role}")
         from .status_bar import ROLE_COLORS, ROLE_LABELS
 

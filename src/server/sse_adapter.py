@@ -35,13 +35,17 @@ class ServerEventBusAdapter:
         drop_policy: str = "drop_oldest",
     ):
         self.event_bus = event_bus
-        self.queue_max_size = int(queue_max_size or 100)
-        self.keepalive_interval = int(keepalive_interval or 15)
-        self.drop_policy = (drop_policy or "drop_oldest").lower()
+        q_val = 100 if queue_max_size is None else int(queue_max_size)
+        self.queue_max_size = max(1, min(q_val, 1000))
+        k_val = 15 if keepalive_interval is None else int(keepalive_interval)
+        self.keepalive_interval = max(1, min(k_val, 300))
+        raw_policy = (drop_policy or "drop_oldest").lower()
+        self.drop_policy = raw_policy if raw_policy in ("drop_oldest", "drop_new") else "drop_oldest"
         self._session_handlers: Dict[str, list] = {}
 
     async def event_generator(self, session_id: str) -> AsyncGenerator[str, None]:
         """Generate SSE events for a given session."""
+        loop = asyncio.get_running_loop()
         connection_id = f"{session_id}:{uuid.uuid4().hex[:8]}"
         event_queue: asyncio.Queue[Optional[tuple]] = asyncio.Queue(
             maxsize=self.queue_max_size
@@ -61,33 +65,32 @@ class ServerEventBusAdapter:
                     payload = {**payload, "session_id": "unknown"}
                 if session_id == "all" or payload.get("session_id") == session_id:
                     policy = getattr(self, "drop_policy", "drop_oldest")
-                    if enqueue_with_drop_policy(
-                        event_queue,
-                        (event_name, payload),
-                        drop_policy=policy,
-                        on_drop=_record_dropped,
-                        on_evict=_record_dropped if policy == "drop_oldest" else None,
-                    ):
-                        return
-                    if policy == "drop_oldest":
-                        logger.warning(
-                            "Event queue full for session %s, dropping event %s",
-                            session_id,
-                            event_name,
-                        )
-                    elif policy == "drop_new":
-                        logger.warning(
-                            "Event queue full for session %s, dropping new event %s",
-                            session_id,
-                            event_name,
-                        )
-                    else:
-                        logger.warning(
-                            "Unknown drop policy '%s' - dropping new event %s for session %s",
-                            policy,
-                            event_name,
-                            session_id,
-                        )
+
+                    def _enqueue() -> None:
+                        if not enqueue_with_drop_policy(
+                            event_queue,
+                            (event_name, payload),
+                            drop_policy=policy,
+                            on_drop=_record_dropped,
+                            on_evict=_record_dropped if policy == "drop_oldest" else None,
+                        ):
+                            if policy == "drop_oldest":
+                                logger.warning(
+                                    "Event queue full for session %s, dropping event %s",
+                                    session_id,
+                                    event_name,
+                                )
+                            elif policy == "drop_new":
+                                logger.warning(
+                                    "Event queue full for session %s, dropping new event %s",
+                                    session_id,
+                                    event_name,
+                                )
+
+                    try:
+                        loop.call_soon_threadsafe(_enqueue)
+                    except RuntimeError:
+                        pass
 
             return handler
 

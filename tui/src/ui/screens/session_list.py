@@ -243,9 +243,16 @@ class SessionListScreen(ModalScreen[None]):
         self._resume_selected()
 
     def _resume_selected(self) -> None:
-        if not self._filtered or self._selected >= len(self._filtered):
+        if not self._filtered:
             return
-        _, data = self._filtered[self._selected]
+        if self._show_new_session and self._selected == 0:
+            self._start_new_session()
+            return
+        _offset = 1 if self._show_new_session else 0
+        idx = self._selected - _offset
+        if idx < 0 or idx >= len(self._filtered):
+            return
+        _, data = self._filtered[idx]
         messages = data.get("messages", [])
         working_dir = data.get("working_dir", "")
         try:
@@ -269,16 +276,23 @@ class SessionListScreen(ModalScreen[None]):
         self.dismiss()
 
     def _delete_selected(self) -> None:
-        if not self._filtered or self._selected >= len(self._filtered):
+        if not self._filtered:
             return
-        path, _ = self._filtered[self._selected]
+        if self._show_new_session and self._selected == 0:
+            return
+        _offset = 1 if self._show_new_session else 0
+        idx = self._selected - _offset
+        if idx < 0 or idx >= len(self._filtered):
+            return
+        path, _ = self._filtered[idx]
         try:
             trash = path.parent / "trash"
             trash.mkdir(exist_ok=True)
             shutil.move(str(path), str(trash / path.name))
-            self._filtered.pop(self._selected)
+            self._filtered.pop(idx)
             self._all_sessions = [(p, d) for p, d in self._all_sessions if p != path]
-            self._selected = min(self._selected, max(0, len(self._filtered) - 1))
+            _max = len(self._filtered) + (1 if self._show_new_session else 0) - 1
+            self._selected = min(self._selected, max(0, _max))
             self._render_list()
             self.app.notify("Session moved to trash.")
         except Exception as exc:
