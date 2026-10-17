@@ -66,6 +66,11 @@ class ConnectionManager:
         if self.db_path is not None:
             return self.db_path
 
+        if self.workdir.is_file() or self.workdir.suffix in (".db", ".sqlite"):
+            self.db_path = self.workdir
+            self._agent_context_dir = self.workdir.parent
+            return self.db_path
+
         ac = self._agent_context_dir
         if ac is not None:
             ac_path = Path(ac)

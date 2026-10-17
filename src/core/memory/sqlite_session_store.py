@@ -469,10 +469,14 @@ class SqliteSessionStore:
     def add_decision(
         self, session_id: str, decision: str, rationale: Optional[str] = None
     ) -> None:
+        from src.core.security.redaction import redact_secrets
+
         sid = session_id or "unknown"
+        clean_decision = redact_secrets(str(decision))
+        clean_rationale = redact_secrets(str(rationale)) if rationale else None
         self._execute_write(
             "INSERT INTO decisions (session_id, decision, rationale) VALUES (?, ?, ?)",
-            (sid, decision, rationale),
+            (sid, clean_decision, clean_rationale),
         )
         # Auto-flush recent decisions to the decisions.json sidecar so callers
         # that expect an immediate on-disk decisions file observe the new
@@ -519,9 +523,13 @@ class SqliteSessionStore:
             context:    Optional surrounding context (e.g. tool args, error message).
             tool:       Optional tool name that produced the error.
         """
+        from src.core.security.redaction import redact_secrets
+
+        clean_summary = redact_secrets(str(summary))
+        clean_context = redact_secrets(str(context)) if context else ""
         self._execute_write(
             "INSERT INTO mistakes (session_id, summary, context, tool) VALUES (?, ?, ?, ?)",
-            (session_id or "unknown", summary, context or "", tool or ""),
+            (session_id or "unknown", clean_summary, clean_context, tool or ""),
         )
 
     def search_mistakes(self, query: str, limit: int = 5) -> List[Dict[str, Any]]:

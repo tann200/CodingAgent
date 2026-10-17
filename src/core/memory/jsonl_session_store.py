@@ -776,13 +776,22 @@ class JsonlSessionStore:
         rationale: Optional[str] = None,
         timestamp: Optional[str] = None,
     ) -> None:
+        from src.core.security.redaction import redact_secrets
+
+        clean_decision = redact_secrets(str(decision)) if isinstance(decision, str) else decision
+        clean_rationale = redact_secrets(str(rationale)) if rationale else None
         self._append(
             session_id,
             {
                 "type": "decision",
-                "decision": decision,
-                "rationale": rationale,
+                "decision": clean_decision,
+                "rationale": clean_rationale,
                 "ts": timestamp or _utc_now(),
+                "provenance": {
+                    "source": "jsonl_session",
+                    "trust_level": "untrusted_reference",
+                    "sanitized": True,
+                },
             },
         )
         # Auto-flush recent decisions to a cross-session sidecar for the
@@ -847,16 +856,29 @@ class JsonlSessionStore:
             # global top-`keep` set can only contain records that are top-`keep`
             # within their own session, so this is exact, not an approximation.
             per_session: List[Dict[str, Any]] = []
+            from src.core.memory.security import scan_memory_content
+            from src.core.security.redaction import redact_secrets
+
             for sid in self.list_sessions():
-                candidates = [
-                    {
-                        "session_id": sid,
-                        "decision": d.get("decision"),
-                        "rationale": d.get("rationale"),
-                        "ts": d.get("ts"),
-                    }
-                    for d in self.iter_decisions(sid)
-                ]
+                candidates = []
+                for d in self.iter_decisions(sid):
+                    dec = str(d.get("decision", "") or "")
+                    rat = str(d.get("rationale", "") or "")
+                    if scan_memory_content(dec) is not None or (rat and scan_memory_content(rat) is not None):
+                        continue
+                    candidates.append(
+                        {
+                            "session_id": sid,
+                            "decision": redact_secrets(dec),
+                            "rationale": redact_secrets(rat) if rat else None,
+                            "ts": d.get("ts"),
+                            "provenance": {
+                                "source": "jsonl_session",
+                                "trust_level": "untrusted_reference",
+                                "sanitized": True,
+                            },
+                        }
+                    )
                 if len(candidates) > keep:
                     candidates.sort(key=lambda x: x.get("ts") or "", reverse=True)
                     candidates = candidates[:keep]
@@ -897,8 +919,30 @@ class JsonlSessionStore:
             data = json.loads(path.read_text(encoding="utf-8"))
             if not isinstance(data, list):
                 return []
-            # Return up to max_entries most recent items
-            return data[: max(0, int(max_entries))]
+            from src.core.memory.security import scan_memory_content
+            from src.core.security.redaction import redact_secrets
+
+            clean_entries = []
+            for item in data:
+                if isinstance(item, dict):
+                    dec = str(item.get("decision", ""))
+                    rat = str(item.get("rationale", "") or "")
+                    if scan_memory_content(dec) is not None or (rat and scan_memory_content(rat) is not None):
+                        continue
+                    entry = dict(item)
+                    entry["decision"] = redact_secrets(dec)
+                    if rat:
+                        entry["rationale"] = redact_secrets(rat)
+                    if "provenance" not in entry:
+                        entry["provenance"] = {
+                            "source": "decisions_sidecar",
+                            "trust_level": "untrusted_reference",
+                            "sanitized": True,
+                        }
+                    clean_entries.append(entry)
+                    if len(clean_entries) >= max(0, int(max_entries)):
+                        break
+            return clean_entries
         except Exception:
             return []
 
@@ -1103,12 +1147,22 @@ class JsonlSessionStore:
         context: Optional[str] = None,
         tool: Optional[str] = None,
     ) -> None:
+        from src.core.security.redaction import redact_secrets
+
+        clean_summary = redact_secrets(str(summary))
+        clean_context = redact_secrets(str(context)) if context else ""
         rec = {
             "type": "mistake",
             "session_id": session_id or "",
-            "summary": summary,
-            "context": context or "",
+            "summary": clean_summary,
+            "context": clean_context,
             "tool": tool or "",
             "ts": _utc_now(),
+            "provenance": {
+                "source": "jsonl_mistakes",
+                "session_id": session_id or "",
+                "trust_level": "untrusted_reference",
+                "sanitized": True,
+            },
         }
         self._append(session_id, rec)

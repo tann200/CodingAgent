@@ -619,15 +619,25 @@ def distill_context(
     if distilled_state and working_dir:
         try:
             from src.core.indexing.vector_store import VectorStore
+            from src.core.memory.security import scan_memory_content
+            from src.core.security.redaction import redact_secrets
 
-            _vs = VectorStore(workdir=str(working_dir))
             _summary_text = (
                 f"Task: {distilled_state.get('current_task', '')}\n"
                 f"State: {distilled_state.get('current_state', '')}\n"
                 f"Next: {distilled_state.get('next_step', '')}"
             )
-            _vs.add_memory(_summary_text, metadata=distilled_state)
-            logger.info("distill_context: summary persisted to VectorStore")
+            if scan_memory_content(_summary_text) is None:
+                _vs = VectorStore(workdir=str(working_dir))
+                _meta = dict(distilled_state)
+                _meta["source"] = "session_distillation"
+                _meta["trust_level"] = "untrusted_reference"
+                _vs.add_memory(redact_secrets(_summary_text), metadata=_meta)
+                logger.info("distill_context: summary persisted to VectorStore")
+            else:
+                logger.warning(
+                    "distill_context: summary contains instruction-bearing or threat patterns — skipping VectorStore persistence"
+                )
         except Exception as _ve:
             logger.warning(
                 f"distill_context: VectorStore persist failed (non-critical): {_ve}"

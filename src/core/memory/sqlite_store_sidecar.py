@@ -10,15 +10,29 @@ from typing import Any, Dict, Iterable, List, Optional
 
 
 def build_decision_records(rows: Iterable[Any]) -> List[Dict[str, Any]]:
-    return [
-        {
-            "session_id": row["session_id"],
-            "decision": row["decision"],
-            "rationale": row["rationale"],
-            "ts": row["created_at"],
-        }
-        for row in rows
-    ]
+    from src.core.memory.security import scan_memory_content
+    from src.core.security.redaction import redact_secrets
+
+    records: List[Dict[str, Any]] = []
+    for row in rows:
+        dec = str(row["decision"] or "")
+        rat = str(row["rationale"] or "") if row["rationale"] else None
+        if scan_memory_content(dec) is not None or (rat and scan_memory_content(rat) is not None):
+            continue
+        records.append(
+            {
+                "session_id": row["session_id"],
+                "decision": redact_secrets(dec),
+                "rationale": redact_secrets(rat) if rat else None,
+                "ts": row["created_at"],
+                "provenance": {
+                    "source": "sqlite_session",
+                    "trust_level": "untrusted_reference",
+                    "sanitized": True,
+                },
+            }
+        )
+    return records
 
 
 def resolve_agent_context_dir(
@@ -111,7 +125,34 @@ def build_write_failure_payload(
 def read_decisions_sidecar(*, path: Path, max_entries: int) -> List[Dict[str, Any]]:
     if not path.exists():
         return []
-    data = json.loads(path.read_text(encoding="utf-8"))
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
     if not isinstance(data, list):
         return []
-    return data[: max(0, int(max_entries))]
+
+    from src.core.memory.security import scan_memory_content
+    from src.core.security.redaction import redact_secrets
+
+    clean_entries: List[Dict[str, Any]] = []
+    for item in data:
+        if isinstance(item, dict):
+            dec = str(item.get("decision", ""))
+            rat = str(item.get("rationale", "") or "")
+            if scan_memory_content(dec) is not None or (rat and scan_memory_content(rat) is not None):
+                continue
+            entry = dict(item)
+            entry["decision"] = redact_secrets(dec)
+            if rat:
+                entry["rationale"] = redact_secrets(rat)
+            if "provenance" not in entry:
+                entry["provenance"] = {
+                    "source": "decisions_sidecar",
+                    "trust_level": "untrusted_reference",
+                    "sanitized": True,
+                }
+            clean_entries.append(entry)
+            if len(clean_entries) >= max(0, int(max_entries)):
+                break
+    return clean_entries

@@ -472,21 +472,47 @@ class VectorStore:
         if not text:
             logger.debug("VectorStore.add_memory: empty text, skipping")
             return
+
+        from src.core.memory.security import scan_memory_content, strip_invisible_chars
+        from src.core.security.redaction import redact_secrets
+
+        # Scan for prompt injection / exfiltration threats at write time
+        threat_err = scan_memory_content(text)
+        if threat_err is not None:
+            logger.warning(
+                "VectorStore.add_memory: rejected instruction-bearing or malicious memory: %s",
+                threat_err,
+            )
+            return
+
+        # Sanitize text at write time: strip invisible chars and redact secrets
+        clean_text = redact_secrets(strip_invisible_chars(text))
+
         import time as _time
 
         rec_id = hashlib.sha256(
-            (text + "|" + str(metadata.get("created_at", ""))).encode()
+            (clean_text + "|" + str(metadata.get("created_at", ""))).encode()
         ).hexdigest()[:16]
+
+        provenance = {
+            "source": metadata.get("source", "session_distillation"),
+            "session_id": metadata.get("session_id", ""),
+            "trust_level": metadata.get("trust_level", "untrusted_reference"),
+            "sanitized": True,
+            "created_at": metadata.get("created_at", _time.time()),
+        }
+
         record: Dict[str, Any] = {
             "id": rec_id,
-            "text": text,
-            "content": text,
+            "text": clean_text,
+            "content": clean_text,
             "metadata": metadata,
+            "provenance": provenance,
             "created_at": _time.time(),
         }
         # Embed the text for semantic recall (real ST model or SHA-256 stub).
         try:
-            record["vector"] = list(self._model.encode([text])[0])
+            record["vector"] = list(self._model.encode([clean_text])[0])
         except Exception:
             pass
 
@@ -500,7 +526,7 @@ class VectorStore:
                     return
             self._append_memory(record)
         logger.info(
-            "VectorStore: persisted memory id=%s (%d chars)", rec_id, len(text)
+            "VectorStore: persisted memory id=%s (%d chars)", rec_id, len(clean_text)
         )
 
     def search_memories(self, query: str, limit: int = 5) -> List[Dict[str, Any]]:
@@ -518,6 +544,11 @@ class VectorStore:
         recs = self._load_memories()
         if not recs:
             return []
+
+        from src.core.memory.security import scan_memory_content
+        from src.core.security.redaction import redact_secrets
+
+        raw_candidates: List[Dict[str, Any]] = []
 
         st = _get_st_model_ready()
         if st is not None:
@@ -541,35 +572,57 @@ class VectorStore:
                     )
                     scored.append((cosine, r))
                 scored.sort(key=lambda t: t[0], reverse=True)
-                results = []
-                for _, r in scored[:limit]:
+                for _, r in scored:
                     out = dict(r)
                     out.pop("vector", None)
-                    results.append(out)
-                logger.debug(
-                    "VectorStore.search_memories(%r) semantic -> %d", query, len(results)
-                )
-                return results
+                    raw_candidates.append(out)
             except Exception as exc:
                 logger.debug(
                     "VectorStore.search_memories: semantic failed (%s), falling back", exc
                 )
-        # --- Token-based fallback ---
-        q = (query or "").lower()
-        tokens = [t for t in re.split(r"[\s_\-/\\]+", q) if t]
-        results = []
-        for r in recs[-limit:]:
+
+        if not raw_candidates:
+            # --- Token-based fallback ---
+            q = (query or "").lower()
+            tokens = [t for t in re.split(r"[\s_\-/\\]+", q) if t]
+            for r in recs[::-1]:
+                text = str(r.get("text") or r.get("content") or "")
+                if not tokens or any(tok in text.lower() for tok in tokens):
+                    out = dict(r)
+                    out.pop("vector", None)
+                    raw_candidates.append(out)
+
+        # Sanitize and filter at retrieval boundary: omit threat/injection items,
+        # redact secrets, and ensure provenance/trust metadata is present.
+        sanitized_results: List[Dict[str, Any]] = []
+        for r in raw_candidates:
             text = str(r.get("text") or r.get("content") or "")
-            if not tokens or any(tok in text.lower() for tok in tokens):
-                out = dict(r)
-                out.pop("vector", None)
-                results.append(out)
-                if len(results) >= limit:
-                    break
+            if scan_memory_content(text) is not None:
+                logger.warning(
+                    "VectorStore.search_memories: omitted instruction-bearing or threat memory id=%s",
+                    r.get("id"),
+                )
+                continue
+            r_clean = dict(r)
+            r_clean["text"] = redact_secrets(text)
+            if "content" in r_clean:
+                r_clean["content"] = redact_secrets(str(r_clean["content"]))
+            if "provenance" not in r_clean:
+                meta = r_clean.get("metadata") or {}
+                r_clean["provenance"] = {
+                    "source": meta.get("source", "session_memory"),
+                    "session_id": meta.get("session_id", ""),
+                    "trust_level": meta.get("trust_level", "untrusted_reference"),
+                    "sanitized": True,
+                }
+            sanitized_results.append(r_clean)
+            if len(sanitized_results) >= limit:
+                break
+
         logger.debug(
-            "VectorStore.search_memories(%r) token -> %d", query, len(results)
+            "VectorStore.search_memories(%r) -> %d memories", query, len(sanitized_results)
         )
-        return results
+        return sanitized_results
 
 
 __all__ = ["VectorStore", "get_st_model_async"]

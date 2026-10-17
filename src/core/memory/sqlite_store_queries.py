@@ -180,15 +180,29 @@ def map_child_session_rows(rows: Iterable[Any]) -> List[Dict[str, Any]]:
 
 
 def map_mistake_rows(rows: Iterable[Any]) -> List[Dict[str, Any]]:
-    return [
-        {
-            "summary": row["summary"],
-            "context": row["context"],
-            "tool": row["tool"],
-            "ts": row["created_at"],
-        }
-        for row in rows
-    ]
+    from src.core.memory.security import scan_memory_content
+    from src.core.security.redaction import redact_secrets
+
+    records: List[Dict[str, Any]] = []
+    for row in rows:
+        summary = str(row["summary"] or "")
+        context = str(row["context"] or "")
+        if scan_memory_content(summary) is not None or (context and scan_memory_content(context) is not None):
+            continue
+        records.append(
+            {
+                "summary": redact_secrets(summary),
+                "context": redact_secrets(context) if context else "",
+                "tool": row["tool"],
+                "ts": row["created_at"],
+                "provenance": {
+                    "source": "sqlite_mistakes",
+                    "trust_level": "untrusted_reference",
+                    "sanitized": True,
+                },
+            }
+        )
+    return records
 
 
 def build_fts_mistake_query(query: str, *, max_tokens: int = 20) -> str:

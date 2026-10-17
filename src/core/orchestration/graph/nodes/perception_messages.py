@@ -1,5 +1,8 @@
+import logging
 from pathlib import Path
 from typing import Any, Mapping
+
+logger = logging.getLogger(__name__)
 
 try:
     from src.core.inference.provider_context import get_context_budget
@@ -82,17 +85,31 @@ def _build_perception_messages(
             if session_store and hasattr(session_store, "read_recent_decisions"):
                 recent = session_store.read_recent_decisions(max_entries=5)
                 if recent:
-                    decision_lines = "\n".join(
-                        f"- {decision.get('decision', '')} ({decision.get('created_at', '')})"
-                        for decision in recent
-                    )
-                    messages[0] = {
-                        **messages[0],
-                        "content": (
-                            f"## Recent task decisions (cross-session memory)\n{decision_lines}\n\n"
-                            + messages[0]["content"]
-                        ),
-                    }
+                    from src.core.memory.security import scan_memory_content
+                    from src.core.security.redaction import redact_secrets
+
+                    sanitized_decisions = []
+                    for decision in recent:
+                        dec_text = str(decision.get("decision", ""))
+                        if scan_memory_content(dec_text) is not None:
+                            logger.warning(
+                                "perception_messages: omitted untrusted/malicious decision from prompt"
+                            )
+                            continue
+                        clean_dec = redact_secrets(dec_text)
+                        ts = decision.get("created_at") or decision.get("ts") or ""
+                        ts_str = f" ({ts})" if ts else ""
+                        sanitized_decisions.append(f"- {clean_dec}{ts_str}")
+
+                    if sanitized_decisions:
+                        decision_lines = "\n".join(sanitized_decisions)
+                        messages[0] = {
+                            **messages[0],
+                            "content": (
+                                f"## Recent task decisions (cross-session memory, reference only, untrusted)\n{decision_lines}\n\n"
+                                + messages[0]["content"]
+                            ),
+                        }
     except Exception:
         pass
 

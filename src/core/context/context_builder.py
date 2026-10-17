@@ -467,12 +467,30 @@ class ContextBuilder:
             results = store.search_mistakes(query, limit=limit)
             if not results:
                 return None
-            lines = ["Past mistakes to avoid (retrieved by similarity):"]
+            lines = ["Past mistakes to avoid (reference only, untrusted):"]
             for r in results:
+                summary_text = str(r.get("summary") or "")
+                context_text = str(r.get("context") or "")
+                try:
+                    from src.core.memory.security import scan_memory_content
+
+                    if (
+                        scan_memory_content(summary_text) is not None
+                        or scan_memory_content(context_text) is not None
+                    ):
+                        logger.warning(
+                            "context_builder: omitted untrusted/malicious mistake entry"
+                        )
+                        continue
+                except Exception:
+                    pass
+
                 tool_tag = f" [{r['tool']}]" if r.get("tool") else ""
-                lines.append(f"- {r['summary']}{tool_tag}")
-                if r.get("context"):
-                    lines.append(f"  context: {str(r['context'])[:200]}")
+                lines.append(f"- {redact_secrets(summary_text)}{tool_tag}")
+                if context_text:
+                    lines.append(f"  context: {redact_secrets(context_text[:200])}")
+            if len(lines) <= 1:
+                return None
             return "\n".join(lines)
         except Exception:
             return None
