@@ -182,3 +182,50 @@ async def test_websocket_parameters_clamping():
     # maxsize must be clamped to 1000, not 999999
     assert created_queues[0] == 1000
 
+
+def test_hardware_detection_cpu_only_preserves_zero_vram():
+    from unittest.mock import patch
+    from src.core.inference.hardware_capability_profile import detect_hardware
+
+    with (
+        patch("platform.system", return_value="Linux"),
+        patch("src.core.inference.hardware_capability_profile._detect_vram_nvidia", return_value=0.0),
+        patch("src.core.inference.hardware_capability_profile._detect_vram_metal", return_value=0.0),
+        patch("src.core.inference.hardware_capability_profile._detect_ram", return_value=32.0),
+        patch("src.core.inference.hardware_capability_profile._detect_cpu_cores", return_value=(8, 16)),
+    ):
+        profile = detect_hardware()
+        assert profile.vram_gb == 0.0
+        assert profile.supports_gpu_offload is False
+        assert profile.ram_gb == 32.0
+        assert profile.name == "detected-cpu-only"
+
+
+def test_kv_cache_governor_custom_thresholds():
+    from src.core.inference.kv_cache_governor import CompactionAction, KVCacheGovernor
+
+    governor = KVCacheGovernor(
+        max_vram_gb=16.0,
+        model_weights_gb=6.0,
+        kv_per_token_mb=1.0,
+        overhead_gb=0.0,
+        warning_threshold=0.50,
+        compact_threshold=0.60,
+    )
+    # max_kv_cache_gb = 10.0, max_tokens = (10.0 * 1024 / 1.0) * 1000 = 10,240,000
+
+    # Test at 55% tokens (between 0.50 and 0.60)
+    tokens_55 = int(governor.max_tokens * 0.55)
+    state = governor.on_context_update(tokens_55)
+    assert state.should_warn is True
+    assert state.should_compact is False
+    assert state.action == CompactionAction.WARNING
+
+    # Test at 65% tokens (above compact_threshold 0.60, but below legacy 0.85)
+    tokens_65 = int(governor.max_tokens * 0.65)
+    state2 = governor.on_context_update(tokens_65)
+    assert state2.should_warn is True
+    assert state2.should_compact is True
+    assert state2.action == CompactionAction.COMPACT
+
+

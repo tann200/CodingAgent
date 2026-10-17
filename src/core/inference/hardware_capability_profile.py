@@ -122,6 +122,14 @@ HARDWARE_PROFILES: dict[str, HardwareProfile] = {
         supports_gpu_offload=False,
         os="cloud",
     ),
+    "cpu-only": HardwareProfile(
+        name="cpu-only",
+        vram_gb=0.0,
+        ram_gb=16.0,
+        cpu_cores=4,
+        supports_gpu_offload=False,
+        os="linux",
+    ),
 }
 
 
@@ -344,10 +352,28 @@ def detect_hardware() -> HardwareProfile:
     if vram_gb == 0 and ram_gb == 0:
         return HARDWARE_PROFILES["cloud"]
 
-    # Find best match by VRAM
+    if vram_gb <= 0:
+        base = HARDWARE_PROFILES.get("cpu-only", HARDWARE_PROFILES["cloud"])
+        detected = HardwareProfile(
+            name=f"detected-{base.name}",
+            vram_gb=0.0,
+            ram_gb=ram_gb or base.ram_gb,
+            cpu_cores=cores or base.cpu_cores,
+            cpu_threads=threads or base.cpu_threads,
+            gpu_bandwidth_gbps=None,
+            supports_gpu_offload=False,
+            os=os_name,
+        )
+        logger.info(
+            f"Detected hardware: 0.0GB VRAM (CPU-only), "
+            f"{detected.ram_gb:.1f}GB RAM, {detected.cpu_cores} cores"
+        )
+        return detected
+
+    # Find best match by VRAM for GPU systems
     best_match = "rtx5070ti-16g"  # Default
     for name, profile in HARDWARE_PROFILES.items():
-        if name == "auto" or name == "cloud":
+        if name in ("auto", "cloud", "cpu-only"):
             continue
         if abs(profile.vram_gb - vram_gb) < 2:
             best_match = name
@@ -357,12 +383,12 @@ def detect_hardware() -> HardwareProfile:
     base = HARDWARE_PROFILES.get(best_match, HARDWARE_PROFILES["rtx5070ti-16g"])
     detected = HardwareProfile(
         name=f"detected-{base.name}",
-        vram_gb=vram_gb or base.vram_gb,
+        vram_gb=vram_gb,
         ram_gb=ram_gb or base.ram_gb,
         cpu_cores=cores or base.cpu_cores,
         cpu_threads=threads or base.cpu_threads,
         gpu_bandwidth_gbps=base.gpu_bandwidth_gbps,
-        supports_gpu_offload=vram_gb > 0,
+        supports_gpu_offload=True,
         os=os_name,
     )
 

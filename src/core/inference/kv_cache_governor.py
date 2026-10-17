@@ -29,6 +29,8 @@ class KVCacheState:
     max_tokens: int
     kv_cache_gb: float
     max_kv_cache_gb: float
+    warning_threshold: float = 0.70
+    compact_threshold: float = 0.85
 
     @property
     def usage_ratio(self) -> float:
@@ -44,11 +46,11 @@ class KVCacheState:
 
     @property
     def should_warn(self) -> bool:
-        return self.usage_ratio >= 0.70 or self.vram_usage_ratio >= 0.70
+        return self.usage_ratio >= self.warning_threshold or self.vram_usage_ratio >= self.warning_threshold
 
     @property
     def should_compact(self) -> bool:
-        return self.usage_ratio >= 0.85 or self.vram_usage_ratio >= 0.85
+        return self.usage_ratio >= self.compact_threshold or self.vram_usage_ratio >= self.compact_threshold
 
     @property
     def action(self) -> CompactionAction:
@@ -112,6 +114,8 @@ class KVCacheGovernor:
             max_tokens=self.max_tokens,
             kv_cache_gb=kv_gb,
             max_kv_cache_gb=self.max_kv_cache_gb,
+            warning_threshold=self.warning_threshold,
+            compact_threshold=self.compact_threshold,
         )
 
     def on_context_update(self, current_tokens: int) -> KVCacheState:

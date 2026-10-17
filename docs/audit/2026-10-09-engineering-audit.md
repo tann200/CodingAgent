@@ -259,6 +259,8 @@ the primary risk is mitigated but the audit's stated contract is not fully met;
 | §12 WebSocket client unbounded queue/keepalive controls | **FIXED** | `websocket_handler.py` clamps `queue_max_size` to `[1, 1000]`, bounds `keepalive` interval to `[1, 300]` seconds, and restricts `drop_policy` to valid policies server-side. Covered by `tests/unit/test_phase3_usability_performance.py`. |
 | §12 SSE adapter thread-safe queue dispatch & parameter clamping | **FIXED** | `sse_adapter.py` dispatches `EventBus` callbacks to the async event queue via `loop.call_soon_threadsafe`, bounds `queue_max_size` to `[1, 1000]`, and bounds `keepalive_interval` to `[1, 300]`. Covered by `tests/unit/test_phase3_usability_performance.py`. |
 | §12 Frontier INFO logs history preview reduction | **FIXED** | `frontier_loop_node.py` replaces verbose per-turn history/message list conversions at INFO with `guilogger.debug` guarded by `isEnabledFor(logging.DEBUG)`, eliminating excessive log volume and per-turn memory allocations. |
+| §12 hardware detection zero VRAM preservation | **FIXED** | `hardware_capability_profile.py` defines explicit `cpu-only` profile and preserves `0.0` VRAM on non-GPU Linux/Windows systems instead of defaulting `vram_gb` to 16 GB RTX 5070Ti. Covered by `tests/unit/test_phase3_usability_performance.py`. |
+| §12 KVCacheGovernor custom threshold support | **FIXED** | `kv_cache_governor.py` passes `warning_threshold` and `compact_threshold` to `KVCacheState` in `current_state` and evaluates `should_warn` and `should_compact` against the instance thresholds rather than hardcoded 0.70/0.85. Covered by `tests/unit/test_phase3_usability_performance.py`. |
 
 ### Method note
 
