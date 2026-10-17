@@ -674,7 +674,11 @@ def _compile_lite_graph():
         {"verification": "verification", "memory_sync": "memory_sync"},
     )
 
-    workflow.add_edge("verification", "memory_sync")
+    workflow.add_conditional_edges(
+        "verification",
+        _tier_graph_routing.route_verification_lite,
+        {"frontier_loop": "frontier_loop", "memory_sync": "memory_sync"},
+    )
     workflow.add_edge("memory_sync", END)
 
     return workflow.compile(checkpointer=_graph_checkpointer())

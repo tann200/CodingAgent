@@ -18,6 +18,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Dict, List, Mapping, Optional, Set
 
+from src.tools.constants import MODIFYING_TOOLS
+
 
 class TaskType(str, Enum):
     MUTATING = "mutating"
@@ -27,13 +29,14 @@ class TaskType(str, Enum):
 
 _MUTATION_REGEX = re.compile(
     r"\b(?:"
-    r"create|write|edit|modify|update|patch|delete|remove|fix|refactor|implement|add|replace|rename"
-    r")\b.*(?:"
+    r"create|write|edit|modify|update|patch|delete|remove|fix|refactor|implement|add|replace|rename|"
+    r"make|change|set|convert|revert|restore|format|upgrade|downgrade|install|move|wrap|extract|inline"
+    r")\b.*?(?:"
     r"\.(?:py|ts|js|json|md|txt|ya?ml|html|css|sh|rs|go|java|c|cpp)|"
-    r"\b(?:file|code|function|class|method|test|module|endpoint|bug|script|directory|folder|package|repo)\b"
+    r"\b(?:file|files|code|function|class|method|test|tests|module|endpoint|bug|script|directory|folder|package|repo|dependency|dependencies|config|configuration)\b"
     r")|"
-    r"\b(?:fix|resolve)\s+(?:the\s+)?(?:bug|issue|error|failure|test|typo|crash)\b|"
-    r"\b(?:implement|build|develop)\s+(?:a\s+|the\s+)?(?:feature|function|class|endpoint|component|api)\b|"
+    r"\b(?:fix|resolve|repair)\s+(?:the\s+)?(?:bug|issue|error|failure|test|typo|crash)\b|"
+    r"\b(?:implement|build|develop|create)\s+(?:a\s+|the\s+)?(?:feature|function|class|endpoint|component|api|module)\b|"
     r"\b(?:add|insert)\s+(?:a\s+|the\s+)?(?:function|class|method|test|endpoint|import|line)\b",
     re.IGNORECASE | re.DOTALL,
 )
@@ -45,8 +48,14 @@ _READ_ONLY_REGEX = re.compile(
     re.IGNORECASE,
 )
 
+_READ_ONLY_OVERRIDE_REGEX = re.compile(
+    r"^(?:how\s+(?:to|does|do|can)|explain|why\b|what\s+(?:is|are)|describe|summarize|tell\s+me\s+about|walk\s+me\s+through)\b",
+    re.IGNORECASE,
+)
+
 _MODIFYING_TOOL_NAMES = frozenset(
-    {
+    MODIFYING_TOOLS
+    | {
         "write_file",
         "edit_file",
         "create_file",
@@ -55,6 +64,10 @@ _MODIFYING_TOOL_NAMES = frozenset(
         "apply_patch",
         "patch",
         "bash",
+        "run_bash",
+        "execute_bash",
+        "run_command",
+        "execute_command",
     }
 )
 
@@ -87,6 +100,11 @@ def classify_task(
                 return TaskType.MUTATING
 
     cleaned_task = (task or "").strip()
+    if _READ_ONLY_OVERRIDE_REGEX.search(cleaned_task):
+        if _READ_ONLY_REGEX.search(cleaned_task):
+            return TaskType.READ_ONLY
+        return TaskType.INFORMATIONAL
+
     if _MUTATION_REGEX.search(cleaned_task):
         return TaskType.MUTATING
 
@@ -105,6 +123,8 @@ def evaluate_completion_contract(
     affected_files: Optional[List[str]] = None,
     last_result: Optional[Mapping[str, Any]] = None,
     errors: Optional[List[str]] = None,
+    last_tool_name: Optional[str] = None,
+    mutating_tool_calls_count: int = 0,
 ) -> CompletionContractVerdict:
     """Evaluate whether completion criteria are genuinely satisfied by concrete evidence."""
     cleaned_task = (task or "").strip()
@@ -168,12 +188,16 @@ def evaluate_completion_contract(
             )
 
         if not has_modified_files:
-            # Check if last_result was a successful non-file mutation or successful command
-            if last_ok is True or last_status == "ok":
+            # Check if a mutating tool or mutating command was executed and succeeded
+            is_mutating_tool = (
+                mutating_tool_calls_count > 0
+                or (last_tool_name is not None and last_tool_name in _MODIFYING_TOOL_NAMES)
+            )
+            if is_mutating_tool and (last_ok is True or last_status == "ok"):
                 return CompletionContractVerdict(
                     is_complete=True,
                     task_type=TaskType.MUTATING,
-                    evidence={"last_result": last_result},
+                    evidence={"last_result": last_result, "last_tool_name": last_tool_name},
                 )
             return CompletionContractVerdict(
                 is_complete=False,

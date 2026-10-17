@@ -313,3 +313,117 @@ class TestEvaluationNodeEvidenceCheck:
 
         res = await evaluation_node(state, config={})
         assert res["evaluation_result"] != "complete"
+
+
+class TestSpec04RegressionContracts:
+    def test_mutating_task_with_readonly_tool_and_ok_status_is_rejected(self):
+        verdict = evaluate_completion_contract(
+            task="Fix the bug in app.py",
+            content_text="I inspected app.py and fixed the bug.",
+            tool_calls_count=1,
+            last_tool_name="read_file",
+            last_result={"ok": True, "status": "ok"},
+            modified_files=[],
+        )
+        assert verdict.is_complete is False
+        assert verdict.task_type == TaskType.MUTATING
+        assert verdict.error_code == "unverified_mutation_missing"
+
+    @pytest.mark.asyncio
+    async def test_frontier_loop_node_failure_in_earlier_turn_is_not_lost(self, tmp_path):
+        orch = SimpleNamespace(
+            working_dir=str(tmp_path),
+            _session_modified_files={str(tmp_path / "a.py")},
+            msg_mgr=SimpleNamespace(messages=[]),
+            plan_mode=None,
+            _current_task_id="t-1",
+            _tool_executor=None,
+        )
+        state = {
+            "task": "Fix the bug in a.py",
+            "history": [],
+            "tool_call_count": 2,
+            "max_tool_calls": 10,
+            "model_tier": "frontier",
+            "working_dir": str(tmp_path),
+            "errors": [],
+        }
+
+        # Model emits no tool calls on turn 1
+        with (
+            patch(
+                "src.core.orchestration.graph.nodes.frontier_loop_node._resolve_orchestrator",
+                return_value=orch,
+            ),
+            patch(
+                "src.core.orchestration.graph.nodes.frontier_loop_node.call_model",
+                new=AsyncMock(return_value={"choices": [{"message": {"content": "All done!"}}]}),
+            ),
+        ):
+            # Pass last_result as an error from an earlier turn
+            state_with_failed_prior_turn = {
+                **state,
+                "last_result": {"ok": False, "error": "pytest failed with exit code 1"},
+            }
+            result = await frontier_loop_node(state_with_failed_prior_turn, config={})
+
+        assert result["last_result"]["ok"] is False
+        assert result["last_result"]["error_code"] == "mutation_failed"
+
+    def test_informational_task_with_repo_context_classified_as_informational(self):
+        user_task = "How does login work?"
+        assert classify_task(user_task) == TaskType.INFORMATIONAL
+
+    def test_lite_routing_with_write_then_read_routes_to_verification(self):
+        state = {
+            "last_tool_name": "read_file",
+            "modified_files": ["/workspace/a.py"],
+            "last_result": {"ok": True, "status": "ok"},
+        }
+        assert route_frontier_loop_exit_lite(state) == "verification"
+
+    def test_route_verification_lite(self):
+        from src.core.orchestration.graph.tier_graph_routing import route_verification_lite
+
+        # Passes -> memory_sync
+        assert route_verification_lite({"verification_passed": True}) == "memory_sync"
+        # Fails and debug_attempts < max -> frontier_loop
+        assert route_verification_lite({"verification_passed": False, "debug_attempts": 0, "max_debug_attempts": 1}) == "frontier_loop"
+        # Fails and attempts exhausted -> memory_sync
+        assert route_verification_lite({"verification_passed": False, "debug_attempts": 1, "max_debug_attempts": 1}) == "memory_sync"
+
+    @pytest.mark.asyncio
+    async def test_informational_task_with_analyst_findings_in_frontier_loop_node(self, tmp_path):
+        orch = SimpleNamespace(
+            working_dir=str(tmp_path),
+            _session_modified_files=set(),
+            msg_mgr=SimpleNamespace(messages=[]),
+            plan_mode=None,
+            _current_task_id="t-2",
+            _tool_executor=None,
+        )
+        state = {
+            "task": "How does login work?",
+            "analyst_findings": "You need to edit auth.py to fix the bug in update_login",
+            "history": [],
+            "tool_call_count": 0,
+            "max_tool_calls": 10,
+            "model_tier": "frontier",
+            "working_dir": str(tmp_path),
+            "errors": [],
+        }
+
+        with (
+            patch(
+                "src.core.orchestration.graph.nodes.frontier_loop_node._resolve_orchestrator",
+                return_value=orch,
+            ),
+            patch(
+                "src.core.orchestration.graph.nodes.frontier_loop_node.call_model",
+                new=AsyncMock(return_value={"choices": [{"message": {"content": "Login works via OAuth."}}]}),
+            ),
+        ):
+            result = await frontier_loop_node(state, config={})
+
+        assert result["last_result"]["ok"] is True
+        assert result["last_result"]["task_type"] == TaskType.INFORMATIONAL.value

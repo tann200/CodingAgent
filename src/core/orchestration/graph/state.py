@@ -476,6 +476,7 @@ class _AgentStateSpec(TypedDict, total=False):
 
     # ── Control flow ───────────────────────────────────────────────────────
     cancel_event: Any | None
+    modified_files: List[str] | None
 
 
 # Expose the TypedDict as AgentState at runtime so tests that inspect

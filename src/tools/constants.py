@@ -36,7 +36,17 @@ WRITE_TOOLS_REQUIRING_READ: frozenset[str] = frozenset(
 #: loop-guard flavor of :data:`WRITE_TOOLS_REQUIRING_READ`; computed from the
 #: same base so the two can never drift — F-88 keeps ``multiedit`` here).
 MODIFYING_TOOLS: frozenset[str] = frozenset(
-    WRITE_TOOLS_REQUIRING_READ | {"multiedit"}
+    WRITE_TOOLS_REQUIRING_READ
+    | {
+        "multiedit",
+        "edit_code_block",
+        "create_directory",
+        "format_file",
+        "lsp_rename",
+        "git_commit",
+        "git_stash",
+        "git_restore",
+    }
 )
 
 #: Extra tools blocked in dry-run mode beyond those that require a read:

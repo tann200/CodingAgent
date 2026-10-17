@@ -145,14 +145,26 @@ async def _evaluation_node_impl(state: StateLike, config: RunnableConfig) -> Dic
             or all(step.get("completed", False) for step in current_plan)
         )
 
+    ignored_errors = {
+        "canceled",
+        "orchestrator not found",
+        "orchestrator not found in config",
+    }
+    if contract.is_complete:
+        ignored_errors.update(
+            {
+                "unverified_text_only_completion",
+                "unverified_mutation_missing",
+                "inline_verification_failed",
+                "empty_response",
+                "unverified_completion",
+            }
+        )
+
     critical_errors = [
         e
         for e in errors
-        if e not in [
-            "canceled",
-            "orchestrator not found",
-            "orchestrator not found in config",
-        ]
+        if e not in ignored_errors
     ]
 
     # Read debug_attempts to gate debug routing — this prevents an unbounded loop.

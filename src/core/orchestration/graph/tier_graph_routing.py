@@ -190,6 +190,23 @@ def route_frontier_loop_exit_lite(
     return "memory_sync"
 
 
+def route_verification_lite(
+    state: Mapping[str, Any],
+) -> Literal["frontier_loop", "memory_sync"]:
+    """Route after verification in the lite graph.
+
+    If verification passed, proceed to memory_sync.
+    If verification failed, route back to frontier_loop up to max_debug_attempts
+    (default 1 for lite); once attempts are exhausted, route to memory_sync.
+    """
+    if state.get("verification_passed") is False:
+        debug_attempts = int(state.get("debug_attempts") or 0)
+        max_debug_attempts = int(state.get("max_debug_attempts") or 1)
+        if debug_attempts < max_debug_attempts:
+            return "frontier_loop"
+    return "memory_sync"
+
+
 
 def _known_tiers() -> frozenset[str]:
     """Tiers accepted by ``select_tier_graph_cache_key``.

@@ -38,6 +38,9 @@ from src.core.orchestration.graph.nodes.frontier_toolcalls import (
 from src.core.orchestration.graph.nodes.frontier_messages import (
     _extract_tool_call_from_text, _normalize_messages_for_native_tools,
 )
+from src.core.orchestration.graph.completion_contract import (
+    _MODIFYING_TOOL_NAMES,
+)
 from src.core.orchestration.graph.nodes.frontier_completion import (
     build_exit_result,
     handle_no_tool_completion,
@@ -592,6 +595,7 @@ async def frontier_loop_node(
     """
     orchestrator = _resolve_orchestrator(state, config)
     task: str = state.get("task") or ""
+    raw_user_task: str = task
     history: list = list(state.get("history") or [])
     tool_call_count: int = int(state.get("tool_call_count") or 0)
     max_tool_calls: int = int(state.get("max_tool_calls") or 30)
@@ -659,6 +663,7 @@ async def frontier_loop_node(
     # the agent breaks keeps being re-reported until it is repaired.
     iv_baselines: dict = {}
     turns_taken: int = 0
+    mutating_tool_calls_count: int = 0
     replan_required: str | None = None
 
     logger.info(
@@ -780,20 +785,35 @@ async def frontier_loop_node(
         # ---- No tool calls → evaluate completion contract --------------
         if not tool_calls:
             last_result = handle_no_tool_completion(
-                task=task,
+                task=raw_user_task,
                 content_text=content_text,
                 turns_taken=turns_taken,
                 tool_call_count=tool_call_count,
                 state=state,
                 orchestrator=orchestrator,
+                last_result=last_result,
+                last_tool_name=last_tool_name,
+                mutating_tool_calls_count=mutating_tool_calls_count,
+                errors=errors,
             )
             if not last_result.get("ok"):
                 errors = list(errors) + [last_result.get("error_code") or "unverified_completion"]
+            else:
+                _TRANSIENT_CONTRACT_ERRORS = {
+                    "unverified_text_only_completion",
+                    "unverified_mutation_missing",
+                    "inline_verification_failed",
+                    "empty_response",
+                    "unverified_completion",
+                }
+                errors = [e for e in errors if e not in _TRANSIENT_CONTRACT_ERRORS]
             break
 
         # ---- Plan-mode gate ----------------------------------------------
         for tc in tool_calls:
             tool_name, tool_args = _normalize_tool_call(tc)
+            if tool_name and tool_name in _MODIFYING_TOOL_NAMES:
+                mutating_tool_calls_count += 1
             if tool_name and orchestrator and _plan_mode_blocks(orchestrator, tool_name):
                 logger.info(
                     "frontier_loop_node: plan-mode blocked '%s' — suspending for approval",
@@ -803,6 +823,7 @@ async def frontier_loop_node(
                     "history": history,
                     "tool_call_count": tool_call_count,
                     "last_result": last_result,
+                    "last_tool_name": last_tool_name,
                     "errors": errors,
                     "_frontier_loop_turns": turns_taken,
                     "awaiting_plan_approval": True,
@@ -876,6 +897,12 @@ async def frontier_loop_node(
     except Exception:
         pass
 
+    mod_files = set()
+    if orchestrator and hasattr(orchestrator, "_session_modified_files") and orchestrator._session_modified_files:
+        mod_files.update(orchestrator._session_modified_files)
+    if state.get("modified_files"):
+        mod_files.update(state.get("modified_files"))
+
     result = build_exit_result(
         history=history,
         tool_call_count=tool_call_count,
@@ -885,7 +912,9 @@ async def frontier_loop_node(
         turns_taken=turns_taken,
         inline_verifications=inline_verifications,
         replan_required=replan_required,
+        modified_files=sorted(mod_files),
     )
+    result["modified_files"] = sorted(mod_files)
     # P3.3: record that the loop covered its plan, and persist the record so the
     # next turn re-plans instead of re-running work that is already done.
     _progress = plan_completion_patch(state, result)

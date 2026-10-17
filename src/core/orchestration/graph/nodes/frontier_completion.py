@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, Dict, Mapping, Optional
+from typing import Any, Dict, List, Mapping, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +103,7 @@ def build_exit_result(
     turns_taken: int,
     inline_verifications: Any,
     replan_required: Optional[str],
+    modified_files: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """Assemble the frontier loop's exit result.
 
@@ -119,6 +120,7 @@ def build_exit_result(
         "errors": errors,
         "_frontier_loop_turns": turns_taken,
         "awaiting_plan_approval": False,
+        "modified_files": modified_files or [],
     }
     if inline_verifications:
         failures = [r for r in inline_verifications if r.get("status") == "failed"]
@@ -233,6 +235,10 @@ def handle_no_tool_completion(
     tool_call_count: int,
     state: Mapping[str, Any],
     orchestrator: Any,
+    last_result: Optional[Mapping[str, Any]] = None,
+    last_tool_name: Optional[str] = None,
+    mutating_tool_calls_count: int = 0,
+    errors: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """Evaluate completion contracts when the model returns no tool calls."""
     from src.core.orchestration.graph.completion_contract import evaluate_completion_contract
@@ -246,6 +252,9 @@ def handle_no_tool_completion(
     if state.get("_session_modified_files"):
         modified_files.update(state.get("_session_modified_files"))
 
+    effective_last_result = last_result if last_result is not None else state.get("last_result")
+    effective_errors = errors if errors is not None else state.get("errors")
+
     contract = evaluate_completion_contract(
         task=task,
         content_text=content_text,
@@ -253,8 +262,10 @@ def handle_no_tool_completion(
         modified_files=modified_files,
         current_plan=state.get("current_plan"),
         affected_files=state.get("affected_files"),
-        last_result=state.get("last_result"),
-        errors=state.get("errors"),
+        last_result=effective_last_result,
+        errors=effective_errors,
+        last_tool_name=last_tool_name or state.get("last_tool_name"),
+        mutating_tool_calls_count=mutating_tool_calls_count,
     )
 
     if contract.is_complete:
