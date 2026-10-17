@@ -325,3 +325,54 @@ class TestWrapperSemantics:
         )())
         assert validate_node_result("custom", {"a": 1}) == []
         assert validate_node_result("custom", {"b": 1})[0].reason == "unknown_key"
+
+
+class TestSpec05StrictStateSchemas:
+    @pytest.mark.asyncio
+    async def test_frontier_loop_retrieved_snippets_and_modified_files_pass_strict_validation(self, monkeypatch, tmp_path):
+        from unittest.mock import AsyncMock, patch
+        from types import SimpleNamespace
+        from src.core.orchestration.graph.nodes.frontier_loop_node import frontier_loop_node
+        from src.core.orchestration.graph.builder import _validated
+
+        monkeypatch.setenv("CODINGAGENT_STATE_SCHEMAS_STRICT", "1")
+
+        orch = SimpleNamespace(
+            working_dir=str(tmp_path),
+            _session_modified_files={str(tmp_path / "hello.py")},
+            msg_mgr=SimpleNamespace(messages=[]),
+            plan_mode=None,
+            _current_task_id="t-spec-05",
+            _tool_executor=None,
+        )
+
+        state = {
+            "task": "Explain architecture",
+            "history": [],
+            "tool_call_count": 0,
+            "max_tool_calls": 5,
+            "model_tier": "frontier",
+            "working_dir": str(tmp_path),
+            "retrieved_snippets": [{"file": "arch.md", "snippet": "System architecture overview"}],
+            "modified_files": [str(tmp_path / "hello.py")],
+            "errors": [],
+        }
+
+        wrapped_node = _validated("frontier_loop", frontier_loop_node)
+
+        with (
+            patch(
+                "src.core.orchestration.graph.nodes.frontier_loop_node._resolve_orchestrator",
+                return_value=orch,
+            ),
+            patch(
+                "src.core.orchestration.graph.nodes.frontier_loop_node.call_model",
+                new=AsyncMock(return_value={"choices": [{"message": {"content": "Architecture is modular."}}]}),
+            ),
+        ):
+            # Must succeed without NodeResultViolation
+            result = await wrapped_node(state, {})
+
+        assert result["last_result"]["ok"] is True
+        assert result.get("retrieved_snippets") == [{"file": "arch.md", "snippet": "System architecture overview"}]
+        assert result.get("modified_files") == [str(tmp_path / "hello.py")]

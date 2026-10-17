@@ -101,8 +101,8 @@ _USE_FULL_GRAPH = False
 # When True, an invalid node->state transition raises NodeResultViolation
 # (fail-closed).  Scenario tests exercise both modes.
 _STATE_SCHEMAS_STRICT = os.environ.get(
-    "CODINGAGENT_STATE_SCHEMAS_STRICT", ""
-).lower() in ("1", "true", "yes")
+    "CODINGAGENT_STATE_SCHEMAS_STRICT", "1"
+).strip().lower() not in ("0", "false", "no")
 
 
 def _validated(name: str, fn):

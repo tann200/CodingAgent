@@ -261,6 +261,7 @@ _NODE_OUTPUT_SCHEMAS: dict[str, NodeOutputSchema] = {
                 "_should_distill",
                 "plan_completed",
                 "modified_files",
+                "retrieved_snippets",
             }
         ),
         core_keys=("history", "tool_call_count", "errors", "awaiting_plan_approval"),

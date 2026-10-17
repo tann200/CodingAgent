@@ -477,6 +477,8 @@ class _AgentStateSpec(TypedDict, total=False):
     # ── Control flow ───────────────────────────────────────────────────────
     cancel_event: Any | None
     modified_files: List[str] | None
+    retrieved_snippets: List[Dict[str, Any]] | None
+    _frontier_loop_turns: int | None
 
 
 # Expose the TypedDict as AgentState at runtime so tests that inspect
