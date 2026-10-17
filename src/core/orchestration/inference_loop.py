@@ -118,6 +118,13 @@ def run_agent_once_impl(
     # UX-3: Reset dry-run intercept log for this run.
     orch._dry_run_log = []  # type: ignore[attr-defined]
 
+    # Check if configuration has changed on disk and reload if pending
+    try:
+        if hasattr(_config_loader_module, "reload_if_pending"):
+            _config_loader_module.reload_if_pending()
+    except Exception:
+        pass
+
     # Check if canceled before starting
     if cancel_event and hasattr(cancel_event, "is_set") and cancel_event.is_set():
         return {

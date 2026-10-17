@@ -155,18 +155,13 @@ def load_merged_config(working_dir: Optional[Path] = None) -> Dict[str, Any]:
     if skipped:
         logger.debug(f"Skipped missing config paths: {skipped}")
 
-    # Apply hot-reload update if enabled
+    # Apply hot-reload state sync if enabled
     if _get_config_reloader is not None:
         try:
-            # get_config_reloader takes the current merged config as its
-            # initial state and returns an object with changed()/load().
-            reloader = _get_config_reloader(result)
-            try:
-                if reloader.changed():
-                    logger.debug("Hot-reload detected config change, applying")
-                    result = reloader.load()
-            except Exception as exc:
-                logger.debug("config_loader: hot-reload interface error: %s", exc)
+            reloader = _get_config_reloader(initial_load=False, workdir=working_dir)
+            # When load_merged_config runs, fresh config has just been loaded.
+            # Reset the changed flag so redundant reloads are not triggered.
+            reloader.clear_changed()
         except Exception as e:
             logger.debug(f"Hot-reload not available: {e}")
 
@@ -191,9 +186,45 @@ def get_global_config() -> Dict[str, Any]:
     """Get the global merged configuration with thread-safe caching."""
     global _cached_config, _last_load_time
     with _config_lock:
-        if _cached_config is None or time.time() - _last_load_time > 300:  # 5 min cache
+        reloader = None
+        if _get_config_reloader is not None:
+            try:
+                reloader = _get_config_reloader(initial_load=False)
+            except Exception:
+                pass
+
+        force_reload = reloader is not None and reloader.changed()
+        if _cached_config is None or (time.time() - _last_load_time > 300) or force_reload:
             _cached_config = load_merged_config()
             _last_load_time = time.time()
+            if reloader is not None:
+                reloader.clear_changed()
+        return _cached_config
+
+
+def reload_if_pending() -> Optional[Dict[str, Any]]:
+    """Check if any configuration file changed and reload global cache if so."""
+    if _get_config_reloader is not None:
+        try:
+            reloader = _get_config_reloader(initial_load=False)
+            if reloader.changed():
+                return get_global_config()
+        except Exception:
+            pass
+    return None
+
+
+def reload_config(working_dir: Optional[Path] = None) -> Dict[str, Any]:
+    """Force an immediate reload of the global configuration cache."""
+    global _cached_config, _last_load_time
+    with _config_lock:
+        _cached_config = load_merged_config(working_dir=working_dir)
+        _last_load_time = time.time()
+        if _get_config_reloader is not None:
+            try:
+                _get_config_reloader(initial_load=False, workdir=working_dir).clear_changed()
+            except Exception:
+                pass
         return _cached_config
 
 

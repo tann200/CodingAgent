@@ -84,7 +84,7 @@ def _parse_args(argv: list) -> argparse.Namespace:
 
     subparsers = parser.add_subparsers(dest="subcommand")
 
-    # TASK-10: `init` subcommand — scaffold .agent/ workspace
+    # TASK-10: `init` subcommand — scaffold .codingAgent/ workspace
     init_parser = subparsers.add_parser(
         "init",
         help="Scaffold a .codingAgent/ workspace directory with config, hooks, and AGENT.md.",

@@ -43,7 +43,7 @@ def _write_permission_audit(
     decision: str,
     reason: str = "",
 ) -> None:
-    """PERM-W5: Append a permission audit entry to .agent/permission_audit.jsonl.
+    """PERM-W5: Append a permission audit entry to .codingAgent/permission_audit.jsonl.
 
     Each line is a JSON object with fields: timestamp, tool, decision, reason.
     The file is rotated when it exceeds MAX_AUDIT_FILE_SIZE (1 MiB) to prevent

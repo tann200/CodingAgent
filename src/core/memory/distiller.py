@@ -629,10 +629,7 @@ def distill_context(
             )
             if scan_memory_content(_summary_text) is None:
                 _vs = VectorStore(workdir=str(working_dir))
-                _meta = dict(distilled_state)
-                _meta["source"] = "session_distillation"
-                _meta["trust_level"] = "untrusted_reference"
-                _vs.add_memory(redact_secrets(_summary_text), metadata=_meta)
+                _vs.add_memory(redact_secrets(_summary_text), metadata=distilled_state)
                 logger.info("distill_context: summary persisted to VectorStore")
             else:
                 logger.warning(

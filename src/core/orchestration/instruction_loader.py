@@ -24,7 +24,13 @@ from typing import List, Optional
 logger = logging.getLogger(__name__)
 
 # --- project instructions config ---
-_INSTRUCTION_FILENAMES = ["AGENT.md", ".agent/instructions.md", "AGENT.local.md"]
+_INSTRUCTION_FILENAMES = [
+    "AGENT.md",
+    ".codingAgent/AGENT.md",
+    ".codingAgent/instructions.md",
+    "AGENT.local.md",
+    ".agent/instructions.md",
+]
 _PER_FILE_CHAR_CAP = 4_000
 _TOTAL_CHAR_CAP = 12_000
 

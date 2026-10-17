@@ -1,63 +1,60 @@
 """Configuration hot-reload utilities for CodingAgent.
 
 This module provides functionality to automatically detect changes to
-`config.user.yaml` and reload configuration hierarchies dynamically.
+configuration files (user config, workspace configs, providers, tools) and
+reload configuration hierarchies dynamically.
 Inspired by OpenClaw's ConfigReloader implementation.
 
 Features:
-- File system watching for config.user.yaml modifications
-- Deep merging of configuration layers
+- File system watching for active configuration file modifications
+- Re-entrancy protection against recursive loading during initialization
 - Thread-safe configuration updates
-- Dirty flag for easy reloading integration
+- Dirty flag and callback invocation for hot reloading
 """
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import threading
 import time
-from typing import Any, Dict, Callable, Optional
 from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional, Set
 
-# Avoid importing project path helpers at module import time to prevent
-# import cycles during tests; import lazily in _get_config_path().
+logger = logging.getLogger(__name__)
 
 # Global singleton
 _config_reloader: Optional["ConfigReloader"] = None
 
 
-def get_config_reloader(initial_load: bool = True) -> "ConfigReloader":
+def get_config_reloader(
+    initial_load: bool = False,
+    workdir: Optional[Path] = None,
+) -> "ConfigReloader":
     """Get the singleton ConfigReloader instance."""
     global _config_reloader
     if _config_reloader is None:
-        _config_reloader = ConfigReloader(initial_load=initial_load)
+        _config_reloader = ConfigReloader(initial_load=initial_load, workdir=workdir)
     return _config_reloader
 
 
 class ConfigReloader:
     """Manages automatic reloading of configuration files.
 
-    This component watches for changes to configuration files and triggers
-    a reload when changes are detected. It's designed to work with the
-    existing Config system but adds automatic hot-reload capabilities.
-
-    Example usage:
-
-    # In your main configuration loop:
-    reloader = get_config_reloader()
-    last_hash = None
-
-    while True:
-        if reloader.changed():
-            config = load_merged_config()  # Your existing load function
-            print("Configuration reloaded!")
-        time.sleep(1)
+    This component watches for changes to configuration files in the active
+    hierarchy and triggers a reload when changes are detected.
     """
 
-    def __init__(self, initial_load: bool = True) -> None:
+    def __init__(
+        self,
+        initial_load: bool = False,
+        workdir: Optional[Path] = None,
+    ) -> None:
+        self._workdir = Path(workdir) if workdir else None
         self._initialized = False
         self._pending_reload = False
-        self._last_hash: Optional[str] = None
+        self._is_loading = False
+        self._last_hashes: Dict[str, str] = {}
 
         # Setup watcher thread
         self._watcher_thread: Optional[threading.Thread] = None
@@ -68,6 +65,9 @@ class ConfigReloader:
 
         if initial_load:
             self.load()
+        else:
+            self._last_hashes = self._calculate_hashes()
+            self._initialized = True
 
         # Start watcher thread
         self._setup_watcher()
@@ -76,45 +76,115 @@ class ConfigReloader:
         """Set up the file watcher thread."""
         if self._watcher_thread is None:
             self._watcher_thread = threading.Thread(
-                target=self._watcher_loop, daemon=True
+                target=self._watcher_loop, daemon=True, name="config-reloader"
             )
             self._watcher_thread.start()
 
+    def _get_watched_paths(self) -> List[Path]:
+        """Collect all active configuration files across user and workspace layers."""
+        paths: List[Path] = []
+        try:
+            from src.core.paths import get_user_config_path
+
+            user_cfg = get_user_config_path()
+            if user_cfg.exists():
+                paths.append(user_cfg)
+        except Exception:
+            pass
+
+        try:
+            ac_dir: Optional[Path] = None
+            if self._workdir:
+                try:
+                    from src.tools.tools_config import agent_context_path
+
+                    ac_dir = agent_context_path(self._workdir)
+                except Exception:
+                    ac_dir = self._workdir / ".codingAgent"
+            else:
+                try:
+                    from src.core.paths import get_agent_context_dir
+
+                    ac_dir = get_agent_context_dir()
+                except Exception:
+                    pass
+
+            if ac_dir and ac_dir.exists():
+                for name in (
+                    "config.json",
+                    "config.local.json",
+                    "providers.json",
+                    "tools.json",
+                    "config.user.yaml",
+                ):
+                    p = ac_dir / name
+                    if p.exists() and p not in paths:
+                        paths.append(p)
+        except Exception as exc:
+            logger.debug("ConfigReloader: failed to resolve workspace paths: %s", exc)
+
+        # Fallback to config.user.yaml in cwd if present
+        cwd_yaml = Path.cwd() / "config.user.yaml"
+        if cwd_yaml.exists() and cwd_yaml not in paths:
+            paths.append(cwd_yaml)
+
+        return paths
+
+    def _calculate_hashes(self) -> Dict[str, str]:
+        """Calculate content hashes for all currently existing watched files."""
+        hashes: Dict[str, str] = {}
+        for p in self._get_watched_paths():
+            try:
+                if p.is_file():
+                    content = p.read_bytes()
+                    hashes[str(p.resolve())] = hashlib.sha256(content).hexdigest()[:16]
+            except Exception:
+                pass
+        return hashes
+
+    def _check_for_changes(self) -> Set[str]:
+        """Compare current watched file hashes to _last_hashes and return changed paths."""
+        new_hashes = self._calculate_hashes()
+        changed: Set[str] = set()
+
+        for p_str, h in new_hashes.items():
+            if self._last_hashes.get(p_str) != h:
+                changed.add(p_str)
+
+        for p_str in self._last_hashes:
+            if p_str not in new_hashes:
+                changed.add(p_str)
+
+        if changed:
+            self._last_hashes = new_hashes
+        return changed
+
     def _watcher_loop(self) -> None:
         """Main watcher loop that monitors config file changes."""
-        config_path = self._get_config_path()
+        if not self._last_hashes:
+            self._last_hashes = self._calculate_hashes()
 
-        if not config_path.exists():
-            logging.warning(f"Config file not found: {config_path}")
-            return
-
-        # Initial hash calculation
-        if self._initialized:
-            self._last_hash = self._file_hash(config_path)
-            return
-
-        # Main watcher loop
         while not self._stop_watcher.is_set():
-            time.sleep(1)
-
             try:
+                time.sleep(1)
                 if self._stop_watcher.is_set():
                     break
 
-                if self._file_hash_changed(config_path):
-                    logging.info("Configuration file changed - triggering reload")
+                changed = self._check_for_changes()
+                if changed:
+                    logger.info(
+                        "Configuration file(s) changed: %s - triggering reload", changed
+                    )
                     self._pending_reload = True
+                    self._invoke_callbacks(changed)
 
             except Exception as e:
-                logging.debug(f"Error in config watcher: {e}")
+                logger.debug("Error in config watcher: %s", e)
 
     def _file_hash(self, path: Path) -> str:
         """Calculate a stable hash of the config file content."""
         try:
-            import hashlib
-
             content = path.read_text(encoding="utf-8") if path.exists() else ""
-            # Use SHA-256 for stable hashing across process restarts
             return hashlib.sha256(content.encode("utf-8")).hexdigest()[:16]
         except Exception:
             return "0"
@@ -122,90 +192,74 @@ class ConfigReloader:
     def _file_hash_changed(self, path: Path) -> bool:
         """Check if the config file hash has changed since last check."""
         current_hash = self._file_hash(path)
-        if current_hash and current_hash != self._last_hash:
-            self._last_hash = current_hash
+        last_hash = self._last_hashes.get(str(path.resolve()))
+        if current_hash and current_hash != last_hash:
+            self._last_hashes[str(path.resolve())] = current_hash
             return True
         return False
 
     def changed(self) -> bool:
-        """Check if configuration has changed pending reload.
+        """Check if configuration has changed pending reload."""
+        if self._pending_reload:
+            return True
+        # Synchronous fallback check
+        changed = self._check_for_changes()
+        if changed:
+            self._pending_reload = True
+            return True
+        return False
 
-        Returns:
-            True if reload is pending or file has changed since last load
-        """
-        return self._pending_reload
+    def clear_changed(self) -> None:
+        """Reset the pending reload flag."""
+        self._pending_reload = False
 
     def load(self) -> Dict[str, Any]:
-        """Force a reload of the configuration.
-
-        Returns:
-            The loaded merged configuration dictionary
-        """
+        """Force a reload of the configuration with re-entrancy protection."""
+        if self._is_loading:
+            return {}
+        self._is_loading = True
         try:
             from src.core.config_loader import load_merged_config
 
-            config = load_merged_config()
+            config = load_merged_config(working_dir=self._workdir)
 
             if self._initialized:
-                logging.info("Configuration loaded successfully")
+                logger.info("Configuration loaded successfully")
             else:
-                logging.info("Configuration initialized and loaded successfully")
+                logger.info("Configuration initialized and loaded successfully")
 
             self._initialized = True
             self._pending_reload = False
-            self._last_hash = self._file_hash(self._get_config_path())
+            self._last_hashes = self._calculate_hashes()
 
-            # Notify callbacks that an explicit load occurred. Pass None to
-            # indicate this was a forced load (not triggered by watcher), and
-            # let callbacks decide how to handle it.
             self._invoke_callbacks(None)
-
             return config
-
         except Exception as e:
-            logging.error(f"Failed to load configuration: {e}")
+            logger.error("Failed to load configuration: %s", e)
             raise
+        finally:
+            self._is_loading = False
 
-    def reload_if_pending(self) -> None:
+    def reload_if_pending(self) -> Optional[Dict[str, Any]]:
         """Check if reload is pending and execute it if so."""
-        if self._pending_reload:
-            logging.info("Executing pending configuration reload")
+        if self.changed():
+            logger.info("Executing pending configuration reload")
             try:
-                from src.core.config_loader import load_merged_config
-
-                # Optionally store the loaded config somewhere if needed
-                load_merged_config()
-                logging.debug("Configuration reloaded successfully")
-                # On a watcher-driven reload we call callbacks with the path
-                # set that triggered this reload (if we have one stored).
-                # We'll pass an empty set here (the watcher loop's _on_change
-                # will call callbacks with the explicit changed paths).
-                self._invoke_callbacks(set())
+                cfg = self.load()
+                return cfg
             except Exception as e:
-                logging.error(f"Failed to reload configuration: {e}")
+                logger.error("Failed to reload configuration: %s", e)
             finally:
-                self._pending_reload = False  # Reset pending flag
+                self._pending_reload = False
+        return None
 
     def add_callback(self, fn: Callable[[Optional[set]], None]) -> None:
-        """Register a callback invoked when configuration is reloaded.
-
-        The callback receives an Optional[set] of changed paths. ``None``
-        indicates an explicit programmatic load (ConfigReloader.load()).
-        """
+        """Register a callback invoked when configuration is reloaded."""
         try:
-            if callable(fn):
+            if callable(fn) and fn not in self._callbacks:
                 self._callbacks.append(fn)
         except Exception as e:
-            try:
-                import traceback
-
-                logging.debug(
-                    "config_reloader: failed to add callback: %s\n%s",
-                    e,
-                    traceback.format_exc(),
-                )
-            except Exception:
-                logging.debug("config_reloader: failed to add callback")
+            logger.debug("config_reloader: failed to add callback: %s", e)
 
     def remove_callback(self, fn: Callable[[Optional[set]], None]) -> None:
         """Remove a previously registered callback (no-op if absent)."""
@@ -213,16 +267,7 @@ class ConfigReloader:
             if fn in self._callbacks:
                 self._callbacks.remove(fn)
         except Exception as e:
-            try:
-                import traceback
-
-                logging.debug(
-                    "config_reloader: failed to remove callback: %s\n%s",
-                    e,
-                    traceback.format_exc(),
-                )
-            except Exception:
-                logging.debug("config_reloader: failed to remove callback")
+            logger.debug("config_reloader: failed to remove callback: %s", e)
 
     def _invoke_callbacks(self, changed_paths: Optional[set]) -> None:
         """Safely invoke registered callbacks with the provided changed_paths."""
@@ -230,7 +275,7 @@ class ConfigReloader:
             try:
                 cb(changed_paths)
             except Exception as exc:
-                logging.warning("config_reloader: callback error: %s", exc)
+                logger.warning("config_reloader: callback error: %s", exc)
 
     def stop(self) -> None:
         """Stop the watcher thread."""
@@ -239,13 +284,13 @@ class ConfigReloader:
             self._watcher_thread.join(timeout=2.0)
 
     def _get_config_path(self) -> Path:
-        """Get the active configuration file path."""
+        """Get primary configuration file path (legacy compatibility helper)."""
+        watched = self._get_watched_paths()
+        if watched:
+            return watched[0]
         try:
-            # Lazily import path helper to avoid import cycles during tests
             from src.core.paths import get_agent_context_dir
 
-            # This mimics Config's get_agent_config_path behavior
-            return get_agent_context_dir() / "config.user.yaml"
+            return get_agent_context_dir() / "config.json"
         except Exception:
-            # Fallback to standard location
-            return Path.cwd() / "config.user.yaml"
+            return Path.cwd() / ".codingAgent" / "config.json"
