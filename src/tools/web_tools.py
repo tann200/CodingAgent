@@ -23,7 +23,50 @@ _BLOCKED_HOSTS = re.compile(
 )
 
 _MAX_WEB_PAGE_CHARS = 100_000
+_MAX_WEB_PAGE_BYTES = 512 * 1024
 _MAX_REDIRECTS = 5
+
+
+def _is_ip_blocked(ip_str: str) -> bool:
+    """Return True if ip_str is a loopback, private, link-local, reserved,
+    cloud metadata, or IPv6-transition address pointing to internal networks.
+    """
+    if not ip_str or not isinstance(ip_str, str):
+        return False
+    clean = ip_str.strip().strip("[]")
+    try:
+        addr = ipaddress.ip_address(clean)
+    except ValueError:
+        try:
+            if clean.isdigit():
+                addr = ipaddress.ip_address(int(clean))
+            else:
+                return False
+        except (ValueError, OverflowError):
+            return False
+
+    # Unwrap IPv6 transition addresses
+    if isinstance(addr, ipaddress.IPv6Address):
+        if addr.ipv4_mapped is not None:
+            return _is_ip_blocked(str(addr.ipv4_mapped))
+        if addr.sixtofour is not None:
+            return _is_ip_blocked(str(addr.sixtofour))
+        if addr.teredo is not None:
+            server_ip, client_ip = addr.teredo
+            return _is_ip_blocked(str(server_ip)) or _is_ip_blocked(str(client_ip))
+
+    if (
+        addr.is_loopback
+        or addr.is_private
+        or addr.is_link_local
+        or addr.is_reserved
+        or addr.is_unspecified
+        or addr.is_multicast
+        or str(addr) == "169.254.169.254"
+    ):
+        return True
+
+    return False
 
 
 def _strip_html(html: str) -> str:
@@ -50,26 +93,15 @@ def _is_url_blocked(url: str) -> bool:
             return True
         host = parsed.hostname or ""
         # Check raw hostname pattern first (fast path)
-        if _BLOCKED_HOSTS.match(host):
+        if _BLOCKED_HOSTS.match(host) or _is_ip_blocked(host):
             return True
         # Resolve all IP addresses for the hostname and check each one
         try:
             infos = socket.getaddrinfo(host, None)
             for info in infos:
                 addr_str = info[4][0]
-                try:
-                    addr = ipaddress.ip_address(addr_str)
-                    if (
-                        addr.is_loopback
-                        or addr.is_private
-                        or addr.is_link_local
-                        or addr.is_reserved
-                        or addr.is_unspecified
-                        or addr.is_multicast
-                    ):
-                        return True
-                except ValueError:
-                    return True  # Unparseable address — block it
+                if _is_ip_blocked(addr_str):
+                    return True
         except (socket.gaierror, OSError):
             # DNS resolution failed — allow the request to proceed and let
             # the HTTP client handle the connection error naturally
@@ -129,7 +161,7 @@ def _is_ssrf_blocked(url: str) -> None:
             return
 
         # Fast-path textual checks
-        if _BLOCKED_HOSTS.match(host):
+        if _BLOCKED_HOSTS.match(host) or _is_ip_blocked(host):
             raise PermissionError(f"URL '{url}' points to a blocked host: {host}")
 
         # Resolve addresses and check each one. Only catch socket.gaierror
@@ -168,14 +200,7 @@ def _is_ssrf_blocked(url: str) -> None:
                 if allowed_by_net:
                     continue
 
-                if (
-                    addr.is_loopback
-                    or addr.is_private
-                    or addr.is_link_local
-                    or addr.is_reserved
-                    or addr.is_unspecified
-                    or addr.is_multicast
-                ):
+                if _is_ip_blocked(addr_str):
                     raise PermissionError(
                         f"URL '{url}' resolved to internal address {addr_str}"
                     )
@@ -283,7 +308,7 @@ def _fetch_with_validated_redirects(url: str, timeout: int = 15) -> Tuple[Any, s
     blocked or the redirect chain exceeds ``_MAX_REDIRECTS``.
     """
     import requests
-    from urllib.parse import urljoin
+    from urllib.parse import urljoin, urlparse
 
     current = url
     for _ in range(_MAX_REDIRECTS + 1):
@@ -294,12 +319,45 @@ def _fetch_with_validated_redirects(url: str, timeout: int = 15) -> Tuple[Any, s
             headers={"User-Agent": "Mozilla/5.0"},
             timeout=timeout,
             allow_redirects=False,
+            stream=True,
         )
+
+        # Inspect connected socket peer address immediately to prevent DNS rebinding TOCTOU
+        raw = getattr(resp, "raw", None)
+        underlying_conn = getattr(raw, "_connection", None) or getattr(raw, "connection", None)
+        sock = getattr(underlying_conn, "sock", None) if underlying_conn else None
+        if sock and hasattr(sock, "getpeername"):
+            peer = None
+            try:
+                peer = sock.getpeername()
+            except (socket.error, OSError):
+                pass
+            if peer and isinstance(peer, (tuple, list)) and len(peer) > 0:
+                peer_ip = str(peer[0])
+                if _is_ip_blocked(peer_ip):
+                    if hasattr(resp, "close"):
+                        resp.close()
+                    raise PermissionError(
+                        f"Connected peer IP '{peer_ip}' for URL '{current}' is blocked (SSRF DNS rebinding protection)"
+                    )
+
         if resp.status_code in (301, 302, 303, 307, 308):
             location = resp.headers.get("Location")
             if not location:
                 return resp, current
-            current = urljoin(current, location)
+            next_url = urljoin(current, location)
+            # Block HTTPS -> HTTP downgrade across redirect hops
+            parsed_current = urlparse(current)
+            parsed_next = urlparse(next_url)
+            if parsed_current.scheme == "https" and parsed_next.scheme == "http":
+                if hasattr(resp, "close"):
+                    resp.close()
+                raise PermissionError(
+                    f"Insecure redirect downgrade from HTTPS to HTTP blocked: {current} -> {next_url}"
+                )
+            if hasattr(resp, "close"):
+                resp.close()
+            current = next_url
             continue
         return resp, current
     raise PermissionError(
@@ -336,11 +394,34 @@ def read_web_page(url: str, format: str = "markdown") -> Dict[str, Any]:
     if format not in ("markdown", "text"):
         return {"status": "error", "error": "format must be 'markdown' or 'text'"}
 
+    resp = None
     try:
         resp, final_url = _fetch_with_validated_redirects(url)
         resp.raise_for_status()
 
-        content = resp.text
+        # Read response body in chunks up to _MAX_WEB_PAGE_BYTES
+        chunks: List[str] = []
+        total_bytes = 0
+        stream_capped = False
+        if hasattr(resp, "iter_content"):
+            for raw_chunk in resp.iter_content(chunk_size=8192, decode_unicode=False):
+                if not raw_chunk:
+                    continue
+                if isinstance(raw_chunk, bytes):
+                    total_bytes += len(raw_chunk)
+                    encoding = getattr(resp, "encoding", None) or "utf-8"
+                    chunk_str = raw_chunk.decode(encoding, errors="replace")
+                else:
+                    chunk_str = str(raw_chunk)
+                    total_bytes += len(chunk_str.encode("utf-8", errors="replace"))
+                chunks.append(chunk_str)
+                if total_bytes >= _MAX_WEB_PAGE_BYTES:
+                    stream_capped = True
+                    break
+            content = "".join(chunks)
+        else:
+            content = getattr(resp, "text", "")
+
         if format == "markdown":
             try:
                 import html2text  # type: ignore[import]
@@ -354,7 +435,7 @@ def read_web_page(url: str, format: str = "markdown") -> Dict[str, Any]:
         else:
             content = _strip_html(content)
 
-        truncated = len(content) > _MAX_WEB_PAGE_CHARS
+        truncated = len(content) > _MAX_WEB_PAGE_CHARS or stream_capped
         return {
             "status": "ok",
             "url": final_url,
@@ -365,3 +446,9 @@ def read_web_page(url: str, format: str = "markdown") -> Dict[str, Any]:
         return {"status": "error", "error": str(pe)}
     except Exception as e:
         return {"status": "error", "error": f"read_web_page failed: {e}"}
+    finally:
+        if resp is not None and hasattr(resp, "close"):
+            try:
+                resp.close()
+            except Exception:
+                pass
