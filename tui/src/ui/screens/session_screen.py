@@ -213,7 +213,7 @@ class SessionScreen(SessionListScreen):
         """Execute the git revert after user confirmation."""
         import re
 
-        if not re.match(r"^[0-9a-fA-F]{7,40}$", git_sha):
+        if not re.match(r"^[0-9a-fA-F]{4,40}$", git_sha):
             self.app.notify("Invalid git SHA format.", severity="error")
             return
         try:

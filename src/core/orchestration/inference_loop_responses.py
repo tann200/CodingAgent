@@ -156,6 +156,14 @@ def _build_success_response(orch: Any, final_state: Dict[str, Any]) -> Dict[str,
         else "Graph execution completed"
     )
 
+    if final_state is not None:
+        final_state["_session_modified_files"] = list(getattr(orch, "_session_modified_files", []))
+    try:
+        if hasattr(orch, "_publish_session_changes"):
+            orch._publish_session_changes()
+    except Exception:
+        pass
+
     history = final_state.get("history", []) if final_state else []
     work_summary = _generate_work_summary(final_state, history)
     assistant_message = _build_assistant_message(

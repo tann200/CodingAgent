@@ -405,6 +405,62 @@ def _build_bwrap_args(
 # ---------------------------------------------------------------------------
 
 
+def _run_subprocess_proc_group(
+    cmd: List[str], cwd: Path | str, timeout: float, **kwargs
+) -> subprocess.CompletedProcess:
+    """Run command in a new process group so timeouts/cancellations kill all child processes."""
+    if os.name == "posix" and "start_new_session" not in kwargs:
+        kwargs["start_new_session"] = True
+
+    try:
+        from src.core.orchestration.tool_execution_pipeline import (
+            register_current_tool_process,
+            unregister_current_tool_process,
+        )
+    except Exception:
+        register_current_tool_process = None
+        unregister_current_tool_process = None
+
+    proc = subprocess.Popen(cmd, cwd=str(cwd), **kwargs)
+
+    if register_current_tool_process:
+        try:
+            register_current_tool_process(proc)
+        except Exception:
+            pass
+
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+        retcode = proc.poll()
+        return subprocess.CompletedProcess(proc.args, retcode, stdout, stderr)
+    except subprocess.TimeoutExpired as exc:
+        if os.name == "posix":
+            try:
+                import signal
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+        else:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+        try:
+            proc.wait(timeout=2.0)
+        except Exception:
+            pass
+        raise exc
+    finally:
+        if unregister_current_tool_process:
+            try:
+                unregister_current_tool_process(proc)
+            except Exception:
+                pass
+
+
 def run_sandboxed(
     cmd: List[str],
     cwd: Path,

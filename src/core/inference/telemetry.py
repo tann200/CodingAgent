@@ -34,9 +34,10 @@ def publish_model_response(
     }
     if extra:
         try:
-            payload["extra"] = extra
+            from src.core.security.redaction import redact_data
+            payload["extra"] = redact_data(extra)
         except Exception:
-            pass
+            payload["extra"] = extra
     try:
         if event_bus and hasattr(event_bus, "publish"):
             event_bus.publish_typed(ModelResponse(**payload))
@@ -90,9 +91,14 @@ def with_telemetry(func: Callable) -> Callable:
             return response
         except Exception as e:
             latency = time.time() - start_time
+            try:
+                from src.core.security.redaction import redact_secrets
+                safe_err = redact_secrets(str(e))
+            except Exception:
+                safe_err = str(e)
             logger.error(
                 f"[LLM Telemetry] FAILED provider={getattr(self, 'name', 'unknown')} "
-                f"latency={latency:.2f}s error={str(e)}"
+                f"latency={latency:.2f}s error={safe_err}"
             )
             raise e
 

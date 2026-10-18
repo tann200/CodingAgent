@@ -5,7 +5,7 @@ from src.tools.todo_tools import _lock_path, _FileLock
 import socket
 
 
-def test_stale_lock_reclaim(tmp_path):
+def test_stale_lock_reclaim(tmp_path, monkeypatch):
     """Simulate a stale lockfile and ensure the fallback lock reclaims it.
 
     The test creates a lockfile with a PID that does not exist and then
@@ -22,7 +22,7 @@ def test_stale_lock_reclaim(tmp_path):
     fake_pid = 999999
     ts = int(time.time() * 1000)
     # Ensure reclaim TTL is zero for the test so reclaim is attempted immediately
-    os.environ["TODO_LOCK_STALE_TTL"] = "0"
+    monkeypatch.setenv("TODO_LOCK_STALE_TTL", "0")
     hostname = socket.gethostname()
     lockp.write_text(f"pid={fake_pid} ts={ts} host={hostname}\n")
 

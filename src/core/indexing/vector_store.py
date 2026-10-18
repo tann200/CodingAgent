@@ -275,7 +275,12 @@ class VectorStore:
         base = agent_context_path(Path(self.workdir)) / "vectorstore"
         base.mkdir(parents=True, exist_ok=True)
 
-        symbols = repo_index.get("symbols", []) if isinstance(repo_index, dict) else []
+        if isinstance(repo_index, list):
+            symbols = repo_index
+        elif isinstance(repo_index, dict):
+            symbols = repo_index.get("symbols", [])
+        else:
+            symbols = []
         try:
             symbols_path = base / "symbols.json"
             symbols_path.parent.mkdir(parents=True, exist_ok=True)

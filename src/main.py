@@ -916,6 +916,16 @@ def main(argv: Optional[list] = None) -> int:
         except Exception as _pm_err:
             _dbg(f"[src.main] Could not apply permission mode: {_pm_err}")
 
+    # Phase 2: Apply --thinking flag
+    if getattr(args, "thinking", None):
+        try:
+            from src.core.inference.thinking_utils import set_active_thinking_mode
+
+            set_active_thinking_mode(args.thinking)
+            _dbg(f"[src.main] Thinking mode set to: {args.thinking}")
+        except Exception as _th_err:
+            _dbg(f"[src.main] Could not apply thinking mode: {_th_err}")
+
     # CP-13 / CP-8: Load per-project settings and apply them (project settings
     # are applied *before* CLI flags so that CLI always wins).
     try:

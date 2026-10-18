@@ -124,8 +124,9 @@ def _export_session(args: Any) -> int:
             fd, tmp = tempfile.mkstemp(dir=str(out_path.parent), suffix=".tmp")
             try:
                 with os.fdopen(fd, "w", encoding="utf-8") as f:
-                    os.fsync(f.fileno())
                     f.write(md_text)
+                    f.flush()
+                    os.fsync(f.fileno())
                 os.replace(tmp, str(out_path))
             finally:
                 try:

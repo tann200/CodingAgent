@@ -9,6 +9,8 @@ from __future__ import annotations
 import datetime
 import json
 import logging
+import os
+import signal
 import threading
 import uuid
 from contextvars import ContextVar
@@ -35,6 +37,51 @@ _ACTIVE_AGENT_CTX: ContextVar[Optional[Any]] = ContextVar(
 )
 _THREAD_CANCEL_EVENTS: Dict[int, threading.Event] = {}
 _THREAD_CANCEL_LOCK: threading.Lock = threading.Lock()
+_CURRENT_TOOL_PROCESS: ContextVar[Optional[Any]] = ContextVar(
+    "_CURRENT_TOOL_PROCESS", default=None
+)
+_THREAD_TOOL_PROCESSES: Dict[int, Any] = {}
+_THREAD_PROCESS_LOCK: threading.Lock = threading.Lock()
+
+
+def register_current_tool_process(proc: Any) -> None:
+    """Register an active subprocess for the current tool execution so it can be terminated on timeout/cancel."""
+    try:
+        _CURRENT_TOOL_PROCESS.set(proc)
+    except Exception:
+        pass
+    tid = threading.get_ident()
+    with _THREAD_PROCESS_LOCK:
+        _THREAD_TOOL_PROCESSES[tid] = proc
+
+
+def unregister_current_tool_process(proc: Any = None) -> None:
+    """Unregister the active subprocess."""
+    tid = threading.get_ident()
+    with _THREAD_PROCESS_LOCK:
+        _THREAD_TOOL_PROCESSES.pop(tid, None)
+
+
+def _kill_proc_group(proc: Any) -> None:
+    """Kill a process and its process group (os.killpg)."""
+    try:
+        pid = getattr(proc, "pid", None)
+        if pid is not None:
+            try:
+                pgid = os.getpgid(pid)
+                os.killpg(pgid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+    except Exception:
+        pass
 
 
 def is_current_tool_cancelled() -> bool:
@@ -813,6 +860,13 @@ def _dispatch_tool_call(
             except _cf.TimeoutError:
                 cancel_ev.set()
                 future.cancel()
+                with _THREAD_PROCESS_LOCK:
+                    for _tid, _proc in list(_THREAD_TOOL_PROCESSES.items()):
+                        try:
+                            _kill_proc_group(_proc)
+                        except Exception:
+                            pass
+                    _THREAD_TOOL_PROCESSES.clear()
                 raise TimeoutError(
                     f"Tool '{name}' timed out after {timeout_seconds} seconds"
                 )

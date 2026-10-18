@@ -32,16 +32,22 @@ class KVCacheState:
     warning_threshold: float = 0.70
     compact_threshold: float = 0.85
 
+    def __post_init__(self) -> None:
+        self.warning_threshold = max(0.0, min(1.0, float(self.warning_threshold)))
+        self.compact_threshold = max(0.0, min(1.0, float(self.compact_threshold)))
+        if self.warning_threshold > self.compact_threshold:
+            self.warning_threshold = self.compact_threshold
+
     @property
     def usage_ratio(self) -> float:
         if self.max_tokens <= 0:
-            return 0.0
+            return 1.0 if self.max_kv_cache_gb <= 0 else 0.0
         return self.current_tokens / self.max_tokens
 
     @property
     def vram_usage_ratio(self) -> float:
         if self.max_kv_cache_gb <= 0:
-            return 0.0
+            return 1.0 if self.max_tokens <= 0 else 0.0
         return self.kv_cache_gb / self.max_kv_cache_gb
 
     @property
@@ -90,17 +96,30 @@ class KVCacheGovernor:
         overhead_gb: float = 0.5,
         warning_threshold: float = 0.70,
         compact_threshold: float = 0.85,
+        cpu_token_budget: int = 8192,
     ):
-        self.max_vram_gb = max_vram_gb
-        self.model_weights_gb = model_weights_gb
-        self.kv_per_token_mb = kv_per_token_mb
-        self.overhead_gb = overhead_gb
+        self.max_vram_gb = max(0.0, float(max_vram_gb))
+        self.model_weights_gb = float(model_weights_gb)
+        self.kv_per_token_mb = float(kv_per_token_mb)
+        self.overhead_gb = float(overhead_gb)
 
-        self.max_kv_cache_gb = max_vram_gb - model_weights_gb - overhead_gb
-        self.max_tokens = int((self.max_kv_cache_gb * 1024 / kv_per_token_mb) * 1000)
+        if self.max_vram_gb == 0.0:
+            self.max_kv_cache_gb = 0.0
+            self.max_tokens = max(0, int(cpu_token_budget))
+        else:
+            raw_kv = self.max_vram_gb - self.model_weights_gb - self.overhead_gb
+            self.max_kv_cache_gb = max(0.0, raw_kv)
+            if self.max_kv_cache_gb <= 0:
+                self.max_tokens = 0
+            else:
+                self.max_tokens = max(0, int((self.max_kv_cache_gb * 1024 / self.kv_per_token_mb) * 1000))
 
-        self.warning_threshold = warning_threshold
-        self.compact_threshold = compact_threshold
+        warn = max(0.0, min(1.0, float(warning_threshold)))
+        compact = max(0.0, min(1.0, float(compact_threshold)))
+        if warn > compact:
+            warn = compact
+        self.warning_threshold = warn
+        self.compact_threshold = compact
 
         self._current_tokens = 0
         self._last_action = CompactionAction.NONE
@@ -167,6 +186,10 @@ class KVCacheGovernor:
 
     def will_overflow(self, incoming_tokens: int) -> bool:
         """Check if adding incoming_tokens would exceed limits."""
+        if self.max_vram_gb == 0.0:
+            return (self._current_tokens + incoming_tokens) > self.max_tokens
+        if self.max_kv_cache_gb <= 0 or self.max_tokens <= 0:
+            return True
         projected = self.project_tokens(incoming_tokens)
         projected_vram = (projected / 1000) * self.kv_per_token_mb / 1024
         return projected_vram > self.max_kv_cache_gb

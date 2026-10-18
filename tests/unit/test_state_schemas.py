@@ -111,7 +111,7 @@ class TestSchemaInventory:
     @pytest.mark.parametrize(
         "node_name,expected_keys,expected_core",
         [
-            ("perception", 21, ("history", "next_action", "rounds")),
+            ("perception", 22, ("history", "next_action", "rounds")),
             ("planning", 16, ("current_plan", "current_step", "plan_attempts", "plan_mode_approved")),
             ("execution", 31, ()),  # divergent preview path → structural only
             ("verification", 2, ("verification_result",)),

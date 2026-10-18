@@ -239,7 +239,7 @@ def _run_tests(repo_dir: Path, instance: SWEBenchInstance, timeout: int) -> Tupl
             cmd[0] = sys.executable
     else:
         test_ids = list(dict.fromkeys(instance.fail_to_pass + instance.pass_to_pass))
-        cmd = [sys.executable, "-m", "pytest", "-q", "--no-header", "--tb=short", "-x"]
+        cmd = [sys.executable, "-m", "pytest", "-q", "--no-header", "--tb=short"]
         cmd.extend(test_ids)
     try:
         result = subprocess.run(
@@ -290,12 +290,23 @@ def grade_runnable(
     if passed:
         f2p_ok, p2p_ok = len(instance.fail_to_pass), len(instance.pass_to_pass)
     else:
-        fail_lines = {
-            line.split(" ", 1)[0].strip() for line in output.splitlines()
+        output_lines = output.splitlines()
+        passed_tests = {
+            line.split(" ", 1)[0].strip() for line in output_lines
+            if "PASSED" in line
+        }
+        fail_tests = {
+            line.split(" ", 1)[0].strip() for line in output_lines
             if "FAILED" in line or "ERROR" in line
         }
-        f2p_ok = sum(1 for t in instance.fail_to_pass if t not in fail_lines)
-        p2p_ok = sum(1 for t in instance.pass_to_pass if t not in fail_lines)
+        f2p_ok = sum(
+            1 for t in instance.fail_to_pass
+            if t in passed_tests or any(t in line for line in output_lines if "PASSED" in line)
+        )
+        p2p_ok = sum(
+            1 for t in instance.pass_to_pass
+            if t not in fail_tests and (t in passed_tests or any(t in line for line in output_lines if "PASSED" in line))
+        )
     return GradeResult(
         status="pass" if passed else "fail",
         patch=patch,
@@ -323,7 +334,9 @@ class SWEBenchRunner:
         agent_factory: Any,
     ) -> Dict[str, Any]:
         start_iso = _now_iso()
-        run_dir = self.workdir / instance.instance_id
+        run_dir = (self.workdir / instance.instance_id).resolve()
+        if not run_dir.is_relative_to(self.workdir.resolve()):
+            raise ValueError(f"Invalid instance_id path traversal: {instance.instance_id}")
         if run_dir.exists():
             shutil.rmtree(run_dir)
         run_dir.mkdir(parents=True, exist_ok=True)
@@ -415,10 +428,16 @@ def _ensure_working_dir(agent: Any, repo_dir: Path) -> None:
 def _invoke_swebench_agent(agent: Any, instance: SWEBenchInstance, repo_dir: Path) -> None:
     task = instance.problem_statement
     if hasattr(agent, "run_agent_once"):
+        tools = []
+        if hasattr(agent, "get_tools_for_role"):
+            try:
+                tools = agent.get_tools_for_role("operational")
+            except Exception:
+                tools = []
         agent.run_agent_once(
-            system_prompt_name="swebench",
+            system_prompt_name="operational",
             messages=[{"role": "user", "content": task}],
-            tools=[],
+            tools=tools,
         )
     elif hasattr(agent, "run"):
         agent.run(task, working_dir=str(repo_dir))

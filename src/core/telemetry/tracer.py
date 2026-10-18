@@ -188,12 +188,24 @@ def span_node(
     safe_attrs: Dict[str, Any] = {}
     if attributes:
         for k, v in attributes.items():
-            if isinstance(v, (str, int, float, bool)):
+            if isinstance(v, str):
+                try:
+                    from src.core.security.redaction import redact_secrets
+
+                    safe_attrs[k] = redact_secrets(v)
+                except Exception:
+                    safe_attrs[k] = v
+            elif isinstance(v, (int, float, bool)):
                 safe_attrs[k] = v
             elif v is None:
                 pass
             else:
-                safe_attrs[k] = str(v)
+                try:
+                    from src.core.security.redaction import redact_secrets
+
+                    safe_attrs[k] = redact_secrets(str(v))
+                except Exception:
+                    safe_attrs[k] = str(v)
 
     with tracer.start_as_current_span(
         f"codingagent.{name}", attributes=safe_attrs
@@ -277,7 +289,9 @@ def _bridge_event(event_name: str, payload: dict, keys: list) -> None:
         current_span = _ot_trace.get_current_span()  # type: ignore[union-attr]
         if current_span is None:
             return
-        attrs = {k: str(payload.get(k, "")) for k in keys if k in payload}
+        from src.core.security.redaction import redact_secrets
+
+        attrs = {k: redact_secrets(str(payload.get(k, ""))) for k in keys if k in payload}
         current_span.add_event(event_name, attributes=attrs)
     except Exception:
         pass

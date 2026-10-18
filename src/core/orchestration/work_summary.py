@@ -62,16 +62,30 @@ def _generate_work_summary(
 
     tool_counts: Dict[str, int] = {}
     tool_errors: List[str] = []
-    for entry in history:
+
+    entries_to_scan = list(history)
+    for tch in final_state.get("tool_call_history") or []:
+        if isinstance(tch, dict) and tch not in entries_to_scan:
+            entries_to_scan.append(tch)
+
+    for entry in entries_to_scan:
+        tool_name = None
         if entry.get("role") == "tool" and entry.get("tool"):
-            tool_name = entry.get("tool", "unknown")
+            tool_name = entry.get("tool")
+        elif entry.get("type") == "tool_execution_result":
+            tool_name = entry.get("tool_name") or entry.get("name") or entry.get("tool")
+        elif entry.get("tool_name"):
+            tool_name = entry.get("tool_name")
+
+        if tool_name:
             tool_counts[tool_name] = tool_counts.get(tool_name, 0) + 1
-            # Collect tool-level errors to surface in summary
-            result = entry.get("result") or {}
+            result = entry.get("result") or entry.get("output") or {}
             if isinstance(result, dict):
                 err = result.get("error") or result.get("message")
-                if err and result.get("status") == "error":
+                if err and (result.get("status") == "error" or result.get("ok") is False):
                     tool_errors.append(f"{tool_name}: {err}")
+            elif isinstance(result, str) and entry.get("ok") is False:
+                tool_errors.append(f"{tool_name}: {result[:100]}")
 
     # Determine overall outcome from last_result
     last_result = final_state.get("last_result") or {}

@@ -336,8 +336,6 @@ def detect_hardware() -> HardwareProfile:
         vram_gb = _detect_vram_metal()
     elif os_name == "linux":
         vram_gb = _detect_vram_nvidia()
-        if vram_gb == 0:
-            vram_gb = _detect_vram_metal()  # Fallback to unified memory detection
     elif os_name == "windows":
         # G6: Windows GPU detection via WMI / PowerShell / nvidia-smi
         vram_gb = _detect_vram_windows()

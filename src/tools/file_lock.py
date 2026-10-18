@@ -205,10 +205,22 @@ class FileLock:
                 try:
                     if self._fp is None:
                         raise TimeoutError("Invalid file handle for flock")
-                    self._fcntl.flock(self._fp.fileno(), self._fcntl.LOCK_EX)
+                    self._fcntl.flock(self._fp.fileno(), self._fcntl.LOCK_EX | self._fcntl.LOCK_NB)
                     break
+                except (BlockingIOError, OSError) as exc:
+                    if getattr(exc, "errno", None) in (errno.EACCES, errno.EAGAIN):
+                        if time.time() - start >= self.timeout:
+                            self._fp.close()
+                            self._fp = None
+                            raise TimeoutError(f"Timeout acquiring lock on {self.lock_path}")
+                        time.sleep(0.05)
+                        continue
+                    raise
                 except InterruptedError:
                     if time.time() - start >= self.timeout:
+                        if self._fp:
+                            self._fp.close()
+                            self._fp = None
                         raise TimeoutError("Timeout acquiring lock")
                     continue
             return self
@@ -240,7 +252,7 @@ class FileLock:
                         try:
                             data = self.lock_path.read_text(encoding="utf-8")
                             pid, host, ts, same_host, too_old = self._parse_lockfile(data)
-                            if pid is not None:
+                            if pid is not None and same_host:
                                 try:
                                     os.kill(pid, 0)
                                     # The owner process is alive — never reclaim a
@@ -258,10 +270,9 @@ class FileLock:
                                         pass
                                     else:
                                         pass
-                            else:
-                                if ts is not None and too_old:
-                                    if self._try_reclaim(None, False, too_old):
-                                        continue
+                            elif too_old:
+                                if self._try_reclaim(pid, same_host, too_old):
+                                    continue
                         except PermissionError:
                             pass
                         except Exception:

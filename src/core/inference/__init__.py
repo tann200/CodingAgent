@@ -63,6 +63,8 @@ from .thinking_utils import (
     budget_max_tokens,
     resolve_thinking_mode,
     get_thinking_directive,
+    set_active_thinking_mode,
+    get_active_thinking_mode,
 )
 
 __all__ = [
@@ -118,4 +120,6 @@ __all__ = [
     "budget_max_tokens",
     "resolve_thinking_mode",
     "get_thinking_directive",
+    "set_active_thinking_mode",
+    "get_active_thinking_mode",
 ]

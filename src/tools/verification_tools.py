@@ -748,13 +748,15 @@ def run_js_tests(
                 pass
 
         runner_order = [preferred] if preferred else []
-        runner_order += ["npx jest", "npx vitest run", "npx mocha"]
+        runner_order += ["npx --no-install jest", "npx --no-install vitest run", "npx --no-install mocha"]
 
         for runner_cmd in runner_order:
             if runner_cmd is None:
                 continue
             parts = runner_cmd.split()
             if not shutil.which(parts[0]):
+                continue
+            if parts[0] == "npx" and not os.path.exists(os.path.join(workdir, "node_modules")):
                 continue
             cmd = parts[:]
             if test_files:
@@ -800,17 +802,17 @@ def run_ts_check(workdir: str) -> Dict[str, Any]:
     - summary: raw tsc output
     """
     try:
-        if not shutil.which("tsc") and not shutil.which("npx"):
+        has_local_tsc = os.path.exists(os.path.join(workdir, "node_modules", ".bin", "tsc"))
+        has_global_tsc = bool(shutil.which("tsc"))
+        if has_local_tsc and shutil.which("npx"):
+            cmd = ["npx", "--no-install", "tsc", "--noEmit"]
+        elif has_global_tsc:
+            cmd = ["tsc", "--noEmit"]
+        else:
             return {
                 "status": "skipped",
                 "reason": "tsc not found and npx not available",
             }
-
-        # Prefer local tsc via npx, fall back to global tsc
-        if shutil.which("npx"):
-            cmd = ["npx", "--no-install", "tsc", "--noEmit"]
-        else:
-            cmd = ["tsc", "--noEmit"]
 
         proc = _run_subprocess(
             cmd, cwd=workdir, capture_output=True, text=True, check=False, timeout=120

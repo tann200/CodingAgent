@@ -133,23 +133,57 @@ def get_active_model_id() -> str:
     return ""
 
 
-def resolve_thinking_mode(cli_mode: ThinkingMode | None, model_id: str) -> bool:
+_ACTIVE_THINKING_MODE: ThinkingMode | None = None
+
+
+def set_active_thinking_mode(mode: ThinkingMode | str | None) -> None:
+    """Set the globally active thinking mode from CLI or configuration."""
+    global _ACTIVE_THINKING_MODE
+    if mode is None:
+        _ACTIVE_THINKING_MODE = None
+    elif isinstance(mode, ThinkingMode):
+        _ACTIVE_THINKING_MODE = mode
+    else:
+        try:
+            _ACTIVE_THINKING_MODE = ThinkingMode(str(mode).lower())
+        except ValueError:
+            logger.warning(f"Invalid thinking mode: {mode}")
+            _ACTIVE_THINKING_MODE = None
+
+
+def get_active_thinking_mode() -> ThinkingMode | None:
+    """Get the currently active thinking mode, if any."""
+    return _ACTIVE_THINKING_MODE
+
+
+def resolve_thinking_mode(cli_mode: ThinkingMode | str | None = None, model_id: str = "") -> bool:
     """Resolve whether thinking should be enabled for this model.
 
     Args:
-        cli_mode: CLI --thinking flag value (None = use default)
+        cli_mode: CLI --thinking flag value (None = use active thinking mode or default)
         model_id: Active model identifier
 
     Returns:
         True if thinking should be enabled, False otherwise
     """
-    if cli_mode == ThinkingMode.ON:
+    effective_mode: ThinkingMode | None
+    if cli_mode is None:
+        effective_mode = _ACTIVE_THINKING_MODE
+    elif isinstance(cli_mode, ThinkingMode):
+        effective_mode = cli_mode
+    else:
+        try:
+            effective_mode = ThinkingMode(str(cli_mode).lower())
+        except ValueError:
+            effective_mode = _ACTIVE_THINKING_MODE
+
+    if effective_mode == ThinkingMode.ON:
         return True
-    if cli_mode == ThinkingMode.OFF:
+    if effective_mode == ThinkingMode.OFF:
         return False
 
     # AUTO mode: enable for reasoning models
-    if cli_mode == ThinkingMode.AUTO or cli_mode is None:
+    if effective_mode == ThinkingMode.AUTO or effective_mode is None:
         return is_reasoning_model(model_id)
 
     return False

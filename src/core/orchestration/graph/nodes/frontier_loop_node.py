@@ -695,11 +695,17 @@ async def frontier_loop_node(
                     role=role,
                 )
             except TypeError:
-                messages = await _prepare_turn_messages(
-                    orchestrator=orchestrator, task=task, history=history,
-                    model_tier=model_tier, turns_taken=turns_taken,
-                    role=role,
-                )
+                try:
+                    messages = await _prepare_turn_messages(
+                        orchestrator=orchestrator, task=task, history=history,
+                        model_tier=model_tier, turns_taken=turns_taken,
+                        role=role,
+                    )
+                except TypeError:
+                    messages = await _prepare_turn_messages(
+                        orchestrator=orchestrator, task=task, history=history,
+                        model_tier=model_tier, turns_taken=turns_taken,
+                    )
 
             try:
                 response, content_text, tool_calls = await _call_llm_for_turn(
