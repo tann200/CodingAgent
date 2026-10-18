@@ -98,3 +98,87 @@ def test_delete_session_preserves_forked_snapshot_rows(tmp_path: Path) -> None:
         (snap_id,),
     ).fetchone()
     assert rows_after["cnt"] == 0
+
+
+def test_sqlite_fts5_rowid_sync_after_delete_session(tmp_path: Path) -> None:
+    store = SqliteSessionStore(workdir=str(tmp_path))
+
+    # Session A: insert message 'alpha'
+    store.add_message("session_a", "user", "alpha message")
+    res_a = store.search("alpha")
+    assert len(res_a) == 1
+    assert res_a[0]["content"] == "alpha message"
+
+    # Delete Session A
+    store.delete_session("session_a")
+
+    # Session B: insert message 'beta'
+    store.add_message("session_b", "user", "beta message")
+
+    # Before SPEC-12 fix, messages.id was 2 while messages_fts.rowid was 1 or desynced,
+    # causing store.search('beta') to return [] or join the wrong row.
+    res_b = store.search("beta")
+    assert len(res_b) == 1
+    assert res_b[0]["session_id"] == "session_b"
+    assert res_b[0]["content"] == "beta message"
+
+
+def test_sqlite_delete_session_cleans_mistakes_fts_and_refreshes_decisions(tmp_path: Path) -> None:
+    store = SqliteSessionStore(workdir=str(tmp_path))
+    sid = "sess_mistake_decision"
+
+    store.add_decision(sid, "decision alpha", "rationale alpha")
+    store.add_mistake(sid, "mistake summary", "context details", "edit_file")
+
+    conn = store._get_connection()
+    fts_mistakes = conn.execute("SELECT COUNT(*) as cnt FROM mistakes_fts WHERE session_id=?", (sid,)).fetchone()["cnt"]
+    assert fts_mistakes >= 1
+
+    decisions_path = tmp_path / ".codingAgent" / "decisions.json"
+    assert decisions_path.exists()
+
+    # Delete session
+    store.delete_session(sid)
+
+    # mistakes_fts must be cleaned up
+    fts_mistakes_after = conn.execute("SELECT COUNT(*) as cnt FROM mistakes_fts WHERE session_id=?", (sid,)).fetchone()["cnt"]
+    assert fts_mistakes_after == 0
+
+    # decisions.json must have been updated to remove the deleted decision
+    decisions = store.read_recent_decisions()
+    assert all(d.get("session_id") != sid for d in decisions)
+
+
+def test_jsonl_session_store_preserves_dotted_session_ids_and_parity(tmp_path: Path) -> None:
+    from src.core.memory.jsonl_session_store import JsonlSessionStore
+
+    store = JsonlSessionStore(workdir=str(tmp_path))
+    sid = "release-1.2.3"
+
+    store.add_message(sid, "user", "release message")
+    store.add_decision(sid, "deploy release", "tag created")
+    store.add_mistake(sid, "version mismatch", "forgot to bump patch", "git_tools")
+
+    snap_id = store.save_snapshot(sid, '{"state": "ready"}')
+    assert snap_id is not None
+    store.save_session_state(sid, {"status": "ok"})
+
+    # Verify session ID is not truncated to 'release-1.2'
+    sessions = store.list_sessions()
+    assert sid in sessions
+    assert "release-1.2" not in sessions
+
+    # Verify search_mistakes works in JsonlSessionStore
+    mistakes = store.search_mistakes("mismatch")
+    assert len(mistakes) >= 1
+    assert "mismatch" in mistakes[0]["summary"]
+
+    # Verify delete_session cleans up files, snapshots, state, and updates decisions
+    deleted_count = store.delete_session(sid)
+    assert deleted_count >= 1
+
+    assert sid not in store.list_sessions()
+    assert store.get_snapshot(sid, snap_id) is None
+    assert store.load_session_state(sid) is None
+    decisions = store.read_recent_decisions()
+    assert all(d.get("session_id") != sid for d in decisions)

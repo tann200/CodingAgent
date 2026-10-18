@@ -48,6 +48,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import shutil
 import threading
 import uuid
@@ -579,7 +580,7 @@ class JsonlSessionStore:
         return bool(self._session_files(session_id))
 
     def delete_session(self, session_id: str) -> int:
-        """Delete all JSONL files for *session_id*.  Returns files deleted."""
+        """Delete all JSONL files and sidecars for *session_id*.  Returns files deleted."""
         count = 0
         with self._session_lock(session_id):
             for p in self._session_files(session_id):
@@ -588,6 +589,42 @@ class JsonlSessionStore:
                     count += 1
                 except Exception as exc:
                     logger.warning("JsonlSessionStore: failed to delete %s: %s", p, exc)
+
+            # Clean up snapshot sidecars for this session
+            snap_dir = self._snapshot_dir()
+            if snap_dir.exists():
+                for snap_p in snap_dir.glob(f"{session_id}.*.json"):
+                    try:
+                        snap_p.unlink(missing_ok=True)
+                        count += 1
+                    except Exception as exc:
+                        logger.warning(
+                            "JsonlSessionStore: failed to delete snapshot %s: %s",
+                            snap_p,
+                            exc,
+                        )
+
+            # Clean up state sidecar for this session
+            state_p = self._state_sidecar_path(session_id)
+            if state_p.exists():
+                try:
+                    state_p.unlink(missing_ok=True)
+                    count += 1
+                except Exception as exc:
+                    logger.warning(
+                        "JsonlSessionStore: failed to delete state %s: %s",
+                        state_p,
+                        exc,
+                    )
+
+        # Re-write decisions.json to purge deleted session's decisions
+        try:
+            self.write_decisions_json()
+        except Exception as exc:
+            logger.debug(
+                "JsonlSessionStore.delete_session: write_decisions_json failed: %s", exc
+            )
+
         return count
 
     def list_sessions(self) -> List[str]:
@@ -597,7 +634,7 @@ class JsonlSessionStore:
             return []
         seen: set[str] = set()
         for p in sessions_dir.glob("*.jsonl"):
-            sid = parse_session_id_from_jsonl_filename(p.name)
+            sid = parse_session_id_from_jsonl_filename(p, sessions_dir=sessions_dir)
             seen.add(sid)
         return sorted(seen)
 
@@ -1161,3 +1198,35 @@ class JsonlSessionStore:
             },
         }
         self._append(session_id, rec)
+
+    def search_mistakes(self, query: str, limit: int = 5) -> List[Dict[str, Any]]:
+        """Return up to *limit* past mistakes whose summary/context matches *query*."""
+        if not query or not query.strip():
+            return []
+        query_words = set(re.findall(r"\w+", query.lower()))
+        if not query_words:
+            return []
+
+        scored: List[Tuple[float, Dict[str, Any]]] = []
+        for session_id in self.list_sessions():
+            for rec in self.iter_records(session_id):
+                if rec.get("type") != "mistake":
+                    continue
+                summary = rec.get("summary", "")
+                context = rec.get("context", "")
+                text = f"{summary} {context}".lower()
+                text_words = set(re.findall(r"\w+", text))
+                overlap = len(query_words & text_words)
+                if overlap > 0 or query.lower() in text:
+                    score = overlap + (2.0 if query.lower() in text else 0.0)
+                    item = {
+                        "summary": summary,
+                        "context": context,
+                        "tool": rec.get("tool", ""),
+                        "ts": rec.get("ts", ""),
+                        "provenance": rec.get("provenance", {}),
+                    }
+                    scored.append((score, item))
+
+        scored.sort(key=lambda t: t[0], reverse=True)
+        return [item for _, item in scored[:limit]]

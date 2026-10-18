@@ -255,6 +255,11 @@ class SchemaManager:
 
         try:
             conn.executescript(fts_creation_script())
+            for trg in ("messages_ai", "messages_ad", "mistakes_ai", "mistakes_ad"):
+                try:
+                    conn.execute(f"DROP TRIGGER IF EXISTS {trg}")
+                except Exception:
+                    pass
             for statement in fts_trigger_statements():
                 conn.execute(statement)
             conn.commit()
@@ -570,6 +575,11 @@ class SnapshotManager:
                         )
                         try:
                             wconn.execute(
+                                "DELETE FROM session_snapshot_rows WHERE snapshot_id IN ("
+                                "SELECT id FROM session_snapshots WHERE session_id=? AND datetime(saved_at) > datetime(?))",
+                                (sid, saved_at),
+                            )
+                            wconn.execute(
                                 "DELETE FROM session_snapshots WHERE session_id=? AND datetime(saved_at) > datetime(?)",
                                 (sid, saved_at),
                             )
@@ -647,6 +657,11 @@ class SnapshotManager:
                 except Exception:
                     pass
                 try:
+                    conn.execute(
+                        "DELETE FROM session_snapshot_rows WHERE snapshot_id IN ("
+                        "SELECT id FROM session_snapshots WHERE session_id=?)",
+                        (sid,),
+                    )
                     conn.execute(
                         "DELETE FROM session_snapshots WHERE session_id=?", (sid,)
                     )

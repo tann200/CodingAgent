@@ -817,17 +817,24 @@ class SqliteSessionStore:
                 except Exception:
                     pass
 
-            # 4. Clean up messages_fts virtual table if present
-            try:
-                cur = conn.execute(
-                    "DELETE FROM messages_fts WHERE session_id=?", (sid,)
-                )
-                if cur is not None and cur.rowcount is not None and cur.rowcount > 0:
-                    total += cur.rowcount
-            except Exception:
-                pass
+            # 4. Clean up messages_fts and mistakes_fts virtual tables if present
+            for fts_tbl in ("messages_fts", "mistakes_fts"):
+                try:
+                    cur = conn.execute(
+                        f"DELETE FROM {fts_tbl} WHERE session_id=?", (sid,)
+                    )
+                    if cur is not None and cur.rowcount is not None and cur.rowcount > 0:
+                        total += cur.rowcount
+                except Exception:
+                    pass
 
             conn.commit()
+
+        try:
+            self.write_decisions_json()
+        except Exception as e:
+            logger.debug("delete_session: write_decisions_json failed: %s", e)
+
         return total
 
     def fork_session(self, session_id: str, fork_id: Optional[str] = None) -> str:

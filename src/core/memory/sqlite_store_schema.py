@@ -115,22 +115,24 @@ def fts_trigger_statements() -> List[str]:
     return [
         """
                 CREATE TRIGGER IF NOT EXISTS messages_ai AFTER INSERT ON messages BEGIN
-                    INSERT INTO messages_fts (session_id, role, content)
-                    VALUES (new.session_id, new.role, new.content);
+                    INSERT INTO messages_fts (rowid, session_id, role, content)
+                    VALUES (new.id, new.session_id, new.role, new.content);
                 END;
             """,
         """
                 CREATE TRIGGER IF NOT EXISTS messages_ad AFTER DELETE ON messages BEGIN
-                    DELETE FROM messages_fts WHERE rowid IN (
-                        SELECT rowid FROM messages_fts WHERE session_id = old.session_id
-                        AND content = old.content LIMIT 1
-                    );
+                    DELETE FROM messages_fts WHERE rowid = old.id;
                 END;
             """,
         """
                 CREATE TRIGGER IF NOT EXISTS mistakes_ai AFTER INSERT ON mistakes BEGIN
-                    INSERT INTO mistakes_fts (session_id, summary, context, tool)
-                    VALUES (new.session_id, new.summary, new.context, new.tool);
+                    INSERT INTO mistakes_fts (rowid, session_id, summary, context, tool)
+                    VALUES (new.id, new.session_id, new.summary, new.context, new.tool);
+                END;
+            """,
+        """
+                CREATE TRIGGER IF NOT EXISTS mistakes_ad AFTER DELETE ON mistakes BEGIN
+                    DELETE FROM mistakes_fts WHERE rowid = old.id;
                 END;
             """,
     ]

@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Optional, Tuple, Union
 
 
 def build_fork_destination_path(
@@ -59,9 +60,33 @@ def build_snapshot_result_payload(data: Dict[str, Any]) -> str:
     )
 
 
-def parse_session_id_from_jsonl_filename(filename: str) -> str:
+def parse_session_id_from_jsonl_filename(
+    filename: Union[str, Path], sessions_dir: Optional[Path] = None
+) -> str:
     """Extract the logical session ID from active or rotated JSONL filenames."""
-    name = Path(filename).stem
-    if "." not in name:
-        return name
-    return name.rsplit(".", 1)[0]
+    path = Path(filename)
+    name = path.name
+    if name.endswith(".jsonl"):
+        name = name[:-6]
+    elif name.endswith(".json"):
+        name = name[:-5]
+
+    search_dir = sessions_dir or (
+        path.parent if str(path.parent) not in ("", ".") else None
+    )
+    if search_dir:
+        if "." in name:
+            base, suffix = name.rsplit(".", 1)
+            if suffix.isdigit() and (search_dir / f"{base}.jsonl").exists():
+                return base
+        if (search_dir / f"{name}.jsonl").exists():
+            return name
+
+    if "." in name:
+        base, suffix = name.rsplit(".", 1)
+        if suffix.isdigit():
+            if re.search(r"\d+\.\d+$", base):
+                return name
+            return base
+
+    return name
