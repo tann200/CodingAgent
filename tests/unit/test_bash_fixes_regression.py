@@ -261,7 +261,9 @@ class TestCheckBackgroundTask:
     def test_nonexistent_pid_returns_not_running(self, tmp_path):
         """A PID that doesn't exist → running=False."""
         from src.tools.file_tools import check_background_task
+        from src.tools._bash_exec import _SPAWNED_BG_PIDS
 
+        _SPAWNED_BG_PIDS.add(999999999)
         # PID 999999999 is virtually guaranteed not to exist.
         result = check_background_task("999999999", workdir=tmp_path)
         assert result["status"] == "ok"
@@ -271,7 +273,9 @@ class TestCheckBackgroundTask:
     def test_current_process_is_running(self, tmp_path):
         """Our own PID is always running."""
         from src.tools.file_tools import check_background_task
+        from src.tools._bash_exec import _SPAWNED_BG_PIDS
 
+        _SPAWNED_BG_PIDS.add(os.getpid())
         result = check_background_task(str(os.getpid()), workdir=tmp_path)
         assert result["status"] == "ok"
         assert result["running"] is True

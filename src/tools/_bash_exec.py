@@ -8,13 +8,14 @@ backward compatibility.
 from __future__ import annotations
 
 import logging
+import os
 import re as _re
 import shlex
 import subprocess
 import unicodedata
 import uuid
 from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Set
 
 from src.tools._security import (
     BASH_STRICT_ALLOWLIST,
@@ -120,6 +121,158 @@ def _check_command_denylist(cmd: str) -> Optional[str]:
             "allowlist_override in agent_config.yaml."
         )
     return None
+
+
+_SPAWNED_BG_PIDS: Set[int] = set()
+
+_DANGEROUS_GIT_FLAGS: frozenset[str] = frozenset(
+    {
+        "-c",
+        "--config-env",
+        "--exec-path",
+        "--git-dir",
+        "--work-tree",
+        "--upload-pack",
+        "--receive-pack",
+    }
+)
+
+_MUTATING_BRANCH_FLAGS: frozenset[str] = frozenset(
+    {"-d", "-D", "-m", "-M", "-c", "-C", "--delete", "--edit-description"}
+)
+_MUTATING_TAG_FLAGS: frozenset[str] = frozenset(
+    {"-d", "-a", "-s", "-u", "-f", "--delete", "--force"}
+)
+
+
+def _is_code_exec_flag(interpreter: str, part: str) -> bool:
+    """Return True if part is an inline code execution flag for interpreter."""
+    base = os.path.basename(interpreter).lower()
+    is_interp = (
+        base in CODE_EXEC_INTERPRETERS
+        or base.startswith(("python", "node", "ruby", "php"))
+    )
+    if not is_interp:
+        return False
+    if part == "-":
+        return True
+    if part.startswith(("--eval=", "--execute=")):
+        return True
+    if part in CODE_EXEC_FLAGS:
+        return True
+    if part.startswith("-") and not part.startswith("--"):
+        # Match combined short flags like -Bc, -Ic, -e"code", -c"code", etc.
+        return any(ch in ("c", "e", "r") for ch in part[1:])
+    return False
+
+
+def _check_git_command_safety(cmd_parts: list[str]) -> tuple[bool, str]:
+    """Inspect git command parts.
+
+    Returns (is_safe, error_or_subcommand_description).
+    If is_safe is False:
+      - If the error mentions 'Dangerous git flag', it's a hard block.
+      - Otherwise, it requires approval (bash) or is blocked (bash_readonly).
+    """
+    if not cmd_parts or cmd_parts[0].lower() != "git":
+        return True, ""
+
+    # Check for dangerous git flags anywhere in the command
+    for part in cmd_parts[1:]:
+        p_lower = part.lower()
+        if p_lower == "-c" or p_lower.startswith("-c="):
+            return False, "Dangerous git flag '-c' is blocked."
+        for d in (
+            "--config-env",
+            "--exec-path",
+            "--git-dir",
+            "--work-tree",
+            "--upload-pack",
+            "--receive-pack",
+        ):
+            if p_lower == d or p_lower.startswith(d + "="):
+                return False, f"Dangerous git flag '{part}' is blocked."
+
+    # Find the subcommand (first non-option argument)
+    subcommand = None
+    sub_index = -1
+    i = 1
+    while i < len(cmd_parts):
+        token = cmd_parts[i]
+        if token.startswith("-"):
+            if token == "-C" and i + 1 < len(cmd_parts):
+                i += 1
+            i += 1
+            continue
+        subcommand = token.lower()
+        sub_index = i
+        break
+
+    if not subcommand:
+        # e.g., 'git' or 'git --version'
+        if any(p.lower() in ("--version", "-v", "--help", "-h") for p in cmd_parts[1:]):
+            return True, "version"
+        return False, "git with no subcommand requires approval."
+
+    rest_tokens = cmd_parts[sub_index + 1 :]
+
+    # Pure read-only subcommands that accept any read arguments
+    if subcommand in {
+        "status",
+        "log",
+        "diff",
+        "show",
+        "blame",
+        "shortlog",
+        "describe",
+        "ls-files",
+        "ls-tree",
+        "rev-parse",
+        "rev-list",
+        "help",
+        "version",
+    }:
+        return True, subcommand
+
+    # branch: safe only when listing branches
+    if subcommand == "branch":
+        if any(p in _MUTATING_BRANCH_FLAGS for p in rest_tokens):
+            return False, "git branch with mutation flag is not allowed without approval."
+        non_flag_args = [p for p in rest_tokens if not p.startswith("-")]
+        if non_flag_args:
+            return False, f"git branch '{non_flag_args[0]}' creates or modifies branches."
+        return True, "branch"
+
+    # tag: safe only when listing
+    if subcommand == "tag":
+        if any(p in _MUTATING_TAG_FLAGS for p in rest_tokens):
+            return False, "git tag with mutation flag is not allowed without approval."
+        non_flag_args = [p for p in rest_tokens if not p.startswith("-")]
+        if non_flag_args:
+            return False, f"git tag '{non_flag_args[0]}' creates or modifies tags."
+        return True, "tag"
+
+    # stash: safe only if 'stash list'
+    if subcommand == "stash":
+        if rest_tokens and rest_tokens[0].lower() == "list":
+            return True, "stash list"
+        return False, "git stash operation is not in the read-only allowlist."
+
+    # config: safe only with --list, -l, or --get
+    if subcommand == "config":
+        first_rest = rest_tokens[0].lower() if rest_tokens else ""
+        if first_rest in ("--list", "-l", "--get"):
+            if not any(p.lower() == "--global" for p in rest_tokens):
+                return True, f"config {first_rest}"
+        return False, "git config operation is not in the read-only allowlist."
+
+    # remote: safe with 'remote' or 'remote -v'
+    if subcommand == "remote":
+        if not rest_tokens or (len(rest_tokens) == 1 and rest_tokens[0].lower() in ("-v", "--verbose")):
+            return True, "remote"
+        return False, f"git remote operation '{rest_tokens[0]}' is not in the read-only allowlist."
+
+    return False, f"git subcommand '{subcommand}' is not in the read-only allowlist."
 
 
 # Destructive-command patterns checked by _check_shell_flags()
@@ -424,14 +577,13 @@ def bash(
             }
 
     # Gate 3: Block inline code-execution flags (python3 -c, node -e, ruby -e, php -r).
-    if first_cmd in CODE_EXEC_INTERPRETERS:
-        for part in cmd_parts[1:]:
-            if part in CODE_EXEC_FLAGS:
-                return {
-                    "status": "error",
-                    "error": f"Command '{first_cmd} {part}' is not allowed: inline code execution flags are blocked. "
-                    "Run a script file instead (e.g. python3 script.py).",
-                }
+    for part in cmd_parts[1:]:
+        if _is_code_exec_flag(first_cmd, part):
+            return {
+                "status": "error",
+                "error": f"Command '{first_cmd} {part}' is not allowed: inline code execution flags are blocked. "
+                "Run a script file instead (e.g. python3 script.py).",
+            }
 
     # Gate 4: Archive / inplace-edit flag check (shared helper — also used by bash_readonly).
     _flag_err = _check_shell_flags(cmd_parts, first_cmd)
@@ -448,12 +600,14 @@ def bash(
     # auto-allowed.  Write operations (commit, push, reset, rm, …) require
     # explicit user approval or must go through the RESTRICTED_COMMANDS path.
     if first_cmd == "git":
-        sub = cmd_parts[1].lower() if len(cmd_parts) > 1 else ""
-        if sub not in GIT_SAFE_SUBCOMMANDS:
+        is_safe, msg = _check_git_command_safety(cmd_parts)
+        if not is_safe:
+            if "Dangerous git flag" in msg:
+                return {"status": "error", "error": msg}
             return {
                 "status": "error",
                 "error": (
-                    f"git subcommand '{sub}' is not in the read-only allowlist. "
+                    f"{msg} "
                     f"Allowed: {sorted(GIT_SAFE_SUBCOMMANDS)}. "
                     "Write operations (commit, push, add, reset, …) require user approval."
                 ),
@@ -548,6 +702,7 @@ def bash(
                 stderr=subprocess.DEVNULL,
                 stdin=subprocess.DEVNULL,
             )
+            _SPAWNED_BG_PIDS.add(proc.pid)
             return {
                 "status": "ok",
                 "command": command,
@@ -651,6 +806,7 @@ def bash_readonly(
 
     # Gate 1: Shell-operator / metacharacter block.
     _cmd_lower = _re.sub(r"\s+", " ", command).lower()
+    _cmd_lower = _cmd_lower.replace("'", "").replace('"', "")
     for pattern in DANGEROUS_PATTERNS:
         if pattern in _cmd_lower:
             return {
@@ -681,6 +837,11 @@ def bash_readonly(
 
     first_cmd = cmd_parts[0].lower()
 
+    # Gate 2b: P2-T3 explicit command denylist
+    _deny_err = _check_command_denylist(command)
+    if _deny_err is not None:
+        return {"status": "error", "error": _deny_err}
+
     # Gate 2: Restricted commands are never allowed in read-only mode.
     if _matches_restricted_command(cmd_parts, command):
         return {
@@ -699,12 +860,12 @@ def bash_readonly(
 
     # Gate 3b: Git subcommand allowlist (read-only mode is more restrictive).
     if first_cmd == "git":
-        sub = cmd_parts[1].lower() if len(cmd_parts) > 1 else ""
-        if sub not in GIT_SAFE_SUBCOMMANDS:
+        is_safe, msg = _check_git_command_safety(cmd_parts)
+        if not is_safe:
             return {
                 "status": "error",
                 "error": (
-                    f"git subcommand '{sub}' is not allowed in read-only mode. "
+                    f"{msg} "
                     f"Allowed: {sorted(GIT_SAFE_SUBCOMMANDS)}."
                 ),
             }
@@ -722,13 +883,12 @@ def bash_readonly(
                 }
 
     # Gate 4: Block inline code-execution flags.
-    if first_cmd in CODE_EXEC_INTERPRETERS:
-        for part in cmd_parts[1:]:
-            if part in CODE_EXEC_FLAGS:
-                return {
-                    "status": "error",
-                    "error": f"Command '{first_cmd} {part}' is not allowed: inline code execution flags are blocked.",
-                }
+    for part in cmd_parts[1:]:
+        if _is_code_exec_flag(first_cmd, part):
+            return {
+                "status": "error",
+                "error": f"Command '{first_cmd} {part}' is not allowed: inline code execution flags are blocked.",
+            }
 
     # Gate 5: Archive / inplace-edit flag check (shared helper).
     _flag_err = _check_shell_flags(cmd_parts, first_cmd)
@@ -845,6 +1005,12 @@ def check_background_task(
         return {
             "status": "error",
             "error": f"Invalid task_id: {task_id!r} — expected a PID string.",
+        }
+
+    if pid not in _SPAWNED_BG_PIDS:
+        return {
+            "status": "error",
+            "error": f"Unknown or untracked background task ID: {task_id}. Only processes started with bash(run_in_background=True) in this session can be checked.",
         }
 
     try:
