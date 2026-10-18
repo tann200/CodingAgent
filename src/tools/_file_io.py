@@ -178,12 +178,16 @@ def write_file(
     if workdir is None:
         workdir = Path.cwd()
     # Phase 4.3: WorkspaceGuard integration - check protected files
-    guard = WorkspaceGuard()
+    guard = WorkspaceGuard(workspace_root=workdir)
     guard_result = guard.guard_operation("write_file", path, user_approved)
     if guard_result.get("status") == "error":
         return {"path": path, "status": "error", "error": guard_result.get("error")}
 
     p = _safe_resolve(path, workdir)
+
+    guard_res_resolved = guard.guard_operation("write_file", str(p), user_approved)
+    if guard_res_resolved.get("status") == "error":
+        return {"path": str(p), "status": "error", "error": guard_res_resolved.get("error")}
 
     # GAP-S1: Read-before-write guardrail (check after resolve so path is absolute)
     try:
@@ -513,22 +517,35 @@ def delete_file(
 ) -> Dict[str, Any]:
     if workdir is None:
         workdir = Path.cwd()
+    workdir_resolved = Path(workdir).resolve()
     # Phase 4.3: WorkspaceGuard integration - check protected files
-    guard = WorkspaceGuard()
+    guard = WorkspaceGuard(workspace_root=workdir_resolved)
     guard_result = guard.guard_operation("delete_file", path, user_approved)
     if guard_result.get("status") == "error":
         return {"path": path, "status": "error", "error": guard_result.get("error")}
 
-    # Read-before-write guardrail: deletion is destructive
-    try:
-        rbw = _check_read_before_write(path)
-        if rbw:
-            return {"path": path, "status": "error", **rbw}
-    except Exception:
-        pass
-
     try:
         p = _safe_resolve(path, workdir)
+        if p.resolve() == workdir_resolved:
+            return {"status": "error", "error": "Cannot delete the workspace root directory."}
+
+        guard_res_resolved = guard.guard_operation("delete_file", str(p), user_approved)
+        if guard_res_resolved.get("status") == "error":
+            return {"path": str(p), "status": "error", "error": guard_res_resolved.get("error")}
+
+        try:
+            _check_project_deny_write(p, workdir)
+        except PermissionError as _pe:
+            return {"path": path, "status": "error", "error": str(_pe)}
+
+        # Read-before-write guardrail: deletion is destructive
+        try:
+            rbw = _check_read_before_write(str(p))
+            if rbw:
+                return {"path": str(p), "status": "error", **rbw}
+        except Exception:
+            pass
+
         if not p.exists():
             return {"path": str(p), "status": "not_found"}
         deleted_path = str(p)
@@ -620,8 +637,9 @@ def rename_file(
             "error": "Missing destination path (use 'new_path' parameter)",
         }
 
+    workdir_resolved = Path(workdir).resolve() if workdir is not None else Path.cwd().resolve()
     # WorkspaceGuard integration - check protected files for both paths
-    guard = WorkspaceGuard()
+    guard = WorkspaceGuard(workspace_root=workdir_resolved)
     guard_src = guard.guard_operation("rename_file", resolved_src, user_approved)
     if guard_src.get("status") == "error":
         return {"path": resolved_src, "status": "error", "error": guard_src.get("error")}
@@ -635,6 +653,13 @@ def rename_file(
     except PermissionError as pe:
         return {"status": "error", "error": str(pe)}
 
+    guard_src_res = guard.guard_operation("rename_file", str(src_resolved), user_approved)
+    if guard_src_res.get("status") == "error":
+        return {"path": str(src_resolved), "status": "error", "error": guard_src_res.get("error")}
+    guard_dst_res = guard.guard_operation("rename_file", str(dst_resolved), user_approved)
+    if guard_dst_res.get("status") == "error":
+        return {"path": str(dst_resolved), "status": "error", "error": guard_dst_res.get("error")}
+
     # Apply project-level deny_write patterns
     try:
         _check_project_deny_write(src_resolved, workdir)
@@ -647,7 +672,7 @@ def rename_file(
 
     # Read-before-write guardrail: rename is destructive on the source file
     try:
-        rbw = _check_read_before_write(resolved_src)
+        rbw = _check_read_before_write(str(src_resolved))
         if rbw:
             return {"status": "error", **rbw}
     except Exception:

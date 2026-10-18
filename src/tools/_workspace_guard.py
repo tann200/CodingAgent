@@ -18,6 +18,9 @@ class WorkspaceGuard:
     must not grant write access).
     """
 
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        pass
+
     def is_secret(self, path: object) -> bool:
         """Fail-closed secret check."""
         return True

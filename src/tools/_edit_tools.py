@@ -261,13 +261,18 @@ def edit_file(
     """Edit a file using a unified diff patch. Returns diff in result for TUI display."""
     if workdir is None:
         workdir = Path.cwd()
+    workdir_resolved = Path(workdir).resolve()
     # Phase 4.3: WorkspaceGuard integration - check protected files
-    guard = WorkspaceGuard()
+    guard = WorkspaceGuard(workspace_root=workdir_resolved)
     guard_result = guard.guard_operation("edit_file", path, user_approved)
     if guard_result.get("status") == "error":
         return {"path": path, "status": "error", "error": guard_result.get("error")}
 
     p = _safe_resolve(path, workdir)
+
+    guard_res_resolved = guard.guard_operation("edit_file", str(p), user_approved)
+    if guard_res_resolved.get("status") == "error":
+        return {"path": str(p), "status": "error", "error": guard_res_resolved.get("error")}
 
     # GAP-S1: Read-before-write guardrail (check after resolve so path is absolute)
     try:
@@ -361,26 +366,31 @@ def edit_by_line_range(
     """
     if workdir is None:
         workdir = Path.cwd()
+    workdir_resolved = Path(workdir).resolve()
 
-    guard = WorkspaceGuard()
+    guard = WorkspaceGuard(workspace_root=workdir_resolved)
     guard_result = guard.guard_operation("edit_by_line_range", path, user_approved)
     if guard_result.get("status") == "error":
         return {"path": path, "status": "error", "error": guard_result.get("error")}
-
-    # GAP-S1: Read-before-write guardrail
-    try:
-        from src.tools.guardrails import check_read_before_write
-
-        rbw = check_read_before_write(path)
-        if rbw:
-            return {"path": path, "status": "error", **rbw}
-    except Exception:
-        pass
 
     try:
         p = _safe_resolve(path, workdir)
     except (PermissionError, ValueError) as exc:
         return {"path": path, "status": "error", "error": str(exc)}
+
+    guard_res_resolved = guard.guard_operation("edit_by_line_range", str(p), user_approved)
+    if guard_res_resolved.get("status") == "error":
+        return {"path": str(p), "status": "error", "error": guard_res_resolved.get("error")}
+
+    # GAP-S1: Read-before-write guardrail (check after resolve so path is absolute)
+    try:
+        from src.tools.guardrails import check_read_before_write
+
+        rbw = check_read_before_write(str(p))
+        if rbw:
+            return {"path": str(p), "status": "error", **rbw}
+    except Exception:
+        pass
 
     if not p.exists():
         return {"path": str(p), "status": "not_found"}
@@ -482,13 +492,18 @@ def edit_file_atomic(
     """
     if workdir is None:
         workdir = Path.cwd()
+    workdir_resolved = Path(workdir).resolve()
 
-    guard = WorkspaceGuard()
+    guard = WorkspaceGuard(workspace_root=workdir_resolved)
     guard_result = guard.guard_operation("edit_file_atomic", path, user_approved)
     if guard_result.get("status") == "error":
         return {"path": path, "status": "error", "error": guard_result.get("error")}
 
     p = _safe_resolve(path, workdir)
+
+    guard_res_resolved = guard.guard_operation("edit_file_atomic", str(p), user_approved)
+    if guard_res_resolved.get("status") == "error":
+        return {"path": str(p), "status": "error", "error": guard_res_resolved.get("error")}
 
     # GAP-S1: Read-before-write guardrail (check after resolve so path is absolute)
     try:
@@ -664,21 +679,26 @@ def multiedit(
             "error": "edits must be a non-empty list",
         }
 
-    guard = WorkspaceGuard()
+    workdir_resolved = Path(workdir).resolve()
+    guard = WorkspaceGuard(workspace_root=workdir_resolved)
     guard_result = guard.guard_operation("multiedit", path, user_approved)
     if guard_result.get("status") == "error":
         return {"path": path, "status": "error", "error": guard_result.get("error")}
 
+    p = _safe_resolve(path, workdir)
+
+    guard_res_resolved = guard.guard_operation("multiedit", str(p), user_approved)
+    if guard_res_resolved.get("status") == "error":
+        return {"path": str(p), "status": "error", "error": guard_res_resolved.get("error")}
+
     try:
         from src.tools.guardrails import check_read_before_write
 
-        rbw = check_read_before_write(path)
+        rbw = check_read_before_write(str(p))
         if rbw:
-            return {"path": path, "status": "error", **rbw}
+            return {"path": str(p), "status": "error", **rbw}
     except Exception:
         pass
-
-    p = _safe_resolve(path, workdir)
     if not p.exists():
         return {"path": str(p), "status": "not_found"}
 
