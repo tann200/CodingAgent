@@ -21,7 +21,6 @@ Usage by the orchestrator:
 
 from __future__ import annotations
 
-import asyncio
 import concurrent.futures
 import contextvars as _cv
 import logging
@@ -34,15 +33,30 @@ logger = logging.getLogger(__name__)
 
 _BATCH_MAX_CALLS = 10
 _batch_context = threading.local()
+_BATCH_ORCHESTRATOR: _cv.ContextVar[Optional[Any]] = _cv.ContextVar(
+    "_BATCH_ORCHESTRATOR", default=None
+)
 
 
-def set_batch_orchestrator(orchestrator: Any) -> None:
-    """Set the orchestrator for the current thread (called by execute_tool)."""
+def set_batch_orchestrator(orchestrator: Any) -> Any:
+    """Set the orchestrator for the current thread and context (called by execute_tool)."""
     _batch_context.orchestrator = orchestrator
+    return _BATCH_ORCHESTRATOR.set(orchestrator)
 
 
 def _get_orchestrator() -> Optional[Any]:
-    return getattr(_batch_context, "orchestrator", None)
+    orch = _BATCH_ORCHESTRATOR.get()
+    if orch is not None:
+        return orch
+    local_orch = getattr(_batch_context, "orchestrator", None)
+    if local_orch is not None:
+        return local_orch
+    try:
+        from src.tools.subagent_tools import _PARENT_ORCHESTRATOR_VAR
+
+        return _PARENT_ORCHESTRATOR_VAR.get(None)
+    except Exception:
+        return None
 
 
 @tool(tags=["coding", "planning", "debug", "review"], permission_kind=PermissionKind.NONE)
@@ -89,74 +103,56 @@ def batch(calls: List[Dict[str, Any]]) -> Dict[str, Any]:
     results: List[Dict[str, Any]] = []
     errors: List[Dict[str, Any]] = []
 
-    async def _dispatch(call: Dict[str, Any]) -> Dict[str, Any]:
-        tool_name = call.get("tool", "")
-        tool_input = call.get("input", {})
-        try:
-            result = orchestrator.execute_tool(
-                {"name": tool_name, "arguments": tool_input}
-            )
-            return {"tool": tool_name, "status": "ok", "result": result}
-        except Exception as exc:
-            logger.warning(f"batch: {tool_name} raised: {exc}")
-            return {"tool": tool_name, "status": "error", "error": str(exc)}
-
-    async def _run_all() -> List[Dict[str, Any]]:
-        return await asyncio.gather(*[_dispatch(c) for c in calls])
-
     try:
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            loop = None
-
-        if loop is not None and loop.is_running():
-            # Inside an async context — run in thread pool to avoid deadlock
-            # MED-2 fix: cap thread count to avoid spawning hundreds of threads for
-            # large batches; an unbounded pool can exhaust OS thread limits.
-            _max_workers = min(len(calls), 16)
-            _ctx = _cv.copy_context()
-            with concurrent.futures.ThreadPoolExecutor(
-                max_workers=_max_workers
-            ) as pool:
-                futs = [
-                    pool.submit(
-                        _ctx.run,
-                        orchestrator.execute_tool,
-                        {"name": c.get("tool", ""), "arguments": c.get("input", {})},
-                    )
-                    for c in calls
-                ]
-                for i, (c, fut) in enumerate(zip(calls, futs)):
-                    try:
-                        res = fut.result(timeout=120)
-                        results.append(
-                            {"tool": c["tool"], "status": "ok", "result": res}
-                        )
-                    except Exception as exc:
+        # Run calls concurrently in a thread pool. Each task runs in its own
+        # copied context to prevent "cannot enter context: already entered"
+        # and ensure orchestrator contextvars propagate cleanly into workers.
+        _max_workers = min(len(calls), 16)
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=_max_workers
+        ) as pool:
+            futs = [
+                pool.submit(
+                    _cv.copy_context().run,
+                    orchestrator.execute_tool,
+                    {"name": c.get("tool", ""), "arguments": c.get("input", {})},
+                )
+                for c in calls
+            ]
+            for c, fut in zip(calls, futs):
+                try:
+                    res = fut.result(timeout=120)
+                    if isinstance(res, dict) and (
+                        res.get("ok") is False or res.get("status") == "error"
+                    ):
                         entry = {
                             "tool": c["tool"],
                             "status": "error",
-                            "error": str(exc),
+                            "error": res.get("error") or str(res),
+                            "result": res,
                         }
                         results.append(entry)
                         errors.append(entry)
-        else:
-            new_loop = asyncio.new_event_loop()
-            try:
-                raw = new_loop.run_until_complete(_run_all())
-            finally:
-                new_loop.close()
-            for entry in raw:
-                results.append(entry)
-                if entry.get("status") == "error":
+                    else:
+                        results.append(
+                            {"tool": c["tool"], "status": "ok", "result": res}
+                        )
+                except Exception as exc:
+                    entry = {
+                        "tool": c["tool"],
+                        "status": "error",
+                        "error": str(exc),
+                    }
+                    results.append(entry)
                     errors.append(entry)
 
     except Exception as exc:
         return {"status": "error", "error": f"batch execution failed: {exc}"}
 
     return {
-        "status": "ok" if not errors else "partial",
+        "status": "error"
+        if len(errors) == len(calls)
+        else ("partial" if errors else "ok"),
         "results": results,
         "errors": errors,
     }

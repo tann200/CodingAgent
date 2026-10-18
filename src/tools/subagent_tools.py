@@ -531,6 +531,8 @@ def delegate_task(
         f"delegate_task: spawning {role} subagent for: {subtask_description[:100]}..."
     )
 
+    _agent_token = None
+    _child_agent = None
     try:
         # 1. Setup the isolated initial state
         try:
@@ -611,6 +613,7 @@ def delegate_task(
                 # Set active_agent on parent orchestrator to enforce allowed_tools
                 if _effective_allowed is not None or _effective_denied:
                     from src.core.orchestration.agent_types import AgentDefinition
+                    from src.core.orchestration.tool_execution_pipeline import _ACTIVE_AGENT_CTX
 
                     _child_agent = AgentDefinition(
                         id=f"delegated_{canonical_role}",
@@ -620,6 +623,7 @@ def delegate_task(
                         denied_tools=_effective_denied,
                     )
                     parent_orchestrator.active_agent = _child_agent
+                    _agent_token = _ACTIVE_AGENT_CTX.set(_child_agent)
                 _active_orchestrator = parent_orchestrator
             except Exception as _e:
                 logger.warning(
@@ -792,11 +796,17 @@ def delegate_task(
             raise _subagent_err
 
         finally:
-            # FAULT-07 fix: always reset active_agent regardless of success/failure/exception.
-            # Previously this was duplicated in the success and except paths and would leak
-            # if an exception was raised before the try block (e.g. during manifest writing).
+            if _agent_token is not None:
+                try:
+                    from src.core.orchestration.tool_execution_pipeline import _ACTIVE_AGENT_CTX
+
+                    _ACTIVE_AGENT_CTX.reset(_agent_token)
+                except Exception:
+                    pass
+            # FAULT-07 fix: reset active_agent on parent orchestrator if it still matches this child agent
             if _use_full_pipeline and parent_orchestrator is not None:
-                parent_orchestrator.active_agent = None
+                if getattr(parent_orchestrator, "active_agent", None) is _child_agent:
+                    parent_orchestrator.active_agent = None
 
         # SPAWN-W3: Persist child session in SessionStore so it's queryable later.
         if parent_session_id is not None:
@@ -1088,7 +1098,10 @@ def delegate_tasks_parallel(
     results: List[Dict[str, Any]] = []
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
-        futures = {pool.submit(_run_one, task): task for task in validated}
+        futures = {
+            pool.submit(_cv.copy_context().run, _run_one, task): task
+            for task in validated
+        }
         for fut in concurrent.futures.as_completed(futures, timeout=_PARALLEL_SUBTASK_TIMEOUT + 10):
             try:
                 results.append(fut.result(timeout=1))

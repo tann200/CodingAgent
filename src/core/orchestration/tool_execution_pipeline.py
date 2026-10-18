@@ -30,6 +30,9 @@ _TOOL_EXECUTOR_LOCK: threading.Lock = threading.Lock()
 _CURRENT_TOOL_CANCEL_EVENT: ContextVar[Optional[threading.Event]] = ContextVar(
     "_CURRENT_TOOL_CANCEL_EVENT", default=None
 )
+_ACTIVE_AGENT_CTX: ContextVar[Optional[Any]] = ContextVar(
+    "_ACTIVE_AGENT_CTX", default=None
+)
 _THREAD_CANCEL_EVENTS: Dict[int, threading.Event] = {}
 _THREAD_CANCEL_LOCK: threading.Lock = threading.Lock()
 
@@ -455,7 +458,9 @@ def _run_preflight_and_lookup(
         return {"ok": False, "error": f"Tool '{name}' not found."}, None
 
     try:
-        active_agent = getattr(orch, "active_agent", None)
+        active_agent = _ACTIVE_AGENT_CTX.get()
+        if active_agent is None:
+            active_agent = getattr(orch, "active_agent", None)
         if active_agent is not None and not active_agent.is_tool_permitted(name):
             _write_permission_audit(
                 orch.working_dir, name, args, "deny", "spawn_allowed_tools"
@@ -1311,7 +1316,9 @@ def _check_agent_permission_override(
 ) -> Optional[Dict[str, Any]]:
     """Apply global + per-agent permission rules; returns error dict if denied."""
     try:
-        active_agent = getattr(orch, "active_agent", None)
+        active_agent = _ACTIVE_AGENT_CTX.get()
+        if active_agent is None:
+            active_agent = getattr(orch, "active_agent", None)
         global_policy = getattr(orch, "permission_policy", None)
         if global_policy is None:
             # The orchestrator never assigns .permission_policy, so without
