@@ -411,6 +411,16 @@ def read_file(
             "error": f"Access denied: '{p.name}' is a protected secret file. Reading credentials and private keys is restricted.",
         }
 
+    if p.is_dir():
+        _mark_file_read(str(p.resolve()))
+        items = [c.name for c in sorted(p.iterdir()) if c.name not in _OS_JUNK]
+        return {
+            "path": str(p),
+            "status": "ok",
+            "content": f"Directory containing {len(items)} items: {', '.join(items[:50])}",
+            "is_directory": True,
+        }
+
     # Binary detection: read first 512 bytes for null-byte check
     # without loading the entire file into memory (OOM-1 fix).
     try:
@@ -503,7 +513,10 @@ def list_dir(path: str = ".", workdir: Path | None = None) -> Dict[str, Any]:
     for child in sorted(p.iterdir(), key=lambda c: (not c.is_dir(), c.name.lower())):
         if child.name in _OS_JUNK:
             continue
-        items.append({"name": child.name, "is_dir": child.is_dir()})
+    try:
+        _mark_file_read(str(p.resolve()))
+    except Exception:
+        pass
     return {"path": str(p), "status": "ok", "items": items}
 
 

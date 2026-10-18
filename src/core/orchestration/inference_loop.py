@@ -110,6 +110,12 @@ def run_agent_once_impl(
     # F16: Reset session read-file tracking at the start of each new task so reads
     # from a previous task cannot bypass the read-before-edit guard in a new task.
     orch._session_read_files = set()
+    try:
+        from src.tools.guardrails import reset_guardrail_state
+
+        reset_guardrail_state()
+    except Exception:
+        pass
     # F17: Reset per-task usage buffer; will be flushed to disk once at task end.
     orch._usage_buffer = {}
     # D-10: Reset the SessionCostTracker buffer and idempotency guard for this turn.

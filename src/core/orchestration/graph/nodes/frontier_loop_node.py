@@ -14,11 +14,11 @@ from pathlib import Path
 from typing import Any, Dict, cast
 
 from src.core.orchestration.graph.state import StateLike
-from src.core.orchestration.graph.nodes.execution_helpers import (
+from src.core.orchestration.graph.nodes.execution_plan import (
     build_read_then_write_result,
     build_tool_history_messages,
+    compute_replan_trigger,
 )
-from src.core.orchestration.graph.nodes.execution_plan import compute_replan_trigger
 from src.core.orchestration.graph.nodes.tool_output_truncation import (
     TOOL_LARGE_TEXT_FIELDS,
     TOOL_OUTPUT_MAX_BYTES,
@@ -42,6 +42,9 @@ from src.core.orchestration.graph.completion_contract import (
     _MODIFYING_TOOL_NAMES,
 )
 from src.core.orchestration.graph.nodes.frontier_completion import (
+    _filter_tools_for_tier,
+    _is_context_overflow,
+    _plan_mode_blocks,
     clear_transient_contract_errors,
     finalize_frontier_exit,
     handle_no_tool_completion,
@@ -64,42 +67,11 @@ from src.core.inference.kv_cache_governor import (
 )
 
 logger = logging.getLogger(__name__)
-from src.core.messaging.event_types import AgentStatus, ToolResult  # noqa: E402
+from src.core.messaging.event_types import AgentStatus  # noqa: E402
 
 # Core tools for small/local models.  Larger tiers get core + extras up to
 # their ``get_tool_limit()`` via ``_filter_tools_for_tier``.
-_CORE_TOOL_NAMES: frozenset[str] = frozenset(
-    {
-        "read_file",
-        "write_file",
-        "list_files",
-        "bash",
-        "edit_file_atomic",
-        "grep",
-        "glob",
-        "run_tests",
-        "delegate_task",
-    }
-)
 
-def _filter_tools_for_tier(tools_schema: list, model_tier: str) -> list:
-    if not tools_schema:
-        return tools_schema
-    try:
-        from src.core.inference.model_tiers import ModelTier, get_tool_limit
-        tier = ModelTier(model_tier.lower())
-    except (ValueError, AttributeError):
-        return tools_schema
-    if tier == ModelTier.SMALL:
-        return [t for t in tools_schema if t.get("function", {}).get("name") in _CORE_TOOL_NAMES]
-    limit = get_tool_limit(tier)
-    core = [t for t in tools_schema if t.get("function", {}).get("name") in _CORE_TOOL_NAMES]
-    extras = [t for t in tools_schema if t.get("function", {}).get("name") not in _CORE_TOOL_NAMES]
-    expanded = list(core)
-    remaining = limit - len(core)
-    if remaining > 0 and extras:
-        expanded.extend(extras[:remaining])
-    return expanded
 
 # Maximum turns within one invocation of frontier_loop_node.
 # Each "turn" is one LLM call + its tool calls.
@@ -178,31 +150,6 @@ def _extract_content_text(response: Any) -> str:
         pass
     return ""
 
-def _is_context_overflow(error_msg: str) -> bool:
-    """Return True if the error message indicates a context-window overflow."""
-    patterns = (
-        "maximum context length", "context window limit", "context window exceeded",
-        "exceeds the available context", "input is too long", "prompt is too long",
-        "context length limit reached", "token limit exceeded", "max tokens exceeded",
-        "reduce the length", "too many tokens",
-    )
-    low = error_msg.lower()
-    return sum(1 for p in patterns if p in low) >= 2
-
-
-def _plan_mode_blocks(orchestrator: Any, tool_name: str) -> bool:
-    """Return True when plan-mode is active and the tool is blocked pending approval."""
-    try:
-        pm = getattr(orchestrator, "plan_mode", None)
-        if pm and getattr(pm, "enabled", False):
-            approved = getattr(orchestrator, "_plan_mode_approved", None)
-            if approved is not True:
-                from src.core.orchestration.plan_mode import PlanMode
-
-                return tool_name in PlanMode.BLOCKED_TOOLS
-    except Exception:
-        pass
-    return False
 
 
 # ---------------------------------------------------------------------------
@@ -454,6 +401,14 @@ async def _dispatch_tool_calls(
 
         logger.info("frontier_loop_node: executing tool %r (turn %d)", tool_name, turns_taken)
 
+        # SPEC-08: Begin step transaction before first mutating tool call in this loop visit
+        if orchestrator and hasattr(orchestrator, "begin_step_transaction"):
+            if tool_name in _MODIFYING_TOOL_NAMES and not getattr(orchestrator, "_step_snapshot_id", None):
+                try:
+                    orchestrator.begin_step_transaction()
+                except Exception as _step_exc:
+                    logger.debug("frontier_loop_node: begin_step_transaction skipped: %s", _step_exc)
+
         # P3.1: snapshot the target's lint state *before* the write so the
         # post-tool checkpoint only reports newly introduced problems.
         workdir = str(state.get("working_dir") or "")
@@ -490,6 +445,7 @@ async def _dispatch_tool_calls(
 
         try:
             if bus:
+                from src.core.messaging.events import ToolResult
                 bus.publish_typed(ToolResult(tool=tool_name, result=tool_result, turn=turns_taken))
         except Exception:
             pass

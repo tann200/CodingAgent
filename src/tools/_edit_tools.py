@@ -382,6 +382,17 @@ def edit_by_line_range(
     if guard_res_resolved.get("status") == "error":
         return {"path": str(p), "status": "error", "error": guard_res_resolved.get("error")}
 
+    # P2-6: Coerce to int — LLM may pass string representations
+    try:
+        start_line = int(start_line)
+        end_line = int(end_line)
+    except (TypeError, ValueError) as _ce:
+        return {
+            "path": str(p),
+            "status": "error",
+            "error": f"start_line/end_line must be integers: {_ce}",
+        }
+
     # GAP-S1: Read-before-write guardrail (check after resolve so path is absolute)
     try:
         from src.tools.guardrails import check_read_before_write
@@ -394,17 +405,6 @@ def edit_by_line_range(
 
     if not p.exists():
         return {"path": str(p), "status": "not_found"}
-
-    # P2-6: Coerce to int — LLM may pass string representations
-    try:
-        start_line = int(start_line)
-        end_line = int(end_line)
-    except (TypeError, ValueError) as _ce:
-        return {
-            "path": str(p),
-            "status": "error",
-            "error": f"start_line/end_line must be integers: {_ce}",
-        }
 
     original_content = p.read_text(encoding="utf-8")
     original_lines = original_content.splitlines(keepends=True)

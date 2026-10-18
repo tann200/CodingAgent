@@ -360,3 +360,83 @@ def finalize_frontier_exit(
         result["retrieved_snippets"] = retrieved_snippets
     return result
 
+
+_CORE_TOOL_NAMES = frozenset(
+    {
+        "read_file",
+        "write_file",
+        "edit_file_atomic",
+        "glob",
+        "grep",
+        "bash",
+        "delegate_task",
+    }
+)
+
+
+def _filter_tools_for_tier(tools_schema: list, model_tier: str) -> list:
+    if not tools_schema:
+        return tools_schema
+    try:
+        from src.core.inference.model_tiers import ModelTier, get_tool_limit
+
+        tier = ModelTier(model_tier.lower())
+    except (ValueError, AttributeError):
+        return tools_schema
+    if tier == ModelTier.SMALL:
+        return [
+            t
+            for t in tools_schema
+            if t.get("function", {}).get("name") in _CORE_TOOL_NAMES
+        ]
+    limit = get_tool_limit(tier)
+    core = [
+        t
+        for t in tools_schema
+        if t.get("function", {}).get("name") in _CORE_TOOL_NAMES
+    ]
+    extras = [
+        t
+        for t in tools_schema
+        if t.get("function", {}).get("name") not in _CORE_TOOL_NAMES
+    ]
+    expanded = list(core)
+    remaining = limit - len(core)
+    if remaining > 0 and extras:
+        expanded.extend(extras[:remaining])
+    return expanded
+
+
+def _is_context_overflow(error_msg: str) -> bool:
+    """Return True if the error message indicates a context-window overflow."""
+    patterns = (
+        "maximum context length",
+        "context window limit",
+        "context window exceeded",
+        "exceeds the available context",
+        "input is too long",
+        "prompt is too long",
+        "context length limit reached",
+        "token limit exceeded",
+        "max tokens exceeded",
+        "reduce the length",
+        "too many tokens",
+    )
+    low = error_msg.lower()
+    return sum(1 for p in patterns if p in low) >= 2
+
+
+def _plan_mode_blocks(orchestrator: Any, tool_name: str) -> bool:
+    """Return True when plan-mode is active and the tool is blocked pending approval."""
+    try:
+        pm = getattr(orchestrator, "plan_mode", None)
+        if pm and getattr(pm, "enabled", False):
+            approved = getattr(orchestrator, "_plan_mode_approved", None)
+            if approved is not True:
+                from src.core.orchestration.plan_mode import PlanMode
+
+                return tool_name in PlanMode.BLOCKED_TOOLS
+    except Exception:
+        pass
+    return False
+

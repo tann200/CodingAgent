@@ -576,9 +576,11 @@ class TestEditByLineRangeStringToIntLineNumberCoercion:
     def test_string_line_numbers_accepted(self, tmp_path):
         """edit_by_line_range should accept string line numbers from LLM."""
         from src.tools.file_tools import edit_by_line_range
+        from src.tools.guardrails import mark_file_read
 
         target = tmp_path / "foo.py"
         target.write_text("line1\nline2\nline3\n")
+        mark_file_read(str(target.resolve()))
 
         result = edit_by_line_range(
             path="foo.py",

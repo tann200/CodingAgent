@@ -165,6 +165,12 @@ def _check_read_before_write(
     try:
         target = Path(orch.working_dir or ".") / path_arg
         resolved_path = str(target.resolve())
+        from src.tools.guardrails import _global_read_files, _get_ctx_read_files, _global_lock
+        with _global_lock:
+            in_guardrails = (resolved_path in _global_read_files) or (resolved_path in _get_ctx_read_files())
+        if in_guardrails:
+            orch._session_read_files.add(resolved_path)
+
         if target.exists() and resolved_path not in orch._session_read_files:
             err_msg = (
                 f"Security/Logic violation: You must read '{path_arg}' "
@@ -976,6 +982,44 @@ def _run_post_execution(
                     (Path(orch.working_dir or ".") / path_arg).resolve()
                 )
                 orch._session_read_files.add(resolved_path)
+            except Exception:
+                pass
+        elif name == "rename_file":
+            try:
+                src_raw = args.get("path") or args.get("src_path") or args.get("src") or args.get("old_path")
+                dst_raw = args.get("new_path") or args.get("dst_path") or args.get("dst") or args.get("new_name")
+                wd = Path(orch.working_dir or ".")
+                src_res = str((wd / src_raw).resolve()) if src_raw else None
+                dst_res = str((wd / dst_raw).resolve()) if dst_raw else None
+                if src_res:
+                    orch._session_modified_files.add(src_res)
+                    orch._session_read_files.add(src_res)
+                if dst_res:
+                    orch._session_modified_files.add(dst_res)
+                    orch._session_read_files.add(dst_res)
+                    try:
+                        from src.tools.guardrails import mark_file_read
+                        mark_file_read(dst_res)
+                    except Exception:
+                        pass
+                aff = getattr(orch, "_affected_files", None)
+                if isinstance(aff, list):
+                    if src_res and src_res not in aff and (src_raw not in aff):
+                        aff.append(src_res)
+                    if dst_res and dst_res not in aff and (dst_raw not in aff):
+                        aff.append(dst_res)
+                elif isinstance(aff, set):
+                    if src_res:
+                        aff.add(src_res)
+                    if dst_res:
+                        aff.add(dst_res)
+                try:
+                    if src_res:
+                        orch.event_bus.publish_typed(FileModified(path=src_res, tool=name, workdir=str(orch.working_dir)))
+                    if dst_res:
+                        orch.event_bus.publish_typed(FileModified(path=dst_res, tool=name, workdir=str(orch.working_dir)))
+                except Exception:
+                    pass
             except Exception:
                 pass
         elif "write" in tool.get("side_effects", []) and path_arg:

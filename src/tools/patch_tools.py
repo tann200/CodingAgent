@@ -112,13 +112,23 @@ def edit_code_block(
 
         old_content = file_path.read_text(encoding="utf-8")
 
-        # Mark as read so write_file guardrail is satisfied
-        try:
-            from src.tools.guardrails import mark_file_read
+        # WorkspaceGuard & read-before-write checks
+        workdir_resolved = workdir_path.resolve()
+        from src.core.orchestration.workspace_guard import WorkspaceGuard
+        guard = WorkspaceGuard(workspace_root=workdir_resolved)
+        guard_res = guard.guard_operation("edit_code_block", str(file_path))
+        if guard_res.get("status") == "error":
+            return {"status": "error", "error": guard_res.get("error")}
 
-            mark_file_read(str(file_path.resolve()))
-        except Exception:
-            pass
+        from src.tools._file_io import _check_project_deny_write
+        deny_err = _check_project_deny_write(file_path, workdir_resolved)
+        if deny_err:
+            return {"status": "error", "error": deny_err}
+
+        from src.tools.guardrails import check_read_before_write
+        rbw = check_read_before_write(str(file_path.resolve()))
+        if rbw:
+            return {"status": "error", "error": rbw.get("error", "File must be read first")}
 
         # C2: Uniqueness check — reject if 0 or >1 occurrences
         count = old_content.count(block_to_find)

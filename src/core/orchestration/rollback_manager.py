@@ -68,6 +68,43 @@ class RollbackManager:
         """Compute a simple checksum for file content."""
         return hashlib.md5(content.encode()).hexdigest()
 
+    def _snapshot_directory_children(self, dir_path: Path) -> List[FileSnapshot]:
+        """Recursively snapshot all items inside a directory."""
+        snaps: List[FileSnapshot] = []
+        try:
+            for child in sorted(dir_path.rglob("*")):
+                try:
+                    rel_p = str(child.relative_to(self.workdir))
+                except Exception:
+                    rel_p = str(child)
+                if child.is_dir():
+                    snaps.append(
+                        FileSnapshot(
+                            path=rel_p,
+                            content="__DIRECTORY__",
+                            timestamp=datetime.now().isoformat(),
+                            checksum="",
+                            exists=True,
+                        )
+                    )
+                elif child.is_file():
+                    try:
+                        child_content = child.read_text(encoding="utf-8")
+                        snaps.append(
+                            FileSnapshot(
+                                path=rel_p,
+                                content=child_content,
+                                timestamp=datetime.now().isoformat(),
+                                checksum=self._compute_checksum(child_content),
+                                exists=True,
+                            )
+                        )
+                    except Exception as err:
+                        logger.warning(f"Failed to snapshot directory child {rel_p}: {err}")
+        except Exception as e:
+            logger.warning(f"Failed to scan directory {dir_path}: {e}")
+        return snaps
+
     def snapshot_files(
         self, file_paths: List[str], snapshot_id: Optional[str] = None
     ) -> str:
@@ -116,6 +153,7 @@ class RollbackManager:
                         exists=True,
                     )
                 )
+                snapshots.extend(self._snapshot_directory_children(path))
                 continue
 
             try:
@@ -446,6 +484,10 @@ class RollbackManager:
                     exists=True,
                 )
             )
+            for child_snap in self._snapshot_directory_children(path):
+                if child_snap.path not in existing_paths:
+                    self.snapshots[snapshot_id].append(child_snap)
+                    existing_paths.add(child_snap.path)
         else:
             try:
                 content = path.read_text(encoding="utf-8")

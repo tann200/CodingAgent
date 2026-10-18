@@ -293,9 +293,11 @@ class TestGitSafeSubcommandsGate:
 class TestEditByLineRangeLineEditsAndPathSafety:
     def test_basic_replace(self, tmp_path):
         from src.tools.file_tools import edit_by_line_range
+        from src.tools.guardrails import mark_file_read
 
         p = tmp_path / "f.txt"
         p.write_text("line1\nline2\nline3\nline4\n")
+        mark_file_read(str(p.resolve()))
 
         result = edit_by_line_range("f.txt", 2, 3, "replaced\n", workdir=tmp_path)
         assert result["status"] == "ok"
@@ -307,9 +309,11 @@ class TestEditByLineRangeLineEditsAndPathSafety:
 
     def test_out_of_range_returns_error(self, tmp_path):
         from src.tools.file_tools import edit_by_line_range
+        from src.tools.guardrails import mark_file_read
 
         p = tmp_path / "f.txt"
         p.write_text("only one line\n")
+        mark_file_read(str(p.resolve()))
 
         result = edit_by_line_range("f.txt", 5, 10, "new", workdir=tmp_path)
         assert result["status"] == "error"

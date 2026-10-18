@@ -10,7 +10,7 @@ import contextvars
 import logging
 import threading
 from pathlib import Path
-from typing import Dict, Set, Any
+from typing import Dict, Set, Any, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -57,19 +57,23 @@ def mark_file_read(path: str) -> None:
         _global_read_files.add(p)
 
 
-def check_read_before_write(path: str) -> Dict[str, Any]:
+def check_read_before_write(path: str, workdir: Optional[str] = None) -> Dict[str, Any]:
     """Check that a file was read before allowing a write.
 
     Checks both the ContextVar set and the global session set so that
     cross-thread tool calls are handled correctly on Python 3.11+.
 
     Args:
-        path: The resolved absolute path of the file to write.
+        path: The path of the file to write (resolved or relative).
+        workdir: Optional working directory anchor for resolving relative paths.
 
     Returns:
         Empty dict if OK, or {"error": "...", "requires_read_first": True} on violation.
     """
-    p = str(Path(path).resolve())
+    if workdir and not Path(path).is_absolute():
+        p = str((Path(workdir) / path).resolve())
+    else:
+        p = str(Path(path).resolve())
     in_context = p in _get_ctx_read_files()
     # LOW-1 fix: perform the existence check and global-set membership test
     # together inside the lock so a concurrent write_file call cannot sneak

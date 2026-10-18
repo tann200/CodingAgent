@@ -62,12 +62,23 @@ def ast_rename(
 
     original = file_path.read_text(encoding="utf-8")
 
-    # Guardrail: mark file as read, then verify write is allowed
-    try:
-        from src.tools.guardrails import mark_file_read, check_read_before_write
+    workdir_resolved = workdir_path.resolve()
+    from src.core.orchestration.workspace_guard import WorkspaceGuard
+    guard = WorkspaceGuard(workspace_root=workdir_resolved)
+    guard_res = guard.guard_operation("ast_rename", str(file_path))
+    if guard_res.get("status") == "error":
+        return {"status": "error", "error": guard_res.get("error")}
 
-        mark_file_read(str(file_path))
-        err = check_read_before_write(str(file_path))
+    from src.tools._file_io import _check_project_deny_write
+    deny_err = _check_project_deny_write(file_path, workdir_resolved)
+    if deny_err:
+        return {"status": "error", "error": deny_err}
+
+    # Guardrail: verify write is allowed (file must have been read first)
+    try:
+        from src.tools.guardrails import check_read_before_write
+
+        err = check_read_before_write(str(file_path.resolve()))
         if err:
             return {"status": "error", "error": err["error"]}
     except ImportError:
@@ -139,6 +150,12 @@ def ast_rename(
 
     # Write the new content
     file_path.write_text(new_content, encoding="utf-8")
+    try:
+        from src.tools.guardrails import mark_file_read
+
+        mark_file_read(str(file_path.resolve()))
+    except Exception:
+        pass
 
     return {
         "status": "ok",

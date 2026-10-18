@@ -155,7 +155,12 @@ class TestCanonicalCentralization:
     def test_modifying_tools_derived_from_write_tools(self):
         from src.tools.constants import MODIFYING_TOOLS, WRITE_TOOLS_REQUIRING_READ
 
-        assert MODIFYING_TOOLS == WRITE_TOOLS_REQUIRING_READ | {"multiedit"}
+        assert MODIFYING_TOOLS == WRITE_TOOLS_REQUIRING_READ | {
+            "create_directory",
+            "git_commit",
+            "git_stash",
+            "git_restore",
+        }
 
     def test_dry_run_superset_of_write_tools(self):
         from src.tools.constants import DRY_RUN_BLOCKED_TOOLS, WRITE_TOOLS_REQUIRING_READ

@@ -49,12 +49,26 @@ DEFAULT_PERMISSION_LEVEL = PermissionLevel.WORKSPACE_WRITE
 TOOL_PERMISSIONS: Dict[str, PermissionLevel] = {
     # --- read-only ---
     "read_file": PermissionLevel.READ_ONLY,
+    "read_file_chunk": PermissionLevel.READ_ONLY,
+    "read_file_bytes": PermissionLevel.READ_ONLY,
+    "batched_file_read": PermissionLevel.READ_ONLY,
+    "tail_log_file": PermissionLevel.READ_ONLY,
+    "repo_overview": PermissionLevel.READ_ONLY,
+    "find_files": PermissionLevel.READ_ONLY,
+    "ast_list_symbols": PermissionLevel.READ_ONLY,
+    "lsp_diagnostics": PermissionLevel.READ_ONLY,
+    "lsp_references": PermissionLevel.READ_ONLY,
+    "lsp_definition": PermissionLevel.READ_ONLY,
+    "lsp_symbols": PermissionLevel.READ_ONLY,
+    "lsp_hover": PermissionLevel.READ_ONLY,
+    "diff_state": PermissionLevel.READ_ONLY,
+    "list_snapshots": PermissionLevel.READ_ONLY,
+    "list_checkpoints": PermissionLevel.READ_ONLY,
     "glob": PermissionLevel.READ_ONLY,
     "grep": PermissionLevel.READ_ONLY,
     "bash_readonly": PermissionLevel.READ_ONLY,
     "list_files": PermissionLevel.READ_ONLY,
     "find_symbol": PermissionLevel.READ_ONLY,
-    "find_references": PermissionLevel.READ_ONLY,
     "search_code": PermissionLevel.READ_ONLY,
     "git_status": PermissionLevel.READ_ONLY,
     "git_log": PermissionLevel.READ_ONLY,
@@ -67,10 +81,14 @@ TOOL_PERMISSIONS: Dict[str, PermissionLevel] = {
     "summarize_structure": PermissionLevel.READ_ONLY,
     # --- workspace write (default) ---
     "write_file": PermissionLevel.WORKSPACE_WRITE,
+    "edit_file": PermissionLevel.WORKSPACE_WRITE,
     "edit_file_atomic": PermissionLevel.WORKSPACE_WRITE,
+    "edit_code_block": PermissionLevel.WORKSPACE_WRITE,
+    "apply_patch": PermissionLevel.WORKSPACE_WRITE,
     "multiedit": PermissionLevel.WORKSPACE_WRITE,
     "edit_by_line_range": PermissionLevel.WORKSPACE_WRITE,
     "rename_file": PermissionLevel.WORKSPACE_WRITE,
+    "create_directory": PermissionLevel.WORKSPACE_WRITE,
     "delete_file": PermissionLevel.DANGER,
     "save_memory": PermissionLevel.WORKSPACE_WRITE,
     "manage_todo": PermissionLevel.WORKSPACE_WRITE,
@@ -80,6 +98,8 @@ TOOL_PERMISSIONS: Dict[str, PermissionLevel] = {
     # --- dangerous ---
     "bash": PermissionLevel.DANGER,
     "run_tests": PermissionLevel.DANGER,
+    "run_tests_legacy": PermissionLevel.DANGER,
+    "run_js_tests": PermissionLevel.DANGER,
     "format_file": PermissionLevel.WORKSPACE_WRITE,
     # --- always prompt ---
     "submit_plan_for_review": PermissionLevel.PROMPT,
@@ -88,6 +108,9 @@ TOOL_PERMISSIONS: Dict[str, PermissionLevel] = {
     "send_user_message": PermissionLevel.READ_ONLY,
     # SPAWN-W5: subagent spawning always requires user confirmation (spawn.permission_required)
     "delegate_task": PermissionLevel.PROMPT,
+    "delegate_tasks_parallel": PermissionLevel.PROMPT,
+    "lsp_rename": PermissionLevel.PROMPT,
+    "ast_rename": PermissionLevel.PROMPT,
 }
 
 

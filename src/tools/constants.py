@@ -23,26 +23,26 @@ WRITE_TOOLS_REQUIRING_READ: frozenset[str] = frozenset(
         "edit_file_atomic",
         "write_file",
         "edit_by_line_range",
+        "edit_code_block",
         "apply_patch",
+        "multiedit",
         # Destructive tools — also subject to the _affected_files scope guard
         "delete_file",
         "rename_file",
         "ast_rename",
+        "lsp_rename",
+        "format_file",
         "manage_todo",  # SEC-2: previously must stay in sync across modules
     }
 )
 
 #: Tools that require a prior successful read call on the target path (the
 #: loop-guard flavor of :data:`WRITE_TOOLS_REQUIRING_READ`; computed from the
-#: same base so the two can never drift — F-88 keeps ``multiedit`` here).
+#: same base so the two can never drift).
 MODIFYING_TOOLS: frozenset[str] = frozenset(
     WRITE_TOOLS_REQUIRING_READ
     | {
-        "multiedit",
-        "edit_code_block",
         "create_directory",
-        "format_file",
-        "lsp_rename",
         "git_commit",
         "git_stash",
         "git_restore",
@@ -60,6 +60,14 @@ _EXEC_SIDE_EFFECT_TOOLS: frozenset[str] = frozenset(
         "execute_command",
         "git_commit",
         "git_push",
+        "git_stash",
+        "git_restore",
+        "create_directory",
+        "run_tests",
+        "run_tests_legacy",
+        "run_js_tests",
+        "delegate_task",
+        "delegate_tasks_parallel",
     }
 )
 DRY_RUN_BLOCKED_TOOLS: frozenset[str] = frozenset(
@@ -177,21 +185,14 @@ IDEMPOTENT_TOOLS: frozenset[str] = frozenset(
         "write_file",
         "edit_file",
         "edit_file_atomic",
-        "edit_by_line_range",
-        "edit_code_block",
-        "apply_patch",
-        "generate_patch",
         "multiedit",
+        "generate_patch",
         "delete_file",
-        "rename_file",
         # ---- idempotent verification / test runners ---------------------
         "syntax_check",
         "run_eslint",
         "run_ts_check",
         "run_linter",
-        "run_tests",
-        "run_tests_legacy",
-        "run_js_tests",
     }
 )
 

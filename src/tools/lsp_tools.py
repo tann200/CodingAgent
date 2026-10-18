@@ -319,6 +319,26 @@ async def lsp_rename(
                     continue
                 if not file_path.exists():
                     continue
+
+                from src.core.orchestration.workspace_guard import WorkspaceGuard
+                guard = WorkspaceGuard(workspace_root=workdir_path)
+                guard_res = guard.guard_operation("lsp_rename", str(resolved_path))
+                if guard_res.get("status") == "error":
+                    logger.warning("lsp_rename: %s blocked by WorkspaceGuard: %s", resolved_path, guard_res.get("error"))
+                    continue
+
+                from src.tools._file_io import _check_project_deny_write
+                deny_err = _check_project_deny_write(resolved_path, workdir_path)
+                if deny_err:
+                    logger.warning("lsp_rename: %s blocked by deny-write: %s", resolved_path, deny_err)
+                    continue
+
+                from src.tools.guardrails import check_read_before_write
+                rbw_err = check_read_before_write(str(resolved_path))
+                if rbw_err:
+                    logger.warning("lsp_rename: %s blocked by read-before-write: %s", resolved_path, rbw_err.get("error"))
+                    continue
+
                 content = file_path.read_text(encoding="utf-8")
                 lines = content.splitlines(keepends=True)
                 # Apply edits in reverse order to preserve line numbers

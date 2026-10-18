@@ -196,7 +196,9 @@ class TestAstRenamePreservesComments:
         )
 
         from src.tools.ast_tools import ast_rename
+        from src.tools.guardrails import mark_file_read
 
+        mark_file_read(str(src.resolve()))
         result = ast_rename(str(src), "old_func", "new_func", workdir=str(tmp_path))
 
         assert result["status"] == "ok"
@@ -219,7 +221,9 @@ class TestAstRenamePreservesComments:
         )
 
         from src.tools.ast_tools import ast_rename
+        from src.tools.guardrails import mark_file_read
 
+        mark_file_read(str(src.resolve()))
         result = ast_rename(str(src), "old_func", "new_func", workdir=str(tmp_path))
 
         assert result["status"] == "ok"
@@ -789,32 +793,37 @@ class TestAstToolsNoDeadCode:
         )
 
     def test_ast_rename_marks_file_read_before_write(self, tmp_path):
-        """ast_rename must call mark_file_read so the guardrail is satisfied."""
-        from src.tools.guardrails import reset_guardrail_state, check_read_before_write
+        """ast_rename enforces RBW and keeps the file marked as read."""
+        from src.tools.guardrails import reset_guardrail_state, check_read_before_write, mark_file_read
         from src.tools.ast_tools import ast_rename
 
         src_file = tmp_path / "mod.py"
         src_file.write_text("def old_fn(): pass\n")
 
         reset_guardrail_state()
-        # Before rename — guardrail should fire (not yet read in this session)
+        # Before read — guardrail should fire (not yet read in this session)
         pre = check_read_before_write(str(src_file.resolve()))
         assert pre.get("requires_read_first") is True
 
-        ast_rename(str(src_file), "old_fn", "new_fn", workdir=str(tmp_path))
+        # Unread file rename fails RBW
+        fail = ast_rename(str(src_file), "old_fn", "new_fn", workdir=str(tmp_path))
+        assert fail["status"] == "error"
 
-        # After rename — file should be marked as read in the global set
+        # Once read, ast_rename succeeds and keeps the file marked as read
+        mark_file_read(str(src_file.resolve()))
+        res = ast_rename(str(src_file), "old_fn", "new_fn", workdir=str(tmp_path))
+        assert res["status"] == "ok"
         post = check_read_before_write(str(src_file.resolve()))
-        assert post == {}, (
-            "ast_rename did not call mark_file_read — guardrail still fires"
-        )
+        assert post == {}
 
     def test_ast_rename_still_works_after_cleanup(self, tmp_path):
         """Removing _RenameTransformer must not break ast_rename functionality."""
         from src.tools.ast_tools import ast_rename
+        from src.tools.guardrails import mark_file_read
 
         src_file = tmp_path / "mod.py"
         src_file.write_text("def old_fn():\n    return old_fn()\n")
+        mark_file_read(str(src_file.resolve()))
 
         result = ast_rename(str(src_file), "old_fn", "new_fn", workdir=str(tmp_path))
         assert result["status"] == "ok"
@@ -901,21 +910,32 @@ class TestRenameFileGuardrail:
 
 
 class TestEditCodeBlockGuardrail:
-    """BUG-25: edit_code_block must call mark_file_read so write_file guardrail passes."""
+    """BUG-25: edit_code_block enforces read-before-write guardrail."""
 
     def test_edit_code_block_marks_file_read(self, tmp_path):
-        """edit_code_block must mark the file as read before writing."""
-        from src.tools.guardrails import reset_guardrail_state, check_read_before_write
+        """edit_code_block must enforce read-before-write."""
+        from src.tools.guardrails import reset_guardrail_state, check_read_before_write, mark_file_read
         from src.tools.patch_tools import edit_code_block
 
         src = tmp_path / "module.py"
         src.write_text("def foo():\n    return 1\n")
 
         reset_guardrail_state()
-        # Confirm guardrail would fire before edit_code_block is called
+        # Confirm guardrail would fire before file is read
         pre = check_read_before_write(str(src.resolve()))
         assert pre.get("requires_read_first") is True
 
+        # Unread file edit fails RBW
+        fail = edit_code_block(
+            path=str(src),
+            block_to_find="return 1",
+            new_block="return 2",
+            workdir=str(tmp_path),
+        )
+        assert fail.get("status") == "error"
+
+        # After reading, edit_code_block succeeds
+        mark_file_read(str(src.resolve()))
         result = edit_code_block(
             path=str(src),
             block_to_find="return 1",
@@ -923,6 +943,6 @@ class TestEditCodeBlockGuardrail:
             workdir=str(tmp_path),
         )
         assert result.get("status") == "ok", (
-            f"edit_code_block should succeed (mark_file_read satisfies guardrail), got: {result}"
+            f"edit_code_block should succeed once read, got: {result}"
         )
         assert "return 2" in src.read_text()
