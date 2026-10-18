@@ -140,6 +140,11 @@ def save_provider_credentials(
         kwargs: dict[str, Any] = {}
         if api_key:
             kwargs["api_key"] = api_key
+        else:
+            p = prefs.data.get("providers", {}).get(provider_id.lower(), {})
+            if "api_key" in p:
+                del p["api_key"]
+                prefs.save()
         if base_url:
             kwargs["base_url"] = base_url
         if kwargs:
