@@ -282,6 +282,7 @@ class _AgentStateSpec(TypedDict, total=False):
     max_turns: int | None
     rounds: int
     agent_mode: str | None
+    active_role: str | None
     model_tier: str | None
     deterministic: bool | None
     seed: int | None

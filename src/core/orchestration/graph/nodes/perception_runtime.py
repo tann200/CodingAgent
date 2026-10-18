@@ -249,15 +249,10 @@ def _compute_active_skills_for_task(
 
 
 def _select_perception_role(state: Mapping[str, Any], orchestrator: Any) -> str:
-    """Map agent_mode to the canonical toolset role name.
-
-    All five toolset roles are reachable:
-      planning  → strategic   (planner toolset)
-      analyzing → analyst     (analysis toolset)
-      reviewing → reviewer    (review toolset)
-      debugging → debugger    (debug toolset)
-      *         → operational (coding toolset, default)
-    """
+    """Map active_role or agent_mode to the canonical toolset role name."""
+    active_role = state.get("active_role") or getattr(orchestrator, "active_role", None)
+    if active_role:
+        return active_role
     agent_mode = (
         state.get("agent_mode")
         or getattr(orchestrator, "_agent_mode", None)

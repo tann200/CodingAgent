@@ -125,6 +125,7 @@ def _on_config_reloaded(orch: Any, changed_paths: Optional[set]) -> None:
         from src.core.inference.llm_manager import (
             reload_provider_manager_sync,
             get_provider_manager,
+            _ensure_provider_manager_initialized_sync,
         )
 
         try:
@@ -132,8 +133,12 @@ def _on_config_reloaded(orch: Any, changed_paths: Optional[set]) -> None:
             if pm:
                 if getattr(pm, "_event_bus", None) is None:
                     pm.set_event_bus(orch.event_bus)
-                reload_provider_manager_sync()
+                if hasattr(pm, "reload"):
+                    reload_provider_manager_sync()
+                else:
+                    _ensure_provider_manager_initialized_sync()
         except Exception:
+            _ensure_provider_manager_initialized_sync()
             guilogger.warning(
                 "ProviderManager reload failed during config reload"
             )

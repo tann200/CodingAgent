@@ -173,14 +173,6 @@ def _is_already_indexed(working_dir: str) -> bool:
     """Return True if working_dir repo index is fresh and no indexed files have changed."""
     try:
         resolved = str(os.path.realpath(working_dir))
-        from pathlib import Path
-
-        index_file = Path(resolved) / ".codingAgent" / "repo_index.json"
-        if not index_file.exists():
-            legacy_file = Path(resolved) / ".agent-context" / "repo_index.json"
-            if not legacy_file.exists():
-                return False
-
         with _INDEXED_DIRS_LOCK:
             current_mtime = os.stat(resolved).st_mtime_ns
             if _INDEXED_DIRS.get(resolved) != current_mtime:
@@ -364,16 +356,8 @@ Use this repository context to plan your deep-dive searches."""
         if not _is_already_indexed(working_dir):
             idx = index_repository(working_dir)
             if idx:
-                vs.index_code(idx)
+                vs.index_code(idx.get("symbols", []) if isinstance(idx, dict) else idx)
             _mark_indexed(working_dir)
-        else:
-            from pathlib import Path
-            symbols_file = Path(working_dir) / ".codingAgent" / "vectorstore" / "symbols.json"
-            legacy_symbols_file = Path(working_dir) / ".agent-context" / "vectorstore" / "symbols.json"
-            if not symbols_file.exists() and not legacy_symbols_file.exists():
-                idx = index_repository(working_dir)
-                if idx:
-                    vs.index_code(idx)
 
         # Search the vector store for semantically similar symbols
         semantic_results = vs.search(task, limit=10)

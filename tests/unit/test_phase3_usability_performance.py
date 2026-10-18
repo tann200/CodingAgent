@@ -382,3 +382,121 @@ async def test_tui_spawn_permission_button_allow_and_deny():
     assert any(isinstance(m, SpawnPermissionDenied) and m.tool_id == "tool456" for m in app._posted_messages)
 
 
+@pytest.mark.asyncio
+async def test_tui_role_forwarding_to_frontier_loop():
+    """Verify frontier_loop_node uses state active_role and filters tools for that role."""
+    from unittest.mock import patch, AsyncMock
+    from src.core.orchestration.graph.nodes.frontier_loop_node import frontier_loop_node
+    from src.core.orchestration.orchestrator import Orchestrator
+
+    orch = Orchestrator()
+    orch.active_role = "reviewer"
+
+    state = {
+        "task": "review patch",
+        "active_role": "reviewer",
+        "history": [],
+        "rounds": 0,
+        "tool_call_count": 0,
+        "max_tool_calls": 5,
+        "errors": [],
+        "model_tier": "frontier",
+        "retrieved_snippets": [],
+        "turn_count": 1,
+        "max_turns": 10,
+    }
+    config = {"configurable": {"orchestrator": orch}}
+
+    with patch(
+        "src.core.orchestration.graph.nodes.frontier_loop_node._call_llm_for_turn",
+        new_callable=AsyncMock,
+    ) as mock_llm:
+        mock_llm.return_value = ({"choices": [{"message": {"content": "Looks good."}}]}, "Looks good.", [])
+        result = await frontier_loop_node(state, config)
+        assert result.get("active_role") == "reviewer"
+        mock_llm.assert_awaited_once()
+        _, kwargs = mock_llm.call_args
+        assert kwargs.get("role") == "reviewer"
+
+
+@pytest.mark.asyncio
+async def test_tui_slash_mcp_writes_to_codingagent_config(tmp_path: Path):
+    """Verify TUI /mcp add writes to .codingAgent/config.json."""
+    from tui.tui_src.ui._app_slash_commands_mixin import AppSlashCommandsMixin
+    from src.core.config_loader import get_mcp_servers
+
+    class DummyApp(AppSlashCommandsMixin):
+        def __init__(self, wdir):
+            self._bridge = MagicMock()
+            self._bridge.working_dir = str(wdir)
+            self._bridge._orchestrator = MagicMock()
+            self._bridge._orchestrator.working_dir = str(wdir)
+            self.notifications = []
+
+        def notify(self, msg, severity="info"):
+            self.notifications.append((msg, severity))
+
+    app = DummyApp(tmp_path)
+    await app._slash_mcp("add myserver npx -y @modelcontextprotocol/server-memory")
+
+    config_file = tmp_path / ".codingAgent" / "config.json"
+    assert config_file.exists(), "config.json was not written to .codingAgent/"
+    servers = get_mcp_servers(tmp_path)
+    assert any(s.get("name") == "myserver" for s in servers)
+
+
+def test_session_screen_offset_fork_and_revert(tmp_path: Path):
+    """Verify SessionScreen subtracts offset when forking/reverting."""
+    from unittest.mock import PropertyMock, patch
+    from tui.tui_src.ui.screens.session_screen import SessionScreen
+
+    screen = SessionScreen()
+    screen._show_new_session = True
+    mock_app = MagicMock()
+    mock_app._get_sessions_dir = lambda: tmp_path
+
+    p0 = tmp_path / "sess0.json"
+    p0.write_text("{}", encoding="utf-8")
+    p1 = tmp_path / "sess1.json"
+    p1.write_text("{}", encoding="utf-8")
+
+    screen._filtered = [
+        (p0, {"task_name": "Session 0", "git_sha": "abc1234"}),
+        (p1, {"task_name": "Session 1", "git_sha": "def5678"}),
+    ]
+
+    with patch.object(SessionScreen, "app", new_callable=PropertyMock, return_value=mock_app):
+        # Row 0 is [+ Start new session]
+        screen._selected = 0
+        screen.action_fork_session()
+        mock_app.notify.assert_called_with("Cannot fork the 'Start new session' item.", severity="warning")
+
+        # Row 1 corresponds to _filtered[0]
+        screen._selected = 1
+        screen.action_fork_session()
+        assert any("Session forked" in str(c) for c in mock_app.notify.call_args_list)
+
+        # Revert with invalid git_sha fails safely
+        screen._do_revert("; rm -rf /", str(tmp_path))
+        mock_app.notify.assert_called_with("Invalid git SHA format.", severity="error")
+
+
+def test_save_provider_credentials_writes_to_user_prefs(tmp_path: Path, monkeypatch):
+    """Verify save_provider_credentials writes to user prefs.json with 0600 permissions."""
+    from tui.tui_src.ui.config_writer import save_provider_credentials, load_provider_credentials
+    from src.core.user_prefs import UserPrefs
+
+    prefs_file = tmp_path / "prefs.json"
+    monkeypatch.setattr("src.core.user_prefs.DEFAULT_FILENAME", str(prefs_file))
+
+    save_provider_credentials("mock_provider", "secret_key_xyz", "http://api.mock.com")
+
+    assert prefs_file.exists()
+    assert (prefs_file.stat().st_mode & 0o777) == 0o600
+
+    creds = load_provider_credentials("mock_provider")
+    assert creds["api_key"] == "secret_key_xyz"
+    assert creds["base_url"] == "http://api.mock.com"
+
+
+

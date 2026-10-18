@@ -106,6 +106,10 @@ def run_agent_once_impl(
 
     # Store cancel_event on orchestrator instance so nodes can access it via getattr
     orch.cancel_event = cancel_event
+    if system_prompt_name:
+        orch.active_role = system_prompt_name
+    elif not getattr(orch, "active_role", None):
+        orch.active_role = "operational"
 
     sid = getattr(orch, "session_id", None) or getattr(orch, "_current_task_id", None)
     if sid:
@@ -263,6 +267,7 @@ def run_agent_once_impl(
         prompt=prompt,
         full_system_prompt=full_system_prompt,
         cancel_event=cancel_event,
+        system_prompt_name=system_prompt_name,
     )
 
     # CP-3.4: automatic crash recovery — if a durable snapshot of the last

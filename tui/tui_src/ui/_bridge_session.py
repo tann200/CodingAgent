@@ -71,6 +71,12 @@ class BridgeSessionMixin(AgentBridgeProtocol):
         # Snapshot history under the lock, then attempt centralized atomic write
         with self._history_lock:
             payload = {"version": self._HISTORY_VERSION, "history": list(self.history)}
+        try:
+            from src.core.security.redaction import redact_data
+
+            payload = redact_data(payload)
+        except Exception:
+            pass
 
         try:
             from src.core.io_utils import atomic_write_json
@@ -182,6 +188,12 @@ class BridgeSessionMixin(AgentBridgeProtocol):
 
     def update_prompt_history(self, text: str) -> None:
         """Record a prompt submission, update frecency scores, persist atomically."""
+        try:
+            from src.core.security.redaction import redact_secrets
+
+            text = redact_secrets(text)
+        except Exception:
+            pass
         try:
             p = self._get_prompt_history_path()
             now = time.time()

@@ -164,6 +164,7 @@ async def _prepare_turn_messages(
     model_tier: str,
     turns_taken: int,
     retrieved_snippets: "list | None" = None,
+    role: str = "operational",
 ) -> list:
     """Build the messages list for one LLM turn.
 
@@ -196,6 +197,19 @@ async def _prepare_turn_messages(
             except Exception:
                 pass
 
+        if orchestrator and hasattr(orchestrator, "get_tools_for_role"):
+            try:
+                role_tools = orchestrator.get_tools_for_role(role)
+                if role_tools:
+                    role_names = {t["name"] for t in role_tools}
+                    tools_schema = [
+                        t for t in tools_schema
+                        if t.get("name") in role_names
+                        or t.get("function", {}).get("name") in role_names
+                    ]
+            except Exception:
+                pass
+
         tools_schema = _filter_tools_for_tier(tools_schema, model_tier)
 
         provider_caps = _resolve_pc(orchestrator)
@@ -203,7 +217,7 @@ async def _prepare_turn_messages(
         loop = asyncio.get_running_loop()
         partial_fn = functools.partial(
             cb.build_prompt,
-            "operational",
+            role,
             retrieved_snippets or [],
             task,
             tools_schema or [],
@@ -265,6 +279,7 @@ async def _call_llm_for_turn(
     orchestrator: Any,
     turns_taken: int,
     model_tier: str = "frontier",
+    role: str = "operational",
 ) -> "tuple[Any, str, list]":
     """Call the LLM and extract ``(response, content_text, tool_calls)``.
 
@@ -276,6 +291,19 @@ async def _call_llm_for_turn(
             reg = getattr(orchestrator, "tool_registry", None)
             if reg and hasattr(reg, "get_openai_functions"):
                 tools_schema = reg.get_openai_functions()
+        except Exception:
+            pass
+
+    if orchestrator and hasattr(orchestrator, "get_tools_for_role"):
+        try:
+            role_tools = orchestrator.get_tools_for_role(role)
+            if role_tools:
+                role_names = {t["name"] for t in role_tools}
+                tools_schema = [
+                    t for t in tools_schema
+                    if t.get("name") in role_names
+                    or t.get("function", {}).get("name") in role_names
+                ]
         except Exception:
             pass
 
@@ -654,16 +682,23 @@ async def frontier_loop_node(
                 "frontier_loop_node: using precomputed next_action before LLM call"
             )
         else:
+            role = (
+                state.get("active_role")
+                or (getattr(orchestrator, "active_role", None) if orchestrator else None)
+                or "operational"
+            )
             try:
                 messages = await _prepare_turn_messages(
                     orchestrator=orchestrator, task=task, history=history,
                     model_tier=model_tier, turns_taken=turns_taken,
                     retrieved_snippets=retrieved_snippets,
+                    role=role,
                 )
             except TypeError:
                 messages = await _prepare_turn_messages(
                     orchestrator=orchestrator, task=task, history=history,
                     model_tier=model_tier, turns_taken=turns_taken,
+                    role=role,
                 )
 
             try:
@@ -674,6 +709,7 @@ async def frontier_loop_node(
                     orchestrator=orchestrator,
                     turns_taken=turns_taken,
                     model_tier=model_tier,
+                    role=role,
                 )
             except Exception as exc:
                 error_str = str(exc)

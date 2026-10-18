@@ -78,6 +78,12 @@ class AppSessionMixin(AgentAppProtocol):
                 "messages": [{"role": r, "content": t} for r, t in history],
                 "working_dir": self._bridge.working_dir or str(os.getcwd()),
             }
+            try:
+                from src.core.security.redaction import redact_data
+
+                payload = redact_data(payload)
+            except Exception:
+                pass
             p = self._get_sessions_dir() / f"session_{self._session_id}.json"
 
             # Ensure parent dir immediately before writing

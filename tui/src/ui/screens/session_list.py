@@ -185,7 +185,14 @@ class SessionListScreen(ModalScreen[None]):
         self._filter(event.value)
 
     def on_key(self, event: Key) -> None:
+        from textual.widgets import Input
+
+        if isinstance(self.focused, Input) and event.key not in ("escape", "down", "up", "enter"):
+            return
         if not self._filtered:
+            if getattr(self, "_show_new_session", False) and event.key in ("enter", "n"):
+                self._start_new_session()
+                event.prevent_default()
             return
         if event.key == "up":
             self._selected = max(0, self._selected - 1)

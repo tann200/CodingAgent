@@ -66,6 +66,7 @@ _NODE_OUTPUT_SCHEMAS: dict[str, NodeOutputSchema] = {
                 "task_decomposed",
                 "original_task",
                 "agent_mode",
+                "active_role",
                 "task_complexity",
                 "_compaction_last_round",
             }
@@ -262,6 +263,7 @@ _NODE_OUTPUT_SCHEMAS: dict[str, NodeOutputSchema] = {
                 "plan_completed",
                 "modified_files",
                 "retrieved_snippets",
+                "active_role",
             }
         ),
         core_keys=("history", "tool_call_count", "errors", "awaiting_plan_approval"),

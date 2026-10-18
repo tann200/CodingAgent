@@ -23,7 +23,7 @@ import json
 import os
 import tempfile
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 try:
     from tui.tui_src.ui.logging import get_logger
@@ -132,51 +132,56 @@ def save_provider_credentials(
     api_key: str,
     base_url: Optional[str] = None,
 ) -> None:
-    """Atomically persist API key (and optional base_url) for a provider.
+    """Atomically persist API key (and optional base_url) in user-level prefs.json."""
+    try:
+        from src.core.user_prefs import UserPrefs
 
-    The credentials are merged into the matching entry inside the top-level
-    list in providers.json.  If no entry matches *provider_id* a new minimal
-    entry is appended so credentials are never silently lost.
-    """
-    providers = _load()
-
-    # Find the matching entry (mutate in-place)
-    entry = next(
-        (
-            p
-            for p in providers
-            if isinstance(p, dict) and _provider_matches(p, provider_id)
-        ),
-        None,
-    )
-    if entry is None:
-        # No existing entry — append a minimal placeholder so the key is saved
-        entry = {"name": provider_id, "type": provider_id}
-        providers.append(entry)
-        logger.warning(
-            f"save_provider_credentials: no entry for '{provider_id}' found in "
-            f"providers.json — appending new entry"
-        )
-
-    if api_key:
-        entry["api_key"] = api_key
-    if base_url:
-        entry["base_url"] = base_url
-
-    _atomic_write(providers)
+        prefs = UserPrefs.load()
+        kwargs: dict[str, Any] = {}
+        if api_key:
+            kwargs["api_key"] = api_key
+        if base_url:
+            kwargs["base_url"] = base_url
+        if kwargs:
+            prefs.update_provider_config(provider_id.lower(), **kwargs)
+    except Exception as exc:
+        logger.warning(f"save_provider_credentials to UserPrefs failed: {exc}")
 
 
 def load_provider_credentials(provider_id: str) -> dict:
     """Return stored credentials for provider_id, or empty dict."""
+    res: dict[str, Any] = {}
+    try:
+        from src.core.user_prefs import UserPrefs
+
+        prefs = UserPrefs.load()
+        p = prefs.data.get("providers", {}).get(provider_id.lower(), {})
+        if p:
+            res.update({k: p[k] for k in ("api_key", "base_url") if k in p and p[k]})
+    except Exception:
+        pass
     for entry in _load():
         if isinstance(entry, dict) and _provider_matches(entry, provider_id):
-            return {k: entry[k] for k in ("api_key", "base_url") if k in entry}
-    return {}
+            for k in ("api_key", "base_url"):
+                if k in entry and k not in res:
+                    res[k] = entry[k]
+            break
+    return res
 
 
 def load_all_credentials() -> dict[str, dict]:
     """Return all stored provider credentials keyed by normalised provider id."""
     result: dict[str, dict] = {}
+    try:
+        from src.core.user_prefs import UserPrefs
+
+        prefs = UserPrefs.load()
+        for pid, p in prefs.data.get("providers", {}).items():
+            creds = {k: p[k] for k in ("api_key", "base_url") if k in p and p[k]}
+            if creds:
+                result[pid.lower()] = creds
+    except Exception:
+        pass
     for entry in _load():
         if not isinstance(entry, dict):
             continue
@@ -184,5 +189,8 @@ def load_all_credentials() -> dict[str, dict]:
         if pid:
             creds = {k: entry[k] for k in ("api_key", "base_url") if k in entry}
             if creds:
-                result[pid] = creds
+                if pid not in result:
+                    result[pid] = {}
+                for k, v in creds.items():
+                    result[pid].setdefault(k, v)
     return result

@@ -76,6 +76,7 @@ class Orchestrator:
     _current_snapshot_id: Optional[str]
     rollback_manager: Any
     current_role: Optional[str]
+    active_role: Optional[str]
     cancel_event: Any
     _pending_delegations: Any
     session_store: Any
@@ -121,6 +122,7 @@ class Orchestrator:
         self._provider_name = ""  # set during provider resolution
         self.deterministic = bool(deterministic)
         self.seed = seed
+        self.active_role = "operational"
         self.tool_registry = tool_registry if tool_registry else example_registry()
         # TASK-09: Filter tool registry using the active permission context (set by
         # --allowed-tools / --deny-tool / --deny-prefix CLI flags in main.py).

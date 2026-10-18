@@ -126,7 +126,7 @@ class AgentApp(
     ]
     CSS_PATH = "styles/app.tcss"
 
-    active_role = reactive("system")
+    active_role = reactive("lead_architect")
     total_tokens = reactive(0)
     context_window = reactive(32000)
     pending_tasks = reactive(0)
@@ -705,6 +705,15 @@ class AgentApp(
             except Exception:
                 pass
         self.notify(f"Switched to {ROLE_LABELS.get(new_role, new_role)}")
+
+    def watch_active_role(self, old_role: str, new_role: str) -> None:
+        if hasattr(self, "_bridge") and self._bridge is not None:
+            try:
+                self._bridge.set_active_role(new_role)
+            except Exception:
+                pass
+        if hasattr(self, "_role_cycle") and new_role in self._role_cycle:
+            self._role_idx = self._role_cycle.index(new_role)
 
     def action_toggle_console(self) -> None:
         try:

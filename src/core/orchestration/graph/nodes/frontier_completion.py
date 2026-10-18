@@ -352,6 +352,8 @@ def finalize_frontier_exit(
         modified_files=sorted(mod_files),
     )
     result["modified_files"] = sorted(mod_files)
+    if state.get("active_role"):
+        result["active_role"] = state.get("active_role")
     _progress = plan_completion_patch(state, result)
     if _progress:
         result.update(_progress)

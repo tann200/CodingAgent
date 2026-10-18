@@ -466,16 +466,18 @@ class AppSlashCommandsMixin(AgentAppProtocol):
                         severity="warning",
                     )
                     return
-                agent_dir = (
-                    _Path(
-                        getattr(
-                            getattr(self._bridge, "_orchestrator", None),
-                            "working_dir",
-                            ".",
-                        )
+                from src.tools.tools_config import agent_context_path
+
+                _wdir = (
+                    getattr(
+                        getattr(self._bridge, "_orchestrator", None),
+                        "working_dir",
+                        None,
                     )
-                    / ".agent"
+                    or getattr(self._bridge, "working_dir", None)
+                    or "."
                 )
+                agent_dir = agent_context_path(_Path(_wdir))
                 agent_dir.mkdir(parents=True, exist_ok=True)
                 config_path = agent_dir / "config.json"
                 cfg: dict = {}

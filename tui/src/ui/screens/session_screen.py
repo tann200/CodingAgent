@@ -142,10 +142,15 @@ class SessionScreen(SessionListScreen):
 
     def action_fork_session(self) -> None:
         """Fork the selected session into a new independent session snapshot."""
-        if not self._filtered or self._selected >= len(self._filtered):
+        _offset = 1 if getattr(self, "_show_new_session", False) else 0
+        idx = self._selected - _offset
+        if idx < 0:
+            self.app.notify("Cannot fork the 'Start new session' item.", severity="warning")
+            return
+        if not self._filtered or idx >= len(self._filtered):
             self.app.notify("No session selected.", severity="warning")
             return
-        path, data = self._filtered[self._selected]
+        path, data = self._filtered[idx]
         try:
             sessions_dir = getattr(self.app, "_get_sessions_dir", lambda: None)()
             if not sessions_dir:
@@ -177,10 +182,15 @@ class SessionScreen(SessionListScreen):
         Shows ``RevertConfirmScreen`` and only proceeds with the destructive
         ``git stash + git checkout`` if the user confirms.
         """
-        if not self._filtered or self._selected >= len(self._filtered):
+        _offset = 1 if getattr(self, "_show_new_session", False) else 0
+        idx = self._selected - _offset
+        if idx < 0:
+            self.app.notify("Cannot revert the 'Start new session' item.", severity="warning")
+            return
+        if not self._filtered or idx >= len(self._filtered):
             self.app.notify("No session selected.", severity="warning")
             return
-        _, data = self._filtered[self._selected]
+        _, data = self._filtered[idx]
         git_sha: Optional[str] = data.get("git_sha") or data.get("snapshot_sha")
         working_dir: str = data.get("working_dir", "")
         if not git_sha:
@@ -201,6 +211,11 @@ class SessionScreen(SessionListScreen):
 
     def _do_revert(self, git_sha: str, working_dir: str) -> None:
         """Execute the git revert after user confirmation."""
+        import re
+
+        if not re.match(r"^[0-9a-fA-F]{7,40}$", git_sha):
+            self.app.notify("Invalid git SHA format.", severity="error")
+            return
         try:
             cwd = Path(working_dir)
             if not cwd.is_dir():
@@ -240,6 +255,10 @@ class SessionScreen(SessionListScreen):
 
     def on_key(self, event: Key) -> None:
         """Route fork/revert keys; delegate everything else to parent."""
+        from textual.widgets import Input
+
+        if isinstance(self.focused, Input) and event.key not in ("escape", "down", "up", "enter"):
+            return
         if event.key == "f":
             self.action_fork_session()
             event.prevent_default()

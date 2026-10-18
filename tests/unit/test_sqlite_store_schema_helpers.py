@@ -20,10 +20,11 @@ def test_fts_helpers_expose_expected_tables_and_triggers():
     triggers = fts_trigger_statements()
 
     assert "CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts" in script
-    assert "CREATE VIRTUAL TABLE IF NOT EXISTS mistakes_fts" in script
-    assert len(triggers) == 3
+    assert len(triggers) == 4
     assert any("messages_ai" in statement for statement in triggers)
+    assert any("messages_ad" in statement for statement in triggers)
     assert any("mistakes_ai" in statement for statement in triggers)
+    assert any("mistakes_ad" in statement for statement in triggers)
 
 
 def test_schema_version_from_row_handles_missing_and_present_rows():

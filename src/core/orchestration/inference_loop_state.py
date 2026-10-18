@@ -13,8 +13,10 @@ def build_initial_state(
     prompt: str,
     full_system_prompt: str,
     cancel_event: Any,
+    system_prompt_name: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Build the initial graph state for one agent run."""
+    role_name = system_prompt_name or getattr(orch, "active_role", None) or "operational"
     return {
         **build_graph_state_base(
             task=prompt,
@@ -26,6 +28,7 @@ def build_initial_state(
             parent_session_id=None,
             delegation_depth=0,
         ),
+        "active_role": role_name,
         "deterministic": getattr(orch, "deterministic", False),
         "cancel_event": cancel_event,
         "seed": getattr(orch, "seed", None),
