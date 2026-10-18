@@ -104,6 +104,11 @@ class McpHttpClient:
                     },
                 },
             )
+            # Send initialized notification per MCP specification
+            try:
+                await self._notify("notifications/initialized", {})
+            except Exception as notify_err:
+                logger.debug("McpHttpClient: initialized notification failed: %s", notify_err)
             self._connected = True
             logger.info(f"McpHttpClient: connected to {self.name} at {self.url}")
         except Exception:
@@ -186,6 +191,7 @@ class McpHttpClient:
                     name=tool_name,
                     fn=_call,
                     description=tool_def.description,
+                    schema=tool_def.input_schema,
                     origin="mcp",
                 )
                 count += 1
@@ -194,6 +200,20 @@ class McpHttpClient:
 
         logger.info(f"McpHttpClient: registered {count} tools from {self.name}")
         return count
+
+    async def _notify(self, method: str, params: Optional[Dict[str, Any]] = None) -> None:
+        """Send a JSON-RPC notification (no id) to the MCP server."""
+        if not self._client:
+            return
+        payload = {
+            "jsonrpc": _JSONRPC_VERSION,
+            "method": method,
+            "params": params or {},
+        }
+        try:
+            await self._client.post(self.url, json=payload)
+        except Exception as exc:
+            logger.debug(f"McpHttpClient: notification failed (non-fatal): {exc}")
 
     async def _request(self, method: str, params: Dict[str, Any]) -> Dict[str, Any]:
         """Send a JSON-RPC request to the MCP server."""
@@ -215,9 +235,18 @@ class McpHttpClient:
             content_type = response.headers.get("Content-Type", "")
 
             if "text/event-stream" in content_type:
-                return await self._handle_sse(response)
+                data = await self._handle_sse(response)
             else:
-                return response.json()
+                data = response.json()
+
+            if isinstance(data, dict):
+                if "error" in data:
+                    err = data["error"]
+                    err_msg = err.get("message", str(err)) if isinstance(err, dict) else str(err)
+                    raise RuntimeError(f"MCP server error: {err_msg}")
+                if "result" in data and isinstance(data["result"], dict):
+                    return data["result"]
+            return data
         except httpx.HTTPError as e:
             logger.error(f"McpHttpClient: request failed: {e}")
             raise

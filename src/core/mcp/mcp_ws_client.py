@@ -375,6 +375,7 @@ class McpWsClient:
                     _name,
                     _make_fn(_client_ref, _tool_name),
                     description=tool_defn.description,
+                    schema=tool_defn.input_schema,
                     origin="mcp",
                 )
                 count += 1

@@ -197,6 +197,8 @@ class LSPClient:
         self._req_id: int = 0
         self._pending: Dict[int, asyncio.Future] = {}
         self._reader_task: Optional[asyncio.Task] = None
+        self._stderr_task: Optional[asyncio.Task] = None
+        self._open_documents: set[str] = set()
         self._started = False
         self._lock = asyncio.Lock()
         # P4-2: auto-restart state
@@ -234,6 +236,7 @@ class LSPClient:
             return
 
         self._reader_task = asyncio.ensure_future(self._reader_loop())
+        self._stderr_task = asyncio.ensure_future(self._stderr_loop())
 
         # initialize
         init_result = await self._request(
@@ -263,6 +266,18 @@ class LSPClient:
             logger.info("LSPClient: started %s for %s", self._cmd[0], self._root)
         else:
             logger.warning("LSPClient: initialize timed out for %s", self._cmd[0])
+            if self._reader_task:
+                self._reader_task.cancel()
+                self._reader_task = None
+            if self._stderr_task:
+                self._stderr_task.cancel()
+                self._stderr_task = None
+            if self._proc:
+                try:
+                    self._proc.kill()
+                except Exception:
+                    pass
+                self._proc = None
 
     async def get_diagnostics(self, file_uri: str) -> List[Diagnostic]:
         """Return diagnostics for *file_uri* (pull model via textDocument/diagnostic).
@@ -276,6 +291,7 @@ class LSPClient:
         """
         if not self.available:
             return self._diagnostics_cache.get(file_uri, [])
+        await self._ensure_document_open(file_uri)
         result = await self._request(
             "textDocument/diagnostic",
             {"textDocument": {"uri": file_uri}},
@@ -299,6 +315,7 @@ class LSPClient:
     async def get_hover(self, file_uri: str, line: int, col: int) -> str:
         if not self.available:
             return ""
+        await self._ensure_document_open(file_uri)
         result = await self._request(
             "textDocument/hover",
             {
@@ -324,6 +341,7 @@ class LSPClient:
     ) -> List[Location]:
         if not self.available:
             return []
+        await self._ensure_document_open(file_uri)
         result = await self._request(
             "textDocument/references",
             {
@@ -341,6 +359,7 @@ class LSPClient:
     ) -> List[Location]:
         if not self.available:
             return []
+        await self._ensure_document_open(file_uri)
         result = await self._request(
             "textDocument/definition",
             {
@@ -357,6 +376,7 @@ class LSPClient:
     async def get_symbols(self, file_uri: str) -> List[DocumentSymbol]:
         if not self.available:
             return []
+        await self._ensure_document_open(file_uri)
         result = await self._request(
             "textDocument/documentSymbol",
             {"textDocument": {"uri": file_uri}},
@@ -370,6 +390,7 @@ class LSPClient:
     ) -> WorkspaceEdit:
         if not self.available:
             return WorkspaceEdit()
+        await self._ensure_document_open(file_uri)
         result = await self._request(
             "textDocument/rename",
             {
@@ -381,6 +402,14 @@ class LSPClient:
         if result is None:
             return WorkspaceEdit()
         changes = result.get("changes") or {}
+        doc_changes = result.get("documentChanges") or []
+        if not changes and doc_changes:
+            changes = {}
+            for dc in doc_changes:
+                if isinstance(dc, dict) and "textDocument" in dc and "edits" in dc:
+                    doc_uri = dc.get("textDocument", {}).get("uri")
+                    if doc_uri:
+                        changes.setdefault(doc_uri, []).extend(dc.get("edits", []))
         return WorkspaceEdit(changes=changes)
 
     async def shutdown(self) -> None:
@@ -394,6 +423,11 @@ class LSPClient:
             logger.debug("LSPClient: shutdown request failed: %s", exc)
         if self._reader_task:
             self._reader_task.cancel()
+            self._reader_task = None
+        if self._stderr_task:
+            self._stderr_task.cancel()
+            self._stderr_task = None
+        self._open_documents.clear()
         try:
             self._proc.kill()
         except Exception as exc:
@@ -560,6 +594,52 @@ class LSPClient:
                     asyncio.ensure_future(self._restart())
                 except RuntimeError:
                     pass  # no running loop — nothing to schedule
+
+    async def _stderr_loop(self) -> None:
+        """Read stderr from language server and log to debug."""
+        if not self._proc or not self._proc.stderr:
+            return
+        try:
+            while True:
+                line = await self._proc.stderr.readline()
+                if not line:
+                    break
+                logger.debug("LSPClient[%s:stderr]: %s", self._cmd[0], line.decode(errors="replace").strip())
+        except (asyncio.CancelledError, Exception):
+            pass
+
+    async def _ensure_document_open(self, file_uri: str) -> None:
+        """Send textDocument/didOpen if not already opened."""
+        if not self.available or file_uri in self._open_documents:
+            return
+        try:
+            from urllib.parse import urlparse, unquote
+            parsed = urlparse(file_uri)
+            if parsed.scheme == "file":
+                path = Path(unquote(parsed.path))
+                if path.exists() and path.is_file():
+                    content = path.read_text(encoding="utf-8", errors="replace")
+                    ext = path.suffix.lstrip(".").lower()
+                    lang_map = {
+                        "py": "python", "js": "javascript", "ts": "typescript",
+                        "rs": "rust", "go": "go", "java": "java", "c": "c",
+                        "cpp": "cpp", "json": "json", "html": "html",
+                    }
+                    language_id = lang_map.get(ext, "plaintext")
+                    await self._notify(
+                        "textDocument/didOpen",
+                        {
+                            "textDocument": {
+                                "uri": file_uri,
+                                "languageId": language_id,
+                                "version": 1,
+                                "text": content,
+                            }
+                        },
+                    )
+                    self._open_documents.add(file_uri)
+        except Exception as e:
+            logger.debug("LSPClient: didOpen failed for %s: %s", file_uri, e)
 
     # ------------------------------------------------------------------
     # Parsers

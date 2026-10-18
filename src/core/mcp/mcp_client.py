@@ -96,6 +96,7 @@ class McpStdioClient:
         self._request_id: int = 0
         self._pending: Dict[int, asyncio.Future] = {}
         self._reader_task: Optional[asyncio.Task] = None
+        self._stderr_task: Optional[asyncio.Task] = None
         self._connected: bool = False
         self._notification_handlers: List[
             Callable[[str, Dict[str, Any]], Optional[Awaitable[None]]]
@@ -161,11 +162,15 @@ class McpStdioClient:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=proc_env,
+            limit=16 * 1024 * 1024,
         )
 
-        # Start background reader task
+        # Start background reader and stderr draining tasks
         self._reader_task = asyncio.create_task(
             self._read_loop(), name=f"mcp-reader-{self.name}"
+        )
+        self._stderr_task = asyncio.create_task(
+            self._stderr_loop(), name=f"mcp-stderr-{self.name}"
         )
 
         # Run MCP initialize handshake — clean up on failure so the client
@@ -183,6 +188,13 @@ class McpStdioClient:
                 except (asyncio.CancelledError, Exception):
                     pass
                 self._reader_task = None
+            if self._stderr_task:
+                self._stderr_task.cancel()
+                try:
+                    await self._stderr_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+                self._stderr_task = None
             if self._process:
                 try:
                     self._process.terminate()
@@ -211,6 +223,14 @@ class McpStdioClient:
                 await self._reader_task
             except (asyncio.CancelledError, Exception):
                 pass
+            self._reader_task = None
+        if self._stderr_task:
+            self._stderr_task.cancel()
+            try:
+                await self._stderr_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._stderr_task = None
         if self._process:
             try:
                 self._process.terminate()
@@ -437,6 +457,18 @@ class McpStdioClient:
                 if not fut.done():
                     fut.set_exception(RuntimeError("MCP client disconnected"))
             self._pending.clear()
+
+    async def _stderr_loop(self) -> None:
+        """Background task: drain stderr lines and log at debug level."""
+        if not self._process or not self._process.stderr:
+            return
+        try:
+            async for raw_line in self._process.stderr:
+                line = raw_line.decode(errors="replace").strip()
+                if line:
+                    logger.debug("mcp_client[%s:stderr]: %s", self.name, line)
+        except (asyncio.CancelledError, Exception):
+            pass
 
 
 # ---------------------------------------------------------------------------
