@@ -7,6 +7,8 @@ import threading
 from typing import Any, Dict, List, Optional
 from pathlib import Path
 
+from src.core.security.redaction import is_secret_path, redact_secrets, redact_data
+
 # ruff: noqa: E501
 
 logger = logging.getLogger(__name__)
@@ -319,7 +321,7 @@ def distill_context(
                     cp_path = agent_context / "compaction_checkpoint.md"
                     try:
                         cp_path.parent.mkdir(parents=True, exist_ok=True)
-                        _atomic_write_text(cp_path, summary)
+                        _atomic_write_text(cp_path, redact_secrets(summary))
                         logger.info(
                             f"distill_context: compaction checkpoint written to {cp_path}"
                         )
@@ -549,7 +551,7 @@ def distill_context(
 
             # Write TASK_STATE.md atomically (F-62: use _atomic_write_text helper).
             task_state_path.parent.mkdir(parents=True, exist_ok=True)
-            content_text = "\n".join(lines)
+            content_text = redact_secrets("\n".join(lines))
             try:
                 _atomic_write_text(task_state_path, content_text)
             except Exception:
@@ -573,14 +575,16 @@ def distill_context(
                     repo_index = json.load(f)
                 repo_memory: Dict[str, Any] = {"modules": []}
                 for fdata in repo_index.get("files", []):
-                    repo_memory["modules"].append(
-                        {"path": fdata.get("path"), "imports": fdata.get("imports", [])}
-                    )
+                    rel_p = fdata.get("path")
+                    if rel_p and not is_secret_path(rel_p):
+                        repo_memory["modules"].append(
+                            {"path": rel_p, "imports": fdata.get("imports", [])}
+                        )
                 mem_path = _agent_ctx / "repo_memory.json"
                 mem_path.parent.mkdir(parents=True, exist_ok=True)
                 # F-62: use _atomic_write_json helper (DRY).
                 try:
-                    _atomic_write_json(mem_path, repo_memory)
+                    _atomic_write_json(mem_path, redact_data(repo_memory))
                 except Exception:
                     logger.exception("Failed to write repo_memory.json to %s", mem_path)
 
@@ -589,25 +593,30 @@ def distill_context(
                     summary_path = _agent_ctx / "file_summaries.json"
                     summaries = {}
                     for fdata in repo_index.get("files", []):
-                        p = working_dir / fdata.get("path")
+                        rel_path = fdata.get("path")
+                        if not rel_path or is_secret_path(rel_path):
+                            continue
+                        p = working_dir / rel_path
+                        if is_secret_path(p):
+                            continue
                         if p.exists() and p.is_file():
                             try:
                                 text = p.read_text(encoding="utf-8")
-                                lines = text.splitlines()
-                                if len(lines) > 200:
+                                file_lines = text.splitlines()
+                                if len(file_lines) > 200:
                                     # keep head and tail
                                     summary = "\n".join(
-                                        lines[:10] + ["[...skipped...]"] + lines[-10:]
+                                        file_lines[:10] + ["[...skipped...]"] + file_lines[-10:]
                                     )
                                 else:
-                                    summary = "\n".join(lines[:200])
-                                summaries[str(fdata.get("path"))] = summary
+                                    summary = "\n".join(file_lines[:200])
+                                summaries[str(rel_path)] = redact_secrets(summary)
                             except Exception:
                                 continue
                     try:
                         summary_path.parent.mkdir(parents=True, exist_ok=True)
                         # F-62: use _atomic_write_json helper (DRY).
-                        _atomic_write_json(summary_path, summaries)
+                        _atomic_write_json(summary_path, redact_data(summaries))
                     except Exception:
                         pass
                 except Exception:
@@ -620,7 +629,6 @@ def distill_context(
         try:
             from src.core.indexing.vector_store import VectorStore
             from src.core.memory.security import scan_memory_content
-            from src.core.security.redaction import redact_secrets
 
             _summary_text = (
                 f"Task: {distilled_state.get('current_task', '')}\n"
@@ -629,7 +637,10 @@ def distill_context(
             )
             if scan_memory_content(_summary_text) is None:
                 _vs = VectorStore(workdir=str(working_dir))
-                _vs.add_memory(redact_secrets(_summary_text), metadata=distilled_state)
+                _vs.add_memory(
+                    redact_secrets(_summary_text),
+                    metadata=redact_data(distilled_state),
+                )
                 logger.info("distill_context: summary persisted to VectorStore")
             else:
                 logger.warning(

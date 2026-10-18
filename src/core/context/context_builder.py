@@ -483,12 +483,23 @@ class ContextBuilder:
                         )
                         continue
                 except Exception:
-                    pass
+                    logger.warning(
+                        "context_builder: omitted mistake entry due to scan error"
+                    )
+                    continue
 
                 tool_tag = f" [{r['tool']}]" if r.get("tool") else ""
-                lines.append(f"- {redact_secrets(summary_text)}{tool_tag}")
+                clean_sum = (
+                    summary_text.replace("</prior_context>", "&lt;/prior_context&gt;")
+                    .replace("</frozen_memory>", "&lt;/frozen_memory&gt;")
+                )
+                clean_ctx = (
+                    context_text.replace("</prior_context>", "&lt;/prior_context&gt;")
+                    .replace("</frozen_memory>", "&lt;/frozen_memory&gt;")
+                )
+                lines.append(f"- {redact_secrets(clean_sum)}{tool_tag}")
                 if context_text:
-                    lines.append(f"  context: {redact_secrets(context_text[:200])}")
+                    lines.append(f"  context: {redact_secrets(clean_ctx[:200])}")
             if len(lines) <= 1:
                 return None
             return "\n".join(lines)
@@ -581,8 +592,15 @@ class ContextBuilder:
                         )
                         continue
                 except Exception:
-                    pass
-                lines.append(f"- {redact_secrets(text_str)}")
+                    logger.warning(
+                        "context_builder: omitted memory from prior context due to scan error"
+                    )
+                    continue
+                safe_entry = (
+                    text_str.replace("</prior_context>", "&lt;/prior_context&gt;")
+                    .replace("</frozen_memory>", "&lt;/frozen_memory&gt;")
+                )
+                lines.append(f"- {redact_secrets(safe_entry)}")
         except Exception as exc:
             logger.debug("context_builder: VectorStore memory retrieval failed: %s", exc)
         # Use frozen snapshot for system prompt stability (prompt caching)
@@ -592,15 +610,20 @@ class ContextBuilder:
                 from src.core.memory.security import scan_memory_content
 
                 if scan_memory_content(_mem_snapshot) is None:
+                    safe_snapshot = (
+                        _mem_snapshot.replace("</prior_context>", "&lt;/prior_context&gt;")
+                        .replace("</frozen_memory>", "&lt;/frozen_memory&gt;")
+                    )
                     lines.append("")
-                    lines.append(redact_secrets(_mem_snapshot))
+                    lines.append(redact_secrets(safe_snapshot))
                 else:
                     logger.warning(
                         "context_builder: omitted untrusted memory snapshot from prompt"
                     )
             except Exception:
-                lines.append("")
-                lines.append(redact_secrets(_mem_snapshot))
+                logger.warning(
+                    "context_builder: omitted memory snapshot due to scan error"
+                )
 
         if not lines:
             return ""

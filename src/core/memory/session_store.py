@@ -343,94 +343,17 @@ class SessionStore:
         return self._local.connection
 
     def write_decisions_json(self, limit: int = 50) -> None:
-        """Write recent decisions to {workdir}/.agent-context/decisions.json.
-
-        Prefer reading from a sqlite DB if present (so tests that write
-        directly into the DB are respected). Otherwise delegate to the
-        underlying store when available.
-        """
-        # If sqlite DB exists and has any decisions, use it
-        try:
-            if self._db_path.exists():
-                conn = self._get_connection()
-                cur = conn.execute(
-                    "SELECT session_id, decision, rationale, created_at FROM decisions ORDER BY created_at DESC LIMIT ?",
-                    (int(limit),),
-                )
-                rows = cur.fetchall()
-                decisions = []
-                for r in rows:
-                    decisions.append(
-                        {
-                            "session_id": r["session_id"],
-                            "decision": r["decision"],
-                            "rationale": r["rationale"],
-                            "ts": r["created_at"],
-                        }
-                    )
-                # Atomic write to decisions.json under the resolved agent
-                # context directory.
-                out_dir = self._agent_context_dir
-                out_dir.mkdir(parents=True, exist_ok=True)
-                dest = out_dir / "decisions.json"
-                try:
-                    from src.core.io_utils import atomic_write_json
-
-                    ok = atomic_write_json(dest, decisions, logger=logger)
-                    if ok:
-                        logger.debug(
-                            "SessionStore.write_decisions_json: atomic write succeeded: %s",
-                            dest,
-                        )
-                        return
-                    else:
-                        logger.warning(
-                            "SessionStore.write_decisions_json: atomic_write_json returned False, falling back"
-                        )
-                except Exception:
-                    import traceback
-
-                    logger.debug(
-                        "SessionStore.write_decisions_json: atomic_write_json unavailable, using fallback\n%s",
-                        traceback.format_exc(),
-                    )
-
-                fd = None
-                tmp = None
-                try:
-                    fd, tmp = tempfile.mkstemp(dir=str(out_dir), suffix=".tmp")
-                    with os.fdopen(fd, "w", encoding="utf-8") as f:
-                        fd = None
-                        json.dump(decisions, f, ensure_ascii=False)
-                        try:
-                            f.flush()
-                            os.fsync(f.fileno())
-                        except Exception:
-                            pass
-                    try:
-                        os.replace(tmp, str(dest))
-                    except Exception:
-                        try:
-                            shutil.move(tmp, str(dest))
-                        except Exception:
-                            pass
-                finally:
-                    try:
-                        if fd is not None:
-                            os.close(fd)
-                    except Exception:
-                        pass
-                return
-        except Exception:
-            # Fall through to delegate to underlying store
-            pass
-
-        # Delegate to underlying store if it supports write_decisions_json
+        """Write recent decisions to decisions.json sidecar via underlying store."""
         if hasattr(self._store, "write_decisions_json"):
             try:
-                return getattr(self._store, "write_decisions_json")(limit=limit)
+                getattr(self._store, "write_decisions_json")(limit=limit)
             except Exception:
-                pass
+                import traceback
+
+                logger.debug(
+                    "SessionStore.write_decisions_json: delegation failed\n%s",
+                    traceback.format_exc(),
+                )
 
     def _write_with_retry(
         self,
@@ -562,25 +485,7 @@ class SessionStore:
         return False
 
     def read_recent_decisions(self, max_entries: int = 10) -> list:
-        """Read recent decisions either from decisions.json sidecar or delegate.
-
-        Returns an empty list when no decisions are available or the file is
-        malformed.
-        """
-        try:
-            out = (
-                getattr(self, "_agent_context_dir", None)
-                or self._workdir / ".codingAgent"
-            )
-            out = Path(out) / "decisions.json"
-            if out.exists():
-                data = json.loads(out.read_text(encoding="utf-8"))
-                if isinstance(data, list):
-                    return data[: max(0, int(max_entries))]
-        except Exception:
-            pass
-
-        # Delegate to underlying store if it provides a reader
+        """Read recent decisions via underlying store."""
         if hasattr(self._store, "read_recent_decisions"):
             try:
                 return getattr(self._store, "read_recent_decisions")(

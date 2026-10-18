@@ -42,10 +42,9 @@ from src.core.orchestration.graph.completion_contract import (
     _MODIFYING_TOOL_NAMES,
 )
 from src.core.orchestration.graph.nodes.frontier_completion import (
-    build_exit_result,
+    clear_transient_contract_errors,
+    finalize_frontier_exit,
     handle_no_tool_completion,
-    persist_plan_progress,
-    plan_completion_patch,
 )
 from src.core.orchestration.graph.nodes.in_loop_verification import (
     build_inline_verification_message,
@@ -55,16 +54,8 @@ from src.core.orchestration.graph.nodes.in_loop_verification import (
 from src.core.orchestration.graph.nodes.tool_result_safety import sanitize_tool_result
 from src.core.security.redaction import redact_secrets
 
-# Re-exported for backwards compatibility with the legacy test surface that
-# imports these helpers from this module.
-__all__ = [
-    "frontier_loop_node",
-    "_append_tool_call_history",
-    "_extract_tool_call_from_text",
-    "_normalize_messages_for_native_tools",
-    "_normalize_tool_call",
-    "_render_tool_calls_text",
-]
+# Re-exported for backwards compatibility with the legacy test surface
+__all__ = ["frontier_loop_node", "_append_tool_call_history", "_extract_tool_call_from_text", "_normalize_messages_for_native_tools", "_normalize_tool_call", "_render_tool_calls_text"]
 from src.core.orchestration.tool_parser import parse_tool_block
 from src.core.inference.kv_cache_governor import (
     CompactionAction,
@@ -799,14 +790,7 @@ async def frontier_loop_node(
             if not last_result.get("ok"):
                 errors = list(errors) + [last_result.get("error_code") or "unverified_completion"]
             else:
-                _TRANSIENT_CONTRACT_ERRORS = {
-                    "unverified_text_only_completion",
-                    "unverified_mutation_missing",
-                    "inline_verification_failed",
-                    "empty_response",
-                    "unverified_completion",
-                }
-                errors = [e for e in errors if e not in _TRANSIENT_CONTRACT_ERRORS]
+                errors = clear_transient_contract_errors(errors)
             break
 
         # ---- Plan-mode gate ----------------------------------------------
@@ -897,13 +881,9 @@ async def frontier_loop_node(
     except Exception:
         pass
 
-    mod_files = set()
-    if orchestrator and hasattr(orchestrator, "_session_modified_files") and orchestrator._session_modified_files:
-        mod_files.update(orchestrator._session_modified_files)
-    if state.get("modified_files"):
-        mod_files.update(state.get("modified_files"))
-
-    result = build_exit_result(
+    return finalize_frontier_exit(
+        state=state,
+        orchestrator=orchestrator,
         history=history,
         tool_call_count=tool_call_count,
         last_result=last_result,
@@ -912,15 +892,5 @@ async def frontier_loop_node(
         turns_taken=turns_taken,
         inline_verifications=inline_verifications,
         replan_required=replan_required,
-        modified_files=sorted(mod_files),
+        retrieved_snippets=retrieved_snippets,
     )
-    result["modified_files"] = sorted(mod_files)
-    # P3.3: record that the loop covered its plan, and persist the record so the
-    # next turn re-plans instead of re-running work that is already done.
-    _progress = plan_completion_patch(state, result)
-    if _progress:
-        result.update(_progress)
-        persist_plan_progress(orchestrator, state)
-    if retrieved_snippets:
-        result["retrieved_snippets"] = retrieved_snippets
-    return result

@@ -276,6 +276,7 @@ def batched_file_read(
     """
     wd = Path(workdir) if workdir else Path.cwd()
     results = {}
+    from src.core.security.redaction import is_secret_path, redact_secrets
 
     for path in paths:
         try:
@@ -283,6 +284,11 @@ def batched_file_read(
                 p = _safe_resolve(path, wd)
             except PermissionError as _pe:
                 results[path] = {"error": str(_pe)}
+                continue
+            if is_secret_path(p):
+                results[path] = {
+                    "error": f"Access denied: '{p.name}' is a protected secret file."
+                }
                 continue
             if not p.exists():
                 results[path] = {"error": "File not found"}
@@ -292,7 +298,7 @@ def batched_file_read(
                 results[path] = {"error": f"File too large ({p.stat().st_size} bytes)"}
                 continue
 
-            content = p.read_text(encoding="utf-8")
+            content = redact_secrets(p.read_text(encoding="utf-8"))
             results[path] = {"status": "ok", "content": content}
         except Exception as e:
             results[path] = {"error": str(e)}
@@ -317,6 +323,7 @@ def multi_file_summary(
     """
     wd = Path(workdir) if workdir else Path.cwd()
     results: Dict[str, Any] = {}
+    from src.core.security.redaction import is_secret_path
 
     for path in paths:
         try:
@@ -324,6 +331,11 @@ def multi_file_summary(
                 p = _safe_resolve(path, wd)
             except PermissionError as pe:
                 results[path] = {"error": str(pe)}
+                continue
+            if is_secret_path(p):
+                results[path] = {
+                    "error": f"Access denied: '{p.name}' is a protected secret file."
+                }
                 continue
             if not p.exists():
                 results[path] = {"error": "File not found"}

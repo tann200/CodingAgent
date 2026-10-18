@@ -613,10 +613,14 @@ def find_references(name: str, workdir: str) -> Dict[str, Any]:
         files = [f.get("path") for f in repo_index.get("files", [])]
         refs = []
         pattern = re.compile(r"\b" + re.escape(name) + r"\b")
+        from src.core.security.redaction import is_secret_path, redact_secrets
+
         for rel in files:
             try:
                 p = _safe_resolve(str(rel), base)
             except PermissionError:
+                continue
+            if is_secret_path(p):
                 continue
             try:
                 text = p.read_text(encoding="utf-8")
@@ -629,7 +633,7 @@ def find_references(name: str, workdir: str) -> Dict[str, Any]:
                                 "file": str(rel),
                                 "line": line_num,
                                 "col": col,
-                                "snippet": line.strip(),
+                                "snippet": redact_secrets(line.strip()),
                             }
                         )
             except Exception:

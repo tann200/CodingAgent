@@ -298,3 +298,65 @@ def handle_no_tool_completion(
         "_completion_detected": False,
     }
 
+
+_TRANSIENT_CONTRACT_ERRORS = frozenset(
+    {
+        "unverified_text_only_completion",
+        "unverified_mutation_missing",
+        "inline_verification_failed",
+        "empty_response",
+        "unverified_completion",
+    }
+)
+
+
+def clear_transient_contract_errors(errors: list) -> list:
+    """Filter out transient completion contract error codes once completed."""
+    return [e for e in errors if e not in _TRANSIENT_CONTRACT_ERRORS]
+
+
+def finalize_frontier_exit(
+    *,
+    state: Mapping[str, Any],
+    orchestrator: Any,
+    history: list,
+    tool_call_count: int,
+    last_result: Optional[Dict[str, Any]],
+    last_tool_name: Optional[str],
+    errors: Any,
+    turns_taken: int,
+    inline_verifications: Any,
+    replan_required: Optional[str],
+    retrieved_snippets: Optional[Any] = None,
+) -> Dict[str, Any]:
+    """Assemble final exit state for frontier_loop_node."""
+    mod_files = set()
+    if (
+        orchestrator
+        and hasattr(orchestrator, "_session_modified_files")
+        and orchestrator._session_modified_files
+    ):
+        mod_files.update(orchestrator._session_modified_files)
+    if state.get("modified_files"):
+        mod_files.update(state.get("modified_files"))
+
+    result = build_exit_result(
+        history=history,
+        tool_call_count=tool_call_count,
+        last_result=last_result,
+        last_tool_name=last_tool_name,
+        errors=errors,
+        turns_taken=turns_taken,
+        inline_verifications=inline_verifications,
+        replan_required=replan_required,
+        modified_files=sorted(mod_files),
+    )
+    result["modified_files"] = sorted(mod_files)
+    _progress = plan_completion_patch(state, result)
+    if _progress:
+        result.update(_progress)
+        persist_plan_progress(orchestrator, state)
+    if retrieved_snippets:
+        result["retrieved_snippets"] = retrieved_snippets
+    return result
+

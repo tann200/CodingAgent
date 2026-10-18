@@ -158,7 +158,6 @@ SAFE_COMMANDS: set[str] = {
     "objdump",
     "readelf",
     "ldd",
-    "strings",
     # macOS-specific
     "sw_vers",
     "defaults",
@@ -181,7 +180,6 @@ SAFE_COMMANDS: set[str] = {
     "sha256sum",
     "md5",
     "shasum",
-    "xxd",
     "less",
     "more",
     "column",

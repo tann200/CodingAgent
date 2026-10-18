@@ -108,14 +108,21 @@ def git_diff(
         staged: If True, show staged (index) diff (`git diff --cached`).
         path: Limit diff to this path (optional).
     """
+    from src.core.security.redaction import is_secret_path, redact_secrets
+
     args = ["diff"]
     if staged:
         args.append("--cached")
     if path:
+        if is_secret_path(Path(path)):
+            return {
+                "status": "error",
+                "error": f"Access denied: '{path}' is a protected secret file.",
+            }
         args += ["--", path]
     result = _run_git(args, workdir)
     if result["status"] == "ok":
-        return {"status": "ok", "diff": result["output"]}
+        return {"status": "ok", "diff": redact_secrets(result["output"])}
     return result
 
 

@@ -474,7 +474,7 @@ class VectorStore:
             return
 
         from src.core.memory.security import scan_memory_content, strip_invisible_chars
-        from src.core.security.redaction import redact_secrets
+        from src.core.security.redaction import redact_secrets, redact_data
 
         # Scan for prompt injection / exfiltration threats at write time
         threat_err = scan_memory_content(text)
@@ -506,8 +506,8 @@ class VectorStore:
             "id": rec_id,
             "text": clean_text,
             "content": clean_text,
-            "metadata": metadata,
-            "provenance": provenance,
+            "metadata": redact_data(metadata),
+            "provenance": redact_data(provenance),
             "created_at": _time.time(),
         }
         # Embed the text for semantic recall (real ST model or SHA-256 stub).

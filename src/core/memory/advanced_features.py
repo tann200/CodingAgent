@@ -12,6 +12,8 @@ from pathlib import Path
 from typing import Dict, List, Optional
 from datetime import datetime
 
+from src.core.security.redaction import redact_data
+
 logger = logging.getLogger(__name__)
 
 # Lock protecting concurrent trajectory file writes (NEW-21)
@@ -55,7 +57,7 @@ class TrajectoryLogger:
         """Log a complete agent run."""
         session_id = session_id or datetime.now().strftime("%Y%m%d_%H%M%S")
 
-        trajectory = {
+        trajectory = redact_data({
             "session_id": session_id,
             "timestamp": datetime.now().isoformat(),
             "task": task,
@@ -64,7 +66,7 @@ class TrajectoryLogger:
             "patch": patch,
             "tests": tests,
             "success": success,
-        }
+        })
 
         filename = f"trajectory_{session_id}.json"
         filepath = self.trajectory_dir / filename
@@ -160,7 +162,7 @@ class TrajectoryLogger:
 
     def export_training_data(self, output_path: Optional[str] = None) -> str:
         """Export all trajectories as training data."""
-        trajectories = self.get_recent_trajectories(limit=1000)
+        trajectories = redact_data(self.get_recent_trajectories(limit=1000))
 
         output = (
             Path(output_path) if output_path else self.workdir / "training_data.json"

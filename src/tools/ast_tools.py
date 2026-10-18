@@ -175,6 +175,13 @@ def ast_list_symbols(
     except PermissionError as pe:
         return {"status": "error", "error": str(pe)}
 
+    from src.core.security.redaction import is_secret_path
+    if is_secret_path(file_path):
+        return {
+            "status": "error",
+            "error": f"Access denied: '{file_path.name}' is a protected secret file.",
+        }
+
     if not file_path.exists():
         return {"status": "error", "error": f"File not found: {path}"}
 

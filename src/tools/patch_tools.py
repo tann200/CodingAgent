@@ -49,14 +49,18 @@ def generate_patch(
     """Generate a unified diff patch between existing file content and new_content.
     Returns {'status':'ok','patch': '...'} or error.
     """
-    # BUG-VOL22-2: Guard missing workdir — fall back to cwd, matching _edit_tools.py pattern.
-    if workdir is None:
-        workdir = Path.cwd()
+    workdir = Path(workdir) if workdir else Path.cwd()
     try:
         try:
             p = _safe_resolve(path, workdir)
         except PermissionError as pe:
             return {"status": "error", "error": str(pe)}
+        from src.core.security.redaction import is_secret_path, redact_secrets
+        if is_secret_path(p):
+            return {
+                "status": "error",
+                "error": f"Access denied: '{p.name}' is a protected secret file.",
+            }
         if not p.exists():
             return {"status": "error", "error": "file not found"}
         old = p.read_text(encoding="utf-8").splitlines(keepends=True)
@@ -64,7 +68,7 @@ def generate_patch(
         patch_lines = list(
             difflib.unified_diff(old, new, fromfile=str(p), tofile=str(p), lineterm="\n")
         )
-        patch = "".join(patch_lines)
+        patch = redact_secrets("".join(patch_lines))
         return {"status": "ok", "patch": patch}
     except Exception as e:
         return {"status": "error", "error": str(e)}

@@ -45,6 +45,12 @@ _MEMORY_THREAT_PATTERNS = [
     (r"eval\s*\([^)]*?\$[^)]*\)", "eval_injection"),
 ]
 
+# Compile patterns with re.IGNORECASE | re.DOTALL so multi-line injection attempts cannot bypass regexes
+_COMPILED_THREAT_PATTERNS = [
+    (re.compile(pattern, re.IGNORECASE | re.DOTALL), pattern_id)
+    for pattern, pattern_id in _MEMORY_THREAT_PATTERNS
+]
+
 # Invisible Unicode characters that could be used for injection
 _INVISIBLE_CHARS = {
     "\u200b",  # Zero-width space
@@ -57,7 +63,17 @@ _INVISIBLE_CHARS = {
     "\u202c",  # Pop directional formatting
     "\u202d",  # Left-to-right override
     "\u202e",  # Right-to-left override
+    "\u00ad",  # Soft hyphen
+    "\u2066",  # Left-to-right isolate
+    "\u2067",  # Right-to-left isolate
+    "\u2068",  # First strong isolate
+    "\u2069",  # Pop directional isolate
+    *(chr(cp) for cp in range(0xE0000, 0xE0080)),  # Tag characters (\U000e0000-\U000e007f)
 }
+
+_INVISIBLE_PATTERN = re.compile(
+    r"[\u00ad\u200b-\u200d\u202a-\u202e\u2060\u2066-\u2069\ufeff\U000e0000-\U000e007f]"
+)
 
 
 def scan_memory_content(content: str) -> Optional[str]:
@@ -78,13 +94,14 @@ def scan_memory_content(content: str) -> Optional[str]:
         return None
 
     # Check for invisible Unicode characters
-    for char in _INVISIBLE_CHARS:
-        if char in content:
-            return f"Blocked: content contains invisible unicode character U+{ord(char):04X} (possible injection)"
+    m = _INVISIBLE_PATTERN.search(content)
+    if m:
+        char = m.group(0)
+        return f"Blocked: content contains invisible unicode character U+{ord(char):04X} (possible injection)"
 
     # Check for threat patterns
-    for pattern, pattern_id in _MEMORY_THREAT_PATTERNS:
-        if re.search(pattern, content, re.IGNORECASE):
+    for pattern, pattern_id in _COMPILED_THREAT_PATTERNS:
+        if pattern.search(content):
             return f"Blocked: content matches threat pattern '{pattern_id}'. Memory entries are injected into the system prompt and must not contain injection or exfiltration payloads."
 
     return None
@@ -99,9 +116,7 @@ def strip_invisible_chars(content: str) -> str:
     Returns:
         Content with invisible characters removed
     """
-    for char in _INVISIBLE_CHARS:
-        content = content.replace(char, "")
-    return content
+    return _INVISIBLE_PATTERN.sub("", content)
 
 
 def is_memory_content_safe(content: str) -> bool:

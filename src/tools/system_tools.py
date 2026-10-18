@@ -73,11 +73,25 @@ def grep(
         ).to_dict()
 
     try:
-        cmd = ["grep", "-r", "-n", pattern]
+        cmd = [
+            "grep",
+            "-r",
+            "-n",
+            "--exclude=.env*",
+            "--exclude=*.pem",
+            "--exclude=*.key",
+            "--exclude=.netrc",
+            "--exclude=.pgpass",
+            "--exclude-dir=.ssh",
+            "--exclude-dir=.aws",
+            "--exclude-dir=.kube",
+            "--exclude-dir=.git",
+        ]
         if context > 0:
             cmd += ["-C", str(context)]
         if include:
             cmd += [f"--include={include}"]
+        cmd.append(pattern)
         cmd.append(str(search_path))
 
         from src.tools.sandbox import run_sandboxed
@@ -94,11 +108,23 @@ def grep(
         if process.returncode == 0:
             raw = redact_secrets(process.stdout)
             matches = _parse_grep_output(raw)
+            filtered_matches = []
             for m in matches:
-                if isinstance(m, dict) and "content" in m:
-                    m["content"] = redact_secrets(m["content"])
+                if isinstance(m, dict):
+                    f_path = Path(m.get("file_path", ""))
+                    if is_secret_path(f_path):
+                        continue
+                    if "content" in m:
+                        m["content"] = redact_secrets(m["content"])
+                    filtered_matches.append(m)
+            raw_lines = [
+                raw_line
+                for raw_line in raw.splitlines()
+                if not is_secret_path(Path(raw_line.split(":", 1)[0]))
+            ]
+            raw = "\n".join(raw_lines)
             return ToolResult.success(
-                {"output": raw, "matches": matches}
+                {"output": raw, "matches": filtered_matches}
             ).to_dict()
         elif process.returncode == 1:
             return ToolResult.success(

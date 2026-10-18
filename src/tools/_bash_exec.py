@@ -44,6 +44,7 @@ from src.core.orchestration.approval_gate import (
     discard_bash_denied,
 )
 from src.core.orchestration.event_bus import get_event_bus as _get_event_bus
+from src.core.security.redaction import is_secret_path, redact_secrets
 
 _logger = logging.getLogger(__name__)
 
@@ -571,6 +572,8 @@ def bash(
         stdout, stderr, _out_cut, _err_cut = _truncate_bash_output(
             result.stdout, result.stderr
         )
+        stdout = redact_secrets(stdout)
+        stderr = redact_secrets(stderr)
         _rci = f"exit_code:{result.returncode}" if result.returncode != 0 else None
         out: Dict[str, Any] = {
             "status": "ok",
@@ -596,6 +599,8 @@ def bash(
         if isinstance(_raw_stderr, bytes):
             _raw_stderr = _raw_stderr.decode(errors="replace")
         _raw_stdout, _raw_stderr, _, _ = _truncate_bash_output(_raw_stdout, _raw_stderr)
+        _raw_stdout = redact_secrets(_raw_stdout)
+        _raw_stderr = redact_secrets(_raw_stderr)
         return {
             "status": "error",
             "command": command,
@@ -730,6 +735,28 @@ def bash_readonly(
     if _flag_err is not None:
         return _flag_err
 
+    # Gate 6: Block access to secret/protected files in arguments
+    for token in cmd_parts[1:]:
+        if not token.startswith("-"):
+            try:
+                candidate = Path(token)
+                candidate_resolved = (
+                    (workdir / candidate).resolve()
+                    if not candidate.is_absolute()
+                    else candidate.resolve()
+                )
+                if is_secret_path(candidate) or is_secret_path(candidate_resolved):
+                    return {
+                        "status": "error",
+                        "error": f"Access to secret/protected path is blocked: {token}",
+                    }
+            except Exception:
+                if is_secret_path(token):
+                    return {
+                        "status": "error",
+                        "error": f"Access to secret/protected path is blocked: {token}",
+                    }
+
     # Execute inside sandbox (network disabled) — prevents exfiltration even for
     # read-only commands. Falls back to plain subprocess when bwrap unavailable.
 
@@ -745,6 +772,8 @@ def bash_readonly(
         stdout, stderr, _out_cut, _err_cut = _truncate_bash_output(
             result.stdout, result.stderr
         )
+        stdout = redact_secrets(stdout)
+        stderr = redact_secrets(stderr)
         _rci = f"exit_code:{result.returncode}" if result.returncode != 0 else None
         out: Dict[str, Any] = {
             "status": "ok",
@@ -770,6 +799,8 @@ def bash_readonly(
         if isinstance(_raw_stderr, bytes):
             _raw_stderr = _raw_stderr.decode(errors="replace")
         _raw_stdout, _raw_stderr, _, _ = _truncate_bash_output(_raw_stdout, _raw_stderr)
+        _raw_stdout = redact_secrets(_raw_stdout)
+        _raw_stderr = redact_secrets(_raw_stderr)
         return {
             "status": "error",
             "command": command,

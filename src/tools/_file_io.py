@@ -953,6 +953,20 @@ def read_file_bytes(
     try:
         with p.open("rb") as _fh:
             data = _fh.read(mb)
+
+        from src.core.security.redaction import contains_secrets
+
+        try:
+            decoded_text = data.decode("utf-8", errors="ignore")
+            if contains_secrets(decoded_text):
+                return {
+                    "path": str(p),
+                    "status": "error",
+                    "error": "Cannot read raw bytes of file containing credentials/secrets; use read_file for redacted text",
+                }
+        except Exception:
+            pass
+
         return {
             "path": str(p),
             "status": "ok",

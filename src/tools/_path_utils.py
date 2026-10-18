@@ -28,6 +28,8 @@ def safe_resolve(path: str, workdir: Path | None) -> Path:
     """
     if workdir is None:
         workdir = Path.cwd()
+    elif isinstance(workdir, str):
+        workdir = Path(workdir)
     p = Path(path)
     if not p.is_absolute():
         p = workdir / p
