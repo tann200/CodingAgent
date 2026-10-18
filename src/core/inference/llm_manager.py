@@ -1226,6 +1226,25 @@ class CircuitBreaker:
         with self._lock:
             return self._current_state()
 
+    def allow_request(self) -> bool:
+        """Atomically test and admit a request. In HALF_OPEN, allows exactly one probe."""
+        with self._lock:
+            if self._state == self.CLOSED:
+                return True
+            if self._state == self.OPEN:
+                if time.time() - self._opened_at >= self.recovery_timeout:
+                    if not self._probe_in_flight:
+                        self._state = self.HALF_OPEN
+                        self._probe_in_flight = True
+                        return True
+                return False
+            if self._state == self.HALF_OPEN:
+                if not self._probe_in_flight:
+                    self._probe_in_flight = True
+                    return True
+                return False
+            return False
+
     def is_open(self) -> bool:
         """Return True when the breaker will reject the next call."""
         with self._lock:
@@ -1250,9 +1269,6 @@ class CircuitBreaker:
     def _current_state(self) -> str:
         if self._state == self.OPEN:
             if time.time() - self._opened_at >= self.recovery_timeout:
-                # BUG-3: only transition to HALF_OPEN and allow one probe through.
-                # If a probe is already in flight, keep reporting OPEN so concurrent
-                # callers fast-fail instead of issuing redundant probe requests.
                 if not self._probe_in_flight:
                     self._state = self.HALF_OPEN
                     self._probe_in_flight = True
@@ -1404,11 +1420,17 @@ async def call_model(
         _call_event_bus = None
 
     # #31: Circuit-breaker fast-fail — skip primary call when provider is known-bad
-    _cb_key = canonical_provider(provider) if provider else ""
+    _active_p = None
+    try:
+        _active_p = _provider_manager.get_active_provider_name()
+    except Exception:
+        pass
+    _resolved_p = provider or _active_p or ""
+    _cb_key = canonical_provider(_resolved_p) if _resolved_p else ""
     _cb_open = False
     if _cb_key:
         _cb = get_circuit_breaker(_cb_key)
-        if _cb.is_open():
+        if not _cb.allow_request():
             guilogger.warning(
                 f"call_model: circuit breaker OPEN for provider '{_cb_key}' — fast-failing primary call"
             )
@@ -1437,6 +1459,16 @@ async def call_model(
             if _cb_key
             else None,
         )
+        if not _cb_handled and _cb_key and isinstance(res, dict) and not res.get("ok"):
+            # SPEC-14: Primary provider failed and model fallback did not recover.
+            # Record primary failure before cross-provider fallback runs,
+            # so a secondary provider's success doesn't reset primary's breaker!
+            _update_circuit_breaker_for_result(
+                provider_key=_cb_key,
+                result=res,
+                get_circuit_breaker=get_circuit_breaker,
+            )
+            _cb_handled = True
     else:
         _cb_handled = True
 

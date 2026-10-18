@@ -692,6 +692,7 @@ class OpenAICompatibleAdapter(LLMClient):
                     }
                     if "tool_calls" in msg:
                         choice_obj["tool_calls"] = msg["tool_calls"]
+                        choice_obj["message"]["tool_calls"] = msg["tool_calls"]
                     choices.append(choice_obj)
 
             if raw_response and "usage" in raw_response:

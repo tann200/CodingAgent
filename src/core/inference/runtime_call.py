@@ -154,13 +154,56 @@ async def call_adapter_with_fallbacks(
                 **call_extra_args,
             )
             result = await run_with_correlation(loop, None, fn)
-            if stream and hasattr(result, "iter_lines"):
-                text = await run_with_correlation(
-                    loop,
-                    None,
-                    functools.partial(consume_sse_stream, result, model),
-                )
-                return {"ok": True, "text": text, "streamed": True}
+            if stream:
+                if hasattr(result, "iter_lines"):
+                    text = await run_with_correlation(
+                        loop,
+                        None,
+                        functools.partial(consume_sse_stream, result, model),
+                    )
+                    return {"ok": True, "text": text, "streamed": True}
+                elif isinstance(result, dict) and result.get("raw") is not None:
+                    raw = result["raw"]
+                    if hasattr(raw, "iter_lines"):
+                        text = await run_with_correlation(
+                            loop,
+                            None,
+                            functools.partial(
+                                consume_sse_stream, raw, model or result.get("model")
+                            ),
+                        )
+                        result["text"] = text
+                        result["streamed"] = True
+                        if not result.get("choices"):
+                            result["choices"] = [
+                                {
+                                    "message": {"role": "assistant", "content": text},
+                                    "finish_reason": "stop",
+                                }
+                            ]
+                        return result
+                    elif hasattr(raw, "__iter__"):
+                        from src.core.inference.streaming import consume_generator_stream
+
+                        return await run_with_correlation(
+                            loop,
+                            None,
+                            functools.partial(
+                                consume_generator_stream,
+                                raw,
+                                model or result.get("model"),
+                            ),
+                        )
+                elif hasattr(result, "__iter__") and not isinstance(
+                    result, (dict, list, str, bytes)
+                ):
+                    from src.core.inference.streaming import consume_generator_stream
+
+                    return await run_with_correlation(
+                        loop,
+                        None,
+                        functools.partial(consume_generator_stream, result, model),
+                    )
             return result
         except Exception as exc:
             last_err = exc
@@ -177,13 +220,56 @@ async def call_adapter_with_fallbacks(
                 **call_extra_args,
             )
             result = await run_with_correlation(loop, None, fn)
-            if stream and hasattr(result, "iter_lines"):
-                text = await run_with_correlation(
-                    loop,
-                    None,
-                    functools.partial(consume_sse_stream, result, model),
-                )
-                return {"ok": True, "text": text, "streamed": True}
+            if stream:
+                if hasattr(result, "iter_lines"):
+                    text = await run_with_correlation(
+                        loop,
+                        None,
+                        functools.partial(consume_sse_stream, result, model),
+                    )
+                    return {"ok": True, "text": text, "streamed": True}
+                elif isinstance(result, dict) and result.get("raw") is not None:
+                    raw = result["raw"]
+                    if hasattr(raw, "iter_lines"):
+                        text = await run_with_correlation(
+                            loop,
+                            None,
+                            functools.partial(
+                                consume_sse_stream, raw, model or result.get("model")
+                            ),
+                        )
+                        result["text"] = text
+                        result["streamed"] = True
+                        if not result.get("choices"):
+                            result["choices"] = [
+                                {
+                                    "message": {"role": "assistant", "content": text},
+                                    "finish_reason": "stop",
+                                }
+                            ]
+                        return result
+                    elif hasattr(raw, "__iter__"):
+                        from src.core.inference.streaming import consume_generator_stream
+
+                        return await run_with_correlation(
+                            loop,
+                            None,
+                            functools.partial(
+                                consume_generator_stream,
+                                raw,
+                                model or result.get("model"),
+                            ),
+                        )
+                elif hasattr(result, "__iter__") and not isinstance(
+                    result, (dict, list, str, bytes)
+                ):
+                    from src.core.inference.streaming import consume_generator_stream
+
+                    return await run_with_correlation(
+                        loop,
+                        None,
+                        functools.partial(consume_generator_stream, result, model),
+                    )
             return result
         except TypeError:
             try:

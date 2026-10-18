@@ -573,6 +573,7 @@ class OllamaAdapter(LLMClient):
             }
             if "tool_calls" in msg:
                 choice["tool_calls"] = msg["tool_calls"]
+                choice["message"]["tool_calls"] = msg["tool_calls"]
 
             p_tokens = raw_response.get("prompt_eval_count", 0)
             c_tokens = raw_response.get("eval_count", 0)

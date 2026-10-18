@@ -108,8 +108,12 @@ class AnthropicAdapter(OpenAICompatibleAdapter):
             resolved_models = [self.DEFAULT_MODEL]
         default_model = resolved_models[0]
 
+        effective_base_url = (
+            base_url or os.environ.get("ANTHROPIC_BASE_URL") or self.BASE_URL
+        ).rstrip("/")
+
         super().__init__(
-            base_url=self.BASE_URL,
+            base_url=effective_base_url,
             api_key=api_key,
             default_model=default_model,
             models=resolved_models,
@@ -397,11 +401,15 @@ class AnthropicAdapter(OpenAICompatibleAdapter):
         elif isinstance(stop_val, (list, tuple)):
             stop_sequences = [str(s) for s in stop_val if s]
 
+        stream = bool(kwargs.get("stream", False))
+
         payload: Dict[str, Any] = {
             "model": model_name,
             "max_tokens": max_tokens,
             "messages": out_messages,
         }
+        if stream:
+            payload["stream"] = True
         if system_blocks:
             payload["system"] = system_blocks
         if anthropic_tools:
@@ -518,6 +526,8 @@ class AnthropicAdapter(OpenAICompatibleAdapter):
             timeout=timeout,
             **kwargs,
         )
+        if stream:
+            return result
         if isinstance(result, dict) and ("content" in result or result.get("type") == "message"):
             return self._anthropic_to_openai_response(result, model_name or self.DEFAULT_MODEL)
         return result

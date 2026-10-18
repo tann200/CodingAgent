@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 from unittest.mock import MagicMock
+import pytest
 
 from src.core.inference.adapters.anthropic_adapter import AnthropicAdapter
 from src.core.context.context_builder import SYSTEM_PROMPT_DYNAMIC_BOUNDARY
@@ -315,3 +316,116 @@ def test_generate_end_to_end_mocked(monkeypatch):
     assert res["prompt_tokens"] == 10
     assert res["completion_tokens"] == 5
     assert res["total_tokens"] == 15
+
+
+def test_anthropic_adapter_custom_base_url():
+    """AnthropicAdapter must honor caller-supplied base_url."""
+    adapter = AnthropicAdapter(api_key="sk-ant-test", base_url="https://anthropic.custom-proxy.internal/v1/")
+    assert adapter.base_url == "https://anthropic.custom-proxy.internal/v1"
+
+
+@pytest.mark.asyncio
+async def test_anthropic_adapter_streaming_assembly():
+    """AnthropicAdapter stream chunks must be assembled by call_adapter_with_fallbacks."""
+    import asyncio
+    from src.core.inference.llm_manager import _consume_sse_stream
+    from src.core.inference.runtime_call import call_adapter_with_fallbacks
+
+    adapter = AnthropicAdapter(api_key="sk-ant-test")
+
+    sse_lines = [
+        b'event: message_start\n',
+        b'data: {"type": "message_start", "message": {"id": "msg_stream_1"}}\n',
+        b'event: content_block_start\n',
+        b'data: {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}\n',
+        b'event: content_block_delta\n',
+        b'data: {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "Hello"}}\n',
+        b'event: content_block_delta\n',
+        b'data: {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": " World!"}}\n',
+        b'event: message_delta\n',
+        b'data: {"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": {"output_tokens": 2}}\n',
+        b'event: message_stop\n',
+        b'data: {"type": "message_stop"}\n',
+    ]
+
+    mock_resp = MagicMock()
+    mock_resp.iter_lines.return_value = sse_lines
+    mock_resp.status_code = 200
+
+    adapter._execute_with_retry = MagicMock(return_value=mock_resp)
+
+    async def _run_coro(loop, executor, fn):
+        return fn()
+
+    res = await call_adapter_with_fallbacks(
+        adapter=adapter,
+        messages=[{"role": "user", "content": "Hi"}],
+        model="claude-3-5-sonnet-20241022",
+        stream=True,
+        format_json=False,
+        call_extra_args={},
+        run_with_correlation=_run_coro,
+        consume_sse_stream=_consume_sse_stream,
+    )
+    assert res.get("ok") is True
+    assert res.get("text") == "Hello World!"
+    assert res.get("streamed") is True
+
+
+@pytest.mark.asyncio
+async def test_ollama_adapter_streaming_assembly():
+    """OllamaAdapter streaming generator chunks must be assembled by call_adapter_with_fallbacks."""
+    from src.core.inference.adapters.ollama_adapter import OllamaAdapter
+    from src.core.inference.llm_manager import _consume_sse_stream
+    from src.core.inference.runtime_call import call_adapter_with_fallbacks
+
+    adapter = OllamaAdapter(name="ollama", base_url="http://localhost:11434")
+
+    def _mock_gen():
+        yield {"model": "llama3:8b", "message": {"role": "assistant", "content": "Part 1 "}, "done": False}
+        yield {
+            "model": "llama3:8b",
+            "message": {
+                "role": "assistant",
+                "content": "Part 2",
+                "tool_calls": [{"name": "test_tool", "arguments": {"x": 1}}],
+            },
+            "done": True,
+            "prompt_eval_count": 10,
+            "eval_count": 20,
+        }
+
+    mock_generate = {
+        "ok": True,
+        "provider": "ollama",
+        "model": "llama3:8b",
+        "choices": [],
+        "raw": _mock_gen(),
+    }
+    adapter.generate = MagicMock(return_value=mock_generate)
+
+    async def _run_coro(loop, executor, fn):
+        return fn()
+
+    res = await call_adapter_with_fallbacks(
+        adapter=adapter,
+        messages=[{"role": "user", "content": "Hi"}],
+        model="llama3:8b",
+        stream=True,
+        format_json=False,
+        call_extra_args={},
+        run_with_correlation=_run_coro,
+        consume_sse_stream=_consume_sse_stream,
+    )
+    assert res.get("ok") is True
+    assert res.get("text") == "Part 1 Part 2"
+    assert res.get("streamed") is True
+    assert len(res.get("choices", [])) == 1
+    choice = res["choices"][0]
+    assert choice["message"]["content"] == "Part 1 Part 2"
+    assert "tool_calls" in choice
+    assert "tool_calls" in choice["message"]
+    assert res["prompt_tokens"] == 10
+    assert res["completion_tokens"] == 20
+    assert res["total_tokens"] == 30
+

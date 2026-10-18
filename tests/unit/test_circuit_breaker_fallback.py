@@ -98,3 +98,64 @@ def test_candidate_model_resolution_preserves_supported_model():
         mgr=mgr,
     )
     assert resolved == "gpt-4o"
+
+
+@pytest.mark.asyncio
+async def test_primary_failure_count_not_reset_by_secondary_fallback_success():
+    """Primary provider failures must open primary breaker even when secondary fallback succeeds."""
+    primary_key = "_test_primary_fail"
+    secondary_key = "_test_secondary_ok"
+
+    with _CB_LOCK:
+        _CIRCUIT_BREAKERS.pop(primary_key, None)
+        _CIRCUIT_BREAKERS.pop(secondary_key, None)
+
+    primary_cb = get_circuit_breaker(primary_key)
+    primary_cb.failure_threshold = 3
+
+    class _MockFallbackChain:
+        async def call(self, *, primary_result, primary_provider, **kwargs):
+            return {"ok": True, "content": "recovered"}, secondary_key
+
+    try:
+        with (
+            patch(
+                "src.core.inference.llm_manager._call_model_internal",
+                AsyncMock(return_value={"ok": False, "error": "http_500"}),
+            ),
+            patch(
+                "src.core.inference.llm_manager._get_fallback_chain",
+                return_value=_MockFallbackChain(),
+            ),
+            patch("src.core.inference.llm_manager._record_token_usage"),
+            patch("src.core.inference.llm_manager._publish_llm_response_hook"),
+        ):
+            for _ in range(3):
+                res = await call_model(
+                    messages=[{"role": "user", "content": "hi"}],
+                    provider=primary_key,
+                )
+                assert res["ok"] is True
+
+        assert primary_cb._failure_count == 3
+        assert primary_cb.is_open() is True
+    finally:
+        with _CB_LOCK:
+            _CIRCUIT_BREAKERS.pop(primary_key, None)
+            _CIRCUIT_BREAKERS.pop(secondary_key, None)
+
+
+def test_circuit_breaker_half_open_single_probe_admission():
+    """CircuitBreaker in HALF_OPEN admits exactly one probe and rejects concurrent requests."""
+    cb = CircuitBreaker(failure_threshold=1, recovery_timeout=0.001)
+    cb.record_failure()
+    time.sleep(0.01)
+
+    assert cb.allow_request() is True
+    assert cb.allow_request() is False
+    assert cb.state == CircuitBreaker.HALF_OPEN
+
+    cb.record_success()
+    assert cb.state == CircuitBreaker.CLOSED
+    assert cb.allow_request() is True
+

@@ -66,6 +66,33 @@ def parse_sse_chunk(data: str) -> Optional[dict]:
 
 def extract_stream_deltas(chunk: dict) -> Optional[Tuple[dict, str, str]]:
     try:
+        # SPEC-14: Anthropic SSE event shapes
+        chunk_type = chunk.get("type")
+        if chunk_type:
+            delta = chunk.get("delta") or {}
+            delta_type = delta.get("type")
+            if chunk_type == "content_block_delta":
+                if delta_type == "text_delta":
+                    return delta, "", delta.get("text") or ""
+                elif delta_type == "thinking_delta":
+                    return delta, delta.get("thinking") or "", ""
+                elif delta_type == "input_json_delta":
+                    return delta, "", delta.get("partial_json") or ""
+                return delta, "", delta.get("text") or ""
+            elif chunk_type == "content_block_start":
+                cb = chunk.get("content_block") or {}
+                if cb.get("type") == "text":
+                    return cb, "", cb.get("text") or ""
+                return cb, "", ""
+            elif chunk_type in (
+                "message_start",
+                "message_delta",
+                "message_stop",
+                "content_block_stop",
+                "ping",
+            ):
+                return delta, "", ""
+
         choices = chunk.get("choices") or []
         if not choices:
             return None
@@ -147,3 +174,68 @@ def finalize_stream(*, bus: Any, accumulated: List[str]) -> str:
         except Exception:
             pass
     return full_text
+
+
+def consume_generator_stream(gen: Any, model: Optional[str] = None) -> dict[str, Any]:
+    """Iterate a generator of chunks (e.g. from OllamaAdapter), publish events, and return result."""
+    accumulated_content: List[str] = []
+    p_tokens = 0
+    c_tokens = 0
+    role = "assistant"
+    tool_calls: List[dict[str, Any]] = []
+    finish_reason = "stop"
+
+    try:
+        from src.core.orchestration.event_bus import get_event_bus
+
+        bus = get_event_bus()
+    except Exception:
+        bus = None
+
+    for chunk in gen:
+        if isinstance(chunk, dict):
+            msg = chunk.get("message") or {}
+            delta_text = msg.get("content") or ""
+            if not delta_text and "response" in chunk:
+                delta_text = chunk.get("response") or ""
+            if delta_text:
+                accumulated_content.append(delta_text)
+                publish_stream_chunk(bus=bus, chunk=delta_text, is_reasoning=False)
+            if "tool_calls" in msg and isinstance(msg["tool_calls"], list):
+                tool_calls.extend(msg["tool_calls"])
+            if chunk.get("prompt_eval_count"):
+                p_tokens = int(chunk["prompt_eval_count"])
+            if chunk.get("eval_count"):
+                c_tokens = int(chunk["eval_count"])
+            if chunk.get("done_reason"):
+                finish_reason = str(chunk["done_reason"])
+        elif isinstance(chunk, str):
+            if chunk:
+                accumulated_content.append(chunk)
+                publish_stream_chunk(bus=bus, chunk=chunk, is_reasoning=False)
+
+    full_text = finalize_stream(bus=bus, accumulated=accumulated_content)
+
+    choice: dict[str, Any] = {
+        "message": {
+            "role": role,
+            "content": full_text,
+        },
+        "finish_reason": finish_reason,
+    }
+    if tool_calls:
+        choice["tool_calls"] = tool_calls
+        choice["message"]["tool_calls"] = tool_calls
+
+    return {
+        "ok": True,
+        "provider": "ollama",
+        "model": model or "unknown",
+        "latency": 0.0,
+        "prompt_tokens": p_tokens,
+        "completion_tokens": c_tokens,
+        "total_tokens": p_tokens + c_tokens,
+        "choices": [choice],
+        "text": full_text,
+        "streamed": True,
+    }
