@@ -8,15 +8,21 @@ DEFAULT_SERVER_EVENT_TYPES = [
     "agent.end",
     "tool.start",
     "tool.end",
+    "tool.execute.start",
+    "tool.execute.finish",
+    "tool.execute.error",
     "mcp.server.status",
     "workflow.step",
     "llm.response",
     "llm.token",
+    "model.response",
+    "model.token",
     "session.created",
     "session.updated",
     "perception.corrective_prompt",
     "error",
     "log",
+    "log.new",
 ]
 
 

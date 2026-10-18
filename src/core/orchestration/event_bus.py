@@ -50,6 +50,19 @@ _logger = logging.getLogger(__name__)
 _current_correlation_id: ContextVar[Optional[str]] = ContextVar(
     "_current_correlation_id", default=None
 )
+_current_session_id: ContextVar[Optional[str]] = ContextVar(
+    "_current_session_id", default=None
+)
+
+
+def set_session_id(session_id: Optional[str]) -> None:
+    """Set the session ID for the current async/thread context."""
+    _current_session_id.set(session_id)
+
+
+def get_session_id() -> Optional[str]:
+    """Return the current session ID, or None if not set."""
+    return _current_session_id.get()
 
 
 def set_correlation_id(correlation_id: str) -> None:
@@ -456,12 +469,15 @@ class EventBus:
         the shared ``MessageBus`` (if an ``EVENT_NAME_TO_TYPED`` entry exists).
         """
         cid = correlation_id or _current_correlation_id.get()
-        if (
-            cid is not None
-            and isinstance(payload, dict)
-            and "_correlation_id" not in payload
-        ):
-            payload = {**payload, "_correlation_id": cid}
+        sid = _current_session_id.get()
+        if isinstance(payload, dict):
+            extra = {}
+            if cid is not None and "_correlation_id" not in payload:
+                extra["_correlation_id"] = cid
+            if sid is not None and "session_id" not in payload:
+                extra["session_id"] = sid
+            if extra:
+                payload = {**payload, **extra}
         with self._lock:
             subs = list(self._subscribers.get(event_name, []))
         for cb in subs:
@@ -539,8 +555,14 @@ class EventBus:
         if event_name is not None:
             payload = event.to_dict()
             cid = _current_correlation_id.get()
+            sid = _current_session_id.get()
+            extra = {}
             if cid is not None and "_correlation_id" not in payload:
-                payload = {**payload, "_correlation_id": cid}
+                extra["_correlation_id"] = cid
+            if sid is not None and "session_id" not in payload:
+                extra["session_id"] = sid
+            if extra:
+                payload = {**payload, **extra}
             with self._lock:
                 subs = list(self._subscribers.get(event_name, []))
             for cb in subs:

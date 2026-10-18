@@ -49,8 +49,8 @@ def _make_websocket_handler(
     def make_handler(ev_name: str) -> Callable[[dict[str, Any]], None]:
         def handler(payload: dict[str, Any]) -> None:
             try:
-                if isinstance(payload, dict) and "session_id" in payload:
-                    if session_id != "all" and payload.get("session_id") != session_id:
+                if session_id != "all":
+                    if not isinstance(payload, dict) or payload.get("session_id") != session_id:
                         return
 
                 def _enqueue() -> None:
@@ -189,9 +189,15 @@ async def websocket_session_handler(
                 typ = msg.get("type")
                 if typ == "subscribe":
                     ev = msg.get("event")
-                    if not ev:
+                    if not ev or not isinstance(ev, str) or len(ev) > 64:
                         continue
                     if ev in handlers:
+                        continue
+                    if len(handlers) >= 32:
+                        try:
+                            q.put_nowait(build_control_error_payload(ev))
+                        except Exception:
+                            pass
                         continue
                     try:
                         h = make_handler(ev)

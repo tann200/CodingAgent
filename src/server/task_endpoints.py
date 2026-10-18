@@ -268,6 +268,9 @@ def _run_task_thread(
         rec["status"] = TaskStatus.RUNNING
         rec["started_at"] = time.time()
 
+    from src.core.orchestration.event_bus import set_session_id
+    set_session_id(session_id)
+
     if bus:
         try:
             bus.publish_typed(AgentStart(task_id=task_id, session_id=session_id, task=redact_secrets(task[:200])))

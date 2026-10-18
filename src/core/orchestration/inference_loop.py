@@ -107,6 +107,14 @@ def run_agent_once_impl(
     # Store cancel_event on orchestrator instance so nodes can access it via getattr
     orch.cancel_event = cancel_event
 
+    sid = getattr(orch, "session_id", None) or getattr(orch, "_current_task_id", None)
+    if sid:
+        try:
+            from src.core.orchestration.event_bus import set_session_id
+            set_session_id(str(sid))
+        except Exception:
+            pass
+
     # F16: Reset session read-file tracking at the start of each new task so reads
     # from a previous task cannot bypass the read-before-edit guard in a new task.
     orch._session_read_files = set()

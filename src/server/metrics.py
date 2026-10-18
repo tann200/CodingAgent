@@ -91,9 +91,21 @@ def inc_event_dropped_counter(event_name: str) -> None:
         )
 
 
+_MAX_CLIENT_DROPPED_COUNTERS = 1000
+
+
 def inc_client_event_dropped_counter(event_name: str, session_id: str) -> None:
     key = (str(session_id or "unknown"), str(event_name or "unknown"))
     with _METRICS_LOCK:
+        if (
+            key not in _CLIENT_DROPPED_EVENT_COUNTERS
+            and len(_CLIENT_DROPPED_EVENT_COUNTERS) >= _MAX_CLIENT_DROPPED_COUNTERS
+        ):
+            try:
+                oldest = next(iter(_CLIENT_DROPPED_EVENT_COUNTERS))
+                _CLIENT_DROPPED_EVENT_COUNTERS.pop(oldest, None)
+            except Exception:
+                pass
         _CLIENT_DROPPED_EVENT_COUNTERS[key] = (
             _CLIENT_DROPPED_EVENT_COUNTERS.get(key, 0) + 1
         )
