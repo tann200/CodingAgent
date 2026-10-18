@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 # Workdirs already incrementally indexed in this process.  ``index_repository``
 # is incremental, but skipping the call entirely for a seen workdir keeps loop
 # entry cheap and avoids repeated filesystem walks.
-_INDEXED_WORKDIRS: set[str] = set()
+_INDEXED_WORKDIRS: dict[str, Any] = {}
 _INDEX_LOCK = threading.Lock()
 
 _MAX_REPO_CTX_FILES = 10
@@ -46,12 +46,25 @@ def _ensure_repo_index(working_dir: str) -> None:
         resolved = str(Path(working_dir).resolve())
     except Exception:
         return
+
+    try:
+        from src.core.orchestration.graph.nodes.analysis_node import (
+            _compute_workspace_revision,
+        )
+
+        rev = _compute_workspace_revision(resolved)
+    except Exception:
+        rev = None
+
     with _INDEX_LOCK:
-        if resolved in _INDEXED_WORKDIRS:
+        if rev is not None:
+            if _INDEXED_WORKDIRS.get(resolved) == rev:
+                return
+        elif resolved in _INDEXED_WORKDIRS:
             return
         # Recorded before the call so a failure cannot cause a re-walk on every
         # loop entry.
-        _INDEXED_WORKDIRS.add(resolved)
+        _INDEXED_WORKDIRS[resolved] = rev
     try:
         from src.core.indexing.repo_indexer import index_repository
 

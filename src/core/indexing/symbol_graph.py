@@ -332,12 +332,22 @@ class SymbolGraph:
 
     def remove_file(self, path: str):
         """Remove file from graph."""
-        p = str(Path(path).relative_to(self.workdir))
-        if p in self.nodes:
-            del self.nodes[p]
-        if p in self.file_hashes:
-            del self.file_hashes[p]
-        self.edges = [e for e in self.edges if e.get("from") != p]
+        full_p = Path(path)
+        if not full_p.is_absolute():
+            full_p = self.workdir / path
+        full_p = full_p.resolve()
+        try:
+            rel_path = str(full_p.relative_to(self.workdir))
+        except ValueError:
+            rel_path = str(path)
+
+        for k in (rel_path, str(full_p), str(path)):
+            self.nodes.pop(k, None)
+            self.file_hashes.pop(k, None)
+        self.edges = [
+            e for e in self.edges
+            if e.get("from") not in (rel_path, str(full_p), str(path))
+        ]
         self._save_graph()
 
     def find_calls(self, function_name: str) -> List[Dict]:

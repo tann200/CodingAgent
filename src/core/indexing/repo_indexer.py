@@ -200,7 +200,7 @@ def parse_python_file(path: Path) -> Dict[str, Any]:
                     "docstring": ast.get_docstring(node),
                 }
             )
-        elif isinstance(node, ast.FunctionDef):
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             functions.append(
                 {
                     "name": node.name,
@@ -578,6 +578,9 @@ def _flat_symbols_for_file(
                     "symbol_type": "class",
                     "file_path": rel_path,
                     "language": language,
+                    "start_line": class_data.get("start_line") or class_data.get("line"),
+                    "end_line": class_data.get("end_line"),
+                    "docstring": class_data.get("docstring"),
                 }
             )
     for func_data in file_data.get("functions") or []:
@@ -588,6 +591,9 @@ def _flat_symbols_for_file(
                     "symbol_type": "function",
                     "file_path": rel_path,
                     "language": language,
+                    "start_line": func_data.get("start_line") or func_data.get("line"),
+                    "end_line": func_data.get("end_line"),
+                    "docstring": func_data.get("docstring"),
                 }
             )
     for sym in file_data.get("symbols") or []:
@@ -598,6 +604,9 @@ def _flat_symbols_for_file(
                     "symbol_type": sym.get("type", "symbol"),
                     "file_path": rel_path,
                     "language": language,
+                    "start_line": sym.get("start_line") or sym.get("line"),
+                    "end_line": sym.get("end_line"),
+                    "docstring": sym.get("docstring"),
                 }
             )
     return out
@@ -621,21 +630,48 @@ def refresh_file_in_index(file_path: str, working_dir: str) -> bool:
         if not p.is_absolute():
             p = Path(working_dir) / file_path
         p = p.resolve()
-        if not p.exists():
-            return False
-        parsed = parse_file(p)
-        if not parsed:
-            return False
+        try:
+            rel = str(p.relative_to(Path(working_dir).resolve()))
+        except ValueError:
+            rel = str(p)
+
         # Load existing index, update the file entry, save atomically.
         ctx_dir = Path(working_dir) / _get_ctx_dir_name()
         index_path = ctx_dir / "repo_index.json"
         if not index_path.exists():
             return False
         data = json.loads(index_path.read_text(encoding="utf-8"))
-        try:
-            rel = str(p.relative_to(Path(working_dir).resolve()))
-        except ValueError:
-            rel = str(p)
+
+        if not p.exists():
+            # SPEC-13: Handle deleted file - prune from files and symbols lists and metadata
+            files_list = data.get("files", [])
+            if isinstance(files_list, list):
+                data["files"] = [
+                    f for f in files_list
+                    if not (isinstance(f, dict) and f.get("path") == rel)
+                ]
+            symbols_list = data.get("symbols", [])
+            if isinstance(symbols_list, list):
+                data["symbols"] = [
+                    s for s in symbols_list
+                    if not (isinstance(s, dict) and s.get("file_path") == rel)
+                ]
+            meta = _load_index_metadata(Path(working_dir))
+            if meta:
+                if "file_hashes" in meta and isinstance(meta["file_hashes"], dict):
+                    meta["file_hashes"].pop(rel, None)
+                if "hashes" in meta and isinstance(meta["hashes"], dict):
+                    meta["hashes"].pop(rel, None)
+                _save_index_metadata(Path(working_dir), meta)
+
+            if _atomic_write_json is not None:
+                return bool(_atomic_write_json(index_path, data))
+            index_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+            return True
+
+        parsed = parse_file(p)
+        if not parsed:
+            return False
         files_list = data.get("files", [])
         if not isinstance(files_list, list):
             files_list = []
@@ -671,8 +707,13 @@ def refresh_file_in_index(file_path: str, working_dir: str) -> bool:
 
         # Update metadata hashes if metadata exists
         meta = _load_index_metadata(Path(working_dir))
-        if meta and "hashes" in meta and isinstance(meta["hashes"], dict):
-            meta["hashes"][rel] = compute_file_hash(p)
+        if meta is not None:
+            if "file_hashes" in meta and isinstance(meta["file_hashes"], dict):
+                meta["file_hashes"][rel] = compute_file_hash(p)
+            elif "hashes" in meta and isinstance(meta["hashes"], dict):
+                meta["hashes"][rel] = compute_file_hash(p)
+            else:
+                meta.setdefault("file_hashes", {})[rel] = compute_file_hash(p)
             _save_index_metadata(Path(working_dir), meta)
 
         if _atomic_write_json is not None:
