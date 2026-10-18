@@ -155,16 +155,9 @@ def load_merged_config(working_dir: Optional[Path] = None) -> Dict[str, Any]:
     if skipped:
         logger.debug(f"Skipped missing config paths: {skipped}")
 
-    # Apply hot-reload state sync if enabled
-    if _get_config_reloader is not None:
-        try:
-            reloader = _get_config_reloader(initial_load=False, workdir=working_dir)
-            # When load_merged_config runs, fresh config has just been loaded.
-            # Reset the changed flag so redundant reloads are not triggered.
-            reloader.clear_changed()
-        except Exception as e:
-            logger.debug(f"Hot-reload not available: {e}")
-
+    # Note: reloader.clear_changed() is intentionally NOT called here so callers
+    # that read partial/scoped configs (e.g. get_mcp_config) do not prematurely
+    # clear the dirty flag before get_global_config() / reload_if_pending() refreshes _cached_config.
     return result
 
 

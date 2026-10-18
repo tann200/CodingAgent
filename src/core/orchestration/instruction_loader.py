@@ -25,10 +25,15 @@ logger = logging.getLogger(__name__)
 
 # --- project instructions config ---
 _INSTRUCTION_FILENAMES = [
+    "AGENTS.md",
     "AGENT.md",
+    "AGENTS.local.md",
+    "AGENT.local.md",
+    ".codingAgent/AGENTS.md",
     ".codingAgent/AGENT.md",
     ".codingAgent/instructions.md",
-    "AGENT.local.md",
+    ".agent/AGENTS.md",
+    ".agent/AGENT.md",
     ".agent/instructions.md",
 ]
 _PER_FILE_CHAR_CAP = 4_000
@@ -77,6 +82,11 @@ def _collect_instructions(cwd: Path) -> str:
                 continue
             try:
                 raw = candidate.read_text(encoding="utf-8", errors="replace")
+                try:
+                    from src.core.security.redaction import redact_secrets
+                    raw = redact_secrets(raw)
+                except Exception:
+                    pass
             except OSError:
                 continue
             digest = hashlib.sha256(raw.encode()).hexdigest()
@@ -93,6 +103,8 @@ def _collect_instructions(cwd: Path) -> str:
             if total >= _TOTAL_CHAR_CAP:
                 break
         if total >= _TOTAL_CHAR_CAP:
+            break
+        if (current / ".git").exists():
             break
         parent = current.parent
         if parent == current:
@@ -135,6 +147,11 @@ def _run_one(cmd: List[str], cwd: Path, cap: int) -> str:
         timeout=_GIT_TIMEOUT,
     )
     out = result.stdout
+    try:
+        from src.core.security.redaction import redact_secrets
+        out = redact_secrets(out)
+    except Exception:
+        pass
     if len(out) > cap:
         out = out[:cap] + f"\n... [truncated at {cap} chars]"
     return out.rstrip()

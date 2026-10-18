@@ -923,12 +923,15 @@ class ProviderManager(ProviderManagerProtocol):
             lock=_providers_json_lock,  # type: ignore[arg-type]
         )
 
-    async def initialize(self):
-        if self._initialized:
+    async def initialize(self, force: bool = False):
+        if self._initialized and not force:
             return
         with self._init_lock:
-            if self._initialized:
+            if self._initialized and not force:
                 return
+            if force:
+                self._providers.clear()
+                self._models_cache.clear()
             guilogger.info("ProviderManager.initialize: loading providers.json")
             cfg = resolve_config_path(self.providers_config_path)
             try:
@@ -1005,6 +1008,10 @@ class ProviderManager(ProviderManagerProtocol):
                 guilogger.error(f"ProviderManager.initialize error: {e}")
             self._initialized = True
 
+    async def reload(self) -> None:
+        """Force reloading providers.json even if already initialized."""
+        await self.initialize(force=True)
+
     async def validate_provider(self, name: str) -> bool:
         return await _validate_provider_connection(adapter=self.get_provider(name))
 
@@ -1015,6 +1022,23 @@ _provider_manager: ProviderManager = ProviderManager()
 
 def get_provider_manager() -> ProviderManager:
     return _provider_manager
+
+
+def reload_provider_manager_sync() -> None:
+    """Synchronously force reload of provider manager."""
+    global _INIT_TASK
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+    if loop and loop.is_running():
+        with _INIT_TASK_LOCK:
+            _INIT_TASK = asyncio.create_task(_provider_manager.reload())
+    else:
+        try:
+            asyncio.run(_provider_manager.reload())
+        except Exception as e:
+            guilogger.error(f"reload_provider_manager_sync error: {e}")
 
 
 _INIT_TASK: "asyncio.Task | None" = None  # held so GC cannot collect it (NEW-11)

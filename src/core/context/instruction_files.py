@@ -44,9 +44,15 @@ MAX_TOTAL_INSTRUCTION_CHARS: int = 12_000
 _CANDIDATE_NAMES: tuple[tuple[str, ...], ...] = (
     # CodingAgent convention
     ("AGENTS.md",),
+    ("AGENT.md",),
     ("AGENTS.local.md",),
+    ("AGENT.local.md",),
     (".codingAgent", "AGENTS.md"),
+    (".codingAgent", "AGENT.md"),
     (".codingAgent", "instructions.md"),
+    (".agent", "AGENTS.md"),
+    (".agent", "AGENT.md"),
+    (".agent", "instructions.md"),
     # Claude Code / claw-code convention
     ("CLAUDE.md",),
     ("CLAUDE.local.md",),
@@ -142,11 +148,12 @@ def discover_instruction_files(
     """
     cwd = Path(workdir).resolve() if workdir else Path.cwd().resolve()
 
-    # Build ancestor chain from root → cwd (claw-code reverses the cursor list)
     ancestors: list[Path] = []
     cursor: Optional[Path] = cwd
     while cursor is not None:
         ancestors.append(cursor)
+        if (cursor / ".git").exists():
+            break
         parent = cursor.parent
         if parent == cursor:
             break
@@ -160,6 +167,11 @@ def discover_instruction_files(
             try:
                 content = candidate.read_text(encoding="utf-8")
                 if content.strip():
+                    try:
+                        from src.core.security.redaction import redact_secrets
+                        content = redact_secrets(content)
+                    except Exception:
+                        pass
                     files.append(InstructionFile(path=candidate, content=content))
             except FileNotFoundError:
                 pass

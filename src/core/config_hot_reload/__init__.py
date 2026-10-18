@@ -232,6 +232,14 @@ class ConfigReloader:
             self._pending_reload = False
             self._last_hashes = self._calculate_hashes()
 
+            try:
+                import src.core.config_loader as _cl
+                with _cl._config_lock:
+                    _cl._cached_config = config
+                    _cl._last_load_time = time.time()
+            except Exception:
+                pass
+
             self._invoke_callbacks(None)
             return config
         except Exception as e:

@@ -381,3 +381,15 @@ class McpServerManager:
                     st.connected = False
             self._clients.clear()
             self._started = False
+
+    async def re_register_tools(self, registry: Any) -> None:
+        """Re-register all connected MCP clients' tools into a new registry."""
+        with self._lock:
+            self._registry = registry
+            clients = list(self._clients.values())
+        for client in clients:
+            if hasattr(client, "register_tools"):
+                try:
+                    await client.register_tools(registry)
+                except Exception as exc:
+                    logger.debug("Failed to re-register MCP tools: %s", exc)

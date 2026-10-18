@@ -108,6 +108,13 @@ class ToolRegistry:
     def get(self, name: str) -> Optional[Dict[str, Any]]:
         return self.tools.get(name)
 
+    def deregister(self, name: str) -> bool:
+        """Remove a tool from the registry."""
+        if name in self.tools:
+            del self.tools[name]
+            return True
+        return False
+
     def list(self) -> List[str]:
         return list(self.tools.keys())
 

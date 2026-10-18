@@ -294,6 +294,14 @@ class ToolRegistry:
         with self._lock:
             return self._tools.get(name)
 
+    def deregister(self, name: str) -> bool:
+        """Remove a tool from the registry."""
+        with self._lock:
+            if name in self._tools:
+                del self._tools[name]
+                return True
+            return False
+
     def get_permission_kind(self, name: str) -> PermissionKind:
         """Return the PermissionKind for *name*, or PermissionKind.NONE if unknown.
 
