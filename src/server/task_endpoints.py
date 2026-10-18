@@ -85,13 +85,17 @@ def get_allowed_workspace_roots() -> List[Path]:
 def validate_working_dir_within_roots(
     working_dir: Optional[str],
     allowed_roots: Optional[List[Path]] = None,
-) -> Optional[Path]:
+) -> Path:
     """Validate that *working_dir* resolves to a path within an approved workspace root.
 
     Raises HTTPException(403) if outside approved roots, or HTTPException(400) if invalid path.
     """
+    roots = allowed_roots if allowed_roots is not None else get_allowed_workspace_roots()
     if working_dir is None:
-        return None
+        if roots:
+            return roots[0]
+        return Path.cwd().resolve()
+
     try:
         resolved = Path(working_dir).resolve()
     except Exception as exc:
@@ -106,7 +110,6 @@ def validate_working_dir_within_roots(
             detail=f"working_dir does not exist or is not a directory: {resolved}",
         )
 
-    roots = allowed_roots if allowed_roots is not None else get_allowed_workspace_roots()
     if not any(resolved == root or resolved.is_relative_to(root) for root in roots):
         raise HTTPException(
             status_code=403,
@@ -115,8 +118,11 @@ def validate_working_dir_within_roots(
     return resolved
 
 
+_TASK_MAX_HISTORY = int(os.getenv("CODINGAGENT_TASK_MAX_HISTORY", "1000"))
+
+
 def _evict_stale_tasks() -> None:
-    """Remove terminal task records older than _TASK_REGISTRY_TTL_SECONDS.
+    """Remove terminal task records older than _TASK_REGISTRY_TTL_SECONDS or exceeding _TASK_MAX_HISTORY.
 
     Called inside the registry lock before each new task insertion so the
     dict stays bounded without a background thread.
@@ -131,6 +137,17 @@ def _evict_stale_tasks() -> None:
     ]
     for tid in stale:
         _TASK_REGISTRY.pop(tid, None)
+
+    if len(_TASK_REGISTRY) >= _TASK_MAX_HISTORY:
+        terminal_tasks = [
+            (tid, rec.get("finished_at") or 0.0)
+            for tid, rec in _TASK_REGISTRY.items()
+            if rec.get("status") in (TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED)
+        ]
+        terminal_tasks.sort(key=lambda x: x[1])
+        excess = len(_TASK_REGISTRY) - _TASK_MAX_HISTORY + 1
+        for tid, _ in terminal_tasks[:excess]:
+            _TASK_REGISTRY.pop(tid, None)
 
 
 @dataclass
@@ -179,18 +196,13 @@ class TaskCreateRequest(BaseModel):
     @classmethod
     def _validate_working_dir(cls, v: Optional[str]) -> Optional[str]:
         if v is None:
-            return v
-        try:
-            resolved = Path(v).resolve()
-        except Exception as exc:
-            raise ValueError(f"working_dir is not a valid path: {exc}") from exc
-        if not resolved.is_dir():
-            raise ValueError(
-                f"working_dir does not exist or is not a directory: {resolved}"
-            )
-        # Prevent traversal outside the filesystem root — resolved path is
-        # always absolute after .resolve(), so just return the canonical form.
-        return str(resolved)
+            return None
+        v_str = str(v).strip()
+        if not v_str:
+            return None
+        if len(v_str) > 4096:
+            raise ValueError("working_dir path too long")
+        return v_str
 
 
 class TaskStatusResponse(BaseModel):
@@ -203,10 +215,18 @@ class TaskStatusResponse(BaseModel):
     finished_at: Optional[float] = None
 
 
-def _get_or_create_orchestrator(working_dir: Optional[str], model: Optional[str]):
+def _get_or_create_orchestrator(
+    working_dir: Optional[str],
+    model: Optional[str],
+    event_bus: Optional[Any] = None,
+):
     from src.core.orchestration.orchestrator import Orchestrator
 
-    orch = Orchestrator(working_dir=working_dir) if working_dir else Orchestrator()
+    orch = (
+        Orchestrator(working_dir=working_dir, event_bus=event_bus)
+        if working_dir
+        else Orchestrator(event_bus=event_bus)
+    )
     if model:
         setattr(orch, "model", model)
     return orch
@@ -256,12 +276,16 @@ def _run_task_thread(
 
     result_text: Optional[str] = None
     error_text: Optional[str] = None
+    orch = None
     try:
         if cancel_event.is_set():
             raise RuntimeError("Task was cancelled before start")
 
         from src.server.app import _get_or_create_orchestrator as orchestrator_factory
-        orch = orchestrator_factory(working_dir, model)
+        try:
+            orch = orchestrator_factory(working_dir, model, event_bus=bus)
+        except TypeError:
+            orch = orchestrator_factory(working_dir, model)
 
         # Propagate task_id and session_id into orchestrator state so session stores,
         # message history, and checkpoints are tied to the client session.
@@ -276,16 +300,26 @@ def _run_task_thread(
             except Exception:
                 pass
 
-        if bus:
-            try:
-                orch.event_bus = bus
-            except Exception:
-                pass
-
         if cancel_event.is_set():
             raise RuntimeError("Task was cancelled before start")
 
-        messages = [{"role": "user", "content": task}]
+        # SPEC-15: Hydrate prior conversation history for multi-turn session continuity
+        prior_messages = []
+        if hasattr(orch, "session_store") and orch.session_store:
+            try:
+                raw_msgs = orch.session_store.get_messages(session_id)
+                for m in raw_msgs:
+                    if isinstance(m, dict) and "role" in m and "content" in m:
+                        prior_messages.append({"role": m["role"], "content": m["content"]})
+            except Exception:
+                pass
+        elif hasattr(orch, "msg_mgr") and orch.msg_mgr:
+            try:
+                prior_messages = list(orch.msg_mgr.get_messages())
+            except Exception:
+                pass
+
+        messages = prior_messages + [{"role": "user", "content": task}]
         tools = getattr(orch, "tools", {}) or {}
         try:
             tools = orch.get_tools_for_role("default")
@@ -309,6 +343,13 @@ def _run_task_thread(
     except Exception as exc:
         error_text = str(exc)
         log.exception("Task %s failed: %s", task_id, exc)
+    finally:
+        if orch is not None:
+            try:
+                if hasattr(orch, "close") and callable(orch.close):
+                    orch.close()
+            except Exception as close_exc:
+                log.debug("Error closing orchestrator for task %s: %s", task_id, close_exc)
 
     final_status = TaskStatus.FAILED if error_text else TaskStatus.COMPLETED
     if cancel_event.is_set():
@@ -348,8 +389,16 @@ async def submit_task(request_body: TaskCreateRequest, request: Request):
         _deps.require_admin_auth(request)
 
     # Enforce workspace root allowlist
-    resolved_workdir = validate_working_dir_within_roots(request_body.working_dir)
-    working_dir_str = str(resolved_workdir) if resolved_workdir else None
+    effective_dir = request_body.working_dir
+    if effective_dir is None:
+        roots = get_allowed_workspace_roots()
+        if roots:
+            effective_dir = str(roots[0])
+        else:
+            effective_dir = str(Path.cwd().resolve())
+
+    resolved_workdir = validate_working_dir_within_roots(effective_dir)
+    working_dir_str = str(resolved_workdir)
 
     task_id = str(uuid.uuid4())
     session_id = request_body.session_id or f"session-{task_id[:8]}"
@@ -375,6 +424,7 @@ async def submit_task(request_body: TaskCreateRequest, request: Request):
             "status": TaskStatus.ACCEPTED,
             "result": None,
             "error": None,
+            "created_at": time.time(),
             "started_at": None,
             "finished_at": None,
             "cancel_event": cancel_event,
@@ -459,7 +509,10 @@ async def list_tasks(request: Request, limit: int = 50):
     limit = max(1, min(limit, 500))
     with _TASK_REGISTRY_LOCK:
         items = list(_TASK_REGISTRY.values())
-    items.sort(key=lambda r: r.get("started_at") or 0.0, reverse=True)
+    items.sort(
+        key=lambda r: r.get("started_at") or r.get("created_at") or 0.0,
+        reverse=True,
+    )
     items = items[: max(1, limit)]
     return [
         TaskStatusResponse(

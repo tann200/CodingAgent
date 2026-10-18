@@ -307,21 +307,27 @@ async def enable_scheduler_job(name: str, request: Request):
         raise HTTPException(status_code=503, detail="Scheduler unavailable")
 
 
+@app.patch("/scheduler/jobs/{name}")
+@app.patch("/scheduler/jobs/{name}/interval")
 @app.post("/scheduler/jobs/{name}/interval")
 async def update_scheduler_job_interval(name: str, request: Request):
     """Update the interval for a specific job.
 
     Expects JSON body: {"interval": <seconds>}.
     """
+    require_scheduler_admin_auth(
+        request, require_admin_auth=_require_admin_auth, logger=logger
+    )
+
     try:
         payload = await request.json()
         interval = int(payload.get("interval", 0))
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid payload")
 
-    require_scheduler_admin_auth(
-        request, require_admin_auth=_require_admin_auth, logger=logger
-    )
+    if interval < 1:
+        raise HTTPException(status_code=400, detail="interval must be >= 1")
+
     _sched = load_scheduler_worker(logger=logger)
 
     try:

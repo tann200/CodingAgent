@@ -61,7 +61,7 @@ def _init_infrastructure(orch: Any, message_max_tokens: Optional[int]) -> None:
         if _graph_exe is not None:
             _graph_exe.shutdown(wait=False)
 
-        atexit.register(_shutdown_executors)
+    atexit.register(_shutdown_executors)
 
     # Wire the MessageManager with compaction support so dropped messages
     # are summarised inline rather than silently discarded.

@@ -113,6 +113,8 @@ def update_job_interval(name: str, interval_seconds: int) -> bool:
 
     Returns True if the job or factory existed and was updated.
     """
+    if int(interval_seconds) < 1:
+        return False
     updated = False
     with _JOBS_LOCK:
         if name in _JOBS:

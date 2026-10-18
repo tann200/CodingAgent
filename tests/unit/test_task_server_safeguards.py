@@ -216,3 +216,91 @@ class TestTaskSessionPropagation:
         assert dummy_orch.session_id == custom_session_id
         assert dummy_orch.session_mgr.task_id == custom_session_id
         dummy_orch.session_mgr.update_session_state.assert_called_with(session_id=custom_session_id)
+
+    def test_post_task_omitting_working_dir_defaults_to_allowed_root(self, tmp_path, test_client):
+        """When working_dir is omitted, it must default to the allowed workspace root."""
+        approved_root = tmp_path / "custom_root"
+        approved_root.mkdir()
+        set_allowed_workspace_roots([approved_root])
+
+        dummy_orch = MagicMock()
+        dummy_orch.get_tools_for_role.return_value = {}
+        dummy_orch.run_agent_once.return_value = {"ok": True, "assistant_message": "done"}
+
+        with patch("src.server.app._get_or_create_orchestrator", return_value=dummy_orch) as mock_factory:
+            resp = test_client.post(
+                "/task",
+                json={"task": "default root task"},
+            )
+            assert resp.status_code == 202
+            time.sleep(0.2)
+
+        # Factory was called with approved_root
+        mock_factory.assert_called_once()
+        assert mock_factory.call_args[0][0] == str(approved_root)
+
+    def test_unauthenticated_post_task_rejects_with_401_not_422(self, test_client, monkeypatch):
+        """Unauthenticated requests must fail with 401 before Pydantic/filesystem checks (oracle prevention)."""
+        monkeypatch.setenv("CODINGAGENT_ADMIN_TOKEN", "admin_secret_token_123")
+
+        resp = test_client.post(
+            "/task",
+            json={
+                "task": "probe filesystem",
+                "working_dir": "/etc/passwd",
+            },
+        )
+        assert resp.status_code == 401
+        assert "422" not in str(resp.status_code)
+
+    def test_multiturn_session_history_hydration_and_orchestrator_close(self, tmp_path, test_client):
+        """Multi-turn tasks sharing session_id must hydrate prior messages and close orchestrators."""
+        approved_root = tmp_path / "session_workspace"
+        approved_root.mkdir()
+        set_allowed_workspace_roots([approved_root])
+
+        history_store = []
+        orch1 = MagicMock()
+        orch1.session_store.get_messages.return_value = history_store
+        orch1.get_tools_for_role.return_value = {}
+        orch1.run_agent_once.return_value = {"ok": True, "assistant_message": "response 1"}
+
+        history_store_after = [
+            {"role": "user", "content": "turn 1"},
+            {"role": "assistant", "content": "response 1"},
+        ]
+        orch2 = MagicMock()
+        orch2.session_store.get_messages.return_value = history_store_after
+        orch2.get_tools_for_role.return_value = {}
+        orch2.run_agent_once.return_value = {"ok": True, "assistant_message": "response 2"}
+
+        session_id = "test-session-multi-turn"
+        with patch("src.server.app._get_or_create_orchestrator", side_effect=[orch1, orch2]):
+            resp1 = test_client.post(
+                "/task",
+                json={"task": "turn 1", "session_id": session_id, "working_dir": str(approved_root)},
+            )
+            assert resp1.status_code == 202
+            time.sleep(0.3)
+
+            resp2 = test_client.post(
+                "/task",
+                json={"task": "turn 2", "session_id": session_id, "working_dir": str(approved_root)},
+            )
+            assert resp2.status_code == 202
+            time.sleep(0.3)
+
+        # Orch 1 had only user message
+        call1_msgs = orch1.run_agent_once.call_args[1]["messages"]
+        assert len(call1_msgs) == 1
+        assert call1_msgs[0]["content"] == "turn 1"
+        orch1.close.assert_called_once()
+
+        # Orch 2 hydrated prior messages from session_store
+        call2_msgs = orch2.run_agent_once.call_args[1]["messages"]
+        assert len(call2_msgs) == 3
+        assert call2_msgs[0]["content"] == "turn 1"
+        assert call2_msgs[1]["content"] == "response 1"
+        assert call2_msgs[2]["content"] == "turn 2"
+        orch2.close.assert_called_once()
+
