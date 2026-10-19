@@ -19,8 +19,8 @@
 
 ```bash
 python -m pytest tests/unit -q -p no:logging
-python -m pytest tests/integration/test_langgraph_orchestrator.py tests/integration/test_fast_path_graph_e2e.py -q -p no:logging
-python -m ruff check src tests --select=E,F,W --ignore=E501
+python -m pytest tests/integration -q -p no:logging -m "not real_llm and not lmstudio and not ollama"
+python -m ruff check src tests tui --select=E,F,W --ignore=E501
 python -m mypy src/server src/core/inference/provider_utils.py src/core/orchestration/tool_contracts.py src/core/orchestration/tool_parser.py --ignore-missing-imports --follow-imports=silent --disable-error-code=import-untyped --no-error-summary
 ```
 
@@ -54,9 +54,9 @@ Run focused tests for every changed module. Do not require a live provider for o
 ## Current High-Risk Areas
 
 - The full plan/step/debug graph is disabled; the live non-lite path uses a frontier loop.
-- Shell sandboxing can fall back to unrestricted host execution when enforcement is unavailable.
-- Completion can be inferred from model text without objective verification.
-- Server task workdirs are not constrained to an explicit approved root.
+- Shell sandboxing fails closed by default; unconfined opt-out requires explicit override.
+- Evidence-based completion contracts guard completion, but prompt classification must remain robust against adversarial inputs.
+- Server task workdirs enforce approved roots, but authentication and session isolation must be maintained.
 - Read paths and traces require careful secret handling.
 
 Any change in these areas needs focused regression coverage and a review of the audit report.

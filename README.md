@@ -52,18 +52,18 @@ codingagent --task "Plan an upgrade" --dry-run
 
 `--autonomous` does not approve gated tools unless their canonical names are explicitly passed with `--autonomous-approve`. Do not use `--autonomous-approve '*'` unless you accept every gated action.
 
-Shell containment is not currently a reliable security boundary on hosts without an enforcing sandbox backend. Treat shell-capable and server-enabled deployments as trusted, local use only until the high-severity audit findings are resolved.
+Shell containment fails closed by default when an enforcing sandbox backend is unavailable (or can be configured via `CODINGAGENT_SANDBOX_ALLOW_UNENFORCED=1`). Treat server-enabled deployments as trusted local use only.
 
 ## Test And Quality Commands
 
 ```bash
 python -m pytest tests/unit -q -p no:logging
-python -m pytest tests/integration/test_langgraph_orchestrator.py tests/integration/test_fast_path_graph_e2e.py -q -p no:logging
-python -m ruff check src tests --select=E,F,W --ignore=E501
+python -m pytest tests/integration -q -p no:logging -m "not real_llm and not lmstudio and not ollama"
+python -m ruff check src tests tui --select=E,F,W --ignore=E501
 python -m mypy src/server src/core/inference/provider_utils.py src/core/orchestration/tool_contracts.py src/core/orchestration/tool_parser.py --ignore-missing-imports --follow-imports=silent --disable-error-code=import-untyped --no-error-summary
 ```
 
-The CI workflow defines the maintained quality, mock integration, mock E2E, platform smoke, benchmark, and optional live-provider jobs. Full test collection requires the `server` extras because server tests import FastAPI and Uvicorn.
+The CI workflow defines the maintained quality (including TUI mirror parity), mock integration, mock E2E, platform smoke, benchmark, and optional live-provider jobs. Full test collection requires the `server` extras because server tests import FastAPI and Uvicorn.
 
 ## Repository Layout
 
@@ -79,8 +79,8 @@ The CI workflow defines the maintained quality, mock integration, mock E2E, plat
 ## Current Limitations
 
 - The non-lite live graph is an LLM-directed frontier loop; the full plan/step/debug/delegation graph is present but disabled.
-- A text-only model response can currently be treated as completion without objective repository verification.
+- Mutating task completion is governed by evidence-based completion contracts requiring verified file modifications and tool execution evidence.
 - Code retrieval is symbol-oriented and is not guaranteed before every planning or editing path.
-- HTTP task execution, when enabled, must remain loopback-bound and trusted; it is not a multi-tenant service boundary.
+- HTTP task execution, when enabled, must remain loopback-bound and restricted to approved workspace roots; it is not a multi-tenant service boundary.
 
 See the audit for evidence, severity, and the prioritized remediation roadmap.
