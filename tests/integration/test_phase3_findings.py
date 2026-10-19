@@ -170,6 +170,8 @@ class TestEvaluationNodeLLMVerdict:
             "task": "Write a hello function",
             "session_id": "test-session",
             "verification_result": {},
+            "modified_files": ["hello.py"],
+            "tool_call_count": 1,
         }
         base.update(overrides)
         return base
