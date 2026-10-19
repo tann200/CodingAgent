@@ -228,27 +228,3 @@ def get_toolset_description(name: str) -> str:
     if toolset:
         return toolset.get("description", "")
     return ""
-
-
-class ToolsetManager:
-    def __init__(self, base_tools: Optional[List[str]] = None):
-        self.base_tools = base_tools or []
-        self._current_toolset: Optional[str] = None
-
-    def select_toolset(self, role: str) -> List[str]:
-        """Select the appropriate toolset based on role."""
-        toolset_name = get_toolset_for_role(role)
-        toolset_tools = get_tools_for_toolset(toolset_name)
-
-        if not toolset_tools:
-            self._current_toolset = None
-            return self.base_tools
-
-        self._current_toolset = toolset_name
-        return toolset_tools
-
-    def get_current_toolset(self) -> Optional[str]:
-        return self._current_toolset
-
-    def get_toolset_tools(self, name: str) -> List[str]:
-        return get_tools_for_toolset(name)

@@ -75,16 +75,6 @@ try:
 except Exception:
     _get_token_budget_monitor = None  # type: ignore[assignment]
 
-# v2: workflow_selector integration
-WorkflowType: Any = None
-try:
-    from src.core.inference.workflow_selector import (
-        WorkflowType,  # type: ignore[assignment]  # noqa: F401
-        should_use_single_loop as _should_use_single_loop,
-    )
-except Exception:
-    _should_use_single_loop = None  # type: ignore[assignment]
-
 # D-11: Named routing constants — avoids magic numbers in router functions.
 _MAX_ROUNDS_PLANNING = _planning_routing._MAX_ROUNDS_PLANNING
 _AUTONOMOUS_MAX_TOOL_CALLS = 100  # default budget for autonomous/full graph

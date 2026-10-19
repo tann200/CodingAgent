@@ -7,17 +7,13 @@ import pytest
 from src.core.inference.model_capability_profile import (
     Architecture,
     AgentMode,
-    AgentModeSettings,
     ModelProfile,
     ModelTier,
     ThinkingMode,
-    _MODE_SETTINGS,
     _PRIMARY_PROFILES,
     classify_model,
-    get_agent_mode_settings,
     get_model_profile,
     list_available_profiles,
-    select_agent_mode,
 )
 
 
@@ -163,36 +159,6 @@ def test_classify_model_integration():
     # Let's test what we actually get
     result = classify_model("huge-model", 32768)
     assert result in [ModelTier.MEDIUM, ModelTier.LARGE, ModelTier.FRONTIER]
-
-
-def test_select_agent_mode():
-    """Test agent mode selection based on parameters."""
-    assert select_agent_mode(1.0, is_local=True) == AgentMode.LITE  # <= 14B
-    assert select_agent_mode(7.0, is_local=True) == AgentMode.LITE
-    assert select_agent_mode(14.0, is_local=True) == AgentMode.LITE
-
-    assert select_agent_mode(15.0, is_local=True) == AgentMode.STANDARD  # 14-70B
-    assert select_agent_mode(35.0, is_local=True) == AgentMode.STANDARD
-    assert select_agent_mode(70.0, is_local=True) == AgentMode.STANDARD
-
-    # Note: The exact threshold might vary, let's check what we actually get
-    result = select_agent_mode(71.0, is_local=True)
-    assert result in [AgentMode.STANDARD, AgentMode.FULL]
-
-
-def test_get_agent_mode_settings():
-    """Test get_agent_mode_settings function."""
-    lite = get_agent_mode_settings(AgentMode.LITE)
-    assert lite.max_turns == 20
-    assert lite.tool_limit == 15
-
-    standard = get_agent_mode_settings(AgentMode.STANDARD)
-    assert standard.max_turns == 40
-    assert standard.tool_limit == 35
-
-    full = get_agent_mode_settings(AgentMode.FULL)
-    assert full.max_turns == 80
-    assert full.tool_limit == 60
 
 
 def test_thinking_mode_enum():

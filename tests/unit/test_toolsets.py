@@ -8,7 +8,6 @@ from src.config.toolsets.loader import (
     get_tools_for_toolset,
     get_toolset_for_role,
     list_available_toolsets,
-    ToolsetManager,
 )
 from src.config.toolsets import loader
 
@@ -39,18 +38,6 @@ def test_get_toolset_for_role():
     assert get_toolset_for_role("planner") == "planning"
     assert get_toolset_for_role("reviewer") == "review"
     assert get_toolset_for_role("debugger") == "debug"
-
-
-def test_toolset_manager():
-    manager = ToolsetManager(base_tools=["base_tool"])
-
-    coding_tools = manager.select_toolset("coder")
-    assert "read_file" in coding_tools
-    assert manager.get_current_toolset() == "coding"
-
-    planning_tools = manager.select_toolset("planner")
-    assert "read_file" in planning_tools
-    assert manager.get_current_toolset() == "planning"
 
 
 def test_load_toolset():

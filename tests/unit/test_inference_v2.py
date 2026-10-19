@@ -16,8 +16,6 @@ from src.core.inference import (
     ThinkingMode,
     AgentMode,
     get_model_profile,
-    select_agent_mode,
-    get_agent_mode_settings,
     list_available_profiles,
 )
 from src.core.inference import (
@@ -39,8 +37,6 @@ from src.core.inference import (
     select_workflow,
     select_workflow_from_names,
     should_use_single_loop,
-    LoopControl,
-    get_loop_control,
 )
 
 
@@ -73,23 +69,6 @@ class TestModelCapabilityProfile:
         profile = get_model_profile("qwen3.5-9b")
         kv_1k = profile.compute_kv_cache_gb(1000)
         assert kv_1k > 0 and kv_1k < 1.0
-
-    def test_agent_mode_selection(self):
-        assert select_agent_mode(9.0, is_local=True) == AgentMode.LITE
-        assert select_agent_mode(14.0, is_local=True) == AgentMode.LITE
-        assert select_agent_mode(27.0, is_local=True) == AgentMode.STANDARD
-        assert select_agent_mode(9.0, is_local=False) == AgentMode.FULL
-
-    def test_agent_mode_settings(self):
-        lite = get_agent_mode_settings(AgentMode.LITE)
-        assert lite.tool_limit == 15
-        assert lite.thinking_mode == ThinkingMode.OFF
-        assert lite.verification is False
-        assert lite.vector_memory is False
-
-        standard = get_agent_mode_settings(AgentMode.STANDARD)
-        assert standard.tool_limit == 35
-        assert standard.verification is True
 
 
 class TestHardwareCapabilityProfile:
@@ -182,34 +161,6 @@ class TestWorkflowSelector:
         assert should_use_single_loop("gemma-4-4b", "rtx5070ti-16g") is True
         assert should_use_single_loop("gemma-4-26b-a4b", "rtx5070ti-16g") is False
         assert should_use_single_loop("gpt-4o") is False
-
-    def test_loop_control_small(self):
-        runtime = get_runtime_profile("gemma-4-4b", "rtx5070ti-16g")
-        control = get_loop_control(runtime)
-
-        assert control.max_llm_calls == 6
-        assert control.llm_calls_remaining == 6
-        assert control.should_stop is False
-
-        control.increment()
-        assert control.llm_calls_remaining == 5
-        assert control.turns_used == 1
-
-    def test_loop_control_small_full_stop(self):
-        runtime = get_runtime_profile("gemma-4-4b", "rtx5070ti-16g")
-        control = get_loop_control(runtime)
-
-        for _ in range(control.max_llm_calls):
-            control.increment()
-
-        assert control.should_stop is True
-
-    def test_loop_control_large(self):
-        """qwen3.5-9b is LARGE — higher LLM call budget."""
-        runtime = get_runtime_profile("qwen3.5-9b", "rtx5070ti-16g")
-        control = get_loop_control(runtime)
-
-        assert control.max_llm_calls == 15
 
     def test_gpt_cloud_workflow(self):
         workflow = select_workflow_from_names("gpt-4o")

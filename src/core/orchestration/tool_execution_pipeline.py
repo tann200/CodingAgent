@@ -18,14 +18,12 @@ from pathlib import Path
 from typing import Any, Dict, Optional, cast
 
 from src.core.messaging.event_types import AgentModeChanged, AgentPlanCommitted, FileDeleted, FileModified, PreviewPending, SpawnPermissionRequired, TokenBudget, TokenBudgetUpdate, ToolExecuteError, ToolExecuteFinish, ToolExecuteStart, ToolInvoked, ToolPermissionRequired
-from src.tools._truncate import RESULT_MAX_CHARS
 from src.core.security.redaction import redact_data, redact_secrets
 logger = logging.getLogger(__name__)
 
 APPROVAL_TIMEOUT_SECONDS: float = 120.0
 TOOL_EXECUTOR_MAX_WORKERS: int = 4
-# TW-4: the per-result char cap lives in the canonical truncation module
-# (_truncate.RESULT_MAX_CHARS); this alias keeps legacy consumers working.
+RESULT_MAX_CHARS: int = 8_000
 TOOL_OUTPUT_MAX_CHARS: int = RESULT_MAX_CHARS
 
 _TOOL_EXECUTOR_LOCK: threading.Lock = threading.Lock()

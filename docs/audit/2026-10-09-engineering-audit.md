@@ -127,18 +127,27 @@ The highest-risk design problem is a mismatch between available and selected con
 - **Server `_run_task_thread` leaks 3 `ThreadPoolExecutor` threads per task**: `task_endpoints.py:264` creates a new `Orchestrator` per task and never calls `orch.close()` (`SPEC-15`).
 - **`KVCacheGovernor` produces negative `max_tokens` when VRAM is `0.0` or over-committed**: `kv_cache_governor.py:99-100,38-45` computes negative `max_tokens` and returns `usage_ratio = 0.0` (`should_compact = False`) while `will_overflow(0)` returns `True` (`SPEC-20`).
 
-## 13. Over-Engineered Or Dormant Components
+## 13. Over-Engineered Or Dormant Components (Audited & Cleaned Up 2026-10-19)
 
-The following classes have no meaningful observed production integration, or duplicate active capability. They should be wired with tests or removed to reduce misleading surface area:
+The subsystems identified below have been audited, with confirmed dead code purged and actively integrated components documented to prevent regression:
 
-- Full graph nodes for planning/debug/replan/delegation while live non-lite routing uses the frontier loop.
-- `GitWorktreeManager`, `ContextManager`, `EventLog`, and `WaveCoordinator` in orchestration.
-- `FrozenMemoryStore`, `SkillLoader`, `SkillRegistry`, `SystemPromptBuilder`, `HookRegistry`, `TelemetryConsumer`, `TelemetryMetrics`, `RollingHistogram`, `MetricsStore`, `Timer`, `IncrementalIndexer`, and `ResiliencePolicy`.
-- `AdapterWrapper`, deprecated `AgentMode`/`AgentModeSettings`, `WorkflowType`/`WorkflowConfig`/`LoopControl`, plus test-focused `MockAdapter`.
-- `ToolsetManager`, `Truncate`, and the unregistered symbol-reader wrapper path.
-- TUI `WorkflowController`, `Coordinator`, legacy `widgets.DiffViewer`, and `HistoryInput`.
-
-The source mirror is currently identical, but maintaining both `tui/src` and `tui/tui_src` doubles future drift risk.
+- **Purged Dead/Dormant Modules & Classes**:
+  - `IncrementalIndexer` (`src/core/indexing/symbol_graph.py`): Purged. Live incremental indexing is handled by `repo_indexer.py:refresh_file_in_index` and `repo_context.py:refresh_index_after_write`.
+  - `ToolsetManager` (`src/config/toolsets/loader.py`): Purged along with test harness. Role-based tool filtering is handled directly by `get_toolset_for_role` and `load_toolset_for_model`.
+  - `Truncate` (`src/tools/_truncate.py`): Purged along with `test_truncate.py`. Canonical truncation is handled by `tool_output_truncation.py` with `RESULT_MAX_CHARS: int = 8_000` in `tool_execution_pipeline.py`.
+  - Deprecated `AgentModeSettings`, `_MODE_SETTINGS`, `select_agent_mode`, and `get_agent_mode_settings` (`src/core/inference/model_capability_profile.py`): Purged. Superseded by `TierConfig` and `classify_model` in `model_tiers.py` (`AgentMode` enum retained for event typing).
+  - `LoopControl` dataclass & `get_loop_control` (`src/core/inference/workflow_selector.py`): Purged. Graph turns are managed by `frontier_loop_node` and `tier_config`.
+  - TUI Dead Modules: `WorkflowController` (`ui/controller.py`), `Coordinator` (`ui/coordinator.py`), and `DiffViewer` (`ui/widgets.py`): Purged across both `tui/src` and `tui/tui_src`, maintaining strict byte-identity.
+  - Previously Purged: `ContextManager`, `EventLog`, `WaveCoordinator`, `TelemetryConsumer`, `TelemetryMetrics`, `AdapterWrapper`, `SkillLoader`, `SkillRegistry`, `SystemPromptBuilder`.
+- **Verified Active Components (Retained)**:
+  - `GitWorktreeManager` (`src/core/orchestration/git_worktree_manager.py`): Retained; actively called by TUI `/worktree` slash command handler (`_app_slash_commands_mixin.py`).
+  - `FrozenMemoryStore` (`src/core/memory/frozen_snapshot.py`): Retained; actively called by `src/core/context/context_builder.py:get_memory_for_prompt`.
+  - `HookRegistry` (`src/core/plugin/hook_registry.py`): Retained; actively called by context builder, LLM manager, execution, perception, and inference loop nodes.
+  - `MetricsStore` & `RollingHistogram` (`src/core/observability/metrics.py`): Retained; actively referenced in `state_schemas.py` and `todo_tools.py`.
+  - `ResiliencePolicy` (`src/core/utils/retry.py`): Retained; actively imported and used by `src/core/inference/adapters/ollama_adapter.py`.
+  - `HistoryInput` (`tui/tui_src/ui/components/history_input.py`): Retained; actively used by `ChatTextArea` for `HistoryInput.InterruptSignal` (double-Esc interrupt handling).
+- **Dual Source Tree Status**:
+  - `tui/src` and `tui/tui_src` are verified byte-identical (`diff -r -x '__pycache__' tui/src tui/tui_src` exits `0`).
 
 ## 14. Prioritized Fix List (Resolved & Reassessed 2026-10-19)
 

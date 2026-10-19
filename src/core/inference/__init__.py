@@ -21,10 +21,7 @@ from .model_capability_profile import (
     Architecture,
     ThinkingMode,
     AgentMode,
-    AgentModeSettings,
     get_model_profile,
-    select_agent_mode,
-    get_agent_mode_settings,
     list_available_profiles,
 )
 from .hardware_capability_profile import (
@@ -47,8 +44,6 @@ from .workflow_selector import (
     select_workflow,
     select_workflow_from_names,
     should_use_single_loop,
-    LoopControl,
-    get_loop_control,
 )
 from .kv_cache_governor import (
     KVCacheGovernor,
@@ -83,10 +78,7 @@ __all__ = [
     "Architecture",
     "ThinkingMode",
     "AgentMode",
-    "AgentModeSettings",
     "get_model_profile",
-    "select_agent_mode",
-    "get_agent_mode_settings",
     "list_available_profiles",
     # hardware_capability_profile
     "HardwareProfile",
@@ -106,8 +98,6 @@ __all__ = [
     "select_workflow",
     "select_workflow_from_names",
     "should_use_single_loop",
-    "LoopControl",
-    "get_loop_control",
     # kv_cache_governor
     "KVCacheGovernor",
     "CompactionAction",

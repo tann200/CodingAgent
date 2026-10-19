@@ -96,9 +96,6 @@ src/
     mock_engine.py                  Mock backend simulator (responds to RequestSystemSettings, loads providers.json)
     settings.py                     Local UI settings cache (no src/core imports, populated by bus events)
     logging.py                      Centralized structured logging
-    widgets.py                      DiffViewer widget
-    coordinator.py                  Data coordinator (decoupled)
-    controller.py                   Workflow controller (decoupled)
 
     components/
       __init__.py                   Component exports
@@ -309,10 +306,6 @@ Full-height vertical pillar log viewer (dock: left, 30% width):
 #### `cards.py` - ProviderCard
 
 Simple status display widget showing `provider_name: status`.
-
-#### `widgets.py` - DiffViewer
-
-Utility widget for showing unified diffs or new file content using `Rich.Syntax`.
 
 ### Features
 
