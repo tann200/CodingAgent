@@ -188,57 +188,36 @@ class TestNoDuplication:
 
 
 # ---------------------------------------------------------------------------
-# 5. tui/src mirror exports identical AgentBridge
+# 5. Single canonical source tree under tui/tui_src with dynamic tui.src alias
 # ---------------------------------------------------------------------------
 
 
-class TestMirrorSync:
-    def test_src_mirror_has_agent_bridge(self) -> None:
+class TestSingleSourceConsolidation:
+    def test_redundant_src_tree_absent(self) -> None:
+        """The duplicate tui/src directory is removed; tui/tui_src is the sole source of truth."""
+        from pathlib import Path
+
+        tui_root = Path(__file__).resolve().parents[2] / "tui"
+        assert not (tui_root / "src").exists(), (
+            "Redundant tui/src directory found! Canonical TUI source tree is tui/tui_src."
+        )
+
+    def test_src_alias_resolves_to_canonical_agent_bridge(self) -> None:
+        """tui.src dynamically aliases tui.tui_src for backward compatibility."""
         from tui.src.ui.core_bridge import AgentBridge as BridgeSrc  # type: ignore[import]
         from tui.tui_src.ui.core_bridge import AgentBridge as BridgeDst
-        # Same MRO structure (names match, even if different objects due to separate import)
+
         src_mro = [c.__name__ for c in BridgeSrc.__mro__]
         dst_mro = [c.__name__ for c in BridgeDst.__mro__]
         assert src_mro == dst_mro
 
     @pytest.mark.parametrize("mixin_name", list(MIXIN_MODULES.keys()))
-    def test_src_mirror_has_mixin(self, mixin_name: str) -> None:
+    def test_src_alias_resolves_all_mixins(self, mixin_name: str) -> None:
+        """Dynamic alias maps every mixin module to the canonical tui.tui_src module."""
         src_mod_name = MIXIN_MODULES[mixin_name].replace("tui.tui_src", "tui.src")
         src_mod = importlib.import_module(src_mod_name)
         mixin = getattr(src_mod, mixin_name)
         assert inspect.isclass(mixin)
-
-    def test_src_and_tui_src_trees_byte_identical(self) -> None:
-        """tui/src and tui/tui_src must be byte-identical mirrors.
-
-        Runtime imports ``tui.tui_src`` (src/main.py, bridge, tests) while
-        ``scripts/run_tui.py`` and a few tests import ``tui.src``. Both trees
-        must stay in lockstep, so any drift fails here — after editing one
-        tree, mirror the change to the other (see AGENTS.md).
-        """
-        from pathlib import Path
-
-        tui_root = Path(__file__).resolve().parents[2] / "tui"
-        excluded = {"__pycache__"}
-
-        def walk(base: Path):
-            out: dict[str, bytes] = {}
-            for p in sorted(base.rglob("*")):
-                if (
-                    p.is_file()
-                    and not any(part in excluded for part in p.parts)
-                    and not p.name.endswith(".pyc")
-                ):
-                    out[str(p.relative_to(base))] = p.read_bytes()
-            return out
-
-        src = walk(tui_root / "src")
-        dst = walk(tui_root / "tui_src")
-        assert list(src) == list(dst), (
-            f"mirror file sets diverged: {sorted(set(src) ^ set(dst))}"
-        )
-        diffs = [k for k in src if src[k] != dst[k]]
-        assert diffs == [], f"tui/src and tui/tui_src out of sync: {diffs}"
 
 
 # ---------------------------------------------------------------------------

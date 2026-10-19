@@ -146,8 +146,8 @@ The subsystems identified below have been audited, with confirmed dead code purg
   - `MetricsStore` & `RollingHistogram` (`src/core/observability/metrics.py`): Retained; actively referenced in `state_schemas.py` and `todo_tools.py`.
   - `ResiliencePolicy` (`src/core/utils/retry.py`): Retained; actively imported and used by `src/core/inference/adapters/ollama_adapter.py`.
   - `HistoryInput` (`tui/tui_src/ui/components/history_input.py`): Retained; actively used by `ChatTextArea` for `HistoryInput.InterruptSignal` (double-Esc interrupt handling).
-- **Dual Source Tree Status**:
-  - `tui/src` and `tui/tui_src` are verified byte-identical (`diff -r -x '__pycache__' tui/src tui/tui_src` exits `0`).
+- **Single Source Tree Consolidation**:
+  - The redundant `tui/src` tree was permanently removed, eliminating drift risk. `tui/tui_src` is the single canonical source of truth for all TUI implementations. `tui/__init__.py` provides a transparent dynamic alias loader so legacy imports of `tui.src.*` resolve to `tui.tui_src.*`.
 
 ## 14. Prioritized Fix List (Resolved & Reassessed 2026-10-19)
 

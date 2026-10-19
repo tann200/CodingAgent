@@ -9,10 +9,10 @@ If Textual is not installed the script will print instructions to install it.
 import sys
 from pathlib import Path
 
-# Ensure project root is on sys.path so `tui.src.ui.main` resolves.
+# Ensure project root is on sys.path so `tui.tui_src.ui.main` resolves.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from tui.src.ui.main import create_app  # type: ignore[import]
+from tui.tui_src.ui.main import create_app  # type: ignore[import]
 
 
 def main():

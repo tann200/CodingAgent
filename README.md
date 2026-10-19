@@ -63,7 +63,7 @@ python -m ruff check src tests tui --select=E,F,W --ignore=E501
 python -m mypy src/server src/core/inference/provider_utils.py src/core/orchestration/tool_contracts.py src/core/orchestration/tool_parser.py --ignore-missing-imports --follow-imports=silent --disable-error-code=import-untyped --no-error-summary
 ```
 
-The CI workflow defines the maintained quality (including TUI mirror parity), mock integration, mock E2E, platform smoke, benchmark, and optional live-provider jobs. Full test collection requires the `server` extras because server tests import FastAPI and Uvicorn.
+The CI workflow defines the maintained quality (including TUI single-source tree enforcement), mock integration, mock E2E, platform smoke, benchmark, and optional live-provider jobs. Full test collection requires the `server` extras because server tests import FastAPI and Uvicorn.
 
 ## Repository Layout
 

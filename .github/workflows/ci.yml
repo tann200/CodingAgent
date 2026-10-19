@@ -58,9 +58,9 @@ jobs:
               print(f"Warning: project.requires-python is '{spec}'. Recommended: '>=3.11,<3.12' to lock to 3.11.x")
           print('pyproject Python requirement OK:', spec)
           PY
-      - name: Assert TUI source mirror parity
+      - name: Assert TUI single source tree (no redundant tui/src)
         run: |
-          diff -r -x '__pycache__' tui/src tui/tui_src
+          test ! -d tui/src
       - name: Install quality dependencies
         run: |
           python -m pip install --upgrade pip

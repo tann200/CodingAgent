@@ -89,7 +89,7 @@ class ChatDisplayMixin(AgentAppProtocol):
 
     def _ensure_stream_widget(self: AgentAppProtocol):
         """Return the active StreamView, creating one if needed."""
-        from tui.src.ui.components.stream_view import StreamView  # type: ignore[import]
+        from tui.tui_src.ui.components.stream_view import StreamView  # type: ignore[import]
 
         if self._current_stream is None:
             self.is_streaming = True
@@ -195,7 +195,7 @@ class ChatDisplayMixin(AgentAppProtocol):
 
     def _at_picker_complete(self: AgentAppProtocol) -> None:
         """Replace the @token in ChatTextArea with the selected file path."""
-        from tui.src.ui.components.chat_input import ChatTextArea  # type: ignore[import]
+        from tui.tui_src.ui.components.chat_input import ChatTextArea  # type: ignore[import]
 
         if not self._at_picker_matches or not (
             0 <= self._at_picker_index < len(self._at_picker_matches)
@@ -301,13 +301,13 @@ class ChatDisplayMixin(AgentAppProtocol):
 
     async def _chat_handle_reasoning(self: AgentAppProtocol, event) -> None:
         self._finalize_stream()
-        from tui.src.ui.components.thinking import ThinkingProcess  # type: ignore[import]
+        from tui.tui_src.ui.components.thinking import ThinkingProcess  # type: ignore[import]
 
         widget = ThinkingProcess(event.content, event.start_time)
         await self._mount_chat_widget(widget)
 
     async def _chat_handle_final_response(self: AgentAppProtocol, event) -> None:
-        from tui.src.ui.components.artifact import AgentArtifact  # type: ignore[import]
+        from tui.tui_src.ui.components.artifact import AgentArtifact  # type: ignore[import]
 
         self._finalize_stream()
         logger.info("Agent final response received")
@@ -463,7 +463,7 @@ class ChatDisplayMixin(AgentAppProtocol):
 
     def _chat_handle_text_changed(self: AgentAppProtocol, event) -> None:
         """Drive inline palette and @file picker from every text change."""
-        from tui.src.ui.components.chat_input import SLASH_COMMANDS  # type: ignore[import]
+        from tui.tui_src.ui.components.chat_input import SLASH_COMMANDS  # type: ignore[import]
 
         text = event.text
         first_line = text.split("\n", 1)[0]

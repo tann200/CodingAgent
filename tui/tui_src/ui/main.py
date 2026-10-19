@@ -1,13 +1,13 @@
 """
-tui/src/ui/main.py — entry-point factory for the standalone TUI.
+tui/tui_src/ui/main.py — entry-point factory for the standalone TUI.
 
 Usage:
-    from tui.src.ui.main import create_app
+    from tui.tui_src.ui.main import create_app
     app = create_app()
     app.run()
 
 Or run directly:
-    python -m tui.src.ui.main
+    python -m tui.tui_src.ui.main
 """
 
 from __future__ import annotations

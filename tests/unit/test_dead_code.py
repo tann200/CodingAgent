@@ -42,11 +42,9 @@ _DYNAMIC_IMPORT_ROOTS = {
     "src.core.plugin",
     "src.core.messaging.event_bus",
     "src.config.toolsets",
-    # The TUI ships as two byte-identical mirrors.  Runtime imports tui_src;
-    # scripts and `python -m tui.src.ui.main` import tui.src.  Both trees are
-    # load-bearing, and Textual resolves widgets/screens by string at runtime,
-    # so neither tree can be proven reachable from import edges alone.
-    "tui.src",
+    # The TUI canonical source tree is under tui.tui_src.
+    # Textual resolves widgets/screens by string at runtime,
+    # so the tree cannot be proven reachable from import edges alone.
     "tui.tui_src",
 }
 
@@ -55,7 +53,6 @@ _DYNAMIC_IMPORT_ROOTS = {
 _ENTRYPOINTS = {
     "src.main",
     "tui.tui_src.ui.main",
-    "tui.src.ui.main",
     "src.server.app",
     "src.cli",
     "src.core.evaluation.__main__",

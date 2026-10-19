@@ -36,8 +36,8 @@ def _make_bridge():
     import sys
     import os
 
-    # Ensure the tui/src is importable
-    tui_src = os.path.join(os.path.dirname(__file__), "..", "..", "tui", "src")
+    # Ensure tui/tui_src is importable
+    tui_src = os.path.join(os.path.dirname(__file__), "..", "..", "tui", "tui_src")
     if tui_src not in sys.path:
         sys.path.insert(0, tui_src)
 

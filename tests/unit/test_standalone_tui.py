@@ -18,8 +18,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 
-# ── Ensure tui/src is on sys.path so `ui.*` imports resolve ──────────────────
-_TUI_SRC = str(Path(__file__).parent.parent.parent / "tui" / "src")
+# ── Ensure tui/tui_src is on sys.path so `ui.*` imports resolve ──────────────
+_TUI_SRC = str(Path(__file__).parent.parent.parent / "tui" / "tui_src")
 if _TUI_SRC not in sys.path:
     sys.path.insert(0, _TUI_SRC)
 

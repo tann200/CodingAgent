@@ -33,14 +33,14 @@ from src.core.messaging.event_types import (
 
 # The TYPED_EVENT_ROUTING table is tested via the bridge module.
 # We import the module to verify it loads cleanly.
-from tui.src.ui._bridge_subscriptions import (
+from tui.tui_src.ui._bridge_subscriptions import (
     TYPED_EVENT_ROUTING,
     BridgeSubscriptionsMixin,
     _resolve_event_class,
 )
 
 # Import the mixin's base protocol for testing
-from tui.src.ui._bridge_protocol import AgentBridgeProtocol
+from tui.tui_src.ui._bridge_protocol import AgentBridgeProtocol
 
 
 # ---------------------------------------------------------------------------
