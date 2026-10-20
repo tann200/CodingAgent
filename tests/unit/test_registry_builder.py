@@ -101,6 +101,21 @@ class TestRegistryBuilder:
         for expected in ("read_file", "write_file", "edit_file", "bash", "glob"):
             assert expected in tools, f"{expected!r} missing from example_registry()"
 
+    def test_contains_lsp_tools(self):
+        from src.core.orchestration.registry_builder import example_registry
+
+        reg = example_registry()
+        tools = set(reg.list())
+        for expected in (
+            "lsp_diagnostics",
+            "lsp_references",
+            "lsp_definition",
+            "lsp_symbols",
+            "lsp_hover",
+            "lsp_rename",
+        ):
+            assert expected in tools, f"{expected!r} missing from example_registry()"
+
 
 class TestBuiltinModuleAutoDiscovery:
     """TW-5: built-in tool modules are auto-discovered, not hard-coded."""

@@ -30,7 +30,7 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from src.tools._tool import ok
+from src.tools._tool import TOOL_ATTR, PermissionKind, ok, tool
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +64,12 @@ def _get_manager(working_dir: Optional[str] = None):
 # ---------------------------------------------------------------------------
 
 
+@tool(
+    name="lsp_diagnostics",
+    description="Get lint and type errors for a file from the language server.",
+    permission_kind=PermissionKind.LSP_READ,
+    tags=["coding", "debug"],
+)
 async def lsp_diagnostics(
     path: str,
     working_dir: Optional[str] = None,
@@ -110,6 +116,12 @@ async def lsp_diagnostics(
 # ---------------------------------------------------------------------------
 
 
+@tool(
+    name="lsp_references",
+    description="Find all references to the symbol at line/col in path.",
+    permission_kind=PermissionKind.LSP_READ,
+    tags=["coding", "debug"],
+)
 async def lsp_references(
     path: str,
     line: int,
@@ -149,6 +161,12 @@ async def lsp_references(
 # ---------------------------------------------------------------------------
 
 
+@tool(
+    name="lsp_definition",
+    description="Go to the definition of the symbol at the given line/column.",
+    permission_kind=PermissionKind.LSP_READ,
+    tags=["coding", "debug"],
+)
 async def lsp_definition(
     path: str,
     line: int,
@@ -190,6 +208,12 @@ async def lsp_definition(
 # ---------------------------------------------------------------------------
 
 
+@tool(
+    name="lsp_symbols",
+    description="List all symbols (functions, classes, variables) in a file.",
+    permission_kind=PermissionKind.LSP_READ,
+    tags=["coding", "debug"],
+)
 async def lsp_symbols(
     path: str,
     working_dir: Optional[str] = None,
@@ -227,6 +251,12 @@ async def lsp_symbols(
 # ---------------------------------------------------------------------------
 
 
+@tool(
+    name="lsp_hover",
+    description="Get type information and documentation for symbol at position.",
+    permission_kind=PermissionKind.LSP_READ,
+    tags=["coding", "debug"],
+)
 async def lsp_hover(
     path: str,
     line: int,
@@ -265,6 +295,13 @@ async def lsp_hover(
 # ---------------------------------------------------------------------------
 
 
+@tool(
+    name="lsp_rename",
+    description="Rename a symbol and all its references across the workspace.",
+    side_effects=["write"],
+    permission_kind=PermissionKind.LSP_WRITE,
+    tags=["coding"],
+)
 async def lsp_rename(
     path: str,
     line: int,
@@ -496,14 +533,28 @@ LSP_TOOL_SCHEMAS = [
 def register_lsp_tools(registry: Any) -> None:
     """Register all LSP tools into *registry*.
 
-    ``registry`` must have a ``register(name, fn, schema)`` method that
-    matches the ``ToolRegistry`` interface in orchestrator.py.
+    Supports both ``ToolRegistry`` instances and legacy registries.
     """
     for schema in LSP_TOOL_SCHEMAS:
         try:
             fn = schema["fn"]
             name = schema["name"]
-            registry.register(name, fn, schema)
+            if hasattr(registry, "register_definition") and hasattr(fn, TOOL_ATTR):
+                registry.register_definition(getattr(fn, TOOL_ATTR))
+            elif hasattr(registry, "register"):
+                registry.register(
+                    name=name,
+                    fn=fn,
+                    side_effects=["write"] if schema.get("permission") == "workspace_write" else [],
+                    description=schema.get("description", ""),
+                    tags=["coding", "debug"],
+                )
+            elif hasattr(registry, "tools") and isinstance(registry.tools, dict):
+                registry.tools[name] = {
+                    "fn": fn,
+                    "side_effects": ["write"] if schema.get("permission") == "workspace_write" else [],
+                    "description": schema.get("description", ""),
+                }
             logger.debug("lsp_tools: registered %s", name)
         except Exception as exc:
             logger.warning(

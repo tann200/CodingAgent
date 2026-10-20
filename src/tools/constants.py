@@ -33,6 +33,14 @@ WRITE_TOOLS_REQUIRING_READ: frozenset[str] = frozenset(
         "lsp_rename",
         "format_file",
         "manage_todo",  # SEC-2: previously must stay in sync across modules
+        # Canonical capability tools (Track 1)
+        "files_write",
+        "files_edit",
+        "files_move",
+        "files_delete",
+        "patch",
+        "format",
+        "todo",
     }
 )
 
@@ -68,6 +76,10 @@ _EXEC_SIDE_EFFECT_TOOLS: frozenset[str] = frozenset(
         "run_js_tests",
         "delegate_task",
         "delegate_tasks_parallel",
+        # Canonical capability tools (Track 1)
+        "shell",
+        "delegate",
+        "verify",
     }
 )
 DRY_RUN_BLOCKED_TOOLS: frozenset[str] = frozenset(
@@ -79,6 +91,10 @@ PERMISSION_REQUIRED_TOOLS: frozenset[str] = frozenset(
     {
         "delete_file",
         "run_bash",
+        # Canonical capability tools (Track 1)
+        "files_delete",
+        "shell",
+        "delegate",
     }
 )
 
@@ -117,6 +133,14 @@ FILE_TOOLS: frozenset[str] = frozenset(
         "rename_file",
         "list_dir",
         "glob_files",
+        # Canonical capability tools (Track 1)
+        "files_read",
+        "files_write",
+        "files_edit",
+        "files_move",
+        "files_delete",
+        "patch",
+        "format",
     }
 )
 
@@ -193,6 +217,19 @@ IDEMPOTENT_TOOLS: frozenset[str] = frozenset(
         "run_eslint",
         "run_ts_check",
         "run_linter",
+        # ---- canonical capability tools (Track 1) ------------------------
+        "files_read",
+        "files_list",
+        "files_search",
+        "code_search",
+        "symbols",
+        "repo_inspect",
+        "files_write",
+        "files_edit",
+        "files_delete",
+        "tasks_wait",
+        "format",
+        "verify",
     }
 )
 

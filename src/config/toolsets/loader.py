@@ -2,7 +2,7 @@ from __future__ import annotations
 import json
 import yaml
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 
 # VOL7-5: Use Path(__file__).parent so YAML files are found regardless of the
@@ -63,6 +63,86 @@ def get_tools_for_toolset(name: str) -> List[str]:
     if toolset and "tools" in toolset:
         return list(toolset["tools"])
     return []
+
+
+def resolve_toolset(
+    name: str,
+    registry_or_tools: Any,
+    fail_closed: bool = True,
+) -> List[str]:
+    """Resolve a toolset against registered tool names.
+
+    Parameters
+    ----------
+    name:
+        Toolset name (e.g. 'coding', 'debug').
+    registry_or_tools:
+        A ToolRegistry instance, orchestrator, dict of tools, or collection of tool names.
+    fail_closed:
+        When True (default), raise KeyError if the toolset does not exist, has
+        no tools, or references tools not present in registry_or_tools.
+
+    Returns
+    -------
+    List[str]
+        List of resolved tool names.
+    """
+    configured = get_tools_for_toolset(name)
+    if not configured:
+        if fail_closed:
+            raise KeyError(f"Toolset {name!r} not found or contains no tools")
+        return []
+
+    if hasattr(registry_or_tools, "list") and callable(registry_or_tools.list):
+        available = set(registry_or_tools.list())
+    elif hasattr(registry_or_tools, "tools") and isinstance(registry_or_tools.tools, dict):
+        available = set(registry_or_tools.tools.keys())
+    elif isinstance(registry_or_tools, (set, frozenset, list, tuple)):
+        available = set(registry_or_tools)
+    elif isinstance(registry_or_tools, dict):
+        available = set(registry_or_tools.keys())
+    else:
+        available = set()
+
+    missing = [t for t in configured if t not in available]
+    if missing and fail_closed:
+        raise KeyError(
+            f"Toolset {name!r} references configured tools absent from registry: {sorted(missing)}"
+        )
+    return [t for t in configured if t in available]
+
+
+def validate_all_toolsets(
+    registry_or_tools: Any,
+    fail_closed: bool = True,
+) -> Dict[str, List[str]]:
+    """Validate all available toolsets against available tools.
+
+    Returns a dict mapping toolset name to list of missing tool names.
+    When fail_closed=True and any toolset has missing tools, raises KeyError.
+    """
+    errors: Dict[str, List[str]] = {}
+    for ts_name in list_available_toolsets():
+        configured = get_tools_for_toolset(ts_name)
+        if hasattr(registry_or_tools, "list") and callable(registry_or_tools.list):
+            available = set(registry_or_tools.list())
+        elif hasattr(registry_or_tools, "tools") and isinstance(registry_or_tools.tools, dict):
+            available = set(registry_or_tools.tools.keys())
+        elif isinstance(registry_or_tools, (set, frozenset, list, tuple)):
+            available = set(registry_or_tools)
+        elif isinstance(registry_or_tools, dict):
+            available = set(registry_or_tools.keys())
+        else:
+            available = set()
+        missing = [t for t in configured if t not in available]
+        if missing:
+            errors[ts_name] = sorted(missing)
+
+    if errors and fail_closed:
+        details = "; ".join(f"{k}: {v}" for k, v in sorted(errors.items()))
+        raise KeyError(f"Toolsets contain unregistered tools: {details}")
+
+    return errors
 
 
 def get_toolset_for_role(role: str) -> str:

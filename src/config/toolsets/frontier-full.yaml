@@ -1,0 +1,30 @@
+name: frontier-full
+description: Complete capability toolset for frontier models (all 27 capability tools)
+tools:
+  - files_read
+  - files_list
+  - files_search
+  - code_search
+  - symbols
+  - repo_inspect
+  - files_write
+  - files_edit
+  - files_move
+  - files_delete
+  - patch
+  - shell
+  - tasks_wait
+  - verify
+  - format
+  - git
+  - lsp
+  - web_search
+  - web_read
+  - memory
+  - state
+  - todo
+  - skills
+  - user_interact
+  - delegate
+  - plan
+  - batch

@@ -86,3 +86,37 @@ def test_list_available_toolsets_lists_dir(tmp_path, monkeypatch):
     names = loader.list_available_toolsets()
     assert "a" in names
     assert "b" in names
+
+
+def test_resolve_toolset_success():
+    coding_tools = loader.get_tools_for_toolset("coding")
+    resolved = loader.resolve_toolset("coding", coding_tools, fail_closed=True)
+    assert resolved == coding_tools
+
+
+def test_resolve_toolset_fail_closed_when_missing():
+    import pytest
+
+    # If any configured tool in the toolset is missing, it must fail closed
+    with pytest.raises(KeyError, match="absent from registry"):
+        loader.resolve_toolset("coding", ["read_file", "write_file"], fail_closed=True)
+
+
+def test_resolve_toolset_non_fail_closed_returns_subset():
+    resolved = loader.resolve_toolset("coding", ["read_file", "write_file"], fail_closed=False)
+    assert resolved == ["read_file", "write_file"]
+
+
+def test_resolve_nonexistent_toolset_fails_closed():
+    import pytest
+
+    with pytest.raises(KeyError, match="not found or contains no tools"):
+        loader.resolve_toolset("nonexistent_toolset_xyz", ["read_file"], fail_closed=True)
+
+
+def test_validate_all_toolsets_against_registry():
+    from src.tools._registry import build_registry
+
+    reg = build_registry(validate_toolsets=True)
+    errors = loader.validate_all_toolsets(reg, fail_closed=True)
+    assert errors == {}

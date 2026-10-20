@@ -53,6 +53,9 @@ def example_registry() -> ToolRegistry:
         except AttributeError as exc:
             logger.debug("registry_builder: edit_by_line_range override skipped: %s", exc)
         return reg
+    except (RuntimeError, KeyError):
+        # Fail closed on fatal registry build errors (missing builtins, toolset resolution failures)
+        raise
     except Exception as exc:
         logger.warning("registry_builder: auto-discovery failed (%s); falling back to manual registration", exc)
 

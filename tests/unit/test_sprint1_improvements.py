@@ -255,13 +255,12 @@ class TestOptionalModuleGracefulDiscovery:
 
     def test_optional_module_import_error_is_debug(self, monkeypatch):
         import logging
-        from src.tools._registry import ToolRegistry, _OPTIONAL_MODULES
+        import src.tools._registry as reg_mod
+        from src.tools._registry import ToolRegistry
 
-        # Use a known optional module name or synthesise one
-        if not _OPTIONAL_MODULES:
-            pytest.skip("No optional modules defined")
+        optional_name = "src.tools.optional_test_module"
+        monkeypatch.setattr(reg_mod, "_OPTIONAL_MODULES", frozenset({optional_name}))
 
-        optional_name = next(iter(_OPTIONAL_MODULES))
         reg = ToolRegistry()
 
         records = []
@@ -279,7 +278,8 @@ class TestOptionalModuleGracefulDiscovery:
         logger.addHandler(handler)
         try:
             with patch("importlib.import_module", side_effect=ImportError("missing dep")):
-                reg.discover_module_name(optional_name)
+                count = reg.discover_module_name(optional_name)
+                assert count == 0
         finally:
             logger.removeHandler(handler)
             logger.setLevel(old_level)
@@ -289,34 +289,14 @@ class TestOptionalModuleGracefulDiscovery:
         assert len(debug_msgs) >= 1, "Expected DEBUG log for optional module import failure"
         assert len(warn_msgs) == 0, f"Unexpected WARNING log: {warn_msgs}"
 
-    def test_non_optional_module_import_error_is_warning(self):
-        import logging
+    def test_non_optional_module_import_error_fails_closed(self):
         from src.tools._registry import ToolRegistry
 
         reg = ToolRegistry()
         fake_module = "src.tools.definitely_does_not_exist_xyz"
 
-        records = []
-
-        class _Handler(logging.Handler):
-            def emit(self, record):
-                record.message = record.getMessage()
-                records.append(record)
-
-        logger = logging.getLogger("src.tools._registry")
-        handler = _Handler()
-        handler.setLevel(logging.WARNING)
-        old_level = logger.level
-        logger.setLevel(logging.WARNING)
-        logger.addHandler(handler)
-        try:
+        with pytest.raises(RuntimeError, match="failed to load"):
             reg.discover_module_name(fake_module)
-        finally:
-            logger.removeHandler(handler)
-            logger.setLevel(old_level)
-
-        warn_msgs = [r for r in records if r.levelno == logging.WARNING and fake_module in r.getMessage()]
-        assert len(warn_msgs) >= 1, "Expected WARNING for non-optional module import failure"
 
 
 # ---------------------------------------------------------------------------

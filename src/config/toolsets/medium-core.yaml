@@ -1,0 +1,21 @@
+name: medium-core
+description: Core capability toolset for 15-30B medium models (18 capability tools)
+tools:
+  - files_read
+  - files_list
+  - files_search
+  - code_search
+  - symbols
+  - repo_inspect
+  - files_write
+  - files_edit
+  - patch
+  - shell
+  - tasks_wait
+  - verify
+  - format
+  - git
+  - state
+  - todo
+  - plan
+  - user_interact

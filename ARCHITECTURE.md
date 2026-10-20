@@ -66,8 +66,9 @@ Graph checkpoints can persist and rehydrate graph state. They improve crash reco
 - `repo_read_tools.py`, `lsp_tools.py`, and `project_tools.py` for repository inspection.
 - `verification_tools.py`, `lint_dispatch.py`, and `formatter.py` for validation.
 - `memory_tools.py`, `todo_tools.py`, `plan_mode_tools.py`, and `subagent_tools.py` for agent state and workflow support.
+- `_capabilities.py` and `capability_tools.py` define the consolidated 27 target capability tools, strict schemas, operation enums, tier assignments (`medium-core` 18 tools, `frontier-full` 27 tools), and backward-compatible adapters for all legacy tool names.
 
-`ToolRegistry.call()` routes invocations through guarded orchestrator execution (`Orchestrator.execute_tool()`), ensuring read-before-write validation, workspace confinement, secret redaction, and transactional pre-call snapshots for all mutations (including unlinking newly created files/directories on rollback).
+`ToolRegistry.call()` routes invocations through guarded orchestrator execution (`Orchestrator.execute_tool()`), ensuring read-before-write validation, workspace confinement, secret redaction, and transactional pre-call snapshots for all mutations (including unlinking newly created files/directories on rollback). Tool discovery fails closed if non-optional built-in modules fail to import, and toolset resolution fails closed if any configured tool is absent.
 
 ### Context, Memory, And Repository Intelligence
 

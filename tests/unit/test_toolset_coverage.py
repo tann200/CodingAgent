@@ -30,3 +30,21 @@ def test_every_registered_tool_in_some_toolset():
 
     missing = [t for t, present in coverage.items() if not present]
     assert not missing, f"Canonical tools missing from toolsets: {missing}"
+
+
+def test_every_toolset_tool_is_registered():
+    """Verify that every tool declared in any toolset exists in the registry."""
+    reg = example_registry()
+    available = set(reg.list())
+
+    toolsets = ts_loader.list_available_toolsets()
+    assert toolsets, "No toolsets found"
+
+    missing_by_toolset = {}
+    for ts_name in toolsets:
+        tools = ts_loader.get_tools_for_toolset(ts_name)
+        missing = [t for t in tools if t not in available]
+        if missing:
+            missing_by_toolset[ts_name] = missing
+
+    assert not missing_by_toolset, f"Toolset tools missing from registry: {missing_by_toolset}"

@@ -41,12 +41,10 @@ logger = logging.getLogger(__name__)
 # cap.  Override via the TOOL_POOL_MAX_PLUGINS environment variable.
 _DEFAULT_MAX_PLUGIN_TOOLS: int = 50
 
-# Modules that require optional dependencies (e.g. pygls for LSP).
-# ImportError on these is logged at DEBUG level rather than WARNING
+# Modules that require optional dependencies.
+# ImportError on these is logged at DEBUG level rather than failing startup
 # to avoid alarming users who have not installed the optional extra.
-_OPTIONAL_MODULES: frozenset[str] = frozenset({
-    "src.tools.lsp_tools",
-})
+_OPTIONAL_MODULES: frozenset[str] = frozenset()
 
 
 @functools.lru_cache(maxsize=1)
@@ -269,19 +267,40 @@ class ToolRegistry:
     def discover_module_name(self, module_name: str, origin: str = "builtin") -> int:
         """Import *module_name* then call ``discover()`` on it.
 
-        Failures are logged at WARNING level and do not propagate so that a
-        missing optional dependency does not prevent the registry from loading.
+        Failures in built-in modules fail closed by raising an exception, ensuring
+        that missing or broken core tool dependencies prevent startup rather than
+        silently degrading into an incomplete live capability set.
+        Optional modules declared in ``_OPTIONAL_MODULES`` log at DEBUG level.
+        Plugin discovery failures log at WARNING level and return 0.
         """
         try:
             mod = importlib.import_module(module_name)
             return self.discover(mod, origin=origin)
         except ImportError as exc:
+            if origin == "builtin" and module_name not in _OPTIONAL_MODULES:
+                logger.error(
+                    "discover_module_name: could not import built-in '%s': %s",
+                    module_name,
+                    exc,
+                )
+                raise RuntimeError(
+                    f"Built-in tool module '{module_name}' failed to load: {exc}"
+                ) from exc
             _log_level = "debug" if module_name in _OPTIONAL_MODULES else "warning"
             getattr(logger, _log_level)(
                 "discover_module_name: could not import '%s': %s", module_name, exc
             )
             return 0
         except Exception as exc:
+            if origin == "builtin" and module_name not in _OPTIONAL_MODULES:
+                logger.error(
+                    "discover_module_name: error in built-in '%s': %s",
+                    module_name,
+                    exc,
+                )
+                raise RuntimeError(
+                    f"Built-in tool module '{module_name}' failed with error: {exc}"
+                ) from exc
             logger.warning("discover_module_name: error in '%s': %s", module_name, exc)
             return 0
 
@@ -419,6 +438,18 @@ class ToolRegistry:
                     sub._tools[n] = self._tools[n]
         return sub
 
+    def resolve_toolset(self, toolset_name: str, fail_closed: bool = True) -> List[str]:
+        """Resolve a toolset against this registry."""
+        from src.config.toolsets.loader import resolve_toolset
+
+        return resolve_toolset(toolset_name, self, fail_closed=fail_closed)
+
+    def validate_toolsets(self, fail_closed: bool = True) -> Dict[str, List[str]]:
+        """Validate all available toolsets against this registry."""
+        from src.config.toolsets.loader import validate_all_toolsets
+
+        return validate_all_toolsets(self, fail_closed=fail_closed)
+
     def __len__(self) -> int:
         with self._lock:
             return len(self._tools)
@@ -490,6 +521,7 @@ def build_registry(
     working_dir: Optional[str] = None,
     extra_modules: Optional[List[Any]] = None,
     include_echo: bool = False,
+    validate_toolsets: bool = True,
 ) -> ToolRegistry:
     """Build and return a fully populated ``ToolRegistry``.
 
@@ -593,6 +625,9 @@ def build_registry(
                 reg.discover(_plugin, origin="plugin")
     except Exception as _plugin_exc:
         logger.debug("build_registry: plugin loading skipped: %s", _plugin_exc)
+
+    if validate_toolsets:
+        reg.validate_toolsets(fail_closed=True)
 
     logger.debug("build_registry: registered %d tools", len(reg))
     return reg
