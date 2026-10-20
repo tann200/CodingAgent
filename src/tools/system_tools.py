@@ -3,6 +3,7 @@ import subprocess
 from pathlib import Path
 from typing import Dict, Any, Optional
 import re
+import fnmatch
 
 from src.tools._path_utils import safe_resolve as _safe_resolve
 from src.tools._result import ToolResult, ErrorCode
@@ -77,6 +78,10 @@ def grep(
             "grep",
             "-r",
             "-n",
+        ]
+        if include:
+            cmd += [f"--include={include}"]
+        cmd += [
             "--exclude=.env*",
             "--exclude=*.pem",
             "--exclude=*.key",
@@ -89,8 +94,6 @@ def grep(
         ]
         if context > 0:
             cmd += ["-C", str(context)]
-        if include:
-            cmd += [f"--include={include}"]
         cmd.append(pattern)
         cmd.append(str(search_path))
 
@@ -114,14 +117,25 @@ def grep(
                     f_path = Path(m.get("file_path", ""))
                     if is_secret_path(f_path):
                         continue
+                    if include and not (
+                        fnmatch.fnmatch(f_path.name, include)
+                        or (include.startswith("*.") and f_path.name.endswith(include[1:]))
+                    ):
+                        continue
                     if "content" in m:
                         m["content"] = redact_secrets(m["content"])
                     filtered_matches.append(m)
-            raw_lines = [
-                raw_line
-                for raw_line in raw.splitlines()
-                if not is_secret_path(Path(raw_line.split(":", 1)[0]))
-            ]
+            raw_lines = []
+            for raw_line in raw.splitlines():
+                line_p = Path(raw_line.split(":", 1)[0])
+                if is_secret_path(line_p):
+                    continue
+                if include and not (
+                    fnmatch.fnmatch(line_p.name, include)
+                    or (include.startswith("*.") and line_p.name.endswith(include[1:]))
+                ):
+                    continue
+                raw_lines.append(raw_line)
             raw = "\n".join(raw_lines)
             return ToolResult.success(
                 {"output": raw, "matches": filtered_matches}
@@ -156,7 +170,10 @@ def grep(
                 continue
             if is_secret_path(p):
                 continue
-            if suffix_filter and p.suffix != suffix_filter:
+            if include and not (
+                fnmatch.fnmatch(p.name, include)
+                or (suffix_filter and p.suffix == suffix_filter)
+            ):
                 continue
             try:
                 with p.open("r", encoding="utf-8", errors="ignore") as fh:

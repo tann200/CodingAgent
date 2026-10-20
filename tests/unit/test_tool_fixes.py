@@ -141,6 +141,38 @@ class TestGrep:
         res = grep("foo", path="../outside", workdir=tmp_path)
         assert res.get("ok") is False
 
+    def test_grep_cmd_include_before_exclude(self, tmp_path, monkeypatch):
+        """Regression test for GNU grep: --include must precede --exclude so GNU grep defaults to exclude."""
+        captured_cmd = []
+        from src.tools import sandbox
+        import subprocess
+
+        def mock_run_sandboxed(cmd, **kwargs):
+            captured_cmd.extend(cmd)
+            return subprocess.CompletedProcess(cmd, 1, "", "")
+
+        monkeypatch.setattr(sandbox, "run_sandboxed", mock_run_sandboxed)
+        grep("foo", workdir=tmp_path, include="*.py")
+        assert "--include=*.py" in captured_cmd
+        include_idx = captured_cmd.index("--include=*.py")
+        exclude_idx = next(i for i, arg in enumerate(captured_cmd) if arg.startswith("--exclude"))
+        assert include_idx < exclude_idx, f"--include ({include_idx}) must precede --exclude ({exclude_idx}) for GNU grep"
+
+    def test_grep_post_filters_by_include_even_if_raw_matches_other_files(self, tmp_path, monkeypatch):
+        """Even if external grep output contains non-matching extensions, python post-filter strips them."""
+        from src.tools import sandbox
+        import subprocess
+
+        def mock_run_sandboxed(cmd, **kwargs):
+            stdout = f"{tmp_path}/a.py:1:foo\n{tmp_path}/notes.txt:1:foo\n{tmp_path}/b.py:2:foo\n"
+            return subprocess.CompletedProcess(cmd, 0, stdout, "")
+
+        monkeypatch.setattr(sandbox, "run_sandboxed", mock_run_sandboxed)
+        res = grep("foo", workdir=tmp_path, include="*.py")
+        file_paths = [m["file_path"] for m in res["output"]["matches"]]
+        assert file_paths == [f"{tmp_path}/a.py", f"{tmp_path}/b.py"]
+        assert f"{tmp_path}/notes.txt" not in res["output"]["output"]
+
 
 # ---------------------------------------------------------------------------
 # edit_file_atomic
