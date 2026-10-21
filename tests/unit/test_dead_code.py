@@ -339,6 +339,7 @@ class TestImportResolverSoundness:
 # the registry itself) and therefore carry no @tool / register_* of their own.
 _TOOL_INFRA_ALLOWLIST: dict[str, str] = {
     "src.tools._registry": "the pkgutil registry; imported by tool consumers",
+    "src.tools._capabilities": "capability metadata and legacy adapter mappings",
     "src.tools.__init__": "package initialiser",
 }
 

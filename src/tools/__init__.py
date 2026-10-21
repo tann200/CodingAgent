@@ -72,6 +72,15 @@ from src.tools._registry import ToolRegistry, build_registry  # noqa: F401
 # --- Configuration -------------------------------------------------------
 from src.tools.tools_config import configure, get_default_workdir  # noqa: F401
 
+# --- Capabilities (Track 1) ----------------------------------------------
+from src.tools._capabilities import (  # noqa: F401
+    CAPABILITIES,
+    FRONTIER_FULL_CAPABILITIES,
+    MEDIUM_CORE_CAPABILITIES,
+    get_capability,
+    resolve_to_capability,
+)
+
 # --- Path safety ---------------------------------------------------------
 from src.tools._path_utils import safe_resolve  # noqa: F401
 
@@ -97,6 +106,12 @@ __all__ = [
     "get_default_workdir",
     # path safety
     "safe_resolve",
+    # capabilities
+    "CAPABILITIES",
+    "MEDIUM_CORE_CAPABILITIES",
+    "FRONTIER_FULL_CAPABILITIES",
+    "get_capability",
+    "resolve_to_capability",
     # security constants
     "DANGEROUS_PATTERNS",
     "SAFE_COMMANDS",
