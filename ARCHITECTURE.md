@@ -15,15 +15,22 @@ CLI or Textual UI
 src.main -> Orchestrator.run_agent_once()
         |
         v
-Tier graph factory
-  lite/small: reduced graph
-  other tiers: frontier graph
+Unified 7-Node Graph Topology (Canonical Architecture)
         |
-        +--> perception
-        +--> analysis for complex tasks
-        +--> frontier LLM/tool loop
-        +--> verification and evaluation
-        +--> memory synchronization
+        +--> initialize (deterministic tier & immutable policy resolution)
+        |       |
+        |       v
+        +--> agent_loop <--------------------+---------------+---------------+
+        |       | (outcome)                  | (approved)    | (replacement) | (compacted)
+        |       +--> approval ---------------+               |               |
+        |       +--> recover --------------------------------+               |
+        |       +--> compact ------------------------------------------------+
+        |       +--> verify
+        |       |       | (failed & budget)
+        |       |       +--> recover
+        |       | (passed / terminal)
+        |       v
+        +--> finalize -> END
         |
         v
 Orchestrator.execute_tool()
@@ -35,7 +42,7 @@ Tool execution pipeline
 Tool registry -> src/tools implementation
 ```
 
-The live tier factory is selected from `src/core/orchestration/inference_loop.py`. The `frontier` route is the default live workflow for tiers other than `lite` and `small`. The older full graph remains implemented in `src/core/orchestration/graph/builder.py`, but `_USE_FULL_GRAPH` is disabled; its explicit planning, step control, replan, debug, and delegation nodes are therefore not the normal live path.
+The live orchestration pipeline uses the unified 7-node graph topology (`initialize -> agent_loop -> [approval | verify | recover | compact | finalize] -> END`) compiled by `src/core/orchestration/graph/builder.py:compile_canonical_graph()`. Both 15-30B medium and frontier models share this identical functional topology; tier classification determines immutable budgets, allowed capabilities (`medium-core` 18 tools vs `frontier-full` 27 tools), and execution policies rather than topology divergence. Legacy topology compilers remain available via `CODINGAGENT_UNIFIED_GRAPH=0` for transitional test harnesses.
 
 ## Components
 
@@ -48,10 +55,16 @@ The live tier factory is selected from `src/core/orchestration/inference_loop.py
 ### Orchestration
 
 - `src/core/orchestration/orchestrator.py` owns the agent instance and exposes `run_agent_once()` and `execute_tool()`.
-- `src/core/orchestration/inference_loop.py` builds the run state, selects a graph, applies limits and cancellation handling, and returns the result.
-- `src/core/orchestration/graph/` contains state definitions, graph builders, routing, checkpointing, and nodes.
-- `frontier_loop_node.py` performs iterative provider calls and translates provider output into centralized tool executions.
-- `verification_node.py`, `evaluation_node.py`, and `memory_update_node.py` process the result after the loop.
+- `src/core/orchestration/inference_loop.py` builds the run state, resolves provider/model tier, embeds immutable runtime policy, compiles the canonical graph, applies turn limits and cancellation handling, and returns the result.
+- `src/core/orchestration/graph/` contains state definitions, canonical graph builder, routing, checkpointing, and cognitive nodes.
+- `src/core/orchestration/graph/policy.py` defines the authoritative target state schema (`runtime`, `run`, `pending_action`, `last_action`, `verification`) and tier policies.
+- `initialize_node.py` resolves runtime metadata and prepares state without LLM calls.
+- `frontier_loop_node.py` (aliased as `agent_loop_node`) performs iterative model-tool loops and emits normalized `last_action` envelopes.
+- `approval_node.py` validates action digest integrity and gates modifying actions.
+- `verification_node.py` enforces evidence-based validation for every mutation regardless of tier.
+- `recover_node.py` unifies replanning and debugging driven by error classification and failed action signatures, rejecting duplicate failed signatures.
+- `compact_node.py` performs deterministic-first history reduction with bounded compaction limits.
+- `finalize_node.py` synchronizes durable memory, writes trajectories, and terminates the pipeline without re-entering the agent loop.
 
 Graph checkpoints can persist and rehydrate graph state. They improve crash recovery, but do not make arbitrary tool side effects transactional.
 

@@ -71,7 +71,7 @@ async def _verification_node_impl(state: StateLike, config: RunnableConfig) -> D
     """
     logger.info("=== verification_node START ===")
 
-    # Collect modified files across session/orchestrator
+    # Collect modified files and declared side effects across session/orchestrator/last_action
     session_modified: set[str] = set()
     orch = _resolve_orchestrator(state, config)
     if orch and getattr(orch, "_session_modified_files", None):
@@ -81,17 +81,30 @@ async def _verification_node_impl(state: StateLike, config: RunnableConfig) -> D
     if state.get("_session_modified_files"):
         session_modified.update(state.get("_session_modified_files"))
 
-    # P3-B: Tier-gated early exits.
+    last_action = state.get("last_action") or {}
+    action_side_effects: list[str] = []
+    if isinstance(last_action, Mapping):
+        action_side_effects = list(last_action.get("side_effects") or [])
+        action_mod_files = list(last_action.get("modified_files") or [])
+        session_modified.update(action_mod_files)
+        session_modified.update(action_side_effects)
+
+    # Invariant: Evidence-based verification for every mutation regardless of tier
     _tier = (state.get("model_tier") or "").lower()
     _last_tool = state.get("last_tool_name") or ""
-    if _tier == "small" and _last_tool not in _WRITE_TOOLS_ALWAYS_VERIFY and not session_modified:
+    if not session_modified and not action_side_effects and _tier == "small" and _last_tool not in _WRITE_TOOLS_ALWAYS_VERIFY:
         logger.info(
-            "verification_node: P3-B SMALL tier + read-only tool '%s' — skipping verification",
-            _last_tool,
+            "verification_node: read-only tool with no modifications or side effects — skipping verification",
         )
         return {
             "verification_passed": True,
-            "verification_result": {"status": "skipped_small_readonly"},
+            "verification_result": {"status": "skipped_readonly"},
+            "verification": {
+                "required": False,
+                "passed": True,
+                "commands": [],
+                "evidence": [],
+            },
         }
 
     # Decide whether verification is needed
@@ -396,4 +409,41 @@ async def _verification_node_impl(state: StateLike, config: RunnableConfig) -> D
                 "verification_node: step commit (non-fatal): %s", _commit_err
             )
 
-    return {"verification_result": results, "verification_passed": verification_passed}
+    commands_executed: list[str] = []
+    evidence_items: list[dict[str, Any]] = []
+    for k, v in results.items():
+        if isinstance(v, dict):
+            cmd = v.get("command") or k
+            commands_executed.append(str(cmd))
+            evidence_items.append({"check": k, "status": v.get("status"), "details": v.get("stdout") or v.get("error")})
+
+    verification_state = {
+        "required": bool(need_verify),
+        "passed": bool(verification_passed),
+        "commands": commands_executed,
+        "evidence": evidence_items,
+    }
+
+    run_state = dict(state.get("run") or {})
+    if verification_passed:
+        run_state["status"] = "completed"
+        run_state["outcome"] = "complete"
+    else:
+        recoveries = int(run_state.get("recoveries") or 0)
+        recovery_limit = 2
+        rt = state.get("runtime") or {}
+        if isinstance(rt, dict) and isinstance(rt.get("policy"), dict):
+            recovery_limit = rt["policy"].get("recovery_limit", 2)
+        if recoveries < recovery_limit:
+            run_state["status"] = "recovering"
+            run_state["outcome"] = "recover"
+        else:
+            run_state["status"] = "failed"
+            run_state["outcome"] = "failed"
+
+    return {
+        "verification_result": results,
+        "verification_passed": verification_passed,
+        "verification": verification_state,
+        "run": run_state,
+    }

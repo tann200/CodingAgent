@@ -11,6 +11,42 @@ in-module callers keep working unchanged.
 from __future__ import annotations
 
 import json
+from typing import Any
+
+
+def _extract_content_text(response: Any) -> str:
+    """Extract text content from an LLM response object."""
+    try:
+        if isinstance(response, dict):
+            choices = response.get("choices", [])
+            if choices and isinstance(choices, list):
+                msg = choices[0].get("message", {}) if isinstance(choices[0], dict) else {}
+                if isinstance(msg, dict):
+                    content = msg.get("content")
+                    if isinstance(content, str):
+                        return content
+                    if isinstance(content, list):
+                        parts = []
+                        for item in content:
+                            if isinstance(item, str):
+                                parts.append(item)
+                            elif isinstance(item, dict):
+                                parts.append(item.get("text", ""))
+                        return "\n".join(p for p in parts if p)
+        content = response.content if hasattr(response, "content") else response  # type: ignore[union-attr]
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts = []
+            for item in content:
+                if isinstance(item, str):
+                    parts.append(item)
+                elif isinstance(item, dict):
+                    parts.append(item.get("text", ""))
+            return "\n".join(p for p in parts if p)
+    except Exception:
+        pass
+    return ""
 
 
 def _extract_tool_call_from_text(content: str) -> tuple[dict | None, str]:

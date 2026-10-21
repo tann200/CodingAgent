@@ -23,6 +23,13 @@ from src.core.orchestration.graph.nodes.analyst_delegation_node import (
     analyst_delegation_node,
 )
 from src.core.orchestration.graph.nodes.wait_for_user_node import wait_for_user_node
+from src.core.orchestration.graph.nodes.initialize_node import initialize_node
+from src.core.orchestration.graph.nodes.frontier_loop_node import agent_loop_node
+from src.core.orchestration.graph.nodes.approval_node import approval_node
+from src.core.orchestration.graph.nodes.recover_node import recover_node
+from src.core.orchestration.graph.nodes.compact_node import compact_node
+from src.core.orchestration.graph.nodes.finalize_node import finalize_node
+from src.core.orchestration.graph import canonical_routing as _canonical_routing
 from src.core.orchestration.graph import analysis_routing as _analysis_routing
 from src.core.orchestration.graph import execution_routing as _execution_routing
 from src.core.orchestration.graph import perception_routing as _perception_routing
@@ -674,6 +681,78 @@ def _compile_lite_graph():
     return workflow.compile(checkpointer=_graph_checkpointer())
 
 
+def _compile_canonical_graph():
+    """Assemble the unified 7-node LangGraph cognitive pipeline.
+
+    Topology (Engineering Audit §Appendix):
+        START -> initialize -> agent_loop
+        agent_loop -> [agent_loop | approval | verify | recover | compact | finalize]
+        approval -> [agent_loop | finalize]
+        verify -> [finalize | recover]
+        recover -> [agent_loop | finalize]
+        compact -> [agent_loop | finalize]
+        finalize -> END
+    """
+    workflow = StateGraph(AgentState)
+
+    workflow.add_node("initialize", _validated("initialize", initialize_node))
+    workflow.add_node("agent_loop", _validated("agent_loop", agent_loop_node))
+    workflow.add_node("approval", _validated("approval", approval_node))
+    workflow.add_node("verify", _validated("verify", verification_node))
+    workflow.add_node("recover", _validated("recover", recover_node))
+    workflow.add_node("compact", _validated("compact", compact_node))
+    workflow.add_node("finalize", _validated("finalize", finalize_node))
+
+    workflow.set_entry_point("initialize")
+    workflow.add_edge("initialize", "agent_loop")
+
+    workflow.add_conditional_edges(
+        "agent_loop",
+        _canonical_routing.route_after_agent_loop,
+        {
+            "agent_loop": "agent_loop",
+            "approval": "approval",
+            "verify": "verify",
+            "recover": "recover",
+            "compact": "compact",
+            "finalize": "finalize",
+        },
+    )
+
+    workflow.add_conditional_edges(
+        "approval",
+        _canonical_routing.route_after_approval,
+        {"agent_loop": "agent_loop", "finalize": "finalize"},
+    )
+
+    workflow.add_conditional_edges(
+        "verify",
+        _canonical_routing.route_after_verify,
+        {"recover": "recover", "finalize": "finalize"},
+    )
+
+    workflow.add_conditional_edges(
+        "recover",
+        _canonical_routing.route_after_recover,
+        {"agent_loop": "agent_loop", "finalize": "finalize"},
+    )
+
+    workflow.add_conditional_edges(
+        "compact",
+        _canonical_routing.route_after_compact,
+        {"agent_loop": "agent_loop", "finalize": "finalize"},
+    )
+
+    workflow.add_edge("finalize", END)
+
+    return workflow.compile(checkpointer=_graph_checkpointer())
+
+
+def compile_canonical_graph():
+    """Public constructor for the unified 7-node cognitive pipeline."""
+    return _compile_canonical_graph()
+
+
 def _resolve_graph_tier(
     orchestrator: Any = None,
     *,
@@ -767,7 +846,11 @@ def build_tier_graph(tier: str):
     - Thread-safe: uses ``_GRAPH_CACHE_LOCK``.
     - Callers can force recompilation by calling ``_reset_compiled_graph()``.
     """
-    cache_key = _tier_graph_routing.select_tier_graph_cache_key(tier)
+    use_canonical = (
+        os.environ.get("CODINGAGENT_UNIFIED_GRAPH", "1").strip().lower()
+        not in ("0", "false", "no")
+    )
+    cache_key = "canonical" if use_canonical else _tier_graph_routing.select_tier_graph_cache_key(tier)
 
     # Fast path (no lock)
     cached = _GRAPH_CACHE.get(cache_key)
@@ -779,12 +862,16 @@ def build_tier_graph(tier: str):
         cached = _GRAPH_CACHE.get(cache_key)
         if cached is not None:
             return cached
-        logger.info("build_tier_graph: compiling '%s' graph", cache_key)
-        compiled = _tier_graph_routing.compile_tier_graph_for_key(
-            cache_key,
-            compile_frontier_graph_fn=_compile_frontier_graph,
-            compile_lite_graph_fn=_compile_lite_graph,
-        )
+        if use_canonical:
+            logger.info("build_tier_graph: compiling canonical unified 7-node graph for tier '%s'", tier)
+            compiled = _compile_canonical_graph()
+        else:
+            logger.info("build_tier_graph: compiling '%s' graph", cache_key)
+            compiled = _tier_graph_routing.compile_tier_graph_for_key(
+                cache_key,
+                compile_frontier_graph_fn=_compile_frontier_graph,
+                compile_lite_graph_fn=_compile_lite_graph,
+            )
         _GRAPH_CACHE[cache_key] = compiled
         logger.info("build_tier_graph: '%s' graph compiled and cached", cache_key)
         return compiled

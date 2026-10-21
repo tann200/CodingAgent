@@ -186,7 +186,7 @@ class TestProductionGraphShape:
         from src.core.orchestration.graph.builder import build_tier_graph
 
         nodes = set(build_tier_graph("frontier").nodes)
-        assert "frontier_loop" in nodes
+        assert "agent_loop" in nodes or "frontier_loop" in nodes
         assert "planning" not in nodes
         assert "execution" not in nodes
 
@@ -202,7 +202,8 @@ class TestProductionGraphShape:
 
         for tier in ("frontier", "lite"):
             graph = build_tier_graph(tier)
-            runner = graph.nodes["frontier_loop"].bound.afunc
+            loop_key = "agent_loop" if "agent_loop" in graph.nodes else "frontier_loop"
+            runner = graph.nodes[loop_key].bound.afunc
             referenced = set()
             for cell in getattr(runner, "__closure__", None) or ():
                 try:
@@ -211,7 +212,7 @@ class TestProductionGraphShape:
                     continue
             modules = {getattr(fn, "__module__", None) for fn in referenced}
             assert fln.__name__ in modules, (
-                f"{tier} graph's frontier_loop does not reference "
+                f"{tier} graph's {loop_key} does not reference "
                 f"{fln.__name__}; wrapped modules were {sorted(m for m in modules if m)}"
             )
 

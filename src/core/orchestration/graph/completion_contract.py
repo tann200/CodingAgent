@@ -241,3 +241,64 @@ def evaluate_completion_contract(
         failure_reason="Empty response for informational query",
         error_code="empty_response",
     )
+
+
+class NoToolClassification(str, Enum):
+    """Classification of model responses without tool calls."""
+
+    ANSWER = "answer"
+    CLARIFICATION = "clarification"
+    REFUSAL = "refusal"
+    INCOMPLETE = "incomplete"
+
+
+_REFUSAL_PATTERNS = re.compile(
+    r"\b(?:I (?:cannot|can't|am unable to|must decline to|won't be able to)|as an AI, I cannot)\b",
+    re.IGNORECASE,
+)
+
+_CLARIFICATION_PATTERNS = re.compile(
+    r"(?:(?:could|can) you (?:please\s+)?(?:clarify|specify|provide|confirm)|please let me know if|which (?:one|file|option) would you prefer|\bdo you want me to\b|\bshould I\b)",
+    re.IGNORECASE,
+)
+
+
+def classify_no_tool_response(
+    *,
+    task: str,
+    content_text: Optional[str],
+    state: Optional[Mapping[str, Any]] = None,
+) -> NoToolClassification:
+    """Classify a model response when no tool calls were emitted.
+
+    Categories:
+    - answer: Valid informational or read-only answer.
+    - clarification: Requests additional input or user clarification.
+    - refusal: Explicit refusal to perform the requested action.
+    - incomplete: Empty response, or unfinished output on a mutating task.
+    """
+    text = (content_text or "").strip()
+    if not text:
+        return NoToolClassification.INCOMPLETE
+
+    if state and state.get("needs_clarification"):
+        return NoToolClassification.CLARIFICATION
+
+    if _REFUSAL_PATTERNS.search(text):
+        return NoToolClassification.REFUSAL
+
+    if _CLARIFICATION_PATTERNS.search(text) or (
+        text.endswith("?") and any(w in text.lower() for w in ("which", "what", "how", "should", "could", "would"))
+    ):
+        return NoToolClassification.CLARIFICATION
+
+    cleaned_task = (task or "").strip()
+    task_type = classify_task(cleaned_task)
+    if task_type == TaskType.MUTATING:
+        mod_files = []
+        if state:
+            mod_files = list(state.get("modified_files") or [])
+        if not mod_files:
+            return NoToolClassification.INCOMPLETE
+
+    return NoToolClassification.ANSWER

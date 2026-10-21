@@ -131,8 +131,10 @@ class TestRunTsCheck:
 
     def test_returns_structured_output(self, tmp_path):
         """run_ts_check returns status field always."""
+        import shutil
         from src.tools.verification_tools import run_ts_check
-        result = run_ts_check(str(tmp_path))
+        with patch.object(shutil, "which", return_value=None):
+            result = run_ts_check(str(tmp_path))
         assert "status" in result
 
 
@@ -147,8 +149,10 @@ class TestRunEslint:
 
     def test_returns_structured_output(self, tmp_path):
         """run_eslint returns status field always."""
+        import shutil
         from src.tools.verification_tools import run_eslint
-        result = run_eslint(str(tmp_path))
+        with patch.object(shutil, "which", return_value=None):
+            result = run_eslint(str(tmp_path))
         assert "status" in result
 
 

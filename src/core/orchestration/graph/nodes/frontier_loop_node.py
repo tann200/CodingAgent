@@ -36,7 +36,9 @@ from src.core.orchestration.graph.nodes.frontier_toolcalls import (
     _render_tool_calls_text,
 )
 from src.core.orchestration.graph.nodes.frontier_messages import (
-    _extract_tool_call_from_text, _normalize_messages_for_native_tools,
+    _extract_content_text,
+    _extract_tool_call_from_text,
+    _normalize_messages_for_native_tools,
 )
 from src.core.orchestration.graph.completion_contract import (
     _MODIFYING_TOOL_NAMES,
@@ -45,6 +47,7 @@ from src.core.orchestration.graph.nodes.frontier_completion import (
     _filter_tools_for_tier,
     _is_context_overflow,
     _plan_mode_blocks,
+    build_plan_mode_blocked_exit,
     clear_transient_contract_errors,
     finalize_frontier_exit,
     handle_no_tool_completion,
@@ -58,7 +61,15 @@ from src.core.orchestration.graph.nodes.tool_result_safety import sanitize_tool_
 from src.core.security.redaction import redact_secrets
 
 # Re-exported for backwards compatibility with the legacy test surface
-__all__ = ["frontier_loop_node", "_append_tool_call_history", "_extract_tool_call_from_text", "_normalize_messages_for_native_tools", "_normalize_tool_call", "_render_tool_calls_text"]
+__all__ = [
+    "frontier_loop_node",
+    "agent_loop_node",
+    "_append_tool_call_history",
+    "_extract_tool_call_from_text",
+    "_normalize_messages_for_native_tools",
+    "_normalize_tool_call",
+    "_render_tool_calls_text",
+]
 from src.core.orchestration.tool_parser import parse_tool_block
 from src.core.inference.kv_cache_governor import (
     CompactionAction,
@@ -116,39 +127,7 @@ def _sanitize_tool_output(res: dict) -> dict:
     return sanitize_tool_result(res, marker_label="frontier_loop", log=logger)
 
 
-def _extract_content_text(response: Any) -> str:
-    """Extract text content from an LLM response object."""
-    try:
-        if isinstance(response, dict):
-            choices = response.get("choices", [])
-            if choices and isinstance(choices, list):
-                msg = choices[0].get("message", {}) if isinstance(choices[0], dict) else {}
-                if isinstance(msg, dict):
-                    content = msg.get("content")
-                    if isinstance(content, str):
-                        return content
-                    if isinstance(content, list):
-                        parts = []
-                        for item in content:
-                            if isinstance(item, str):
-                                parts.append(item)
-                            elif isinstance(item, dict):
-                                parts.append(item.get("text", ""))
-                        return "\n".join(p for p in parts if p)
-        content = response.content if hasattr(response, "content") else response  # type: ignore[union-attr]
-        if isinstance(content, str):
-            return content
-        if isinstance(content, list):
-            parts = []
-            for item in content:
-                if isinstance(item, str):
-                    parts.append(item)
-                elif isinstance(item, dict):
-                    parts.append(item.get("text", ""))
-            return "\n".join(p for p in parts if p)
-    except Exception:
-        pass
-    return ""
+
 
 
 
@@ -801,16 +780,17 @@ async def frontier_loop_node(
                     "frontier_loop_node: plan-mode blocked '%s' — suspending for approval",
                     tool_name,
                 )
-                return {
-                    "history": history,
-                    "tool_call_count": tool_call_count,
-                    "last_result": last_result,
-                    "last_tool_name": last_tool_name,
-                    "errors": errors,
-                    "_frontier_loop_turns": turns_taken,
-                    "awaiting_plan_approval": True,
-                    "next_action": {"name": tool_name, "arguments": tool_args},
-                }
+                return build_plan_mode_blocked_exit(
+                    tool_name=tool_name,
+                    tool_args=tool_args,
+                    history=history,
+                    tool_call_count=tool_call_count,
+                    last_result=last_result,
+                    last_tool_name=last_tool_name,
+                    errors=errors,
+                    turns_taken=turns_taken,
+                    state=state,
+                )
 
         # ---- Execute tool calls ------------------------------------------
         history, tool_call_count, batch_result, batch_tool, batch_iv = await _dispatch_tool_calls(
@@ -892,3 +872,7 @@ async def frontier_loop_node(
         replan_required=replan_required,
         retrieved_snippets=retrieved_snippets,
     )
+
+
+# Canonical alias for the unified 7-node architecture
+agent_loop_node = frontier_loop_node

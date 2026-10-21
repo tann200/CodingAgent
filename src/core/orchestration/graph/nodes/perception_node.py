@@ -230,6 +230,7 @@ async def _perception_node_impl(
     _provider_context = _resolve_perception_provider_context(
         orchestrator=orchestrator,
         adapter=adapter,
+        state=state,
     )
     _active_model_name = _provider_context["active_model_name"]
 

@@ -204,6 +204,24 @@ from typing import (  # noqa: E402
 # an incompatible duplicate dataclass definition (different fields) which
 # caused AttributeErrors at runtime when code mixed both.
 from src.core.orchestration.dag_parser import PlanDAG  # noqa: F401, E402
+from src.core.orchestration.graph.policy import (  # noqa: F401, E402
+    LastAction,
+    PendingAction,
+    Policy,
+    RunOutcome,
+    RunState,
+    RunStatus,
+    RuntimeState,
+    VerificationMode,
+    VerificationState,
+    compute_action_digest,
+    create_last_action,
+    create_run_state,
+    create_runtime_state,
+    get_capabilities_for_tier,
+    get_policy_for_tier,
+    normalize_target_tier,
+)
 
 _logger = logging.getLogger(__name__)
 
@@ -480,6 +498,14 @@ class _AgentStateSpec(TypedDict, total=False):
     modified_files: List[str] | None
     retrieved_snippets: List[Dict[str, Any]] | None
     _frontier_loop_turns: int | None
+
+    # ── Target State Contract (Engineering Audit §Appendix) ────────────────
+    # Target 7-node architecture: runtime, run, pending_action, last_action, verification.
+    runtime: Dict[str, Any] | None
+    run: Dict[str, Any] | None
+    pending_action: Dict[str, Any] | None
+    last_action: Dict[str, Any] | None
+    verification: Dict[str, Any] | None
 
 
 # Expose the TypedDict as AgentState at runtime so tests that inspect

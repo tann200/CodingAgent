@@ -138,7 +138,14 @@ _NODE_OUTPUT_SCHEMAS: dict[str, NodeOutputSchema] = {
         core_keys=(),
     ),
     "verification": NodeOutputSchema(
-        frozenset({"verification_result", "verification_passed"}),
+        frozenset(
+            {
+                "verification_result",
+                "verification_passed",
+                "verification",
+                "run",
+            }
+        ),
         core_keys=("verification_result",),
     ),
     "analysis": NodeOutputSchema(
@@ -264,9 +271,140 @@ _NODE_OUTPUT_SCHEMAS: dict[str, NodeOutputSchema] = {
                 "modified_files",
                 "retrieved_snippets",
                 "active_role",
+                "runtime",
+                "run",
+                "pending_action",
+                "last_action",
+                "verification",
             }
         ),
-        core_keys=("history", "tool_call_count", "errors", "awaiting_plan_approval"),
+        core_keys=(),
+    ),
+    "initialize": NodeOutputSchema(
+        frozenset(
+            {
+                "runtime",
+                "run",
+                "pending_action",
+                "last_action",
+                "verification",
+                "modified_files",
+                "errors",
+                "model_tier",
+            }
+        ),
+        core_keys=("runtime", "run"),
+    ),
+    "agent_loop": NodeOutputSchema(
+        frozenset(
+            {
+                "history",
+                "tool_call_count",
+                "last_result",
+                "last_tool_name",
+                "errors",
+                "_frontier_loop_turns",
+                "awaiting_plan_approval",
+                "next_action",
+                "inline_verification_failures",
+                "replan_required",
+                "action_failed",
+                "_budget_compaction",
+                "_should_distill",
+                "plan_completed",
+                "modified_files",
+                "retrieved_snippets",
+                "active_role",
+                "runtime",
+                "run",
+                "pending_action",
+                "last_action",
+                "verification",
+            }
+        ),
+        core_keys=(),
+    ),
+    "approval": NodeOutputSchema(
+        frozenset(
+            {
+                "pending_action",
+                "last_action",
+                "run",
+                "awaiting_plan_approval",
+                "awaiting_user_input",
+                "plan_mode_approved",
+                "plan_mode_blocked_tool",
+                "last_result",
+                "preview_confirmed",
+                "pending_preview_id",
+                "errors",
+            }
+        ),
+        core_keys=(),
+    ),
+    "verify": NodeOutputSchema(
+        frozenset(
+            {
+                "verification",
+                "verification_result",
+                "verification_passed",
+                "run",
+                "errors",
+                "modified_files",
+            }
+        ),
+        core_keys=(),
+    ),
+    "recover": NodeOutputSchema(
+        frozenset(
+            {
+                "pending_action",
+                "last_action",
+                "run",
+                "errors",
+                "history",
+                "current_plan",
+                "current_step",
+                "replan_attempts",
+                "debug_attempts",
+                "total_debug_attempts",
+                "next_action",
+                "replan_required",
+                "action_failed",
+            }
+        ),
+        core_keys=(),
+    ),
+    "compact": NodeOutputSchema(
+        frozenset(
+            {
+                "history",
+                "run",
+                "errors",
+                "_budget_compaction",
+                "_should_distill",
+                "_force_compact",
+                "_compacted_history",
+                "last_compact_turn",
+                "last_compact_at",
+                "context_degradation_detected",
+            }
+        ),
+        core_keys=(),
+    ),
+    "finalize": NodeOutputSchema(
+        frozenset(
+            {
+                "run",
+                "history",
+                "errors",
+                "_force_compact",
+                "analysis_summary",
+                "evaluation_result",
+                "session_cost_usd",
+            }
+        ),
+        core_keys=(),
     ),
 }
 

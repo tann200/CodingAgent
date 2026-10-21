@@ -315,6 +315,48 @@ def clear_transient_contract_errors(errors: list) -> list:
     return [e for e in errors if e not in _TRANSIENT_CONTRACT_ERRORS]
 
 
+def build_plan_mode_blocked_exit(
+    *,
+    tool_name: str,
+    tool_args: dict,
+    history: list,
+    tool_call_count: int,
+    last_result: Optional[dict],
+    last_tool_name: Optional[str],
+    errors: list,
+    turns_taken: int,
+    state: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Assemble state update when a modifying tool is blocked awaiting approval."""
+    from src.core.orchestration.graph.policy import compute_action_digest
+
+    pending_action = {
+        "name": tool_name,
+        "arguments": tool_args,
+        "summary": f"Execute {tool_name}",
+        "digest": compute_action_digest(tool_name, tool_args),
+    }
+    run_state = dict(state.get("run") or {})
+    run_state.update({
+        "status": "awaiting_approval",
+        "outcome": "approval_required",
+        "turns": int(run_state.get("turns") or 0) + turns_taken,
+        "tool_calls": tool_call_count,
+    })
+    return {
+        "history": history,
+        "tool_call_count": tool_call_count,
+        "last_result": last_result,
+        "last_tool_name": last_tool_name,
+        "errors": errors,
+        "_frontier_loop_turns": turns_taken,
+        "awaiting_plan_approval": True,
+        "next_action": {"name": tool_name, "arguments": tool_args},
+        "pending_action": pending_action,
+        "run": run_state,
+    }
+
+
 def finalize_frontier_exit(
     *,
     state: Mapping[str, Any],
@@ -360,6 +402,43 @@ def finalize_frontier_exit(
         persist_plan_progress(orchestrator, state)
     if retrieved_snippets:
         result["retrieved_snippets"] = retrieved_snippets
+
+    # Target Action & Run State Contract
+    from src.core.orchestration.graph.policy import create_last_action
+
+    run_state = dict(state.get("run") or {})
+    prev_turns = int(run_state.get("turns") or 0)
+    run_state["turns"] = prev_turns + turns_taken
+    run_state["tool_calls"] = tool_call_count
+
+    if "context_overflow" in (errors or []):
+        run_state["status"] = "running"
+        run_state["outcome"] = "compact"
+    elif replan_required or (last_result and last_result.get("ok") is False) or ("inline_verification_failed" in (errors or [])):
+        run_state["status"] = "recovering"
+        run_state["outcome"] = "recover"
+    elif mod_files:
+        run_state["status"] = "verifying"
+        run_state["outcome"] = "verify"
+    elif result.get("plan_completed") or (last_result and last_result.get("completed_without_tool")):
+        run_state["status"] = "completed"
+        run_state["outcome"] = "complete"
+    else:
+        run_state["status"] = "running"
+        run_state["outcome"] = "continue"
+
+    result["run"] = run_state
+
+    if last_tool_name:
+        last_action = create_last_action(
+            name=last_tool_name,
+            arguments=state.get("planned_action") or {},
+            result=last_result,
+            side_effects=sorted(mod_files) if mod_files else [],
+            modified_files=sorted(mod_files),
+        )
+        result["last_action"] = last_action
+
     return result
 
 

@@ -5,6 +5,27 @@ from __future__ import annotations
 from typing import Any, Callable, Dict, Optional
 
 from src.tools.subagent_payloads import build_graph_state_base
+from src.core.orchestration.graph.policy import (
+    create_run_state,
+    create_runtime_state,
+    normalize_target_tier,
+)
+
+
+def _resolve_initial_runtime(orch: Any) -> tuple[str, str, str]:
+    """Resolve provider, model, and target tier for initial state."""
+    try:
+        from src.core.inference.model_tiers import classify_model
+        from src.core.inference.provider_utils import resolve_provider_and_model
+
+        provider, model = resolve_provider_and_model(orch)
+        adapter = getattr(orch, "_adapter", None) or getattr(orch, "adapter", None)
+        ctx_window = int(getattr(adapter, "context_window", 0) or 0)
+        tier_enum = classify_model(model or "", ctx_window)
+        tier = normalize_target_tier(tier_enum)
+        return str(provider or ""), str(model or ""), tier
+    except Exception:
+        return "", "", "medium"
 
 
 def build_initial_state(
@@ -17,6 +38,10 @@ def build_initial_state(
 ) -> Dict[str, Any]:
     """Build the initial graph state for one agent run."""
     role_name = system_prompt_name or getattr(orch, "active_role", None) or "operational"
+    provider, model, tier = _resolve_initial_runtime(orch)
+    runtime_state = create_runtime_state(tier=tier, provider=provider, model=model)
+    run_state = create_run_state(status="running", outcome="continue")
+
     return {
         **build_graph_state_base(
             task=prompt,
@@ -33,6 +58,12 @@ def build_initial_state(
         "cancel_event": cancel_event,
         "seed": getattr(orch, "seed", None),
         "empty_response_count": 0,
+        "runtime": runtime_state,
+        "run": run_state,
+        "pending_action": None,
+        "last_action": None,
+        "verification": None,
+        "model_tier": tier,
         "analysis_summary": None,
         "relevant_files": [],
         "key_symbols": [],

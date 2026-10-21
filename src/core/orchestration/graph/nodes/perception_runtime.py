@@ -275,6 +275,7 @@ def _resolve_perception_provider_context(
     *,
     orchestrator: Any,
     adapter: Any,
+    state: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Resolve provider/model metadata used by perception prompt and warnings."""
     try:
@@ -292,7 +293,18 @@ def _resolve_perception_provider_context(
 
     provider = caps.get("provider_name")
     model = caps.get("model")
-    model_tier_str = _classify_model_tier(model, adapter)
+
+    # Invariant: Tier and policy are resolved once before invocation and placed in state.
+    # Preserve immutable pre-resolved tier if present to eliminate mid-run reclassification.
+    pre_tier = None
+    if state:
+        rt = state.get("runtime")
+        if isinstance(rt, Mapping) and rt.get("tier"):
+            pre_tier = str(rt.get("tier"))
+        elif state.get("model_tier"):
+            pre_tier = str(state.get("model_tier"))
+
+    model_tier_str = pre_tier or _classify_model_tier(model, adapter)
 
     return {
         "provider_capabilities": provider_capabilities,
