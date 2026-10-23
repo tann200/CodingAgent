@@ -115,12 +115,19 @@ async def _recover_node_impl(state: StateLike, config: RunnableConfig) -> Dict[s
     working_dir = state.get("working_dir", ".")
     model_tier = (state.get("model_tier") or runtime_state.get("tier") or "medium").lower()
 
-    builder = ContextBuilder(orchestrator=orchestrator, working_dir=working_dir)
-    messages = builder.build(
-        task=task,
-        history=state.get("history", []),
-        role="reviewer",
+    builder = ContextBuilder(working_dir=working_dir)
+    from src.core.orchestration.provider_capabilities import resolve_provider_capabilities as _resolve_pc
+    provider_capabilities = _resolve_pc(orchestrator)
+    messages = builder.build_prompt(
+        role_name="reviewer",
+        active_skills=[],
+        task_description=task,
+        tools=[],
+        conversation=state.get("history", []),
+        max_tokens=4000,
+        provider_capabilities=provider_capabilities,
         model_tier=model_tier,
+        model_name=provider_capabilities.get("model") or "",
     )
 
     recovery_prompt = (

@@ -212,6 +212,64 @@ class TestCanonicalNodes:
         assert res_exceeded["run"]["status"] == "failed"
         assert "context_overflow_exhausted" in res_exceeded["errors"]
 
+    @pytest.mark.asyncio
+    async def test_recover_node_limit_exhausted(self):
+        state = {
+            "task": "Fix bug",
+            "run": {"recoveries": 2},
+            "runtime": {"policy": {"recovery_limit": 2}},
+            "last_action": {"name": "files_edit", "arguments": {"path": "a.py"}, "digest": "xyz"},
+            "errors": ["SyntaxError"],
+        }
+        res = await _recover_node_impl(state, config=MagicMock())
+        assert res["run"]["status"] == "failed"
+        assert res["run"]["outcome"] == "failed"
+        assert "Recovery limit (2) reached" in res["errors"][0]
+
+    @pytest.mark.asyncio
+    async def test_recover_node_generates_replacement_action(self):
+        state = {
+            "task": "Fix bug",
+            "run": {"recoveries": 0},
+            "runtime": {"policy": {"recovery_limit": 2}},
+            "last_action": {"name": "files_edit", "arguments": {"path": "a.py", "content": "bad"}, "digest": "d_bad"},
+            "last_result": {"error": "SyntaxError: invalid syntax"},
+        }
+        mock_response = MagicMock()
+        mock_response.content = '```tool\n{"name": "files_write", "arguments": {"path": "a.py", "content": "fixed"}}\n```'
+        with patch("src.core.orchestration.graph.nodes.recover_node.call_model", new_callable=AsyncMock) as mock_call:
+            mock_call.return_value = mock_response
+            res = await _recover_node_impl(state, config=MagicMock())
+
+        assert res["run"]["status"] == "running"
+        assert res["run"]["outcome"] == "continue"
+        assert res["run"]["recoveries"] == 1
+        assert res["pending_action"]["name"] == "files_write"
+        assert res["pending_action"]["arguments"] == {"path": "a.py", "content": "fixed"}
+        assert res["pending_action"]["digest"] == compute_action_digest("files_write", {"path": "a.py", "content": "fixed"})
+
+    @pytest.mark.asyncio
+    async def test_recover_node_rejects_duplicate_signature(self):
+        failed_args = {"path": "a.py", "content": "bad"}
+        failed_digest = compute_action_digest("files_write", failed_args)
+        state = {
+            "task": "Fix bug",
+            "run": {"recoveries": 0},
+            "runtime": {"policy": {"recovery_limit": 2}},
+            "last_action": {"name": "files_write", "arguments": failed_args, "digest": failed_digest},
+            "last_result": {"error": "SyntaxError"},
+        }
+        mock_response = MagicMock()
+        mock_response.content = '```tool\n{"name": "files_write", "arguments": {"path": "a.py", "content": "bad"}}\n```'
+        with patch("src.core.orchestration.graph.nodes.recover_node.call_model", new_callable=AsyncMock) as mock_call:
+            mock_call.return_value = mock_response
+            res = await _recover_node_impl(state, config=MagicMock())
+
+        assert res["run"]["status"] == "failed"
+        assert res["run"]["outcome"] == "failed"
+        assert res["pending_action"] is None
+        assert "no valid replacement action produced" in res["errors"][0]
+
     def test_no_tool_classification(self):
         # Incomplete (empty)
         assert classify_no_tool_response(task="test", content_text="") == NoToolClassification.INCOMPLETE
