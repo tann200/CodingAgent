@@ -165,7 +165,7 @@ class TestOllamaAdapterGenerate:
         error_resp = make_response(500, {"error": "internal error"})
         messages = [{"role": "user", "content": "hi"}]
 
-        with patch.object(adapter, "_call_requests", return_value=error_resp):
+        with patch.object(adapter, "_call_requests", return_value=error_resp), patch("time.sleep", return_value=None):
             result = adapter.generate(messages, model="llama3:8b")
 
         assert isinstance(result, dict)
@@ -186,7 +186,7 @@ class TestOllamaAdapterGenerate:
             adapter,
             "_call_requests",
             side_effect=req.exceptions.ConnectionError("refused"),
-        ):
+        ), patch("time.sleep", return_value=None):
             result = adapter.generate(messages, model="llama3:8b")
 
         assert isinstance(result, dict)

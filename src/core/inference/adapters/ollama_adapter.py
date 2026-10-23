@@ -222,13 +222,20 @@ class OllamaAdapter(LLMClient):
     def _select_model_name(self, model):
         return lm_select_model_name(self.models, model)
 
-    def _request_with_retry(self, method: str, url: str, timeout: float = 30.0, **kwargs) -> Optional[requests.Response]:
+    def _request_with_retry(
+        self,
+        method: str,
+        url: str,
+        timeout: float = 30.0,
+        max_retries: int = 3,
+        **kwargs,
+    ) -> Optional[requests.Response]:
         """Make an HTTP request with retry and capped, jittered backoff.
 
         Uses the shared resilience policy for status classification
         (``is_retryable_status_code``) and ``jittered_backoff`` for the wait.
         """
-        _MAX_RETRIES = 3
+        _MAX_RETRIES = max_retries
         _MAX_BACKOFF = 30.0
         last_response = None
         for _attempt in range(_MAX_RETRIES):
@@ -374,7 +381,7 @@ class OllamaAdapter(LLMClient):
         for url in candidates:
             try:
                 tried.append(url)
-                response = self._request_with_retry('get', url, timeout=10)
+                response = self._request_with_retry('get', url, timeout=10, max_retries=1)
                 if response is None:
                     continue
                 try:
@@ -422,7 +429,9 @@ class OllamaAdapter(LLMClient):
                 if models_out:
                     return {"models": models_out}
             except requests.exceptions.ConnectionError:
-                continue
+                # Connection to the daemon failed. All candidate URLs point to the same host;
+                # don't waste time trying alternative path variants on an unreachable host.
+                break
             except Exception as e:
                 _logger.debug("get_models_from_api failed for %s: %s", url, e)
                 continue

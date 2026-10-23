@@ -57,8 +57,9 @@ _PRIVATE_KEY_PATTERNS: list[tuple[re.Pattern[str], str]] = [
 ]
 
 # Database / Protocol URI with embedded credentials (e.g. postgres://user:password@host)
+# Bounded scheme prefix length {0,31} prevents catastrophic backtracking (ReDoS) on large payloads.
 _URI_PASSWORD_PATTERN = re.compile(
-    r"([a-zA-Z][a-zA-Z0-9+.-]*://[^:\s@]*)?:([^@\s]+)@([^\s/]+)"
+    r"([a-zA-Z][a-zA-Z0-9+.-]{0,31}://[^:\s@]*)?:([^@\s]+)@([^\s/]+)"
 )
 
 # Key-Value assignments in environment files, config files, JSON, YAML
@@ -176,7 +177,7 @@ def detect_secrets(text: str) -> List[str]:
     for pattern, label in _PRIVATE_KEY_PATTERNS:
         if pattern.search(text):
             findings.append(label)
-    if _URI_PASSWORD_PATTERN.search(text):
+    if "@" in text and ":" in text and _URI_PASSWORD_PATTERN.search(text):
         findings.append("uri_password")
     for pattern, label in _PROVIDER_SECRET_PATTERNS:
         if pattern.search(text):
@@ -203,9 +204,10 @@ def redact_secrets(text: str, replacement: str = REDACTED_PLACEHOLDER) -> str:
         redacted = pattern.sub(replacement, redacted)
 
     # 2. URI passwords: preserve scheme, user, and host, redact password
-    redacted = _URI_PASSWORD_PATTERN.sub(
-        lambda m: f"{m.group(1) or ''}:{replacement}@{m.group(3)}", redacted
-    )
+    if "@" in redacted and ":" in redacted:
+        redacted = _URI_PASSWORD_PATTERN.sub(
+            lambda m: f"{m.group(1) or ''}:{replacement}@{m.group(3)}", redacted
+        )
 
     # 3. Specific provider tokens
     for pattern, _ in _PROVIDER_SECRET_PATTERNS:

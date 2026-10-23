@@ -327,14 +327,14 @@ def test_websocket_control_negative_cases(monkeypatch, recv_json_ws):
             # Subscribe to an event twice -> second subscribe should be a no-op but server may ack
             ws.send_text(json.dumps({"type": "subscribe", "event": "session.created"}))
             try:
-                ack1 = recv_json_ws(ws, timeout=2.0)
+                ack1 = recv_json_ws(ws, timeout=0.2)
                 assert ack1.get("event") == "_control"
             except TimeoutError:
                 pass  # events=none: server may not ack control messages
             # Duplicate subscribe
             ws.send_text(json.dumps({"type": "subscribe", "event": "session.created"}))
             try:
-                ack2 = recv_json_ws(ws, timeout=2.0)
+                ack2 = recv_json_ws(ws, timeout=0.2)
                 # Server may send keepalive or control envelopes; if keepalive arrived accept that
                 assert ack2.get("event") in ("_control", "_keepalive")
             except TimeoutError:
@@ -344,7 +344,7 @@ def test_websocket_control_negative_cases(monkeypatch, recv_json_ws):
             ws.send_text(json.dumps({"type": "unsubscribe", "event": "unknown.event"}))
             for _ in range(10):
                 try:
-                    m = recv_json_ws(ws, timeout=2.0)
+                    m = recv_json_ws(ws, timeout=0.2)
                 except TimeoutError:
                     break
                 except Exception:
@@ -357,6 +357,6 @@ def test_websocket_control_negative_cases(monkeypatch, recv_json_ws):
             # Send unknown control type -> ignored
             ws.send_text(json.dumps({"type": "does_not_exist"}))
             try:
-                recv_json_ws(ws, timeout=1.0)
+                recv_json_ws(ws, timeout=0.2)
             except (TimeoutError, Exception):
                 pass

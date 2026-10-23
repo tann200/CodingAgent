@@ -12,6 +12,7 @@ from src.core.messaging.events import Event
 class TestEvent(Event):
     """Test event with custom fields."""
 
+    __test__ = False
     message: str
     count: int
 
