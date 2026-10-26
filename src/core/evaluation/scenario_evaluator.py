@@ -484,7 +484,7 @@ def get_default_scenarios() -> List[Scenario]:
                     "    return result\n"
                 ),
             },
-            expected_files={"merge.py": "dict"},
+            expected_files={"merge.py": "-> dict"},
             difficulty="easy",
             category="single_file_edit",
             tags=["type_hints"],
@@ -694,7 +694,7 @@ def get_default_scenarios() -> List[Scenario]:
                     "    return process_stage(data)\n"
                 ),
             },
-            expected_files={"validator.py": "get"},
+            expected_files={"validator.py": "get("},
             difficulty="hard",
             category="context_boundary",
             tags=["multi_file_read", "call_chain"],
@@ -806,7 +806,7 @@ def get_default_scenarios() -> List[Scenario]:
                     "]\n"
                 ),
             },
-            expected_files={"records.py": "'a': 1"},
+            expected_files={"records.py": "{'a': 1, 'name': 'Alice', 'z': 3}"},
             difficulty="medium",
             category="disambiguation",
             tags=["formatting"],

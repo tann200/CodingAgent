@@ -329,3 +329,20 @@ def test_work_summary_tool_call_history():
     assert "read_file" in summary
     assert "write_file" in summary
     assert "edit_file" in summary
+
+
+def test_tautological_evaluation_scenarios_remediated():
+    """SPEC-20 item 6: add_type_hints, trace_call_chain, ambiguous_format_request
+    must not have expected_files substrings present in setup_files."""
+    from src.core.evaluation.scenario_evaluator import get_default_scenarios
+
+    scenarios = {s.name: s for s in get_default_scenarios()}
+    for name in ("add_type_hints", "trace_call_chain", "ambiguous_format_request"):
+        assert name in scenarios, f"Scenario {name} missing"
+        s = scenarios[name]
+        for filename, expected_sub in s.expected_files.items():
+            setup_content = s.setup_files.get(filename, "")
+            assert expected_sub not in setup_content, (
+                f"Scenario '{name}' checks for substring {expected_sub!r} which is "
+                f"already present in setup_files for {filename}"
+            )
