@@ -115,6 +115,25 @@ class ToolRegistry:
             return True
         return False
 
+    def __contains__(self, name: str) -> bool:
+        return name in self.tools
+
+    def discover(self, module: Any, origin: str = "builtin") -> int:
+        """Find all @tool-decorated callables in module and register them."""
+        count = 0
+        for attr_name in dir(module):
+            try:
+                obj = getattr(module, attr_name, None)
+            except Exception:
+                continue
+            if callable(obj) and hasattr(obj, "__tool_meta__"):
+                meta = getattr(obj, "__tool_meta__")
+                name = getattr(meta, "name", None) or getattr(obj, "__name__", "")
+                desc = getattr(meta, "description", "") or (obj.__doc__ or "")
+                self.register(name, obj, description=desc, origin=origin)
+                count += 1
+        return count
+
     def list(self) -> List[str]:
         return list(self.tools.keys())
 

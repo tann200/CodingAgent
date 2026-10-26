@@ -104,6 +104,10 @@ class Orchestrator:
     cost_tracker: Any
     tool_execution_service: Any
     _mcp_server: Any
+    trusted: Optional[bool]
+    plugin_dir: Optional[Path]
+    _deferred_init_done: bool
+    _deferred_init_result: Any
 
     def __init__(
         self,
@@ -116,6 +120,8 @@ class Orchestrator:
         seed: Optional[int] = None,
         event_bus: Optional["EventBus"] = None,
         dry_run: bool = False,
+        trusted: Optional[bool] = None,
+        plugin_dir: Optional[str | Path] = None,
     ):
         self._dry_run = dry_run
         self._adapter = adapter
@@ -123,6 +129,10 @@ class Orchestrator:
         self.deterministic = bool(deterministic)
         self.seed = seed
         self.active_role = "operational"
+        self.trusted = trusted
+        self.plugin_dir = Path(plugin_dir) if plugin_dir else None
+        self._deferred_init_done = False
+        self._deferred_init_result = None
         self.tool_registry = tool_registry if tool_registry else example_registry()
         # TASK-09: Filter tool registry using the active permission context (set by
         # --allowed-tools / --deny-tool / --deny-prefix CLI flags in main.py).
@@ -168,6 +178,52 @@ class Orchestrator:
         from src.core.orchestration.orchestrator_helpers import start_mcp_server_impl
 
         await start_mcp_server_impl(self)
+
+    def run_deferred_init_sync(self, trusted: Optional[bool] = None) -> Any:
+        """Synchronously execute deferred initialization if not already completed."""
+        if getattr(self, "_deferred_init_done", False):
+            return getattr(self, "_deferred_init_result", None)
+
+        import asyncio
+        import concurrent.futures
+        from src.core.orchestration.deferred_init import run_deferred_init
+
+        effective_trust = (
+            trusted if trusted is not None else getattr(self, "trusted", None)
+        )
+        coro = run_deferred_init(self, trusted=effective_trust)
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+
+        if loop is None:
+            result = asyncio.run(coro)
+        elif loop.is_running():
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                result = pool.submit(asyncio.run, coro).result()
+        else:
+            result = loop.run_until_complete(coro)
+
+        self._deferred_init_done = True
+        self._deferred_init_result = result
+        return result
+
+    async def run_deferred_init_async(self, trusted: Optional[bool] = None) -> Any:
+        """Asynchronously execute deferred initialization if not already completed."""
+        if getattr(self, "_deferred_init_done", False):
+            return getattr(self, "_deferred_init_result", None)
+
+        from src.core.orchestration.deferred_init import run_deferred_init
+
+        effective_trust = (
+            trusted if trusted is not None else getattr(self, "trusted", None)
+        )
+        result = await run_deferred_init(self, trusted=effective_trust)
+        self._deferred_init_done = True
+        self._deferred_init_result = result
+        return result
 
     # ------------------------------------------------------------------
     # ARCH-1: Property shims — delegate session state to self.session_mgr.

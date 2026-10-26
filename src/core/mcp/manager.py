@@ -65,10 +65,12 @@ class McpServerManager:
         registry: Any,
         event_bus: Any,
         working_dir: Optional[Path] = None,
+        trusted: Optional[bool] = None,
     ) -> None:
         self._registry = registry
         self._event_bus = event_bus
         self._working_dir = working_dir
+        self._trusted = trusted
         self._clients: Dict[str, Any] = {}
         self._states: Dict[str, McpServerState] = {}
         self._started: bool = False
@@ -207,8 +209,13 @@ class McpServerManager:
 
             # SPEC-03: Workspace-defined stdio servers require explicit trust to execute host commands
             source = cfg.get("source")
+            is_trusted_workspace = (
+                self._trusted is True
+                or os.environ.get("CODINGAGENT_TRUSTED", "").strip().lower() in ("1", "true", "yes")
+                or os.environ.get("CODINGAGENT_TRUST_WORKSPACE_MCP") == "1"
+            )
             if transport == "stdio" and source == "workspace":
-                if os.environ.get("CODINGAGENT_TRUST_WORKSPACE_MCP") != "1" and not cfg.get("trusted", False):
+                if not is_trusted_workspace and not cfg.get("trusted", False):
                     logger.warning(
                         "mcp manager: refusing to auto-start untrusted workspace stdio MCP server %r. "
                         "Set CODINGAGENT_TRUST_WORKSPACE_MCP=1 or mark server as trusted to allow.",

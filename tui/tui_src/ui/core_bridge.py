@@ -132,7 +132,12 @@ def _get_orchestrator(app_obj):
         return None
 
 
-def _make_orchestrator(working_dir: Optional[Path], event_bus) -> "Optional[Any]":
+def _make_orchestrator(
+    working_dir: Optional[Path],
+    event_bus,
+    trusted: Optional[bool] = None,
+    plugin_dir: Optional[Any] = None,
+) -> "Optional[Any]":
     """Create and return a real Orchestrator wired to *event_bus*.
 
     Falls back to None gracefully if ``src.core`` is unavailable (dev/mock mode).
@@ -150,6 +155,8 @@ def _make_orchestrator(working_dir: Optional[Path], event_bus) -> "Optional[Any]
             working_dir=working_dir,
             event_bus=event_bus,
             message_max_tokens=None,
+            trusted=trusted,
+            plugin_dir=plugin_dir,
         )
     except Exception as exc:
         logger.debug(f"_make_orchestrator: could not create Orchestrator: {exc}")
@@ -226,7 +233,14 @@ class AgentBridge(
         self._orchestrator = _get_orchestrator(app)
         if self._orchestrator is None:
             _wd = working_dir or (Path.cwd())
-            self._orchestrator = _make_orchestrator(_wd, self._bus)
+            _trusted = getattr(app, "_initial_trusted", None)
+            _plugin_dir = getattr(app, "_initial_plugin_dir", None)
+            self._orchestrator = _make_orchestrator(
+                _wd,
+                self._bus,
+                trusted=_trusted,
+                plugin_dir=_plugin_dir,
+            )
 
         self._working_dir: str = str(working_dir) if working_dir else ""
         self._continue_state: Optional[dict] = None
@@ -268,15 +282,18 @@ class AgentBridge(
             self._deferred_init_done = True
             return
         try:
-            from src.core.orchestration.deferred_init import (  # type: ignore[import]
-                run_deferred_init,
-            )
+            if hasattr(self._orchestrator, "run_deferred_init_sync"):
+                self._orchestrator.run_deferred_init_sync()
+            else:
+                from src.core.orchestration.deferred_init import (  # type: ignore[import]
+                    run_deferred_init,
+                )
 
-            _loop = asyncio.new_event_loop()
-            try:
-                _loop.run_until_complete(run_deferred_init(self._orchestrator))
-            finally:
-                _loop.close()
+                _loop = asyncio.new_event_loop()
+                try:
+                    _loop.run_until_complete(run_deferred_init(self._orchestrator))
+                finally:
+                    _loop.close()
         except Exception as exc:
             logger.debug(f"deferred_init skipped/failed: {exc}")
         finally:

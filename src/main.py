@@ -327,6 +327,24 @@ def _parse_args(argv: list) -> argparse.Namespace:
         default=False,
         help="Enable debug logging (sets CODINGAGENT_DEBUG=1).",
     )
+    parser.add_argument(
+        "--trusted",
+        action="store_true",
+        default=None,
+        help="Mark the workspace as trusted, enabling plugins and MCP servers.",
+    )
+    parser.add_argument(
+        "--untrusted",
+        action="store_false",
+        dest="trusted",
+        help="Mark the workspace as untrusted, disabling plugins and MCP servers.",
+    )
+    parser.add_argument(
+        "--plugin-dir",
+        metavar="DIR",
+        default=None,
+        help="Directory to load plugins from (requires trusted workspace).",
+    )
     # Allow unknown flags so future args don't break older wrappers
     known, _ = parser.parse_known_args(argv)
     return known
@@ -639,6 +657,8 @@ def _run_headless(
     resume_session: Optional[str] = None,
     provider: Optional[str] = None,
     model: Optional[str] = None,
+    trusted: Optional[bool] = None,
+    plugin_dir: Optional[str] = None,
 ) -> int:
     """Run a single task without the TUI and print the result.
 
@@ -714,7 +734,12 @@ def _run_headless(
     try:
         from src.core.orchestration.orchestrator import Orchestrator
 
-        orch = Orchestrator(working_dir=workdir, dry_run=dry_run)
+        orch = Orchestrator(
+            working_dir=workdir,
+            dry_run=dry_run,
+            trusted=trusted,
+            plugin_dir=plugin_dir,
+        )
 
         # CP-3.4: give this invocation a stable checkpoint thread id.  Resume
         # paths reuse the *original* session id so crash-recovery resumes the
@@ -1006,6 +1031,8 @@ def main(argv: Optional[list] = None) -> int:
             resume_session=getattr(args, "resume_session", None),
             provider=getattr(args, "provider", None),
             model=getattr(args, "model", None),
+            trusted=getattr(args, "trusted", None),
+            plugin_dir=getattr(args, "plugin_dir", None),
         )
 
     try:
@@ -1025,6 +1052,10 @@ def main(argv: Optional[list] = None) -> int:
         # AgentApp creates its bridge in on_mount; pass via class attribute.
         if _working_dir is not None:
             app._initial_working_dir = _working_dir  # type: ignore[attr-defined]
+        if getattr(args, "trusted", None) is not None:
+            app._initial_trusted = args.trusted  # type: ignore[attr-defined]
+        if getattr(args, "plugin_dir", None) is not None:
+            app._initial_plugin_dir = args.plugin_dir  # type: ignore[attr-defined]
         _dbg("[src.main] Delegating startup to AgentApp (new TUI)")
         app.run()
         _dbg("[src.main] AgentApp.run() returned")

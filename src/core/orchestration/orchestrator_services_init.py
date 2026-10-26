@@ -90,6 +90,7 @@ def _init_services(orch: Any) -> None:
             registry=orch.tool_registry,
             event_bus=orch.event_bus,
             working_dir=orch.working_dir,
+            trusted=getattr(orch, "trusted", None),
         )
         orch.mcp_manager = orch._mcp_manager
     except Exception:

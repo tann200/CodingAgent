@@ -136,6 +136,14 @@ def run_agent_once_impl(
     # UX-3: Reset dry-run intercept log for this run.
     orch._dry_run_log = []  # type: ignore[attr-defined]
 
+    # Ensure deferred initialization runs before first task execution
+    if not getattr(orch, "_deferred_init_done", False):
+        try:
+            if hasattr(orch, "run_deferred_init_sync"):
+                orch.run_deferred_init_sync()
+        except Exception as _d_exc:
+            guilogger.debug("run_deferred_init_sync error in inference loop: %s", _d_exc)
+
     # Check if configuration has changed on disk and reload if pending
     try:
         if hasattr(_config_loader_module, "reload_if_pending"):

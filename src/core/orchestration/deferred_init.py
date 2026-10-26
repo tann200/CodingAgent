@@ -105,10 +105,13 @@ async def run_deferred_init(
         if mcp_manager is None:
             mcp_manager = _attrs.get("_mcp_manager")
 
-        if mcp_manager is not None and hasattr(mcp_manager, "start"):
-            await mcp_manager.start()
-            result.mcp_started = True
-            logger.info("deferred_init: MCP manager started")
+        if mcp_manager is not None:
+            if hasattr(mcp_manager, "_trusted") and getattr(mcp_manager, "_trusted", None) is None:
+                mcp_manager._trusted = bool(trusted)
+            if hasattr(mcp_manager, "start"):
+                await mcp_manager.start()
+                result.mcp_started = True
+                logger.info("deferred_init: MCP manager started")
         else:
             # Backward-compat fallback: legacy single mcp_server.start().
             mcp_server = getattr(orchestrator, "mcp_server", None)
@@ -137,6 +140,18 @@ async def run_deferred_init(
     # ── 3. Plugin loading ────────────────────────────────────────────────────
     try:
         plugin_dir = getattr(orchestrator, "plugin_dir", None)
+        if plugin_dir is None and orchestrator is not None:
+            wd = getattr(orchestrator, "working_dir", None)
+            if wd:
+                from pathlib import Path
+
+                for candidate in (
+                    Path(wd) / ".codingagent" / "plugins",
+                    Path(wd) / ".codingAgent" / "plugins",
+                ):
+                    if candidate.is_dir():
+                        plugin_dir = candidate
+                        break
         if plugin_dir is not None:
             from pathlib import Path
 
@@ -192,6 +207,16 @@ async def run_deferred_init(
                             mod = importlib.util.module_from_spec(spec)
                             sys.modules[spec.name] = mod
                             spec.loader.exec_module(mod)  # type: ignore[union-attr]
+                            tool_reg = getattr(orchestrator, "tool_registry", None)
+                            if tool_reg is not None and hasattr(tool_reg, "discover"):
+                                try:
+                                    tool_reg.discover(mod, origin="plugin")
+                                except Exception as disc_exc:
+                                    logger.debug(
+                                        "deferred_init: tool discovery for plugin %s skipped: %s",
+                                        plugin_path.stem,
+                                        disc_exc,
+                                    )
                             count += 1
                     except Exception as plugin_exc:
                         result.errors.append(f"Plugin {plugin_path.name}: {plugin_exc}")
