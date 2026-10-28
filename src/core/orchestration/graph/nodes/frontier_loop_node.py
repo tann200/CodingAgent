@@ -579,6 +579,10 @@ async def frontier_loop_node(
         logger.info(
             "frontier_loop_node: injected repo_context (%d chars)", len(repo_context)
         )
+    current_plan = state.get("current_plan")
+    if isinstance(current_plan, list) and current_plan:
+        steps_str = "\n".join(f"{i+1}. {'[x]' if s.get('completed') else '[ ]'} {s.get('description', '')}" for i, s in enumerate(current_plan))
+        task = f"{task}\n\nExecution Plan (split steps to execute):\n{steps_str}"
 
     retrieved_snippets = state.get("retrieved_snippets")
     if retrieved_snippets is None and orchestrator:

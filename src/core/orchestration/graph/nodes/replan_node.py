@@ -42,14 +42,18 @@ async def _replan_node_impl(state: StateLike, config: RunnableConfig) -> Dict[st
     # P1-3: Increment inner replan-loop counter
     replan_attempts = int(state.get("replan_attempts") or 0) + 1
     if not current_plan:
-        logger.warning("replan_node: current_plan is empty, nothing to replan")
-        return {
-            "replan_required": None,
-            "action_failed": False,
-            "replan_attempts": 0,
-            "total_recovery_attempts": total_recovery_attempts,
-            "errors": ["current_plan is empty"],
-        }
+        task_desc = str(state.get("original_task") or state.get("task") or "").strip()
+        if not task_desc and state.get("next_action"):
+            next_act = state.get("next_action") or {}
+            task_desc = f"Execute tool {next_act.get('name', 'action')}"
+        if not task_desc:
+            task_desc = "Execute requested modifications"
+        logger.info(
+            "replan_node: current_plan is empty, synthesizing task-level step for replan: %s",
+            task_desc[:80],
+        )
+        current_plan = [{"description": task_desc, "completed": False}]
+        current_step = 0
 
     # H-02: Detect LangGraph node replay by comparing the pre-replan plan hash.
     # On replay LangGraph re-reads the pre-node checkpoint, so replan_attempts
@@ -217,7 +221,7 @@ Respond ONLY with the JSON array, no other text."""
             if (
                 cancel_event
                 and hasattr(cancel_event, "is_set")
-                and cancel_event.is_set()
+                and cancel_event.is_set() is True
             ):
                 _rp_task.cancel()
                 logger.info("replan_node: Task canceled mid-generation")
