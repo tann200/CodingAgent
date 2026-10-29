@@ -42,6 +42,37 @@ def build_initial_state(
     runtime_state = create_runtime_state(tier=tier, provider=provider, model=model)
     run_state = create_run_state(status="running", outcome="continue")
 
+    from src.core.inference.workflow_selector import (
+        WorkflowConfig,
+        resolve_workflow_config,
+    )
+    try:
+        wf_cfg = getattr(orch, "workflow_config", None)
+        if not isinstance(wf_cfg, WorkflowConfig):
+            if hasattr(orch, "get_workflow_config") and callable(orch.get_workflow_config):
+                res = orch.get_workflow_config()
+                if isinstance(res, WorkflowConfig):
+                    wf_cfg = res
+                else:
+                    wf_cfg = resolve_workflow_config(orch)
+            else:
+                wf_cfg = resolve_workflow_config(orch)
+    except Exception:
+        wf_cfg = None
+
+    tool_limit = int(wf_cfg.tool_limit) if wf_cfg else 30
+    max_turns_cfg = int(wf_cfg.max_turns) if wf_cfg else 50
+    context_limit = int(wf_cfg.context_limit) if wf_cfg else 16384
+    use_verification = bool(wf_cfg.use_verification) if wf_cfg else True
+    use_replan = bool(wf_cfg.use_replan) if wf_cfg else True
+    use_vector_memory = bool(wf_cfg.use_vector_memory) if wf_cfg else False
+    wf_type = str(wf_cfg.workflow_type.value) if wf_cfg else "capable_loop"
+    thinking_mode = (
+        str(getattr(wf_cfg.thinking_mode, "value", wf_cfg.thinking_mode))
+        if wf_cfg
+        else "off"
+    )
+
     return {
         **build_graph_state_base(
             task=prompt,
@@ -76,7 +107,16 @@ def build_initial_state(
         "step_controller_enabled": True,
         "task_decomposed": False,
         "tool_call_count": 0,
-        "max_tool_calls": 30,
+        "max_tool_calls": tool_limit,
+        "tool_limit": tool_limit,
+        "max_turns": max_turns_cfg,
+        "context_limit": context_limit,
+        "use_verification": use_verification,
+        "use_replan": use_replan,
+        "use_vector_memory": use_vector_memory,
+        "workflow_type": wf_type,
+        "thinking_mode": thinking_mode,
+        "workflow_config": wf_cfg,
         "tool_last_used": {},
         "files_read": {},
         "analyst_findings": None,
@@ -103,7 +143,6 @@ def build_initial_state(
         "total_recovery_attempts": 0,
         "plan_enforce_warnings": False,
         "turn_count": 0,
-        "max_turns": _compute_default_max_turns(orch),
         "plan_strict_mode": False,
         "call_graph": None,
         "test_map": None,
@@ -190,6 +229,18 @@ def resolve_max_turns(
 def _compute_default_max_turns(orch: Any) -> int:
     """Return the tier-appropriate default max_turns for the active model."""
     try:
+        from src.core.inference.workflow_selector import (
+            WorkflowConfig,
+            resolve_workflow_config,
+        )
+
+        wf = getattr(orch, "workflow_config", None)
+        if isinstance(wf, WorkflowConfig):
+            return int(wf.max_turns)
+        wf = resolve_workflow_config(orch)
+        if wf and getattr(wf, "max_turns", None):
+            return int(wf.max_turns)
+
         from src.core.inference.model_tiers import classify_model, get_max_turns
         from src.core.inference.provider_utils import resolve_provider_and_model
 

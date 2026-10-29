@@ -304,6 +304,14 @@ class _AgentStateSpec(TypedDict, total=False):
     model_tier: str | None
     deterministic: bool | None
     seed: int | None
+    tool_limit: int | None
+    context_limit: int | None
+    use_verification: bool | None
+    use_replan: bool | None
+    use_vector_memory: bool | None
+    workflow_type: str | None
+    thinking_mode: str | None
+    workflow_config: Any | None
 
     # ── Conversation history ───────────────────────────────────────────────
     # LIFECYCLE: Written by perception_node, execution_node; read by all nodes.
@@ -531,6 +539,8 @@ _INT_OR_NONE_FIELDS: tuple[str, ...] = (
     "total_debug_attempts",
     "tool_call_count",
     "max_tool_calls",
+    "tool_limit",
+    "context_limit",
     "empty_response_count",
     "no_plan_fail_count",
     "current_wave",

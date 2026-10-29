@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from enum import Enum
+from typing import Any
 
 from .runtime_profile import RuntimeProfile, get_runtime_profile
 from .model_tiers import ModelTier
@@ -86,3 +87,74 @@ def should_use_single_loop(model_name: str, hardware_name: str = "auto") -> bool
     """Quick check: should this model use single-loop orchestrator?"""
     runtime = get_runtime_profile(model_name, hardware_name)
     return runtime.model_tier == ModelTier.SMALL and not runtime.is_cloud
+
+
+def resolve_workflow_config(
+    orchestrator: Any = None,
+    *,
+    model: str | None = None,
+    adapter: Any = None,
+    hardware_name: str = "auto",
+) -> WorkflowConfig:
+    """Resolve the authoritative WorkflowConfig for orchestrator, model, or adapter.
+
+    Checks if orchestrator already defines an explicit workflow_config.
+    Otherwise derives WorkflowConfig from active model, adapter context window,
+    and hardware profile.
+    """
+    if orchestrator is not None:
+        explicit = getattr(orchestrator, "workflow_config", None)
+        if explicit is not None and isinstance(explicit, WorkflowConfig):
+            return explicit
+
+    resolved_adapter = adapter
+    if resolved_adapter is None and orchestrator is not None:
+        resolved_adapter = getattr(orchestrator, "_adapter", None) or getattr(
+            orchestrator, "adapter", None
+        )
+
+    resolved_model = model
+    if not resolved_model and orchestrator is not None:
+        try:
+            from src.core.inference.provider_utils import resolve_provider_and_model
+
+            _, resolved_model = resolve_provider_and_model(orchestrator)
+        except Exception:
+            resolved_model = None
+
+    if not resolved_model and resolved_adapter is not None:
+        try:
+            resolved_model = getattr(resolved_adapter, "default_model", None)
+        except Exception:
+            resolved_model = None
+        if not resolved_model:
+            try:
+                models_attr = getattr(resolved_adapter, "models", None)
+                if isinstance(models_attr, (list, tuple)) and models_attr:
+                    resolved_model = str(models_attr[0])
+                elif models_attr:
+                    resolved_model = str(models_attr)
+            except Exception:
+                resolved_model = None
+
+    hw = hardware_name
+    if hw == "auto" and orchestrator is not None:
+        hw = (
+            getattr(orchestrator, "hardware_profile", None)
+            or getattr(orchestrator, "_hardware_profile", None)
+            or "auto"
+        )
+
+    context_window = 0
+    if resolved_adapter is not None and hasattr(resolved_adapter, "context_window"):
+        try:
+            context_window = int(resolved_adapter.context_window or 0)
+        except Exception:
+            context_window = 0
+
+    return select_workflow_from_names(
+        model_name=str(resolved_model or "default"),
+        hardware_name=str(hw or "auto"),
+        context_window=context_window,
+    )
+

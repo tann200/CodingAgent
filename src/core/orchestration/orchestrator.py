@@ -122,9 +122,11 @@ class Orchestrator:
         dry_run: bool = False,
         trusted: Optional[bool] = None,
         plugin_dir: Optional[str | Path] = None,
+        workflow_config: Optional[Any] = None,
     ):
         self._dry_run = dry_run
         self._adapter = adapter
+        self.workflow_config = workflow_config
         self._provider_name = ""  # set during provider resolution
         self.deterministic = bool(deterministic)
         self.seed = seed
@@ -224,6 +226,15 @@ class Orchestrator:
         self._deferred_init_done = True
         self._deferred_init_result = result
         return result
+
+    def get_workflow_config(self) -> Any:
+        """Return the authoritative WorkflowConfig for this orchestrator."""
+        if self.workflow_config is not None:
+            return self.workflow_config
+        from src.core.inference.workflow_selector import resolve_workflow_config
+
+        self.workflow_config = resolve_workflow_config(self)
+        return self.workflow_config
 
     # ------------------------------------------------------------------
     # ARCH-1: Property shims — delegate session state to self.session_mgr.

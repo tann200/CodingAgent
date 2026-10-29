@@ -32,9 +32,13 @@ def route_after_agent_loop(
         return "compact"
 
     if outcome == "recover" or state.get("replan_required"):
+        if state.get("use_replan") is False:
+            return "finalize"
         return "recover"
 
     if outcome == "verify":
+        if state.get("use_verification") is False:
+            return "finalize"
         return "verify"
 
     if outcome in ("complete", "failed", "cancelled"):
@@ -45,6 +49,8 @@ def route_after_agent_loop(
 
     # Fallback heuristics for transitional states
     if state.get("modified_files") or state.get("last_action"):
+        if state.get("use_verification") is False:
+            return "finalize"
         return "verify"
 
     return "finalize"

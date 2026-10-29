@@ -64,9 +64,11 @@ def route_frontier_loop_exit(
     # Phase 3.1: patch-size replan — a tool result flagged requires_split sets
     # replan_required; route to the replan node so the oversized step is split.
     if state.get("replan_required"):
+        if state.get("use_replan") is False:
+            return "memory_sync"
         return "replan"
     last_result = state.get("last_result")
-    if last_result is None:
+    if last_result is None or state.get("use_verification") is False:
         return "memory_sync"
     return "verification"
 

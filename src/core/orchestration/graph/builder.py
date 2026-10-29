@@ -761,6 +761,18 @@ def _resolve_graph_tier(
 ) -> str:
     """Resolve the model tier used to select the compiled graph."""
     try:
+        from src.core.inference.workflow_selector import (
+            WorkflowType,
+            resolve_workflow_config,
+        )
+
+        wf_cfg = resolve_workflow_config(orchestrator, model=model, adapter=adapter)
+        if (
+            wf_cfg.workflow_type == WorkflowType.SINGLE_LOOP
+            or wf_cfg.graph_type in ("single_loop", "lite")
+        ):
+            return "lite"
+
         from src.core.inference.model_tiers import classify_model
         from src.core.inference.provider_utils import resolve_provider_capabilities
 

@@ -44,6 +44,7 @@ from .workflow_selector import (
     select_workflow,
     select_workflow_from_names,
     should_use_single_loop,
+    resolve_workflow_config,
 )
 from .kv_cache_governor import (
     KVCacheGovernor,
@@ -98,6 +99,7 @@ __all__ = [
     "select_workflow",
     "select_workflow_from_names",
     "should_use_single_loop",
+    "resolve_workflow_config",
     # kv_cache_governor
     "KVCacheGovernor",
     "CompactionAction",
