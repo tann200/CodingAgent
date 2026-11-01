@@ -38,7 +38,14 @@ Start a project-local agent workspace:
 codingagent init --dir /path/to/repository
 ```
 
-`init` creates `.codingAgent/` with agent configuration, hooks, and a project instruction file. Use `codingagent --help` for the complete command surface. Key commands include `init`, `system-prompt`, `session`, `status`, `mcp`, and `diff`.
+`init` creates `.codingAgent/` with agent configuration, hooks, and a project instruction file. Use `codingagent --help` for the complete command surface. Key commands include `init`, `system-prompt`, `session`, `status`, `doctor`, `mcp`, and `diff`.
+
+Diagnose local model engines (Ollama, LM Studio, vLLM) and validate native tool schemas:
+
+```bash
+codingagent doctor
+codingagent doctor --provider ollama --validate-tools
+```
 
 ## Safety Model
 

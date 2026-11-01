@@ -366,6 +366,14 @@ class OllamaAdapter(LLMClient):
             out.append(base.rstrip("/") + "/" + path.lstrip("/"))
         return out
 
+    def validate_connection(self) -> bool:
+        """Return True if Ollama server is reachable and responds with model list."""
+        try:
+            res = self.get_models_from_api()
+            return bool(res and isinstance(res, dict) and res.get("models") is not None)
+        except Exception:
+            return False
+
     def get_models_from_api(self):
         # Prefer canonical Ollama API: base may already include '/api'
         base = (self.base_url or "").rstrip("/")

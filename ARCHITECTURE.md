@@ -46,7 +46,7 @@ The live orchestration pipeline executes a single self-contained invocation of t
 
 - `src/main.py` parses CLI flags, initializes runtime settings, and selects headless or Textual execution.
 - `tui/tui_src/ui/` implements the Textual client. `AgentBridge` is the boundary between UI state and core orchestration/events.
-- `src/cli/` implements the headless `session`, `status`, `mcp`, and `diff` subcommands.
+- `src/cli/` implements the headless `session`, `status`, `doctor`, `mcp`, and `diff` subcommands.
 
 ### Orchestration
 

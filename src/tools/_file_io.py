@@ -398,6 +398,7 @@ def read_file(
     summarize: bool = False,
     workdir: Path | None = None,
 ) -> Dict[str, Any]:
+    """Read the complete UTF-8 contents of a file at the specified path."""
     if workdir is None:
         workdir = Path.cwd()
     p = _safe_resolve(path, workdir)
@@ -506,6 +507,7 @@ def read_file(
     permission_kind=PermissionKind.READ_FILE,
 )
 def list_dir(path: str = ".", workdir: Path | None = None) -> Dict[str, Any]:
+    """List all files and subdirectories located within the specified directory path."""
     if workdir is None:
         workdir = Path.cwd()
     p = _safe_resolve(path, workdir)
@@ -528,6 +530,7 @@ def delete_file(
     workdir: Path | None = None,
     user_approved: bool = False,  # type: ignore[assignment]
 ) -> Dict[str, Any]:
+    """Delete a file or directory at the specified path within the workspace."""
     if workdir is None:
         workdir = Path.cwd()
     workdir_resolved = Path(workdir).resolve()
@@ -726,6 +729,7 @@ def read_file_chunk(
     limit: int = -1,
     workdir: Path | None = None,
 ) -> Dict[str, Any]:
+    """Read a specific line range or chunk from a file."""
     if workdir is None:
         workdir = Path.cwd()
     p = _safe_resolve(path, workdir)

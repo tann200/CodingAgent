@@ -171,6 +171,48 @@ def _parse_args(argv: list) -> argparse.Namespace:
     diff_parser.add_argument("--path", metavar="PATH", default=None,
                              help="Restrict the diff to a specific path.")
 
+    # Phase 3.8: `doctor` subcommand — diagnose local model providers & validate tool schemas
+    doctor_parser = subparsers.add_parser(
+        "doctor",
+        help="Diagnose local model providers (Ollama, LM Studio, vLLM), inspect hardware limits, and validate native tool schemas.",
+    )
+    doctor_parser.add_argument(
+        "--provider",
+        metavar="NAME",
+        default=None,
+        help="Specific provider to diagnose (e.g. ollama, lm_studio, vllm, or all).",
+    )
+    doctor_parser.add_argument(
+        "--model",
+        metavar="MODEL_ID",
+        default=None,
+        help="Specific model identifier to probe and validate.",
+    )
+    doctor_parser.add_argument(
+        "--endpoint",
+        metavar="URL",
+        default=None,
+        help="Custom server URL override to probe (e.g. http://localhost:11434).",
+    )
+    doctor_parser.add_argument(
+        "--validate-tools",
+        action="store_true",
+        default=False,
+        help="Send a test ping with flat tool schemas to verify server native tool acceptance.",
+    )
+    doctor_parser.add_argument(
+        "--workdir",
+        metavar="DIR",
+        default=None,
+        help="Working directory to inspect.",
+    )
+    doctor_parser.add_argument(
+        "--json",
+        action="store_true",
+        default=False,
+        help="Output diagnostic report as structured JSON.",
+    )
+
     # Global (non-subcommand) flags
     parser.add_argument(
         "--output-format",
@@ -899,6 +941,12 @@ def main(argv: Optional[list] = None) -> int:
         from src.cli.diff_cmd import run_diff
 
         return run_diff(args)
+
+    # Phase 3.8: Dispatch `doctor` subcommand
+    if getattr(args, "subcommand", None) == "doctor":
+        from src.cli.doctor_cmd import run_doctor
+
+        return run_doctor(args)
 
     # UX-2: Dispatch --validate-config flag
     if getattr(args, "validate_config", False):

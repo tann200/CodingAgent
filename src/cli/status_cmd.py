@@ -68,6 +68,23 @@ def run_status(args: Any) -> int:
     except Exception:
         payload["sessions_available"] = 0
 
+    # Phase 3.8: resolve ModelRuntimePolicy for active provider/model
+    try:
+        from src.core.orchestration.graph.runtime_policy import resolve_runtime_policy
+
+        if active["model"]:
+            pol = resolve_runtime_policy(model=active["model"], provider=active["provider"])
+            payload["policy"] = {
+                "tier": pol.policy_tier,
+                "toolset": pol.toolset_name,
+                "tool_limit": pol.tool_limit,
+                "verification_mode": pol.verification_mode,
+                "parallel_reads": pol.max_parallel_reads,
+                "turn_limit": pol.turn_limit,
+            }
+    except Exception:
+        pass
+
     if getattr(args, "json", False):
         print_json(payload)
         return 0
@@ -76,6 +93,9 @@ def run_status(args: Any) -> int:
     print(f"  Runtime:     {payload['runtime']['python']} ({payload['runtime']['os']})")
     print(f"  Provider:    {payload['provider'] or '(none configured)'}")
     print(f"  Model:       {payload['model'] or '(default)'}")
+    if "policy" in payload:
+        p_info = payload["policy"]
+        print(f"  Policy Tier: {p_info['tier']} (toolset: {p_info['toolset']} [{p_info['tool_limit']} tools], verify: {p_info['verification_mode']})")
     print(f"  WorkDir:     {payload['workdir']}")
     if payload["git_branch"]:
         print(f"  Git branch:  {payload['git_branch']}")
