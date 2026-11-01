@@ -257,39 +257,53 @@ class OpenAICompatibleAdapter(LLMClient):
     @staticmethod
     def _preprocess_messages(
         messages: List[Dict[str, Any]],
+        *,
+        preserve_reasoning_content: bool = False,
     ) -> List[Dict[str, Any]]:
-        """Strip the ``SYSTEM_PROMPT_DYNAMIC_BOUNDARY`` sentinel from messages.
+        """Strip internal prompt markers and provider-incompatible message keys.
 
-        OpenAI-compatible endpoints do not support the Anthropic
-        ``cache_control`` content-block format, so the sentinel is simply
-        removed.  Subclasses that wrap a native Anthropic Messages API endpoint
-        should override this method to split the system content on the sentinel
-        and set ``cache_control: {"type": "ephemeral"}`` on the static block.
-
-        The sentinel appears as a standalone paragraph in the system message
-        content.  We strip it (and any surrounding blank lines it introduces)
-        so the model never sees the raw internal marker.
+        - Removes ``SYSTEM_PROMPT_DYNAMIC_BOUNDARY`` from system messages.
+        - Strips Anthropic-only ``thinking_blocks`` from outbound messages.
+        - Strips ``reasoning_content`` from historical assistant turns unless
+          ``preserve_reasoning_content=True`` (OpenAI and DeepSeek APIs reject
+          ``reasoning_content`` on input messages with HTTP 400).
         """
         try:
             from src.core.context.context_builder import (  # type: ignore[import]
                 SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
             )
         except Exception:
-            return messages
+            SYSTEM_PROMPT_DYNAMIC_BOUNDARY = "__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__"
 
         out: List[Dict[str, Any]] = []
         for msg in messages:
-            if msg.get("role") == "system" and isinstance(msg.get("content"), str):
-                content: str = msg["content"]
+            if not isinstance(msg, dict):
+                out.append(msg)
+                continue
+            needs_strip = "thinking_blocks" in msg or (
+                not preserve_reasoning_content and "reasoning_content" in msg
+            )
+            cleaned_msg = (
+                {
+                    k: v
+                    for k, v in msg.items()
+                    if k != "thinking_blocks"
+                    and (preserve_reasoning_content or k != "reasoning_content")
+                }
+                if needs_strip
+                else msg
+            )
+            if cleaned_msg.get("role") == "system" and isinstance(
+                cleaned_msg.get("content"), str
+            ):
+                content: str = cleaned_msg["content"]
                 if SYSTEM_PROMPT_DYNAMIC_BOUNDARY in content:
-                    # Remove the sentinel and collapse the extra blank line it
-                    # introduces (the sentinel is surrounded by "\n\n" joins).
                     cleaned = content.replace(
                         f"\n\n{SYSTEM_PROMPT_DYNAMIC_BOUNDARY}\n\n", "\n\n"
                     ).replace(SYSTEM_PROMPT_DYNAMIC_BOUNDARY, "")
-                    out.append({**msg, "content": cleaned})
+                    out.append({**cleaned_msg, "content": cleaned})
                     continue
-            out.append(msg)
+            out.append(cleaned_msg)
         return out
 
     # ------------------------------------------------------------------
@@ -677,12 +691,12 @@ class OpenAICompatibleAdapter(LLMClient):
                     # leave content as an empty string.  Fall back so the agent gets
                     # the answer rather than an empty string.
                     content = msg.get("content", "") or ""
-                    if not content.strip():
-                        content = (
-                            msg.get("reasoning_content")
-                            or msg.get("thinking")
-                            or content
-                        )
+                    has_tool_calls = bool(msg.get("tool_calls"))
+                    raw_reasoning = (
+                        msg.get("reasoning_content") or msg.get("thinking") or ""
+                    )
+                    if not content.strip() and not has_tool_calls:
+                        content = raw_reasoning or content
                     choice_obj: Dict[str, Any] = {
                         "message": {
                             "role": msg.get("role", "assistant"),
@@ -693,6 +707,10 @@ class OpenAICompatibleAdapter(LLMClient):
                     if "tool_calls" in msg:
                         choice_obj["tool_calls"] = msg["tool_calls"]
                         choice_obj["message"]["tool_calls"] = msg["tool_calls"]
+                    if raw_reasoning:
+                        choice_obj["message"]["reasoning_content"] = str(raw_reasoning)
+                    if msg.get("thinking_blocks"):
+                        choice_obj["message"]["thinking_blocks"] = msg["thinking_blocks"]
                     choices.append(choice_obj)
 
             if raw_response and "usage" in raw_response:

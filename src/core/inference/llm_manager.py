@@ -1359,13 +1359,19 @@ def _consume_sse_stream(raw_response: Any, model: Optional[str] = None) -> str:
     _inside_think = False
 
     accumulated = []
+    from src.core.inference.streaming import StreamedTurnAccumulator, StreamedTurnText
+
+    turn_acc = StreamedTurnAccumulator()
+    utf8_carry = bytearray()
 
     def _publish_chunk(chunk: str, is_reasoning: bool) -> None:
+        if is_reasoning and chunk:
+            turn_acc.record_reasoning(chunk)
         _publish_stream_chunk(bus=bus, chunk=chunk, is_reasoning=is_reasoning)
 
     try:
         for raw_line in raw_response.iter_lines():
-            data = _decode_sse_line(raw_line)
+            data = _decode_sse_line(raw_line, carry=utf8_carry)
             if data is None:
                 continue
             if data == "[DONE]":
@@ -1373,6 +1379,7 @@ def _consume_sse_stream(raw_response: Any, model: Optional[str] = None) -> str:
             chunk = _parse_sse_chunk(data)
             if chunk is None:
                 continue
+            turn_acc.feed_chunk(chunk)
             extracted = _extract_stream_deltas(chunk)
             if extracted is None:
                 continue
@@ -1416,7 +1423,15 @@ def _consume_sse_stream(raw_response: Any, model: Optional[str] = None) -> str:
     except Exception as e:
         guilogger.warning(f"_consume_sse_stream: stream iteration error: {e}")
 
-    return _finalize_stream(bus=bus, accumulated=accumulated)
+    full_text = _finalize_stream(bus=bus, accumulated=accumulated)
+    return StreamedTurnText(
+        full_text,
+        tool_calls=turn_acc.build_tool_calls(),
+        thinking_blocks=turn_acc.build_thinking_blocks(),
+        reasoning_content=turn_acc.reasoning_content,
+        finish_reason=turn_acc.finish_reason,
+        usage=turn_acc.usage,
+    )
 
 
 async def call_model(

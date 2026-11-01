@@ -79,10 +79,13 @@ def merge_profiles(
     Tier settings are sourced from ``ModelTier`` (``model_tiers``), not
     the deprecated ``AgentMode``.
     """
-    from .model_tiers import classify_model
+    from .model_tiers import classify_model, is_nano_model
 
     model_tier = classify_model(model_profile.name, model_profile.max_context)
     tc = get_tier_config(model_tier)
+    is_nano = model_tier == ModelTier.SMALL and (
+        is_nano_model(model_profile.name) or model_profile.params_total < 8.5
+    )
 
     safe_context = compute_safe_context_tokens(
         vram_gb=hardware_profile.vram_gb,
@@ -91,11 +94,23 @@ def merge_profiles(
         overhead_gb=0.5,
     )
 
-    safe_context = min(safe_context, tc.context_tokens)
+    tier_ctx_cap = 16384 if is_nano else max(tc.context_tokens, 32768)
+    safe_context = min(safe_context, tier_ctx_cap)
     safe_context = min(safe_context, model_profile.max_context)
 
-    tool_limit = min(get_tool_limit(model_tier), model_profile.tool_limit)
-    max_turns = min(get_max_turns(model_tier), model_profile.max_turns)
+    if model_tier == ModelTier.SMALL and not is_nano:
+        # 8.5B–14.9B compact models: 12 flat tools + targeted verification enabled
+        tool_limit = min(12, model_profile.tool_limit)
+        max_turns = min(24, model_profile.max_turns)
+        use_verification = True
+        use_replan = True
+        use_vector_memory = False
+    else:
+        tool_limit = min(get_tool_limit(model_tier), model_profile.tool_limit)
+        max_turns = min(get_max_turns(model_tier), model_profile.max_turns)
+        use_verification = tc.verification
+        use_replan = tc.replan
+        use_vector_memory = tc.vector_memory
 
     thinking_mode = ThinkingMode(tc.thinking_mode)
     if model_profile.thinking_mode == ThinkingMode.OFF:
@@ -109,11 +124,11 @@ def merge_profiles(
         tool_limit=tool_limit,
         max_turns=max_turns,
         thinking_mode=thinking_mode,
-        use_verification=tc.verification,
-        use_replan=tc.replan,
-        use_vector_memory=tc.vector_memory,
+        use_verification=use_verification,
+        use_replan=use_replan,
+        use_vector_memory=use_vector_memory,
         kv_cache_quant=hardware_profile.vram_gb <= 16,
-        compaction_threshold=0.8 if model_tier == ModelTier.SMALL else 0.85,
+        compaction_threshold=0.72 if model_tier == ModelTier.SMALL else 0.80,
     )
 
 

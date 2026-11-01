@@ -24,7 +24,6 @@ from src.core.orchestration.graph import canonical_routing
 from src.core.orchestration.graph.nodes.initialize_node import _initialize_node_impl
 from src.core.orchestration.graph.nodes.approval_node import _approval_node_impl
 from src.core.orchestration.graph.nodes.compact_node import _compact_node_impl
-from src.core.orchestration.graph.nodes.recover_node import _recover_node_impl
 from src.core.orchestration.graph.completion_contract import (
     NoToolClassification,
     classify_no_tool_response,
@@ -106,19 +105,21 @@ class TestCanonicalTopology:
             "agent_loop",
             "approval",
             "verify",
-            "recover",
             "compact",
             "finalize",
             "__end__",
         }
         assert expected.issubset(nodes)
+        assert "recover" not in nodes
 
     def test_build_tier_graph_uses_canonical_topology(self):
         g_med = build_tier_graph("medium")
         g_fr = build_tier_graph("frontier")
-        expected_nodes = {"initialize", "agent_loop", "approval", "verify", "recover", "compact", "finalize"}
+        expected_nodes = {"initialize", "agent_loop", "approval", "verify", "compact", "finalize"}
         assert expected_nodes.issubset(set(g_med.get_graph().nodes.keys()))
         assert expected_nodes.issubset(set(g_fr.get_graph().nodes.keys()))
+        assert "recover" not in set(g_med.get_graph().nodes.keys())
+        assert "recover" not in set(g_fr.get_graph().nodes.keys())
 
 
 class TestCanonicalRouting:
@@ -126,7 +127,8 @@ class TestCanonicalRouting:
         assert canonical_routing.route_after_agent_loop({"run": {"outcome": "continue"}}) == "agent_loop"
         assert canonical_routing.route_after_agent_loop({"run": {"outcome": "approval_required"}}) == "approval"
         assert canonical_routing.route_after_agent_loop({"run": {"outcome": "verify"}}) == "verify"
-        assert canonical_routing.route_after_agent_loop({"run": {"outcome": "recover"}}) == "recover"
+        assert canonical_routing.route_after_agent_loop({"run": {"outcome": "recover", "recoveries": 1}}) == "agent_loop"
+        assert canonical_routing.route_after_agent_loop({"run": {"outcome": "recover", "recoveries": 3}, "runtime": {"policy": {"recovery_limit": 2}}}) == "finalize"
         assert canonical_routing.route_after_agent_loop({"run": {"outcome": "compact"}}) == "compact"
         assert canonical_routing.route_after_agent_loop({"run": {"outcome": "complete"}}) == "finalize"
         assert canonical_routing.route_after_agent_loop({"run": {"outcome": "failed"}}) == "finalize"
@@ -139,21 +141,16 @@ class TestCanonicalRouting:
 
     def test_route_after_verify(self):
         assert canonical_routing.route_after_verify({"run": {"outcome": "complete"}, "verification_passed": True}) == "finalize"
-        # Recovery budget remaining
+        # Deferred-rollback recovery budget remaining -> routes directly back to agent_loop
         state = {
             "run": {"outcome": "recover", "recoveries": 1},
             "runtime": {"policy": {"recovery_limit": 2}},
             "verification_passed": False,
         }
-        assert canonical_routing.route_after_verify(state) == "recover"
-        # Recovery budget exhausted
+        assert canonical_routing.route_after_verify(state) == "agent_loop"
+        # Recovery budget exhausted -> routes to finalize
         state["run"]["recoveries"] = 2
         assert canonical_routing.route_after_verify(state) == "finalize"
-
-    def test_route_after_recover(self):
-        assert canonical_routing.route_after_recover({"run": {"outcome": "continue"}}) == "agent_loop"
-        assert canonical_routing.route_after_recover({"pending_action": {"name": "fix"}}) == "agent_loop"
-        assert canonical_routing.route_after_recover({"run": {"outcome": "failed"}}) == "finalize"
 
     def test_route_after_compact(self):
         assert canonical_routing.route_after_compact({"run": {"outcome": "continue"}}) == "agent_loop"
@@ -211,64 +208,6 @@ class TestCanonicalNodes:
         res_exceeded = await _compact_node_impl(state, config=MagicMock())
         assert res_exceeded["run"]["status"] == "failed"
         assert "context_overflow_exhausted" in res_exceeded["errors"]
-
-    @pytest.mark.asyncio
-    async def test_recover_node_limit_exhausted(self):
-        state = {
-            "task": "Fix bug",
-            "run": {"recoveries": 2},
-            "runtime": {"policy": {"recovery_limit": 2}},
-            "last_action": {"name": "files_edit", "arguments": {"path": "a.py"}, "digest": "xyz"},
-            "errors": ["SyntaxError"],
-        }
-        res = await _recover_node_impl(state, config=MagicMock())
-        assert res["run"]["status"] == "failed"
-        assert res["run"]["outcome"] == "failed"
-        assert "Recovery limit (2) reached" in res["errors"][0]
-
-    @pytest.mark.asyncio
-    async def test_recover_node_generates_replacement_action(self):
-        state = {
-            "task": "Fix bug",
-            "run": {"recoveries": 0},
-            "runtime": {"policy": {"recovery_limit": 2}},
-            "last_action": {"name": "files_edit", "arguments": {"path": "a.py", "content": "bad"}, "digest": "d_bad"},
-            "last_result": {"error": "SyntaxError: invalid syntax"},
-        }
-        mock_response = MagicMock()
-        mock_response.content = '```tool\n{"name": "files_write", "arguments": {"path": "a.py", "content": "fixed"}}\n```'
-        with patch("src.core.orchestration.graph.nodes.recover_node.call_model", new_callable=AsyncMock) as mock_call:
-            mock_call.return_value = mock_response
-            res = await _recover_node_impl(state, config=MagicMock())
-
-        assert res["run"]["status"] == "running"
-        assert res["run"]["outcome"] == "continue"
-        assert res["run"]["recoveries"] == 1
-        assert res["pending_action"]["name"] == "files_write"
-        assert res["pending_action"]["arguments"] == {"path": "a.py", "content": "fixed"}
-        assert res["pending_action"]["digest"] == compute_action_digest("files_write", {"path": "a.py", "content": "fixed"})
-
-    @pytest.mark.asyncio
-    async def test_recover_node_rejects_duplicate_signature(self):
-        failed_args = {"path": "a.py", "content": "bad"}
-        failed_digest = compute_action_digest("files_write", failed_args)
-        state = {
-            "task": "Fix bug",
-            "run": {"recoveries": 0},
-            "runtime": {"policy": {"recovery_limit": 2}},
-            "last_action": {"name": "files_write", "arguments": failed_args, "digest": failed_digest},
-            "last_result": {"error": "SyntaxError"},
-        }
-        mock_response = MagicMock()
-        mock_response.content = '```tool\n{"name": "files_write", "arguments": {"path": "a.py", "content": "bad"}}\n```'
-        with patch("src.core.orchestration.graph.nodes.recover_node.call_model", new_callable=AsyncMock) as mock_call:
-            mock_call.return_value = mock_response
-            res = await _recover_node_impl(state, config=MagicMock())
-
-        assert res["run"]["status"] == "failed"
-        assert res["run"]["outcome"] == "failed"
-        assert res["pending_action"] is None
-        assert "no valid replacement action produced" in res["errors"][0]
 
     def test_no_tool_classification(self):
         # Incomplete (empty)

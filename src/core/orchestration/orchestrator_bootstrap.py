@@ -77,14 +77,16 @@ def _init_infrastructure(orch: Any, message_max_tokens: Optional[int]) -> None:
         orch._msg_mgr_lock = _threading.Lock()
     except Exception:
         orch._msg_mgr_lock = None
+    orch._state_lock = _threading.RLock()
 
     orch._max_files_per_task = 10
     # F17: In-memory usage counter — flushed once per run_agent_once() instead of per tool call
     orch._usage_buffer = {}  # type: ignore[attr-defined]
 
-    # HR-3 fix: create a single reusable ThreadPoolExecutor for tool timeouts.
+    # HR-3 fix: create a single reusable ThreadPoolExecutor for tool timeouts
+    # sized for parallel read-only tool waves (up to 5 concurrent reads).
     orch._tool_executor = _cf.ThreadPoolExecutor(
-        max_workers=2, thread_name_prefix="tool_timeout"
+        max_workers=5, thread_name_prefix="tool_timeout"
     )
 
     # MED-5 fix: create a single reusable ThreadPoolExecutor for graph execution.
@@ -113,7 +115,7 @@ def _init_infrastructure(orch: Any, message_max_tokens: Optional[int]) -> None:
 
     # PERF-1: Evict any stale repo summary for this working directory.
     try:
-        from src.core.orchestration.graph.nodes.analysis_node import (
+        from src.core.orchestration.graph.nodes.repo_context import (
             clear_repo_summary_cache as _clear_rsc,
         )
 

@@ -47,20 +47,30 @@ VerificationMode = Literal["targeted", "full"]
 class Policy(TypedDict, total=False):
     """Immutable execution policy for a model tier."""
 
+    policy_tier: str
+    toolset_name: str
     turn_limit: int
     tool_limit: int
     recovery_limit: int
     compaction_limit: int
     verification_mode: VerificationMode
+    use_verification: bool
     readonly_parallelism: bool
+    max_parallel_reads: int
     mutations_serialized: bool
     preflight_required: bool
+    thinking_enabled: bool
+    compaction_trigger_ratio: float
+    compaction_target_ratio: float
+    context_window: int
 
 
 class RuntimeState(TypedDict, total=False):
     """Target runtime metadata and immutable capability policy."""
 
     tier: TargetTier
+    policy_tier: str
+    toolset_name: str
     provider: str
     model: str
     capabilities: List[str]

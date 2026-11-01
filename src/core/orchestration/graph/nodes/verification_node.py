@@ -1,10 +1,29 @@
-from langchain_core.runnables import RunnableConfig
+from __future__ import annotations
+
 import logging
+import py_compile as _pyc
 from pathlib import Path
 from typing import Any, Dict, Mapping
 
+from langchain_core.runnables import RunnableConfig
+
+from src.core.orchestration.graph.nodes.node_utils import (
+    _resolve_orchestrator,
+    span_node as _span_node,
+)
+from src.core.orchestration.graph.nodes.verification_helpers import (
+    build_deferred_rollback_feedback,
+    check_targeted_python_syntax,
+    discover_targeted_pytest_files,
+    filter_unverified_files,
+    has_go_project,
+    has_rust_project,
+    run_custom_verify_yaml,
+    run_go_verification,
+    run_rust_verification,
+    run_targeted_ruff,
+)
 from src.core.orchestration.graph.state import StateLike
-from src.core.orchestration.graph.nodes.node_utils import _resolve_orchestrator, span_node as _span_node
 from src.tools import verification_tools
 
 logger = logging.getLogger(__name__)
@@ -36,7 +55,6 @@ def _step_requests_verification(state: Mapping[str, Any]) -> bool:
     return False
 
 
-# P3-B: Write tools that always require verification even on SMALL tier.
 _WRITE_TOOLS_ALWAYS_VERIFY = {
     "write_file",
     "edit_file",
@@ -47,6 +65,10 @@ _WRITE_TOOLS_ALWAYS_VERIFY = {
     "apply_patch",
     "create_file",
     "delete_file",
+    "files_write",
+    "files_edit",
+    "files_delete",
+    "files_patch",
 }
 
 
@@ -57,21 +79,9 @@ async def verification_node(state: StateLike, config: RunnableConfig) -> Dict[st
 
 
 async def _verification_node_impl(state: StateLike, config: RunnableConfig) -> Dict[str, Any]:
-    """
-    Verification Layer: Run tests / linters / syntax checks on proposed edits.
-    Also validates file deletions to ensure files are actually deleted.
-    This node is intentionally conservative: it will only run verification tools when
-    the state indicates a recent edit or when the `current_plan` requests validation.
-    Uses the 'reviewer' role for quality assurance.
-
-    P3-B: Tier-gated verification:
-    - NANO: always skip (step limit already caps damage; overhead >30% of total time)
-    - SMALL: skip for read-only tool results; verify writes only
-    - MEDIUM+: full verification + evaluation (unchanged)
-    """
+    """Polyglot, SHA-256-deduplicated verification node with Deferred Rollback."""
     logger.info("=== verification_node START ===")
 
-    # Collect modified files and declared side effects across session/orchestrator/last_action
     session_modified: set[str] = set()
     orch = _resolve_orchestrator(state, config)
     if orch and getattr(orch, "_session_modified_files", None):
@@ -89,12 +99,16 @@ async def _verification_node_impl(state: StateLike, config: RunnableConfig) -> D
         session_modified.update(action_mod_files)
         session_modified.update(action_side_effects)
 
-    # Invariant: Evidence-based verification for every mutation regardless of tier
     _tier = (state.get("model_tier") or "").lower()
     _last_tool = state.get("last_tool_name") or ""
-    if not session_modified and not action_side_effects and _tier == "small" and _last_tool not in _WRITE_TOOLS_ALWAYS_VERIFY:
+    if (
+        not session_modified
+        and not action_side_effects
+        and _tier == "small"
+        and _last_tool not in _WRITE_TOOLS_ALWAYS_VERIFY
+    ):
         logger.info(
-            "verification_node: read-only tool with no modifications or side effects — skipping verification",
+            "verification_node: read-only tool with no modifications or side effects — skipping verification"
         )
         return {
             "verification_passed": True,
@@ -107,15 +121,13 @@ async def _verification_node_impl(state: StateLike, config: RunnableConfig) -> D
             },
         }
 
-    # Decide whether verification is needed
     last_result = state.get("last_result") or {}
     need_verify = False
 
-    # Check if last action was a deletion
+    # Validate file deletions immediately
     if isinstance(last_result, dict):
         r = last_result.get("result") or {}
         if isinstance(r, dict) and r.get("status") == "ok" and r.get("deleted"):
-            # This was a delete_file call - verify the file is actually gone
             deleted_path = r.get("path")
             if deleted_path:
                 workdir = Path(state.get("working_dir", "."))
@@ -125,9 +137,7 @@ async def _verification_node_impl(state: StateLike, config: RunnableConfig) -> D
                     else Path(deleted_path)
                 )
                 if full_path.exists():
-                    logger.warning(
-                        f"Verification FAILED: {deleted_path} still exists after deletion"
-                    )
+                    logger.warning("Verification FAILED: %s still exists after deletion", deleted_path)
                     return {
                         "verification_result": {
                             "deletion_verification": "FAILED",
@@ -136,85 +146,57 @@ async def _verification_node_impl(state: StateLike, config: RunnableConfig) -> D
                         },
                         "verification_passed": False,
                     }
-                else:
-                    logger.info(
-                        f"Verification PASSED: {deleted_path} successfully deleted"
-                    )
-                    return {
-                        "verification_result": {
-                            "deletion_verification": "PASSED",
-                            "path": deleted_path,
-                        }
+                logger.info("Verification PASSED: %s successfully deleted", deleted_path)
+                return {
+                    "verification_result": {
+                        "deletion_verification": "PASSED",
+                        "path": deleted_path,
                     }
+                }
 
-    # W1: Trigger verification for any side-effecting tool that reported success.
-    # Previously only edit_file with a "path" field was caught; bash, write_file, and
-    # patch tools were silently skipped.  Widen the check to cover all write tools.
     last_tool_name: str = state.get("last_tool_name") or ""
     try:
         if isinstance(last_result, dict):
-            r = (
-                last_result.get("result") or last_result
-            )  # handle both wrapped and flat results
+            r = last_result.get("result") or last_result
             if isinstance(r, dict):
                 if r.get("status") == "ok":
-                    # Any side-effecting tool that succeeded triggers verification
-                    if last_tool_name in _WRITE_TOOLS_ALWAYS_VERIFY:
+                    if last_tool_name in _WRITE_TOOLS_ALWAYS_VERIFY or r.get("path") or (
+                        "returncode" in r and r["returncode"] == 0
+                    ):
                         need_verify = True
-                    # Fallback: path present → legacy edit_file shape
-                    elif r.get("path"):
-                        need_verify = True
-                    # Fallback: bash success (returncode present and == 0)
-                    elif "returncode" in r and r["returncode"] == 0:
-                        need_verify = True
-                # Trigger verification on command or tool failure
-                elif ("returncode" in r and r["returncode"] != 0) or r.get("status") in ("error", "failed") or last_result.get("ok") is False:
+                elif (
+                    ("returncode" in r and r["returncode"] != 0)
+                    or r.get("status") in ("error", "failed")
+                    or last_result.get("ok") is False
+                ):
                     need_verify = True
     except Exception:
         pass
 
-    # Minimum mutation verification: if ANY file was modified, verification is required
     if session_modified:
         need_verify = True
 
-    # Also trigger verification when the current plan step explicitly requests it
     if not need_verify and _step_requests_verification(state):
         need_verify = True
-        logger.info(
-            "verification_node: step explicitly requests verification — running tests"
-        )
 
-    # H1: Determine whether we are at the final plan step.
-    # Running the full test suite after every single tool call (pytest + ruff +
-    # syntax) means a 5-step plan triggers 5 full pytest runs — very slow.
-    # Fix: on intermediate steps run only the cheap syntax check; reserve the
-    # full suite for the final step or when the step explicitly requests it.
     current_plan = state.get("current_plan") or []
     current_step = int(state.get("current_step") or 0)
-    # P0-A fix: no-plan (fast-path) tasks must NOT treat every tool call as the
-    # final step.  Previously `at_final_step = (not current_plan) or ...` caused
-    # pytest to run after every single tool call on no-plan tasks.
-    # We only consider no-plan tasks "at final step" when execution has genuinely
-    # concluded: either evaluation already returned "complete"/"pass", or there
-    # are no further actions pending.
     if current_plan:
         at_final_step = current_step >= len(current_plan) - 1
     else:
         evaluation_done = state.get("evaluation_result") in ("complete", "pass")
         next_action = state.get("next_action")
         at_final_step = evaluation_done or (next_action is None)
-    step_requests_verification = _step_requests_verification(state)
-    run_full_suite = at_final_step or step_requests_verification
+    run_full_suite = at_final_step or _step_requests_verification(state)
 
-    if need_verify and not run_full_suite:
-        logger.info(
-            f"verification_node: intermediate step {current_step + 1}/{len(current_plan)} "
-            "— deferring full test suite to final step; running syntax check only"
-        )
+    rt = state.get("runtime")
+    is_canonical_run = isinstance(rt, Mapping)
+    rt_policy = rt.get("policy") if is_canonical_run and isinstance(rt.get("policy"), Mapping) else {}
+    verification_mode = str(rt_policy.get("verification_mode") or "")
 
-    # H4: Helper to check whether the user has requested cancellation.
-    # verification tools (pytest, ruff) can block for up to 120 s each;
-    # without this check the agent is uninterruptible during the full run.
+    verified_hashes: Dict[str, str] = dict(state.get("_verified_file_hashes") or {})
+    current_hashes: Dict[str, str] = {}
+
     cancel_event = state.get("cancel_event")
 
     def _is_cancelled() -> bool:
@@ -223,7 +205,7 @@ async def _verification_node_impl(state: StateLike, config: RunnableConfig) -> D
         except Exception:
             return False
 
-    results = {}
+    results: Dict[str, Any] = {}
     if need_verify:
         if _is_cancelled():
             logger.info("verification_node: cancelled before running tools — skipping")
@@ -233,31 +215,38 @@ async def _verification_node_impl(state: StateLike, config: RunnableConfig) -> D
             }
         try:
             wd = Path(state.get("working_dir") or ".")
-            is_js = _has_js_project(wd)
-            if is_js:
-                if run_full_suite:
-                    # JS/TS project: run JS tests + TypeScript check + linter
-                    logger.info(
-                        "verification_node: JS/TS project detected — running JS test suite"
-                    )
+            unverified_paths, current_hashes, skipped_cached = filter_unverified_files(
+                session_modified, verified_hashes, wd
+            )
+
+            custom_results = run_custom_verify_yaml(wd, session_modified, _is_cancelled)
+            if custom_results is not None:
+                results.update(custom_results)
+            elif _has_js_project(wd):
+                if run_full_suite and verification_mode != "targeted":
                     results["js_tests"] = verification_tools.run_js_tests(str(wd))
                     if _is_cancelled():
-                        logger.info("verification_node: cancelled after js_tests")
                         return {
                             "verification_result": {**results, "cancelled": True},
                             "verification_passed": True,
                         }
                     results["ts_check"] = verification_tools.run_ts_check(str(wd))
                     if _is_cancelled():
-                        logger.info("verification_node: cancelled after ts_check")
                         return {
                             "verification_result": {**results, "cancelled": True},
                             "verification_passed": True,
                         }
                     results["eslint"] = verification_tools.run_eslint(str(wd))
+                elif verification_mode == "targeted":
+                    js_paths = [
+                        p for p in unverified_paths
+                        if Path(p).suffix.lower() in (".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs")
+                    ]
+                    if js_paths:
+                        results["eslint"] = verification_tools.run_eslint(str(wd), paths=js_paths)
+                    if run_full_suite and not _is_cancelled():
+                        results["ts_check"] = verification_tools.run_ts_check(str(wd))
                 else:
-                    # F21/W4: Intermediate JS/TS step — run eslint on the modified file only
-                    # (faster than full suite; catches syntax errors and obvious mistakes early)
                     modified_path: str | None = None
                     try:
                         lr = state.get("last_result") or {}
@@ -266,46 +255,65 @@ async def _verification_node_impl(state: StateLike, config: RunnableConfig) -> D
                     except Exception:
                         pass
                     if modified_path:
-                        logger.info(
-                            f"verification_node: intermediate JS/TS step — running eslint on {modified_path}"
-                        )
                         results["eslint"] = verification_tools.run_eslint(
                             str(wd), paths=[modified_path]
                         )
-                    else:
-                        logger.info(
-                            "verification_node: intermediate JS/TS step — no modified path; skipping eslint"
+            elif has_rust_project(wd):
+                results.update(run_rust_verification(wd, run_full_suite, _is_cancelled))
+            elif has_go_project(wd):
+                results.update(run_go_verification(wd, run_full_suite, _is_cancelled))
+            elif verification_mode == "targeted":
+                # Targeted Python verification: NEVER os.walk the full repository
+                results["syntax"] = check_targeted_python_syntax(
+                    unverified_paths, skipped_cached=skipped_cached
+                )
+                if unverified_paths and not _is_cancelled():
+                    results["linter"] = run_targeted_ruff(unverified_paths, wd)
+                if run_full_suite and not _is_cancelled():
+                    targeted_tests = discover_targeted_pytest_files(session_modified, wd)
+                    last_failed_exists = (wd / ".pytest_cache" / "v" / "cache" / "lastfailed").exists()
+                    if targeted_tests:
+                        results["tests"] = verification_tools.run_tests(
+                            str(wd), test_files=targeted_tests
                         )
+                    elif last_failed_exists:
+                        results["tests"] = verification_tools.run_tests(
+                            str(wd), use_last_failed=True
+                        )
+                    else:
+                        results["tests"] = {
+                            "status": "skipped",
+                            "reason": "targeted mode: no matching test file for modified module",
+                        }
             else:
                 if run_full_suite:
-                    # Python project full suite: pytest + ruff + syntax
-                    # MC-2: Use incremental test execution with --lf (last-failed) if available
-                    last_failed_exists = (
-                        wd / ".pytest_cache" / "v" / "cache" / "lastfailed"
-                    ).exists()
+                    last_failed_exists = (wd / ".pytest_cache" / "v" / "cache" / "lastfailed").exists()
                     results["tests"] = verification_tools.run_tests(
                         str(wd), use_last_failed=last_failed_exists
                     )
                     if _is_cancelled():
-                        logger.info("verification_node: cancelled after run_tests")
                         return {
                             "verification_result": {**results, "cancelled": True},
                             "verification_passed": True,
                         }
                     results["linter"] = verification_tools.run_linter(str(wd))
                     if _is_cancelled():
-                        logger.info("verification_node: cancelled after run_linter")
                         return {
                             "verification_result": {**results, "cancelled": True},
                             "verification_passed": True,
                         }
-                    # Full syntax walk on final step only
-                    results["syntax"] = verification_tools.syntax_check(str(wd))
+                    if session_modified and not unverified_paths and skipped_cached > 0:
+                        results["syntax"] = {
+                            "status": "ok",
+                            "checked_files": 0,
+                            "skipped_cached": skipped_cached,
+                            "syntax_errors": [],
+                        }
+                    else:
+                        results["syntax"] = verification_tools.syntax_check(str(wd))
                 else:
-                    # SCAN-2 fix: intermediate steps — scope syntax check to the
-                    # modified file only (avoids full os.walk on every step which
-                    # is O(n_py_files) and defeats the purpose of the fast path).
-                    _mod_path: "str | None" = None
+                    # SCAN-2: intermediate step — use py_compile on single modified .py file
+                    _mod_path: str | None = None
                     try:
                         _lr = state.get("last_result") or {}
                         _r = _lr.get("result") or _lr
@@ -313,8 +321,6 @@ async def _verification_node_impl(state: StateLike, config: RunnableConfig) -> D
                     except Exception:
                         pass
                     if _mod_path and str(_mod_path).endswith(".py"):
-                        import py_compile as _pyc
-
                         try:
                             _pyc.compile(str(_mod_path), doraise=True)
                             results["syntax"] = {
@@ -326,33 +332,22 @@ async def _verification_node_impl(state: StateLike, config: RunnableConfig) -> D
                             results["syntax"] = {
                                 "status": "fail",
                                 "checked_files": 1,
-                                "syntax_errors": [
-                                    {"file": _mod_path, "error": str(_se)}
-                                ],
+                                "syntax_errors": [{"file": _mod_path, "error": str(_se)}],
                             }
-                        logger.info(
-                            f"verification_node: intermediate step syntax check on {_mod_path}"
-                        )
-                    else:
-                        # No modified .py file identifiable — skip syntax check on
-                        # intermediate step to avoid the expensive full directory walk.
-                        logger.info(
-                            "verification_node: intermediate step — no .py path in last_result; skipping syntax check"
-                        )
         except Exception as e:
             results["error"] = str(e)
 
-    # Determine if verification passed (handles both Python and JS/TS result shapes)
-    def _failed(r: Dict) -> bool:
-        return isinstance(r, dict) and r.get("status") == "fail"
-
     verification_passed = True
-    for key in ("tests", "linter", "syntax", "js_tests", "ts_check", "eslint"):
-        if _failed(results.get(key, {})):
+    if "error" in results:
+        verification_passed = False
+    for key, val in results.items():
+        if key == "step_rollback":
+            continue
+        if isinstance(val, Mapping) and val.get("status") == "fail":
             verification_passed = False
             break
 
-    # If the last action was a failed command or failed mutation, verification must fail
+    # Failed command or failed mutation forces verification failure
     if isinstance(last_result, dict):
         r = last_result.get("result") or last_result
         if isinstance(r, dict):
@@ -363,51 +358,88 @@ async def _verification_node_impl(state: StateLike, config: RunnableConfig) -> D
                     "error": f"Command failed with exit code {r['returncode']}",
                     "details": r.get("stderr") or r.get("stdout") or "",
                 }
-            elif (r.get("status") in ("error", "failed") or last_result.get("ok") is False) and (last_tool_name in _WRITE_TOOLS_ALWAYS_VERIFY or session_modified):
+            elif (r.get("status") in ("error", "failed") or last_result.get("ok") is False) and (
+                last_tool_name in _WRITE_TOOLS_ALWAYS_VERIFY or session_modified
+            ):
                 verification_passed = False
                 results["mutation"] = {
                     "status": "fail",
-                    "error": str(r.get("error") or last_result.get("error") or "Mutation action failed"),
+                    "error": str(
+                        r.get("error") or last_result.get("error") or "Mutation action failed"
+                    ),
                 }
 
-    # Step-level atomic rollback: if verification failed, restore all files written
-    # during this step to their pre-edit state.
+    run_state = dict(state.get("run") or {})
+    prev_recoveries = int(run_state.get("recoveries") or 0)
+    raw_limit = rt_policy.get("recovery_limit") if isinstance(rt_policy, Mapping) else None
+    recovery_limit = int(raw_limit) if raw_limit is not None else 2
+    can_defer_rollback = bool(
+        is_canonical_run
+        and state.get("use_replan") is not False
+        and prev_recoveries < recovery_limit
+    )
+
+    updated_history: list | None = None
+
     if not verification_passed and need_verify:
-        try:
-            orchestrator = _resolve_orchestrator(state, config)
-            if orchestrator and hasattr(orchestrator, "rollback_step_transaction"):
-                if getattr(orchestrator, "_step_snapshot_id", None):
-                    rb = orchestrator.rollback_step_transaction()
-                    if rb.get("ok"):
-                        logger.info(
-                            f"verification_node: step rollback restored "
-                            f"{rb.get('restored_count', 0)} file(s)"
-                        )
-                        results["step_rollback"] = {
-                            "triggered": True,
-                            "restored_files": rb.get("restored_files", []),
-                        }
-                    else:
-                        logger.warning(
-                            f"verification_node: step rollback failed: {rb.get('error')}"
-                        )
-        except Exception as rb_err:
-            logger.warning(
-                f"verification_node: step rollback error (non-fatal): {rb_err}"
+        if can_defer_rollback:
+            # Deferred Rollback: keep open transaction & edits on disk for surgical fix
+            attempt = prev_recoveries + 1
+            run_state["recoveries"] = attempt
+            run_state["status"] = "recovering"
+            run_state["outcome"] = "continue"
+            results["step_rollback"] = {
+                "triggered": False,
+                "deferred": True,
+                "attempt": attempt,
+                "recovery_limit": recovery_limit,
+            }
+            feedback = build_deferred_rollback_feedback(
+                results=results,
+                attempt=attempt,
+                recovery_limit=recovery_limit,
+                modified_files=session_modified,
             )
+            updated_history = list(state.get("history") or []) + [
+                {"role": "user", "content": feedback}
+            ]
+            logger.info(
+                "verification_node: deferring rollback for recovery attempt %d/%d",
+                attempt,
+                recovery_limit,
+            )
+        else:
+            # Recovery exhausted or legacy non-canonical graph: rollback immediately
+            try:
+                orchestrator = _resolve_orchestrator(state, config)
+                if orchestrator and hasattr(orchestrator, "rollback_step_transaction"):
+                    if getattr(orchestrator, "_step_snapshot_id", None):
+                        rb = orchestrator.rollback_step_transaction()
+                        if rb.get("ok"):
+                            logger.info(
+                                "verification_node: step rollback restored %d file(s)",
+                                rb.get("restored_count", 0),
+                            )
+                            results["step_rollback"] = {
+                                "triggered": True,
+                                "restored_files": rb.get("restored_files", []),
+                            }
+                        else:
+                            logger.warning(
+                                "verification_node: step rollback failed: %s", rb.get("error")
+                            )
+            except Exception as rb_err:
+                logger.warning("verification_node: step rollback error (non-fatal): %s", rb_err)
+            run_state["status"] = "failed"
+            run_state["outcome"] = "failed"
     elif verification_passed and need_verify:
-        # F5: Commit (clean up) the step snapshot so snapshot data does not
-        # accumulate unboundedly across successful steps.  Only the rollback
-        # path was ever handled — the success path leaked every snapshot.
         try:
             orchestrator = _resolve_orchestrator(state, config)
             if orchestrator and hasattr(orchestrator, "commit_step_transaction"):
                 if getattr(orchestrator, "_step_snapshot_id", None):
                     orchestrator.commit_step_transaction()
         except Exception as _commit_err:
-            logger.debug(
-                "verification_node: step commit (non-fatal): %s", _commit_err
-            )
+            logger.debug("verification_node: step commit (non-fatal): %s", _commit_err)
 
     commands_executed: list[str] = []
     evidence_items: list[dict[str, Any]] = []
@@ -415,7 +447,13 @@ async def _verification_node_impl(state: StateLike, config: RunnableConfig) -> D
         if isinstance(v, dict):
             cmd = v.get("command") or k
             commands_executed.append(str(cmd))
-            evidence_items.append({"check": k, "status": v.get("status"), "details": v.get("stdout") or v.get("error")})
+            evidence_items.append(
+                {
+                    "check": k,
+                    "status": v.get("status"),
+                    "details": v.get("stdout") or v.get("error"),
+                }
+            )
 
     verification_state = {
         "required": bool(need_verify),
@@ -424,26 +462,26 @@ async def _verification_node_impl(state: StateLike, config: RunnableConfig) -> D
         "evidence": evidence_items,
     }
 
-    run_state = dict(state.get("run") or {})
     if verification_passed:
         run_state["status"] = "completed"
         run_state["outcome"] = "complete"
-    else:
-        recoveries = int(run_state.get("recoveries") or 0)
-        recovery_limit = 2
-        rt = state.get("runtime") or {}
-        if isinstance(rt, dict) and isinstance(rt.get("policy"), dict):
-            recovery_limit = rt["policy"].get("recovery_limit", 2)
-        if recoveries < recovery_limit:
+    elif not need_verify:
+        if prev_recoveries < recovery_limit:
             run_state["status"] = "recovering"
             run_state["outcome"] = "recover"
         else:
             run_state["status"] = "failed"
             run_state["outcome"] = "failed"
 
-    return {
+    out: Dict[str, Any] = {
         "verification_result": results,
         "verification_passed": verification_passed,
         "verification": verification_state,
         "run": run_state,
     }
+    if is_canonical_run:
+        if updated_history is not None:
+            out["history"] = updated_history
+        if verification_passed and current_hashes:
+            out["_verified_file_hashes"] = {**verified_hashes, **current_hashes}
+    return out

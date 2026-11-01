@@ -9,10 +9,14 @@ blowout from large bash output, git diffs, or file reads.
 import json
 
 
-from src.core.orchestration.graph.nodes.execution_node import (
-    _truncate_tool_output,
-    _TOOL_OUTPUT_MAX_BYTES,
+from src.core.orchestration.graph.nodes.tool_output_truncation import (
+    truncate_tool_output,
+    TOOL_OUTPUT_MAX_BYTES as _TOOL_OUTPUT_MAX_BYTES,
 )
+
+
+def _truncate_tool_output(res: dict) -> dict:
+    return truncate_tool_output(res, marker_label="OP-9")
 
 
 class TestTruncateToolOutputUnderLimit:

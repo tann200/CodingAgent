@@ -24,12 +24,18 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 class TestSingleAuthoritativeSkillsDir:
     """MC-4: only agent-brain/skills exists as a skill source."""
 
-    def test_legacy_skills_dir_removed(self):
-        legacy = _REPO_ROOT / "src" / "config" / "skills"
-        assert not legacy.exists(), (
-            "Legacy skill directory src/config/skills/ still exists — it must be "
-            "consolidated into src/config/agent-brain/skills/."
-        )
+    def test_packaged_skills_dir_contains_standard_packages(self):
+        packaged_dir = _REPO_ROOT / "src" / "config" / "skills"
+        assert packaged_dir.exists(), "src/config/skills/ packaged skills directory must exist"
+        # Verify the 3 packaged skills for Agensi / Claude Code / Cursor exist with SKILL.md
+        for skill_name in ("polyglot-verify", "atomic-edit-rollback", "git-safe-review"):
+            skill_file = packaged_dir / skill_name / "SKILL.md"
+            assert skill_file.exists(), f"Skill bundle {skill_name}/SKILL.md missing"
+            text = skill_file.read_text(encoding="utf-8")
+            assert f"name: {skill_name}" in text
+            assert "compatibility:" in text
+        # Verify legacy explore_codebase is not left behind as a loose file in src/config/skills/
+        assert not (packaged_dir / "explore_codebase.md").exists()
 
     def test_skill_tools_point_at_agent_brain_skills(self):
         ab_skills = (
@@ -59,3 +65,12 @@ class TestSingleAuthoritativeSkillsDir:
         assert result["status"] == "ok"
         assert "Explore Codebase" in result["content"]
         assert str(_SKILLS_DIR) in result["path"]
+
+    def test_load_packaged_skills_via_tool(self):
+        for name in ("polyglot-verify", "atomic-edit-rollback", "git-safe-review"):
+            res = load_skill(name)
+            assert res["status"] == "ok", f"Failed to load {name}: {res}"
+            assert res["name"] == name
+            assert "Skill:" in res["content"]
+            assert name in res["path"]
+            assert res["path"].endswith("SKILL.md")

@@ -51,7 +51,7 @@ class TestModelCapabilityProfile:
         assert profile.params_total == 9.0
         assert profile.architecture == Architecture.GDN
         assert profile.thinking_mode == ThinkingMode.OFF
-        assert profile.tool_limit == 50
+        assert profile.tool_limit == 12
 
     def test_get_gemma_profile(self):
         profile = get_model_profile("gemma-4-27b-a4b")
@@ -104,7 +104,7 @@ class TestRuntimeProfile:
         hardware = get_hardware_profile("rtx5070ti-16g")
         runtime = merge_profiles(model, hardware)
 
-        assert runtime.model_tier == ModelTier.LARGE
+        assert runtime.model_tier == ModelTier.SMALL
         assert runtime.safe_context_tokens >= 8192
         assert runtime.tool_limit <= 50
         assert runtime.thinking_mode == ThinkingMode.OFF  # profile overrides tier default

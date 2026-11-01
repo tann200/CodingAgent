@@ -351,3 +351,46 @@ def build_inline_verification_message(record: Optional[Dict[str, Any]]) -> Dict[
             lines.append(f"    {err}")
     lines.append("Fix these before continuing.")
     return {"role": "user", "content": "\n".join(lines)}
+
+
+def compute_file_sha256(path: Path) -> Optional[str]:
+    """Return hex SHA-256 of *path*, or ``None`` if unreadable."""
+    import hashlib
+
+    try:
+        if not path.is_file():
+            return None
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
+def update_verified_file_hashes(
+    tool_args: Any,
+    workdir: Any,
+    record: Optional[Dict[str, Any]],
+    verified_hashes: Dict[str, str],
+) -> None:
+    """Update *verified_hashes* with SHA-256 digests of files that passed inline check."""
+    if not isinstance(record, dict) or not isinstance(verified_hashes, dict):
+        return
+    paths = _checkable_paths(tool_args)
+    if not paths:
+        return
+    failed_paths = {
+        str(f.get("path") or "")
+        for f in (record.get("failures") or [])
+        if isinstance(f, dict)
+    }
+    for requested in paths:
+        try:
+            resolved_p = Path(_resolve(requested, workdir)).resolve()
+            key = str(resolved_p)
+        except Exception:
+            continue
+        if record.get("status") == "passed" and requested not in failed_paths:
+            digest = compute_file_sha256(resolved_p)
+            if digest:
+                verified_hashes[key] = digest
+        else:
+            verified_hashes.pop(key, None)

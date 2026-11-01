@@ -178,3 +178,94 @@ def test_build_static_system_parts_assembles_expected_sections():
     assert "<thinking_mode>on</thinking_mode>" in result
     assert "<output_format>fmt</output_format>" in result
     assert "__BOUNDARY__" in result
+
+
+def test_select_prompt_partial_maps_qwen_and_deepseek_models():
+    def _load(name: str) -> str:
+        return name
+
+    # Compact Qwen model
+    assert select_prompt_partial(
+        model_tier=None,
+        provider_capabilities={"model": "qwen/qwen3.5-9b"},
+        is_reasoning=False,
+        load_partial=_load,
+    ) == "local-small.md"
+
+    # DeepSeek reasoning
+    assert select_prompt_partial(
+        model_tier=None,
+        provider_capabilities={"model": "deepseek-r1:14b"},
+        is_reasoning=False,
+        load_partial=_load,
+    ) == "openai-reasoning.md"
+
+    # DeepSeek V3 frontier
+    assert select_prompt_partial(
+        model_tier=None,
+        provider_capabilities={"model": "deepseek-v3"},
+        is_reasoning=False,
+        load_partial=_load,
+    ) == "openai-frontier.md"
+
+    # Compact tier without model ID
+    assert select_prompt_partial(
+        model_tier="compact",
+        provider_capabilities={},
+        is_reasoning=False,
+        load_partial=_load,
+    ) == "local-small.md"
+
+    # Standard tier without model ID
+    assert select_prompt_partial(
+        model_tier="standard",
+        provider_capabilities={},
+        is_reasoning=False,
+        load_partial=_load,
+    ) == "local-medium.md"
+
+    # 2026 GPT-6 & GPT-5.6
+    assert select_prompt_partial(
+        model_tier=None,
+        provider_capabilities={"model": "gpt-6"},
+        is_reasoning=False,
+        load_partial=_load,
+    ) == "openai-frontier.md"
+
+    assert select_prompt_partial(
+        model_tier=None,
+        provider_capabilities={"model": "gpt-5.6"},
+        is_reasoning=False,
+        load_partial=_load,
+    ) == "openai-frontier.md"
+
+    # 2026 Claude Sonnet 4.6 & Opus 4.6
+    assert select_prompt_partial(
+        model_tier=None,
+        provider_capabilities={"model": "claude-sonnet-4.6"},
+        is_reasoning=False,
+        load_partial=_load,
+    ) == "anthropic-frontier.md"
+
+    # 2026 Llama 4 Scout (medium) & Maverick (frontier)
+    assert select_prompt_partial(
+        model_tier=None,
+        provider_capabilities={"model": "llama-4-scout"},
+        is_reasoning=False,
+        load_partial=_load,
+    ) == "local-medium.md"
+
+    assert select_prompt_partial(
+        model_tier=None,
+        provider_capabilities={"model": "llama-4-maverick"},
+        is_reasoning=False,
+        load_partial=_load,
+    ) == "openai-frontier.md"
+
+    # 2026 Gemini 3.5
+    assert select_prompt_partial(
+        model_tier=None,
+        provider_capabilities={"model": "gemini-3.5"},
+        is_reasoning=False,
+        load_partial=_load,
+    ) == "gemini-frontier.md"

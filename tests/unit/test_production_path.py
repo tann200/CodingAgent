@@ -59,7 +59,7 @@ class TestFrontierLoopSanitizesToolOutput:
     def test_flag_survives_truncation(self) -> None:
         """The flag is a dict key, not body text, so the model still sees it even
         when the inline warning is cut off by the byte cap."""
-        from src.core.orchestration.graph.nodes.execution_plan import (
+        from src.core.orchestration.graph.nodes.frontier_dispatch import (
             build_tool_history_messages,
         )
 

@@ -229,44 +229,7 @@ def test_kv_cache_governor_custom_thresholds():
     assert state2.action == CompactionAction.COMPACT
 
 
-def test_analysis_node_per_file_freshness_tracking(tmp_path: Path):
-    from src.core.orchestration.graph.nodes.analysis_node import (
-        _is_already_indexed,
-        _mark_indexed,
-    )
-    from src.core.indexing.repo_indexer import _get_ctx_dir_name
 
-    ctx_dir = tmp_path / _get_ctx_dir_name()
-    ctx_dir.mkdir(parents=True, exist_ok=True)
-    index_file = ctx_dir / "repo_index.json"
-    index_file.write_text("{}", encoding="utf-8")
-
-    sub_dir = tmp_path / "pkg"
-    sub_dir.mkdir()
-    py_file = sub_dir / "module.py"
-    py_file.write_text("def hello(): pass\n", encoding="utf-8")
-
-    # Initially not indexed
-    assert _is_already_indexed(str(tmp_path)) is False
-
-    # Mark as indexed
-    _mark_indexed(str(tmp_path))
-    assert _is_already_indexed(str(tmp_path)) is True
-
-    # Root directory mtime does NOT change when an existing file inside pkg/ is modified!
-    # Update file content and mtime:
-    py_file.write_text("def hello_updated(): pass\n", encoding="utf-8")
-    import os
-    import time
-    new_time = time.time() + 10
-    os.utime(py_file, (new_time, new_time))
-
-    # Freshness check must detect the file modification and return False!
-    assert _is_already_indexed(str(tmp_path)) is False
-
-    # Re-marking as indexed should make it fresh again
-    _mark_indexed(str(tmp_path))
-    assert _is_already_indexed(str(tmp_path)) is True
 
 
 @pytest.mark.asyncio
@@ -294,7 +257,7 @@ async def test_frontier_loop_auto_retrieves_context_on_simple_tasks(tmp_path: Pa
     mock_build_prompt = MagicMock(return_value=[{"role": "system", "content": "You are assistant."}])
     with (
         patch("src.core.orchestration.graph.nodes.frontier_loop_node._resolve_orchestrator", return_value=orch),
-        patch("src.core.orchestration.graph.nodes.perception_retrieval._retrieve_context", new=AsyncMock(return_value=dummy_snippets)) as mock_retrieve,
+        patch("src.core.orchestration.graph.nodes.repo_context._retrieve_context", new=AsyncMock(return_value=dummy_snippets)) as mock_retrieve,
         patch("src.core.context.context_builder.ContextBuilder.build_prompt", mock_build_prompt),
         patch("src.core.orchestration.graph.nodes.frontier_loop_node.call_model", new=AsyncMock(return_value={"choices": [{"message": {"content": "Auth explained"}}]})),
     ):

@@ -1,11 +1,10 @@
-"""Canonical routing for the unified 7-node LangGraph cognitive pipeline.
+"""Canonical routing for the unified 6-node 2026 LangGraph pipeline.
 
-Implements conditional routing per Engineering Audit §Appendix:
+Topology:
 - START -> initialize -> agent_loop
-- agent_loop -> [agent_loop | approval | verify | recover | compact | finalize]
+- agent_loop -> [agent_loop | approval | verify | compact | finalize]
 - approval -> [agent_loop | finalize]
-- verify -> [finalize | recover]
-- recover -> [agent_loop | finalize]
+- verify -> [agent_loop | finalize]
 - compact -> [agent_loop | finalize]
 - finalize -> END
 """
@@ -20,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 def route_after_agent_loop(
     state: Mapping[str, Any],
-) -> Literal["agent_loop", "approval", "verify", "recover", "compact", "finalize"]:
+) -> Literal["agent_loop", "approval", "verify", "compact", "finalize"]:
     """Route exit of agent_loop based on run outcome and action state."""
     run = state.get("run") or {}
     outcome = run.get("outcome")
@@ -34,7 +33,13 @@ def route_after_agent_loop(
     if outcome == "recover" or state.get("replan_required"):
         if state.get("use_replan") is False:
             return "finalize"
-        return "recover"
+        recoveries = int(run.get("recoveries") or state.get("debug_attempts") or 0)
+        policy = (state.get("runtime") or {}).get("policy") or {}
+        raw_limit = policy.get("recovery_limit") if isinstance(policy, Mapping) else None
+        recovery_limit = int(raw_limit) if raw_limit is not None else 2
+        if recovery_limit > 0 and recoveries <= recovery_limit:
+            return "agent_loop"
+        return "finalize"
 
     if outcome == "verify":
         if state.get("use_verification") is False:
@@ -75,35 +80,27 @@ def route_after_approval(
 
 def route_after_verify(
     state: Mapping[str, Any],
-) -> Literal["recover", "finalize"]:
-    """Route after verification node."""
+) -> Literal["agent_loop", "finalize"]:
+    """Route after verification node (in-loop recovery via agent_loop on failure)."""
     run = state.get("run") or {}
     outcome = run.get("outcome")
 
-    if outcome == "recover" or state.get("verification_passed") is False:
-        recoveries = int(run.get("recoveries") or state.get("debug_attempts") or 0)
-        policy = (state.get("runtime") or {}).get("policy") or {}
-        recovery_limit = int(policy.get("recovery_limit") or 2)
-        if recoveries < recovery_limit:
-            return "recover"
+    if outcome == "continue":
+        return "agent_loop"
+    if outcome == "failed":
         return "finalize"
 
-    return "finalize"
+    if outcome == "recover" or state.get("verification_passed") is False:
+        if state.get("use_replan") is False:
+            return "finalize"
+        recoveries = int(run.get("recoveries") or state.get("debug_attempts") or 0)
+        policy = (state.get("runtime") or {}).get("policy") or {}
+        raw_limit = policy.get("recovery_limit") if isinstance(policy, Mapping) else None
+        recovery_limit = int(raw_limit) if raw_limit is not None else 2
+        if recoveries < recovery_limit:
+            return "agent_loop"
+        return "finalize"
 
-
-def route_after_recover(
-    state: Mapping[str, Any],
-) -> Literal["agent_loop", "finalize"]:
-    """Route after recovery node."""
-    run = state.get("run") or {}
-    outcome = run.get("outcome")
-
-    if (
-        outcome == "continue"
-        or state.get("pending_action")
-        or state.get("next_action")
-    ):
-        return "agent_loop"
     return "finalize"
 
 

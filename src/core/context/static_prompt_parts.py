@@ -10,16 +10,28 @@ logger = logging.getLogger(__name__)
 
 MODEL_ID_PARTIAL_MAP: List[Tuple[str, str]] = [
     (r"o1|o3|o4", "openai-reasoning.md"),
-    (r"gpt-4o|gpt-4\.5|gpt-4-turbo", "openai-frontier.md"),
+    (r"deepseek-(?:r[1-3]|reasoner)", "openai-reasoning.md"),
+    (r"gpt-(?:6(?:\.[0-9]+)?|5(?:\.[0-9]+)?|4\.5|4\.1|4o|4-turbo)", "openai-frontier.md"),
+    (r"deepseek-(?:v[3-5]|coder)", "openai-frontier.md"),
     (
-        r"claude-opus|claude-3-7|claude-sonnet-4-[5-9]|claude-3-5-sonnet",
+        r"claude-(?:opus|sonnet)-[4-6]|claude-3-7|claude-sonnet-4[\.-][5-9]|claude-opus-4[\.-][5-9]|claude-3-5-sonnet",
         "anthropic-frontier.md",
     ),
     (r"claude-haiku|claude-3-5-haiku|claude-3-haiku", "anthropic-small.md"),
-    (r"gemini-2\.5-pro|gemini-pro|gemini-ultra", "gemini-frontier.md"),
-    (r"gemini-flash|gemini-nano|gemini-2\.0-flash", "gemini-small.md"),
+    (r"gemini-(?:2\.5-pro|[34](?:\.[0-9]+)?|pro|ultra)", "gemini-frontier.md"),
+    (r"gemini-(?:flash|nano|2\.0-flash)", "gemini-small.md"),
     (r"gemma-4-31b|gemma-4-26b|gemma4:31b|gemma4:26b", "gemini-frontier.md"),
     (r"gemma-4-e[24]b|gemma4:e[24]b|gemma4-e[24]b", "local-small.md"),
+    (r"llama-4-maverick", "openai-frontier.md"),
+    (r"llama-4-scout", "local-medium.md"),
+    (r"llama-4.*(?:8b|11b|compact|small)", "local-small.md"),
+    (r"llama-4.*(?:70b|405b|medium|large)", "local-medium.md"),
+    (r"qwen.*(?:27b|32b|35b|72b)", "local-medium.md"),
+    (r"qwen.*(?:coder|3\.5|3|2\.5).*(?:7b|8b|9b|14b)|qwen.*(?:7b|8b|9b|14b)", "local-small.md"),
+    (r"llama-3\.[12]-(?:8b|11b)", "local-small.md"),
+    (r"llama-3\.[13]-(?:70b|405b)", "local-medium.md"),
+    (r"phi-4", "local-small.md"),
+    (r"devstral|mistral-nemo|ministral", "local-medium.md"),
 ]
 
 
@@ -71,12 +83,16 @@ def select_prompt_partial(
             return partial
 
     tier = (model_tier or "").lower()
-    if tier == "small":
+    if tier in ("small", "nano", "compact"):
         partial = load_partial("local-small.md")
         if partial:
             return partial
-    elif tier == "medium":
+    elif tier in ("medium", "standard"):
         partial = load_partial("local-medium.md")
+        if partial:
+            return partial
+    elif tier in ("large", "frontier"):
+        partial = load_partial("openai-frontier.md")
         if partial:
             return partial
 
@@ -118,9 +134,10 @@ def render_tools_for_tier(
         if model_tier_enum is None:
             raise ImportError("model_tiers unavailable")
         tier = model_tier_enum(model_tier) if model_tier else model_tier_enum.MEDIUM
-        is_minimal = tier == model_tier_enum.SMALL
+        tier_val = getattr(tier, "value", str(tier)).lower()
+        is_minimal = tier_val in ("small", "nano", "compact")
     except Exception:
-        is_minimal = False
+        is_minimal = str(model_tier or "").lower() in ("small", "nano", "compact")
 
     lines: List[str] = []
     for tool in tools:
@@ -142,7 +159,7 @@ def build_model_constraints_block(
     get_context_budget: Optional[Callable[..., int]],
 ) -> str:
     tier_str = (model_tier or "").lower()
-    if tier_str not in ("nano", "small"):
+    if tier_str not in ("nano", "small", "compact"):
         return ""
     try:
         if model_tier_enum is None or get_plan_step_limit is None:
@@ -188,16 +205,19 @@ def build_instruction_files_block(
 def build_project_instructions_block(
     *,
     workdir: Path,
-    load_project_instructions: Optional[Callable[[Path], Sequence[str]]],
+    load_project_instructions: Optional[Callable[[Path], Any]],
 ) -> str:
     try:
         if load_project_instructions is None:
             raise ImportError("instruction_loader unavailable")
         project_instructions = load_project_instructions(workdir)
         if project_instructions:
-            instruction_block = "\n".join(
-                f"- {instruction}" for instruction in project_instructions
-            )
+            if isinstance(project_instructions, str):
+                instruction_block = project_instructions.strip()
+            else:
+                instruction_block = "\n".join(
+                    f"- {instruction}" for instruction in project_instructions
+                )
             return f"<project_config_instructions>\n{instruction_block}\n</project_config_instructions>"
     except Exception as exc:
         logger.debug("static_prompt_parts: project instructions block failed: %s", exc)

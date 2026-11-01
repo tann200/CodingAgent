@@ -44,19 +44,40 @@ async def _initialize_node_impl(state: StateLike, config: RunnableConfig) -> Dic
         tier = "medium"
         provider = ""
         model = ""
+        ctx_window = 0
         try:
             from src.core.inference.model_tiers import classify_model
             from src.core.inference.provider_utils import resolve_provider_and_model
 
             provider, model = resolve_provider_and_model(orchestrator)
+            if not isinstance(provider, str):
+                provider = ""
+            if not isinstance(model, str):
+                model = ""
             adapter = getattr(orchestrator, "_adapter", None) or getattr(orchestrator, "adapter", None)
-            ctx_window = int(getattr(adapter, "context_window", 0) or 0)
+            raw_ctx = getattr(adapter, "context_window", 0)
+            ctx_window = int(raw_ctx) if isinstance(raw_ctx, (int, float)) else 0
             tier_enum = classify_model(model or "", ctx_window)
             tier = normalize_target_tier(tier_enum)
         except Exception as exc:
             logger.debug("initialize_node: error resolving model tier: %s", exc)
 
-        runtime = create_runtime_state(tier=tier, provider=provider, model=model)
+        from src.core.orchestration.graph.runtime_policy import resolve_runtime_policy
+
+        rt_policy = resolve_runtime_policy(
+            orchestrator,
+            model=model,
+            provider=provider,
+            context_window=ctx_window,
+        )
+        runtime = create_runtime_state(
+            tier=rt_policy.target_tier if model else tier,
+            provider=provider,
+            model=model,
+            custom_policy=rt_policy.to_policy_dict(),
+        )
+        runtime["policy_tier"] = rt_policy.policy_tier
+        runtime["toolset_name"] = rt_policy.toolset_name
     else:
         runtime = dict(runtime)
 

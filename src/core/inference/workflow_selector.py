@@ -40,19 +40,26 @@ class WorkflowConfig:
 def select_workflow(runtime: RuntimeProfile) -> WorkflowConfig:
     """Select workflow config based on runtime profile.
 
-    Binary decision:
-    - SMALL mode → SINGLE_LOOP
-    - MEDIUM/LARGE/FRONTIER → CAPABLE_LOOP
+    - Sub-8.5B local ``nano`` models (e.g. ``gemma-4-4b``) → ``SINGLE_LOOP``
+      (minimal tools, no mandatory verification gate).
+    - 8.5B–14.9B ``compact`` models (e.g. ``qwen3.5-9b``, ``qwen3:14b``,
+      ``gemma-4-12b``, ``phi-4``) and ``MEDIUM/LARGE/FRONTIER`` → ``CAPABLE_LOOP``
+      with targeted/full verification and bounded flat toolsets.
     """
-    is_small = runtime.model_tier == ModelTier.SMALL
-    is_cloud = runtime.is_cloud
+    from .model_tiers import is_nano_model
 
-    if is_small and not is_cloud:
+    is_nano = (
+        runtime.model_tier == ModelTier.SMALL
+        and not runtime.is_cloud
+        and (is_nano_model(runtime.model.name) or runtime.model.params_total < 8.5)
+    )
+
+    if is_nano:
         return WorkflowConfig(
             workflow_type=WorkflowType.SINGLE_LOOP,
             context_limit=min(runtime.safe_context_tokens, 16384),
-            tool_limit=min(runtime.tool_limit, 15),
-            max_turns=min(runtime.max_turns, 25),
+            tool_limit=min(runtime.tool_limit, 12),
+            max_turns=min(runtime.max_turns, 20),
             thinking_mode=ThinkingMode.OFF,
             use_verification=False,
             use_replan=False,
@@ -84,9 +91,15 @@ def select_workflow_from_names(
 
 
 def should_use_single_loop(model_name: str, hardware_name: str = "auto") -> bool:
-    """Quick check: should this model use single-loop orchestrator?"""
+    """Quick check: should this model use single-loop orchestrator (<8.5B nano)?"""
+    from .model_tiers import is_nano_model
+
     runtime = get_runtime_profile(model_name, hardware_name)
-    return runtime.model_tier == ModelTier.SMALL and not runtime.is_cloud
+    return (
+        runtime.model_tier == ModelTier.SMALL
+        and not runtime.is_cloud
+        and (is_nano_model(runtime.model.name) or runtime.model.params_total < 8.5)
+    )
 
 
 def resolve_workflow_config(

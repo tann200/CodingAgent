@@ -163,25 +163,25 @@ class TestWireEventBus(unittest.TestCase):
 class TestNodeSpanWrappers(unittest.TestCase):
     """_span_node wrappers in graph nodes work without OTel."""
 
-    def test_perception_node_span_wrapper(self):
-        """perception_node module's _span_node wrapper is a callable context manager."""
-        from src.core.orchestration.graph.nodes.perception_node import _span_node
+    def test_node_utils_span_wrapper(self):
+        """node_utils module's span_node wrapper is a callable context manager."""
+        from src.core.orchestration.graph.nodes.node_utils import span_node
 
-        with _span_node("perception", {"round": 0}):
+        with span_node("initialize", {"turn": 0}):
             pass
 
-    def test_execution_node_span_wrapper(self):
-        """execution_node module's _span_node wrapper is a callable context manager."""
-        from src.core.orchestration.graph.nodes.execution_node import _span_node
+    def test_verification_node_span_wrapper(self):
+        """verification_node module's _span_node wrapper is a callable context manager."""
+        from src.core.orchestration.graph.nodes.verification_node import _span_node
 
-        with _span_node("execution", {"step": 1}):
+        with _span_node("verification", {"step": 1}):
             pass
 
-    def test_planning_node_span_wrapper(self):
-        """planning_node module's _span_node wrapper is a callable context manager."""
-        from src.core.orchestration.graph.nodes.planning_node import _span_node
+    def test_finalize_node_span_wrapper(self):
+        """finalize_node module's _span_node wrapper is a callable context manager."""
+        from src.core.orchestration.graph.nodes.finalize_node import _span_node
 
-        with _span_node("planning", {"plan_attempts": 0}):
+        with _span_node("finalize", {"turn": 0}):
             pass
 
 

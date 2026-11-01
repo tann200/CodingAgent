@@ -190,59 +190,6 @@ class TestPersistPlanProgress:
         assert persist_plan_progress(_Orch(tmp_path), state) is False
 
 
-# ---------------------------------------------------------------------------
-# The defect this fixes, end to end
-# ---------------------------------------------------------------------------
-
-
-class TestEvaluationHonoursTheSignal:
-    @staticmethod
-    def _evaluate(state):
-        import asyncio
-
-        from src.core.orchestration.graph.nodes.evaluation_node import evaluation_node
-
-        return asyncio.run(evaluation_node(state, {}))
-
-    def _frontier_state(self, **over):
-        """State exactly as the production frontier path produces it."""
-        state = {
-            "current_plan": [
-                {"description": "a"},
-                {"description": "b"},
-                {"description": "c"},
-            ],
-            "current_step": 0,
-            "verification_passed": True,
-            "verification_result": {"passed": True},
-            "errors": [],
-            "last_result": {"ok": True, "_completion_detected": True},
-            "action_failed": False,
-            "rounds": 1,
-        }
-        state.update(over)
-        return state
-
-    def test_a_finished_plan_reports_complete_not_replan(self):
-        out = self._evaluate(self._frontier_state(plan_completed=True))
-        assert out["evaluation_result"] == "complete"
-
-    def test_without_the_signal_it_was_misreported_as_replan(self):
-        """Pins the defect: the old behaviour is what P3.3 corrects."""
-        out = self._evaluate(self._frontier_state())
-        assert out["evaluation_result"] == "replan"
-
-    def test_an_unfinished_plan_still_reports_replan(self):
-        out = self._evaluate(
-            self._frontier_state(
-                plan_completed=False,
-                last_result={"ok": False},
-                action_failed=True,
-            )
-        )
-        assert out["evaluation_result"] == "replan"
-
-
 class TestCompletedPlansAreNotResumed:
     @staticmethod
     def _resumable(data, **over):

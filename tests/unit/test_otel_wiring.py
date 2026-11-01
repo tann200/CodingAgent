@@ -138,31 +138,31 @@ class TestSecondaryNodeSpans:
 
         return fake_span
 
-    def test_evaluation_node_calls_span(self):
-        from src.core.orchestration.graph.nodes import evaluation_node as _mod
+    def test_initialize_node_calls_span(self):
+        from src.core.orchestration.graph.nodes import initialize_node as _mod
         calls = []
 
         async def fake_impl(s, c):
-            return {"ok": True}
+            return {}
 
         with patch.object(_mod, "_span_node", self._make_fake_span(calls)), \
-             patch.object(_mod, "_evaluation_node_impl", fake_impl):
-            asyncio.run(_mod.evaluation_node(_make_state(), {}))
+             patch.object(_mod, "_initialize_node_impl", fake_impl):
+            asyncio.run(_mod.initialize_node(_make_state(), {}))
 
-        assert "evaluation" in calls
+        assert "initialize" in calls
 
-    def test_replan_node_calls_span(self):
-        from src.core.orchestration.graph.nodes import replan_node as _mod
+    def test_finalize_node_calls_span(self):
+        from src.core.orchestration.graph.nodes import finalize_node as _mod
         calls = []
 
         async def fake_impl(s, c):
-            return {"ok": True}
+            return {}
 
         with patch.object(_mod, "_span_node", self._make_fake_span(calls)), \
-             patch.object(_mod, "_replan_node_impl", fake_impl):
-            asyncio.run(_mod.replan_node(_make_state(), {}))
+             patch.object(_mod, "_finalize_node_impl", fake_impl):
+            asyncio.run(_mod.finalize_node(_make_state(), {}))
 
-        assert "replan" in calls
+        assert "finalize" in calls
 
     def test_verification_node_calls_span(self):
         from src.core.orchestration.graph.nodes import verification_node as _mod
@@ -193,9 +193,9 @@ class TestSecondaryNodeSpans:
     def test_impl_functions_exist(self):
         """All _impl functions must exist and be coroutine functions."""
         import inspect
-        from src.core.orchestration.graph.nodes.evaluation_node import _evaluation_node_impl
-        from src.core.orchestration.graph.nodes.replan_node import _replan_node_impl
+        from src.core.orchestration.graph.nodes.initialize_node import _initialize_node_impl
+        from src.core.orchestration.graph.nodes.finalize_node import _finalize_node_impl
         from src.core.orchestration.graph.nodes.verification_node import _verification_node_impl
         from src.core.orchestration.graph.nodes.memory_update_node import _memory_update_node_impl
-        for fn in [_evaluation_node_impl, _replan_node_impl, _verification_node_impl, _memory_update_node_impl]:
+        for fn in [_initialize_node_impl, _finalize_node_impl, _verification_node_impl, _memory_update_node_impl]:
             assert inspect.iscoroutinefunction(fn), f"{fn.__name__} is not async"

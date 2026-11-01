@@ -351,6 +351,7 @@ def build_plan_mode_blocked_exit(
         "errors": errors,
         "_frontier_loop_turns": turns_taken,
         "awaiting_plan_approval": True,
+        "plan_mode_blocked_tool": tool_name,
         "next_action": {"name": tool_name, "arguments": tool_args},
         "pending_action": pending_action,
         "run": run_state,
@@ -370,6 +371,8 @@ def finalize_frontier_exit(
     inline_verifications: Any,
     replan_required: Optional[str],
     retrieved_snippets: Optional[Any] = None,
+    last_tool_args: Optional[Dict[str, Any]] = None,
+    verified_file_hashes: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     """Assemble final exit state for frontier_loop_node."""
     mod_files = set()
@@ -394,6 +397,10 @@ def finalize_frontier_exit(
         modified_files=sorted(mod_files),
     )
     result["modified_files"] = sorted(mod_files)
+    if verified_file_hashes:
+        merged_hashes = dict(state.get("_verified_file_hashes") or {})
+        merged_hashes.update(verified_file_hashes)
+        result["_verified_file_hashes"] = merged_hashes
     if state.get("active_role"):
         result["active_role"] = state.get("active_role")
     _progress = plan_completion_patch(state, result)
@@ -415,8 +422,35 @@ def finalize_frontier_exit(
         run_state["status"] = "running"
         run_state["outcome"] = "compact"
     elif replan_required or (last_result and last_result.get("ok") is False) or ("inline_verification_failed" in (errors or [])):
-        run_state["status"] = "recovering"
-        run_state["outcome"] = "recover"
+        prev_recoveries = int(run_state.get("recoveries") or 0)
+        rt_policy = (state.get("runtime") or {}).get("policy") if isinstance(state.get("runtime"), Mapping) else None
+        raw_limit = rt_policy.get("recovery_limit") if isinstance(rt_policy, Mapping) else None
+        recovery_limit = int(raw_limit) if raw_limit is not None else 2
+        if state.get("use_replan") is not False and prev_recoveries < recovery_limit:
+            run_state["recoveries"] = prev_recoveries + 1
+            run_state["status"] = "recovering"
+            run_state["outcome"] = "recover"
+            reason = (
+                replan_required
+                or str((last_result or {}).get("error") or "")
+                or "Previous attempt did not satisfy completion or verification checks."
+            )
+            guidance_hist = list(result.get("history") or [])
+            guidance_hist.append(
+                {
+                    "role": "user",
+                    "content": (
+                        f"<recovery_guidance attempt=\"{prev_recoveries + 1}/{recovery_limit}\">\n"
+                        f"{reason}\n"
+                        "Apply a focused fix using different arguments or smaller targeted edits.\n"
+                        "</recovery_guidance>"
+                    ),
+                }
+            )
+            result["history"] = guidance_hist
+        else:
+            run_state["status"] = "failed"
+            run_state["outcome"] = "failed"
     elif mod_files:
         run_state["status"] = "verifying"
         run_state["outcome"] = "verify"
@@ -430,9 +464,14 @@ def finalize_frontier_exit(
     result["run"] = run_state
 
     if last_tool_name:
+        effective_args = (
+            last_tool_args
+            if isinstance(last_tool_args, dict)
+            else (state.get("planned_action") if isinstance(state.get("planned_action"), dict) else {})
+        )
         last_action = create_last_action(
             name=last_tool_name,
-            arguments=state.get("planned_action") or {},
+            arguments=effective_args,
             result=last_result,
             side_effects=sorted(mod_files) if mod_files else [],
             modified_files=sorted(mod_files),
@@ -490,21 +529,36 @@ def _filter_tools_for_tier(tools_schema: list, model_tier: str) -> list:
 
 def _is_context_overflow(error_msg: str) -> bool:
     """Return True if the error message indicates a context-window overflow."""
-    patterns = (
-        "maximum context length",
-        "context window limit",
+    if not error_msg:
+        return False
+    import re
+
+    low = error_msg.lower()
+    unambiguous = (
+        "context_length_exceeded",
+        "maximum context length exceeded",
+        "context length exceeded",
         "context window exceeded",
+        "exceeds context length",
         "exceeds the available context",
-        "input is too long",
-        "prompt is too long",
+        "exceeds the model's maximum",
         "context length limit reached",
+        "prompt is too long",
+        "input is too long",
         "token limit exceeded",
         "max tokens exceeded",
+    )
+    if any(p in low for p in unambiguous):
+        return True
+    if re.search(r"maximum context length is \d+.*(?:requested|resulted|exceed|however)", low):
+        return True
+    partial_patterns = (
+        "maximum context length",
+        "context window limit",
         "reduce the length",
         "too many tokens",
     )
-    low = error_msg.lower()
-    return sum(1 for p in patterns if p in low) >= 2
+    return sum(1 for p in partial_patterns if p in low) >= 2
 
 
 def _plan_mode_blocks(orchestrator: Any, tool_name: str) -> bool:
@@ -520,4 +574,19 @@ def _plan_mode_blocks(orchestrator: Any, tool_name: str) -> bool:
     except Exception:
         pass
     return False
+
+
+def compute_replan_trigger(*, result: Mapping[str, Any]) -> dict[str, Any]:
+    """Compute replan trigger if patch exceeded split thresholds."""
+    if result.get("requires_split") is True:
+        error_msg = result.get(
+            "error", "Patch exceeded 200 lines. Split into multiple targeted functions."
+        )
+        return {
+            "replan_required": error_msg,
+            "action_failed": True,
+            "next_action": None,
+        }
+    return {}
+
 

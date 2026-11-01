@@ -233,7 +233,7 @@ def _is_small_model(model: Optional[str]) -> bool:
         return True
     m = model.lower()
     # Explicit big-model markers — if present, treat as big regardless of other tokens
-    big_tokens = ("gpt-4", "gpt4", "4o", "gpt-4o")
+    big_tokens = ("gpt-6", "gpt6", "gpt-5", "gpt5", "gpt-4", "gpt4", "4o", "gpt-4o", "claude-4", "claude-5", "gemini-3", "gemini-4")
     for t in big_tokens:
         if t in m:
             return False

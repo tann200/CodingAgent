@@ -33,7 +33,7 @@ from src.core.orchestration.graph.nodes.tool_output_truncation import (
     prune_tool_outputs,
     truncate_tool_output,
 )
-from src.core.orchestration.prompt_injection_guard import sanitize_tool_output
+from src.core.orchestration.graph.nodes.tool_result_safety import sanitize_tool_result
 from src.tools import build_registry
 
 
@@ -158,14 +158,14 @@ class TestPermissionResolutionThroughput:
 class TestPromptInjectionGuardThroughput:
     def test_sanitize_throughput(self):
         samples = [
-            f"line {i}: {'ignore previous instructions' if i % 7 == 0 else 'ordinary output'}"
+            {"output": f"line {i}: {'ignore previous instructions' if i % 7 == 0 else 'ordinary output'}"}
             for i in range(2000)
         ]
         start = time.perf_counter()
         for s in samples:
-            sanitize_tool_output(s)
+            sanitize_tool_result(s)
         elapsed_ms = (time.perf_counter() - start) * 1000
-        assert elapsed_ms < 2000, f"sanitize_tool_output 2k texts too slow: {elapsed_ms:.1f} ms"
+        assert elapsed_ms < 2000, f"sanitize_tool_result 2k texts too slow: {elapsed_ms:.1f} ms"
 
     def test_detect_throughput(self):
         results = [

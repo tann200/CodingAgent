@@ -55,12 +55,15 @@ _USER_AGENT = "CodingAgent/1.0"
 
 # Static fallback model list used before /models is fetched or when unauthenticated.
 _DEFAULT_MODELS = [
+    "gpt-6",
+    "gpt-5",
     "gpt-4o",
     "gpt-4o-mini",
-    "claude-3.5-sonnet",
-    "claude-3.7-sonnet",
-    "claude-sonnet-4.5",
+    "claude-opus-4.6",
     "claude-sonnet-4.6",
+    "claude-sonnet-4.5",
+    "claude-3.7-sonnet",
+    "claude-3.5-sonnet",
     "o1",
     "o3-mini",
     "gemini-2.0-flash-001",

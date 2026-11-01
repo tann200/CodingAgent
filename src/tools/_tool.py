@@ -110,6 +110,9 @@ class ToolDefinition:
     # @tool decorator (as opposed to the side_effects-implied default).  All
     # built-in tools declare it explicitly; contract tests enforce that.
     permission_kind_explicit: bool = False
+    # Controls whether default LLM schema generation exposes this tool directly
+    # ("primary") or keeps it hidden as an execution-only alias ("alias_only").
+    schema_visibility: str = "primary"
 
     def to_openai_schema(self) -> dict:
         """Return an OpenAI function-calling schema dict for this tool."""
@@ -295,6 +298,7 @@ def tool(
     tags: Optional[List[str]] = None,
     description: Optional[str] = None,
     permission_kind: Optional[PermissionKind] = None,  # TASK-3
+    schema_visibility: str = "primary",
 ) -> Any:
     """Decorator that marks a function as an agent tool.
 
@@ -338,6 +342,7 @@ def tool(
             tags=list(tags or []),
             permission_kind=_perm,
             permission_kind_explicit=permission_kind is not None,
+            schema_visibility=schema_visibility,
         )
         setattr(fn, TOOL_ATTR, defn)
         return fn

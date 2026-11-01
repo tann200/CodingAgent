@@ -1100,9 +1100,12 @@ class ContextBuilder:
         except Exception as exc:
             logger.debug("context_builder: simple_mode/tier check failed: %s", exc)
 
-        use_native_tools = (
-            not _is_simple_mode  # NANO never uses native tools
-            and provider_capabilities is not None
+        # Native tool schemas are supplied via the API `tools` payload whenever
+        # the provider supports native tool calling; do NOT disable `use_native_tools`
+        # for SMALL models just because parallel tool calls are disabled, otherwise
+        # tool schemas are rendered in the system prompt AND sent in `tools` (2x cost).
+        use_native_tools = bool(
+            provider_capabilities is not None
             and provider_capabilities.get("supports_native_tools", False)
         )
 

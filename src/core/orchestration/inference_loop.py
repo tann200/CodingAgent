@@ -18,15 +18,15 @@ from src.core.orchestration.event_bus import new_correlation_id
 from src.core.messaging.event_types import SessionTitleGenerated
 from src.core.orchestration.graph.routing_constants import MAX_GRAPH_ROUNDS
 
+__all__ = ["run_agent_once_impl", "MAX_GRAPH_ROUNDS"]
+
 from src.core.orchestration.inference_loop_responses import (
     _build_graph_failure_response,
     _build_success_response,
 )
 from src.core.orchestration.inference_loop_rounds import (
-    _analyze_round_result,
     _build_loop_exit_response,
     _execute_graph_round,
-    _prepare_next_round_state,
 )
 from src.core.orchestration.inference_loop_state import (
     build_initial_state,
@@ -346,121 +346,14 @@ def run_agent_once_impl(
         _graph_executor = orch._graph_executor
 
         try:
-            # Allow multiple graph rounds to consume multi-turn tool sequences (bounded)
-            # F-71: single named constant; guard below uses >= so it fires at exactly
-            # MAX_TOOL_LOOP_ITERATIONS, not one beyond it.
-            # P1-T3: read from config key "max_graph_rounds" (default MAX_GRAPH_ROUNDS)
-            # so operators can tune the limit without touching source code.
-            _configured_rounds = (
-                int(_cfg_get("max_graph_rounds", MAX_GRAPH_ROUNDS))
-                if _cfg_get is not None
-                else MAX_GRAPH_ROUNDS
+            # 2026 Unified 6-Node Canonical Graph: single self-contained graph invocation
+            final_state = _execute_graph_round(
+                graph=graph,
+                orch=orch,
+                graph_executor=_graph_executor,
+                current_state=initial_state,
             )
-            MAX_TOOL_LOOP_ITERATIONS: int = _configured_rounds
-            max_rounds = MAX_TOOL_LOOP_ITERATIONS
-            current_state = initial_state
-
-            # Loop safeguard: track iterations for no-progress detection
-            loop_iteration = 0
-            last_assistant_tracker: dict[str, Any] = {"last": "", "count": 0}
-
-            for round_idx in range(max_rounds):
-                # Check for cancellation at the start of each round
-                if (
-                    cancel_event
-                    and hasattr(cancel_event, "is_set")
-                    and cancel_event.is_set()
-                ):
-                    guilogger.info(
-                        "Orchestrator: Task canceled by user during round loop"
-                    )
-                    break
-
-                guilogger.debug(
-                    f"Starting graph round {round_idx} (iteration {loop_iteration})"
-                )
-
-                next_state = _execute_graph_round(
-                    graph=graph,
-                    orch=orch,
-                    graph_executor=_graph_executor,
-                    current_state=current_state,
-                )
-
-                guilogger.info(
-                    f"Graph round {round_idx}: next_state keys: {list(next_state.keys()) if next_state else 'None'}"
-                )
-
-                # If nothing changed (no new assistant turn) or no next action, stop early
-                final_state = next_state
-
-                # CP-3.4: persist a durable, JSON-safe snapshot of this
-                # completed round so a crash mid-task can be recovered.
-                _try_save_thread_state(orch, final_state)
-
-                round_result = _analyze_round_result(final_state)
-                last_assistant = round_result["last_assistant"]
-                has_tool_block = bool(round_result["has_tool_block"])
-                handled = bool(round_result["handled"])
-
-                # If there's no unhandled tool block, we're done
-                if not has_tool_block or handled:
-                    content_preview = (last_assistant or "")[:200]
-                    guilogger.debug(
-                        "inference_loop: no unhandled tool block, exiting loop. "
-                        "Content preview: %r",
-                        content_preview,
-                    )
-                    break
-
-                # Increment iteration counter and check for infinite loop
-                loop_iteration += 1
-
-                # STRICT LIMIT: Never allow more than MAX_TOOL_LOOP_ITERATIONS tool call iterations
-                if loop_iteration >= MAX_TOOL_LOOP_ITERATIONS:
-                    guilogger.error(
-                        f"inference_loop: TOOL LOOP LIMIT EXCEEDED - {loop_iteration} iterations (max {MAX_TOOL_LOOP_ITERATIONS})"
-                    )
-                    final_state = final_state or {}
-                    final_state["errors"] = list(final_state.get("errors", [])) + [
-                        "infinite_loop_tool_limit"
-                    ]
-                    # P1-T5: surface the limit to the user as an assistant message so
-                    # they know why the task stopped rather than seeing a silent abort.
-                    _limit_msg = (
-                        f"Task stopped: the tool-call loop limit ({MAX_TOOL_LOOP_ITERATIONS} rounds) "
-                        "has been reached. This usually means the agent is stuck in a repeated "
-                        "tool-call cycle. Please review the conversation and start a new task."
-                    )
-                    _history = list(final_state.get("history", []))
-                    _history.append({"role": "assistant", "content": _limit_msg})
-                    final_state["history"] = _history
-                    final_state["assistant_message"] = _limit_msg
-                    _try_save_thread_state(orch, final_state)
-                    break
-
-                # Track last assistant message for no-progress detection
-                if last_assistant_tracker["last"] == last_assistant:
-                    last_assistant_tracker["count"] += 1
-                else:
-                    last_assistant_tracker["count"] = 0
-                    last_assistant_tracker["last"] = last_assistant
-
-                guilogger.info(
-                    f"inference_loop: iteration {loop_iteration}/{MAX_TOOL_LOOP_ITERATIONS}, "
-                    f"history length={len(final_state.get('history', []))}"
-                )
-
-                # SCAN3-1 fix: preserve ALL state from the completed round and
-                # only override the fields that must reset for the next round.
-                # Prior hand-rolled reconstruction silently discarded wave state,
-                # analysis results, loop counters, delegation state, and more.
-                current_state = _prepare_next_round_state(
-                    final_state=final_state,
-                    current_state=current_state,
-                    orch=orch,
-                    cancel_event=cancel_event,
-                )
+            _try_save_thread_state(orch, final_state)
         finally:
             # MED-5 fix: _graph_executor is now instance-level and shut down in
             # close() — do NOT shut it down here or subsequent calls will fail.

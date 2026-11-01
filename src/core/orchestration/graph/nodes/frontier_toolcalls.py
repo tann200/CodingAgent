@@ -17,9 +17,45 @@ module-level imports moved.  Behavior is covered by
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
+import yaml
 
 from src.core.orchestration.tool_parser import parse_tool_block
+
+
+def _parse_arguments_dict(raw: Any) -> dict:
+    """Parse tool arguments into a dictionary with fallbacks for local model quirks."""
+    if isinstance(raw, dict):
+        return raw
+    if not isinstance(raw, str):
+        return {}
+    s = raw.strip()
+    if not s:
+        return {}
+    if s.startswith("```"):
+        s = re.sub(r"^```[a-zA-Z0-9_-]*\s*\n?", "", s)
+        s = re.sub(r"\n?```\s*$", "", s).strip()
+    try:
+        parsed = json.loads(s, strict=False)
+        if isinstance(parsed, dict):
+            return parsed
+    except Exception:
+        pass
+    try:
+        cleaned = re.sub(r",\s*([\]}])", r"\1", s)
+        parsed = json.loads(cleaned, strict=False)
+        if isinstance(parsed, dict):
+            return parsed
+    except Exception:
+        pass
+    try:
+        parsed = yaml.safe_load(s)
+        if isinstance(parsed, dict):
+            return parsed
+    except Exception:
+        pass
+    return {}
 
 
 def _normalize_tool_call(tc: Any) -> tuple[str, dict]:
@@ -37,18 +73,12 @@ def _normalize_tool_call(tc: Any) -> tuple[str, dict]:
             or (tc.get("function", {}) or {}).get("arguments", {})
             or {}
         )
-        if isinstance(raw_args, str):
-            try:
-                raw_args = json.loads(raw_args)
-            except Exception:
-                raw_args = {}
-        return tool_name, raw_args if isinstance(raw_args, dict) else {}
+        return tool_name, _parse_arguments_dict(raw_args)
 
     try:
         tool_name = tc.function.name
-        raw_args = tc.function.arguments
-        tool_args = json.loads(raw_args) if isinstance(raw_args, str) else (raw_args or {})
-        return tool_name, tool_args if isinstance(tool_args, dict) else {}
+        raw_args = getattr(tc.function, "arguments", {})
+        return tool_name, _parse_arguments_dict(raw_args)
     except Exception:
         return "", {}
 

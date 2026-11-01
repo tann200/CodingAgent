@@ -3,7 +3,250 @@ from __future__ import annotations
 
 from src.core.messaging.event_types import LLMToken, ModelToken, ResponseStreamChunk, ResponseStreamEnd
 import json
-from typing import Any, Callable, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
+
+
+class StreamedTurnText(str):
+    """``str`` subclass returned by SSE streaming with structured turn metadata.
+
+    Preserves ``isinstance(val, str)`` and equality with plain strings while
+    exposing accumulated ``tool_calls``, ``thinking_blocks``,
+    ``reasoning_content``, ``finish_reason``, and ``usage`` so streamed turns
+    never drop native function calls or signed thinking blocks.
+    """
+
+    tool_calls: List[Dict[str, Any]]
+    thinking_blocks: List[Dict[str, Any]]
+    reasoning_content: str
+    finish_reason: str
+    usage: Dict[str, int]
+
+    def __new__(
+        cls,
+        text: str,
+        *,
+        tool_calls: Optional[List[Dict[str, Any]]] = None,
+        thinking_blocks: Optional[List[Dict[str, Any]]] = None,
+        reasoning_content: str = "",
+        finish_reason: str = "stop",
+        usage: Optional[Dict[str, int]] = None,
+    ) -> "StreamedTurnText":
+        obj = super().__new__(cls, text)
+        obj.tool_calls = list(tool_calls or [])
+        obj.thinking_blocks = list(thinking_blocks or [])
+        obj.reasoning_content = reasoning_content
+        obj.finish_reason = finish_reason or "stop"
+        obj.usage = dict(usage or {})
+        return obj
+
+
+class StreamedTurnAccumulator:
+    """Accumulates OpenAI and Anthropic SSE deltas for tool calls, thinking, and usage."""
+
+    def __init__(self) -> None:
+        self._openai_tool_calls: Dict[int, Dict[str, Any]] = {}
+        self._anthropic_blocks: Dict[int, Dict[str, Any]] = {}
+        self._reasoning_parts: List[str] = []
+        self.finish_reason: str = "stop"
+        self.usage: Dict[str, int] = {}
+
+    def record_reasoning(self, text: str) -> None:
+        if text:
+            self._reasoning_parts.append(text)
+
+    def feed_chunk(self, chunk: Dict[str, Any]) -> None:
+        """Process one parsed SSE JSON object (OpenAI or Anthropic shape)."""
+        if not isinstance(chunk, dict):
+            return
+
+        # 1. Anthropic SSE event shapes
+        chunk_type = chunk.get("type")
+        if chunk_type:
+            if chunk_type == "message_start":
+                msg = chunk.get("message") or {}
+                u = msg.get("usage") if isinstance(msg, dict) else None
+                if isinstance(u, dict):
+                    if "input_tokens" in u:
+                        self.usage["prompt_tokens"] = int(u.get("input_tokens") or 0)
+                    if "cache_creation_input_tokens" in u:
+                        self.usage["cache_creation_input_tokens"] = int(
+                            u.get("cache_creation_input_tokens") or 0
+                        )
+                    if "cache_read_input_tokens" in u:
+                        self.usage["cache_read_input_tokens"] = int(
+                            u.get("cache_read_input_tokens") or 0
+                        )
+            elif chunk_type == "content_block_start":
+                idx = int(chunk.get("index", 0) or 0)
+                cb = chunk.get("content_block") or {}
+                if isinstance(cb, dict):
+                    cb_type = cb.get("type")
+                    if cb_type == "tool_use":
+                        init_input = cb.get("input")
+                        init_parts: List[str] = []
+                        if isinstance(init_input, dict) and init_input:
+                            init_parts.append(json.dumps(init_input))
+                        self._anthropic_blocks[idx] = {
+                            "type": "tool_use",
+                            "id": str(cb.get("id") or f"toolu_{idx}"),
+                            "name": str(cb.get("name") or ""),
+                            "json_parts": init_parts,
+                        }
+                    elif cb_type == "thinking":
+                        init_think = str(cb.get("thinking") or "")
+                        self._anthropic_blocks[idx] = {
+                            "type": "thinking",
+                            "thinking_parts": [init_think] if init_think else [],
+                            "signature_parts": (
+                                [str(cb["signature"])] if cb.get("signature") else []
+                            ),
+                        }
+                    elif cb_type == "redacted_thinking":
+                        self._anthropic_blocks[idx] = {
+                            "type": "redacted_thinking",
+                            "data": str(cb.get("data") or ""),
+                        }
+            elif chunk_type == "content_block_delta":
+                idx = int(chunk.get("index", 0) or 0)
+                delta = chunk.get("delta") or {}
+                blk = self._anthropic_blocks.get(idx)
+                if isinstance(delta, dict) and isinstance(blk, dict):
+                    dtype = delta.get("type")
+                    if dtype == "input_json_delta" and blk.get("type") == "tool_use":
+                        part = delta.get("partial_json")
+                        if part:
+                            blk["json_parts"].append(str(part))
+                    elif dtype == "thinking_delta" and blk.get("type") == "thinking":
+                        tpart = delta.get("thinking")
+                        if tpart:
+                            blk["thinking_parts"].append(str(tpart))
+                    elif dtype == "signature_delta" and blk.get("type") == "thinking":
+                        spart = delta.get("signature")
+                        if spart:
+                            blk["signature_parts"].append(str(spart))
+            elif chunk_type == "message_delta":
+                delta = chunk.get("delta") or {}
+                if isinstance(delta, dict):
+                    sr = delta.get("stop_reason")
+                    if sr == "tool_use":
+                        self.finish_reason = "tool_calls"
+                    elif sr == "max_tokens":
+                        self.finish_reason = "length"
+                    elif sr:
+                        self.finish_reason = "stop"
+                u = chunk.get("usage")
+                if isinstance(u, dict) and "output_tokens" in u:
+                    self.usage["completion_tokens"] = int(u.get("output_tokens") or 0)
+            return
+
+        # 2. OpenAI-compatible SSE chunk shapes
+        u = chunk.get("usage")
+        if isinstance(u, dict):
+            if "prompt_tokens" in u:
+                self.usage["prompt_tokens"] = int(u.get("prompt_tokens") or 0)
+            if "completion_tokens" in u:
+                self.usage["completion_tokens"] = int(u.get("completion_tokens") or 0)
+            if "cache_creation_input_tokens" in u:
+                self.usage["cache_creation_input_tokens"] = int(
+                    u.get("cache_creation_input_tokens") or 0
+                )
+            if "cache_read_input_tokens" in u:
+                self.usage["cache_read_input_tokens"] = int(
+                    u.get("cache_read_input_tokens") or 0
+                )
+
+        choices = chunk.get("choices")
+        if not isinstance(choices, list) or not choices:
+            return
+        c0 = choices[0] if isinstance(choices[0], dict) else {}
+        fr = c0.get("finish_reason")
+        if fr:
+            self.finish_reason = str(fr)
+        delta = c0.get("delta")
+        if not isinstance(delta, dict):
+            return
+        delta_tcs = delta.get("tool_calls")
+        if isinstance(delta_tcs, list):
+            for pos, tc in enumerate(delta_tcs):
+                if not isinstance(tc, dict):
+                    continue
+                idx = int(tc.get("index", pos) or 0)
+                slot = self._openai_tool_calls.setdefault(
+                    idx,
+                    {
+                        "id": "",
+                        "type": "function",
+                        "name_parts": [],
+                        "arg_parts": [],
+                    },
+                )
+                if tc.get("id"):
+                    slot["id"] = str(tc["id"])
+                fn = tc.get("function")
+                if isinstance(fn, dict):
+                    if fn.get("name"):
+                        slot["name_parts"].append(str(fn["name"]))
+                    if fn.get("arguments") is not None:
+                        slot["arg_parts"].append(str(fn["arguments"]))
+
+    def build_tool_calls(self) -> List[Dict[str, Any]]:
+        out: List[Dict[str, Any]] = []
+        for idx in sorted(self._openai_tool_calls.keys()):
+            slot = self._openai_tool_calls[idx]
+            fn_name = "".join(slot["name_parts"])
+            fn_args = "".join(slot["arg_parts"]) or "{}"
+            out.append(
+                {
+                    "id": slot["id"] or f"call_{idx}",
+                    "type": "function",
+                    "function": {
+                        "name": fn_name,
+                        "arguments": fn_args,
+                    },
+                }
+            )
+        for idx in sorted(self._anthropic_blocks.keys()):
+            blk = self._anthropic_blocks[idx]
+            if blk.get("type") == "tool_use":
+                raw_json = "".join(blk.get("json_parts") or []).strip() or "{}"
+                out.append(
+                    {
+                        "id": blk.get("id") or f"toolu_{idx}",
+                        "type": "function",
+                        "function": {
+                            "name": blk.get("name") or "",
+                            "arguments": raw_json,
+                        },
+                    }
+                )
+        return out
+
+    def build_thinking_blocks(self) -> List[Dict[str, Any]]:
+        blocks: List[Dict[str, Any]] = []
+        for idx in sorted(self._anthropic_blocks.keys()):
+            blk = self._anthropic_blocks[idx]
+            btype = blk.get("type")
+            if btype == "thinking":
+                entry: Dict[str, Any] = {
+                    "type": "thinking",
+                    "thinking": "".join(blk.get("thinking_parts") or []),
+                }
+                sig = "".join(blk.get("signature_parts") or [])
+                if sig:
+                    entry["signature"] = sig
+                blocks.append(entry)
+            elif btype == "redacted_thinking":
+                blocks.append(
+                    {
+                        "type": "redacted_thinking",
+                        "data": blk.get("data") or "",
+                    }
+                )
+        return blocks
+
+    @property
+    def reasoning_content(self) -> str:
+        return "".join(self._reasoning_parts)
 
 def decode_sse_line(
     raw_line: Any,
@@ -76,8 +319,9 @@ def extract_stream_deltas(chunk: dict) -> Optional[Tuple[dict, str, str]]:
                     return delta, "", delta.get("text") or ""
                 elif delta_type == "thinking_delta":
                     return delta, delta.get("thinking") or "", ""
-                elif delta_type == "input_json_delta":
-                    return delta, "", delta.get("partial_json") or ""
+                elif delta_type in ("input_json_delta", "signature_delta"):
+                    # Accumulated as structured tool_calls / signature in StreamedTurnAccumulator
+                    return delta, "", ""
                 return delta, "", delta.get("text") or ""
             elif chunk_type == "content_block_start":
                 cb = chunk.get("content_block") or {}
@@ -216,16 +460,40 @@ def consume_generator_stream(gen: Any, model: Optional[str] = None) -> dict[str,
 
     full_text = finalize_stream(bus=bus, accumulated=accumulated_content)
 
+    normalized_tool_calls: List[dict[str, Any]] = []
+    for idx, tc in enumerate(tool_calls):
+        if not isinstance(tc, dict):
+            continue
+        item = dict(tc)
+        if not item.get("id"):
+            item["id"] = f"call_{idx}"
+        if not item.get("type"):
+            item["type"] = "function"
+        if "function" not in item or not isinstance(item.get("function"), dict):
+            raw_args = item.get("arguments", {})
+            arg_str = raw_args if isinstance(raw_args, str) else json.dumps(raw_args)
+            item["function"] = {
+                "name": str(item.get("name") or ""),
+                "arguments": arg_str,
+            }
+        else:
+            fn_copy = dict(item["function"])
+            raw_args = fn_copy.get("arguments", {})
+            if not isinstance(raw_args, str):
+                fn_copy["arguments"] = json.dumps(raw_args)
+            item["function"] = fn_copy
+        normalized_tool_calls.append(item)
+
     choice: dict[str, Any] = {
         "message": {
             "role": role,
             "content": full_text,
         },
-        "finish_reason": finish_reason,
+        "finish_reason": "tool_calls" if normalized_tool_calls and finish_reason == "stop" else finish_reason,
     }
-    if tool_calls:
-        choice["tool_calls"] = tool_calls
-        choice["message"]["tool_calls"] = tool_calls
+    if normalized_tool_calls:
+        choice["tool_calls"] = normalized_tool_calls
+        choice["message"]["tool_calls"] = normalized_tool_calls
 
     return {
         "ok": True,

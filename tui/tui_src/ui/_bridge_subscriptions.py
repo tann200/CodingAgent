@@ -72,6 +72,7 @@ TYPED_EVENT_ROUTING: list[tuple[str, str]] = [
     ("ToolExecuteStart", "_on_tool_start"),
     ("ToolExecuteFinish", "_on_tool_finish"),
     ("ToolExecuteError", "_on_tool_error"),
+    ("ToolResult", "_on_tool_finish"),
     ("FileDiffPreview", "_on_diff_preview"),
     ("FileModified", "_on_file_modified"),
     ("FileDeleted", "_on_file_deleted"),

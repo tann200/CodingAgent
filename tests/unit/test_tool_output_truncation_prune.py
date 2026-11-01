@@ -6,17 +6,12 @@ token-estimation helper now also used as the default estimator in
 src.core.context.token_truncation.
 """
 
-from src.core.orchestration.graph.nodes import perception_node, tool_output_truncation
+from src.core.orchestration.graph.nodes import tool_output_truncation
 from src.core.orchestration.graph.nodes.tool_output_truncation import (
     _PRUNED_TOOL_PLACEHOLDER,
     estimate_text_tokens,
     prune_tool_outputs,
 )
-
-
-def test_prune_tool_outputs_is_single_canonical_implementation():
-    """perception_node must import the canonical pruner, not its own clone."""
-    assert perception_node._prune_tool_outputs is prune_tool_outputs
 
 
 def test_default_return_is_list_for_existing_callers():

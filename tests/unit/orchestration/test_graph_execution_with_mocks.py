@@ -26,12 +26,7 @@ from src.core.inference.adapters.mock_adapter import MockAdapter
 # ── helper ────────────────────────────────────────────────────────────────────
 
 _CALL_MODEL_TARGETS = [
-    "src.core.orchestration.graph.nodes.execution_node.call_model",
-    "src.core.orchestration.graph.nodes.planning_node.call_model",
-    "src.core.orchestration.graph.nodes.perception_node.call_model",
-    "src.core.orchestration.graph.nodes.debug_node.call_model",
-    "src.core.orchestration.graph.nodes.replan_node.call_model",
-    "src.core.orchestration.graph.nodes.analysis_node.call_model",
+    "src.core.orchestration.graph.nodes.frontier_loop_node.call_model",
     "src.core.inference.llm_manager.call_model",
 ]
 
@@ -241,68 +236,6 @@ class TestContextBuilderWithMock:
             m.get("content", "") for m in messages if isinstance(m.get("content"), str)
         )
         assert "hello-world" in full_text or "Python" in full_text or len(messages) >= 1
-
-
-# ── MA-04: Planning node with MockAdapter ─────────────────────────────────────
-
-
-class TestPlanningNodeWithMock:
-    """MA-04: planning_node processes MockAdapter plan response into state."""
-
-    PLAN_RESPONSE = """
-## Plan
-
-| Step | Action | Target | Status |
-|------|--------|--------|--------|
-| 1 | read_file | src/main.py | pending |
-| 2 | edit_file | src/main.py | pending |
-| 3 | run_tests |  | pending |
-
-Goal: Add a hello-world function to main.py.
-""".strip()
-
-    @pytest.mark.asyncio
-    async def test_planning_node_populates_plan_content(self, tmp_path, monkeypatch):
-        from src.core.orchestration.graph.nodes.planning_node import planning_node
-        from src.core.orchestration.orchestrator import Orchestrator
-
-        adapter = MockAdapter(responses=[self.PLAN_RESPONSE])
-        _patch_call_model(monkeypatch, adapter)
-
-        orch = Orchestrator(working_dir=str(tmp_path))
-        state = {
-            "messages": [{"role": "user", "content": "Add hello world to main.py"}],
-            "task_text": "Add hello world to main.py",
-            "current_plan": None,
-            "plan_content": None,
-            "plan_steps": [],
-            "current_step": 0,
-            "turn_count": 1,
-            "max_turns": 50,
-            "next_action": None,
-            "last_result": None,
-            "error_message": None,
-            "context_files": [],
-            "indexed_files": [],
-            "analysis_summary": None,
-            "model_tier": None,
-            "plan_attempts": 0,
-            "replan_attempts": 0,
-            "plan_enforce_warnings": False,
-            "plan_mode_approved": None,
-        }
-        result = await planning_node(state, orch)
-        # planning_node must return a dict
-        assert isinstance(result, dict)
-        # plan_content or plan_steps should be populated if the mock was called
-        has_plan = (
-            result.get("plan_content")
-            or result.get("plan_steps")
-            or result.get("current_plan")
-        )
-        # Adapter call verifies the LLM integration path ran
-        if adapter.call_count > 0:
-            assert has_plan or result.get("error_message") is None
 
 
 # ── MA-05: Tool dispatch with MockAdapter ─────────────────────────────────────

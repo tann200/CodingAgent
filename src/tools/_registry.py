@@ -74,6 +74,44 @@ _BUILTIN_ALIASES: Dict[str, str] = {
     "fs.list": "list_files",
 }
 
+# Capability-dispatcher wrappers and deprecated duplicate tools kept registered
+# for execution compatibility ("alias_only") while excluded from default primary
+# OpenAI tool schemas so models see clean single-purpose primitives.
+_ALIAS_ONLY_TOOL_NAMES: frozenset[str] = frozenset(
+    {
+        "batch",
+        "code_search",
+        "delegate",
+        "files_delete",
+        "files_edit",
+        "files_list",
+        "files_move",
+        "files_read",
+        "files_search",
+        "files_write",
+        "format",
+        "git",
+        "lsp",
+        "memory",
+        "patch",
+        "plan",
+        "repo_inspect",
+        "shell",
+        "skills",
+        "state",
+        "symbols",
+        "tasks_wait",
+        "todo",
+        "user_interact",
+        "verify",
+        "web_read",
+        # Deprecated duplicate primitives
+        "run_tests_legacy",
+        "get_git_diff",
+        "edit_file",
+    }
+)
+
 
 class ToolRegistry:
     """Thread-safe registry of agent tools.
@@ -110,6 +148,7 @@ class ToolRegistry:
         self._plugin_count: int = 0
         self.working_dir: Optional[str] = working_dir
         self._orchestrator: Optional[Any] = None
+        self._explicit_filter: bool = False
 
     def set_orchestrator(self, orchestrator: Any) -> None:
         """Bind an active orchestrator to this registry for guarded tool execution."""
@@ -140,6 +179,7 @@ class ToolRegistry:
         description: str = "",
         tags: Optional[List[str]] = None,
         origin: str = "builtin",
+        schema_visibility: str = "primary",
     ) -> None:
         """Manually register a callable under *name*.
 
@@ -158,6 +198,9 @@ class ToolRegistry:
         origin:
             ``'builtin'`` (default) or ``'plugin'``.  Plugin registrations that
             attempt to overwrite a builtin name raise ``ValueError`` (TASK-03).
+        schema_visibility:
+            ``'primary'`` (default) or ``'alias_only'`` (executable, hidden from
+            default OpenAI schemas unless explicitly filtered).
         """
         entry: Dict[str, Any] = {
             "fn": fn,
@@ -165,6 +208,7 @@ class ToolRegistry:
             "description": description or (fn.__doc__ or "").strip().split("\n")[0],
             "tags": list(tags or []),
             "name": name,
+            "schema_visibility": schema_visibility,
         }
         # Hold the lock for the entire check-and-register sequence to prevent
         # TOCTOU races between the builtin-conflict check, the plugin-cap check,
@@ -208,12 +252,19 @@ class ToolRegistry:
             description=defn.description,
             tags=defn.tags,
             origin=origin,
+            schema_visibility=getattr(defn, "schema_visibility", "primary"),
         )
         # Store the ToolDefinition on the entry so tool_preflight.py can
         # access validate_args() without re-importing _tool.py at call time.
         with self._lock:
             if defn.name in self._tools:
                 self._tools[defn.name]["__tool_meta__"] = defn
+
+    def set_schema_visibility(self, name: str, visibility: str) -> None:
+        """Update schema_visibility ('primary' | 'alias_only') on a registered tool."""
+        with self._lock:
+            if name in self._tools:
+                self._tools[name]["schema_visibility"] = visibility
 
     def alias(self, alias_name: str, canonical_name: str) -> None:
         """Register *alias_name* as an alias for an already-registered tool."""
@@ -226,6 +277,7 @@ class ToolRegistry:
             return
         entry = dict(canonical)
         entry["name"] = alias_name
+        entry["schema_visibility"] = "alias_only"
         with self._lock:
             self._tools[alias_name] = entry
 
@@ -387,18 +439,25 @@ class ToolRegistry:
 
         return entry["fn"](**kwargs)
 
-    def get_openai_functions(self) -> List[Dict[str, Any]]:
-        """Return all tools formatted as OpenAI function-calling schemas.
+    def get_openai_functions(self, include_aliases: bool = False) -> List[Dict[str, Any]]:
+        """Return registered tools formatted as OpenAI function-calling schemas.
 
-        Aliases share the same underlying function and therefore produce
-        identical schema entries (same canonical name). We deduplicate by
-        the schema function name so the LLM receives each tool exactly once.
+        Entries marked ``schema_visibility='alias_only'`` (capability wrappers,
+        short aliases, and deprecated duplicates) remain executable in the
+        registry while hidden from default schemas unless ``include_aliases``
+        is True or ``filter_by_names()`` explicitly selected them.
         """
         with self._lock:
             items = list(self._tools.items())
         seen: set = set()
         result = []
         for name, entry in items:
+            if (
+                not include_aliases
+                and not self._explicit_filter
+                and entry.get("schema_visibility") == "alias_only"
+            ):
+                continue
             fn = entry.get("fn")
             if not fn:
                 continue
@@ -432,6 +491,7 @@ class ToolRegistry:
         """Return a new registry restricted to the given tool *names*."""
         sub = ToolRegistry(working_dir=self.working_dir)
         sub._orchestrator = self._orchestrator
+        sub._explicit_filter = True
         with self._lock:
             for n in names:
                 if n in self._tools:
@@ -578,6 +638,11 @@ def build_registry(
     # Discover all built-in tool modules (auto-discovered, TW-5)
     for mod_name in _builtin_module_names():
         reg.discover_module_name(mod_name)
+
+    # Mark capability wrappers and deprecated duplicate tools as alias_only so
+    # they stay executable while primary schema queries remain flat primitives.
+    for _alias_tool_name in _ALIAS_ONLY_TOOL_NAMES:
+        reg.set_schema_visibility(_alias_tool_name, "alias_only")
 
     # Register built-in aliases
     for alias, canonical in _BUILTIN_ALIASES.items():

@@ -123,33 +123,35 @@ def _prepare_next_round_state(
     _prev_working_dir = current_state.get("working_dir")
     _prev_system_prompt = current_state.get("system_prompt")
 
-    # P2-T4: context-budget compaction — if history is large, compact it via
-    # distiller to prevent unbounded context growth across rounds.
-    # Threshold: ~6 000 tokens (≈ 24 KB) estimated by the distiller helper.
-    _HISTORY_TOKEN_THRESHOLD = 6000
+    # P2-T4: context-budget compaction — scale threshold to runtime.policy.context_window
+    # when present (falling back to 6 000 tokens for bare legacy states) and preserve
+    # TurnGroup atomicity on recent slices so assistant.tool_calls + role="tool" stay paired.
+    _rt_policy = ((final_state.get("runtime") or current_state.get("runtime") or {}).get("policy") or {})
+    _ctx_win = int(_rt_policy.get("context_window") or 0) if isinstance(_rt_policy, dict) else 0
+    _trig_ratio = float(_rt_policy.get("compaction_trigger_ratio") or 0.75) if isinstance(_rt_policy, dict) else 0.75
+    _HISTORY_TOKEN_THRESHOLD = max(6000, int(_ctx_win * _trig_ratio)) if _ctx_win > 0 else 6000
     try:
         from src.core.memory.distiller import (  # noqa: PLC0415
             _KEEP_RECENT as _KEEP_RECENT_MSGS,
             compact_messages_to_prose as _compact,
             _estimate_tokens as _est,
         )
+        from src.core.orchestration.graph.nodes.compact_node import group_atomic_turns
 
         _token_est = _est(_next_history)
         if _token_est > _HISTORY_TOKEN_THRESHOLD:
             _wdir = _prev_working_dir or final_state.get("working_dir") or ""
             _prose = _compact(_next_history, Path(_wdir) if _wdir else None)
             if _prose:
-                # WR-3: preserve role alternation — a single `user` blob with a
-                # "[Context summary]" prefix flattens every prior role and can
-                # produce back-to-back user turns.  Mirror the convention used by
-                # distill_context (TASK-08/OP-8): keep the most recent messages
-                # verbatim after an injected `[COMPACTED]` system summary, and end
-                # with one user continuation turn.
-                _recent = (
-                    _next_history[-_KEEP_RECENT_MSGS:]
-                    if len(_next_history) >= _KEEP_RECENT_MSGS
-                    else list(_next_history)
-                )
+                _groups = group_atomic_turns(list(_next_history))
+                _recent_groups_rev: list[list[dict[str, Any]]] = []
+                _msg_acc = 0
+                for _grp in reversed(_groups):
+                    if _recent_groups_rev and _msg_acc + len(_grp) > _KEEP_RECENT_MSGS:
+                        break
+                    _recent_groups_rev.append(_grp)
+                    _msg_acc += len(_grp)
+                _recent = [m for g in reversed(_recent_groups_rev) for m in g]
                 _tail_user = (
                     _recent[-1] if _recent and _recent[-1].get("role") == "user" else None
                 )

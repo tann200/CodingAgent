@@ -58,3 +58,40 @@ arguments: {"path": "src/main.py", "content": "hello world"}
     assert res["name"] == "edit_file"
     assert res["arguments"]["path"] == "src/main.py"
     assert res["arguments"]["content"] == "hello world"
+
+
+def test_parse_json_with_trailing_commas():
+    """Test JSON block with trailing comma commonly emitted by local models."""
+    text = """I will run the command now:
+    {"name": "bash", "arguments": {"command": "git status",}}"""
+    res = parse_tool_block(text)
+    assert res is not None
+    assert res["name"] == "bash"
+    assert res["arguments"]["command"] == "git status"
+
+
+def test_normalize_tool_call_handles_local_model_variations():
+    """Test that _normalize_tool_call handles trailing commas and code fences in raw args."""
+    from src.core.orchestration.graph.nodes.frontier_toolcalls import _normalize_tool_call
+
+    # Raw string with markdown fence and trailing comma
+    tc = {
+        "name": "edit_file",
+        "arguments": "```json\n{\"path\": \"src/main.py\", \"content\": \"hello\",}\n```",
+    }
+    name, args = _normalize_tool_call(tc)
+    assert name == "edit_file"
+    assert args == {"path": "src/main.py", "content": "hello"}
+
+
+def test_normalize_tool_call_with_raw_newlines_in_json():
+    from src.core.orchestration.graph.nodes.frontier_toolcalls import _normalize_tool_call
+
+    # Local smaller models emitting raw literal newlines in arguments JSON
+    tc = {
+        "name": "write_file",
+        "arguments": '{"path": "test.py", "content": "line1\nline2"}',
+    }
+    name, args = _normalize_tool_call(tc)
+    assert name == "write_file"
+    assert args == {"path": "test.py", "content": "line1\nline2"}

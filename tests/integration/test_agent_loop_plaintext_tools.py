@@ -9,11 +9,7 @@ pytestmark = pytest.mark.integration
 
 # Modules that import call_model directly at module load time — all must be patched.
 _CALL_MODEL_TARGETS = [
-    "src.core.orchestration.graph.nodes.execution_node.call_model",
-    "src.core.orchestration.graph.nodes.planning_node.call_model",
-    "src.core.orchestration.graph.nodes.perception_node.call_model",
-    "src.core.orchestration.graph.nodes.debug_node.call_model",
-    "src.core.orchestration.graph.nodes.replan_node.call_model",
+    "src.core.orchestration.graph.nodes.frontier_loop_node.call_model",
     "src.core.inference.llm_manager.call_model",
 ]
 

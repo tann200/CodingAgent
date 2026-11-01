@@ -12,6 +12,7 @@ environments (GitHub Actions). They serve as regression guards, not SLAs.
 # ruff: noqa: E501
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 import tempfile
@@ -103,93 +104,6 @@ class TestToolDispatchBenchmark:
 
 
 # ---------------------------------------------------------------------------
-# Benchmark 2: Planning node overhead (mocked LLM)
-# ---------------------------------------------------------------------------
-
-
-class TestPlanningBenchmark:
-    """Measure planning_node latency with a mocked call_model."""
-
-    @pytest.mark.asyncio
-    async def test_planning_node_latency_3_steps(self):
-        """planning_node must return within 500 ms for a 3-step plan (mocked LLM)."""
-        from src.core.orchestration.graph.nodes.planning_node import planning_node
-
-        workdir = _make_workdir()
-        mock_response = _mock_plan_response(3)
-
-        orch = MagicMock()
-        orch.working_dir = str(workdir)
-        orch.session_store = MagicMock()
-        orch.get_provider_capabilities = MagicMock(return_value={})
-        orch.cancel_event = None
-
-        async def _fast_model(*args, **kwargs):
-            return mock_response
-
-        state: Dict[str, Any] = {
-            "task": "Refactor main function",
-            "working_dir": str(workdir),
-            "current_plan": [],
-            "current_step": 0,
-            "task_decomposed": False,
-            "plan_attempts": 0,
-            "history": [],
-        }
-        config = {"configurable": {"orchestrator": orch}}
-
-        start = time.perf_counter()
-        with patch(
-            "src.core.orchestration.graph.nodes.planning_node.call_model",
-            side_effect=_fast_model,
-        ):
-            result = await planning_node(state, config)
-        elapsed_ms = (time.perf_counter() - start) * 1000
-
-        assert elapsed_ms < 500, f"planning_node too slow: {elapsed_ms:.1f} ms"
-        assert len(result.get("current_plan", [])) > 0
-
-    @pytest.mark.asyncio
-    async def test_planning_node_latency_10_steps(self):
-        """planning_node must return within 1000 ms for a 10-step plan (mocked LLM)."""
-        from src.core.orchestration.graph.nodes.planning_node import planning_node
-
-        workdir = _make_workdir()
-        mock_response = _mock_plan_response(10)
-
-        orch = MagicMock()
-        orch.working_dir = str(workdir)
-        orch.session_store = MagicMock()
-        orch.get_provider_capabilities = MagicMock(return_value={})
-        orch.cancel_event = None
-
-        async def _fast_model(*args, **kwargs):
-            return mock_response
-
-        state: Dict[str, Any] = {
-            "task": "Big refactor with 10 steps",
-            "working_dir": str(workdir),
-            "current_plan": [],
-            "current_step": 0,
-            "task_decomposed": False,
-            "plan_attempts": 0,
-            "history": [],
-        }
-        config = {"configurable": {"orchestrator": orch}}
-
-        start = time.perf_counter()
-        with patch(
-            "src.core.orchestration.graph.nodes.planning_node.call_model",
-            side_effect=_fast_model,
-        ):
-            result = await planning_node(state, config)
-        elapsed_ms = (time.perf_counter() - start) * 1000
-
-        assert elapsed_ms < 1000, f"planning_node 10-step plan too slow: {elapsed_ms:.1f} ms"
-        assert len(result.get("current_plan", [])) == 10
-
-
-# ---------------------------------------------------------------------------
 # Benchmark 3: DAG parser throughput
 # ---------------------------------------------------------------------------
 
@@ -253,3 +167,85 @@ class TestDAGParserBenchmark:
 
         assert waves is not None # type: ignore[possibly-undefined]
         assert elapsed_ms < 10, f"topological_sort_waves too slow: {elapsed_ms:.2f} ms/call"
+
+
+# ---------------------------------------------------------------------------
+# Benchmark 4: Token efficiency & parallel wave dispatch latency
+# ---------------------------------------------------------------------------
+
+
+class TestTokenEfficiencyAndParallelWavesBenchmark:
+    """Benchmark token footprint reduction and parallel wave dispatch speed."""
+
+    def test_compact_vs_frontier_toolset_token_efficiency(self):
+        """compact-flat (12 tools) must reduce tool schema size by >= 40% vs frontier-flat (25 tools)."""
+        workdir = _make_workdir()
+        orch = _make_orchestrator(workdir)
+
+        from src.core.orchestration.graph.runtime_policy import (
+            COMPACT_RUNTIME_POLICY,
+            FRONTIER_RUNTIME_POLICY,
+            resolve_effective_tool_schemas,
+        )
+
+        compact_schemas = resolve_effective_tool_schemas(orch, COMPACT_RUNTIME_POLICY)
+        frontier_schemas = resolve_effective_tool_schemas(orch, FRONTIER_RUNTIME_POLICY)
+
+        assert len(compact_schemas) <= 12, f"Expected <= 12 tools for compact-flat, got {len(compact_schemas)}"
+        assert len(frontier_schemas) >= 20, f"Expected >= 20 tools for frontier-flat, got {len(frontier_schemas)}"
+
+        compact_bytes = len(json.dumps(compact_schemas))
+        frontier_bytes = len(json.dumps(frontier_schemas))
+        reduction_ratio = 1.0 - (compact_bytes / frontier_bytes)
+
+        # Must save at least 40% tool schema footprint to maximize KV cache and prompt efficiency on 9-14B models
+        assert reduction_ratio >= 0.40, f"Expected >= 40% reduction, achieved {reduction_ratio * 100:.1f}%"
+
+    @pytest.mark.asyncio
+    async def test_parallel_read_wave_dispatch_latency(self):
+        """Parallel wave partition and concurrent execution must complete in under 100 ms for 3 reads."""
+        workdir = _make_workdir()
+        orch = _make_orchestrator(workdir)
+
+        for i in range(3):
+            (workdir / f"bench_{i}.py").write_text(f"def foo_{i}(): return {i}\n")
+
+        from src.core.orchestration.graph.nodes.frontier_dispatch import (
+            execute_raw_tool,
+            normalize_tool_calls_with_ids,
+            partition_tool_call_waves,
+        )
+
+        raw_calls = [
+            {"function": {"name": "read_file", "arguments": json.dumps({"path": f"bench_{i}.py"})}}
+            for i in range(3)
+        ]
+        norm = normalize_tool_calls_with_ids(raw_calls, turn_index=1)
+        waves = partition_tool_call_waves(norm, orch, max_parallel_reads=3)
+
+        assert len(waves) == 1
+        is_parallel, wave_items = waves[0]
+        assert is_parallel is True
+        assert len(wave_items) == 3
+
+        start = time.perf_counter()
+        results = await asyncio.gather(*[
+            execute_raw_tool(orch, {"name": t_name, "arguments": t_args}, model_tier="medium", run_async=True)
+            for (_cid, t_name, t_args, _otc) in wave_items
+        ])
+        elapsed_ms = (time.perf_counter() - start) * 1000
+
+        assert len(results) == 3
+        for res in results:
+            assert res.get("ok") is True or res.get("status") == "ok"
+        assert elapsed_ms < 100, f"Parallel read wave too slow: {elapsed_ms:.1f} ms"
+
+    def test_evaluation_cli_list_scenarios_smoke(self, capsys):
+        """CLI runner 'list' must output available evaluation scenarios without error."""
+        from src.core.evaluation.cli import main
+
+        ret = main(["list"])
+        assert ret == 0
+        captured = capsys.readouterr()
+        assert "scenarios" in captured.out
+

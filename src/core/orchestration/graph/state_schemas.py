@@ -1,22 +1,19 @@
 """Focused node-result schemas and graph-boundary transition enforcement.
 
-STATE-01: Instead of only logging state issues, each cognitive node now has a
+STATE-01: Instead of only logging state issues, each cognitive node has a
 declared *output schema* describing the keys its result dict may write into
 ``AgentState``.  The graph boundary wrapper validates the dict a node returns
 and either raises a structured ``NodeResultViolation`` (fail-closed/strict) or
 logs + emits a typed ``NodeResultValidationFailed`` event (fail-open/default),
 so an invalid transition cannot silently pollute shared state.
 
-Contract (per node):
-- ``allowed_keys`` — the complete set of top-level keys the node is known to
-  write.  Keys outside this set are *unknown* and rejected.  These allow-lists
-  are exhaustive supersets gathered from every return path of each node, so a
-  correct result can never be rejected.
-- ``core_keys`` — top-level keys present in *every* return shape of the node.
-  A result missing a core key is *broken*.  ``execution`` has divergent shapes
-  (the preview-mode early return shares no keys with the tool-call success
-  path), so its core is deliberately empty and only the structural allow-list
-  is enforced.
+Canonical 2026 6-Node Architecture:
+- initialize
+- agent_loop (alias frontier_loop)
+- approval (delegate wait_for_user)
+- verify (delegate verification)
+- compact
+- finalize (delegate memory_sync)
 """
 
 from __future__ import annotations
@@ -32,9 +29,7 @@ from src.core.messaging.event_types import NodeResultValidationFailed
 
 _logger = logging.getLogger(__name__)
 
-# Per-node output schemas (see module docstring for the contract).  The
-# allow-list unions were derived from an exhaustive inventory of every return
-# path (see docs/ARCHITECTURAL_REVIEW_AND_ROADMAP.md, STATE-01).
+
 @dataclass(frozen=True)
 class NodeOutputSchema:
     """Declared output contract for a single cognitive node."""
@@ -43,243 +38,66 @@ class NodeOutputSchema:
     core_keys: tuple[str, ...] = ()
 
 
+_CANONICAL_LOOP_KEYS = frozenset(
+    {
+        "history",
+        "tool_call_count",
+        "last_result",
+        "last_tool_name",
+        "errors",
+        "_frontier_loop_turns",
+        "awaiting_plan_approval",
+        "plan_mode_blocked_tool",
+        "next_action",
+        "inline_verification_failures",
+        "replan_required",
+        "action_failed",
+        "_budget_compaction",
+        "_should_distill",
+        "plan_completed",
+        "modified_files",
+        "_verified_file_hashes",
+        "retrieved_snippets",
+        "active_role",
+        "runtime",
+        "run",
+        "pending_action",
+        "last_action",
+        "verification",
+    }
+)
+
+_CANONICAL_APPROVAL_KEYS = frozenset(
+    {
+        "pending_action",
+        "next_action",
+        "last_action",
+        "run",
+        "awaiting_plan_approval",
+        "awaiting_user_input",
+        "plan_mode_approved",
+        "plan_mode_blocked_tool",
+        "last_result",
+        "preview_confirmed",
+        "pending_preview_id",
+        "errors",
+    }
+)
+
+_CANONICAL_VERIFY_KEYS = frozenset(
+    {
+        "verification",
+        "verification_result",
+        "verification_passed",
+        "run",
+        "errors",
+        "modified_files",
+        "history",
+        "_verified_file_hashes",
+    }
+)
+
 _NODE_OUTPUT_SCHEMAS: dict[str, NodeOutputSchema] = {
-    "perception": NodeOutputSchema(
-        frozenset(
-            {
-                "history",
-                "next_action",
-                "rounds",
-                "errors",
-                "turn_count",
-                "last_result",
-                "empty_response_count",
-                "needs_clarification",
-                "model_tier",
-                "_compacted_history",
-                "_budget_compaction",
-                "_should_distill",
-                "session_cost_usd",
-                "snapshots",
-                "current_plan",
-                "current_step",
-                "task_decomposed",
-                "original_task",
-                "agent_mode",
-                "active_role",
-                "task_complexity",
-                "_compaction_last_round",
-            }
-        ),
-        core_keys=("history", "next_action", "rounds"),
-    ),
-    "planning": NodeOutputSchema(
-        frozenset(
-            {
-                "current_plan",
-                "current_step",
-                "plan_attempts",
-                "plan_mode_approved",
-                "errors",
-                "task_decomposed",
-                "plan_resumed",
-                "step_description",
-                "next_action",
-                "plan_dag",
-                "execution_waves",
-                "current_wave",
-                "affected_files",
-                "relevant_files",
-                "key_symbols",
-                "plan_history",
-            }
-        ),
-        core_keys=("current_plan", "current_step", "plan_attempts", "plan_mode_approved"),
-    ),
-    "execution": NodeOutputSchema(
-        frozenset(
-            {
-                "last_result",
-                "errors",
-                "next_action",
-                "history",
-                "_compacted_history",
-                "_budget_compaction",
-                "_should_distill",
-                "step_retry_counts",
-                "current_step",
-                "current_plan",
-                "task",
-                "tool_call_count",
-                "doom_loop_behavior",
-                "recent_tool_calls",
-                "awaiting_plan_approval",
-                "awaiting_user_input",
-                "plan_mode_blocked_tool",
-                "pending_preview_id",
-                "preview_confirmed",
-                "last_tool_name",
-                "verified_reads",
-                "tool_last_used",
-                "files_read",
-                "current_wave",
-                "replan_required",
-                "action_failed",
-                "plan_progress",
-                "plan_mode_approved",
-                "no_plan_fail_count",
-                "affected_files",
-                "snapshots",
-            }
-        ),
-        # The preview-mode early return shares no keys with the tool-call
-        # success path, so there is no single key present in every shape.
-        # Enforcement here is structural (allow-list) only.
-        core_keys=(),
-    ),
-    "verification": NodeOutputSchema(
-        frozenset(
-            {
-                "verification_result",
-                "verification_passed",
-                "verification",
-                "run",
-            }
-        ),
-        core_keys=("verification_result",),
-    ),
-    "analysis": NodeOutputSchema(
-        frozenset(
-            {
-                "analysis_summary",
-                "relevant_files",
-                "key_symbols",
-                "repo_summary_data",
-                "call_graph",
-                "test_map",
-                "analysis_failed",
-            }
-        ),
-        core_keys=("analysis_summary", "relevant_files", "key_symbols"),
-    ),
-    "step_controller": NodeOutputSchema(
-        frozenset(
-            {
-                "next_action",
-                "step_description",
-                "planned_action",
-                "step_retry_counts",
-                "step_lint_warnings",
-            }
-        ),
-        # Path A returns {} (disabled/no plan), so there is no single key in
-        # every return shape.
-        core_keys=(),
-    ),
-    "evaluation": NodeOutputSchema(
-        frozenset(
-            {
-                "evaluation_result",
-                "evaluation_llm_verdict",
-                "evaluation_llm_reason",
-                "next_action",
-                "errors",
-                "replan_required",
-                "action_failed",
-            }
-        ),
-        core_keys=("evaluation_result",),
-    ),
-    "debug": NodeOutputSchema(
-        frozenset(
-            {
-                "next_action",
-                "errors",
-                "debug_attempts",
-                "total_debug_attempts",
-                "total_recovery_attempts",
-                "last_debug_error_type",
-            }
-        ),
-        core_keys=("next_action",),
-    ),
-    "replan": NodeOutputSchema(
-        frozenset(
-            {
-                "replan_required",
-                "action_failed",
-                "replan_attempts",
-                "total_recovery_attempts",
-                "errors",
-                "current_plan",
-                "current_step",
-                "execution_waves",
-                "last_plan_hash",
-                "history",
-            }
-        ),
-        core_keys=("replan_required", "action_failed", "replan_attempts", "total_recovery_attempts"),
-    ),
-    "delegation": NodeOutputSchema(
-        frozenset({"delegation_results", "history", "_file_lock_manager"}),
-        # Path A returns {} (no delegations), so core is empty.
-        core_keys=(),
-    ),
-    "analyst_delegation": NodeOutputSchema(
-        frozenset({"analyst_findings"}),
-        core_keys=("analyst_findings",),
-    ),
-    "wait_for_user": NodeOutputSchema(
-        frozenset(
-            {
-                "awaiting_plan_approval",
-                "awaiting_user_input",
-                "plan_mode_approved",
-                "plan_mode_blocked_tool",
-                "last_result",
-                "preview_confirmed",
-                "pending_preview_id",
-            }
-        ),
-        core_keys=("awaiting_user_input",),
-    ),
-    "memory_sync": NodeOutputSchema(
-        frozenset({"_force_compact", "errors", "analysis_summary", "history"}),
-        core_keys=("_force_compact", "errors"),
-    ),
-    "plan_validator": NodeOutputSchema(
-        frozenset({"plan_validation", "errors", "action_failed"}),
-        core_keys=("plan_validation",),
-    ),
-    "frontier_loop": NodeOutputSchema(
-        frozenset(
-            {
-                "history",
-                "tool_call_count",
-                "last_result",
-                "last_tool_name",
-                "errors",
-                "_frontier_loop_turns",
-                "awaiting_plan_approval",
-                "next_action",
-                "inline_verification_failures",
-                "replan_required",
-                "action_failed",
-                "_budget_compaction",
-                "_should_distill",
-                "plan_completed",
-                "modified_files",
-                "retrieved_snippets",
-                "active_role",
-                "runtime",
-                "run",
-                "pending_action",
-                "last_action",
-                "verification",
-            }
-        ),
-        core_keys=(),
-    ),
     "initialize": NodeOutputSchema(
         frozenset(
             {
@@ -295,41 +113,12 @@ _NODE_OUTPUT_SCHEMAS: dict[str, NodeOutputSchema] = {
         ),
         core_keys=("runtime", "run"),
     ),
-    "agent_loop": NodeOutputSchema(
+    "agent_loop": NodeOutputSchema(_CANONICAL_LOOP_KEYS, core_keys=()),
+    "frontier_loop": NodeOutputSchema(_CANONICAL_LOOP_KEYS, core_keys=()),
+    "approval": NodeOutputSchema(_CANONICAL_APPROVAL_KEYS, core_keys=()),
+    "wait_for_user": NodeOutputSchema(
         frozenset(
             {
-                "history",
-                "tool_call_count",
-                "last_result",
-                "last_tool_name",
-                "errors",
-                "_frontier_loop_turns",
-                "awaiting_plan_approval",
-                "next_action",
-                "inline_verification_failures",
-                "replan_required",
-                "action_failed",
-                "_budget_compaction",
-                "_should_distill",
-                "plan_completed",
-                "modified_files",
-                "retrieved_snippets",
-                "active_role",
-                "runtime",
-                "run",
-                "pending_action",
-                "last_action",
-                "verification",
-            }
-        ),
-        core_keys=(),
-    ),
-    "approval": NodeOutputSchema(
-        frozenset(
-            {
-                "pending_action",
-                "last_action",
-                "run",
                 "awaiting_plan_approval",
                 "awaiting_user_input",
                 "plan_mode_approved",
@@ -337,43 +126,21 @@ _NODE_OUTPUT_SCHEMAS: dict[str, NodeOutputSchema] = {
                 "last_result",
                 "preview_confirmed",
                 "pending_preview_id",
-                "errors",
             }
         ),
-        core_keys=(),
+        core_keys=("awaiting_user_input",),
     ),
-    "verify": NodeOutputSchema(
+    "verify": NodeOutputSchema(_CANONICAL_VERIFY_KEYS, core_keys=()),
+    "verification": NodeOutputSchema(
         frozenset(
             {
-                "verification",
                 "verification_result",
                 "verification_passed",
+                "verification",
                 "run",
-                "errors",
-                "modified_files",
             }
         ),
-        core_keys=(),
-    ),
-    "recover": NodeOutputSchema(
-        frozenset(
-            {
-                "pending_action",
-                "last_action",
-                "run",
-                "errors",
-                "history",
-                "current_plan",
-                "current_step",
-                "replan_attempts",
-                "debug_attempts",
-                "total_debug_attempts",
-                "next_action",
-                "replan_required",
-                "action_failed",
-            }
-        ),
-        core_keys=(),
+        core_keys=("verification_result",),
     ),
     "compact": NodeOutputSchema(
         frozenset(
@@ -406,18 +173,16 @@ _NODE_OUTPUT_SCHEMAS: dict[str, NodeOutputSchema] = {
         ),
         core_keys=(),
     ),
+    "memory_sync": NodeOutputSchema(
+        frozenset({"_force_compact", "errors", "analysis_summary", "history"}),
+        core_keys=("_force_compact", "errors"),
+    ),
 }
 
 
 @dataclass
 class NodeResultViolation(Exception):
-    """Structured error for an invalid node->state transition.
-
-    Attributes:
-        node_name: the graph node that produced the invalid result.
-        reason: short machine-readable reason (``unknown_key``, ``missing_core_key``).
-        details: a list of human-readable detail messages.
-    """
+    """Structured error for an invalid node->state transition."""
 
     node_name: str
     reason: str
@@ -436,7 +201,7 @@ def get_node_output_schema(node_name: str) -> NodeOutputSchema | None:
 
 
 def register_node_output_schema(node_name: str, schema: NodeOutputSchema) -> None:
-    """Register (or override) the output schema for a node.  For tests/extensions."""
+    """Register (or override) the output schema for a node. For tests/extensions."""
     _NODE_OUTPUT_SCHEMAS[node_name] = schema
 
 
@@ -491,26 +256,7 @@ def wrap_node(
     strict: bool = False,
     publish_violation: Callable[[NodeResultViolation], None] | None = None,
 ) -> Callable[..., Any]:
-    """Wrap a graph node so its returned state update is validated at the boundary.
-
-    Parameters
-    ----------
-    node_name:
-        The graph node name (must have a registered schema, else passes through).
-    fn:
-        The node implementation (sync or async).
-    strict:
-        When True, an invalid result raises the first ``NodeResultViolation``
-        (fail-closed).  When False (default), violations are logged and emitted
-        as a typed ``NodeResultValidationFailed`` event via the orchestrator's
-        event bus (resolved from state/config) — the live graph runs fail-open
-        by default so a bad transition is surfaced, not fatal.
-    publish_violation:
-        Optional callback invoked with each violation.  Overrides the default
-        orchestrator-event-bus publisher.  Called only in non-strict mode.
-
-    Returns a wrapper that preserves sync/async semantics of ``fn``.
-    """
+    """Wrap a graph node so its returned state update is validated at the boundary."""
     if node_name not in _NODE_OUTPUT_SCHEMAS:
         return fn
 
@@ -560,11 +306,7 @@ def _default_publish_violation(
     config: Any,
     violation: NodeResultViolation,
 ) -> None:
-    """Publish a ``NodeResultValidationFailed`` typed event via the orchestrator.
-
-    Resolves the orchestrator from ``state``/``config`` (same strategy as the
-    nodes) and falls back to the global singleton EventBus.  Never raises.
-    """
+    """Publish a ``NodeResultValidationFailed`` typed event via the orchestrator."""
     try:
         from src.core.orchestration.graph.nodes.node_utils import (
             _resolve_orchestrator,
@@ -586,9 +328,6 @@ def _default_publish_violation(
                     session_id=session_id if isinstance(session_id, str) else "",
                 )
             )
-        # Observability (ITEM 2.3 / CF-5): accumulate fail-open violations so
-        # operators/telemetry can observe their rate and distribution.  Guarded
-        # so a metrics failure can never break node execution (graceful).
         try:
             from src.core.observability.metrics import metrics
 
@@ -635,5 +374,5 @@ def _enforce(
             raise violation
         try:
             publisher(violation)
-        except Exception:  # publisher failure must not break the node
+        except Exception:
             _logger.debug("state_schemas: publish_violation failed", exc_info=True)

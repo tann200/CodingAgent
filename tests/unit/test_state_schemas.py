@@ -1,12 +1,7 @@
 """STATE-01: focused node-result schemas + graph-boundary transition enforcement.
 
 Contract tests for ``src/core/orchestration/graph/state_schemas.py``.
-
-Scenario coverage (roadmap acceptance): fast, full, approval, cancellation, and
-recovery paths.  Each scenario asserts that a *correct* node result for that path
-passes the boundary validator, and that an *invalid* transition (unknown /
-missing-core key) on that path fails with a structured ``NodeResultViolation``
-(fail-closed) or surfaces a ``NodeResultValidationFailed`` event (fail-open).
+Tests the canonical 6-node architecture: initialize, agent_loop, approval, verify, compact, finalize.
 """
 
 import asyncio
@@ -23,98 +18,61 @@ from src.core.orchestration.graph.state_schemas import (
     register_node_output_schema,
 )
 
+# ── Representative correct results per scenario path ──
 
-# ── Representative correct results per scenario path (from the node inventory) ──
-
-# Fast-path: perception → execution round-trip (read-only tool call).
-FAST_PERCEPTION = {
-    "history": [{"role": "assistant", "content": "Checking files."}],
-    "next_action": {"name": "list_files", "arguments": {"path": "."}},
-    "rounds": 1,
-    "turn_count": 1,
-    "empty_response_count": 0,
+VALID_INITIALIZE = {
+    "runtime": {"tier": "frontier", "provider": "mock"},
+    "run": {"status": "running", "outcome": "continue"},
+    "model_tier": "frontier",
     "errors": [],
-    "model_tier": "medium",
-    "task_complexity": "simple",
 }
 
-# Full-path: analysis → planning → execution → verification chain results.
-FULL_PLANNING = {
-    "current_plan": [{"step": 1, "action": "edit"}],
-    "current_step": 0,
-    "plan_attempts": 1,
-    "plan_mode_approved": False,
-    "task_decomposed": True,
-    "plan_dag": {"nodes": [1]},
-    "execution_waves": [["1"]],
-    "current_wave": 0,
-    "affected_files": ["a.py"],
-    "relevant_files": ["a.py"],
-    "key_symbols": ["Foo"],
-}
-
-FULL_EXECUTION = {
+VALID_AGENT_LOOP = {
+    "history": [{"role": "assistant", "content": "Done editing."}],
+    "tool_call_count": 2,
     "last_result": {"ok": True},
-    "last_tool_name": "write_file",
-    "verified_reads": ["a.py"],
-    "history": [{"role": "tool"}],
-    "next_action": None,
-    "tool_call_count": 1,
-    "tool_last_used": {},
-    "files_read": {"a.py": True},
-    "recent_tool_calls": ["write_file"],
-    "current_step": 1,
-    "current_plan": FULL_PLANNING["current_plan"],
-    "task": "edit a.py",
-    "snapshots": [],
+    "last_tool_name": "edit_file",
+    "modified_files": ["src/main.py"],
+    "run": {"status": "running", "outcome": "verify"},
 }
 
-FULL_VERIFICATION = {
-    "verification_result": {"ok": True},
-    "verification_passed": True,
-}
-
-# Approval path: wait_for_user → execution (plan-mode blocked tool).
-APPROVAL_EXECUTION = {
+VALID_APPROVAL = {
     "awaiting_plan_approval": True,
     "awaiting_user_input": True,
     "plan_mode_blocked_tool": "write_file",
     "last_result": {"ok": False, "error": "blocked"},
-    "history": [],
-    "next_action": None,
 }
 
-# Cancellation path: execution/-perception canceled before running.
-CANCELLATION_PERCEPTION = {
-    "history": [],
-    "next_action": None,
-    "rounds": 1,
-    "last_result": {"ok": False, "error": "cancelled"},
-    "errors": ["cancelled"],
-    "empty_response_count": 0,
+VALID_VERIFY = {
+    "verification_result": {"ok": True},
+    "verification_passed": True,
+    "run": {"status": "running", "outcome": "continue"},
 }
 
-# Recovery path: no-tool infinite-loop guard on perception.
-RECOVERY_PERCEPTION = {
-    "history": [{"role": "assistant", "content": "retrying"}],
-    "next_action": None,
-    "rounds": 2,
-    "last_result": {"ok": False, "error": "infinite loop"},
-    "errors": ["infinite_loop_no_tool"],
-    "empty_response_count": 0,
+VALID_COMPACT = {
+    "history": [{"role": "user", "content": "hello"}],
+    "run": {"status": "running", "outcome": "continue"},
+    "_force_compact": True,
+}
+
+VALID_FINALIZE = {
+    "run": {"status": "completed", "outcome": "complete"},
+    "session_cost_usd": 0.05,
 }
 
 
 class TestSchemaInventory:
-    """All four target nodes have a registered, non-trivial output schema."""
+    """All 6 canonical nodes have a registered, non-trivial output schema."""
 
     @pytest.mark.parametrize(
         "node_name,expected_keys,expected_core",
         [
-            ("perception", 22, ("history", "next_action", "rounds")),
-            ("planning", 16, ("current_plan", "current_step", "plan_attempts", "plan_mode_approved")),
-            ("execution", 31, ()),  # divergent preview path → structural only
-            ("verification", 4, ("verification_result",)),
+            ("initialize", 8, ("runtime", "run")),
+            ("agent_loop", 24, ()),
+            ("approval", 12, ()),
+            ("verify", 8, ()),
+            ("compact", 10, ()),
+            ("finalize", 7, ()),
         ],
     )
     def test_known_node_has_schema(self, node_name, expected_keys, expected_core):
@@ -133,13 +91,12 @@ class TestValidResultsPass:
     @pytest.mark.parametrize(
         "node,result",
         [
-            ("perception", FAST_PERCEPTION),
-            ("perception", CANCELLATION_PERCEPTION),
-            ("perception", RECOVERY_PERCEPTION),
-            ("planning", FULL_PLANNING),
-            ("execution", FULL_EXECUTION),
-            ("execution", APPROVAL_EXECUTION),
-            ("verification", FULL_VERIFICATION),
+            ("initialize", VALID_INITIALIZE),
+            ("agent_loop", VALID_AGENT_LOOP),
+            ("approval", VALID_APPROVAL),
+            ("verify", VALID_VERIFY),
+            ("compact", VALID_COMPACT),
+            ("finalize", VALID_FINALIZE),
         ],
     )
     def test_correct_result_yields_no_violations(self, node, result):
@@ -150,39 +107,39 @@ class TestInvalidTransitionsFail:
     """Invalid node->state transitions produce structured violations."""
 
     def test_unknown_key_is_rejected(self):
-        bad = {**FAST_PERCEPTION, "totally_bogus_field": 1}
-        violations = validate_node_result("perception", bad)
+        bad = {**VALID_INITIALIZE, "totally_bogus_field": 1}
+        violations = validate_node_result("initialize", bad)
         assert len(violations) == 1
         assert violations[0].reason == "unknown_key"
         assert "totally_bogus_field" in violations[0].details[0]
 
     def test_missing_core_key_is_rejected(self):
-        bad = {k: v for k, v in FAST_PERCEPTION.items() if k != "next_action"}
-        violations = validate_node_result("perception", bad)
+        bad = {k: v for k, v in VALID_INITIALIZE.items() if k != "runtime"}
+        violations = validate_node_result("initialize", bad)
         assert len(violations) == 1
         assert violations[0].reason == "missing_core_key"
-        assert "next_action" in violations[0].details[0]
+        assert "runtime" in violations[0].details[0]
 
     def test_non_mapping_result_is_rejected(self):
-        violations = validate_node_result("perception", "not-a-dict")
+        violations = validate_node_result("initialize", "not-a-dict")
         assert len(violations) == 1
         assert violations[0].reason == "non_mapping_result"
 
     def test_strict_wrapper_raises_structured_error(self):
         async def _node(_s, _c):
-            return {**FAST_PERCEPTION, "bogus": 1}
+            return {**VALID_INITIALIZE, "bogus": 1}
 
-        wrapped = wrap_node("perception", _node, strict=True)
+        wrapped = wrap_node("initialize", _node, strict=True)
         with pytest.raises(NodeResultViolation) as exc:
             asyncio.run(wrapped({}, {}))
-        assert exc.value.node_name == "perception"
+        assert exc.value.node_name == "initialize"
         assert exc.value.reason == "unknown_key"
 
     def test_strict_wrapper_rejects_missing_core_key(self):
         async def _node(_s, _c):
-            return {"history": []}  # missing next_action + rounds
+            return {"model_tier": "frontier"}  # missing runtime + run
 
-        wrapped = wrap_node("perception", _node, strict=True)
+        wrapped = wrap_node("initialize", _node, strict=True)
         with pytest.raises(NodeResultViolation) as exc:
             asyncio.run(wrapped({}, {}))
         assert exc.value.reason == "missing_core_key"
@@ -193,16 +150,17 @@ class TestFailOpenHeadroom:
 
     def test_fail_open_preserves_result_and_calls_publisher(self):
         captured = []
+
         async def _node(_s, _c):
-            return {**FULL_PLANNING, "bogus_planning": 1}
+            return {**VALID_AGENT_LOOP, "bogus_loop_field": 1}
 
         wrapped = wrap_node(
-            "planning", _node, strict=False, publish_violation=captured.append
+            "agent_loop", _node, strict=False, publish_violation=captured.append
         )
         result = asyncio.run(wrapped({}, {}))
-        assert result["bogus_planning"] == 1  # node result returned unchanged
+        assert result["bogus_loop_field"] == 1  # node result returned unchanged
         assert len(captured) == 1
-        assert captured[0].node_name == "planning"
+        assert captured[0].node_name == "agent_loop"
         assert captured[0].reason == "unknown_key"
 
     def test_fail_open_publishes_typed_event_via_orchestrator(self, monkeypatch):
@@ -215,7 +173,6 @@ class TestFailOpenHeadroom:
         class FakeOrch:
             event_bus = FakeBus()
 
-        import src.core.orchestration.graph.state_schemas as schemas
         from src.core.orchestration.graph.nodes import node_utils
 
         monkeypatch.setattr(
@@ -235,9 +192,6 @@ class TestFailOpenHeadroom:
         assert event.session_id == "s1"
 
     def test_fail_open_increments_validation_counter(self, monkeypatch):
-        """Fail-open violations must be observable via the metrics store
-        (audit 2.3 / CF-5): total + per-node + per-reason counters."""
-        import src.core.orchestration.graph.state_schemas as schemas
         from src.core.orchestration.graph.nodes import node_utils
 
         monkeypatch.setattr(
@@ -272,8 +226,6 @@ class TestFailOpenHeadroom:
         ), "per-reason counter must increment"
 
     def test_valid_result_does_not_increment_counter(self, monkeypatch):
-        """A conforming node result must NOT touch the violation counter."""
-        import src.core.orchestration.graph.state_schemas as schemas
         from src.core.orchestration.graph.nodes import node_utils
 
         monkeypatch.setattr(
@@ -307,17 +259,17 @@ class TestWrapperSemantics:
     @pytest.mark.asyncio
     async def test_async_wrapper_returns_same_value(self):
         async def _node(_s, _c):
-            return dict(FULL_VERIFICATION)
+            return dict(VALID_VERIFY)
 
-        wrapped = wrap_node("verification", _node, strict=True)
-        assert await wrapped({}, {}) == FULL_VERIFICATION
+        wrapped = wrap_node("verify", _node, strict=True)
+        assert await wrapped({}, {}) == VALID_VERIFY
 
     def test_sync_wrapper_returns_same_value(self):
         def _node(_s, _c):
-            return dict(FAST_PERCEPTION)
+            return dict(VALID_INITIALIZE)
 
-        wrapped = wrap_node("perception", _node, strict=False)
-        assert wrapped({}, {}) == FAST_PERCEPTION
+        wrapped = wrap_node("initialize", _node, strict=False)
+        assert wrapped({}, {}) == VALID_INITIALIZE
 
     def test_registered_schema_can_be_extended(self):
         register_node_output_schema("custom", type(
@@ -370,7 +322,6 @@ class TestSpec05StrictStateSchemas:
                 new=AsyncMock(return_value={"choices": [{"message": {"content": "Architecture is modular."}}]}),
             ),
         ):
-            # Must succeed without NodeResultViolation
             result = await wrapped_node(state, {})
 
         assert result["last_result"]["ok"] is True

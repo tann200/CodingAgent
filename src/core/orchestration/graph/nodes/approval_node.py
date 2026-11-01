@@ -15,6 +15,7 @@ from typing import Any, Dict, Mapping
 from langchain_core.runnables import RunnableConfig
 
 from src.core.orchestration.graph.nodes.node_utils import (
+    _resolve_orchestrator,
     span_node as _span_node,
 )
 from src.core.orchestration.graph.nodes.wait_for_user_node import wait_for_user_node
@@ -76,10 +77,26 @@ async def _approval_node_impl(state: StateLike, config: RunnableConfig) -> Dict[
     res = dict(base_result)
 
     approved = res.get("plan_mode_approved") or state.get("plan_mode_approved") or res.get("preview_confirmed")
+    orchestrator = _resolve_orchestrator(state, config)
     if approved:
+        if orchestrator is not None:
+            try:
+                orchestrator._plan_mode_approved = True
+            except Exception:
+                pass
+        resumed_action = state.get("next_action")
+        if not resumed_action and isinstance(pending_action, Mapping) and pending_action.get("name"):
+            resumed_action = {
+                "name": str(pending_action["name"]),
+                "arguments": dict(pending_action.get("arguments") or {}),
+            }
+        res["next_action"] = resumed_action
+        res["pending_action"] = None
         run_state["status"] = "running"
         run_state["outcome"] = "continue"
     else:
+        res["next_action"] = None
+        res["pending_action"] = None
         # If cancelled or rejected
         if res.get("awaiting_user_input") is False and not approved:
             run_state["status"] = "cancelled"

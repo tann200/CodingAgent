@@ -1,0 +1,28 @@
+name: frontier-flat
+description: Flat single-purpose full toolset for 2026 frontier and reasoning models (25 tools)
+tools:
+  - read_file
+  - list_files
+  - glob
+  - grep
+  - edit_file_atomic
+  - write_file
+  - bash
+  - run_tests
+  - git_status
+  - git_diff
+  - manage_todo
+  - ask_user
+  - multiedit
+  - apply_patch
+  - find_symbol
+  - run_linter
+  - git_log
+  - check_background_task
+  - delegate_task
+  - lsp_diagnostics
+  - lsp_references
+  - lsp_definition
+  - web_search
+  - read_web_page
+  - load_skill

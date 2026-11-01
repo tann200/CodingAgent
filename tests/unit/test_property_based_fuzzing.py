@@ -35,9 +35,8 @@ from src.core.orchestration.graph.nodes.tool_output_truncation import (
     prune_tool_outputs,
     truncate_tool_output,
 )
-from src.core.orchestration.prompt_injection_guard import (
-    _FENCE_OPEN,
-    sanitize_tool_output,
+from src.core.orchestration.graph.nodes.tool_result_safety import (
+    sanitize_tool_result,
 )
 from src.tools._tool import PermissionKind, permission_kind_to_table_kind
 from src.tools import build_registry
@@ -295,21 +294,12 @@ def test_prune_stale_tool_outputs_preserves_recent_tool_results():
 # ---------------------------------------------------------------------------
 
 
-def test_sanitize_tool_output_crash_free_and_fenced():
+def test_sanitize_tool_result_crash_free():
     rng = random.Random(_SEED)
     for _ in range(_ITER):
-        text = _rand_text(rng)
-        out = sanitize_tool_output(text)
-        assert isinstance(out, str)
-        if out != text:
-            assert out.startswith(_FENCE_OPEN)
-
-
-def test_sanitize_tool_output_clean_text_unchanged():
-    rng = random.Random(_SEED)
-    for _ in range(_ITER):
-        text = "def add(a, b):\n    return a + b\n" + _rand_text(rng, 60)
-        assert sanitize_tool_output(text) == text
+        res = {key: _rand_value(rng) for key in rng.sample(TOOL_LARGE_TEXT_FIELDS, _rand_int(rng, 0, len(TOOL_LARGE_TEXT_FIELDS)))}
+        out = sanitize_tool_result(res)
+        assert isinstance(out, dict)
 
 
 def test_detect_prompt_injection_crash_free():

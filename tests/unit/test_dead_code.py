@@ -81,8 +81,8 @@ _SKIP_DIRS = {
 # Each entry is "why it is dead" so the baseline is auditable rather than a
 # silent allowlist.  A module may be removed from this set once it is deleted.
 #
-# Phase 2 removed all 25 modules that were listed here; the reachability walk
-# must now report zero unreachable modules.  Any new entry is a regression.
+# Phase 4 removed all dead cognitive nodes and compilers; the reachability walk
+# reports zero unreachable modules.  Any new entry is a regression.
 _KNOWN_DEAD: dict[str, str] = {}
 
 

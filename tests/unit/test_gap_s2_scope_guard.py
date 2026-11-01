@@ -302,57 +302,6 @@ class TestAskUserScopeExpansion:
 
 
 # ---------------------------------------------------------------------------
-# SG-10 / SG-11 / SG-12  — _extract_affected_files unit tests
-# ---------------------------------------------------------------------------
-
-
-class TestExtractAffectedFiles:
-    """Unit tests for the planning_node._extract_affected_files helper."""
-
-    @staticmethod
-    def _extract(steps):
-        from src.core.orchestration.graph.nodes.planning_node import (
-            _extract_affected_files,
-        )
-
-        return _extract_affected_files(steps)
-
-    def test_sg10_parses_file_paths_from_description(self):
-        """SG-10: File paths in step descriptions are extracted."""
-        steps = [
-            {"description": "Edit src/utils.py and src/core/manager.py", "files": []}
-        ]
-        result = self._extract(steps)
-        assert "src/utils.py" in result
-        assert "src/core/manager.py" in result
-
-    def test_sg11_uses_explicit_files_list(self):
-        """SG-11: Explicit step['files'] entries are included."""
-        steps = [{"description": "Some description", "files": ["src/explicit.py"]}]
-        result = self._extract(steps)
-        assert "src/explicit.py" in result
-
-    def test_sg12_deduplicates_entries(self):
-        """SG-12: Duplicate paths appear only once in the result."""
-        steps = [
-            {"description": "Edit src/dup.py", "files": ["src/dup.py"]},
-            {"description": "Also edit src/dup.py", "files": []},
-        ]
-        result = self._extract(steps)
-        assert result.count("src/dup.py") == 1
-
-    def test_empty_steps_returns_empty_list(self):
-        """Empty step list → empty result."""
-        assert self._extract([]) == []
-
-    def test_step_without_files_key_handled_gracefully(self):
-        """Steps missing 'files' key don't crash."""
-        steps = [{"description": "Edit src/main.py"}]
-        result = self._extract(steps)
-        assert "src/main.py" in result
-
-
-# ---------------------------------------------------------------------------
 # SG-13  — Path normalisation
 # ---------------------------------------------------------------------------
 

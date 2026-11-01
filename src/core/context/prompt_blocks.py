@@ -15,8 +15,11 @@ def _tagged_block(tag: str, content: str) -> str:
 
 def conversation_has_tool_results(conversation: Sequence[Mapping[str, Any]]) -> bool:
     return any(
-        message.get("role") == "user"
-        and "tool_execution_result" in str(message.get("content", ""))
+        message.get("role") == "tool"
+        or (
+            message.get("role") == "user"
+            and "tool_execution_result" in str(message.get("content", ""))
+        )
         for message in conversation
     )
 

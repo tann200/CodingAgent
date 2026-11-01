@@ -22,7 +22,7 @@ from src.core.security.redaction import redact_data, redact_secrets
 logger = logging.getLogger(__name__)
 
 APPROVAL_TIMEOUT_SECONDS: float = 120.0
-TOOL_EXECUTOR_MAX_WORKERS: int = 4
+TOOL_EXECUTOR_MAX_WORKERS: int = 5
 RESULT_MAX_CHARS: int = 8_000
 TOOL_OUTPUT_MAX_CHARS: int = RESULT_MAX_CHARS
 
@@ -846,25 +846,35 @@ def _dispatch_tool_call(
                             max_workers=TOOL_EXECUTOR_MAX_WORKERS
                         )
                         orch._tool_executor = tool_executor
+            worker_tid_holder: list[int] = []
+
+            def _timed_tool_worker(fn_target: Any, fn_args: dict) -> Any:
+                worker_tid_holder.append(threading.get_ident())
+                return _run_tool_callable(fn_target, fn_args)
+
             try:
                 ctx = _contextvars.copy_context()
                 future = tool_executor.submit(
-                    ctx.run, _run_tool_callable, tool["fn"], args
+                    ctx.run, _timed_tool_worker, tool["fn"], args
                 )
             except Exception:
-                future = tool_executor.submit(_run_tool_callable, tool["fn"], args)
+                future = tool_executor.submit(_timed_tool_worker, tool["fn"], args)
             try:
                 res = future.result(timeout=timeout_seconds)
             except _cf.TimeoutError:
                 cancel_ev.set()
                 future.cancel()
+                # Isolate timeout kill strictly to the timed-out worker thread so
+                # sibling concurrent read-only tool subprocesses are not killed.
                 with _THREAD_PROCESS_LOCK:
-                    for _tid, _proc in list(_THREAD_TOOL_PROCESSES.items()):
-                        try:
-                            _kill_proc_group(_proc)
-                        except Exception:
-                            pass
-                    _THREAD_TOOL_PROCESSES.clear()
+                    timed_out_tid = worker_tid_holder[0] if worker_tid_holder else None
+                    if timed_out_tid is not None:
+                        _proc = _THREAD_TOOL_PROCESSES.pop(timed_out_tid, None)
+                        if _proc is not None:
+                            try:
+                                _kill_proc_group(_proc)
+                            except Exception:
+                                pass
                 raise TimeoutError(
                     f"Tool '{name}' timed out after {timeout_seconds} seconds"
                 )
@@ -1019,12 +1029,22 @@ def _run_post_execution(
             exc_info=True,
         )
 
+    import contextlib as _contextlib
+
+    _raw_lock = getattr(orch, "_state_lock", None)
+    _lock_ctx = (
+        _raw_lock
+        if _raw_lock is not None and hasattr(_raw_lock, "__enter__")
+        else _contextlib.nullcontext()
+    )
+
     try:
         import time as _time
 
         ts = _time.time()
-        orch._usage_buffer[name] = orch._usage_buffer.get(name, 0) + 1
-        orch.cost_tracker.record_tool_call(name)
+        with _lock_ctx:
+            orch._usage_buffer[name] = orch._usage_buffer.get(name, 0) + 1
+            orch.cost_tracker.record_tool_call(name)
         try:
             orch.event_bus.publish_typed(ToolInvoked(session_update="tool_call_update", tool_call_id=tool_call_id, title=name, status="invoked", timestamp=ts, workdir=str(orch.working_dir)))
         except Exception:
@@ -1033,12 +1053,27 @@ def _run_post_execution(
         pass
 
     if res.get("status") == "ok" or res.get("ok") is True:
-        if name in ["read_file", "fs.read"] and path_arg:
+        if name in ("read_file", "fs.read", "read_file_chunk", "read_file_bytes", "files_read") and path_arg:
             try:
                 resolved_path = str(
                     (Path(orch.working_dir or ".") / path_arg).resolve()
                 )
-                orch._session_read_files.add(resolved_path)
+                with _lock_ctx:
+                    orch._session_read_files.add(resolved_path)
+            except Exception:
+                pass
+        elif name == "batched_file_read":
+            try:
+                wd = Path(orch.working_dir or ".")
+                batch_paths = args.get("paths") or []
+                if isinstance(batch_paths, list):
+                    resolved_batch = [
+                        str((wd / p).resolve())
+                        for p in batch_paths
+                        if isinstance(p, str) and p.strip()
+                    ]
+                    with _lock_ctx:
+                        orch._session_read_files.update(resolved_batch)
             except Exception:
                 pass
         elif name == "rename_file":
@@ -1048,28 +1083,29 @@ def _run_post_execution(
                 wd = Path(orch.working_dir or ".")
                 src_res = str((wd / src_raw).resolve()) if src_raw else None
                 dst_res = str((wd / dst_raw).resolve()) if dst_raw else None
-                if src_res:
-                    orch._session_modified_files.add(src_res)
-                    orch._session_read_files.add(src_res)
-                if dst_res:
-                    orch._session_modified_files.add(dst_res)
-                    orch._session_read_files.add(dst_res)
-                    try:
-                        from src.tools.guardrails import mark_file_read
-                        mark_file_read(dst_res)
-                    except Exception:
-                        pass
-                aff = getattr(orch, "_affected_files", None)
-                if isinstance(aff, list):
-                    if src_res and src_res not in aff and (src_raw not in aff):
-                        aff.append(src_res)
-                    if dst_res and dst_res not in aff and (dst_raw not in aff):
-                        aff.append(dst_res)
-                elif isinstance(aff, set):
+                with _lock_ctx:
                     if src_res:
-                        aff.add(src_res)
+                        orch._session_modified_files.add(src_res)
+                        orch._session_read_files.add(src_res)
                     if dst_res:
-                        aff.add(dst_res)
+                        orch._session_modified_files.add(dst_res)
+                        orch._session_read_files.add(dst_res)
+                        try:
+                            from src.tools.guardrails import mark_file_read
+                            mark_file_read(dst_res)
+                        except Exception:
+                            pass
+                    aff = getattr(orch, "_affected_files", None)
+                    if isinstance(aff, list):
+                        if src_res and src_res not in aff and (src_raw not in aff):
+                            aff.append(src_res)
+                        if dst_res and dst_res not in aff and (dst_raw not in aff):
+                            aff.append(dst_res)
+                    elif isinstance(aff, set):
+                        if src_res:
+                            aff.add(src_res)
+                        if dst_res:
+                            aff.add(dst_res)
                 try:
                     if src_res:
                         orch.event_bus.publish_typed(FileModified(path=src_res, tool=name, workdir=str(orch.working_dir)))
@@ -1084,7 +1120,8 @@ def _run_post_execution(
                 resolved_path = str(
                     (Path(orch.working_dir or ".") / path_arg).resolve()
                 )
-                orch._session_modified_files.add(resolved_path)
+                with _lock_ctx:
+                    orch._session_modified_files.add(resolved_path)
                 try:
                     orch.event_bus.publish_typed(FileModified(path=resolved_path, tool=name, workdir=str(orch.working_dir)))
                 except Exception:
@@ -1114,14 +1151,15 @@ def _run_post_execution(
         guilogger.debug(f"change_log: record_change skipped (non-blocking): {exc}")
 
     try:
-        orch._append_execution_trace(
-            {
-                "tool": name,
-                "args": redact_data(orch._normalize_args(args)),
-                "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                "result_ok": bool(res.get("status") == "ok" or res.get("ok") is True),
-            }
-        )
+        with _lock_ctx:
+            orch._append_execution_trace(
+                {
+                    "tool": name,
+                    "args": redact_data(orch._normalize_args(args)),
+                    "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                    "result_ok": bool(res.get("status") == "ok" or res.get("ok") is True),
+                }
+            )
     except Exception:
         pass
 

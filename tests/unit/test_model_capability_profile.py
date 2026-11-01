@@ -148,7 +148,7 @@ def test_get_model_profile_fallback():
 def test_classify_model_integration():
     """Test integration with model_tiers.classify_model."""
     # Test known models from primary profiles
-    assert classify_model("qwen3.5-9b", 0) == ModelTier.LARGE  # 9B with 262K context
+    assert classify_model("qwen3.5-9b", 0) == ModelTier.SMALL  # 9B compact model (not 50-tool LARGE)
     assert (
         classify_model("gemma-4-27b-a4b", 0) == ModelTier.MEDIUM
     )  # MoE treated as MEDIUM

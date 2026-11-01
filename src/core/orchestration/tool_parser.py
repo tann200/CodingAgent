@@ -48,18 +48,26 @@ def _extract_json_object(text: str) -> Optional[Dict[str, Any]]:
                     depth -= 1
                     if depth == 0:
                         candidate = text[start : j + 1]
+                        parsed = None
                         try:
-                            parsed = json.loads(candidate)
-                            if isinstance(parsed, dict):
-                                if parsed.get("name") and parsed.get("arguments") is not None:
-                                    return parsed
-                                if parsed.get("tool") and parsed.get("arguments") is not None:
-                                    return {
-                                        "name": parsed["tool"],
-                                        "arguments": parsed["arguments"],
-                                    }
+                            parsed = json.loads(candidate, strict=False)
                         except Exception:
-                            pass
+                            try:
+                                cleaned = re.sub(r",\s*([\]}])", r"\1", candidate)
+                                parsed = json.loads(cleaned, strict=False)
+                            except Exception:
+                                try:
+                                    parsed = yaml.safe_load(candidate)
+                                except Exception:
+                                    parsed = None
+                        if isinstance(parsed, dict):
+                            if parsed.get("name") and parsed.get("arguments") is not None:
+                                return parsed
+                            if parsed.get("tool") and parsed.get("arguments") is not None:
+                                return {
+                                    "name": parsed["tool"],
+                                    "arguments": parsed["arguments"],
+                                }
                         break
             j += 1
         i += 1
@@ -103,7 +111,7 @@ def parse_tool_block(text: str) -> Optional[Dict[str, Any]]:
         if match:
             json_content = match.group(1).strip()
             try:
-                parsed = json.loads(json_content)
+                parsed = json.loads(json_content, strict=False)
                 if parsed.get("name") and parsed.get("arguments") is not None:
                     logger.debug(
                         f"parse_tool_block: JSON parse succeeded for tool '{parsed.get('name')}'"
@@ -224,7 +232,7 @@ def _parse_qwen3_xml(text: str) -> Optional[Dict[str, Any]]:
     if args_match:
         args_str = args_match.group(1).strip()
         try:
-            args = json.loads(args_str)
+            args = json.loads(args_str, strict=False)
             if isinstance(args, dict):
                 return {"name": tool_name, "arguments": args}
         except Exception:

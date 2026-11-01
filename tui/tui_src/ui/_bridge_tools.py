@@ -102,7 +102,10 @@ class BridgeToolsMixin(AgentBridgeProtocol):
 
         if not result_text:
             result_text = "(no output)"
-        ok = payload.get("ok", True)
+        res_dict = payload.get("result") if isinstance(payload.get("result"), dict) else {}
+        ok = payload.get("ok", res_dict.get("ok", True))
+        if res_dict.get("ok") is False or res_dict.get("error"):
+            ok = False
         self._post(
             ToolCallFinishEvent(
                 tool_name=tool_name, tool_id=tool_id, result_text=result_text, ok=ok

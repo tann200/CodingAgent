@@ -39,7 +39,17 @@ def build_initial_state(
     """Build the initial graph state for one agent run."""
     role_name = system_prompt_name or getattr(orch, "active_role", None) or "operational"
     provider, model, tier = _resolve_initial_runtime(orch)
-    runtime_state = create_runtime_state(tier=tier, provider=provider, model=model)
+    from src.core.orchestration.graph.runtime_policy import resolve_runtime_policy
+
+    rt_policy = resolve_runtime_policy(orch, model=model, provider=provider)
+    runtime_state = create_runtime_state(
+        tier=rt_policy.target_tier if model else tier,
+        provider=provider,
+        model=model,
+        custom_policy=rt_policy.to_policy_dict(),
+    )
+    runtime_state["policy_tier"] = rt_policy.policy_tier
+    runtime_state["toolset_name"] = rt_policy.toolset_name
     run_state = create_run_state(status="running", outcome="continue")
 
     from src.core.inference.workflow_selector import (

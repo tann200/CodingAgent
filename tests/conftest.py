@@ -262,3 +262,23 @@ def configure_tools_config():
         tools_config.reset_to_defaults()
     except Exception:
         pass
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _protect_providers_json():
+    """Preserve src/config/providers.json across test runs."""
+    from pathlib import Path
+
+    p = Path(__file__).resolve().parent.parent / "src" / "config" / "providers.json"
+    if not p.exists():
+        yield
+        return
+    original = p.read_text(encoding="utf-8")
+    try:
+        yield
+    finally:
+        try:
+            if p.read_text(encoding="utf-8") != original:
+                p.write_text(original, encoding="utf-8")
+        except Exception:
+            pass

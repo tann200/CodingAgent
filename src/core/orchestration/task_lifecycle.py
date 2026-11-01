@@ -99,7 +99,9 @@ def start_new_task_impl(orch) -> str:
     if hasattr(orch, "plan_mode") and orch.plan_mode:
         orch.plan_mode.disable()
     orch._plan_approval_event = None
+    orch._plan_approval_loop = None
     orch._plan_approved = False
+    orch._plan_mode_approved = False
 
     # HR-9 fix: clear stale delegations from the previous task so that
     # memory_sync does not spuriously route to delegation_node on the next run.
@@ -193,7 +195,7 @@ def start_new_task_impl(orch) -> str:
     # have changed since the last task (agent wrote/deleted files), and the
     # cached summary would otherwise be served until the process restarts.
     try:
-        from src.core.orchestration.graph.nodes.analysis_node import (
+        from src.core.orchestration.graph.nodes.repo_context import (
             clear_repo_summary_cache,
         )
 
@@ -352,13 +354,33 @@ def get_file_lock_manager_impl(orch):
 # ---------------------------------------------------------------------------
 
 
+def _signal_plan_event(orch) -> None:
+    """Thread-safe signaling for _plan_approval_event across UI/worker threads."""
+    ev = getattr(orch, "_plan_approval_event", None)
+    if not ev:
+        return
+    loop = getattr(orch, "_plan_approval_loop", None)
+    try:
+        running_loop = asyncio.get_running_loop()
+    except RuntimeError:
+        running_loop = None
+    if (
+        isinstance(loop, asyncio.AbstractEventLoop)
+        and loop.is_running()
+        and running_loop is not loop
+    ):
+        loop.call_soon_threadsafe(ev.set)
+    else:
+        ev.set()
+
+
 def approve_plan_impl(orch) -> None:
     """Called by TUI when user approves the pending plan."""
     orch._plan_approved = True
+    orch._plan_mode_approved = True
     if orch.plan_mode:
         orch.plan_mode.disable()
-    if orch._plan_approval_event:
-        orch._plan_approval_event.set()
+    _signal_plan_event(orch)
     guilogger.info("Orchestrator: plan approved by user")
 
 
@@ -370,8 +392,8 @@ def approve_plan_impl(orch) -> None:
 def reject_plan_impl(orch) -> None:
     """Called by TUI when user rejects the pending plan."""
     orch._plan_approved = False
-    if orch._plan_approval_event:
-        orch._plan_approval_event.set()
+    orch._plan_mode_approved = False
+    _signal_plan_event(orch)
     guilogger.info("Orchestrator: plan rejected by user")
 
 
@@ -382,10 +404,28 @@ def reject_plan_impl(orch) -> None:
 
 async def wait_for_plan_approval_impl(orch) -> bool:
     """Suspend until user approves or rejects the plan. Returns True if approved."""
-    orch._plan_approval_event = asyncio.Event()
+    ev = asyncio.Event()
+    orch._plan_approval_event = ev
+    orch._plan_approval_loop = asyncio.get_running_loop()
     orch._plan_approved = False
-    await orch._plan_approval_event.wait()
-    return orch._plan_approved
+    orch._plan_mode_approved = False
+    cancel_ev = getattr(orch, "cancel_event", None)
+    wait_task = asyncio.create_task(ev.wait())
+    try:
+        while not ev.is_set():
+            if (
+                cancel_ev is not None
+                and hasattr(cancel_ev, "is_set")
+                and callable(cancel_ev.is_set)
+                and cancel_ev.is_set() is True
+            ):
+                return False
+            await asyncio.wait({wait_task}, timeout=0.25)
+    finally:
+        if not wait_task.done():
+            wait_task.cancel()
+        orch._plan_approval_loop = None
+    return bool(orch._plan_approved)
 
 
 # ---------------------------------------------------------------------------

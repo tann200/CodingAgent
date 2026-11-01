@@ -118,7 +118,7 @@ def _encoding_for_model(model_hint: Optional[str]) -> str:
     if not model_hint:
         return "cl100k_base"
     m = model_hint.lower()
-    if any(k in m for k in ("gpt-4o", "o1", "o3", "o4")):
+    if any(k in m for k in ("gpt-6", "gpt-5", "gpt-4o", "o1", "o3", "o4")):
         return "o200k_base"
     if any(k in m for k in ("gpt-4", "gpt-3.5", "gpt-4-turbo", "claude")):
         return "cl100k_base"

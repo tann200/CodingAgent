@@ -571,18 +571,23 @@ class OllamaAdapter(LLMClient):
                     "raw": raw_response,
                 }
 
-            # Normalize Ollama response
+            # Normalize Ollama response (including ID-less tool_calls & thinking)
             msg = raw_response.get("message", {})
-            choice = {
+            choice: Dict[str, Any] = {
                 "message": {
                     "role": msg.get("role", "assistant"),
                     "content": msg.get("content", ""),
                 },
                 "finish_reason": "stop",
             }
-            if "tool_calls" in msg:
-                choice["tool_calls"] = msg["tool_calls"]
-                choice["message"]["tool_calls"] = msg["tool_calls"]
+            if msg.get("thinking"):
+                choice["message"]["reasoning_content"] = str(msg["thinking"])
+            if "tool_calls" in msg and isinstance(msg["tool_calls"], list):
+                norm_tcs = self._normalize_inbound_tool_calls(msg["tool_calls"])
+                choice["tool_calls"] = norm_tcs
+                choice["message"]["tool_calls"] = norm_tcs
+                if norm_tcs:
+                    choice["finish_reason"] = "tool_calls"
 
             p_tokens = raw_response.get("prompt_eval_count", 0)
             c_tokens = raw_response.get("eval_count", 0)
@@ -714,6 +719,95 @@ class OllamaAdapter(LLMClient):
             _logger.warning("generate failed: %s", e)
             return {"meta": {"error": "generate_failed", "exception": str(e)}}
 
+    @staticmethod
+    def _normalize_inbound_tool_calls(raw_tool_calls: List[Any]) -> List[Dict[str, Any]]:
+        """Ensure Ollama tool_calls carry deterministic ``id`` and OpenAI ``function`` shape."""
+        normalized: List[Dict[str, Any]] = []
+        for idx, tc in enumerate(raw_tool_calls or []):
+            if not isinstance(tc, dict):
+                continue
+            item = dict(tc)
+            if not item.get("id"):
+                item["id"] = f"call_{idx}"
+            if not item.get("type"):
+                item["type"] = "function"
+            fn = item.get("function")
+            if isinstance(fn, dict):
+                fn_copy = dict(fn)
+                raw_args = fn_copy.get("arguments", {})
+                if not isinstance(raw_args, str):
+                    fn_copy["arguments"] = json.dumps(raw_args)
+                item["function"] = fn_copy
+            else:
+                raw_args = item.get("arguments", {})
+                arg_str = raw_args if isinstance(raw_args, str) else json.dumps(raw_args)
+                item["function"] = {
+                    "name": str(item.get("name") or ""),
+                    "arguments": arg_str,
+                }
+            normalized.append(item)
+        return normalized
+
+    @staticmethod
+    def _format_outbound_messages(messages: Any) -> Any:
+        """Project canonical OpenAI-style history into Ollama ``/api/chat`` shape.
+
+        - Strips ``SYSTEM_PROMPT_DYNAMIC_BOUNDARY`` sentinel from system prompts.
+        - Removes internal ``thinking_blocks`` / ``reasoning_content`` fields.
+        - Converts ``assistant.tool_calls[*].function.arguments`` from JSON string
+          to ``dict`` (required by Ollama ``/api/chat``).
+        - Attaches ``tool_name`` on ``role='tool'`` messages.
+        """
+        if not isinstance(messages, (list, tuple)):
+            return messages
+        try:
+            from src.core.context.context_builder import SYSTEM_PROMPT_DYNAMIC_BOUNDARY
+        except Exception:
+            SYSTEM_PROMPT_DYNAMIC_BOUNDARY = "__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__"
+
+        formatted: List[Dict[str, Any]] = []
+        for raw_msg in messages:
+            if not isinstance(raw_msg, dict):
+                continue
+            msg = {
+                k: v
+                for k, v in raw_msg.items()
+                if k not in ("thinking_blocks", "reasoning_content")
+            }
+            role = msg.get("role")
+            if role == "system" and isinstance(msg.get("content"), str):
+                content = msg["content"]
+                if SYSTEM_PROMPT_DYNAMIC_BOUNDARY in content:
+                    msg["content"] = content.replace(
+                        f"\n\n{SYSTEM_PROMPT_DYNAMIC_BOUNDARY}\n\n", "\n\n"
+                    ).replace(SYSTEM_PROMPT_DYNAMIC_BOUNDARY, "")
+            elif role == "assistant" and isinstance(msg.get("tool_calls"), list):
+                ollama_tcs: List[Dict[str, Any]] = []
+                for tc in msg["tool_calls"]:
+                    if not isinstance(tc, dict):
+                        continue
+                    tc_copy = dict(tc)
+                    fn = tc_copy.get("function")
+                    if isinstance(fn, dict):
+                        fn_copy = dict(fn)
+                        raw_args = fn_copy.get("arguments", {})
+                        if isinstance(raw_args, str):
+                            try:
+                                parsed = json.loads(raw_args)
+                                fn_copy["arguments"] = (
+                                    parsed if isinstance(parsed, dict) else {"value": parsed}
+                                )
+                            except Exception:
+                                fn_copy["arguments"] = {"raw_input": raw_args}
+                        tc_copy["function"] = fn_copy
+                    ollama_tcs.append(tc_copy)
+                msg["tool_calls"] = ollama_tcs
+            elif role == "tool":
+                if not msg.get("tool_name") and msg.get("name"):
+                    msg["tool_name"] = msg["name"]
+            formatted.append(msg)
+        return formatted
+
     def _chat_internal(
         self,
         messages,
@@ -728,6 +822,8 @@ class OllamaAdapter(LLMClient):
         if model_name is None:
             raise ValueError("No model available for chat.")
         url = f"{self.base_url}/chat"
+
+        messages = self._format_outbound_messages(messages)
 
         # FIX: Extract Ollama options correctly so temperature/seed actually apply
         options, payload_kwargs = self._extract_ollama_options(kwargs)

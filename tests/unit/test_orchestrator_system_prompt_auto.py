@@ -15,11 +15,7 @@ from src.core.orchestration.orchestrator import Orchestrator
 
 # Every graph node that calls call_model at module-load time needs patching.
 _CALL_MODEL_TARGETS = [
-    "src.core.orchestration.graph.nodes.perception_node.call_model",
-    "src.core.orchestration.graph.nodes.planning_node.call_model",
-    "src.core.orchestration.graph.nodes.execution_node.call_model",
-    "src.core.orchestration.graph.nodes.debug_node.call_model",
-    "src.core.orchestration.graph.nodes.replan_node.call_model",
+    "src.core.orchestration.graph.nodes.frontier_loop_node.call_model",
     "src.core.inference.llm_manager.call_model",
     "src.core.inference.llm_manager._call_model_internal",
 ]

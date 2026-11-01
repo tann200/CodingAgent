@@ -18,19 +18,53 @@ from src.tools._tool import tool, PermissionKind
 
 logger = logging.getLogger(__name__)
 
-_SKILLS_DIR = Path(__file__).parent.parent / "config" / "agent-brain" / "skills"
+_CONFIG_DIR = Path(__file__).parent.parent / "config"
+_SKILLS_DIR = _CONFIG_DIR / "agent-brain" / "skills"
+_SKILLS_DIRS = [
+    _CONFIG_DIR / "skills",
+    _SKILLS_DIR,
+]
+
+
+def _find_skill_file(name: str) -> Path | None:
+    """Locate a skill file across configured search directories.
+
+    Supports:
+    - Package bundle directory: ``<dir>/<name>/SKILL.md``
+    - Flat markdown file: ``<dir>/<name>.md``
+    - Kebab-case and snake_case variants.
+    """
+    clean = name.strip()
+    candidates = [clean, clean.replace("-", "_"), clean.replace("_", "-")]
+
+    for sdir in _SKILLS_DIRS:
+        if not sdir.exists():
+            continue
+        for cand in candidates:
+            # 1. Directory bundle: <cand>/SKILL.md
+            bundle_upper = sdir / cand / "SKILL.md"
+            if bundle_upper.is_file():
+                return bundle_upper
+            bundle_lower = sdir / cand / "skill.md"
+            if bundle_lower.is_file():
+                return bundle_lower
+            # 2. Flat file: <cand>.md
+            flat_file = sdir / f"{cand}.md"
+            if flat_file.is_file():
+                return flat_file
+    return None
 
 
 @tool(tags=["coding", "planning", "debug", "review"], permission_kind=PermissionKind.READ_FILE)
 def load_skill(name: str) -> Dict[str, Any]:
     """Load a named skill (prompt template) from the skills directory.
 
-    Skills are markdown files in src/config/agent-brain/skills/ that provide
-    reusable instructions, checklists, or workflow descriptions that the agent
+    Skills are markdown files in src/config/skills/ or src/config/agent-brain/skills/
+    that provide reusable instructions, checklists, or workflow descriptions that the agent
     can inject into its context on demand.
 
     Args:
-        name: Skill name (filename without .md extension).  Use list_skills
+        name: Skill name (filename or directory name without .md extension). Use list_skills
               first to discover available skills.
 
     Returns:
@@ -47,14 +81,8 @@ def load_skill(name: str) -> Dict[str, Any]:
             "error": f"Invalid skill name: '{name}'. Must be a simple name, not a path.",
         }
 
-    if not _SKILLS_DIR.exists():
-        return {
-            "status": "error",
-            "error": f"Skills directory not found at {_SKILLS_DIR}. Create it and add .md skill files.",
-        }
-
-    skill_path = _SKILLS_DIR / f"{clean}.md"
-    if not skill_path.exists():
+    skill_path = _find_skill_file(clean)
+    if not skill_path or not skill_path.exists():
         available = _list_skill_names()
         return {
             "status": "not_found",
@@ -85,7 +113,17 @@ def list_skills() -> Dict[str, Any]:
     return {"status": "ok", "skills": names}
 
 
-def _list_skill_names() -> list:
-    if not _SKILLS_DIR.exists():
-        return []
-    return sorted(p.stem for p in _SKILLS_DIR.glob("*.md") if p.is_file())
+def _list_skill_names() -> list[str]:
+    names: set[str] = set()
+    for sdir in _SKILLS_DIRS:
+        if not sdir.exists():
+            continue
+        # Scan flat markdown files
+        for p in sdir.glob("*.md"):
+            if p.is_file():
+                names.add(p.stem)
+        # Scan directory bundles with SKILL.md or skill.md
+        for p in sdir.iterdir():
+            if p.is_dir() and ((p / "SKILL.md").is_file() or (p / "skill.md").is_file()):
+                names.add(p.name)
+    return sorted(names)

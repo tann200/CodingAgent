@@ -275,6 +275,31 @@ class AnthropicAdapter(OpenAICompatibleAdapter):
             blocks: List[Dict[str, Any]] = []
 
             if role == "assistant":
+                # Preserve signed Anthropic thinking / redacted_thinking blocks
+                # at the front of the assistant turn (required by Claude 4.5/4.6
+                # interleaved thinking when replaying tool_use turns).
+                thinking_blocks = msg.get("thinking_blocks") or []
+                if isinstance(thinking_blocks, list):
+                    for tb in thinking_blocks:
+                        if not isinstance(tb, dict):
+                            continue
+                        tb_type = tb.get("type")
+                        if tb_type == "thinking" and tb.get("signature"):
+                            blocks.append(
+                                {
+                                    "type": "thinking",
+                                    "thinking": str(tb.get("thinking") or ""),
+                                    "signature": str(tb["signature"]),
+                                }
+                            )
+                        elif tb_type == "redacted_thinking" and tb.get("data"):
+                            blocks.append(
+                                {
+                                    "type": "redacted_thinking",
+                                    "data": str(tb["data"]),
+                                }
+                            )
+
                 if isinstance(raw_content, str) and raw_content.strip():
                     blocks.append({"type": "text", "text": raw_content})
                 elif isinstance(raw_content, list):
@@ -434,6 +459,8 @@ class AnthropicAdapter(OpenAICompatibleAdapter):
 
         text_parts: List[str] = []
         tool_calls: List[Dict[str, Any]] = []
+        thinking_blocks: List[Dict[str, Any]] = []
+        reasoning_parts: List[str] = []
 
         content = raw_json.get("content") or []
         if isinstance(content, list):
@@ -443,6 +470,24 @@ class AnthropicAdapter(OpenAICompatibleAdapter):
                 btype = block.get("type")
                 if btype == "text":
                     text_parts.append(block.get("text", ""))
+                elif btype == "thinking":
+                    t_text = str(block.get("thinking") or "")
+                    t_entry: Dict[str, Any] = {
+                        "type": "thinking",
+                        "thinking": t_text,
+                    }
+                    if block.get("signature"):
+                        t_entry["signature"] = str(block["signature"])
+                    thinking_blocks.append(t_entry)
+                    if t_text:
+                        reasoning_parts.append(t_text)
+                elif btype == "redacted_thinking":
+                    thinking_blocks.append(
+                        {
+                            "type": "redacted_thinking",
+                            "data": str(block.get("data") or ""),
+                        }
+                    )
                 elif btype == "tool_use":
                     tc_id = block.get("id") or ""
                     fn_name = block.get("name") or ""
@@ -477,6 +522,10 @@ class AnthropicAdapter(OpenAICompatibleAdapter):
         }
         if tool_calls:
             message["tool_calls"] = tool_calls
+        if thinking_blocks:
+            message["thinking_blocks"] = thinking_blocks
+        if reasoning_parts:
+            message["reasoning_content"] = "\n".join(reasoning_parts)
 
         usage = raw_json.get("usage") or {}
         in_tok = usage.get("input_tokens", 0) if isinstance(usage, dict) else 0

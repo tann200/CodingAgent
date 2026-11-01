@@ -39,34 +39,18 @@ def test_orchestrator_run_with_mocked_llm(tmp_path):
 
     # Patch call_model
     with patch(
-        "src.core.orchestration.graph.nodes.perception_node.call_model",
+        "src.core.orchestration.graph.nodes.frontier_loop_node.call_model",
         side_effect=mock_call,
     ):
         with patch(
-            "src.core.orchestration.graph.nodes.planning_node.call_model",
+            "src.core.inference.llm_manager.call_model",
             side_effect=mock_call,
         ):
-            with patch(
-                "src.core.orchestration.graph.nodes.execution_node.call_model",
-                side_effect=mock_call,
-            ):
-                with patch(
-                    "src.core.orchestration.graph.nodes.debug_node.call_model",
-                    side_effect=mock_call,
-                ):
-                    with patch(
-                        "src.core.orchestration.graph.nodes.replan_node.call_model",
-                        side_effect=mock_call,
-                    ):
-                        with patch(
-                            "src.core.inference.llm_manager.call_model",
-                            side_effect=mock_call,
-                        ):
-                            # Execute with a simple task - should not raise an exception
-                            res = orch.run_agent_once(
-                                None, [{"role": "user", "content": "hello"}], {}
-                            )
+            # Execute with a simple task - should not raise an exception
+            res = orch.run_agent_once(
+                None, [{"role": "user", "content": "hello"}], {}
+            )
 
-                            # Result should be a dict with some response
-                            assert isinstance(res, dict)
-                            assert "error" in res or "assistant_message" in res
+            # Result should be a dict with some response
+            assert isinstance(res, dict)
+            assert "error" in res or "assistant_message" in res

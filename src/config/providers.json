@@ -7,7 +7,8 @@
       "qwen/qwen3.5-9b",
       "gemma-4-26b-a4b-it",
       "gemma-4-e4b-it",
-      "Jackrong/Qwen3.5-27B-Claude-4.6-Opus-Reasoning-Distilled"
+      "Jackrong/Qwen3.5-27B-Claude-4.6-Opus-Reasoning-Distilled",
+      "llama-4-scout"
     ],
     "default_model": "qwen/qwen3.5-9b",
     "supports_native_tools": true,
@@ -23,10 +24,17 @@
     "name": "ollama",
     "type": "ollama",
     "base_url": "http://localhost:11434",
-    "models": [],
-    "supports_native_tools": false,
+    "models": [
+      "qwen3.5:9b",
+      "qwen3.5:14b",
+      "llama-4-scout",
+      "deepseek-r1:14b",
+      "gemma-4:e4b"
+    ],
+    "default_model": "qwen3.5:9b",
+    "supports_native_tools": true,
     "provider_supports_parallel_tools": false,
-    "disable_thinking": true,
+    "disable_thinking": false,
     "active": false
   },
   {
@@ -34,12 +42,15 @@
     "type": "github_copilot",
     "base_url": "https://api.githubcopilot.com",
     "models": [
+      "gpt-6",
+      "gpt-5",
       "gpt-4o",
       "gpt-4o-mini",
-      "claude-3.5-sonnet",
-      "claude-3.7-sonnet",
-      "claude-sonnet-4.5",
+      "claude-opus-4.6",
       "claude-sonnet-4.6",
+      "claude-sonnet-4.5",
+      "claude-3.7-sonnet",
+      "claude-3.5-sonnet",
       "o1",
       "o3-mini",
       "gemini-2.0-flash-001"

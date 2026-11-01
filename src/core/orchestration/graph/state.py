@@ -5,8 +5,8 @@ from __future__ import annotations
 Overview
 --------
 ``AgentState`` (alias ``_AgentStateSpec``) is a flat ``TypedDict`` threaded
-through every node in the LangGraph graph.  All 79 fields are ``total=False``
-(all optional at the TypedDict level); runtime defaults are supplied by node
+through every node in the LangGraph graph. All fields are ``total=False``
+(optional at the TypedDict level); runtime defaults are supplied by node
 initialisation code.
 
 Two fields use LangGraph *annotated reducers* so parallel branches can safely
@@ -19,158 +19,55 @@ append without clobbering each other:
 All other fields are last-write-wins: the node that finishes last in a parallel
 fan-out wins.
 
-Node Execution Order (Standard Graph — NANO/SMALL/MEDIUM model tiers)
-----------------------------------------------------------------------
+Node Execution Order (Canonical 6-Node Deterministic-Boundary Graph)
+---------------------------------------------------------------------
 Defined in ``src/core/orchestration/graph/builder.py:compile_agent_graph()``.
 
 ::
 
     ENTRY
-      └─ perception ──────────────────────────────────────────────────────────
-            │  Reads:  task, history, rounds, turn_count, max_turns,
-            │          current_plan, cancel_event, model_tier, …
-            │  Writes: history, next_action, rounds, model_tier,
-            │          task_complexity, _should_distill, _budget_compaction, …
-            ├─► execution          (tool call path / simple task fast-path)
-            ├─► analysis           (default: context-gathering)
-            ├─► planning           (simple task: bypass analysis)
-            └─► memory_sync        (task already complete)
+      │
+      ▼
+    initialize  ──►  agent_loop  ──►  [ conditional router: route_agent_loop_exit ]
+                         ▲             ├──► approval  ──► agent_loop
+                         │             ├──► compact   ──► agent_loop
+                         │             ├──► verify    ──► [ conditional router: route_verify_exit ]
+                         │             │                    ├──► agent_loop (on verify failure)
+                         │             │                    └──► finalize   (on verify pass)
+                         │             └──► finalize  ──► END
+                         └────────────────────────────────┘
 
-      └─ analysis ─────────────────────────────────────────────────────────────
-            │  Reads:  task, working_dir, model_tier
-            │  Writes: analysis_summary, relevant_files, key_symbols,
-            │          repo_summary_data, call_graph, test_map
-            ├─► analyst_delegation (complex task)
-            └─► planning           (simple task)
+1. ``initialize``:
+   Validates working directory, initializes or normalizes model tier & runtime capabilities,
+   ensures valid ``runtime`` and ``run`` structures, and sets initial session state.
 
-      └─ analyst_delegation ───────────────────────────────────────────────────
-            │  Reads:  task, analysis_summary, relevant_files, working_dir
-            │  Writes: analyst_findings
-            └─► planning
+2. ``agent_loop``:
+   Single iterative cognitive node that performs perception, context assembly, tool
+   planning, and multi-turn dispatch. Evaluates completion contracts and routes to
+   downstream deterministic boundary nodes.
 
-      └─ planning ─────────────────────────────────────────────────────────────
-            │  Reads:  task, history, current_plan, analysis_summary,
-            │          plan_attempts, model_tier
-            │  Writes: current_plan, current_step, task_decomposed, plan_dag,
-            │          execution_waves, plan_attempts, affected_files
-            └─► plan_validator
+3. ``approval``:
+   Deterministic HITL approval checkpoint for protected files, plan approval, and dangerous operations.
 
-      └─ plan_validator ───────────────────────────────────────────────────────
-            │  Reads:  current_plan, plan_enforce_warnings, plan_strict_mode
-            │  Writes: plan_validation, action_failed, errors
-            ├─► execution          (plan valid)
-            ├─► planning           (plan invalid → re-plan)
-            └─► wait_for_user      (plan-mode: awaiting approval)
+4. ``verify``:
+   Deterministic verification gate: runs test suite, syntax checks, and evidence collection.
+   Guards completion; on pass routes to ``finalize``, on failure routes back to ``agent_loop`` with diagnostic context.
 
-      └─ execution ────────────────────────────────────────────────────────────
-            │  Reads:  task, working_dir, history, next_action, planned_action,
-            │          step_description, tool_call_count, cancel_event, …
-            │  Writes: last_result, last_tool_name, verified_reads, history,
-            │          next_action, tool_call_count, plan_progress,
-            │          replan_required, no_plan_fail_count, snapshots, …
-            ├─► wait_for_user      (preview pending)
-            ├─► step_controller    (plan step done → advance step)
-            ├─► perception         (WR-1 fast-path: read-only round-trip)
-            ├─► memory_sync        (tool budget exhausted)
-            ├─► replan             (replan_required set)
-            └─► analysis           (tool fail → re-analysis)
+5. ``compact``:
+   Deterministic memory & context compaction node. Truncates older tool outputs, rolls up history
+   via ``merge_or_replace_list``, and preserves critical decision provenance.
 
-      └─ wait_for_user ────────────────────────────────────────────────────────
-            │  Reads:  awaiting_plan_approval, current_plan,
-            │          pending_preview_id, awaiting_user_input
-            │  Writes: awaiting_plan_approval, plan_mode_approved,
-            │          preview_confirmed, pending_preview_id
-            ├─► execution          (confirmed / approved)
-            ├─► perception         (preview rejected)
-            └─► planning           (plan rejected → re-plan)
+6. ``finalize``:
+   Deterministic transaction settlement and clean up node. Commits or rolls back deferred
+   transactions, generates work summary, records telemetry/costs, and marks run status as completed.
 
-      └─ step_controller ──────────────────────────────────────────────────────
-            │  Reads:  current_plan, current_step, last_result,
-            │          step_retry_counts, model_tier, working_dir
-            │  Writes: step_description, planned_action, step_retry_counts,
-            │          step_lint_warnings, next_action
-            ├─► execution          (execute current step)
-            ├─► verification       (plan exhausted)
-            ├─► planning           (no plan)
-            └─► END                (cancelled / plan empty)
-
-      └─ replan ───────────────────────────────────────────────────────────────
-            │  Reads:  replan_required, current_plan, replan_attempts, task
-            │  Writes: current_plan, current_step, execution_waves,
-            │          replan_required, replan_attempts, history, errors
-            ├─► step_controller    (new plan ready)
-            ├─► perception         (fallback)
-            └─► memory_sync        (recovery cap hit)
-
-      └─ verification ─────────────────────────────────────────────────────────
-            │  Reads:  last_result, current_plan, current_step, model_tier
-            │  Writes: verification_result, verification_passed
-            └─► evaluation
-
-      └─ evaluation ───────────────────────────────────────────────────────────
-            │  Reads:  verification_result, verification_passed, errors,
-            │          debug_attempts, max_debug_attempts
-            │  Writes: evaluation_result, next_action, evaluation_llm_verdict,
-            │          replan_required, action_failed, errors
-            ├─► memory_sync        (complete)
-            ├─► step_controller    (partial completion → next step)
-            ├─► debug              (verification failed)
-            └─► END
-
-      └─ debug ────────────────────────────────────────────────────────────────
-            │  Reads:  debug_attempts, max_debug_attempts, verification_result,
-            │          last_result, task, history, cancel_event
-            │  Writes: next_action, debug_attempts, total_debug_attempts,
-            │          last_debug_error_type, errors
-            ├─► execution          (apply fix)
-            ├─► memory_sync        (give up)
-            └─► END
-
-      └─ memory_sync (memory_update_node) ─────────────────────────────────────
-            │  Reads:  working_dir, history, evaluation_result, task,
-            │          current_plan, session_id, _should_distill, _force_compact
-            │  Writes: _force_compact, errors, analysis_summary, history
-            │          (compacted via ReplaceList)
-            ├─► delegation         (delegations pending)
-            ├─► perception         (loop back for next turn)
-            └─► END
-
-      └─ delegation ───────────────────────────────────────────────────────────
-            │  Reads:  delegations, working_dir, session_id, delegation_depth
-            │  Writes: delegation_results, history
-            └─► END
-
-Frontier / Lite Graphs
------------------------
-``_compile_frontier_graph()`` (LARGE/FRONTIER tiers) replaces ``execution``
-with a single ``frontier_loop`` node that handles both planning and tool calls
-in one pass.
-
-``_compile_lite_graph()`` (LITE/v2 mode) is a minimal
-``perception → frontier_loop → memory_sync → END`` pipeline with no
-verification or delegation.
-
-Field Lifecycle Quick Reference
---------------------------------
-The following fields are written by *multiple* nodes — take care when reading
-them mid-graph:
-
-=========================  ====================================================
-Field                      Written by
-=========================  ====================================================
-``next_action``            perception, execution, debug, step_controller,
-                           evaluation
-``history``                perception, execution, replan, memory_sync,
-                           delegation
-``current_plan``           planning, replan, execution (plan_advance helper)
-``current_step``           planning, replan, execution (plan_advance helper)
-``analysis_summary``       analysis, memory_sync (distilled)
-``relevant_files``         analysis, planning
-``errors``                 perception, plan_validator, execution, replan,
-                           debug, memory_sync
-``model_tier``             perception (only — set once per turn)
-``rounds``                 perception (incremented each turn)
-=========================  ====================================================
+Target State Contracts
+----------------------
+- ``runtime``: Normalized tier policy, capabilities, and provider metadata.
+- ``run``: Current run status (running/completed/failed) and transition outcome.
+- ``pending_action``: Pending tool or plan awaiting execution or approval.
+- ``last_action``: Most recent executed tool action, result digest, and exit status.
+- ``verification``: Verification results, pass/fail status, and diagnostic evidence.
 
 Reducer Semantics
 -----------------
@@ -186,6 +83,7 @@ See Also
 --------
 - ``src/core/orchestration/graph/builder.py`` — graph compilation & routing
 - ``src/core/orchestration/graph/nodes/`` — individual node implementations
+- ``src/core/orchestration/graph/state_schemas.py`` — node result schema enforcement
 - ``src/core/orchestration/graph/state.py:validate_state()`` — runtime checks
 """
 

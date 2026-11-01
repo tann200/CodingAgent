@@ -16,21 +16,53 @@ def prune_stale_tool_outputs(
     if not messages:
         return messages
 
-    tool_result_indices: List[int] = []
+    native_tool_indices: List[int] = []
+    legacy_tool_indices: List[int] = []
     for i, msg in enumerate(messages):
-        if msg.get("role") == "user":
-            content = msg.get("content", "")
-            if "tool_execution_result" in str(content):
-                tool_result_indices.append(i)
+        role = msg.get("role")
+        content = msg.get("content", "")
+        has_legacy_marker = "tool_execution_result" in str(content)
+        if has_legacy_marker:
+            legacy_tool_indices.append(i)
+        elif role == "tool" and msg.get("tool_call_id"):
+            native_tool_indices.append(i)
 
-    recent_indices: set[int] = set(tool_result_indices[-stale_after_turns:])
+    recent_native: set[int] = (
+        set(native_tool_indices[-stale_after_turns:]) if stale_after_turns > 0 else set()
+    )
+    recent_legacy: set[int] = (
+        set(legacy_tool_indices[-stale_after_turns:]) if stale_after_turns > 0 else set()
+    )
     pruned: List[Dict] = []
 
     for i, msg in enumerate(messages):
+        content_raw = msg.get("content", "")
+        has_legacy_marker = "tool_execution_result" in str(content_raw)
         if (
+            msg.get("role") == "tool"
+            and msg.get("tool_call_id")
+            and not has_legacy_marker
+            and i not in recent_native
+        ):
+            content_str = str(content_raw)
+            if len(content_str) <= 400 or (
+                current_step_hint and current_step_hint.lower() in content_str.lower()
+            ):
+                pruned.append(msg)
+                continue
+            tool_name = msg.get("name") or "tool"
+            stub = json.dumps(
+                {
+                    "tool_name": tool_name,
+                    "_pruned": True,
+                    "_note": f"Full output pruned (stale - >{stale_after_turns} tool turns ago). Re-read if needed.",
+                }
+            )
+            pruned.append({**msg, "content": stub})
+        elif (
             msg.get("role") == "user"
-            and i not in recent_indices
-            and "tool_execution_result" in str(msg.get("content", ""))
+            and has_legacy_marker
+            and i not in recent_legacy
         ):
             try:
                 content_str = msg.get("content", "")

@@ -58,22 +58,4 @@ def test_current_wave_in_int_or_none_fields():
     assert "current_wave" in _INT_OR_NONE_FIELDS
 
 
-def test_planning_result_sets_execution_waves():
-    """_build_resolved_plan_result must include execution_waves and current_wave."""
-    from src.core.orchestration.graph.nodes.planning_result import _build_resolved_plan_result
 
-    dummy_plan = [{"description": "s1"}, {"description": "s2"}]
-    dummy_waves = [["0"], ["1"]]
-    result = _build_resolved_plan_result(
-        current_plan=dummy_plan,
-        current_step=0,
-        plan_attempts=1,
-        relevant_files=[],
-        key_symbols=[],
-        affected_files=[],
-        execution_waves=dummy_waves,
-    )
-    assert "execution_waves" in result
-    assert result["execution_waves"] == dummy_waves
-    assert "current_wave" in result
-    assert result["current_wave"] == 0

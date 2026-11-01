@@ -129,6 +129,63 @@ def _history_has_tool_calls(messages: Optional[List[Dict[str, Any]]]) -> bool:
     return False
 
 
+def _attach_streamed_turn_metadata(
+    target: Dict[str, Any],
+    stream_text: Any,
+    *,
+    always_populate_choices: bool,
+) -> Dict[str, Any]:
+    """Attach structured tool_calls, thinking_blocks, reasoning, and usage from SSE."""
+    plain_text = str(stream_text)
+    target["text"] = plain_text
+    target["streamed"] = True
+
+    tcs = list(getattr(stream_text, "tool_calls", None) or [])
+    tbs = list(getattr(stream_text, "thinking_blocks", None) or [])
+    rc = str(getattr(stream_text, "reasoning_content", "") or "")
+    finish_reason = str(getattr(stream_text, "finish_reason", "") or "stop")
+    usage = getattr(stream_text, "usage", None) or {}
+
+    if isinstance(usage, dict) and usage:
+        p_tok = int(usage.get("prompt_tokens", target.get("prompt_tokens", 0)) or 0)
+        c_tok = int(
+            usage.get("completion_tokens", target.get("completion_tokens", 0)) or 0
+        )
+        target["prompt_tokens"] = p_tok
+        target["completion_tokens"] = c_tok
+        target["total_tokens"] = p_tok + c_tok
+        if "cache_creation_input_tokens" in usage:
+            target["cache_creation_input_tokens"] = int(
+                usage["cache_creation_input_tokens"] or 0
+            )
+        if "cache_read_input_tokens" in usage:
+            target["cache_read_input_tokens"] = int(
+                usage["cache_read_input_tokens"] or 0
+            )
+
+    has_structured = bool(tcs or tbs or rc)
+    if always_populate_choices or has_structured:
+        msg_obj: Dict[str, Any] = {"role": "assistant", "content": plain_text}
+        if tcs:
+            msg_obj["tool_calls"] = tcs
+            if finish_reason == "stop":
+                finish_reason = "tool_calls"
+        if tbs:
+            msg_obj["thinking_blocks"] = tbs
+        if rc:
+            msg_obj["reasoning_content"] = rc
+        choice_obj: Dict[str, Any] = {
+            "message": msg_obj,
+            "finish_reason": finish_reason,
+        }
+        if tcs:
+            choice_obj["tool_calls"] = tcs
+        if not target.get("choices") or has_structured:
+            target["choices"] = [choice_obj]
+
+    return target
+
+
 async def call_adapter_with_fallbacks(
     *,
     adapter: Any,
@@ -161,7 +218,11 @@ async def call_adapter_with_fallbacks(
                         None,
                         functools.partial(consume_sse_stream, result, model),
                     )
-                    return {"ok": True, "text": text, "streamed": True}
+                    return _attach_streamed_turn_metadata(
+                        {"ok": True},
+                        text,
+                        always_populate_choices=False,
+                    )
                 elif isinstance(result, dict) and result.get("raw") is not None:
                     raw = result["raw"]
                     if hasattr(raw, "iter_lines"):
@@ -172,16 +233,11 @@ async def call_adapter_with_fallbacks(
                                 consume_sse_stream, raw, model or result.get("model")
                             ),
                         )
-                        result["text"] = text
-                        result["streamed"] = True
-                        if not result.get("choices"):
-                            result["choices"] = [
-                                {
-                                    "message": {"role": "assistant", "content": text},
-                                    "finish_reason": "stop",
-                                }
-                            ]
-                        return result
+                        return _attach_streamed_turn_metadata(
+                            result,
+                            text,
+                            always_populate_choices=True,
+                        )
                     elif hasattr(raw, "__iter__"):
                         from src.core.inference.streaming import consume_generator_stream
 
@@ -227,7 +283,11 @@ async def call_adapter_with_fallbacks(
                         None,
                         functools.partial(consume_sse_stream, result, model),
                     )
-                    return {"ok": True, "text": text, "streamed": True}
+                    return _attach_streamed_turn_metadata(
+                        {"ok": True},
+                        text,
+                        always_populate_choices=False,
+                    )
                 elif isinstance(result, dict) and result.get("raw") is not None:
                     raw = result["raw"]
                     if hasattr(raw, "iter_lines"):
@@ -238,16 +298,11 @@ async def call_adapter_with_fallbacks(
                                 consume_sse_stream, raw, model or result.get("model")
                             ),
                         )
-                        result["text"] = text
-                        result["streamed"] = True
-                        if not result.get("choices"):
-                            result["choices"] = [
-                                {
-                                    "message": {"role": "assistant", "content": text},
-                                    "finish_reason": "stop",
-                                }
-                            ]
-                        return result
+                        return _attach_streamed_turn_metadata(
+                            result,
+                            text,
+                            always_populate_choices=True,
+                        )
                     elif hasattr(raw, "__iter__"):
                         from src.core.inference.streaming import consume_generator_stream
 

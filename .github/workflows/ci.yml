@@ -185,7 +185,7 @@ jobs:
 
   benchmarks:
     runs-on: ubuntu-latest
-    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' }}
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request' || github.ref == 'refs/heads/main' }}
     needs: unit-tests
     steps:
       - uses: actions/checkout@v4

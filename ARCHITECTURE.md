@@ -12,28 +12,24 @@ The process is not a security-isolated multi-tenant platform. Model providers, M
 CLI or Textual UI
         |
         v
-src.main -> Orchestrator.run_agent_once()
+src.main -> Orchestrator.run_agent_once() (single async graph invocation)
         |
         v
-Unified 7-Node Graph Topology (Canonical Architecture)
+Unified 6-Node Graph Topology (2026 Canonical Architecture)
         |
-        +--> initialize (deterministic tier & immutable policy resolution)
+        +--> initialize (deterministic ModelRuntimePolicy & capability resolution)
         |       |
         |       v
-        +--> agent_loop <--------------------+---------------+---------------+
-        |       | (outcome)                  | (approved)    | (replacement) | (compacted)
-        |       +--> approval ---------------+               |               |
-        |       +--> recover --------------------------------+               |
-        |       +--> compact ------------------------------------------------+
-        |       +--> verify
-        |       |       | (failed & budget)
-        |       |       +--> recover
-        |       | (passed / terminal)
-        |       v
-        +--> finalize -> END
+        +--> agent_loop <--------------------+--------------------+--------------------+
+        |       | (outcome)                  | (approved)         | (deferred-rollback | (TurnGroup-atomic
+        |       +--> approval ---------------+                    |  surgical retry)   |  compaction)
+        |       +--> verify --------------------------------------+                    |
+        |       |       | (passed or recovery budget exhausted)                        |
+        |       +-------+--> finalize (Transaction Settlement Guard) -> END            |
+        |       +--> compact ----------------------------------------------------------+
         |
         v
-Orchestrator.execute_tool()
+Orchestrator.execute_tool() (parallel read-only waves, serialized mutations)
         |
         v
 Tool execution pipeline
@@ -42,7 +38,7 @@ Tool execution pipeline
 Tool registry -> src/tools implementation
 ```
 
-The live orchestration pipeline uses the unified 7-node graph topology (`initialize -> agent_loop -> [approval | verify | recover | compact | finalize] -> END`) compiled by `src/core/orchestration/graph/builder.py:compile_canonical_graph()`. Both 15-30B medium and frontier models share this identical functional topology; tier classification determines immutable budgets, allowed capabilities (`medium-core` 18 tools vs `frontier-full` 27 tools), and execution policies rather than topology divergence. Legacy topology compilers remain available via `CODINGAGENT_UNIFIED_GRAPH=0` for transitional test harnesses.
+The live orchestration pipeline executes a single self-contained invocation of the unified 6-node graph topology (`initialize -> agent_loop -> [approval | verify | compact | finalize] -> END`) compiled by `src/core/orchestration/graph/builder.py:compile_canonical_graph()`. All 2026 model tiers share this identical topology while `ModelRuntimePolicy` (`src/core/orchestration/graph/runtime_policy.py`) scales immutable budgets, flat single-purpose primitive toolsets (`compact-flat` 12 tools for `<8.5B` `nano` and `9-14B` `compact`, `standard-flat` 18 tools for `15-70B` dense & MoE `standard`, `frontier-flat` 25 tools for `frontier`), read-only wave parallelism, and targeted vs. full verification. All legacy cognitive nodes and obsolete topology compilers have been retired.
 
 ## Components
 
@@ -55,16 +51,15 @@ The live orchestration pipeline uses the unified 7-node graph topology (`initial
 ### Orchestration
 
 - `src/core/orchestration/orchestrator.py` owns the agent instance and exposes `run_agent_once()` and `execute_tool()`.
-- `src/core/orchestration/inference_loop.py` builds the run state, resolves provider/model tier, embeds immutable runtime policy, compiles the canonical graph, applies turn limits and cancellation handling, and returns the result.
+- `src/core/orchestration/inference_loop.py` builds the run state, resolves provider/model capabilities, embeds immutable runtime policy, invokes the compiled canonical graph once per task, applies turn limits and cancellation handling, and returns the result.
 - `src/core/orchestration/graph/` contains state definitions, canonical graph builder, routing, checkpointing, and cognitive nodes.
-- `src/core/orchestration/graph/policy.py` defines the authoritative target state schema (`runtime`, `run`, `pending_action`, `last_action`, `verification`) and tier policies.
-- `initialize_node.py` resolves runtime metadata and prepares state without LLM calls.
-- `frontier_loop_node.py` (aliased as `agent_loop_node`) performs iterative model-tool loops and emits normalized `last_action` envelopes.
-- `approval_node.py` validates action digest integrity and gates modifying actions.
-- `verification_node.py` enforces evidence-based validation for every mutation regardless of tier.
-- `recover_node.py` unifies replanning and debugging driven by error classification and failed action signatures, rejecting duplicate failed signatures.
-- `compact_node.py` performs deterministic-first history reduction with bounded compaction limits.
-- `finalize_node.py` synchronizes durable memory, writes trajectories, and terminates the pipeline without re-entering the agent loop.
+- `src/core/orchestration/graph/runtime_policy.py` and `policy.py` define the authoritative target state schema (`runtime`, `run`, `pending_action`, `last_action`, `verification`) and 4-profile `ModelRuntimePolicy` (`nano`, `compact`, `standard`, `frontier`).
+- `initialize_node.py` resolves runtime metadata, `ModelRuntimePolicy`, and flat toolset configuration deterministically without LLM calls.
+- `frontier_loop_node.py` (aliased as `agent_loop_node`) and `frontier_dispatch.py` execute iterative native-tool loops with structured `assistant.tool_calls` + `role="tool"` history, signed `thinking_blocks` / `reasoning_content` preservation, KV-cache prefix stability, parallel read-only tool waves, `bash` file-mutation detection, duplicate failing-call short-circuiting, and in-loop recovery guidance.
+- `approval_node.py` validates action digest integrity, suspends non-blockingly for user/plan approval, and resumes the approved `next_action` cleanly.
+- `verification_node.py` and `verification_helpers.py` enforce SHA-256-deduplicated targeted or full polyglot verification (Python, JS/TS `package.json`, Rust `Cargo.toml`, Go `go.mod`, and sandboxed allowlisted `.codingagent/verify.yaml`) with **Deferred Rollback** during bounded recovery retries so models can apply surgical fixes against on-disk edits.
+- `compact_node.py` performs 2-stage `TurnGroup`-atomic deterministic compaction (provenance-preserving tool-output stubbing followed by `<context_checkpoint>` turn-group folding) that never splits `assistant.tool_calls` from matching `role="tool"` messages.
+- `finalize_node.py` enforces a fail-closed **Transaction Settlement Guard** (committing open snapshots only when verified or rolling back any unverified/failed/cancelled deferred-rollback edits), persists trajectories deterministically, and terminates to `END`.
 
 Graph checkpoints can persist and rehydrate graph state. They improve crash recovery, but do not make arbitrary tool side effects transactional.
 
@@ -79,7 +74,7 @@ Graph checkpoints can persist and rehydrate graph state. They improve crash reco
 - `repo_read_tools.py`, `lsp_tools.py`, and `project_tools.py` for repository inspection.
 - `verification_tools.py`, `lint_dispatch.py`, and `formatter.py` for validation.
 - `memory_tools.py`, `todo_tools.py`, `plan_mode_tools.py`, and `subagent_tools.py` for agent state and workflow support.
-- `_capabilities.py` and `capability_tools.py` define the consolidated 27 target capability tools, strict schemas, operation enums, tier assignments (`medium-core` 18 tools, `frontier-full` 27 tools), and backward-compatible adapters for all legacy tool names.
+- `src/config/toolsets/` (`compact-flat.yaml`, `standard-flat.yaml`, `frontier-flat.yaml`) defines the model-facing flat single-purpose primitive toolsets (12 / 18 / 25 tools) intersected fail-closed with role and `explore_mode` permissions. `_capabilities.py` and `capability_tools.py` remain registered with `schema_visibility="alias_only"` for backward-compatible execution without bloating model-facing schemas.
 
 `ToolRegistry.call()` routes invocations through guarded orchestrator execution (`Orchestrator.execute_tool()`), ensuring read-before-write validation, workspace confinement, secret redaction, and transactional pre-call snapshots for all mutations (including unlinking newly created files/directories on rollback). Tool discovery fails closed if non-optional built-in modules fail to import, and toolset resolution fails closed if any configured tool is absent.
 
@@ -88,7 +83,7 @@ Graph checkpoints can persist and rehydrate graph state. They improve crash reco
 - `src/core/context/` constructs prompts from task messages, tool descriptions, skills, optional prior-session context, LSP context, and retrieved snippets.
 - `src/core/memory/` provides JSONL and SQLite session stores, summaries/distillation, compaction, snapshots, and sidecar diagnostics.
 - `src/core/indexing/` extracts symbols and maintains a repository index, with optional embedding support. Current fallback retrieval is symbol and path oriented rather than a complete semantic code-chunk index.
-- `src/config/agent-brain/roles/` and `src/config/agent-brain/skills/` supply prompt-time role and skill content.
+- `src/config/agent-brain/roles/` and `src/config/agent-brain/skills/` supply prompt-time role and internal skill content. Reusable agent skills packaged for external agent runners (Agensi, Claude Code, Cursor) reside in `src/config/skills/<skill>/SKILL.md`.
 
 ### Providers And Evaluation
 

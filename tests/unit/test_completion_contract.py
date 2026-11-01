@@ -11,8 +11,6 @@ from src.core.orchestration.graph.completion_contract import (
 )
 from src.core.orchestration.graph.nodes.frontier_loop_node import frontier_loop_node
 from src.core.orchestration.graph.nodes.verification_node import verification_node
-from src.core.orchestration.graph.nodes.evaluation_node import evaluation_node
-from src.core.orchestration.graph.tier_graph_routing import route_frontier_loop_exit_lite
 
 
 class TestTaskClassification:
@@ -270,51 +268,6 @@ class TestVerificationNodeMinimumTierParity:
         assert res["verification_result"]["command"]["status"] == "fail"
 
 
-class TestTierGraphRoutingMinimumVerification:
-    def test_lite_routes_to_verification_if_files_modified(self):
-        state = {
-            "last_tool_name": "read_file",
-            "modified_files": ["/workspace/test.py"],
-        }
-        assert route_frontier_loop_exit_lite(state) == "verification"
-
-    def test_lite_routes_to_verification_if_last_result_failed(self):
-        state = {
-            "last_tool_name": "bash",
-            "last_result": {"ok": False, "status": "error"},
-        }
-        assert route_frontier_loop_exit_lite(state) == "verification"
-
-    def test_lite_routes_to_memory_sync_if_purely_readonly(self):
-        state = {
-            "last_tool_name": "read_file",
-            "modified_files": [],
-            "last_result": {"ok": True, "status": "ok"},
-        }
-        assert route_frontier_loop_exit_lite(state) == "memory_sync"
-
-
-class TestEvaluationNodeEvidenceCheck:
-    @pytest.mark.asyncio
-    async def test_evaluation_node_fails_when_mutating_task_has_no_modifications(self):
-        state = {
-            "task": "edit calc.py to add divide function",
-            "history": [
-                {"role": "user", "content": "edit calc.py to add divide function"},
-                {"role": "assistant", "content": "I have updated calc.py."},
-            ],
-            "current_plan": [],
-            "tool_call_count": 0,
-            "modified_files": [],
-            "errors": [],
-            "verification_passed": True,
-            "verification_result": {},
-        }
-
-        res = await evaluation_node(state, config={})
-        assert res["evaluation_result"] != "complete"
-
-
 class TestSpec04RegressionContracts:
     def test_mutating_task_with_readonly_tool_and_ok_status_is_rejected(self):
         verdict = evaluate_completion_contract(
@@ -373,24 +326,6 @@ class TestSpec04RegressionContracts:
     def test_informational_task_with_repo_context_classified_as_informational(self):
         user_task = "How does login work?"
         assert classify_task(user_task) == TaskType.INFORMATIONAL
-
-    def test_lite_routing_with_write_then_read_routes_to_verification(self):
-        state = {
-            "last_tool_name": "read_file",
-            "modified_files": ["/workspace/a.py"],
-            "last_result": {"ok": True, "status": "ok"},
-        }
-        assert route_frontier_loop_exit_lite(state) == "verification"
-
-    def test_route_verification_lite(self):
-        from src.core.orchestration.graph.tier_graph_routing import route_verification_lite
-
-        # Passes -> memory_sync
-        assert route_verification_lite({"verification_passed": True}) == "memory_sync"
-        # Fails and debug_attempts < max -> frontier_loop
-        assert route_verification_lite({"verification_passed": False, "debug_attempts": 0, "max_debug_attempts": 1}) == "frontier_loop"
-        # Fails and attempts exhausted -> memory_sync
-        assert route_verification_lite({"verification_passed": False, "debug_attempts": 1, "max_debug_attempts": 1}) == "memory_sync"
 
     @pytest.mark.asyncio
     async def test_informational_task_with_analyst_findings_in_frontier_loop_node(self, tmp_path):

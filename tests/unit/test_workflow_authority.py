@@ -19,11 +19,9 @@ from src.core.inference.workflow_selector import (
     select_workflow_from_names,
 )
 from src.core.orchestration.graph.builder import (
-    _resolve_graph_tier,
     get_compiled_graph_for_orchestrator,
 )
 from src.core.orchestration.graph.canonical_routing import route_after_agent_loop
-from src.core.orchestration.graph.tier_graph_routing import route_frontier_loop_exit
 from src.core.orchestration.inference_loop_state import (
     build_initial_state,
     resolve_max_turns,
@@ -88,7 +86,7 @@ def test_graph_builder_tier_driven_by_workflow_config():
         "src.core.orchestration.graph.builder.build_tier_graph"
     ) as mock_build:
         get_compiled_graph_for_orchestrator(orch_small)
-        mock_build.assert_called_once_with("lite")
+        mock_build.assert_called_once_with("canonical")
 
 
 def test_graph_builder_tier_for_capable_loop():
@@ -112,7 +110,7 @@ def test_graph_builder_tier_for_capable_loop():
         return_value={"model": "gpt-4o"},
     ):
         get_compiled_graph_for_orchestrator(orch_capable)
-        mock_build.assert_called_once_with("frontier")
+        mock_build.assert_called_once_with("canonical")
 
 
 def test_initial_state_limits_and_capabilities_reflect_workflow_config():
@@ -156,19 +154,6 @@ def test_initial_state_limits_and_capabilities_reflect_workflow_config():
 
 
 def test_routing_bypasses_verification_and_replan_when_disabled():
-    # In frontier graph routing:
-    state_no_verify = {
-        "last_result": {"ok": True},
-        "use_verification": False,
-    }
-    assert route_frontier_loop_exit(state_no_verify) == "memory_sync"
-
-    state_no_replan = {
-        "replan_required": "Oversize patch",
-        "use_replan": False,
-    }
-    assert route_frontier_loop_exit(state_no_replan) == "memory_sync"
-
     # In canonical graph routing:
     assert (
         route_after_agent_loop(

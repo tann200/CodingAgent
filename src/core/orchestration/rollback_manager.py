@@ -105,6 +105,16 @@ class RollbackManager:
             logger.warning(f"Failed to scan directory {dir_path}: {e}")
         return snaps
 
+    def _normalize_rel_path(self, resolved_path: Path) -> str:
+        """Return canonical workspace-relative POSIX path for snapshot deduplication."""
+        try:
+            return resolved_path.resolve().relative_to(self.workdir.resolve()).as_posix()
+        except Exception:
+            try:
+                return resolved_path.relative_to(self.workdir).as_posix()
+            except Exception:
+                return resolved_path.as_posix()
+
     def snapshot_files(
         self, file_paths: List[str], snapshot_id: Optional[str] = None
     ) -> str:
@@ -122,6 +132,7 @@ class RollbackManager:
         self.current_snapshot = snapshot_id
 
         snapshots: List[FileSnapshot] = []
+        seen_paths: set[str] = set()
 
         for file_path in file_paths:
             try:
@@ -131,10 +142,14 @@ class RollbackManager:
                     f"snapshot_files: path '{file_path}' escapes workspace — skipping"
                 )
                 continue
+            norm_path = self._normalize_rel_path(path)
+            if norm_path in seen_paths:
+                continue
+            seen_paths.add(norm_path)
             if not path.exists():
                 snapshots.append(
                     FileSnapshot(
-                        path=file_path,
+                        path=norm_path,
                         content=None,
                         timestamp=datetime.now().isoformat(),
                         checksum="",
@@ -146,21 +161,24 @@ class RollbackManager:
             if path.is_dir():
                 snapshots.append(
                     FileSnapshot(
-                        path=file_path,
+                        path=norm_path,
                         content="__DIRECTORY__",
                         timestamp=datetime.now().isoformat(),
                         checksum="",
                         exists=True,
                     )
                 )
-                snapshots.extend(self._snapshot_directory_children(path))
+                for child_snap in self._snapshot_directory_children(path):
+                    if child_snap.path not in seen_paths:
+                        snapshots.append(child_snap)
+                        seen_paths.add(child_snap.path)
                 continue
 
             try:
                 content = path.read_text(encoding="utf-8")
                 snapshots.append(
                     FileSnapshot(
-                        path=file_path,
+                        path=norm_path,
                         content=content,
                         timestamp=datetime.now().isoformat(),
                         checksum=self._compute_checksum(content),
@@ -460,14 +478,20 @@ class RollbackManager:
                 # First file being added to this transaction — create empty entry
                 self.snapshots[snapshot_id] = []
 
-        existing_paths = {s.path for s in self.snapshots[snapshot_id]}
-        if file_path in existing_paths:
+        norm_path = self._normalize_rel_path(path)
+        existing_paths: set[str] = set()
+        for s in self.snapshots[snapshot_id]:
+            try:
+                existing_paths.add(self._normalize_rel_path(safe_resolve(s.path, self.workdir)))
+            except Exception:
+                existing_paths.add(s.path)
+        if norm_path in existing_paths:
             return False  # already captured
 
         if not path.exists():
             self.snapshots[snapshot_id].append(
                 FileSnapshot(
-                    path=file_path,
+                    path=norm_path,
                     content=None,
                     timestamp=datetime.now().isoformat(),
                     checksum="",
@@ -477,7 +501,7 @@ class RollbackManager:
         elif path.is_dir():
             self.snapshots[snapshot_id].append(
                 FileSnapshot(
-                    path=file_path,
+                    path=norm_path,
                     content="__DIRECTORY__",
                     timestamp=datetime.now().isoformat(),
                     checksum="",
@@ -493,7 +517,7 @@ class RollbackManager:
                 content = path.read_text(encoding="utf-8")
                 self.snapshots[snapshot_id].append(
                     FileSnapshot(
-                        path=file_path,
+                        path=norm_path,
                         content=content,
                         timestamp=datetime.now().isoformat(),
                         checksum=self._compute_checksum(content),

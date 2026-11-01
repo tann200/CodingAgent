@@ -78,8 +78,8 @@ The CI workflow defines the maintained quality (including TUI single-source tree
 
 ## Current Limitations
 
-- The live graph uses a unified 7-node canonical topology (`initialize -> agent_loop -> [approval | verify | recover | compact | finalize] -> END`) for both medium (18 core tools) and frontier (27 capability tools) tiers; tier determines immutable budgets and capabilities rather than topology divergence.
-- Mutating task completion is governed by evidence-based completion contracts requiring verified file modifications and tool execution evidence.
+- The live graph uses a unified 6-node canonical topology (`initialize -> agent_loop -> [approval | verify | compact | finalize] -> END`) across all model profiles (`nano` `<8.5B` and `compact` `9-14B` with 12 flat tools, `standard` `15-70B` dense/MoE with 18 flat tools, and `frontier` with 25 flat tools); `ModelRuntimePolicy` scales budgets, read-only wave parallelism, and targeted vs. full verification rather than diverging graph topology.
+- Mutating task completion is governed by evidence-based completion contracts, polyglot verification with Deferred Rollback during bounded retries, and a fail-closed Transaction Settlement Guard in `finalize` that rolls back unverified snapshots on failure or cancellation.
 - Code retrieval is symbol-oriented and is not guaranteed before every planning or editing path.
 - HTTP task execution, when enabled, must remain loopback-bound and restricted to approved workspace roots; it is not a multi-tenant service boundary.
 

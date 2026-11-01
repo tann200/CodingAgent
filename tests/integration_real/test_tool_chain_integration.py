@@ -26,11 +26,7 @@ pytestmark = pytest.mark.integration_real
 # patched so the scripted adapter drives the loop (same set as
 # tests/integration/test_agent_loop_plaintext_tools.py).
 _CALL_MODEL_TARGETS = [
-    "src.core.orchestration.graph.nodes.execution_node.call_model",
-    "src.core.orchestration.graph.nodes.planning_node.call_model",
-    "src.core.orchestration.graph.nodes.perception_node.call_model",
-    "src.core.orchestration.graph.nodes.debug_node.call_model",
-    "src.core.orchestration.graph.nodes.replan_node.call_model",
+    "src.core.orchestration.graph.nodes.frontier_loop_node.call_model",
     "src.core.inference.llm_manager.call_model",
 ]
 
