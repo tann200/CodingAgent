@@ -38,13 +38,21 @@ Start a project-local agent workspace:
 codingagent init --dir /path/to/repository
 ```
 
-`init` creates `.codingAgent/` with agent configuration, hooks, and a project instruction file. Use `codingagent --help` for the complete command surface. Key commands include `init`, `system-prompt`, `session`, `status`, `doctor`, `mcp`, and `diff`.
+`init` creates `.codingAgent/` with agent configuration, hooks, and a project instruction file. Use `codingagent --help` for the complete command surface. Key commands include `init`, `system-prompt`, `session`, `status`, `doctor`, `skill`, `mcp`, and `diff`.
 
 Diagnose local model engines (Ollama, LM Studio, vLLM) and validate native tool schemas:
 
 ```bash
 codingagent doctor
 codingagent doctor --provider ollama --validate-tools
+```
+
+List, inspect, and export packaged agent skills for Agensi, Claude Code, and Cursor:
+
+```bash
+codingagent skill list
+codingagent skill export polyglot-verify --target claude
+codingagent skill export --all --target agensi
 ```
 
 ## Safety Model

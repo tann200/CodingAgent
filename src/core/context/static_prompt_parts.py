@@ -253,7 +253,7 @@ def build_output_format_block(
             "After the tool result is returned, you may call one more tool if needed.\n"
             "</output_format>"
         )
-    if tier_str == "small":
+    if tier_str in ("small", "nano", "compact"):
         return (
             "<output_format>\n"
             "Output ONLY the JSON function call. No explanation, no extra text.\n"

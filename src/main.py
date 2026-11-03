@@ -213,6 +213,37 @@ def _parse_args(argv: list) -> argparse.Namespace:
         help="Output diagnostic report as structured JSON.",
     )
 
+    # Phase 3.8: `skill` subcommand — list, inspect, and export agent skills
+    skill_parser = subparsers.add_parser(
+        "skill",
+        help="List, inspect, and export packaged agent skills for Agensi, Claude Code, and Cursor.",
+    )
+    skill_sub = skill_parser.add_subparsers(dest="skill_action")
+
+    skill_list = skill_sub.add_parser("list", help="List all available agent skills.")
+    skill_list.add_argument("--json", action="store_true")
+
+    skill_show = skill_sub.add_parser("show", help="Show instructions for a specific skill.")
+    skill_show.add_argument("name", help="Name of the skill to inspect.")
+    skill_show.add_argument("--json", action="store_true")
+
+    skill_export = skill_sub.add_parser("export", help="Export skill(s) to target agent harness.")
+    skill_export.add_argument("name", nargs="?", default=None, help="Name of the skill to export (or omit with --all).")
+    skill_export.add_argument("--all", action="store_true", help="Export all available skills.")
+    skill_export.add_argument(
+        "--target",
+        choices=["claude", "cursor", "agensi", "dir"],
+        default="agensi",
+        help="Target agent harness format (default: agensi).",
+    )
+    skill_export.add_argument("--out", metavar="DIR", default=None, help="Destination directory (default: current workspace).")
+    skill_export.add_argument("--json", action="store_true")
+
+    skill_val = skill_sub.add_parser("validate", help="Validate skill metadata and structure.")
+    skill_val.add_argument("name", nargs="?", default=None, help="Name of skill to validate (or omit with --all).")
+    skill_val.add_argument("--all", action="store_true", help="Validate all available skills.")
+    skill_val.add_argument("--json", action="store_true")
+
     # Global (non-subcommand) flags
     parser.add_argument(
         "--output-format",
@@ -947,6 +978,12 @@ def main(argv: Optional[list] = None) -> int:
         from src.cli.doctor_cmd import run_doctor
 
         return run_doctor(args)
+
+    # Phase 3.8: Dispatch `skill` subcommand
+    if getattr(args, "subcommand", None) == "skill":
+        from src.cli.skill_cmd import run_skill
+
+        return run_skill(args)
 
     # UX-2: Dispatch --validate-config flag
     if getattr(args, "validate_config", False):
