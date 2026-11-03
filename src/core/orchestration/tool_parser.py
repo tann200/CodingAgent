@@ -61,12 +61,19 @@ def _extract_json_object(text: str) -> Optional[Dict[str, Any]]:
                                 except Exception:
                                     parsed = None
                         if isinstance(parsed, dict):
-                            if parsed.get("name") and parsed.get("arguments") is not None:
-                                return parsed
-                            if parsed.get("tool") and parsed.get("arguments") is not None:
+                            raw_name = parsed.get("name") or parsed.get("tool")
+                            raw_args = parsed.get("arguments")
+                            if raw_args is None:
+                                raw_args = parsed.get("parameters")
+                            if raw_name and raw_args is not None:
+                                if isinstance(raw_args, str):
+                                    try:
+                                        raw_args = json.loads(raw_args)
+                                    except Exception:
+                                        pass
                                 return {
-                                    "name": parsed["tool"],
-                                    "arguments": parsed["arguments"],
+                                    "name": raw_name,
+                                    "arguments": raw_args,
                                 }
                         break
             j += 1
@@ -112,18 +119,22 @@ def parse_tool_block(text: str) -> Optional[Dict[str, Any]]:
             json_content = match.group(1).strip()
             try:
                 parsed = json.loads(json_content, strict=False)
-                if parsed.get("name") and parsed.get("arguments") is not None:
+                raw_name = parsed.get("name") or parsed.get("tool")
+                raw_args = parsed.get("arguments")
+                if raw_args is None:
+                    raw_args = parsed.get("parameters")
+                if raw_name and raw_args is not None:
+                    if isinstance(raw_args, str):
+                        try:
+                            raw_args = json.loads(raw_args)
+                        except Exception:
+                            pass
                     logger.debug(
-                        f"parse_tool_block: JSON parse succeeded for tool '{parsed.get('name')}'"
-                    )
-                    return parsed
-                if parsed.get("tool") and parsed.get("arguments") is not None:
-                    logger.debug(
-                        f"parse_tool_block: JSON parse succeeded for tool '{parsed.get('tool')}'"
+                        f"parse_tool_block: JSON parse succeeded for tool '{raw_name}'"
                     )
                     return {
-                        "name": parsed.get("tool"),
-                        "arguments": parsed.get("arguments"),
+                        "name": raw_name,
+                        "arguments": raw_args,
                     }
             except Exception:
                 pass
@@ -203,23 +214,47 @@ def parse_tool_block(text: str) -> Optional[Dict[str, Any]]:
 
 
 def _parse_qwen3_xml(text: str) -> Optional[Dict[str, Any]]:
-    """Parse Qwen3 native XML tool call format.
+    """Parse Qwen3, DeepSeek, and Gemma markup tool call formats.
 
-    Qwen3 can emit tool calls in XML format:
-    ```
-    <tool_call>
-      <name>tool_name</name>
-      <arguments>
-      {"arg1": "value1", "arg2": "value2"}
-      </arguments>
-    </tool_call>
-    ```
-
-    This parser extracts the tool name and arguments, converting arguments
-    to JSON if they're a JSON string.
+    Supports:
+    1. Standard Qwen3 XML format:
+       <tool_call>
+         <name>tool_name</name>
+         <arguments>{"arg": "val"}</arguments>
+       </tool_call>
+    2. DeepSeek / Gemma tag format:
+       <function=tool_name>{"arg": "val"}</function>
+       or <function=tool_name><parameter=k>v</parameter></function>
     """
+    # 1. DeepSeek / Gemma tag format: <function=name>...</function>
+    func_tag_match = re.search(r"<function=([A-Za-z_]\w*)>(.*?)</function>", text, re.DOTALL)
+    if func_tag_match:
+        tool_name = func_tag_match.group(1)
+        body = func_tag_match.group(2).strip()
+        try:
+            parsed_args = json.loads(body, strict=False)
+            if isinstance(parsed_args, dict):
+                return {"name": tool_name, "arguments": parsed_args}
+        except Exception:
+            pass
+
+        # Try <parameter=name>value</parameter>
+        param_matches = re.findall(r"<parameter=([A-Za-z_]\w*)>(.*?)</parameter>", body, re.DOTALL)
+        if param_matches:
+            parsed_args = {}
+            for k, v in param_matches:
+                v_clean = v.strip()
+                try:
+                    parsed_args[k] = json.loads(v_clean, strict=False)
+                except Exception:
+                    parsed_args[k] = v_clean
+            return {"name": tool_name, "arguments": parsed_args}
+
+        return {"name": tool_name, "arguments": {}}
+
+    # 2. Qwen3 XML format: <name>...</name> and <arguments|parameters>...</arguments|parameters>
     name_pattern = r"<name>\s*([A-Za-z_]\w*)\s*</name>"
-    args_pattern = r"<arguments>\s*(.*?)\s*</arguments>"
+    args_pattern = r"<(?:arguments|parameters)>\s*(.*?)\s*</(?:arguments|parameters)>"
 
     name_match = re.search(name_pattern, text, re.DOTALL)
     args_match = re.search(args_pattern, text, re.DOTALL)

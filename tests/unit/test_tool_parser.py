@@ -95,3 +95,46 @@ def test_normalize_tool_call_with_raw_newlines_in_json():
     name, args = _normalize_tool_call(tc)
     assert name == "write_file"
     assert args == {"path": "test.py", "content": "line1\nline2"}
+
+
+def test_parse_tool_block_parameters_alias():
+    text = '{"name": "read_file", "parameters": {"path": "src/main.py"}}'
+    res = parse_tool_block(text)
+    assert res is not None
+    assert res["name"] == "read_file"
+    assert res["arguments"] == {"path": "src/main.py"}
+
+
+def test_parse_tool_block_stringified_arguments():
+    text = '{"name": "read_file", "arguments": "{\\"path\\": \\"src/main.py\\"}"}'
+    res = parse_tool_block(text)
+    assert res is not None
+    assert res["name"] == "read_file"
+    assert res["arguments"] == {"path": "src/main.py"}
+
+
+def test_parse_deepseek_gemma_function_tag_json():
+    text = 'Let me inspect the file:\n<function=read_file>{"path": "config.json"}</function>'
+    res = parse_tool_block(text)
+    assert res is not None
+    assert res["name"] == "read_file"
+    assert res["arguments"] == {"path": "config.json"}
+
+
+def test_parse_deepseek_gemma_function_parameter_tags():
+    text = '<function=edit_file_atomic><parameter=path>test.py</parameter><parameter=old_string>foo</parameter><parameter=new_string>bar</parameter></function>'
+    res = parse_tool_block(text)
+    assert res is not None
+    assert res["name"] == "edit_file_atomic"
+    assert res["arguments"]["path"] == "test.py"
+    assert res["arguments"]["old_string"] == "foo"
+    assert res["arguments"]["new_string"] == "bar"
+
+
+def test_parse_qwen3_xml_with_parameters_tag():
+    text = '<tool_call>\n<name>find_files</name>\n<parameters>\n{"pattern": "*.py"}\n</parameters>\n</tool_call>'
+    res = parse_tool_block(text)
+    assert res is not None
+    assert res["name"] == "find_files"
+    assert res["arguments"] == {"pattern": "*.py"}
+
