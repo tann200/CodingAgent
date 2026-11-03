@@ -147,7 +147,7 @@ jobs:
           pip install -e .[dev,server]
       - name: Run platform-sensitive unit smoke tests
         run: |
-          python -m pytest tests/unit/test_sandbox.py tests/unit/test_sandbox_bwrap.py tests/unit/test_tools_sandbox.py tests/unit/test_task_lifecycle.py -q -p no:logging
+          python -m pytest tests/unit/test_sandbox.py tests/unit/test_sandbox_bwrap.py tests/unit/test_tools_sandbox.py tests/unit/test_task_lifecycle.py tests/unit/test_cli_doctor.py -q -p no:logging
 
   integration-mock:
     runs-on: ubuntu-latest
