@@ -45,7 +45,7 @@ The live orchestration pipeline executes a single self-contained invocation of t
 ### Entry Points And UI
 
 - `src/main.py` parses CLI flags, initializes runtime settings, and selects headless or Textual execution.
-- `tui/tui_src/ui/` implements the Textual client. `AgentBridge` is the boundary between UI state and core orchestration/events.
+- `tui/tui_src/ui/` implements the Textual client. `AgentBridge` is the boundary between UI state and core orchestration/events. `_app_slash_commands_mixin.py` provides interactive slash commands (`/status`, `/doctor`, `/skills`, `/compact`, `/fast`, `/provider`, `/model`) for in-session runtime policy monitoring, local model diagnostics, and skill inspection.
 - `src/cli/` implements the headless `session`, `status`, `doctor`, `skill`, `mcp`, and `diff` subcommands.
 
 ### Orchestration
@@ -65,7 +65,7 @@ Graph checkpoints can persist and rehydrate graph state. They improve crash reco
 
 ### Tool Execution And Safety
 
-`src/core/orchestration/tool_execution_pipeline.py` is the normal enforcement point for model-initiated tool calls. It performs canonicalization, read-before-write and scope checks, permission checks, approval handling, contract validation, rollback snapshots where supported, hooks, timeout handling, event publication, and tracing.
+`src/core/orchestration/tool_execution_pipeline.py` is the normal enforcement point for model-initiated tool calls. It performs canonicalization, read-before-write and scope checks, permission checks, approval handling, contract validation, rollback snapshots where supported, hooks, timeout handling, event publication, and tracing. String tool output is capped via tier-adaptive truncation scaled dynamically by `ModelRuntimePolicy` (`nano`: 6,000 chars; `compact`: 12,000 chars; `standard`: 24,000 chars; `frontier`: 48,000 chars) before entering history and model context.
 
 `src/tools/` provides the registered functions. Important groups are:
 

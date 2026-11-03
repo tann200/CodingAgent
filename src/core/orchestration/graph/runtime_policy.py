@@ -86,6 +86,7 @@ class ModelRuntimePolicy:
     compaction_trigger_ratio: float
     compaction_target_ratio: float
     context_window: int
+    tool_output_max_chars: int = 24_000
 
     def to_policy_dict(self) -> Dict[str, Any]:
         """Serialize into the ``state['runtime']['policy']`` contract dictionary."""
@@ -106,6 +107,7 @@ class ModelRuntimePolicy:
             "compaction_trigger_ratio": self.compaction_trigger_ratio,
             "compaction_target_ratio": self.compaction_target_ratio,
             "context_window": self.context_window,
+            "tool_output_max_chars": self.tool_output_max_chars,
         }
 
 
@@ -125,6 +127,7 @@ NANO_RUNTIME_POLICY = ModelRuntimePolicy(
     compaction_trigger_ratio=0.70,
     compaction_target_ratio=0.45,
     context_window=16384,
+    tool_output_max_chars=6000,
 )
 
 COMPACT_RUNTIME_POLICY = ModelRuntimePolicy(
@@ -143,6 +146,7 @@ COMPACT_RUNTIME_POLICY = ModelRuntimePolicy(
     compaction_trigger_ratio=0.72,
     compaction_target_ratio=0.45,
     context_window=32768,
+    tool_output_max_chars=12000,
 )
 
 STANDARD_RUNTIME_POLICY = ModelRuntimePolicy(
@@ -161,6 +165,7 @@ STANDARD_RUNTIME_POLICY = ModelRuntimePolicy(
     compaction_trigger_ratio=0.78,
     compaction_target_ratio=0.50,
     context_window=65536,
+    tool_output_max_chars=24000,
 )
 
 FRONTIER_RUNTIME_POLICY = ModelRuntimePolicy(
@@ -179,7 +184,15 @@ FRONTIER_RUNTIME_POLICY = ModelRuntimePolicy(
     compaction_trigger_ratio=0.80,
     compaction_target_ratio=0.50,
     context_window=200000,
+    tool_output_max_chars=48000,
 )
+
+TIER_TOOL_OUTPUT_MAX_CHARS: Dict[PolicyTier, int] = {
+    "nano": 6_000,
+    "compact": 12_000,
+    "standard": 24_000,
+    "frontier": 48_000,
+}
 
 _POLICY_BY_TIER: Dict[PolicyTier, ModelRuntimePolicy] = {
     "nano": NANO_RUNTIME_POLICY,

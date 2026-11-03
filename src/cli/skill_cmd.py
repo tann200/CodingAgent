@@ -84,6 +84,9 @@ def get_skill_info(name: str) -> Optional[Dict[str, Any]]:
         return None
 
 
+get_skill_metadata = get_skill_info
+
+
 def list_all_skills() -> List[Dict[str, Any]]:
     """List metadata for all available skills."""
     names = _list_skill_names()

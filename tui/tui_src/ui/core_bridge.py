@@ -351,11 +351,55 @@ class AgentBridge(
                     pass
             else:
                 task_id = str(getattr(orch, "current_task_id", "—"))
+
+        provider = ""
+        model = ""
+        policy_dict: dict = {}
+
+        if orch:
+            try:
+                from src.core.inference.provider_utils import resolve_provider_and_model
+
+                p, m = resolve_provider_and_model(orch)
+                if p:
+                    provider = p
+                if m:
+                    model = m
+            except Exception:
+                pass
+            if not provider:
+                provider = getattr(orch, "_provider_name", "") or ""
+            if not model:
+                model = getattr(orch, "_model", "") or ""
+            try:
+                from src.core.orchestration.graph.runtime_policy import resolve_runtime_policy
+
+                pol = resolve_runtime_policy(orch, model=model, provider=provider)
+                policy_dict = pol.to_policy_dict()
+            except Exception:
+                pass
+        else:
+            try:
+                from src.cli.status_cmd import _active_provider
+                from src.core.orchestration.graph.runtime_policy import resolve_runtime_policy
+
+                active = _active_provider()
+                provider = str(active.get("provider") or "")
+                model = str(active.get("model") or "")
+                if model:
+                    pol = resolve_runtime_policy(model=model, provider=provider)
+                    policy_dict = pol.to_policy_dict()
+            except Exception:
+                pass
+
         return {
             "running": self.is_running(),
             "task_id": task_id,
             "working_dir": self._working_dir,
             "history_len": len(self.history),
+            "provider": provider,
+            "model": model,
+            "policy": policy_dict,
         }
 
     def is_running(self) -> bool:

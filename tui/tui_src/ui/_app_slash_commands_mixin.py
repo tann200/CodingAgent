@@ -28,7 +28,9 @@ Available commands:
   /undo          — undo last user message (removes it from history)
   /continue      — restore & re-run previous task
   /interrupt     — cancel running agent
-  /status        — show agent/provider/model status
+  /status        — show agent/provider/model status & runtime policy
+  /doctor        — diagnose running local models & flat tool schemas
+  /skills [name] — inspect packaged skills (polyglot-verify, git-safe-review…)
   /fast          — switch to fastest/smallest model (NANO tier)
   /provider [n]  — list or switch provider by index/name
   /model [n]     — list or switch model for active provider
@@ -150,18 +152,45 @@ class AppSlashCommandsMixin(AgentAppProtocol):
 
         elif cmd == "status":
             st = self._bridge.get_status()
+            pol_info = ""
+            p = st.get("policy")
+            if isinstance(p, dict) and p:
+                pol_info = (
+                    f"  Policy Tier: [bold cyan]{str(p.get('policy_tier', '—')).upper()}[/]\n"
+                    f"  Flat Toolset:{p.get('toolset_name', '—')} ({p.get('tool_limit', '—')} tools)\n"
+                    f"  Verify Mode: {p.get('verification_mode', '—')} (SHA-256 deduplicated)\n"
+                    f"  Parallel:    {p.get('max_parallel_reads', 1)} read waves\n"
+                    f"  Turn Limit:  {p.get('turn_limit', '—')} turns\n"
+                    f"  Output Cap:  {p.get('tool_output_max_chars', 24_000):,} chars\n"
+                )
+
+            prov_str = ""
+            if st.get("provider") or st.get("model"):
+                prov_str = (
+                    f"  Provider:    [bold]{st.get('provider') or '—'}[/]\n"
+                    f"  Model:       [cyan]{st.get('model') or '—'}[/]\n"
+                )
+
             w = Static(
-                f"[bold]Status[/]\n"
-                f"  Running:   {'yes' if self.agent_running else 'no'}\n"
-                f"  Task ID:   {st['task_id']}\n"
-                f"  Role:      {self.active_role}\n"
-                f"  Tokens:    {self.total_tokens:,} / {self.context_window:,}\n"
-                f"  History:   {st['history_len']} messages\n"
-                f"  WorkDir:   {st['working_dir']}",
+                f"[bold]CodingAgent Status[/]\n"
+                f"  Running:     {'yes' if self.agent_running else 'no'}\n"
+                f"  Task ID:     {st['task_id']}\n"
+                f"{prov_str}"
+                f"{pol_info}"
+                f"  Role:        {self.active_role}\n"
+                f"  Tokens:      {self.total_tokens:,} / {self.context_window:,}\n"
+                f"  History:     {st['history_len']} messages\n"
+                f"  WorkDir:     {st['working_dir']}",
                 classes="system_msg",
                 markup=True,
             )
             await self._mount_chat_widget(w)
+
+        elif cmd == "doctor":
+            await self._slash_doctor()
+
+        elif cmd in ("skills", "skill"):
+            await self._slash_skills(args)
 
         elif cmd == "fast":
             await self._slash_fast()
@@ -279,6 +308,103 @@ class AppSlashCommandsMixin(AgentAppProtocol):
                 self.notify("Nothing to undo", severity="warning")
 
         self.push_screen(_UndoConfirmScreen(), _after_confirm)
+
+    async def _slash_doctor(self: AgentAppProtocol) -> None:
+        """Run system & model capability diagnosis and mount report in chat."""
+        import asyncio
+        from types import SimpleNamespace
+        from src.cli.doctor_cmd import build_doctor_diagnosis, format_doctor_tui_markup
+
+        self.notify("Running doctor diagnostics…", severity="information")
+        wdir = getattr(self._bridge, "working_dir", None)
+        args = SimpleNamespace(
+            workdir=wdir,
+            provider=None,
+            model=None,
+            endpoint=None,
+            validate_tools=False,
+            json=False,
+        )
+
+        loop = asyncio.get_running_loop()
+        try:
+            diag = await loop.run_in_executor(None, build_doctor_diagnosis, args)
+            markup_text = format_doctor_tui_markup(diag)
+            w = Static(markup_text, classes="system_msg doctor_report", markup=True)
+            await self._mount_chat_widget(w)
+        except Exception as exc:
+            logger.exception("Failed to run doctor in TUI: %s", exc)
+            err_w = Static(f"[bold red]Doctor audit failed:[/] {exc}", classes="system_msg", markup=True)
+            await self._mount_chat_widget(err_w)
+
+    async def _slash_skills(self: AgentAppProtocol, args: str) -> None:
+        """Inspect and display packaged skills in the chat panel."""
+        from rich.markup import escape
+        from src.cli.skill_cmd import get_skill_metadata, list_all_skills
+
+        skill_arg = args.strip()
+        if not skill_arg:
+            skills = list_all_skills()
+            lines = [
+                f"[bold cyan]Packaged Agent Skills[/] ({len(skills)} available)",
+                "[dim]Optimized for compact 9–14B models & frontier reasoning engines[/]",
+                "",
+            ]
+            for s in skills:
+                name = escape(str(s.get("name", "unknown")))
+                desc_raw = str(s.get("description", "")).split("\n")[0]
+                desc = escape(desc_raw)
+                tier = escape(str(s.get("tier_recommendation", "compact")))
+                ver = escape(str(s.get("version", "1.0.0")))
+                lines.append(f"  • [bold]{name}[/] [dim]({ver}, {tier})[/]")
+                if desc:
+                    lines.append(f"    {desc}")
+            lines.append("")
+            lines.append("[dim]Use '/skills <name>' to view skill instructions, or 'codingagent skill export <name>' to export.[/]")
+            w = Static("\n".join(lines), classes="system_msg skills_list", markup=True)
+            await self._mount_chat_widget(w)
+        else:
+            meta = get_skill_metadata(skill_arg)
+            if not meta:
+                self.notify(f"Skill '{skill_arg}' not found", severity="warning")
+                w = Static(
+                    f"[bold yellow]Skill '{escape(skill_arg)}' not found.[/] Type [bold]/skills[/] to list all packaged skills.",
+                    classes="system_msg",
+                    markup=True,
+                )
+                await self._mount_chat_widget(w)
+                return
+
+            doc_path = meta.get("path")
+            content = ""
+            if doc_path and Path(doc_path).exists():
+                try:
+                    content = Path(doc_path).read_text(encoding="utf-8")
+                except Exception:
+                    pass
+
+            name_esc = escape(str(meta.get("name", skill_arg)))
+            tier_esc = escape(str(meta.get("tier_recommendation", "compact")))
+            ver_esc = escape(str(meta.get("version", "1.0.0")))
+            desc_esc = escape(str(meta.get("description", "—")))
+
+            lines = [
+                f"[bold cyan]Skill: {name_esc}[/] (v{ver_esc})",
+                f"Tier Target: [bold]{tier_esc}[/]",
+                f"Description: {desc_esc}",
+                "",
+            ]
+            if content:
+                max_preview = 2500
+                if len(content) > max_preview:
+                    preview = content[:max_preview] + f"\n... [truncated: {len(content) - max_preview} chars omitted]"
+                else:
+                    preview = content
+                file_name = Path(doc_path).name if doc_path else "SKILL.md"
+                lines.append(f"[dim]── Instructions ({escape(file_name)}) ──[/]\n{escape(preview)}")
+
+            w = Static("\n".join(lines), classes="system_msg skill_detail", markup=True)
+            await self._mount_chat_widget(w)
 
     async def _slash_fast(self: AgentAppProtocol) -> None:
         """S8-C: /fast — switch to the smallest/fastest configured model (NANO tier)."""

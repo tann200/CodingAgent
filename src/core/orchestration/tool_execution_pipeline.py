@@ -26,6 +26,60 @@ TOOL_EXECUTOR_MAX_WORKERS: int = 5
 RESULT_MAX_CHARS: int = 8_000
 TOOL_OUTPUT_MAX_CHARS: int = RESULT_MAX_CHARS
 
+TIER_TOOL_OUTPUT_MAX_CHARS: Dict[str, int] = {
+    "nano": 6_000,
+    "compact": 12_000,
+    "standard": 24_000,
+    "frontier": 48_000,
+}
+
+
+def resolve_tool_output_max_chars(orch: Any = None) -> int:
+    """Resolve maximum allowed characters for a tool output string based on runtime policy.
+
+    Scales dynamically based on active ModelRuntimePolicy:
+      - nano: 6,000 chars (~1,500 tokens)
+      - compact: 12,000 chars (~3,000 tokens)
+      - standard: 24,000 chars (~6,000 tokens)
+      - frontier: 48,000 chars (~12,000 tokens)
+    Falls back to RESULT_MAX_CHARS (8,000 chars) if orchestrator policy cannot be determined.
+    """
+    if orch is None:
+        return RESULT_MAX_CHARS
+
+    explicit = getattr(orch, "_tool_output_max_chars", None)
+    if isinstance(explicit, int) and explicit > 0:
+        return explicit
+
+    pol = getattr(orch, "_runtime_policy", None) or getattr(orch, "runtime_policy", None)
+    if pol is not None:
+        if hasattr(pol, "tool_output_max_chars"):
+            val = getattr(pol, "tool_output_max_chars")
+            if isinstance(val, int) and val > 0:
+                return val
+        if isinstance(pol, dict):
+            val = pol.get("tool_output_max_chars")
+            if isinstance(val, int) and val > 0:
+                return val
+            tier = pol.get("policy_tier")
+            if tier and str(tier) in TIER_TOOL_OUTPUT_MAX_CHARS:
+                return TIER_TOOL_OUTPUT_MAX_CHARS[str(tier)]
+
+    try:
+        from src.core.orchestration.graph.runtime_policy import resolve_runtime_policy
+
+        resolved = resolve_runtime_policy(orch)
+        if hasattr(resolved, "tool_output_max_chars"):
+            val = getattr(resolved, "tool_output_max_chars")
+            if isinstance(val, int) and val > 0:
+                return val
+        if hasattr(resolved, "policy_tier") and str(resolved.policy_tier) in TIER_TOOL_OUTPUT_MAX_CHARS:
+            return TIER_TOOL_OUTPUT_MAX_CHARS[str(resolved.policy_tier)]
+    except Exception:
+        pass
+
+    return RESULT_MAX_CHARS
+
 _TOOL_EXECUTOR_LOCK: threading.Lock = threading.Lock()
 _CURRENT_TOOL_CANCEL_EVENT: ContextVar[Optional[threading.Event]] = ContextVar(
     "_CURRENT_TOOL_CANCEL_EVENT", default=None
@@ -95,28 +149,35 @@ def is_current_tool_cancelled() -> bool:
     return False
 
 
-def _truncate_result_strings(result: Any, _depth: int = 0) -> Any:
+def _truncate_result_strings(
+    result: Any,
+    _depth: int = 0,
+    max_chars: Optional[int] = None,
+) -> Any:
     """Recursively truncate overly large string fields in tool results.
 
     E-03: The previous implementation only handled the top-level dict and a
     single nested ``result["result"]`` dict.  Deeper nesting and list values
     were silently passed through at full size, bypassing TOOL_OUTPUT_MAX_CHARS.
 
-    This replacement recurses into dicts and lists up to a safety depth of 6.
+    This replacement recurses into dicts and lists up to a safety depth of 6,
+    scaling dynamically with the resolved *max_chars* ceiling (defaults to
+    ``TOOL_OUTPUT_MAX_CHARS``).
     """
+    ceiling = max_chars if (isinstance(max_chars, int) and max_chars > 0) else TOOL_OUTPUT_MAX_CHARS
     if _depth > 6:
         return result
     if isinstance(result, str):
-        if len(result) > TOOL_OUTPUT_MAX_CHARS:
+        if len(result) > ceiling:
             return (
-                result[:TOOL_OUTPUT_MAX_CHARS]
-                + f"\n... [truncated: {len(result) - TOOL_OUTPUT_MAX_CHARS} chars omitted]"
+                result[:ceiling]
+                + f"\n... [truncated: {len(result) - ceiling} chars omitted]"
             )
         return result
     if isinstance(result, dict):
-        return {k: _truncate_result_strings(v, _depth + 1) for k, v in result.items()}
+        return {k: _truncate_result_strings(v, _depth + 1, max_chars=ceiling) for k, v in result.items()}
     if isinstance(result, list):
-        return [_truncate_result_strings(v, _depth + 1) for v in result]
+        return [_truncate_result_strings(v, _depth + 1, max_chars=ceiling) for v in result]
     return result
 
 
@@ -964,7 +1025,8 @@ def _run_post_execution(
     Returns the final ``{"ok": True, "result": ...}`` dict.
     """
     res = orch._normalize_tool_result(res)
-    res = _truncate_result_strings(res)
+    max_chars = resolve_tool_output_max_chars(orch)
+    res = _truncate_result_strings(res, max_chars=max_chars)
     res = redact_data(res)
 
     if name in ("plan_enter", "plan_exit") and isinstance(res, dict) and res.get("ok"):

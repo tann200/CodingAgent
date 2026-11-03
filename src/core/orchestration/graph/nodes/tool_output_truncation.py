@@ -30,6 +30,7 @@ def prune_tool_outputs(
     history: List[Dict[str, Any]],
     *,
     return_pruned_count: Literal[False] = False,
+    protect_tokens: int = _PRUNE_PROTECT_TOKENS,
 ) -> List[Dict[str, Any]]: ...
 
 
@@ -38,6 +39,7 @@ def prune_tool_outputs(
     history: List[Dict[str, Any]],
     *,
     return_pruned_count: Literal[True],
+    protect_tokens: int = _PRUNE_PROTECT_TOKENS,
 ) -> tuple[List[Dict[str, Any]], int]: ...
 
 
@@ -45,6 +47,7 @@ def prune_tool_outputs(
     history: List[Dict[str, Any]],
     *,
     return_pruned_count: bool = False,
+    protect_tokens: int = _PRUNE_PROTECT_TOKENS,
 ) -> List[Dict[str, Any]] | tuple[List[Dict[str, Any]], int]:
     """Zero out old tool-result content beyond the token-protect boundary.
 
@@ -90,7 +93,7 @@ def prune_tool_outputs(
             running_tokens += estimate_text_tokens(str(msg.get("content") or ""))
             continue
         running_tokens += estimate_text_tokens(str(msg.get("content") or ""))
-        if running_tokens > _PRUNE_PROTECT_TOKENS and _is_tool_result(msg):
+        if running_tokens > protect_tokens and _is_tool_result(msg):
             if msg.get("content") != _PRUNED_TOOL_PLACEHOLDER:
                 result[i] = {**msg, "content": _PRUNED_TOOL_PLACEHOLDER}
                 pruned_count += 1

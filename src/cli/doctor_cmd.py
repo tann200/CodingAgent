@@ -626,14 +626,13 @@ def load_providers_config() -> List[Dict[str, Any]]:
     return []
 
 
-def run_doctor(args: Any) -> int:
-    """Execute the full doctor diagnostic audit and output findings."""
-    workdir = resolve_workdir(getattr(args, "workdir", None))
-    provider_filter = getattr(args, "provider", None)
-    model_filter = getattr(args, "model", None)
-    endpoint_override = getattr(args, "endpoint", None)
-    validate_tools = getattr(args, "validate_tools", False)
-    as_json = getattr(args, "json", False)
+def build_doctor_diagnosis(args: Any = None) -> Dict[str, Any]:
+    """Audit system, hardware, sandbox, and model providers without printing."""
+    workdir = resolve_workdir(getattr(args, "workdir", None)) if args else resolve_workdir(None)
+    provider_filter = getattr(args, "provider", None) if args else None
+    model_filter = getattr(args, "model", None) if args else None
+    endpoint_override = getattr(args, "endpoint", None) if args else None
+    validate_tools = getattr(args, "validate_tools", False) if args else False
 
     # 1. System & Hardware Diagnosis
     sys_diag = {
@@ -657,14 +656,12 @@ def run_doctor(args: Any) -> int:
             if name == p_filt_norm or p_filt_norm in name:
                 target_configs.append(p)
         if not target_configs:
-            # Synthetic provider config if user provided custom flags
             target_configs.append({
                 "name": provider_filter,
                 "type": provider_filter,
                 "base_url": endpoint_override,
             })
     else:
-        # Default: check all local providers first, plus active provider
         target_configs = all_configs
 
     provider_results: List[Dict[str, Any]] = []
@@ -712,20 +709,107 @@ def run_doctor(args: Any) -> int:
     elif any(p.get("status") == "warning" for p in provider_results):
         overall_status = "warning"
 
-    payload: Dict[str, Any] = {
+    return {
         "status": overall_status,
         "system": sys_diag,
         "hardware": hw_diag,
         "sandbox": sb_diag,
         "providers": provider_results,
         "recommendations": all_recommendations,
+        "online_count": online_count,
+        "provider_filter": provider_filter,
     }
 
+
+def format_doctor_tui_markup(diag: Dict[str, Any]) -> str:
+    """Format diagnosis payload into Textual-compatible markup for TUI display."""
+    sys_d = diag.get("system") or {}
+    hw = diag.get("hardware") or {}
+    sb = diag.get("sandbox") or {}
+    provs = diag.get("providers") or []
+    recs = diag.get("recommendations") or []
+    status = diag.get("status", "unknown")
+
+    status_color = "green" if status == "healthy" else ("yellow" if status in ("warning", "offline") else "red")
+
+    lines = [
+        f"[bold cyan]CodingAgent Doctor — Diagnostic Health Audit[/] ([{status_color}]{status.upper()}[/])",
+        f"[dim]Version {sys_d.get('version', '—')} | Python {sys_d.get('python', '—')} | {sys_d.get('os', '—')} ({hw.get('machine', '—')})[/]",
+        "",
+        "[bold]Hardware & Memory Capacity[/]",
+    ]
+    mem_str = f"RAM: {hw.get('ram_gb', 0)} GB"
+    if hw.get("vram_gb", 0) > 0:
+        mem_str += f" | VRAM: {hw.get('vram_gb')} GB"
+    lines.append(f"  • Hardware:    {mem_str} | {hw.get('cpu_cores', 0)} cores ({hw.get('cpu_threads', 0)} threads)")
+    rec_ctx = hw.get("recommended_context") or {}
+    lines.append(f"  • Context Cap: Compact 9–14B: [green]{rec_ctx.get('compact_9b_14b', 0):,} tokens[/] | Standard: {rec_ctx.get('standard_15b_70b', 0):,} tokens")
+
+    lines.append("")
+    lines.append("[bold]Execution Sandbox Security[/]")
+    sb_badge = "[green]✓ Enforced[/]" if sb.get("enforced") else ("[green]✓ Available[/]" if sb.get("available") else "[yellow]! Unenforced[/]")
+    lines.append(f"  • Strictness:  Level '{sb.get('level', 'none')}' ({sb_badge})")
+    lines.append(f"  • Workdir:     {sys_d.get('workdir', '—')} (Git: {sys_d.get('git_branch') or 'none'})")
+
+    lines.append("")
+    lines.append("[bold]Model Providers & Flat Toolsets[/]")
+    for p in provs:
+        p_name = p.get("provider", "unknown")
+        p_stat = p.get("status", "unknown")
+        if p_stat in ("healthy", "configured"):
+            stag = "[green][ONLINE][/]"
+        elif p_stat == "warning":
+            stag = "[yellow][WARNING][/]"
+        elif p_stat == "offline":
+            stag = "[yellow][OFFLINE][/]"
+        else:
+            stag = "[red][ERROR][/]"
+        endpoint = f" @ {p.get('endpoint')}" if p.get("endpoint") else ""
+        lat = f" ({p.get('latency_ms')} ms)" if p.get("latency_ms") is not None else ""
+        lines.append(f"  • [bold]{p_name.upper()}[/] {stag}{endpoint}{lat}")
+        if p.get("target_model"):
+            pol = p.get("policy") or {}
+            lines.append(f"    - Target Model:   [cyan]{p['target_model']}[/]")
+            lines.append(f"    - Runtime Policy: Tier: [bold]{pol.get('tier', '—')}[/] | Toolset: [bold]{pol.get('toolset', '—')}[/] ({pol.get('tool_limit', 0)} tools)")
+            lines.append(f"    - Execution Mode: Verify: '{pol.get('verification_mode', '—')}' | Parallel Reads: {pol.get('parallel_reads', 1)} waves")
+            t_val = p.get("tool_validation") or {}
+            if t_val.get("schemas_valid"):
+                lines.append(f"    - Flat Schemas:   [green]✓ All {t_val.get('schemas_count', 0)} schemas valid[/]")
+            elif t_val.get("schema_errors"):
+                lines.append(f"    - Flat Schemas:   [red]✗ Schema errors: {t_val.get('schema_errors')}[/]")
+        if p.get("error"):
+            lines.append(f"    - Probe Note:     [dim]{p['error']}[/]")
+
+    if recs:
+        lines.append("")
+        lines.append("[bold]Actionable Recommendations[/]")
+        for r in set(recs):
+            lines.append(f"  [yellow]→[/] {r}")
+    else:
+        lines.append("")
+        lines.append("[green]✓ All configured providers and tool schemas are ready.[/]")
+
+    return "\n".join(lines)
+
+
+def run_doctor(args: Any) -> int:
+    """Execute the full doctor diagnostic audit and output findings."""
+    payload = build_doctor_diagnosis(args)
+    overall_status = payload["status"]
+    provider_filter = payload["provider_filter"]
+    online_count = payload["online_count"]
+    as_json = getattr(args, "json", False) if args else False
+
     if as_json:
-        print_json(payload)
+        clean_payload = {k: v for k, v in payload.items() if k not in ("online_count", "provider_filter")}
+        print_json(clean_payload)
         return 0 if overall_status in ("healthy", "warning") else 1
 
-    # Pretty Terminal Report
+    sys_diag = payload["system"]
+    hw_diag = payload["hardware"]
+    sb_diag = payload["sandbox"]
+    provider_results = payload["providers"]
+    all_recommendations = payload["recommendations"]
     print(f"\n{_C_BOLD}{_C_CYAN}CodingAgent Doctor — Local Model & Capability Health Audit{_C_RESET}")
     print(f"{_C_DIM}Version {sys_diag['version']} | Python {sys_diag['python']} | {sys_diag['os']} ({hw_diag['machine']}){_C_RESET}\n")
 

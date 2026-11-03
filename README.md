@@ -55,9 +55,15 @@ codingagent skill export polyglot-verify --target claude
 codingagent skill export --all --target agensi
 ```
 
+In the interactive Textual TUI (`codingagent`), use slash commands in the prompt:
+- `/status` — Inspect active provider, model, `ModelRuntimePolicy` tier, flat toolset, verification mode, parallel read limit, and character output ceiling.
+- `/doctor` — Run local model reachability, latency, context estimation, and tool schema diagnosis directly inside chat.
+- `/skills` or `/skills <name>` — List packaged skills or inspect skill instructions without leaving the TUI.
+- `/compact` — Trigger deterministic compaction of conversation context.
+
 ## Safety Model
 
-Normal agent tool calls go through a centralized execution pipeline that applies tool normalization, permission checks, read-before-write rules, workspace checks, approval handling, validation, snapshots, hooks, and telemetry. Use the least permissive mode that satisfies the task:
+Normal agent tool calls go through a centralized execution pipeline that applies tool normalization, permission checks, read-before-write rules, workspace checks, approval handling, validation, snapshots, hooks, and telemetry. Tool output strings are dynamically capped using tier-adaptive truncation scaled to the active `ModelRuntimePolicy` (nano: 6,000 chars; compact: 12,000 chars; standard: 24,000 chars; frontier: 48,000 chars). Use the least permissive mode that satisfies the task:
 
 ```bash
 codingagent --task "Inspect this repository" --permission-mode read_only
