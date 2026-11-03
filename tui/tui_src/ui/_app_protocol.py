@@ -45,6 +45,7 @@ class AgentAppProtocol:
     _bridge: Any  # AgentBridge — typed as Any to avoid circular import
     _session_id: str
     _current_stream: Any  # Optional[StreamView]
+    _active_stream_view: Any  # Optional[StreamView] (SPEC-P3.1)
     _modified_files: list
     _settings: Any  # SettingsStore
     _last_task_text: str
@@ -127,6 +128,7 @@ class AgentAppProtocol:
     # AppStatusHandlersMixin
     def action_open_sessions(self) -> None: ...
     def action_open_settings(self) -> None: ...
+    def action_open_editor(self) -> None: ...
     def action_quit_app(self) -> None: ...
 
     # AppSlashCommandsMixin — slash handlers called via self.X dispatch

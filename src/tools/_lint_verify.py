@@ -12,10 +12,39 @@ from __future__ import annotations
 import logging
 import re
 import tempfile
+import threading
+import time
 from pathlib import Path
 from typing import Any
 
 _logger = logging.getLogger(__name__)
+
+_PREVALIDATED_CACHE: dict[tuple[str, int, int], float] = {}
+_PREVALIDATED_LOCK = threading.Lock()
+_CACHE_TTL = 10.0  # seconds
+
+
+def mark_content_prevalidated(p: Path, content: str) -> None:
+    """Record that candidate content for file p has passed sandbox AST validation."""
+    key = (str(p.resolve()), len(content), hash(content))
+    now = time.monotonic()
+    with _PREVALIDATED_LOCK:
+        _PREVALIDATED_CACHE[key] = now
+        if len(_PREVALIDATED_CACHE) > 256:
+            for k, t in list(_PREVALIDATED_CACHE.items()):
+                if now - t > _CACHE_TTL:
+                    _PREVALIDATED_CACHE.pop(k, None)
+
+
+def is_content_prevalidated(p: Path, content: str) -> bool:
+    """Return True if candidate content was already validated recently."""
+    key = (str(p.resolve()), len(content), hash(content))
+    now = time.monotonic()
+    with _PREVALIDATED_LOCK:
+        ts = _PREVALIDATED_CACHE.get(key)
+        if ts is not None and (now - ts) <= _CACHE_TTL:
+            return True
+    return False
 
 
 def _norm_lint_key(err: dict[str, Any], path_tokens: list[str]) -> tuple[Any, Any, str]:
@@ -55,8 +84,17 @@ def verify_candidate_content(
     try:
         from src.tools.lint_dispatch import quick_lint
 
+        # Fast path: if content was already pre-validated by tool pipeline sandbox (SPEC-P3.5)
+        # and file is new or has no baseline errors, avoid redundant tempdir & subprocess invocation.
+        prevalidated = is_content_prevalidated(p, content)
+        if prevalidated and not p.is_file():
+            return None
+
         baseline_result = quick_lint(str(p), workdir)
         baseline_errors = list((baseline_result or {}).get("lint_errors") or [])
+        if prevalidated and not baseline_errors:
+            return None
+
         baseline_keys: set[tuple[Any, Any, str]] = set()
         for err in baseline_errors:
             if isinstance(err, dict):

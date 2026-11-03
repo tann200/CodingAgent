@@ -4,7 +4,7 @@
 **Audits Covered:**
 - [docs/audit/2026-11-03-tui-subsystem-audit.md](file:///Users/tann200/PycharmProjects/CodingAgent/docs/audit/2026-11-03-tui-subsystem-audit.md)
 - [docs/audit/2026-11-03-tools-and-graph-workflows-audit.md](file:///Users/tann200/PycharmProjects/CodingAgent/docs/audit/2026-11-03-tools-and-graph-workflows-audit.md)
-**Status:** Phase 1 & Phase 2 Implemented and Verified (24/24 unit tests passing, ruff & mypy clean)
+**Status:** Phase 1, Phase 2, Phase 3, and Phase 4 Implemented and Verified (40/40 unit tests passing, ruff & mypy clean)
 
 ---
 
@@ -221,16 +221,54 @@ Every task includes:
 
 ## Phase 3: Capability Improvements
 
-- **SPEC-P3.1:** Eliminate double-response rendering between `StreamView` and `AgentArtifact`.
-- **SPEC-P3.2:** Dynamically scale context window limit in `#sb_tokens` based on provider profile.
-- **SPEC-P3.3:** Asynchronous session list scanning in `SessionListScreen` to prevent UI stalls.
-- **SPEC-P3.4:** Intelligent targeted verification scoping for single-file frontend edits.
-- **SPEC-P3.5:** Deduplicate syntax validation passes between `write_file` and tool pipeline.
+### SPEC-P3.1: Eliminate Double-Response Rendering Between StreamView and AgentArtifact
+- **Location:** [tui/tui_src/ui/components/chat_mixin.py:270-325](file:///Users/tann200/PycharmProjects/CodingAgent/tui/tui_src/ui/components/chat_mixin.py#L270-L325), [tui/tui_src/ui/app.py:530-550](file:///Users/tann200/PycharmProjects/CodingAgent/tui/tui_src/ui/app.py#L530-L550), [tui/tui_src/ui/_app_protocol.py](file:///Users/tann200/PycharmProjects/CodingAgent/tui/tui_src/ui/_app_protocol.py)
+- **Problem:** When streaming tokens, `AgentApp` mounted a `StreamView`. On turn completion, `AgentArtifact` was mounted below it without detaching or replacing the `StreamView`, resulting in identical consecutive responses displayed in chat.
+- **Specification:** Maintained `_active_stream_view` tracking on the app. When `AgentArtifact` or final content is mounted, `_active_stream_view` is detached and removed from the DOM. Suppressed duplicate streaming mounts when unmounted.
+- **Regression Test:** `tests/unit/test_tui_response_deduplication.py`
+
+### SPEC-P3.2: Dynamically Scale Context Window Limit in `#sb_tokens`
+- **Location:** [tui/tui_src/ui/app.py:180-210](file:///Users/tann200/PycharmProjects/CodingAgent/tui/tui_src/ui/app.py#L180-L210)
+- **Problem:** `#sb_tokens` displayed a fixed 200,000 limit regardless of the active provider or model profile (e.g., Gemini 1M/2M, Claude 200k, local Ollama 8k). Changes to model or reactive `context_window` did not refresh the token counter until an execution turn started.
+- **Specification:** Added Textual reactive watchers `watch_context_window` and `watch_total_tokens` in `AgentApp` to immediately format `#sb_tokens` using `_format_tokens(self.total_tokens, self.context_window)`.
+- **Regression Test:** `tests/unit/test_tui_context_window_scaling.py`
+
+### SPEC-P3.3: Asynchronous Session List Scanning in `SessionListScreen`
+- **Location:** [tui/tui_src/ui/screens/session_list.py:120-160](file:///Users/tann200/PycharmProjects/CodingAgent/tui/tui_src/ui/screens/session_list.py#L120-L160)
+- **Problem:** Synchronous globbing and parsing of hundreds of session JSON files on the main UI thread during `on_mount()` froze the UI event loop and caused perceptible stutter.
+- **Specification:** Added `_scan_sessions()` and `_load_sessions_async()` in `SessionListScreen` offloading file discovery and JSON parsing to worker threads via `asyncio.to_thread()`, keeping Textual's event loop smooth and responsive.
+- **Regression Test:** `tests/unit/test_session_list_async_scanning.py`
+
+### SPEC-P3.4: Intelligent Targeted Verification Scoping for Single-File Edits
+- **Location:** [src/core/orchestration/graph/nodes/verification_node.py:150-185](file:///Users/tann200/PycharmProjects/CodingAgent/src/core/orchestration/graph/nodes/verification_node.py#L150-L185)
+- **Problem:** Modifying non-code files (e.g. `.css`, `.scss`, `.md`, `.json`, `.svg`) triggered the entire project test suite (`run_js_tests` / `run_python_tests`), causing unrelated test failures to fail non-functional documentation or styling edits.
+- **Specification:** Scoped verification heuristics: if `unverified_paths` contains only non-executable asset files, skip full test execution and mark verification passed.
+- **Regression Test:** `tests/unit/test_verification_node_targeted_heuristics.py`
+
+### SPEC-P3.5: Deduplicate Syntax Validation Passes
+- **Location:** [src/tools/_lint_verify.py:70-110](file:///Users/tann200/PycharmProjects/CodingAgent/src/tools/_lint_verify.py#L70-L110), [src/core/orchestration/tool_execution_pipeline.py:650-700](file:///Users/tann200/PycharmProjects/CodingAgent/src/core/orchestration/tool_execution_pipeline.py#L650-L700)
+- **Problem:** Candidate file content was linted and validated twice: once in `_run_sandbox_and_snapshot` and again inside `write_file` / `edit_file` via `verify_candidate_content`, doubling temporary file disk I/O and subprocess execution times.
+- **Specification:** Introduced content pre-validation tracking (`mark_content_prevalidated` / `is_content_prevalidated`) in `src/tools/_lint_verify.py`. If candidate content was already verified by the sandbox pipeline, `verify_candidate_content` takes a fast-path bypass.
+- **Regression Test:** `tests/unit/test_lint_verify_deduplication.py`
 
 ---
 
 ## Phase 4: Long-Term Architecture
 
-- **SPEC-P4.1:** Multi-file transaction settlement DAGs in `RollbackManager`.
-- **SPEC-P4.2:** Headless Textual pilot test suite (`App.run_test()`).
-- **SPEC-P4.3:** Unified slash command and command palette dispatch service.
+### SPEC-P4.1: Multi-File Transaction Settlement DAGs in `RollbackManager`
+- **Location:** [src/core/orchestration/rollback_manager.py:80-160](file:///Users/tann200/PycharmProjects/CodingAgent/src/core/orchestration/rollback_manager.py#L80-L160)
+- **Problem:** `RollbackManager.rollback()` operated only globally across all snapshots in a step, with no capability to roll back or commit selective subsets of files or inspect transaction dependencies.
+- **Specification:** Added selective path filtering `paths: Optional[List[str]] = None` to `rollback()`, implemented `rollback_files()` and `commit_files()`, and added persistent transaction journal snapshots to disk (`_persist_snapshot_disk()`).
+- **Regression Test:** `tests/unit/test_rollback_manager_dag.py`
+
+### SPEC-P4.2: Headless Textual Pilot Test Suite (`App.run_test()`)
+- **Location:** [tests/unit/test_tui_pilot_suite.py](file:///Users/tann200/PycharmProjects/CodingAgent/tests/unit/test_tui_pilot_suite.py)
+- **Problem:** TUI interactions, layout composing, keyboard shortcut dispatching, and screen transitions lacked end-to-end headless pilot tests, allowing regressions in widget composition.
+- **Specification:** Built headless pilot test suite leveraging Textual's `app.run_test()` driver verifying initial UI layout, role switching cycles, log console toggling (`ctrl+l`), and modal screen transitions (`CommandPalette`, `SettingsScreen`).
+- **Regression Test:** `tests/unit/test_tui_pilot_suite.py`
+
+### SPEC-P4.3: Unified Slash Command and Command Palette Dispatch Service
+- **Location:** [tui/tui_src/ui/features/palette/logic.py](file:///Users/tann200/PycharmProjects/CodingAgent/tui/tui_src/ui/features/palette/logic.py), [tui/tui_src/ui/app.py:355-385](file:///Users/tann200/PycharmProjects/CodingAgent/tui/tui_src/ui/app.py#L355-L385), [tui/tui_src/ui/_app_slash_commands_mixin.py:221](file:///Users/tann200/PycharmProjects/CodingAgent/tui/tui_src/ui/_app_slash_commands_mixin.py#L221)
+- **Problem:** Command palette and slash commands used separate disjoint registries and dispatch logic. Key slash commands (diff, timeline, worktree, mcp, fast, undo, export) were missing from the palette, and actions lacked unified routing.
+- **Specification:** Expanded `COMMAND_LIST` in `palette/logic.py` with categorized slash command actions (`slash:diff`, `slash:worktree`, `slash:timeline`, `slash:mcp`, `slash:fast`, `slash:undo`, `slash:export`, `action_open_sessions`, `action_open_editor`). In `app.py:handle_palette_command`, implemented `slash:` prefix routing posting `SlashCommand`, connected `action_open_sessions` and `action_open_editor`, added generic action dispatch via `getattr(self, cmd)`, and added `/export` alias to `/share`.
+- **Regression Test:** `tests/unit/test_palette_slash_dispatch.py`

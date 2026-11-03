@@ -95,12 +95,15 @@ class ChatDisplayMixin(AgentAppProtocol):
             self.is_streaming = True
             role = ROLE_LABELS.get(self.active_role, self.active_role)
             self._current_stream = StreamView(role=role, classes="stream_msg")
+            self._active_stream_view = self._current_stream
             chat_log = self.query_one("#chat_log", VerticalScroll)
             self.call_later(self._mount_and_scroll, self._current_stream, chat_log)
         return self._current_stream
 
     async def _mount_and_scroll(self: AgentAppProtocol, widget, container) -> None:
         """Async-mount *widget* into *container* then scroll to the end."""
+        if getattr(widget, "_detached", False):
+            return
         await container.mount(widget)
         container.scroll_end(animate=False)
 
@@ -309,6 +312,16 @@ class ChatDisplayMixin(AgentAppProtocol):
     async def _chat_handle_final_response(self: AgentAppProtocol, event) -> None:
         from tui.tui_src.ui.components.artifact import AgentArtifact  # type: ignore[import]
 
+        # SPEC-P3.1: Detach any active stream view before mounting artifact to eliminate double-response rendering
+        if getattr(self, "_active_stream_view", None) is not None:
+            stream_view = self._active_stream_view
+            stream_view._detached = True
+            try:
+                stream_view.remove()
+            except Exception:
+                pass
+            self._active_stream_view = None
+
         self._finalize_stream()
         logger.info("Agent final response received")
         artifact = AgentArtifact(
@@ -317,6 +330,7 @@ class ChatDisplayMixin(AgentAppProtocol):
         await self._mount_chat_widget(artifact)
 
     async def _chat_handle_error(self: AgentAppProtocol, event) -> None:
+        self._active_stream_view = None
         self._finalize_stream()
         logger.error(f"Worker error: {event.message}")
         widget = Static(

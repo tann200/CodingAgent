@@ -766,6 +766,19 @@ def _run_sandbox_and_snapshot(
                                     _os.unlink(tmp_path)
                             except Exception:
                                 pass
+
+            # SPEC-P3.5: Mark successfully sandbox-validated content to avoid duplicate linting in tool body
+            if new_content and isinstance(new_content, str) and path_arg:
+                try:
+                    from pathlib import Path as _P
+                    from src.tools._lint_verify import mark_content_prevalidated
+
+                    target_p = _P(path_arg)
+                    if not target_p.is_absolute() and hasattr(orch, "working_dir") and orch.working_dir:
+                        target_p = _P(orch.working_dir) / target_p
+                    mark_content_prevalidated(target_p, new_content)
+                except Exception:
+                    pass
     except Exception as e:
         guilogger.error(f"Sandbox validation failed (fail-closed): {e}")
         return {

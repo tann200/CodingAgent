@@ -1,10 +1,17 @@
 from ...settings import SettingsStore
 
 COMMAND_LIST = [
+    # Session category
     {
         "label": "New session",
         "hint": "Clear chat and reset state",
         "action": "action_new_session",
+        "category": "Session",
+    },
+    {
+        "label": "Sessions browser",
+        "hint": "Browse and resume saved sessions",
+        "action": "action_open_sessions",
         "category": "Session",
     },
     {
@@ -20,11 +27,50 @@ COMMAND_LIST = [
         "category": "Session",
     },
     {
+        "label": "Undo changes",
+        "hint": "Undo last user message and revert file changes",
+        "action": "slash:undo",
+        "category": "Session",
+    },
+    {
+        "label": "Export session",
+        "hint": "Export conversation to markdown",
+        "action": "slash:export",
+        "category": "Session",
+    },
+    {
+        "label": "Session timeline",
+        "hint": "View session message timeline",
+        "action": "slash:timeline",
+        "category": "Session",
+    },
+    # Git category
+    {
+        "label": "Review diff",
+        "hint": "Show working-directory diff since last snapshot",
+        "action": "slash:diff",
+        "category": "Git",
+    },
+    {
+        "label": "Worktree manager",
+        "hint": "Manage git worktree isolation",
+        "action": "slash:worktree",
+        "category": "Git",
+    },
+    # Model category
+    {
         "label": "Switch model",
         "hint": "Change active LLM model",
         "action": "menu_switch_model",
         "category": "Model",
     },
+    {
+        "label": "Toggle fast model",
+        "hint": "Switch to fastest nano tier model",
+        "action": "slash:fast",
+        "category": "Model",
+    },
+    # Provider category
     {
         "label": "Connect provider",
         "hint": "Add API key for a provider",
@@ -36,6 +82,13 @@ COMMAND_LIST = [
         "hint": "Probe provider availability",
         "action": "action_check_providers",
         "category": "Provider",
+    },
+    # System category
+    {
+        "label": "MCP servers",
+        "hint": "Manage MCP servers",
+        "action": "slash:mcp",
+        "category": "System",
     },
     {
         "label": "Settings",

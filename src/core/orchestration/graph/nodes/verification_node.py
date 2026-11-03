@@ -223,7 +223,14 @@ async def _verification_node_impl(state: StateLike, config: RunnableConfig) -> D
             if custom_results is not None:
                 results.update(custom_results)
             elif _has_js_project(wd):
-                if run_full_suite and verification_mode != "targeted":
+                js_code_exts = {".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"}
+                has_js_code_modified = any(
+                    Path(p).suffix.lower() in js_code_exts for p in unverified_paths
+                )
+                if unverified_paths and not has_js_code_modified:
+                    logger.debug("verification_node: modified files contain no JS/TS executable code — skipping js_tests")
+                    results["status"] = "skipped_non_code"
+                elif run_full_suite and verification_mode != "targeted":
                     results["js_tests"] = verification_tools.run_js_tests(str(wd))
                     if _is_cancelled():
                         return {
@@ -240,11 +247,11 @@ async def _verification_node_impl(state: StateLike, config: RunnableConfig) -> D
                 elif verification_mode == "targeted":
                     js_paths = [
                         p for p in unverified_paths
-                        if Path(p).suffix.lower() in (".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs")
+                        if Path(p).suffix.lower() in js_code_exts
                     ]
                     if js_paths:
                         results["eslint"] = verification_tools.run_eslint(str(wd), paths=js_paths)
-                    if run_full_suite and not _is_cancelled():
+                    if run_full_suite and not _is_cancelled() and has_js_code_modified:
                         results["ts_check"] = verification_tools.run_ts_check(str(wd))
                 else:
                     modified_path: str | None = None
@@ -254,7 +261,7 @@ async def _verification_node_impl(state: StateLike, config: RunnableConfig) -> D
                         modified_path = r.get("path")
                     except Exception:
                         pass
-                    if modified_path:
+                    if modified_path and Path(modified_path).suffix.lower() in js_code_exts:
                         results["eslint"] = verification_tools.run_eslint(
                             str(wd), paths=[modified_path]
                         )
@@ -286,7 +293,14 @@ async def _verification_node_impl(state: StateLike, config: RunnableConfig) -> D
                             "reason": "targeted mode: no matching test file for modified module",
                         }
             else:
-                if run_full_suite:
+                py_code_exts = {".py", ".pyw"}
+                has_py_code_modified = any(
+                    Path(p).suffix.lower() in py_code_exts for p in unverified_paths
+                )
+                if unverified_paths and not has_py_code_modified:
+                    logger.debug("verification_node: modified files contain no Python executable code — skipping tests")
+                    results["status"] = "skipped_non_code"
+                elif run_full_suite:
                     last_failed_exists = (wd / ".pytest_cache" / "v" / "cache" / "lastfailed").exists()
                     results["tests"] = verification_tools.run_tests(
                         str(wd), use_last_failed=last_failed_exists

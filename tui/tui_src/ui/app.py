@@ -144,6 +144,7 @@ class AgentApp(
         self._bridge = AgentBridge(self, working_dir=_init_wd)
         self._session_id: str = str(_uuid.uuid4())
         self._current_stream = None  # type: ignore[assignment]
+        self._active_stream_view = None  # type: ignore[assignment]
         self._role_cycle = ["lead_architect", "full_stack_engineer", "qa_lead"]
         self._role_idx = 0
         self._modified_files: list[str] = []
@@ -354,6 +355,15 @@ class AgentApp(
     def handle_palette_command(self, event: PaletteCommand) -> None:
         cmd = event.command_id
         logger.info(f"Palette command: {cmd}")
+
+        if cmd.startswith("slash:"):
+            slash_cmd = cmd[len("slash:") :]
+            parts = slash_cmd.split(maxsplit=1)
+            command = parts[0]
+            args = parts[1] if len(parts) > 1 else ""
+            self.post_message(SlashCommand(command, args))
+            return
+
         dispatch = {
             "action_toggle_console": self.action_toggle_console,
             "action_open_settings": self.action_open_settings,
@@ -362,10 +372,14 @@ class AgentApp(
             "action_new_session": lambda: self.post_message(SlashCommand("new")),
             "action_check_providers": lambda: self.notify("Provider check not connected"),
             "action_compact_memory": lambda: self.post_message(SlashCommand("compact")),
+            "action_open_sessions": self.action_open_sessions,
+            "action_open_editor": self.action_open_editor,
         }
         fn = dispatch.get(cmd)
         if fn:
             fn()
+        elif hasattr(self, cmd) and callable(getattr(self, cmd)):
+            getattr(self, cmd)()
         else:
             logger.debug(f"Unhandled palette command: {cmd}")
 
@@ -722,6 +736,36 @@ class AgentApp(
         if hasattr(self, "_role_cycle") and new_role in self._role_cycle:
             self._role_idx = self._role_cycle.index(new_role)
 
+    def watch_context_window(self, new_limit: int) -> None:
+        if new_limit > 0:
+            used_pct = (self.total_tokens / new_limit * 100) if new_limit else 0.0
+            from ._app_status_handlers_mixin import _budget_color
+
+            color = _budget_color(used_pct)
+            try:
+                self.query_one("#sb_tokens", Static).update(
+                    f"[bold {color}]{self.total_tokens:,} / {new_limit:,}  ({used_pct:.1f}%)[/]"
+                )
+            except Exception:
+                pass
+            if hasattr(self, "_update_status_bar"):
+                self._update_status_bar()
+
+    def watch_total_tokens(self, new_tokens: int) -> None:
+        limit = self.context_window or 32000
+        used_pct = (new_tokens / limit * 100) if limit else 0.0
+        from ._app_status_handlers_mixin import _budget_color
+
+        color = _budget_color(used_pct)
+        try:
+            self.query_one("#sb_tokens", Static).update(
+                f"[bold {color}]{new_tokens:,} / {limit:,}  ({used_pct:.1f}%)[/]"
+            )
+        except Exception:
+            pass
+        if hasattr(self, "_update_status_bar"):
+            self._update_status_bar()
+
     def action_toggle_console(self) -> None:
         try:
             from .components import ConsolePanel
@@ -767,6 +811,15 @@ class AgentApp(
         from .screens.session_screen import SessionScreen
 
         self.push_screen(SessionScreen())
+
+    def action_open_editor(self) -> None:
+        import os
+
+        editor = os.environ.get("VISUAL") or os.environ.get("EDITOR")
+        if not editor:
+            self.notify("No $EDITOR or $VISUAL configured in environment", severity="warning")
+            return
+        self.notify(f"External editor configured: {editor}", severity="information")
 
     def _clear_session(self) -> None:
         self._clear_chat_panel()

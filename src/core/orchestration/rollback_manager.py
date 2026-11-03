@@ -291,12 +291,17 @@ class RollbackManager:
             )
             raise
 
-    def rollback(self, snapshot_id: Optional[str] = None) -> Dict[str, Any]:
+    def rollback(
+        self,
+        snapshot_id: Optional[str] = None,
+        paths: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
         """
-        Rollback to a previous snapshot.
+        Rollback to a previous snapshot, optionally restricted to specific file paths (SPEC-P4.1).
 
         Args:
             snapshot_id: ID of snapshot to restore (uses current if not provided)
+            paths: Optional list of specific paths to roll back; if None, all files in snapshot are restored.
 
         Returns:
             Status of rollback operation
@@ -325,7 +330,20 @@ class RollbackManager:
             else:
                 return {"ok": False, "error": f"Snapshot {snapshot_id} not found"}
 
-        snapshots = self.snapshots.get(snapshot_id, [])  # type: ignore[call-overload, arg-type]
+        all_snapshots = self.snapshots.get(snapshot_id, [])  # type: ignore[call-overload, arg-type]
+        if paths is not None:
+            norm_targets = set()
+            for p in paths:
+                try:
+                    norm_targets.add(self._normalize_rel_path(safe_resolve(p, self.workdir)))
+                except Exception:
+                    norm_targets.add(str(p))
+            snapshots = [
+                s for s in all_snapshots
+                if s.path in norm_targets or any(s.path.endswith(t) for t in norm_targets)
+            ]
+        else:
+            snapshots = all_snapshots
 
         restored_files = []
         failed_files: list = []
@@ -420,6 +438,21 @@ class RollbackManager:
                 failed_files.append({"path": snap.path, "error": str(e)})
                 continue
 
+        # If selective rollback was performed, update the snapshot to retain only un-rolled-back files
+        if paths is not None and snapshot_id in self.snapshots:
+            remaining = [s for s in all_snapshots if s.path not in restored_files]
+            if remaining:
+                self.snapshots[snapshot_id] = remaining
+                self._persist_snapshot_disk(snapshot_id, remaining)
+            else:
+                self.snapshots.pop(snapshot_id, None)
+                snapshot_file = self.snapshot_dir / f"{snapshot_id}.json"
+                if snapshot_file.exists():
+                    try:
+                        snapshot_file.unlink()
+                    except Exception:
+                        pass
+
         logger.info(
             f"Rolled back {len(restored_files)} files from snapshot {snapshot_id}"
             + (f" ({len(failed_files)} failed)" if failed_files else "")
@@ -432,6 +465,99 @@ class RollbackManager:
             "restored_count": len(restored_files),
             "failed_files": failed_files,
         }
+
+    def rollback_files(
+        self,
+        paths: List[str],
+        snapshot_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Surgically roll back specific files in a snapshot graph (SPEC-P4.1)."""
+        return self.rollback(snapshot_id=snapshot_id, paths=paths)
+
+    def commit_files(
+        self,
+        paths: List[str],
+        snapshot_id: Optional[str] = None,
+    ) -> List[str]:
+        """Commit specific files from a snapshot graph (SPEC-P4.1), keeping others."""
+        snapshot_id = snapshot_id or self.current_snapshot
+        if not snapshot_id:
+            return []
+        if snapshot_id not in self.snapshots:
+            snapshot_file = self.snapshot_dir / f"{snapshot_id}.json"
+            if snapshot_file.exists():
+                try:
+                    data = json.loads(snapshot_file.read_text())
+                    self.snapshots[snapshot_id] = [
+                        FileSnapshot(
+                            path=f["path"],
+                            content=f.get("content"),
+                            timestamp=f.get("timestamp", ""),
+                            checksum=f.get("checksum", ""),
+                            exists=f.get("exists", True if f.get("content") is not None else False),
+                        )
+                        for f in data.get("files", [])
+                    ]
+                except Exception:
+                    return []
+            else:
+                return []
+
+        all_snaps = self.snapshots.get(snapshot_id, [])
+        norm_targets = set()
+        for p in paths:
+            try:
+                norm_targets.add(self._normalize_rel_path(safe_resolve(p, self.workdir)))
+            except Exception:
+                norm_targets.add(str(p))
+
+        committed: List[str] = []
+        remaining: List[FileSnapshot] = []
+        for s in all_snaps:
+            if s.path in norm_targets or any(s.path.endswith(t) for t in norm_targets):
+                committed.append(s.path)
+            else:
+                remaining.append(s)
+
+        if remaining:
+            self.snapshots[snapshot_id] = remaining
+            self._persist_snapshot_disk(snapshot_id, remaining)
+        else:
+            self.snapshots.pop(snapshot_id, None)
+            snapshot_file = self.snapshot_dir / f"{snapshot_id}.json"
+            if snapshot_file.exists():
+                try:
+                    snapshot_file.unlink()
+                except Exception:
+                    pass
+        return committed
+
+    def _persist_snapshot_disk(self, snapshot_id: str, snapshots: List[FileSnapshot]) -> bool:
+        """Helper to write snapshot data to disk atomically."""
+        snapshot_file = self.snapshot_dir / f"{snapshot_id}.json"
+        snapshot_data = {
+            "snapshot_id": snapshot_id,
+            "timestamp": datetime.now().isoformat(),
+            "files": [
+                {
+                    "path": s.path,
+                    "content": s.content,
+                    "timestamp": s.timestamp,
+                    "checksum": s.checksum,
+                    "exists": s.exists,
+                }
+                for s in snapshots
+            ],
+        }
+        try:
+            from src.core.io_utils import atomic_write_json
+            return atomic_write_json(snapshot_file, snapshot_data, logger=logger)
+        except Exception:
+            try:
+                snapshot_file.write_text(json.dumps(snapshot_data, indent=2))
+                return True
+            except Exception:
+                return False
 
     def append_to_snapshot(self, snapshot_id: str, file_path: str) -> bool:
         """

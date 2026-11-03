@@ -85,9 +85,7 @@ class SessionListScreen(ModalScreen[None]):
                 id="sessions_hint",
             )
 
-    def on_mount(self) -> None:
-        self._load_sessions()
-        self._render_list()
+    async def on_mount(self) -> None:
         try:
             title = self.query_one("#sessions_title", Label)
             title.update("Subagent Sessions" if self._filter_subagents else "Sessions")
@@ -97,32 +95,54 @@ class SessionListScreen(ModalScreen[None]):
             self.query_one("#sessions_search", Input).focus()
         except Exception:
             pass
+        # Render initial placeholder while loading
+        self._render_list()
+        # Offload file scanning and parsing to background thread (SPEC-P3.3)
+        await self._load_sessions_async()
+        self._render_list()
 
-    def _load_sessions(self) -> None:
+    def _scan_sessions(self) -> list[Tuple[Path, Dict[str, Any]]]:
+        """Read and parse session JSON files on a worker thread."""
         try:
-            _get_sessions_dir = getattr(self.app, "_get_sessions_dir", None)
+            app = getattr(self, "app", None) or getattr(self, "_app", None)
+            _get_sessions_dir = getattr(app, "_get_sessions_dir", None)
             if _get_sessions_dir is None:
                 _log.warning("app has no _get_sessions_dir — session list will be empty")
-                return
+                return []
             sessions_dir: Any = _get_sessions_dir()
             if not sessions_dir:
-                return
+                return []
             files = sorted(Path(sessions_dir).glob("session_*.json"), reverse=True)
-            self._all_sessions = []
+            res: list[Tuple[Path, Dict[str, Any]]] = []
             for f in files[:100]:
                 try:
                     payload: Dict[str, Any] = json.loads(f.read_text(encoding="utf-8"))
-                    self._all_sessions.append((f, payload))
+                    res.append((f, payload))
                 except Exception as _parse_err:
                     _log.warning("skipping corrupt session file %s: %s", f.name, _parse_err)
-            # GAP-FOOTER-3: pre-filter to subagent sessions only when requested
-            if self._filter_subagents:
-                self._all_sessions = [
-                    (p, d) for p, d in self._all_sessions if d.get("parent_session_id")
-                ]
-            self._filtered = list(self._all_sessions)
+            return res
         except Exception:
-            pass
+            return []
+
+    async def _load_sessions_async(self) -> None:
+        """Asynchronously scan session files without blocking the UI thread."""
+        import asyncio
+
+        sessions = await asyncio.to_thread(self._scan_sessions)
+        self._all_sessions = sessions
+        if self._filter_subagents:
+            self._all_sessions = [
+                (p, d) for p, d in self._all_sessions if d.get("parent_session_id")
+            ]
+        self._filtered = list(self._all_sessions)
+
+    def _load_sessions(self) -> None:
+        self._all_sessions = self._scan_sessions()
+        if self._filter_subagents:
+            self._all_sessions = [
+                (p, d) for p, d in self._all_sessions if d.get("parent_session_id")
+            ]
+        self._filtered = list(self._all_sessions)
 
     def _filter(self, query: str) -> None:
         q = query.lower()

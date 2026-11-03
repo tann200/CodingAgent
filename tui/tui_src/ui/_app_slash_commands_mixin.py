@@ -39,7 +39,7 @@ Available commands:
   /timeline      — view session message timeline
   /diff          — show working-directory diff since last snapshot
   /fork          — fork current session to a new independent copy
-  /share         — export conversation to a markdown file (clipboard if pyperclip available)
+  /share  /export — export conversation to a markdown file (clipboard if pyperclip available)
   /rename <name> — rename the current session
   /worktree [list|create|remove <id>] — manage git worktree isolation
   /mcp [list|add <name> <cmd…>|status] — manage MCP servers
@@ -218,7 +218,7 @@ class AppSlashCommandsMixin(AgentAppProtocol):
         elif cmd == "fork":
             await self._slash_fork()
 
-        elif cmd == "share":
+        elif cmd in ("share", "export"):
             await self._slash_share()
 
         elif cmd == "rename":
