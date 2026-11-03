@@ -58,10 +58,19 @@ async def _finalize_node_impl(state: StateLike, config: RunnableConfig) -> Dict[
     # Transaction Settlement Guard: settle any open deferred-rollback snapshot
     snap_id = getattr(orchestrator, "_step_snapshot_id", None) if orchestrator else None
     if isinstance(snap_id, str) and snap_id:
-        can_commit = state.get("verification_passed") is True or (
-            state.get("use_verification") is False
-            and run_state.get("status") not in ("failed", "cancelled")
-            and run_state.get("outcome") not in ("failed", "cancelled")
+        is_cancelled_or_failed = (
+            run_state.get("status") in ("failed", "cancelled")
+            or run_state.get("outcome") in ("failed", "cancelled")
+            or (
+                cancel_event is not None
+                and hasattr(cancel_event, "is_set")
+                and callable(cancel_event.is_set)
+                and cancel_event.is_set() is True
+            )
+        )
+        can_commit = (not is_cancelled_or_failed) and (
+            state.get("verification_passed") is True
+            or state.get("use_verification") is False
         )
         if can_commit:
             try:

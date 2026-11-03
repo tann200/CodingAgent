@@ -289,6 +289,62 @@ class BridgeSessionMixin(AgentBridgeProtocol):
                     logger.warning(f"start_new_task() failed: {exc}")
         self.publish_session_new()
 
+    def resume_session(
+        self, session_id: str, messages: list[dict], working_dir: str = ""
+    ) -> None:
+        """Resume a saved session by populating history and orchestrator context."""
+        with self._history_lock:
+            self.history = [
+                (m.get("role", ""), m.get("content", ""))
+                for m in messages
+                if isinstance(m, dict)
+            ]
+        if working_dir:
+            self.working_dir = working_dir
+
+        if self._orchestrator:
+            msg_mgr = getattr(self._orchestrator, "msg_mgr", None) or getattr(
+                self._orchestrator, "message_manager", None
+            )
+            if msg_mgr is not None and hasattr(msg_mgr, "messages"):
+                try:
+                    if hasattr(msg_mgr, "clear"):
+                        msg_mgr.clear()
+                    else:
+                        msg_mgr.messages.clear()
+                    for m in messages:
+                        if isinstance(m, dict) and m.get("role") and m.get("content"):
+                            msg_mgr.append(m["role"], m["content"])
+                except Exception as exc:
+                    logger.warning(f"Failed to hydrate msg_mgr on session resume: {exc}")
+
+            if working_dir and hasattr(self._orchestrator, "working_dir"):
+                try:
+                    self._orchestrator.working_dir = working_dir
+                except Exception:
+                    pass
+
+        try:
+            from src.core.messaging.event_types import SessionHydrated
+
+            self.publish_typed(
+                SessionHydrated(
+                    session_id=session_id,
+                    message_history=messages,
+                    current_task=messages[0].get("content", "") if messages else "",
+                    working_dir=working_dir,
+                )
+            )
+        except Exception:
+            self.publish(
+                "session.hydrated",
+                {
+                    "session_id": session_id,
+                    "message_history": messages,
+                    "working_dir": working_dir,
+                },
+            )
+
     def restore_and_continue(
         self, last_task: str, continue_state: Optional[dict]
     ) -> bool:

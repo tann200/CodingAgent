@@ -990,9 +990,29 @@ class AppSlashCommandsMixin(AgentAppProtocol):
                 else "manual"
             )
             try:
+                # Save parent working dir for restoration on removal
+                if not hasattr(self, "_parent_working_dir") or self._parent_working_dir is None:
+                    self._parent_working_dir = getattr(self._bridge, "working_dir", None) or workspace
+
                 wt_path = await self._worktree_mgr.create(task_id)
+
+                # Switch active bridge and orchestrator working directories
+                self._bridge.working_dir = _Path(wt_path)
+                if orch is not None:
+                    orch.working_dir = str(wt_path)
+                    try:
+                        if hasattr(orch, "_publish_git_status"):
+                            orch._publish_git_status()
+                    except Exception:
+                        pass
+
+                try:
+                    self.query_one("#sb_workdir", Static).update(str(wt_path))
+                except Exception:
+                    pass
+
                 w = Static(
-                    f"[bold #22c55e]✓ Worktree created[/]\n"
+                    f"[bold #22c55e]✓ Worktree created & switched[/]\n"
                     f"  task_id: {task_id}\n"
                     f"  path:    {wt_path}",
                     classes="system_msg",
@@ -1011,12 +1031,39 @@ class AppSlashCommandsMixin(AgentAppProtocol):
             if not task_id:
                 self.notify("Usage: /worktree remove <task_id>", severity="warning")
                 return
+
+            wt_path_to_remove = self._worktree_mgr.active.get(task_id)
             removed = await self._worktree_mgr.remove(task_id)
-            msg = (
-                f"[bold #22c55e]✓ Worktree removed:[/] {task_id}"
-                if removed
-                else f"[dim]No worktree found for task_id: {task_id}[/]"
-            )
+            if removed:
+                parent_dir = getattr(self, "_parent_working_dir", None) or workspace
+                is_current = False
+                if wt_path_to_remove and (
+                    str(getattr(self._bridge, "working_dir", "")) == str(wt_path_to_remove)
+                    or (orch and str(getattr(orch, "working_dir", "")) == str(wt_path_to_remove))
+                ):
+                    is_current = True
+
+                if is_current:
+                    self._bridge.working_dir = _Path(parent_dir)
+                    if orch is not None:
+                        orch.working_dir = str(parent_dir)
+                        try:
+                            if hasattr(orch, "_publish_git_status"):
+                                orch._publish_git_status()
+                        except Exception:
+                            pass
+                    try:
+                        self.query_one("#sb_workdir", Static).update(str(parent_dir))
+                    except Exception:
+                        pass
+
+                msg = (
+                    f"[bold #22c55e]✓ Worktree removed:[/] {task_id}"
+                    + (f" (switched back to {parent_dir})" if is_current else "")
+                )
+            else:
+                msg = f"[dim]No worktree found for task_id: {task_id}[/]"
+
             await self._mount_chat_widget(
                 Static(msg, classes="system_msg", markup=True)
             )

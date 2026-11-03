@@ -198,7 +198,21 @@ class BridgeToolsMixin(AgentBridgeProtocol):
     def _on_plan_requested(self, payload: dict) -> None:
         from tui.tui_src.ui.bus import PlanRequestedEvent
 
-        self._post(PlanRequestedEvent(plan_text=payload.get("plan") or payload.get("plan_text", "")))
+        plan_val = payload.get("plan") if payload.get("plan") is not None else payload.get("plan_text", "")
+        if isinstance(plan_val, list):
+            lines = []
+            for i, step in enumerate(plan_val, 1):
+                if isinstance(step, dict):
+                    desc = step.get("description") or step.get("task") or step.get("title") or str(step)
+                    status = "[x]" if step.get("completed") else "[ ]"
+                    lines.append(f"{i}. {status} {desc}")
+                else:
+                    lines.append(f"{i}. {step}")
+            plan_str = "\n".join(lines)
+        else:
+            plan_str = str(plan_val or "")
+
+        self._post(PlanRequestedEvent(plan_text=plan_str))
 
     def _on_mcp_server_status(self, payload: dict) -> None:
         from tui.tui_src.ui.bus import McpServerStatusEvent
@@ -292,7 +306,7 @@ class BridgeToolsMixin(AgentBridgeProtocol):
         ``PreviewCoordinator._on_confirmed`` can resolve the threading.Event
         gate registered in ``file_tools.register_preview_gate()``.
         """
-        self._bus.publish_typed(PreviewConfirmed(path=path))
+        self._bus.publish_typed(PreviewConfirmed(preview_id=path, path=path))
 
     def reject_file_preview(self, path: str) -> None:
         """User rejected the diff preview for a file write — resolve the gate.
@@ -301,4 +315,4 @@ class BridgeToolsMixin(AgentBridgeProtocol):
         ``PreviewCoordinator._on_rejected`` can set the rejected flag in
         ``file_tools._preview_rejected`` and unblock the gate.
         """
-        self._bus.publish_typed(PreviewRejected(path=path))
+        self._bus.publish_typed(PreviewRejected(preview_id=path, path=path))

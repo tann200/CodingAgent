@@ -330,6 +330,21 @@ class SessionHealthEvent(Message):
         super().__init__()
 
 
+class SessionHydratedEvent(Message):
+    """§4.5 session.hydrated — session restored with message history."""
+
+    def __init__(
+        self,
+        session_id: str,
+        messages: list[dict],
+        working_dir: str = "",
+    ) -> None:
+        self.session_id = session_id
+        self.messages = messages
+        self.working_dir = working_dir
+        super().__init__()
+
+
 class ModelRoutingEvent(Message):
     """§4.5 model.routing — active provider/model changed."""
 

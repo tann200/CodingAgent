@@ -634,8 +634,26 @@ def _run_sandbox_and_snapshot(
     try:
         if "write" in tool.get("side_effects", []) and path_arg:
             new_content = args.get("content")
+            # SPEC-P1.7: Compute candidate replacement text for atomic string replacement tools
+            if not new_content and name == "edit_file_atomic" and path_arg:
+                old_s = args.get("old_string")
+                new_s = args.get("new_string")
+                if isinstance(old_s, str) and isinstance(new_s, str):
+                    try:
+                        from pathlib import Path as _P
+                        target_p = _P(path_arg)
+                        if not target_p.is_absolute() and hasattr(orch, "working_dir") and orch.working_dir:
+                            target_p = _P(orch.working_dir) / target_p
+                        if target_p.is_file():
+                            orig_text = target_p.read_text(encoding="utf-8")
+                            if old_s in orig_text:
+                                new_content = orig_text.replace(old_s, new_s, 1)
+                    except Exception:
+                        pass
+
             if new_content and isinstance(new_content, str):
-                if str(path_arg).endswith(".py"):
+                p_str = str(path_arg)
+                if p_str.endswith(".py"):
                     import ast as _ast
 
                     try:
@@ -648,9 +666,7 @@ def _run_sandbox_and_snapshot(
                                 f"error at line {syn.lineno}: {syn.msg}"
                             ),
                         }
-                elif str(path_arg).endswith(
-                    (".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx")
-                ):
+                elif p_str.endswith((".js", ".mjs", ".cjs")):
                     import subprocess as _sp
                     import tempfile as _tf
 
@@ -684,7 +700,7 @@ def _run_sandbox_and_snapshot(
                                     return {
                                         "ok": False,
                                         "error": (
-                                            "Sandbox validation error: JS/TS syntax "
+                                            "Sandbox validation error: JS syntax "
                                             f"error: {err[:300]}"
                                         ),
                                     }
@@ -698,6 +714,58 @@ def _run_sandbox_and_snapshot(
                                     pass
                     except (FileNotFoundError, _sp.TimeoutExpired):
                         pass
+                elif p_str.endswith((".ts", ".tsx")):
+                    # SPEC-P1.1: Validate TypeScript only if tsc is directly available on PATH;
+                    # do NOT force node --check with .js suffix which fails on valid TS types/interfaces.
+                    import shutil as _shutil
+                    import subprocess as _sp
+                    import tempfile as _tf
+
+                    tsc_bin = _shutil.which("tsc")
+                    if tsc_bin:
+                        tmp_path = None
+                        ext = ".tsx" if p_str.endswith(".tsx") else ".ts"
+                        try:
+                            with _tf.NamedTemporaryFile(
+                                suffix=ext,
+                                mode="w",
+                                delete=False,
+                                encoding="utf-8",
+                            ) as tmp:
+                                tmp.write(new_content)
+                                tmp_path = tmp.name
+                            check = _sp.run(
+                                [
+                                    tsc_bin,
+                                    "--noEmit",
+                                    "--allowJs",
+                                    "--target",
+                                    "es2020",
+                                    tmp_path,
+                                ],
+                                capture_output=True,
+                                text=True,
+                                timeout=10,
+                            )
+                            if check.returncode != 0:
+                                err = (check.stdout or check.stderr or "syntax error").strip()
+                                if "error TS" in err:
+                                    return {
+                                        "ok": False,
+                                        "error": (
+                                            f"Sandbox validation error: TS syntax error: {err[:300]}"
+                                        ),
+                                    }
+                        except Exception:
+                            pass
+                        finally:
+                            try:
+                                import os as _os
+
+                                if tmp_path:
+                                    _os.unlink(tmp_path)
+                            except Exception:
+                                pass
     except Exception as e:
         guilogger.error(f"Sandbox validation failed (fail-closed): {e}")
         return {
@@ -867,20 +935,15 @@ def _dispatch_tool_call(
                 # Check if we're in a thread with an existing event loop
                 try:
                     loop = _asyncio.get_running_loop()
-                    # If we're in a thread with a running loop, use run_coroutine_threadsafe
-                    if loop.is_running():
-                        # This should be called from the main thread, but we're in a worker thread
-                        # So we need to handle this carefully - create a new event loop for this thread
-                        new_loop = _asyncio.new_event_loop()
-                        _asyncio.set_event_loop(new_loop)
-                        try:
-                            return new_loop.run_until_complete(rv)
-                        finally:
-                            new_loop.close()
-                    else:
-                        # Loop exists but not running - safe to use run_until_complete
-                        return loop.run_until_complete(rv)
                 except RuntimeError:
+                    loop = None
+
+                if loop is not None and loop.is_running():
+                    # Thread has an active running event loop; run the coroutine in a
+                    # dedicated thread to avoid nested loop collision and preserve caller's loop.
+                    with _cf.ThreadPoolExecutor(max_workers=1) as pool:
+                        return pool.submit(_asyncio.run, cast(Coroutine[Any, Any, Any], rv)).result()
+                else:
                     # No running loop - safe to use asyncio.run
                     return _asyncio.run(cast(Coroutine[Any, Any, Any], rv))
             return rv

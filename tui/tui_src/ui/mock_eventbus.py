@@ -31,6 +31,10 @@ class MockEventBus:
             except ValueError:
                 pass
 
+    def has_subscribers(self, event: str) -> bool:
+        with self._lock:
+            return bool(self._subscribers.get(event))
+
     def publish(self, event: str, payload: dict | None = None) -> None:
         if payload is None:
             payload = {}

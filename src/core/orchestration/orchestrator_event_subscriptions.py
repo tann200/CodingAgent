@@ -265,9 +265,25 @@ def _register_permission_gate_subscriptions(orch: Any) -> None:
         tool_id = payload.get("tool_id", "")
         if feedback and tool_id:
             try:
-                if hasattr(orch, "state") and "history" in orch.state:
+                denial_msg = f"Tool permission denied. Reason: {feedback}"
+                # SPEC-P2.4: Append denial feedback to message manager so model receives the operator's reason
+                msg_mgr = getattr(orch, "msg_mgr", None) or getattr(orch, "message_manager", None)
+                if msg_mgr is not None and hasattr(msg_mgr, "append"):
+                    msg_mgr.append("user", denial_msg)
+
+                # Also buffer into mid-run injection source so active loop picks it up immediately
+                inj_source = getattr(orch, "_injection_source", None)
+                if inj_source is not None and hasattr(inj_source, "_pending_injections"):
+                    inj_lock = getattr(inj_source, "_agent_lock", None)
+                    if inj_lock is not None and hasattr(inj_lock, "__enter__"):
+                        with inj_lock:
+                            inj_source._pending_injections.append(denial_msg)
+                    else:
+                        inj_source._pending_injections.append(denial_msg)
+
+                if hasattr(orch, "state") and isinstance(getattr(orch, "state"), dict) and "history" in orch.state:
                     orch.state["history"].append(
-                        ("system", f"Tool permission denied. Feedback: {feedback}")
+                        ("system", denial_msg)
                     )
                 guilogger.info(
                     f"denial_feedback: added to agent context (tool_id={tool_id})"

@@ -273,6 +273,22 @@ class ToolPermissionRequired(Event):
 
 
 @dataclass
+class ToolPermissionGranted(Event):
+    """
+    Published when operator approves a tool permission request.
+    """
+    tool_id: str
+
+
+@dataclass
+class ToolPermissionDenied(Event):
+    """
+    Published when operator denies a tool permission request.
+    """
+    tool_id: str
+
+
+@dataclass
 class ToolDoomLoopDetected(Event):
     """
     Published when a tool doom-loop is detected.
@@ -360,7 +376,8 @@ class PreviewConfirmed(Event):
 
     Use-case: Allow blocked tool to proceed after user confirmation.
     """
-    preview_id: str
+    preview_id: str = ""
+    path: Optional[str] = None
 
 
 @dataclass
@@ -373,7 +390,8 @@ class PreviewRejected(Event):
 
     Use-case: Cancel blocked tool; close preview panel.
     """
-    preview_id: str
+    preview_id: str = ""
+    path: Optional[str] = None
 
 
 @dataclass

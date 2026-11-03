@@ -228,7 +228,17 @@ class BridgeContextMixin(AgentBridgeProtocol):
         self._schedule_callback(self.app._handle_session_new)
 
     def _on_session_hydrated(self, payload: dict) -> None:
+        from tui.tui_src.ui.bus import SessionHydratedEvent
+
         logger.info("Session hydrated from backend")
+        msgs = payload.get("message_history") or payload.get("messages") or []
+        self._post(
+            SessionHydratedEvent(
+                session_id=str(payload.get("session_id", "")),
+                messages=msgs if isinstance(msgs, list) else [],
+                working_dir=str(payload.get("working_dir", "")),
+            )
+        )
 
     def _on_session_health(self, payload: dict) -> None:
         from tui.tui_src.ui.bus import SessionHealthEvent

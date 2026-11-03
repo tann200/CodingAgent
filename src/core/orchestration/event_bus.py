@@ -214,6 +214,8 @@ _EVENT_IMPORT_PATHS: Dict[str, Tuple[str, str, Optional[Dict[str, str]]]] = {
     "tool.execute.error": ("src.core.messaging.event_types", "ToolExecuteError", {"sessionUpdate": "session_update", "toolCallId": "tool_call_id", "rawOutput": "raw_output"}),
     "tool.result": ("src.core.messaging.event_types", "ToolResult", None),
     "tool.permission_required": ("src.core.messaging.event_types", "ToolPermissionRequired", None),
+    "tool.permission_granted": ("src.core.messaging.event_types", "ToolPermissionGranted", None),
+    "tool.permission_denied": ("src.core.messaging.event_types", "ToolPermissionDenied", None),
     "tool.doom_loop_detected": ("src.core.messaging.event_types", "ToolDoomLoopDetected", None),
     "spawn.permission_required": ("src.core.messaging.event_types", "SpawnPermissionRequired", None),
     "bash.approval_granted": ("src.core.messaging.event_types", "BashApprovalGranted", None),
@@ -360,6 +362,21 @@ def _import_event_class(event_name: str) -> Optional[Tuple[TypingType[Event], Op
     return (cls, mapper)
 
 
+def _resolve_event_class(event_name: str) -> Optional[TypingType[Event]]:
+    """Resolve and return the typed Event class for *event_name*, or None."""
+    cached = _EVENT_CLASS_CACHE.get(event_name)
+    if cached is not None:
+        return cached[0]
+    result = _import_event_class(event_name)
+    if result is None:
+        return None
+    cls, _ = result
+    with _CACHE_LOCK:
+        _EVENT_CLASS_CACHE[event_name] = result
+        _EVENT_NAME_FROM_CLASS[cls] = event_name
+    return cls
+
+
 def _build_typed_event(event_name: str, payload: Optional[Any]) -> Optional[Event]:
     # Fast path: check cache
     cached = _EVENT_CLASS_CACHE.get(event_name)
@@ -443,7 +460,13 @@ class EventBus:
     def has_subscribers(self, event_name: str) -> bool:
         """Return True if any subscriber is registered for event_name."""
         with self._lock:
-            return bool(self._subscribers.get(event_name))
+            if bool(self._subscribers.get(event_name)):
+                return True
+        if self._typed is not None:
+            cls = _resolve_event_class(event_name)
+            if cls is not None and hasattr(self._typed, "has_subscribers"):
+                return bool(self._typed.has_subscribers(cls))
+        return False
 
     def unsubscribe(self, event_name: str, callback: Callable[[Any], None]) -> None:
         with self._lock:

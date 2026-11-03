@@ -408,6 +408,11 @@ class MessageBus:
                         event_type.__name__,
                     )
 
+    def has_subscribers(self, event_type: Type[Event]) -> bool:
+        """Return True if any handler is registered for event_type."""
+        with self._lock:
+            return bool(self._handlers.get(event_type))
+
     def publish(
         self,
         event: Event,

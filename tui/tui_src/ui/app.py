@@ -291,6 +291,13 @@ class AgentApp(
                 except Exception as _drain_err:
                     logger.debug("shutdown drain send failed: %s", _drain_err)
         self._save_session_snapshot()
+        if hasattr(self, "_worktree_mgr") and self._worktree_mgr is not None:
+            try:
+                import shutil
+                for wt_path in list(getattr(self._worktree_mgr, "active", {}).values()):
+                    shutil.rmtree(wt_path, ignore_errors=True)
+            except Exception:
+                pass
         self._bridge.interrupt()
         self._bridge.save_history()
         self._bridge.cleanup()

@@ -544,10 +544,19 @@ def bash(
         _risk_level, _risk_reasons = analyze_bash_command(
             command, working_dir=str(workdir)
         )
-        if _risk_level in (BashRiskLevel.BLOCKED, BashRiskLevel.DANGEROUS):
+        if _risk_level == BashRiskLevel.BLOCKED:
             return {
                 "status": "error",
                 "error": f"Command blocked by security analysis: {'; '.join(_risk_reasons)}",
+            }
+        if _risk_level == BashRiskLevel.DANGEROUS:
+            return {
+                "status": "error",
+                "error": (
+                    f"Command requires operator approval (risk: {'; '.join(_risk_reasons)}). "
+                    "Use safe alternatives or request user approval."
+                ),
+                "requires_approval": True,
             }
     except ImportError:
         pass  # bash_security unavailable; Gate 1 above is still active

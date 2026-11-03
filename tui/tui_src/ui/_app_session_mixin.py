@@ -9,8 +9,10 @@ from __future__ import annotations
 import os
 import time
 from pathlib import Path
+from textual import on
 from textual.widgets import Static
 
+from .bus import SessionHydratedEvent
 from .logging import get_logger
 
 from ._app_protocol import AgentAppProtocol
@@ -154,6 +156,28 @@ class AppSessionMixin(AgentAppProtocol):
         """Called from bridge when session.new fires."""
         self._clear_chat_panel()
         self._reset_sidebar()
+
+    @on(SessionHydratedEvent)
+    async def handle_session_hydrated(self: AgentAppProtocol, event: SessionHydratedEvent) -> None:
+        """Mount restored session history into the chat log when a session is resumed."""
+        self._clear_chat_panel()
+        self._session_id = event.session_id
+        from tui.tui_src.ui.components.artifact import AgentArtifact
+
+        for msg in event.messages:
+            if not isinstance(msg, dict):
+                continue
+            role = msg.get("role", "")
+            content = msg.get("content", "")
+            if not content:
+                continue
+            if role == "user":
+                w = Static(f"[bold #3b82f6]User:[/] {content}", classes="user_msg")
+                await self._mount_chat_widget(w)
+            elif role == "assistant":
+                art = AgentArtifact(content=content, title="Response", kind="markdown")
+                await self._mount_chat_widget(art)
+        self.notify(f"Session restored ({len(event.messages)} messages)")
 
     def _reset_sidebar(self: AgentAppProtocol) -> None:
         self._modified_files.clear()

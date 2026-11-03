@@ -370,26 +370,42 @@ class ChatDisplayMixin(AgentAppProtocol):
 
     async def _chat_handle_plan_requested(self: AgentAppProtocol, event) -> None:
         """Mount plan text + Approve/Reject buttons in the chat log."""
+        import rich.markup as _markup
+
         logger.info("Plan approval requested")
         self._finalize_stream()
         chat_log = self.query_one("#chat_log", VerticalScroll)
-        if event.plan_text:
+        plan_raw = getattr(event, "plan_text", None) if getattr(event, "plan_text", None) is not None else getattr(event, "plan", "")
+        if isinstance(plan_raw, list):
+            plan_lines = []
+            for i, step in enumerate(plan_raw, 1):
+                if isinstance(step, dict):
+                    desc = step.get("description") or step.get("task") or str(step)
+                    plan_lines.append(f"{i}. {desc}")
+                else:
+                    plan_lines.append(f"{i}. {step}")
+            plan_text = "\n".join(plan_lines)
+        else:
+            plan_text = str(plan_raw or "")
+
+        if plan_text:
+            escaped_plan = _markup.escape(plan_text)
             plan_display = Static(
-                f"[bold #a855f7]Plan:[/]\n{event.plan_text}",
+                f"[bold #a855f7]Plan:[/]\n{escaped_plan}",
                 classes="plan_msg",
                 markup=True,
             )
             await chat_log.mount(plan_display)
-        approval = Horizontal(id="plan_approval", classes="approval_row")
+        approval = Horizontal(
+            Static("Approve this plan?  ", classes="approval_label", markup=True),
+            Button("Approve", id="btn_approve_plan", variant="success"),
+            Button("Reject", id="btn_reject_plan", variant="error"),
+            id="plan_approval",
+            classes="approval_row",
+        )
         await chat_log.mount(approval)
-        await approval.mount(
-            Static("Approve this plan?  ", classes="approval_label", markup=True)
-        )
-        await approval.mount(
-            Button("Approve", id="btn_approve_plan", variant="success")
-        )
-        await approval.mount(Button("Reject", id="btn_reject_plan", variant="error"))
-        chat_log.scroll_end(animate=False)
+        if hasattr(chat_log, "scroll_end"):
+            chat_log.scroll_end(animate=False)
         self._prune_chat_log()
 
     async def _chat_handle_session_health(self: AgentAppProtocol, event) -> None:

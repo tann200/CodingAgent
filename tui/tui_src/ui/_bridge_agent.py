@@ -112,11 +112,12 @@ class BridgeAgentMixin(AgentBridgeProtocol):
                     messages.append({"role": "user", "content": text})
                 else:
                     messages = [{"role": "user", "content": text}]
-                tools = (
-                    self._orchestrator.get_tools_for_role(prompt_name)
-                    if hasattr(self._orchestrator, "get_tools_for_role")
-                    else self._orchestrator.get_tools_for_role("operational")
-                )
+                if hasattr(self._orchestrator, "get_tools_for_role"):
+                    tools = self._orchestrator.get_tools_for_role(prompt_name)
+                elif hasattr(self._orchestrator, "get_tools") and callable(self._orchestrator.get_tools):
+                    tools = self._orchestrator.get_tools()
+                else:
+                    tools = None
                 self._orchestrator.active_role = prompt_name
                 # MID-INJ: Attach self so inference_loop can expose
                 # pop_pending_injections() to the graph via initial_state.

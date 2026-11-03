@@ -528,6 +528,30 @@ async def frontier_loop_node(
     while turns_taken < effective_max_turns:
         turns_taken += 1
 
+        # MID-INJ: Drain any in-flight operator injections from the bridge buffer
+        inj_source = state.get("_pending_injections_source") or getattr(
+            orchestrator, "_injection_source", None
+        )
+        if inj_source is not None and hasattr(inj_source, "pop_pending_injections"):
+            try:
+                mid_run_injections = inj_source.pop_pending_injections()
+                if mid_run_injections:
+                    history = list(history)
+                    for inj_text in mid_run_injections:
+                        if inj_text and isinstance(inj_text, str):
+                            logger.info(
+                                "frontier_loop_node: drained operator mid-run steering injection: %s",
+                                inj_text[:60],
+                            )
+                            history.append(
+                                {
+                                    "role": "user",
+                                    "content": f"<operator_steering>\n{inj_text}\n</operator_steering>",
+                                }
+                            )
+            except Exception as inj_exc:
+                logger.debug("frontier_loop_node: pop_pending_injections failed: %s", inj_exc)
+
         if tool_call_count >= max_tool_calls:
             logger.warning(
                 "frontier_loop_node: tool budget exhausted (%d/%d), exiting loop",

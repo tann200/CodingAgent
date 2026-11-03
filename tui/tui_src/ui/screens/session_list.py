@@ -265,17 +265,22 @@ class SessionListScreen(ModalScreen[None]):
         try:
             bridge = getattr(self.app, "_bridge", None)
             if bridge is not None and messages:
-                # TUI-06: load history into bridge before starting new session
-                with bridge._history_lock:
-                    bridge.history = [
-                        (m.get("role", ""), m.get("content", ""))
-                        for m in messages
-                        if isinstance(m, dict)
-                    ]
-                if working_dir:
-                    bridge.working_dir = working_dir
-                # Reset orchestrator state so it's fresh for the resumed session
-                bridge.start_new_session()
+                session_id = str(data.get("session_id", ""))
+                if hasattr(bridge, "resume_session"):
+                    bridge.resume_session(
+                        session_id=session_id,
+                        messages=messages,
+                        working_dir=working_dir,
+                    )
+                else:
+                    with bridge._history_lock:
+                        bridge.history = [
+                            (m.get("role", ""), m.get("content", ""))
+                            for m in messages
+                            if isinstance(m, dict)
+                        ]
+                    if working_dir:
+                        bridge.working_dir = working_dir
             task = str(data.get("task_name", "session"))[:40]
             self.app.notify(f"Session resumed: {task}")
         except Exception as exc:

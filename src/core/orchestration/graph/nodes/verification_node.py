@@ -211,7 +211,7 @@ async def _verification_node_impl(state: StateLike, config: RunnableConfig) -> D
             logger.info("verification_node: cancelled before running tools — skipping")
             return {
                 "verification_result": {"cancelled": True},
-                "verification_passed": True,
+                "verification_passed": False,
             }
         try:
             wd = Path(state.get("working_dir") or ".")
@@ -228,13 +228,13 @@ async def _verification_node_impl(state: StateLike, config: RunnableConfig) -> D
                     if _is_cancelled():
                         return {
                             "verification_result": {**results, "cancelled": True},
-                            "verification_passed": True,
+                            "verification_passed": False,
                         }
                     results["ts_check"] = verification_tools.run_ts_check(str(wd))
                     if _is_cancelled():
                         return {
                             "verification_result": {**results, "cancelled": True},
-                            "verification_passed": True,
+                            "verification_passed": False,
                         }
                     results["eslint"] = verification_tools.run_eslint(str(wd))
                 elif verification_mode == "targeted":
@@ -294,13 +294,13 @@ async def _verification_node_impl(state: StateLike, config: RunnableConfig) -> D
                     if _is_cancelled():
                         return {
                             "verification_result": {**results, "cancelled": True},
-                            "verification_passed": True,
+                            "verification_passed": False,
                         }
                     results["linter"] = verification_tools.run_linter(str(wd))
                     if _is_cancelled():
                         return {
                             "verification_result": {**results, "cancelled": True},
-                            "verification_passed": True,
+                            "verification_passed": False,
                         }
                     if session_modified and not unverified_paths and skipped_cached > 0:
                         results["syntax"] = {

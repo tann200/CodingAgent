@@ -13,6 +13,7 @@ then removes itself.
 
 from __future__ import annotations
 
+import rich.markup as _markup
 from textual.widget import Widget
 from textual.widgets import Static, Button
 from textual.containers import Horizontal, Vertical
@@ -43,8 +44,8 @@ def _parse_sidebyside(diff: str) -> tuple[list[str], list[str]]:
             continue
 
         if ln.startswith("@@"):
-            left.append(f"[bold #00b4d8]{ln}[/]")
-            right.append(f"[bold #00b4d8]{ln}[/]")
+            left.append(f"[bold #00b4d8]{_markup.escape(ln)}[/]")
+            right.append(f"[bold #00b4d8]{_markup.escape(ln)}[/]")
             i += 1
             continue
 
@@ -65,14 +66,22 @@ def _parse_sidebyside(diff: str) -> tuple[list[str], list[str]]:
             removed_padded: list = removed + [None] * (pad - len(removed))
             added_padded: list = added + [None] * (pad - len(added))
             for r, a in zip(removed_padded, added_padded):
-                left.append(f"[on #3d0000]{r} [/]" if r is not None else "[dim]  [/]")
-                right.append(f"[on #003d00]{a} [/]" if a is not None else "[dim]  [/]")
+                left.append(
+                    f"[on #3d0000]{_markup.escape(r)} [/]"
+                    if r is not None
+                    else "[dim]  [/]"
+                )
+                right.append(
+                    f"[on #003d00]{_markup.escape(a)} [/]"
+                    if a is not None
+                    else "[dim]  [/]"
+                )
             continue
 
         # Context line
         ctx = ln[1:] if ln.startswith(" ") else ln
-        left.append(ctx)
-        right.append(ctx)
+        left.append(_markup.escape(ctx))
+        right.append(_markup.escape(ctx))
         i += 1
 
     return left, right
@@ -173,13 +182,14 @@ def _render_inline(diff: str) -> list[str]:
         if ln.startswith("---") or ln.startswith("+++"):
             continue
         if ln.startswith("@@"):
-            lines.append(f"[bold #00b4d8]{ln}[/]")
+            lines.append(f"[bold #00b4d8]{_markup.escape(ln)}[/]")
         elif ln.startswith("-"):
-            lines.append(f"[on #3d0000]- {ln[1:]}[/]")
+            lines.append(f"[on #3d0000]- {_markup.escape(ln[1:])}[/]")
         elif ln.startswith("+"):
-            lines.append(f"[on #003d00]+ {ln[1:]}[/]")
+            lines.append(f"[on #003d00]+ {_markup.escape(ln[1:])}[/]")
         else:
-            lines.append(ln[1:] if ln.startswith(" ") else ln)
+            ctx = ln[1:] if ln.startswith(" ") else ln
+            lines.append(_markup.escape(ctx))
     return lines
 
 
