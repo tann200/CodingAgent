@@ -74,13 +74,19 @@ def _patch_infra(monkeypatch) -> None:
         )
     except AttributeError:
         pass
-    # Reset the compiled graph cache so changes to routing functions (e.g. route_execution
-    # _mod_kws) take effect in this test session rather than being shadowed by a cached graph.
+    try:
+        monkeypatch.setattr(
+            "src.core.memory.distiller.compact_messages_to_prose",
+            lambda *args, **kwargs: "Summary",
+        )
+    except AttributeError:
+        pass
+    # Reset the compiled graph cache so changes to routing functions take effect
     try:
         import src.core.orchestration.graph.builder as _builder
 
-        monkeypatch.setattr(_builder, "_COMPILED_GRAPH", None)
-    except AttributeError:
+        _builder._reset_compiled_graph()
+    except Exception:
         pass
 
 
@@ -88,11 +94,13 @@ def _build_orch(tmp_path: Path, adapter, monkeypatch) -> Orchestrator:
     """Build an Orchestrator wired with a scripted adapter (DeterministicAdapter)."""
     _patch_call_model(adapter, monkeypatch)
     _patch_infra(monkeypatch)
-    return Orchestrator(
+    orch = Orchestrator(
         adapter=adapter,
         working_dir=str(tmp_path),
         allow_external_working_dir=True,
     )
+    orch._session_title = "Test Session"
+    return orch
 
 
 def _build_orch_mock(
@@ -112,6 +120,7 @@ def _build_orch_mock(
         working_dir=str(tmp_path),
         allow_external_working_dir=True,
     )
+    orch._session_title = "Test Session"
     return orch, adapter
 
 
