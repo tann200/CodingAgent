@@ -79,6 +79,22 @@ def _patch_scripted_model(monkeypatch: pytest.MonkeyPatch, adapter: ScriptedLoca
         except AttributeError:
             pass
 
+    import subprocess
+
+    def _fake_run_subprocess(cmd, *args, **kwargs):
+        cmd_str = " ".join(cmd) if isinstance(cmd, list) else str(cmd)
+        if "pytest" in cmd_str:
+            return subprocess.CompletedProcess(
+                args=cmd, returncode=0, stdout="1 passed in 0.01s\n", stderr=""
+            )
+        if "ruff" in cmd_str:
+            return subprocess.CompletedProcess(
+                args=cmd, returncode=0, stdout="All checks passed!\n", stderr=""
+            )
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("src.tools.verification_tools._run_subprocess", _fake_run_subprocess)
+
 
 class TestLocalModelSmokeE2E:
     def test_local_compact_model_multiturn_atomic_edit_e2e(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

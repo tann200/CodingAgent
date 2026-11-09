@@ -38,6 +38,7 @@ import os
 import platform
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from typing import List, Optional
@@ -357,6 +358,7 @@ def _build_bwrap_args(
         "/lib64",
         "/bin",
         "/sbin",
+        "/opt",
         "/etc/ld.so.cache",
         "/etc/ld.so.conf",
         "/etc/ld.so.conf.d",
@@ -371,6 +373,16 @@ def _build_bwrap_args(
         if Path(d).exists():
             args += ["--ro-bind", d, d]
 
+    # Mount the active Python environment and base prefix if they exist and are outside standard paths
+    for pfx in (sys.prefix, getattr(sys, "base_prefix", None)):
+        if pfx:
+            p_res = str(Path(pfx).resolve())
+            if Path(p_res).exists() and not any(
+                p_res == base or p_res.startswith(base + "/")
+                for base in ("/usr", "/lib", "/lib64", "/bin", "/sbin", "/opt")
+            ):
+                args += ["--ro-bind", p_res, p_res]
+
     # Minimal proc and dev setup
     if Path("/proc").exists():
         args += ["--proc", "/proc"]
@@ -380,12 +392,17 @@ def _build_bwrap_args(
     # Private tmpfs mount for /tmp (prevents exposing host temporary data/tokens)
     args += ["--tmpfs", "/tmp"]
 
-    # Make the working directory writable
+    # Make the working directory writable (create directory inside tmpfs if under /tmp)
     cwd_str = str(cwd.resolve())
+    if cwd_str.startswith("/tmp/"):
+        args += ["--dir", cwd_str]
     args += ["--bind", cwd_str, cwd_str]
 
     # Extra writable dirs (caller-provided)
     for d in extra_writable_dirs or []:
+        d_str = str(Path(d).resolve())
+        if d_str.startswith("/tmp/"):
+            args += ["--dir", d_str]
         args += ["--bind", d, d]
 
     if level in ("workspace", "full"):

@@ -74,6 +74,21 @@ def _patch_infra(monkeypatch: Any) -> None:
         monkeypatch.setattr(_builder, "_COMPILED_GRAPH", None)
     except AttributeError:
         pass
+    import subprocess
+
+    def _fake_run_subprocess(cmd, *args, **kwargs):
+        cmd_str = " ".join(cmd) if isinstance(cmd, list) else str(cmd)
+        if "pytest" in cmd_str:
+            return subprocess.CompletedProcess(
+                args=cmd, returncode=0, stdout="1 passed in 0.01s\n", stderr=""
+            )
+        if "ruff" in cmd_str:
+            return subprocess.CompletedProcess(
+                args=cmd, returncode=0, stdout="All checks passed!\n", stderr=""
+            )
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("src.tools.verification_tools._run_subprocess", _fake_run_subprocess)
 
 
 def _make_orch(
