@@ -217,7 +217,7 @@ def test_pm3_overwrite_file_changes_land(tmp_path, monkeypatch):
             "```yaml\nname: read_file\narguments:\n  path: config.py\n```",
             # Round 1: write new content.  'replace ' in task triggers read_then_modify
             # routing after round 0, bringing us back to perception for round 1.
-            '```yaml\nname: write_file\narguments:\n  path: config.py\n  content: "NAME = new_name"\n```',
+            '```yaml\nname: write_file\narguments:\n  path: config.py\n  content: "NAME = \'new_name\'\\n"\n```',
             # Round 2: completion acknowledgement → no YAML → memory_sync.
             "config.py has been updated.",
         ],
