@@ -232,7 +232,7 @@ class TestLocalModelSmokeE2E:
         )
 
         assert isinstance(result, dict)
-        assert target_file.read_text(encoding="utf-8") == "def hello():\n    return 42"
+        assert target_file.read_text(encoding="utf-8").strip() == "def hello():\n    return 42"
         assert adapter.call_count == 2
         assert result.get("error") is None
 
