@@ -88,6 +88,24 @@ def _patch_infra(monkeypatch) -> None:
         _builder._reset_compiled_graph()
     except Exception:
         pass
+    # Mock external subprocess execution inside verification tools so pipeline
+    # orchestration tests run hermetically without host runner environment differences
+    # (e.g. pytest exiting with returncode 5 on empty tmp_path, or host linters failing).
+    import subprocess
+
+    def _fake_run_subprocess(cmd, *args, **kwargs):
+        cmd_str = " ".join(cmd) if isinstance(cmd, list) else str(cmd)
+        if "pytest" in cmd_str:
+            return subprocess.CompletedProcess(
+                args=cmd, returncode=0, stdout="1 passed in 0.01s\n", stderr=""
+            )
+        if "ruff" in cmd_str:
+            return subprocess.CompletedProcess(
+                args=cmd, returncode=0, stdout="All checks passed!\n", stderr=""
+            )
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("src.tools.verification_tools._run_subprocess", _fake_run_subprocess)
 
 
 def _build_orch(tmp_path: Path, adapter, monkeypatch) -> Orchestrator:
