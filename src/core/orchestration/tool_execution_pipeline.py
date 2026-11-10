@@ -634,22 +634,42 @@ def _run_sandbox_and_snapshot(
     try:
         if "write" in tool.get("side_effects", []) and path_arg:
             new_content = args.get("content")
-            # SPEC-P1.7: Compute candidate replacement text for atomic string replacement tools
-            if not new_content and name == "edit_file_atomic" and path_arg:
-                old_s = args.get("old_string")
-                new_s = args.get("new_string")
-                if isinstance(old_s, str) and isinstance(new_s, str):
-                    try:
-                        from pathlib import Path as _P
-                        target_p = _P(path_arg)
-                        if not target_p.is_absolute() and hasattr(orch, "working_dir") and orch.working_dir:
-                            target_p = _P(orch.working_dir) / target_p
-                        if target_p.is_file():
+            # SPEC-P3.1: Compute candidate replacement text for atomic and multi-edit tools
+            if not new_content and path_arg and name in ("edit_file_atomic", "edit_code_block", "multiedit"):
+                try:
+                    from pathlib import Path as _P
+                    target_p = _P(path_arg)
+                    if not target_p.is_absolute() and hasattr(orch, "working_dir") and orch.working_dir:
+                        target_p = _P(orch.working_dir) / target_p
+                    if target_p.is_file():
+                        try:
                             orig_text = target_p.read_text(encoding="utf-8")
-                            if old_s in orig_text:
+                        except UnicodeDecodeError:
+                            orig_text = target_p.read_text(encoding="utf-8", errors="replace")
+
+                        if name == "edit_file_atomic":
+                            old_s = args.get("old_string")
+                            new_s = args.get("new_string")
+                            if isinstance(old_s, str) and isinstance(new_s, str) and old_s in orig_text:
                                 new_content = orig_text.replace(old_s, new_s, 1)
-                    except Exception:
-                        pass
+                        elif name == "edit_code_block":
+                            old_s = args.get("block_to_find")
+                            new_s = args.get("new_block")
+                            if isinstance(old_s, str) and isinstance(new_s, str) and old_s in orig_text:
+                                new_content = orig_text.replace(old_s, new_s, 1)
+                        elif name == "multiedit":
+                            edits = args.get("edits")
+                            if isinstance(edits, list):
+                                curr = orig_text
+                                for ed in edits:
+                                    if isinstance(ed, dict):
+                                        o = ed.get("old_string")
+                                        n = ed.get("new_string")
+                                        if isinstance(o, str) and isinstance(n, str) and o in curr:
+                                            curr = curr.replace(o, n, 1)
+                                new_content = curr
+                except Exception:
+                    pass
 
             if new_content and isinstance(new_content, str):
                 p_str = str(path_arg)

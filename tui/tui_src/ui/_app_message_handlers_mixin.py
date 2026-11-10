@@ -101,6 +101,23 @@ class AppMessageHandlersMixin(AgentAppProtocol):
         except Exception:
             pass
 
+        # SPEC-P3.3: Dynamically scale token budget limit in sidebar based on routed model profile
+        ctx = getattr(event, "context_window", None)
+        if not ctx and getattr(event, "model", None):
+            try:
+                from src.core.inference.model_capability_profile import get_model_profile
+
+                prof = get_model_profile(str(event.model))
+                if prof and prof.max_context:
+                    ctx = prof.max_context
+            except Exception:
+                pass
+        if ctx and ctx > 0:
+            try:
+                self.context_window = int(ctx)
+            except Exception:
+                pass
+
     # ── Streaming display — thin delegates to ChatDisplayMixin ────────────
 
     @on(StreamChunkEvent)

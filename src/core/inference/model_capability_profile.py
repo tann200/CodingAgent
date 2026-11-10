@@ -274,6 +274,22 @@ _PRIMARY_PROFILES: dict[str, ModelProfile] = {
         native_tool_format="json",
         weights_gb=0,
     ),
+    "gemini": ModelProfile(
+        name="gemini-1.5-pro",
+        architecture=Architecture.DENSE,
+        params_total=300.0,
+        params_active=None,
+        quantization="fp16",
+        reasoning_score=0.98,
+        tool_call_reliability=0.98,
+        max_context=1000000,
+        kv_per_token_mb=2.0,
+        tool_limit=60,
+        max_turns=100,
+        thinking_mode=ThinkingMode.ON,
+        native_tool_format="json",
+        weights_gb=0,
+    ),
 }
 
 

@@ -206,7 +206,8 @@ class AgentApp(
                 yield Label("SUBAGENTS", classes="sb_title")
                 yield Static("none", id="sb_subagent_status")
                 yield Label("TOKEN BUDGET", classes="sb_title")
-                yield Static("0 / 32,000  (0.0%)", id="sb_tokens")
+                init_limit = getattr(self, "context_window", 32000) or 32000
+                yield Static(f"0 / {init_limit:,}  (0.0%)", id="sb_tokens")
                 yield Label("TOKEN BREAKDOWN", classes="sb_title")
                 yield Static("In: 0 | Out: 0", id="sb_context")
                 yield Label("SESSION COST", classes="sb_title")

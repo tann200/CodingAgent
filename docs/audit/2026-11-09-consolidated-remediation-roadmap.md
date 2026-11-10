@@ -4,7 +4,7 @@
 **Audits Covered:**
 - [docs/audit/2026-11-09-tui-subsystem-audit.md](file:///Users/tann200/PycharmProjects/CodingAgent/docs/audit/2026-11-09-tui-subsystem-audit.md)
 - [docs/audit/2026-11-09-tools-and-graph-workflows-audit.md](file:///Users/tann200/PycharmProjects/CodingAgent/docs/audit/2026-11-09-tools-and-graph-workflows-audit.md)
-**Status:** In Progress (Implementing Phase 1 and Phase 2 Fixes)
+**Status:** Phase 1, Phase 2, and Phase 3 Implemented & Verified in CI
 
 ---
 
@@ -111,14 +111,49 @@ Every task includes:
 
 ---
 
-## Phase 3: Capability Improvements (Future Sprint)
-- Dynamic context window scaling in token telemetry bar.
-- Scoped verification heuristics for non-executable assets.
-- AST pre-write validation for atomic file edits.
+## Phase 3: Capability Improvements (Implemented)
+
+### SPEC-P3.1: Pre-Write AST & Syntax Validation for `edit_file_atomic`, `edit_code_block`, and `multiedit`
+- **Location:** `src/core/orchestration/tool_execution_pipeline.py:636-680`
+- **Problem:** `edit_file_atomic` and multi-edit tools take `path`, `old_string`, `new_string`, so `args.get("content")` evaluated to `None`. Pre-write AST syntax validation was bypassed, allowing syntax errors to land on disk before verification.
+- **Specification:**
+  Project candidate replacement content in `_run_sandbox_and_snapshot` before disk write. Run language AST parsing (`ast.parse` for Python, `tsc`/`node` for JS/TS). If syntax is broken, block execution with a fail-closed sandbox error. Valid candidate content is marked as pre-validated.
+- **Complexity:** Low | **Impact:** High (prevents file syntax corruption from partial atomic string edits)
+- **Regression Test:** `tests/unit/test_tool_pipeline_atomic_ast_validation.py`
 
 ---
 
-## Phase 4: Long-Term Architecture
-- Multi-file transaction settlement DAGs in `RollbackManager`.
-- Headless Textual pilot test suite expansion.
-- Unified slash command and command palette dispatch service.
+### SPEC-P3.2: Scoped Verification Heuristics for Non-Executable Assets
+- **Location:** `src/core/orchestration/graph/nodes/verification_node.py:222-243`
+- **Problem:** Modifying non-code files (e.g. `.md`, `.css`, `.json`, `.svg`, `.txt`) triggered expensive project-wide test suites (`run_tests` / `run_js_tests`), failing non-functional documentation or asset edits on unrelated test failures.
+- **Specification:**
+  When `unverified_paths` contains only non-executable asset files, skip full test runner invocations, record verification passed, and mark `status: "skipped_non_code"` with `non_code_assets: True`.
+- **Complexity:** Low | **Impact:** High (unblocks documentation, asset, and config edits from unrelated project test failures)
+- **Regression Test:** `tests/unit/test_verification_node_non_code_heuristics.py`
+
+---
+
+### SPEC-P3.3: Dynamic Context Window Scaling in `#sb_tokens` Status Bar
+- **Location:** `tui/tui_src/ui/_app_message_handlers_mixin.py:92-120`, `tui/tui_src/ui/app.py:209,740-768`
+- **Problem:** `#sb_tokens` displayed a static 32,000 capacity regardless of the routed provider or model profile (e.g., Gemini 1M, Claude 200k, Ollama 8k).
+- **Specification:**
+  Added model profile lookup in `handle_model_routing` and reactive `watch_context_window` scaling so `#sb_tokens` immediately reformats using the routed model's true context capacity.
+- **Complexity:** Low | **Impact:** Medium (provides accurate live token telemetry in TUI)
+- **Regression Test:** `tests/unit/test_tui_context_window_dynamic_scaling.py`
+
+---
+
+### SPEC-P3.4: Deduplicate Redundant Syntax Validation Passes
+- **Location:** `src/tools/_lint_verify.py:85-97`, `src/core/orchestration/tool_execution_pipeline.py:770-785`
+- **Problem:** Files validated in `_run_sandbox_and_snapshot` were re-validated in `_verify_candidate_content`, doubling tempdir creation and subprocess linter invocations.
+- **Specification:**
+  Propagated pre-validation marks for all edit and write tools, enabling the fast-path bypass in `verify_candidate_content`.
+- **Complexity:** Low | **Impact:** Medium (reduces temporary file disk I/O and latency)
+- **Regression Test:** `tests/unit/test_tool_pipeline_atomic_ast_validation.py`
+
+---
+
+## Phase 4: Long-Term Architecture & Multi-File DAGs (Future Sprint)
+- **SPEC-P4.1**: Granular selective file rollback (`rollback_files([paths])`) and dependency resolution in `RollbackManager`.
+- **SPEC-P4.2**: Unified slash command and command palette (`ctrl+p`) dispatch service in `tui/tui_src/ui/features/palette/logic.py`.
+- **SPEC-P4.3**: Headless Textual pilot test suite expansion (`App.run_test()`).

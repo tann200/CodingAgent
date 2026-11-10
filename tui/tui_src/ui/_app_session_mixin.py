@@ -194,7 +194,8 @@ class AppSessionMixin(AgentAppProtocol):
             self.query_one("#sb_plan_desc", Static).update("")
             self.query_one("#sb_tool_activity", Static).update("—")
             self.query_one("#sb_session", Static).update("Pending: 0 | Queue: 0")
-            self.query_one("#sb_tokens", Static).update("0 / 32,000  (0.0%)")
+            limit = getattr(self, "context_window", 32000) or 32000
+            self.query_one("#sb_tokens", Static).update(f"0 / {limit:,}  (0.0%)")
             self.query_one("#sb_context", Static).update("In: 0 | Out: 0")
             self.query_one("#sb_cost", Static).update("$0.000")
             self.query_one("#sb_git", Static).update("○ —")
