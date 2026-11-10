@@ -791,6 +791,14 @@ def _run_sandbox_and_snapshot(
     paths_to_snap: list[str] = []
     if path_arg:
         paths_to_snap.append(str(path_arg))
+    for key in ("paths", "files", "target_files", "file_paths"):
+        val = args.get(key)
+        if isinstance(val, (list, tuple)):
+            for item in val:
+                if isinstance(item, str) and item not in paths_to_snap:
+                    paths_to_snap.append(item)
+                elif isinstance(item, dict) and "path" in item and str(item["path"]) not in paths_to_snap:
+                    paths_to_snap.append(str(item["path"]))
     dst_arg = (
         args.get("new_path")
         or args.get("dst_path")

@@ -6,7 +6,7 @@ AgentApp to a ≤400-line core.
 
 from __future__ import annotations
 
-
+from rich.markup import escape
 from src.core.messaging.event_types import ModelRouting
 from pathlib import Path
 
@@ -240,7 +240,7 @@ class AppSlashCommandsMixin(AgentAppProtocol):
                     event.command if not event.args else f"{event.command} {event.args}"
                 )
                 widget = Label(
-                    f"[bold #3b82f6]You:[/] /{val}",
+                    f"[bold #3b82f6]You:[/] /{escape(val)}",
                     classes="user_msg",
                     markup=True,
                 )
@@ -912,6 +912,7 @@ class AppSlashCommandsMixin(AgentAppProtocol):
             return
 
         renamed = False
+        self._session_custom_title = new_name
         try:
             orch = self._bridge._orchestrator
             store = getattr(orch, "session_store", None) if orch else None
@@ -927,15 +928,21 @@ class AppSlashCommandsMixin(AgentAppProtocol):
             logger.warning(f"/rename: session rename failed: {exc}")
 
         try:
+            self._save_session_snapshot()
+            renamed = True
+        except Exception as exc:
+            logger.debug(f"/rename: session snapshot update: {exc}")
+
+        try:
             self.sub_title = new_name
         except Exception:
             pass
         self._bridge.publish("session.renamed", {"name": new_name})
 
         msg = (
-            f"[bold]Session renamed:[/] {new_name}"
+            f"[bold]Session renamed:[/] {escape(new_name)}"
             if renamed
-            else f"[bold]Display name set:[/] {new_name} [dim](session store not updated)[/]"
+            else f"[bold]Display name set:[/] {escape(new_name)}"
         )
         w = Static(msg, classes="system_msg", markup=True)
         await self._mount_chat_widget(w)

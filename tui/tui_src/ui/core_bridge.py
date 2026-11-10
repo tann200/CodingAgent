@@ -305,10 +305,15 @@ class AgentBridge(
         """Thread-safe bridge to Textual's event loop (§9.6)."""
         try:
             loop = asyncio.get_running_loop()
-            # Already inside the event loop (mock engine async tasks)
-            loop.call_soon(fn, *args)
+            app_loop = getattr(self.app, "_loop", None)
+            if loop is app_loop and app_loop is not None:
+                # Already inside Textual's event loop thread
+                loop.call_soon(fn, *args)
+                return
+            # Running loop belongs to a background worker thread
+            self.app.call_from_thread(fn, *args)
         except RuntimeError:
-            # Background thread — use Textual's thread-safe caller
+            # Background thread without running loop — use Textual's thread-safe caller
             try:
                 self.app.call_from_thread(fn, *args)
             except Exception as e:
@@ -316,6 +321,11 @@ class AgentBridge(
                     "UI callback %s dropped: %s — UI may be desynced",
                     fn.__name__, e,
                 )
+        except Exception as e:
+            logger.warning(
+                "UI callback %s error: %s — UI may be desynced",
+                fn.__name__, e,
+            )
 
     # ── EventBus subscription management (§4.2) ──────────────────────────
 

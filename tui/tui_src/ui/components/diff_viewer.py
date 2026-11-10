@@ -125,7 +125,7 @@ class SideBySideDiff(Widget):
     def compose(self):
         action = "NEW FILE" if self._is_new_file else "DIFF"
         yield Static(
-            f"[bold]┌─ {action}:[/] {self._path}",
+            f"[bold]┌─ {action}:[/] {_markup.escape(self._path)}",
             classes="sbs_header",
             markup=True,
         )
@@ -221,7 +221,7 @@ class InlineDiff(Widget):
     def compose(self):
         action = "NEW FILE" if self._is_new_file else "DIFF"
         yield Static(
-            f"[bold]┌─ {action}:[/] {self._path}",
+            f"[bold]┌─ {action}:[/] {_markup.escape(self._path)}",
             classes="sbs_header",
             markup=True,
         )

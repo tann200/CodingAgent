@@ -89,7 +89,10 @@ class RollbackManager:
                     )
                 elif child.is_file():
                     try:
-                        child_content = child.read_text(encoding="utf-8")
+                        try:
+                            child_content = child.read_text(encoding="utf-8")
+                        except UnicodeDecodeError:
+                            child_content = child.read_text(encoding="utf-8", errors="replace")
                         snaps.append(
                             FileSnapshot(
                                 path=rel_p,
@@ -175,7 +178,10 @@ class RollbackManager:
                 continue
 
             try:
-                content = path.read_text(encoding="utf-8")
+                try:
+                    content = path.read_text(encoding="utf-8")
+                except UnicodeDecodeError:
+                    content = path.read_text(encoding="utf-8", errors="replace")
                 snapshots.append(
                     FileSnapshot(
                         path=norm_path,
@@ -640,7 +646,10 @@ class RollbackManager:
                     existing_paths.add(child_snap.path)
         else:
             try:
-                content = path.read_text(encoding="utf-8")
+                try:
+                    content = path.read_text(encoding="utf-8")
+                except UnicodeDecodeError:
+                    content = path.read_text(encoding="utf-8", errors="replace")
                 self.snapshots[snapshot_id].append(
                     FileSnapshot(
                         path=norm_path,

@@ -143,6 +143,7 @@ class AgentApp(
         _init_wd: Optional[Path] = getattr(self, "_initial_working_dir", None)
         self._bridge = AgentBridge(self, working_dir=_init_wd)
         self._session_id: str = str(_uuid.uuid4())
+        self._session_custom_title: Optional[str] = None
         self._current_stream = None  # type: ignore[assignment]
         self._active_stream_view = None  # type: ignore[assignment]
         self._role_cycle = ["lead_architect", "full_stack_engineer", "qa_lead"]

@@ -9,6 +9,7 @@ No src.core imports — purely UI.
 
 from __future__ import annotations
 
+from rich.markup import escape
 from textual.widgets import Static
 
 
@@ -41,9 +42,10 @@ class FilePickerOverlay(Static):
             return
         lines: list[str] = []
         for i, path in enumerate(matches[:8]):
+            safe_path = escape(path)
             if i == selected:
-                lines.append(f"[bold white on #003f6f] {path} [/bold white on #003f6f]")
+                lines.append(f"[bold white on #003f6f] {safe_path} [/bold white on #003f6f]")
             else:
-                lines.append(f"[cyan] {path}[/cyan]")
+                lines.append(f"[cyan] {safe_path}[/cyan]")
         self.update("\n".join(lines))
         self.display = True

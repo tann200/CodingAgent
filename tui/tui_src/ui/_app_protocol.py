@@ -44,6 +44,7 @@ class AgentAppProtocol:
 
     _bridge: Any  # AgentBridge — typed as Any to avoid circular import
     _session_id: str
+    _session_custom_title: Optional[str]
     _current_stream: Any  # Optional[StreamView]
     _active_stream_view: Any  # Optional[StreamView] (SPEC-P3.1)
     _modified_files: list

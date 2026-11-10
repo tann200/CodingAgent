@@ -63,6 +63,7 @@ class AppSessionMixin(AgentAppProtocol):
             first_user = next(
                 (text[:60] for role, text in history if role == "user"), ""
             )
+            task_name = getattr(self, "_session_custom_title", None) or first_user
             # TASK-05: pull turn count and token totals from bridge accessors
             turn_count = self._bridge.get_turn_count()
             input_tokens, output_tokens = self._bridge.get_usage_totals()
@@ -72,7 +73,7 @@ class AppSessionMixin(AgentAppProtocol):
                 "session_id": self._session_id,
                 "timestamp": time.time(),
                 "created_at": created_at,
-                "task_name": first_user,
+                "task_name": task_name,
                 "message_count": len(history),
                 "turn_count": turn_count,
                 "input_tokens": input_tokens,

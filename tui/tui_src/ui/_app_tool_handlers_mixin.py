@@ -6,6 +6,7 @@ to a ≤400-line core.
 
 from __future__ import annotations
 
+from rich.markup import escape
 from textual import on
 from textual.containers import Horizontal, VerticalScroll
 from textual.widgets import Button, Input, Static
@@ -221,7 +222,7 @@ class AppToolHandlersMixin(AgentAppProtocol):
             label = f"{icon} {event.tool_name}  {args_fmt}".rstrip()
 
         widget = Static(
-            f"[bold #facc15]{label}[/]",
+            f"[bold #facc15]{escape(label)}[/]",
             classes="tool_msg tool_inprogress",
             markup=True,
         )
@@ -310,7 +311,7 @@ class AppToolHandlersMixin(AgentAppProtocol):
                 else "└ done"
             )
             markup = (
-                f"[bold #22c55e]│ {role} Task[/] — {task_short}\n  [dim]{tc_str}[/]"
+                f"[bold #22c55e]│ {escape(role)} Task[/] — {escape(task_short)}\n  [dim]{tc_str}[/]"
             )
             if event.tool_id and event.tool_id in self._tool_widgets:
                 w = self._tool_widgets.pop(event.tool_id)
@@ -336,7 +337,7 @@ class AppToolHandlersMixin(AgentAppProtocol):
                 self._sched_chat_widget(block)
             else:
                 header = Static(
-                    f"[bold #fbbf24]# {desc or event.tool_name}[/]",
+                    f"[bold #fbbf24]# {escape(desc or event.tool_name)}[/]",
                     classes="tool_msg",
                     markup=True,
                 )
@@ -384,12 +385,12 @@ class AppToolHandlersMixin(AgentAppProtocol):
             w = self._tool_widgets.pop(event.tool_id)
             self.call_later(
                 lambda widget=w, n=event.tool_name, err=event.error: widget.update(
-                    f"[bold #ff5555]✗ {n} failed:[/] {err}"
+                    f"[bold #ff5555]✗ {escape(n)} failed:[/] {escape(str(err))}"
                 )
             )
         else:
             widget = Static(
-                f"[bold #ff5555]✗ {event.tool_name} failed:[/] {event.error}",
+                f"[bold #ff5555]✗ {escape(event.tool_name)} failed:[/] {escape(str(event.error))}",
                 classes="tool_msg error_msg",
                 markup=True,
             )
@@ -465,7 +466,7 @@ class AppToolHandlersMixin(AgentAppProtocol):
         logger.info(f"Tool: {event.tool_name}")
         args_fmt = _fmt_args(event.arguments)
         widget = Static(
-            f"[bold #facc15]✦ {event.tool_name}[/]  {args_fmt}",
+            f"[bold #facc15]✦ {escape(event.tool_name)}[/]  {escape(args_fmt)}",
             classes="tool_msg",
             markup=True,
         )
@@ -500,7 +501,7 @@ class AppToolHandlersMixin(AgentAppProtocol):
     async def handle_diff_accepted(self: AgentAppProtocol, event) -> None:
         logger.info(f"Diff accepted: {event.path}")
         w = Static(
-            f"[bold #22c55e]✓ Accepted:[/] {event.path}",
+            f"[bold #22c55e]✓ Accepted:[/] {escape(event.path)}",
             classes="retry_msg",
             markup=True,
         )
@@ -514,7 +515,7 @@ class AppToolHandlersMixin(AgentAppProtocol):
     async def handle_diff_rejected(self: AgentAppProtocol, event) -> None:
         logger.info(f"Diff rejected: {event.path}")
         w = Static(
-            f"[bold #ff5555]✗ Rejected:[/] {event.path}",
+            f"[bold #ff5555]✗ Rejected:[/] {escape(event.path)}",
             classes="retry_msg",
             markup=True,
         )
@@ -551,7 +552,7 @@ class AppToolHandlersMixin(AgentAppProtocol):
         self._update_perm_badge(+1)
         chat_log = self.query_one("#chat_log", VerticalScroll)
         warn = Static(
-            f"[bold #facc15]⚠ This command requires approval:[/]  {event.command}",
+            f"[bold #facc15]⚠ This command requires approval:[/]  {escape(event.command)}",
             classes="retry_msg",
             markup=True,
         )
@@ -714,7 +715,7 @@ class AppToolHandlersMixin(AgentAppProtocol):
                     {"tool_id": tool_id, "feedback": feedback},
                 )
                 w = Static(
-                    f"[dim]Feedback sent: {feedback}[/]",
+                    f"[dim]Feedback sent: {escape(feedback)}[/]",
                     classes="retry_msg",
                     markup=True,
                 )

@@ -207,8 +207,16 @@ def write_file(
 
     # Read original content BEFORE modification for diff generation
     original_content = ""
-    if p.exists():
-        original_content = p.read_text(encoding="utf-8")
+    if p.exists() and p.is_file():
+        try:
+            original_content = p.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            try:
+                original_content = p.read_text(encoding="utf-8", errors="replace")
+            except Exception:
+                original_content = ""
+        except Exception:
+            original_content = ""
 
     # D-04: Idempotency guard — skip write when content is identical
     if original_content == content:

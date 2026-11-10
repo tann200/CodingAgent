@@ -50,6 +50,7 @@ from __future__ import annotations
 
 import os
 import re
+import threading
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -156,26 +157,51 @@ class ChatDisplayMixin(AgentAppProtocol):
         """Return workspace file paths matching *query*, relative to working_dir.
 
         Results are cached for 60 s to avoid rescanning on every keystroke.
+        Background thread warming prevents blocking the UI event loop.
         """
         now = time.monotonic()
-        if not self._at_file_cache or now - self._at_file_cache_ts > 60.0:
-            try:
-                wd = Path(self._bridge.working_dir or os.getcwd())
-                all_files: list[str] = []
-                for root, dirs, fnames in os.walk(str(wd)):
-                    dirs[:] = [d for d in dirs if d not in _AT_SKIP_DIRS]
-                    for fname in fnames:
-                        all_files.append(
-                            os.path.relpath(os.path.join(root, fname), str(wd))
-                        )
-                        if len(all_files) >= 2000:
-                            break
+        wd_path = self._bridge.working_dir or os.getcwd()
+
+        def _scan_files(target_wd: str) -> list[str]:
+            wd = Path(target_wd)
+            all_files: list[str] = []
+            for root, dirs, fnames in os.walk(str(wd)):
+                dirs[:] = [d for d in dirs if d not in _AT_SKIP_DIRS]
+                for fname in fnames:
+                    all_files.append(
+                        os.path.relpath(os.path.join(root, fname), str(wd))
+                    )
                     if len(all_files) >= 2000:
                         break
-                self._at_file_cache = sorted(all_files)
-                self._at_file_cache_ts = now
-            except Exception:
-                return []
+                if len(all_files) >= 2000:
+                    break
+            return sorted(all_files)
+
+        need_refresh = (not self._at_file_cache) or (now - self._at_file_cache_ts > 60.0)
+        if need_refresh and not getattr(self, "_at_file_scanning", False):
+            self._at_file_scanning = True
+
+            def _bg_worker(target_wd: str):
+                try:
+                    res = _scan_files(target_wd)
+                    self._at_file_cache = res
+                    self._at_file_cache_ts = time.monotonic()
+                except Exception:
+                    pass
+                finally:
+                    self._at_file_scanning = False
+
+            if not self._at_file_cache:
+                try:
+                    self._at_file_cache = _scan_files(wd_path)
+                    self._at_file_cache_ts = now
+                except Exception:
+                    self._at_file_cache = []
+                finally:
+                    self._at_file_scanning = False
+            else:
+                threading.Thread(target=_bg_worker, args=(wd_path,), daemon=True).start()
+
         if not query:
             return self._at_file_cache[:max_results]
         q = query.lower()
