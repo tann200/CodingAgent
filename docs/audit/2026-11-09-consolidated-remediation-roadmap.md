@@ -4,7 +4,7 @@
 **Audits Covered:**
 - [docs/audit/2026-11-09-tui-subsystem-audit.md](file:///Users/tann200/PycharmProjects/CodingAgent/docs/audit/2026-11-09-tui-subsystem-audit.md)
 - [docs/audit/2026-11-09-tools-and-graph-workflows-audit.md](file:///Users/tann200/PycharmProjects/CodingAgent/docs/audit/2026-11-09-tools-and-graph-workflows-audit.md)
-**Status:** Phase 1, Phase 2, and Phase 3 Implemented & Verified in CI
+**Status:** Phase 1, Phase 2, Phase 3, and Phase 4 Implemented & Verified in CI (Run `42895238948`)
 
 ---
 
@@ -153,7 +153,23 @@ Every task includes:
 
 ---
 
-## Phase 4: Long-Term Architecture & Multi-File DAGs (Future Sprint)
-- **SPEC-P4.1**: Granular selective file rollback (`rollback_files([paths])`) and dependency resolution in `RollbackManager`.
-- **SPEC-P4.2**: Unified slash command and command palette (`ctrl+p`) dispatch service in `tui/tui_src/ui/features/palette/logic.py`.
-- **SPEC-P4.3**: Headless Textual pilot test suite expansion (`App.run_test()`).
+## Phase 4: Long-Term Architecture & Multi-File DAGs (Implemented & Verified)
+
+### SPEC-P4.1: Granular Selective File Rollback & Atomic Commit
+- **Location:** `src/core/orchestration/rollback_manager.py:475-530`
+- **Specification:** Added `rollback_files(paths, snapshot_id)` and `commit_files(paths, snapshot_id)` to allow surgical rollbacks of individual file paths without discarding the rest of a snapshot journal.
+- **Regression Tests:** `tests/unit/test_rollback_manager.py`, `tests/unit/test_rollback_manager_dag.py`
+
+---
+
+### SPEC-P4.2: Unified Slash Command and Command Palette Dispatch Service
+- **Location:** `tui/tui_src/ui/features/palette/logic.py`, `tui/tui_src/ui/features/palette/screen.py`, `tui/tui_src/ui/app.py`
+- **Specification:** Unified all slash commands (`/help`, `/clear`, `/new`, `/compact`, `/undo`, `/continue`, `/interrupt`, `/status`, `/doctor`, `/skills`, `/fast`, `/provider`, `/model`, `/settings`, `/sessions`, `/timeline`, `/diff`, `/fork`, `/export`, `/worktree`, `/mcp`, `/quit`) into the `ctrl+p` command palette. Rendered bold cyan slash badges on palette items, enabled leading slash search filtering, and aliased `action_open_palette`.
+- **Regression Tests:** `tests/unit/test_palette_slash_dispatch.py`
+
+---
+
+### SPEC-P4.3: Headless Textual Pilot Test Suite Expansion & Markup Hardening
+- **Location:** `tests/unit/test_tui_pilot_suite.py`, `tests/unit/test_bash_block.py`, `tui/tui_src/ui/components/bash_block.py`, `tui/tui_src/ui/_app_tool_handlers_mixin.py`
+- **Specification:** Expanded headless pilot test coverage via `App.run_test()`. Replaced fragile string markup with Rich `Text` streaming in `BashBlock` to prevent unhandled bracket collisions (e.g. `[1/10]`, `[ERROR]`, `[slug]`), fixed invalid Textual CSS (`cursor: pointer;`), and escaped dynamic tool output strings in `_app_tool_handlers_mixin.py`.
+- **Regression Tests:** `tests/unit/test_tui_pilot_suite.py`, `tests/unit/test_bash_block.py`
