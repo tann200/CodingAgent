@@ -229,18 +229,23 @@ async def _verification_node_impl(state: StateLike, config: RunnableConfig) -> D
             }
             is_purely_non_code = bool(
                 unverified_paths
-                and all(Path(p).suffix.lower() in non_code_exts for p in unverified_paths)
+                and all(
+                    Path(p).suffix.lower() in non_code_exts
+                    and ".codingagent" not in Path(p).parts
+                    and Path(p).name != "verify.yaml"
+                    for p in unverified_paths
+                )
             )
 
-            if is_purely_non_code:
+            if (custom_results := run_custom_verify_yaml(wd, session_modified, _is_cancelled)) is not None:
+                results.update(custom_results)
+            elif is_purely_non_code:
                 logger.info(
                     "verification_node: all %d modified paths are non-executable assets — skipping full test suite",
                     len(unverified_paths),
                 )
                 results["status"] = "skipped_non_code"
                 results["non_code_assets"] = True
-            elif (custom_results := run_custom_verify_yaml(wd, session_modified, _is_cancelled)) is not None:
-                results.update(custom_results)
             elif _has_js_project(wd):
                 js_code_exts = {".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"}
                 has_js_code_modified = any(
