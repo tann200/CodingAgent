@@ -148,3 +148,36 @@ def test_output_lines_copy_is_returned() -> None:
     lines.append("mutate")
     # Mutation of returned list must not affect internal state
     assert len(block.output_lines) == 1
+
+
+@pytest.mark.asyncio
+async def test_bash_block_escapes_bracketed_command_and_output() -> None:
+    from textual.app import App, ComposeResult
+    from textual.widgets import Static
+
+    class _HarnessApp(App):
+        def compose(self) -> ComposeResult:
+            block = BashBlock(
+                description="Check [slug] route",
+                command="cat app/[slug]/page.tsx | grep [0-9]",
+            )
+            block.set_output([
+                "[1/5] Compiling [component]",
+                "[ERROR] Unmatched bracket in [data]",
+                "Result: [ok]",
+            ])
+            yield block
+
+    app = _HarnessApp()
+    async with app.run_test():
+        block = app.query_one(BashBlock)
+        output_widget = block.query_one(".bash-output", Static)
+        rendered = str(output_widget.render())
+        assert "[1/5]" in rendered
+        assert "[ERROR]" in rendered
+
+        # Toggle collapsed to test full output path
+        block.collapsed = False
+        rendered_expanded = str(output_widget.render())
+        assert "[1/5]" in rendered_expanded
+        assert "[ERROR]" in rendered_expanded

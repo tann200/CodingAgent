@@ -356,16 +356,18 @@ class AppToolHandlersMixin(AgentAppProtocol):
         label = f"{icon} {event.tool_name}"
 
         sep = "\n" if result_display else ""
+        lbl_escaped = escape(label)
+        r_escaped = escape(result_display)
         if event.tool_id and event.tool_id in self._tool_widgets:
             w = self._tool_widgets.pop(event.tool_id)
             self.call_later(
-                lambda widget=w, col=color, r=result_display, lbl=label, s=sep: (
+                lambda widget=w, col=color, r=r_escaped, lbl=lbl_escaped, s=sep: (
                     widget.update(f"[bold {col}]{lbl}[/]{s}{r}")
                 )
             )
         else:
             widget = Static(
-                f"[bold {color}]{label}[/]{sep}{result_display}",
+                f"[bold {color}]{lbl_escaped}[/]{sep}{r_escaped}",
                 classes="tool_msg",
                 markup=True,
             )

@@ -13,15 +13,20 @@ logger = get_logger("palette")
 
 
 class CommandItem(ListItem):
-    def __init__(self, label: str, hint: str, action: str) -> None:
+    def __init__(
+        self, label: str, hint: str, action: str, slash: str = ""
+    ) -> None:
         super().__init__()
         self.command_label = label
         self.command_hint = hint
         self.command_action = action
+        self.command_slash = slash
 
     def compose(self) -> ComposeResult:
         t = Text()
         t.append(f"  {self.command_label}", style="bold white")
+        if self.command_slash:
+            t.append(f"  {self.command_slash}", style="bold cyan")
         if self.command_hint:
             t.append(f"  {self.command_hint}", style="#666666")
         yield Static(t, markup=False)
@@ -103,6 +108,7 @@ class CommandPalette(ModalScreen):
                 label=cmd["label"],
                 hint=cmd.get("hint", ""),
                 action=cmd["action"],
+                slash=cmd.get("slash", ""),
             )
             lv.append(item)
 

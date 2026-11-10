@@ -795,6 +795,8 @@ class AgentApp(
 
         self.push_screen(CommandPalette(self._settings))
 
+    action_open_palette = action_show_commands
+
     def action_open_model_picker(self) -> None:
         from .features.palette.screen import CommandPalette
 

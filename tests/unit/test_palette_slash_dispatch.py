@@ -43,6 +43,36 @@ def test_palette_filtering() -> None:
     assert any(cmd["action"] == "action_open_sessions" for cmd in session_results)
 
 
+def test_palette_slash_query_filtering() -> None:
+    # Filter by slash string with leading slash
+    status_results = filter_commands("/status")
+    assert any(cmd["action"] == "slash:status" for cmd in status_results)
+
+    doctor_results = filter_commands("/doctor")
+    assert any(cmd["action"] == "slash:doctor" for cmd in doctor_results)
+
+    clear_results = filter_commands("/clear")
+    assert any(cmd["action"] == "slash:clear" for cmd in clear_results)
+
+    fork_results = filter_commands("/fork")
+    assert any(cmd["action"] == "slash:fork" for cmd in fork_results)
+
+
+@pytest.mark.asyncio
+async def test_command_item_renders_slash_badge() -> None:
+    from tui.tui_src.ui.features.palette.screen import CommandItem
+
+    test_app = AgentApp()
+    async with test_app.run_test():
+        item = CommandItem(label="Status", hint="Check status", action="slash:status", slash="/status")
+        assert item.command_slash == "/status"
+        composed = list(item.compose())
+        assert len(composed) == 1
+        rendered_text = str(composed[0].render())
+        assert "/status" in rendered_text
+        assert "Status" in rendered_text
+
+
 def test_handle_palette_command_slash_dispatch() -> None:
     app = AgentApp()
     posted_messages = []

@@ -19,6 +19,7 @@ from textual.app import ComposeResult
 from textual.reactive import reactive
 from textual.widget import Widget
 from textual.widgets import Label, Static
+from rich.text import Text
 
 MAX_VISIBLE_LINES = 40
 _EXPAND_HINT = "[dim](... click to expand)[/]"
@@ -47,7 +48,6 @@ class BashBlock(Widget):
     BashBlock > .bash-header:hover {
         color: #e4e4e7;
         text-style: bold underline;
-        cursor: pointer;
     }
     BashBlock > .bash-cmd {
         color: #fbbf24;
@@ -79,10 +79,10 @@ class BashBlock(Widget):
 
     def compose(self) -> ComposeResult:
         desc = self._description or "bash"
-        yield Label(f"# {desc}", classes="bash-header")
+        yield Label(f"# {desc}", classes="bash-header", markup=False)
         if self._command:
-            yield Label(f"$ {self._command}", classes="bash-cmd")
-        yield Static("", classes="bash-output")
+            yield Label(f"$ {self._command}", classes="bash-cmd", markup=False)
+        yield Static("", classes="bash-output", markup=False)
 
     def on_mount(self) -> None:
         self._refresh_output()
@@ -126,16 +126,17 @@ class BashBlock(Widget):
             output_widget.update("")
             return
 
+        t = Text()
         if self.collapsed and len(lines) > MAX_VISIBLE_LINES:
             visible = lines[:MAX_VISIBLE_LINES]
             hidden = len(lines) - MAX_VISIBLE_LINES
-            text = "\n".join(visible)
-            text += f"\n[dim]... {hidden} more line(s) — click header to expand[/]"
+            t.append("\n".join(visible))
+            t.append(f"\n... {hidden} more line(s) — click header to expand", style="dim")
         else:
-            text = "\n".join(lines)
+            t.append("\n".join(lines))
             if len(lines) > MAX_VISIBLE_LINES:
-                text += f"\n{_COLLAPSE_HINT}"
-        output_widget.update(text)
+                t.append("\n(click to collapse)", style="dim")
+        output_widget.update(t)
 
     # ------------------------------------------------------------------
     # Read-only accessors (used in tests)
