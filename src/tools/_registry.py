@@ -307,13 +307,22 @@ class ToolRegistry:
                 obj = getattr(module, attr_name, None)
             except Exception:
                 continue
-            if callable(obj) and hasattr(obj, TOOL_ATTR):
-                defn: ToolDefinition = getattr(obj, TOOL_ATTR)
-                try:
-                    self.register_definition(defn, origin=origin)
-                    count += 1
-                except ValueError as conflict_err:
-                    logger.warning("discover: %s", conflict_err)
+            if callable(obj):
+                defn: Optional[ToolDefinition] = getattr(obj, TOOL_ATTR, None)
+                if defn is None:
+                    # Unwrap wrapped or decorated callables (TOOL-C2)
+                    try:
+                        import inspect
+                        unwrapped = inspect.unwrap(obj)
+                        defn = getattr(unwrapped, TOOL_ATTR, None)
+                    except Exception:
+                        defn = None
+                if defn is not None and isinstance(defn, ToolDefinition):
+                    try:
+                        self.register_definition(defn, origin=origin)
+                        count += 1
+                    except ValueError as conflict_err:
+                        logger.warning("discover: %s", conflict_err)
         return count
 
     def discover_module_name(self, module_name: str, origin: str = "builtin") -> int:
@@ -388,6 +397,13 @@ class ToolRegistry:
         fn = entry.get("fn")
         if fn is not None:
             defn: Optional[ToolDefinition] = getattr(fn, TOOL_ATTR, None)
+            if defn is None:
+                try:
+                    import inspect
+                    unwrapped = inspect.unwrap(fn)
+                    defn = getattr(unwrapped, TOOL_ATTR, None)
+                except Exception:
+                    defn = None
             if defn is not None:
                 return defn.permission_kind
         # Check plain-string field (LSP-style schema dicts)

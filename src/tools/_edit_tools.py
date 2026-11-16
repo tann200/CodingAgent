@@ -251,6 +251,34 @@ def _fuzzy_find(content: str, target: str) -> Optional[str]:
     return None
 
 
+def _read_original_content(p: Path) -> tuple[Optional[str], Optional[Dict[str, Any]]]:
+    """Read original content of a file for editing, returning (content, None) on success or (None, err_dict) if binary/unreadable."""
+    try:
+        with p.open("rb") as fh:
+            header = fh.read(512)
+            if b"\x00" in header:
+                return None, {
+                    "path": str(p),
+                    "status": "error",
+                    "error": f"Cannot edit binary file: '{p.name}'. Editing binary files as text is not supported.",
+                }
+            raw = header + fh.read()
+        try:
+            return raw.decode("utf-8"), None
+        except UnicodeDecodeError:
+            return None, {
+                "path": str(p),
+                "status": "error",
+                "error": f"Cannot edit binary or non-UTF-8 file: '{p.name}'. File is not valid UTF-8.",
+            }
+    except Exception as exc:
+        return None, {
+            "path": str(p),
+            "status": "error",
+            "error": f"Failed to read file '{p.name}': {exc}",
+        }
+
+
 @tool(side_effects=["write"], tags=["coding"], permission_kind=PermissionKind.WRITE_FILE)
 def edit_file(
     path: str,
@@ -289,7 +317,9 @@ def edit_file(
     import difflib
 
     # Read original content BEFORE modification for diff generation
-    original_content = p.read_text(encoding="utf-8")
+    original_content, err_dict = _read_original_content(p)
+    if err_dict is not None:
+        return err_dict
 
     if not patch.strip().startswith("---") and not patch.strip().startswith("@@"):
         return {
@@ -406,7 +436,9 @@ def edit_by_line_range(
     if not p.exists():
         return {"path": str(p), "status": "not_found"}
 
-    original_content = p.read_text(encoding="utf-8")
+    original_content, err_dict = _read_original_content(p)
+    if err_dict is not None:
+        return err_dict
     original_lines = original_content.splitlines(keepends=True)
     total_lines = len(original_lines)
 
@@ -517,7 +549,9 @@ def edit_file_atomic(
     if not p.exists():
         return {"path": str(p), "status": "not_found"}
 
-    original_content = p.read_text(encoding="utf-8")
+    original_content, err_dict = _read_original_content(p)
+    if err_dict is not None:
+        return err_dict
 
     count = original_content.count(old_string)
     if count > 1:
@@ -702,7 +736,9 @@ def multiedit(
     if not p.exists():
         return {"path": str(p), "status": "not_found"}
 
-    original_content = p.read_text(encoding="utf-8")
+    original_content, err_dict = _read_original_content(p)
+    if err_dict is not None:
+        return err_dict
     working_content = original_content
 
     for i, edit in enumerate(edits):

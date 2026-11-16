@@ -110,7 +110,18 @@ def edit_code_block(
         if not file_path.exists():
             return {"status": "not_found", "error": f"File not found: {path}"}
 
-        old_content = file_path.read_text(encoding="utf-8")
+        # Safe binary check
+        try:
+            with file_path.open("rb") as fh:
+                header = fh.read(512)
+                if b"\x00" in header:
+                    return {"status": "error", "error": f"Cannot edit binary file: '{file_path.name}'."}
+                raw = header + fh.read()
+            old_content = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            return {"status": "error", "error": f"File '{file_path.name}' is not valid UTF-8. Cannot edit as text."}
+        except Exception as exc:
+            return {"status": "error", "error": f"Failed to read file: {exc}"}
 
         # WorkspaceGuard & read-before-write checks
         workdir_resolved = workdir_path.resolve()

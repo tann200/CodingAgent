@@ -10,6 +10,7 @@ bash_approved, bash_denied, confirm_file_preview, reject_file_preview.
 
 from __future__ import annotations
 
+import re
 
 from src.core.messaging.event_types import BashApprovalDenied, BashApprovalGranted, PreviewConfirmed, PreviewRejected
 from typing import TYPE_CHECKING
@@ -18,6 +19,9 @@ if TYPE_CHECKING:
     pass
 
 from ._bridge_protocol import AgentBridgeProtocol
+
+_ANSI_ESCAPE_RE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+_MAX_TUI_OUTPUT_CHARS = 100_000
 
 TIER3_PREFIXES = (
     "pip ",
@@ -102,6 +106,14 @@ class BridgeToolsMixin(AgentBridgeProtocol):
 
         if not result_text:
             result_text = "(no output)"
+        else:
+            result_text = _ANSI_ESCAPE_RE.sub("", result_text)
+            if len(result_text) > _MAX_TUI_OUTPUT_CHARS:
+                extra = len(result_text) - _MAX_TUI_OUTPUT_CHARS
+                result_text = (
+                    result_text[:_MAX_TUI_OUTPUT_CHARS]
+                    + f"\n... [{extra} characters truncated for display]"
+                )
         res_dict = payload.get("result") if isinstance(payload.get("result"), dict) else {}
         ok = payload.get("ok", res_dict.get("ok", True))
         if res_dict.get("ok") is False or res_dict.get("error"):
@@ -117,11 +129,19 @@ class BridgeToolsMixin(AgentBridgeProtocol):
 
         tool_name = payload.get("title") or payload.get("tool", "unknown")
         tool_id = payload.get("tool_call_id") or payload.get("toolCallId", "")
+        err_msg = str(payload.get("error", "Unknown error"))
+        err_msg = _ANSI_ESCAPE_RE.sub("", err_msg)
+        if len(err_msg) > _MAX_TUI_OUTPUT_CHARS:
+            extra = len(err_msg) - _MAX_TUI_OUTPUT_CHARS
+            err_msg = (
+                err_msg[:_MAX_TUI_OUTPUT_CHARS]
+                + f"\n... [{extra} characters truncated]"
+            )
         self._post(
             ToolCallErrorEvent(
                 tool_name=tool_name,
                 tool_id=tool_id,
-                error=str(payload.get("error", "Unknown error")),
+                error=err_msg,
             )
         )
 
