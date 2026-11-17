@@ -156,7 +156,7 @@ def test_server_native_tool_acceptance(
     try:
         if p_type == "ollama":
             endpoint = f"{clean_url}/api/chat"
-            payload = {
+            payload: Dict[str, Any] = {
                 "model": model,
                 "messages": [{"role": "user", "content": "Respond with 'READY'"}],
                 "tools": schemas,
@@ -177,14 +177,14 @@ def test_server_native_tool_acceptance(
         if not clean_url.endswith("/v1") and "/v1" not in clean_url and not clean_url.endswith("/chat/completions"):
             endpoint = f"{clean_url}/v1/chat/completions"
 
-        payload = {
+        compat_payload: Dict[str, Any] = {
             "model": model,
             "messages": [{"role": "user", "content": "Respond with 'READY'"}],
             "tools": schemas,
             "max_tokens": 5,
             "stream": False,
         }
-        resp = requests.post(endpoint, json=payload, timeout=timeout)
+        resp = requests.post(endpoint, json=compat_payload, timeout=timeout)
         if resp.status_code == 200:
             return True, None
         try:
